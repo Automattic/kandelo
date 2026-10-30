@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
@@ -19,6 +19,12 @@ import { zstdCompressSync } from "node:zlib";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import type { VfsImageMetadata } from "../../host/src/vfs/vfs-image-filesystem";
 import { ABI_VERSION } from "../../host/src/generated/abi";
+import {
+  createSourceOnlyBinarySnapshotSession,
+  programOriginalWasmArtifact,
+  programWasmArtifactPolicy,
+  resolveProgramOriginalWasmArtifact,
+} from "../../host/src/binary-resolver";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -251,6 +257,34 @@ function writeSourceOnlyFixture(root: string): {
   return { artifact, artifactBytes, relPath, sibling, projectionPath };
 }
 
+function writeOriginalSourceOnlyFixture(root: string, originalBytes = Buffer.from("\0asm\x01\0\0\0")) {
+  const fixture = writeSourceOnlyFixture(root);
+  const authority = JSON.parse(readFileSync(fixture.projectionPath, "utf8"));
+  const packageName = "source-only-fixture";
+  const projected = authority.projection.packages[packageName];
+  const output = projected.members[0];
+  output.mirrorPath = output.sourceArtifact;
+  output.originalWasm = "originals/artifact.wasm";
+  projected.members = [output];
+  const node = authority.nodes.find((entry: { node: { name: string } }) => entry.node.name === packageName);
+  const relPath = `programs/wasm32/${output.mirrorPath}`;
+  const artifact = join(root, relPath);
+  copyFileSync(fixture.artifact, artifact);
+  chmodSync(artifact, 0o755);
+  const originalRelPath = `programs/wasm32/.originals/${packageName}/${node.cacheKeySha256}/${output.originalWasm}`;
+  const original = join(root, originalRelPath);
+  mkdirSync(dirname(original), { recursive: true });
+  writeFileSync(original, originalBytes, { mode: 0o444 });
+  chmodSync(original, 0o444);
+  node.members = [
+    { ...node.members[0], mirrorPath: relPath },
+    { sourceArtifact: output.originalWasm, mirrorPath: originalRelPath, mode: 0o444,
+      size: originalBytes.length, sha256: sha256(originalBytes) },
+  ].sort((left, right) => left.mirrorPath < right.mirrorPath ? -1 : 1);
+  writeFileSync(fixture.projectionPath, JSON.stringify(authority));
+  return { ...fixture, artifact, relPath, original, originalRelPath, originalBytes };
+}
+
 function resolveSourceOnlyBinary(
   relPath: string,
   sourceOnlyRoot: string,
@@ -300,6 +334,103 @@ afterAll(() => {
 });
 
 describe("source-only binary resolver boundary", () => {
+  it("keeps executable paths flat and admits associated originals only as data", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "kandelo-original-projection-")));
+    const fixture = writeOriginalSourceOnlyFixture(root);
+    try {
+      const result = resolveSourceOnlyBinary(fixture.relPath, root);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe(fixture.artifact);
+      const raw = resolveSourceOnlyBinary(fixture.originalRelPath, root);
+      expect(raw.status, raw.stderr).toBe(0);
+      expect(raw.stdout.trim()).toBe(fixture.original);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["missing", "corrupt", "executable", "writable", "symlink"])("refuses an executable whose associated original is %s", (mutation) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "kandelo-original-projection-")));
+    const fixture = writeOriginalSourceOnlyFixture(root);
+    try {
+      if (mutation === "missing" || mutation === "symlink") rmSync(fixture.original);
+      if (mutation === "symlink") symlinkSync(fixture.artifact, fixture.original);
+      if (mutation === "corrupt") {
+        chmodSync(fixture.original, 0o644);
+        writeFileSync(fixture.original, Buffer.alloc(fixture.originalBytes.length));
+        chmodSync(fixture.original, 0o444);
+      }
+      if (mutation === "executable") chmodSync(fixture.original, 0o555);
+      if (mutation === "writable") chmodSync(fixture.original, 0o644);
+      const result = resolveSourceOnlyBinary(fixture.relPath, root);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/originals|mode/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(["arch", "cache-key", "extra", "caller-role", "artifact-collision"])("rejects %s changes to original companion ownership", (mutation) => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "kandelo-original-projection-")));
+    const fixture = writeOriginalSourceOnlyFixture(root);
+    try {
+      const authority = JSON.parse(readFileSync(fixture.projectionPath, "utf8"));
+      const node = authority.nodes.find((entry: { node: { name: string } }) => entry.node.name === "source-only-fixture");
+      const original = node.members.find((member: { mirrorPath: string }) => member.mirrorPath === fixture.originalRelPath);
+      if (mutation === "arch") original.mirrorPath = original.mirrorPath.replace("/wasm32/", "/wasm64/");
+      if (mutation === "cache-key") original.mirrorPath = original.mirrorPath.replace("2".repeat(64), "9".repeat(64));
+      if (mutation === "extra") node.members.push({ ...original, mirrorPath: `${original.mirrorPath}.extra` });
+      if (mutation === "caller-role") original.associatedOriginal = true;
+      if (mutation === "artifact-collision") authority.projection.packages["source-only-fixture"].members[0].originalWasm = "artifact.wasm";
+      node.members.sort((left: { mirrorPath: string }, right: { mirrorPath: string }) => left.mirrorPath < right.mirrorPath ? -1 : 1);
+      writeFileSync(fixture.projectionPath, JSON.stringify(authority));
+      const result = resolveSourceOnlyBinary(fixture.relPath, root);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/projection|originalWasm/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("pins original ownership and streams uncaptured originals within snapshot budgets", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "kandelo-original-projection-")));
+    const payload = Buffer.concat([Buffer.from(nameBytes("padding")), Buffer.alloc(2 * 1024 * 1024)]);
+    const originalBytes = Buffer.concat([Buffer.from("\0asm\x01\0\0\0"), Buffer.from([0, ...uleb128(payload.length)]), payload]);
+    const fixture = writeOriginalSourceOnlyFixture(root, originalBytes);
+    const previousPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
+    const previousRoot = process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    process.env.WASM_POSIX_RESOLUTION_POLICY = "source-only-v1";
+    process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = root;
+    const allocation = vi.spyOn(Buffer, "alloc");
+    try {
+      expect(programOriginalWasmArtifact(fixture.relPath)).toMatchObject({
+        relPath: fixture.originalRelPath, size: originalBytes.length, sha256: sha256(originalBytes), mode: 0o444,
+      });
+      expect(resolveProgramOriginalWasmArtifact(fixture.relPath, "source-only-fixture", fixture.artifact)).toMatchObject({
+        path: fixture.original, relPath: fixture.originalRelPath, sha256: sha256(originalBytes), size: originalBytes.length,
+      });
+      expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, "unrelated", fixture.artifact)).toThrow(/does not own/);
+      const staleExecutable = join(root, "stale.wasm");
+      writeFileSync(staleExecutable, Buffer.from("stale program"));
+      expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, "source-only-fixture", staleExecutable)).toThrow(/differs from its selected package receipt/);
+      expect(() => programWasmArtifactPolicy(fixture.originalRelPath)).toThrow(/not a declared executable/);
+      const session = createSourceOnlyBinarySnapshotSession();
+      const executable = session.snapshots([fixture.relPath], fixture.artifactBytes.length);
+      expect(Buffer.from(executable[0]!.bytes)).toEqual(Buffer.from(fixture.artifactBytes));
+      expect(allocation.mock.calls.every(([size]) => size < originalBytes.length)).toBe(true);
+      expect(() => session.snapshots([fixture.originalRelPath], originalBytes.length - 1)).toThrow(/limit|exceed/i);
+      const captured = session.snapshots([fixture.originalRelPath], originalBytes.length);
+      expect(Buffer.from(captured[0]!.bytes)).toEqual(originalBytes);
+    } finally {
+      allocation.mockRestore();
+      if (previousPolicy === undefined) delete process.env.WASM_POSIX_RESOLUTION_POLICY;
+      else process.env.WASM_POSIX_RESOLUTION_POLICY = previousPolicy;
+      if (previousRoot === undefined) delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+      else process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT = previousRoot;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("selects the aggregate instead of mirror, compiled-cache, and installed poison", () => {
     const sourceOnlyRoot = realpathSync(
       mkdtempSync(join(tmpdir(), "kandelo-source-only-binaries-")),

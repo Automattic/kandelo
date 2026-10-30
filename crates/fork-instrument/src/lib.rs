@@ -20,6 +20,7 @@ pub mod linked_frames;
 pub mod module_exception_codec;
 pub mod module_gc_codec;
 pub mod native;
+pub mod original_artifact;
 mod progress;
 pub mod runtime;
 pub mod sink;

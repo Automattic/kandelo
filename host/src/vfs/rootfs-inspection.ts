@@ -1,6 +1,7 @@
 import { ERRNO, STRUCT_SIZE_WASM_STAT } from "../generated/abi";
 import { KernelScratchError } from "../kernel-scratch";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs";
+import { StorageMemoryBudget, StorageMetadataMap } from "./storage-memory-budget";
 
 /** Decode copied kernel metadata; this module owns no filesystem state. */
 export function decodeInspectionStat(view: Pick<DataView, "byteLength" | "getBigInt64" | "getUint32">): VfsPathStat {
@@ -62,9 +63,17 @@ export function decodeInspectionDirectory(bytes: Uint8Array): VfsDirEntrySnapsho
   return entries;
 }
 
-export function decodeInspectionResourceLimits(bytes: Uint8Array): Map<string, number> {
+export function decodeInspectionResourceLimits(
+  bytes: Uint8Array,
+  budget = new StorageMemoryBudget(),
+): StorageMetadataMap<string, number> {
   const reader = new InspectionReader(bytes);
-  const resources = new Map<string, number>();
-  while (!reader.done) resources.set(reader.text(), reader.size());
-  return resources;
+  const temporary = budget.reserve(bytes.byteLength * 2);
+  let resources: StorageMetadataMap<string, number> | undefined;
+  try {
+    resources = new StorageMetadataMap<string, number>(budget);
+    while (!reader.done) resources.set(reader.text(), reader.size());
+    return resources;
+  } catch (error) { resources?.dispose(); throw error; }
+  finally { temporary.release(); }
 }

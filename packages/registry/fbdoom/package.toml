@@ -28,6 +28,7 @@ script_path = "packages/registry/fbdoom/build-fbdoom.sh"
 [[outputs]]
 name = "fbdoom"
 wasm = "fbdoom.wasm"
+fork_instrumentation = "disabled"
 
 [[runtime_files]]
 artifact = "sessions.json"

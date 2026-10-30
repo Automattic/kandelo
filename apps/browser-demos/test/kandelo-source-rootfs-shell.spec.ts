@@ -1,37 +1,17 @@
 import { createHash } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
+import { runTerminalCommand } from "./support/terminal-command";
 
 const strict = process.env.KANDELO_SOURCE_ROOTFS_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_MAIN_SHELL_SHA256;
 
-async function terminalText(page: Page): Promise<string> {
-  return page.locator(".xterm-rows").first().evaluate(
-    (node) => node.textContent ?? "",
-  );
-}
-
-async function ensureGuideOpen(page: Page): Promise<void> {
-  // The demo guide no longer auto-opens; open it from the dock on first use.
-  if (await page.locator("aside.kdemo").count()) return;
-  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 120_000 });
-  await page.waitForSelector("aside.kdemo", { timeout: 30_000 });
-}
-
-async function runGuideScript(
+async function runShellScript(
   page: Page,
   script: string,
   expected: string | RegExp,
   timeout = 120_000,
 ): Promise<void> {
-  await ensureGuideOpen(page);
-  const runButton = page.locator(".kdemo-run").first();
-  await page.locator(".kdemo textarea").first().fill(script);
-  await runButton.click();
-  const assertion = expect.poll(() => terminalText(page), { timeout });
-  if (typeof expected === "string") await assertion.toContain(expected);
-  else await assertion.toMatch(expected);
-  await expect(runButton).toHaveText("Run script", { timeout });
-  await expect(runButton).toBeEnabled();
+  await runTerminalCommand(page, script, expected, timeout);
 }
 
 test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async ({
@@ -69,18 +49,14 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   await page.goto(new URL("?profile=shell", productBase).href, {
     waitUntil: "domcontentloaded",
   });
-  // "Ready" renders inside the demo guide panel, which no longer auto-opens.
-  await ensureGuideOpen(page);
-  await expect
-    .poll(() => page.evaluate(() => document.body.innerText), {
-      timeout: 180_000,
-    })
-    .toContain("Ready");
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
+  await expect(page.getByRole("button", { name: "Shortcuts", exact: true })).toHaveCount(0);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 120_000,
   });
+  await expect(page.locator(".xterm-rows").first()).toContainText(/kandelo(?:-bash-[0-9.]+)?\$ ?/, { timeout: 120_000 });
 
-  await runGuideScript(
+  await runShellScript(
     page,
     "vals=(alpha beta)\n" +
       "if [[ ${vals[1]} == beta ]]; then\n" +
@@ -90,19 +66,19 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
       "fi",
     /SOURCE_ROOTFS_BASH_OK:[0-9][^\r\n]*:\/home\/maker/,
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "printf 'rootfs-lazy\\n' | grep -q '^rootfs-lazy$' && " +
       "printf 'SOURCE_ROOTFS_GREP_OK\\n'",
     "SOURCE_ROOTFS_GREP_OK",
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "less --version >/tmp/source-rootfs-less.out 2>&1 && " +
       "printf 'SOURCE_ROOTFS_LESS_OK\\n'",
     "SOURCE_ROOTFS_LESS_OK",
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "vim --version >/tmp/source-rootfs-vim.out 2>&1\n" +
       "vim_version=$(</tmp/source-rootfs-vim.out)\n" +
@@ -114,7 +90,7 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
       "fi",
     "SOURCE_ROOTFS_VIM_OK",
   );
-  await runGuideScript(
+  await runShellScript(
     page,
     "nethack -s all >/tmp/source-rootfs-nethack.out 2>&1\n" +
       "status=$?\n" +

@@ -3,6 +3,7 @@ import { encodeBootDescriptor } from "../../../web-libs/kandelo-session/src/boot
 import { createInlineBootInput } from "../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../web-libs/kandelo-session/src/kernel-host";
 import { gotoMachine } from "./support/kandelo-machine";
+import { clickDockTool } from "./support/dock";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate(
@@ -132,9 +133,7 @@ test("share dialog authors a script link that runs on open @slow", async ({ page
     timeout: 180_000,
   });
 
-  await page
-    .getByRole("button", { name: "Share this computer as a link" })
-    .click();
+  await clickDockTool(page, "Share setup…");
   await page
     .locator(".kshare textarea")
     .fill('echo "shared-script:$((40 + 2))"');

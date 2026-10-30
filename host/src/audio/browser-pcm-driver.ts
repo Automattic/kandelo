@@ -48,10 +48,22 @@ export interface BrowserPcmDriverOptions {
  */
 let sharedAudioContext: AudioContext | null = null;
 const sharedRegisteredWorklets = new Set<string>();
+let sharedTransportRetirementFailure: Error | null = null;
+let sharedContextTransitionFailure: Error | null = null;
+const retiredContextFailures = new WeakSet<object>();
+
+export function isPcmContextFailureWithRetiredTransport(error: unknown): boolean {
+  return typeof error === "object" && error !== null && retiredContextFailures.has(error);
+}
+
+export function assertBrowserPcmTransportRetired(): void {
+  if (sharedTransportRetirementFailure !== null) throw sharedTransportRetirementFailure;
+}
 
 const DEFAULT_RENDER_QUANTUM_FRAMES = 128;
 const UNREPORTED_OUTPUT_LATENCY_FALLBACK_MS = 100;
 const MAX_OUTPUT_PIPELINE_SETTLE_MS = 1000;
+const MAX_WORKLET_DETACH_MS = 1000;
 
 /** AudioWorklet-backed physical/default PCM sink for browser machines. */
 export class BrowserPcmDriver implements PcmOutputDriver {
@@ -62,6 +74,10 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   private remotePrepared = false;
   private state: PcmOutputState = "unprepared";
   private preparing: Promise<void> | null = null;
+  private closing: Promise<void> | null = null;
+  private resuming: Promise<void> | null = null;
+  private suspending: Promise<void> | null = null;
+  private processorError: string | null = null;
   /** True when this driver created a private context it must close. */
   private ownsContext = false;
   private contextStateHandler: (() => void) | null = null;
@@ -69,28 +85,73 @@ export class BrowserPcmDriver implements PcmOutputDriver {
 
   constructor(private readonly options: BrowserPcmDriverOptions) {}
 
-  /** Forward the connection without receiving a kernel-memory wrapper. */
+  prepareContext(): void {
+    if (this.state === "closed" || this.closing !== null) throw new Error("PCM output is closed");
+    assertBrowserPcmTransportRetired();
+    this.assertContextReusable();
+    if (this.state === "error") throw new Error("PCM output has failed");
+    if (this.context !== null) return;
+    const AudioContextCtor = globalThis.AudioContext ??
+      (globalThis as typeof globalThis & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!this.options.createContext && !AudioContextCtor) {
+      this.markFatalError();
+      this.setState("unavailable");
+      this.transport = null;
+      throw new Error("Web Audio is unavailable");
+    }
+    let context: AudioContext;
+    try {
+      if (this.options.createContext) {
+        context = this.options.createContext();
+        this.ownsContext = true;
+      } else {
+        if (!sharedAudioContext || sharedAudioContext.state === "closed") {
+          sharedAudioContext = new (AudioContextCtor as typeof AudioContext)({ latencyHint: "interactive" });
+          sharedRegisteredWorklets.clear();
+        }
+        context = sharedAudioContext;
+        this.ownsContext = false;
+      }
+    } catch (error) {
+      this.markFatalError();
+      this.transport = null;
+      this.setState("error");
+      throw error;
+    }
+    this.context = context;
+    this.contextStateHandler = () => this.syncContextState();
+    context.onstatechange = this.contextStateHandler;
+    context.addEventListener?.("error", this.onContextError);
+    this.syncContextState();
+  }
+
   prepareRemote(port: MessagePort): Promise<void> {
-    if (this.state === "closed") {
-      return Promise.reject(new Error("PCM output is closed"));
-    }
+    if (this.state === "closed" || this.closing !== null) return Promise.reject(new Error("PCM output is closed"));
+    try {
+      assertBrowserPcmTransportRetired();
+      this.assertContextReusable();
+    } catch (error) { return Promise.reject(error); }
     if (this.remotePrepared) return this.preparing ?? Promise.resolve();
-    if (this.transport) {
-      return Promise.reject(new Error("PCM output already has a transport"));
-    }
+    if (this.transport) return Promise.reject(new Error("PCM output already has a transport"));
+    const operation = pendingAudioOperation();
     this.remotePrepared = true;
-    this.preparing = this.prepareInner(null, port).finally(() => {
-      this.preparing = null;
-    });
+    this.preparing = operation.promise.finally(() => { this.preparing = null; });
+    operation.start(() => this.prepareInner(port));
     return this.preparing;
   }
 
   prepare(transport: PcmTransportDescriptor): Promise<void> {
-    if (this.state === "closed") {
+    if (this.state === "closed" || this.closing !== null) {
       return Promise.reject(new Error("PCM output is closed"));
     }
     if (this.remotePrepared) {
       return Promise.reject(new Error("PCM output already has a remote transport"));
+    }
+    try {
+      assertBrowserPcmTransportRetired();
+      this.assertContextReusable();
+    } catch (error) {
+      return Promise.reject(error);
     }
     validatePcmTransport(transport);
     if (this.transport) {
@@ -101,15 +162,32 @@ export class BrowserPcmDriver implements PcmOutputDriver {
       }
       return this.preparing ?? Promise.resolve();
     }
+    const operation = pendingAudioOperation();
     this.transport = transport;
-    this.preparing = this.prepareInner(transport).finally(() => {
+    this.preparing = operation.promise.finally(() => {
       this.preparing = null;
     });
+    operation.start(() => this.prepareInner());
     return this.preparing;
   }
 
-  async resume(): Promise<void> {
-    if (this.preparing) await this.preparing;
+  resume(): Promise<void> {
+    if (this.closing !== null || this.state === "closed") {
+      return Promise.reject(new Error("PCM output is closed"));
+    }
+    if (this.resuming !== null) return this.resuming;
+    const operation = pendingAudioOperation();
+    this.resuming = operation.promise.finally(() => {
+      this.resuming = null;
+    });
+    operation.start(() => this.resumeInner());
+    return this.resuming;
+  }
+
+  private async resumeInner(): Promise<void> {
+    const preparation = this.preparing;
+    if (this.context === null && preparation !== null) await preparation;
+    if (this.closing !== null || this.state === "closed") throw new Error("PCM output is closed");
     if (this.state === "error") throw new Error("PCM output has failed");
     if (this.transport && hasPcmFatalError(pcmControlWords(this.transport))) {
       this.setState("error");
@@ -119,6 +197,9 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (!context) throw new Error("PCM output has not been prepared");
     try {
       await context.resume();
+      if (this.closing !== null || context !== this.context) throw new Error("PCM output is closed");
+      if (preparation !== null) await preparation;
+      if (this.closing !== null || context !== this.context) throw new Error("PCM output is closed");
       this.syncContextState();
       if (context.state !== "running") {
         throw new Error(`AudioContext remained ${context.state}`);
@@ -126,18 +207,38 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     } catch (error) {
       // A suspended context and a rejected resume before a user gesture are
       // recoverable. The caller can retry resume from the next activation.
-      this.syncContextState();
+      if (this.closing === null && context === this.context) this.syncContextState();
       throw error;
     }
   }
 
-  async suspend(): Promise<void> {
+  suspend(): Promise<void> {
+    if (this.closing !== null || this.state === "closed") {
+      return Promise.reject(new Error("PCM output is closed"));
+    }
+    return this.beginSuspension(false);
+  }
+
+  private beginSuspension(allowClosing: boolean): Promise<void> {
+    if (this.suspending !== null) return this.suspending;
+    const operation = pendingAudioOperation();
+    this.suspending = operation.promise.finally(() => {
+      this.suspending = null;
+    });
+    operation.start(() => this.suspendInner(allowClosing));
+    return this.suspending;
+  }
+
+  private async suspendInner(allowClosing: boolean): Promise<void> {
     if (this.preparing) await this.preparing;
+    if ((!allowClosing && this.closing !== null) || this.state === "closed") throw new Error("PCM output is closed");
     if (this.transport && hasPcmFatalError(pcmControlWords(this.transport))) {
       this.setState("error");
     }
     if (!this.context || this.context.state === "closed") return;
-    await this.context.suspend();
+    const context = this.context;
+    await context.suspend();
+    if ((!allowClosing && this.closing !== null) || context !== this.context) throw new Error("PCM output is closed");
     this.syncContextState();
   }
 
@@ -161,14 +262,22 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   async settleOutputPipeline(): Promise<void> {
     if (this.preparing) await this.preparing.catch(() => {});
     const context = this.context;
-    if (!context || !this.node || context.state !== "running") return;
+    if (!context || context.state !== "running") return;
+    const hasOutput = this.node !== null;
 
     const startedAt = performance.now();
-    await waitForPromiseWithin(
-      context.suspend(),
+    const suspension = this.beginSuspension(true);
+    if (!await waitForPromiseWithin(
+      suspension,
       MAX_OUTPUT_PIPELINE_SETTLE_MS,
-    );
+    )) {
+      const error = new Error("PCM output suspension did not settle before shutdown");
+      this.recordContextTransitionFailure(error);
+      throw error;
+    }
+    await suspension;
     this.syncContextState();
+    if (!hasOutput) return;
 
     if ((context.state as string) === "closed" || context !== this.context) {
       return;
@@ -185,36 +294,51 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (settleMs > 0) await delay(settleMs);
   }
 
-  async close(): Promise<void> {
-    if (this.state === "closed") return;
-    if (this.preparing) await this.preparing.catch(() => {});
+  close(): Promise<void> {
+    if (this.closing !== null) return this.closing;
+    const operation = pendingAudioOperation();
+    this.closing = operation.promise;
+    operation.start(() => this.closeInner());
+    return this.closing;
+  }
+
+  private async closeInner(): Promise<void> {
+    const failures: unknown[] = [];
+    const contextFailures: unknown[] = [];
+    if (this.preparing && !await waitForPromiseWithin(this.preparing.catch(() => {}), MAX_WORKLET_DETACH_MS)) {
+      const error = new Error("PCM worklet preparation did not settle before shutdown");
+      contextFailures.push(error);
+      this.recordContextTransitionFailure(error);
+    }
+    const transitions = [this.resuming, this.suspending].filter(
+      (transition): transition is Promise<void> => transition !== null,
+    );
+    if (transitions.length > 0 && !await waitForPromiseWithin(
+      Promise.allSettled(transitions), MAX_WORKLET_DETACH_MS,
+    )) {
+      const error = new Error("PCM context transition did not settle before shutdown");
+      contextFailures.push(error);
+      this.recordContextTransitionFailure(error);
+    }
     const node = this.node;
     const context = this.context;
+    if (node) {
+      try {
+        await this.detachNode(node);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (this.preparing === null) {
+      await this.settleOutputPipeline().catch(error => {
+        contextFailures.push(error);
+        this.recordContextTransitionFailure(error);
+      });
+    }
     this.node = null;
     this.context = null;
     this.transport = null;
     if (node) {
-      // A disconnected source processor that returns true remains alive in
-      // the shared context. Require it to drop its kernel-memory views before
-      // closing the port; disconnect alone leaves every old machine pinned.
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          console.warn("[BrowserPcmDriver] AudioWorklet memory release acknowledgement timed out");
-          resolve();
-        }, 1_000);
-        node.port.onmessage = event => {
-          if (event.data?.type !== "released") return;
-          clearTimeout(timeout);
-          resolve();
-        };
-        try {
-          node.port.postMessage({ type: "release" });
-        } catch (error) {
-          clearTimeout(timeout);
-          console.warn("[BrowserPcmDriver] AudioWorklet release failed", error);
-          resolve();
-        }
-      });
       node.port.onmessage = null;
       node.onprocessorerror = null;
       node.disconnect();
@@ -235,6 +359,50 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     // context costs one rendering thread total, not one per machine.
     this.setState("closed");
     this.listeners.clear();
+    if (failures.length === 0 && contextFailures.length > 0 && !this.ownsContext) {
+      const failure = new Error("PCM audio context is quarantined until reload; transport memory is detached", {
+        cause: contextFailures.length === 1 ? contextFailures[0]
+          : new AggregateError(contextFailures, "PCM context shutdown failed"),
+      });
+      retiredContextFailures.add(failure);
+      throw failure;
+    }
+    failures.push(...contextFailures);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, "PCM output shutdown failed");
+  }
+
+  private recordUnconfirmedRetirement(error: unknown): void {
+    if (this.ownsContext) return;
+    sharedTransportRetirementFailure ??= new Error(
+      "PCM transport retirement is unconfirmed; reload before attaching shared audio",
+      { cause: error },
+    );
+  }
+
+  private recordContextTransitionFailure(error: unknown): void {
+    if (this.ownsContext) return;
+    sharedContextTransitionFailure ??= new Error("PCM audio context is quarantined until reload", { cause: error });
+  }
+
+  private assertContextReusable(): void {
+    if (!this.options.createContext && sharedContextTransitionFailure !== null) {
+      this.setState("unavailable");
+      throw sharedContextTransitionFailure;
+    }
+  }
+
+  private async detachNode(node: AudioWorkletNode): Promise<void> {
+    try {
+      await detachWorklet(node);
+    } catch (error) {
+      let message = "PCM AudioWorklet detach failed";
+      try { if (error instanceof Error) message = error.message.slice(0, 512); } catch {}
+      const failure = new Error(`${message}; context=${this.context?.state ?? "absent"}; sink=${this.state}`
+        + (this.processorError === null ? "" : `; processor=${this.processorError}`), { cause: error });
+      this.recordUnconfirmedRetirement(failure);
+      throw failure;
+    }
   }
 
   getState(): PcmOutputState {
@@ -243,70 +411,23 @@ export class BrowserPcmDriver implements PcmOutputDriver {
 
   subscribe(listener: (state: PcmOutputState) => void): () => void {
     this.listeners.add(listener);
-    listener(this.state);
+    this.notifyListener(listener, this.state);
     return () => this.listeners.delete(listener);
   }
 
-  private async prepareInner(
-    transport: PcmTransportDescriptor | null,
-    remotePort?: MessagePort,
-  ): Promise<void> {
-    const AudioContextCtor =
-      globalThis.AudioContext ??
-      (
-        globalThis as typeof globalThis & {
-          webkitAudioContext?: typeof AudioContext;
-        }
-      ).webkitAudioContext;
-    if (!this.options.createContext && !AudioContextCtor) {
-      this.markFatalError();
-      this.setState("unavailable");
-      this.transport = null;
-      throw new Error("Web Audio is unavailable");
-    }
-
-    let context: AudioContext;
+  private async prepareInner(remotePort?: MessagePort): Promise<void> {
+    let context = this.context;
     try {
-      if (this.options.createContext) {
-        context = this.options.createContext();
-        this.ownsContext = true;
-      } else {
-        // [RUNTIME-WORKAROUND: WEBKIT-AUDIOWORKLET-CLOSE-LEAK]
-        // Reuse the page-wide context; see the sharedAudioContext
-        // declaration for why closing per-machine contexts leaks a rendering
-        // thread on WebKit.
-        if (!sharedAudioContext || sharedAudioContext.state === "closed") {
-          sharedAudioContext = new (AudioContextCtor as typeof AudioContext)({
-            latencyHint: "interactive",
-          });
-          sharedRegisteredWorklets.clear();
-        }
-        context = sharedAudioContext;
-        this.ownsContext = false;
-      }
-    } catch (error) {
-      this.markFatalError();
-      this.transport = null;
-      this.setState("error");
-      throw error;
-    }
-    this.context = context;
-    // Store the handler so close() can prove it is unhooking its own. With a
-    // shared context, blindly nulling onstatechange would clobber a handler a
-    // later driver installed if teardown ordering ever overlapped.
-    this.contextStateHandler = () => this.syncContextState();
-    context.onstatechange = this.contextStateHandler;
-    // Web Audio 1.1 defines AudioContext's `error` event for audio-system
-    // resource failures. TypeScript's current DOM declarations do not yet
-    // include the event in AudioContextEventMap, so use the string overload.
-    context.addEventListener?.("error", this.onContextError);
-
-    try {
+      this.prepareContext();
+      context = this.context!;
       const workletUrl = String(this.options.workletUrl);
       if (this.ownsContext || !sharedRegisteredWorklets.has(workletUrl)) {
         await context.audioWorklet.addModule(workletUrl);
         if (!this.ownsContext) sharedRegisteredWorklets.add(workletUrl);
       }
+      if (this.closing !== null) return;
+      const transport = this.transport;
+      if (transport === null && remotePort === undefined) throw new Error("PCM transport is not available");
       const options: AudioWorkletNodeOptions = {
         numberOfInputs: 0,
         numberOfOutputs: 1,
@@ -331,15 +452,16 @@ export class BrowserPcmDriver implements PcmOutputDriver {
           outputSampleRate: context.sampleRate,
         },
       };
+      assertBrowserPcmTransportRetired();
+      this.assertContextReusable();
       const node = this.options.createNode
         ? this.options.createNode(context, "kandelo-pcm-output", options)
         : new AudioWorkletNode(context, "kandelo-pcm-output", options);
-      if (remotePort) {
-        node.port.postMessage({ type: "attach", port: remotePort }, [remotePort]);
-      }
+      this.node = node;
       node.port.onmessage = (event: MessageEvent<unknown>) => {
         const message = event.data as { type?: unknown; message?: unknown };
         if (message?.type !== "error") return;
+        this.processorError = typeof message.message === "string" ? message.message.slice(0, 512) : "AudioWorklet failed";
         this.fail();
         console.error(
           `[BrowserPcmDriver] ${
@@ -349,24 +471,45 @@ export class BrowserPcmDriver implements PcmOutputDriver {
           }`,
         );
       };
-      node.onprocessorerror = () => {
+      node.onprocessorerror = event => {
+        let message = "AudioWorklet processor failed";
+        try {
+          const detail = (event as ErrorEvent).message;
+          if (typeof detail === "string" && detail.length > 0) message = detail.slice(0, 512);
+        } catch {}
+        this.processorError = message;
         this.fail();
+        try { console.error(`[BrowserPcmDriver] ${message}`); } catch {}
       };
+      if (remotePort) node.port.postMessage({ type: "attach", port: remotePort }, [remotePort]);
       node.connect(context.destination);
-      this.node = node;
       this.syncContextState();
     } catch (error) {
       this.markFatalError();
+      context ??= this.context;
+      let failure = error;
+      const node = this.node;
+      if (node) {
+        try {
+          await this.detachNode(node);
+        } catch (cleanupError) {
+          failure = new AggregateError([error, cleanupError], "PCM output preparation and transport retirement failed");
+        }
+        node.port.onmessage = null;
+        node.onprocessorerror = null;
+        node.disconnect();
+        node.port.close();
+      }
       this.node = null;
       this.context = null;
       this.transport = null;
-      if (context.onstatechange === this.contextStateHandler) {
+      if (context?.onstatechange === this.contextStateHandler) {
         context.onstatechange = null;
       }
-      context.removeEventListener?.("error", this.onContextError);
+      context?.removeEventListener?.("error", this.onContextError);
       if (this.ownsContext) {
-        if (context.state !== "closed") await context.close().catch(() => {});
-      } else if (sharedAudioContext === context) {
+        if (context && context.state !== "closed") await context.close().catch(() => {});
+      } else if (context !== null && sharedAudioContext === context) {
         // A context that failed to prepare must not be handed to the next
         // machine. Drop the cache; closing it may leak the worklet thread on
         // WebKit, but a broken context would strand every later machine.
@@ -375,7 +518,7 @@ export class BrowserPcmDriver implements PcmOutputDriver {
         if (context.state !== "closed") await context.close().catch(() => {});
       }
       this.setState("error");
-      throw error;
+      throw failure;
     }
   }
 
@@ -405,10 +548,19 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   }
 
   private setState(state: PcmOutputState): void {
+    if (this.state === "closed") return;
     if (this.state === "error" && state !== "closed") return;
     if (this.state === state) return;
     this.state = state;
-    for (const listener of this.listeners) listener(state);
+    for (const listener of this.listeners) this.notifyListener(listener, state);
+  }
+
+  private notifyListener(listener: (state: PcmOutputState) => void, state: PcmOutputState): void {
+    try {
+      listener(state);
+    } catch {
+      try { console.error("[BrowserPcmDriver] state listener failed"); } catch {}
+    }
   }
 
   private markFatalError(): void {
@@ -423,6 +575,24 @@ export class BrowserPcmDriver implements PcmOutputDriver {
   }
 }
 
+function pendingAudioOperation(): {
+  promise: Promise<void>;
+  start: (operation: () => Promise<void>) => void;
+} {
+  let complete!: () => void;
+  let refuse!: (error: unknown) => void;
+  const promise = new Promise<void>((resolve, reject) => {
+    complete = resolve;
+    refuse = reject;
+  });
+  return {
+    promise,
+    start: operation => {
+      try { void operation().then(complete, refuse); } catch (error) { refuse(error); }
+    },
+  };
+}
+
 function sameTransport(
   a: PcmTransportDescriptor,
   b: PcmTransportDescriptor,
@@ -434,6 +604,25 @@ function sameTransport(
     a.dataOffset === b.dataOffset &&
     a.dataBytes === b.dataBytes
   );
+}
+
+function detachWorklet(node: AudioWorkletNode): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("PCM AudioWorklet did not acknowledge transport detach"));
+    }, MAX_WORKLET_DETACH_MS);
+    node.port.onmessage = (event: MessageEvent<unknown>) => {
+      if ((event.data as { type?: unknown })?.type !== "detached") return;
+      clearTimeout(timeout);
+      resolve();
+    };
+    try {
+      node.port.postMessage({ type: "detach" });
+    } catch (error) {
+      clearTimeout(timeout);
+      reject(error);
+    }
+  });
 }
 
 function outputPipelineSettleMs(context: AudioContext): number {
@@ -483,16 +672,16 @@ function delay(delayMs: number): Promise<void> {
 function waitForPromiseWithin(
   promise: Promise<unknown>,
   timeoutMs: number,
-): Promise<void> {
+): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = () => {
+    const finish = (completed: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
-      resolve();
+      resolve(completed);
     };
-    const timeout = setTimeout(finish, timeoutMs);
-    void promise.then(finish, finish);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    void promise.then(() => finish(true), () => finish(true));
   });
 }

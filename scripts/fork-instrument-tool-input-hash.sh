@@ -23,7 +23,7 @@ fork_instrument_tool_input_hash() {
                     printf '%s\n' "$relative_path"
                 fi
             done
-            find crates/fork-instrument crates/program-abi -type f -print
+            find crates/fork-instrument crates/program-abi crates/wasm-artifact -type f -print
         } | LC_ALL=C sort -u > "$paths_file"
         # One git process hashes every file (--stdin-paths answers one object
         # id per line, in order). A process per file took about 3 s for the

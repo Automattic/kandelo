@@ -1,3 +1,4 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
@@ -41,10 +42,7 @@ async function syslogText(page: Page): Promise<string> {
 }
 
 async function setInternals(page: Page, open: boolean) {
-  const internals = page.getByRole("button", { name: "Internals" });
-  if ((await internals.count()) === 0) return;
-  const pressed = (await internals.getAttribute("aria-pressed")) === "true";
-  if (pressed !== open) await internals.click();
+  await setInternalsOpen(page, open);
 }
 
 // Both budgets run the same machine. `memoryProfile` is the dev override that

@@ -326,9 +326,7 @@ export interface ProcessMemoryAllocationRequest {
 
 export interface ProcessMemoryAllocatorOptions {
   /**
-   * Optional host allocation boundary. WebKit constructs fresh process
-   * memories in disposable worker realms to avoid synchronous collection
-   * stalling the kernel realm. Admission remains owned by this allocator.
+   * Optional host allocation boundary. Admission remains owned by this allocator.
    */
   createMemoryAsync?: (
     request: Readonly<ProcessMemoryAllocationRequest>,
@@ -522,8 +520,9 @@ export class ProcessMemoryCapacityError extends Error {
     requestedBytes: number,
     chargedBytes: number,
     maxTotalBytes: number,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
     this.name = "ProcessMemoryCapacityError";
     this.requestedBytes = requestedBytes;
     this.chargedBytes = chargedBytes;
@@ -917,7 +916,12 @@ export class ProcessMemoryAllocator {
     snapshot?: ArrayBuffer,
   ): Promise<ProcessMemoryLease> {
     try {
-      const memory = await this.options.createMemoryAsync!(request);
+      let memory: WebAssembly.Memory;
+      try {
+        memory = await this.options.createMemoryAsync!(request);
+      } catch (error) {
+        this.rethrowNativeConstructionFailure(error, reservedBytes);
+      }
       const buffer = memory.buffer as ArrayBufferLike;
       if (!(memory instanceof WebAssembly.Memory)
         || !(buffer instanceof SharedArrayBuffer)
@@ -1244,19 +1248,36 @@ export class ProcessMemoryAllocator {
   private createMemory(
     request: ProcessMemoryAllocationRequest,
   ): WebAssembly.Memory {
-    if (request.ptrWidth === 8) {
+    try {
+      if (request.ptrWidth === 8) {
+        return new WebAssembly.Memory({
+          initial: BigInt(request.initialPages) as any,
+          maximum: BigInt(request.maximumPages) as any,
+          shared: true,
+          address: "i64",
+        } as any);
+      }
       return new WebAssembly.Memory({
-        initial: BigInt(request.initialPages) as any,
-        maximum: BigInt(request.maximumPages) as any,
+        initial: request.initialPages,
+        maximum: request.maximumPages,
         shared: true,
-        address: "i64",
-      } as any);
+      });
+    } catch (error) {
+      this.rethrowNativeConstructionFailure(error, request.initialPages * WASM_PAGE_SIZE);
     }
-    return new WebAssembly.Memory({
-      initial: request.initialPages,
-      maximum: request.maximumPages,
-      shared: true,
-    });
+  }
+
+  private rethrowNativeConstructionFailure(error: unknown, requestedBytes: number): never {
+    if (error instanceof RangeError) {
+      throw new ProcessMemoryCapacityError(
+        `Native process memory construction failed: ${error.message}`,
+        requestedBytes,
+        this.liveBytes,
+        this.options.maxTotalBytes,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 
   private refreshOwnedBytes(): void {

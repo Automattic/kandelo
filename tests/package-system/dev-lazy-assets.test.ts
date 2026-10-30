@@ -83,6 +83,36 @@ describe("dev lazy-asset route", () => {
     expect(approved).toContain("/repo/v1/tmux.wasm");
   });
 
+  it("isolates stale member failures without approving or hiding them", () => {
+    let identity = "old";
+    let batches = 0;
+    const approved: string[] = [];
+    const failure = new Error("Original companion is not owned by the selected package generation");
+    const servePath = batchedFsServePath({
+      projectionPath: "/projection.json",
+      identity: () => identity,
+      listMembers: () => ["programs/wasm32/coreutils.wasm", "programs/wasm32/stale.wasm"],
+      resolveBatch: () => {
+        batches += 1;
+        return ["/cache/coreutils.wasm", identity === "old" ? failure : "/cache/rebuilt.wasm"];
+      },
+      resolveOne: () => null,
+      approve: (file) => {
+        approved.push(file);
+        return file;
+      },
+    });
+    expect(servePath("programs/wasm32/coreutils.wasm", "/")).toBe("/@fs/cache/coreutils.wasm");
+    expect(() => servePath("programs/wasm32/stale.wasm", "/")).toThrow(failure);
+    expect(servePath("programs/wasm32/coreutils.wasm", "/")).toBe("/@fs/cache/coreutils.wasm");
+    expect(() => servePath("programs/wasm32/stale.wasm", "/")).toThrow(failure);
+    expect(batches).toBe(1);
+    expect(approved).toEqual(["/cache/coreutils.wasm", "/cache/coreutils.wasm"]);
+    identity = "rebuilt";
+    expect(servePath("programs/wasm32/stale.wasm", "/")).toBe("/@fs/cache/rebuilt.wasm");
+    expect(batches).toBe(2);
+  });
+
   it("encodes the checkout path the way Vite's /@fs/ route decodes it", () => {
     const servePath = batchedFsServePath({
       projectionPath: "/p.json",

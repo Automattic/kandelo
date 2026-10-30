@@ -1,0 +1,6 @@
+script_path = "packages/registry/service-activity-tools/build.sh"
+inputs = ["packages/registry/service-activity-tools", "scripts/package-build-roots.sh", "scripts/install-local-binary.sh"]
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 3
+publication_state = "pending"

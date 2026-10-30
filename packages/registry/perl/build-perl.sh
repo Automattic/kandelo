@@ -411,7 +411,18 @@ if [ ! -f config.sh ]; then
     # perl's own -Dnoextensions), so drop `re` here. The core regex engine
     # stays compiled in; only the optional `use re` pluggable-engine pragma is
     # unavailable.
+    HOST_LOCALE_ARGS=()
+    if [ "$(uname -s)" = Darwin ]; then
+        HOST_LOCALE_ARGS=(
+            --host-set-d_perl_lc_all_uses_name_value_pairs=undef
+            --host-set-d_perl_lc_all_separator=define
+            '--host-set-perl_lc_all_separator="/"'
+            --host-set-d_perl_lc_all_category_positions_init=define
+            '--host-set-perl_lc_all_category_positions_init={LC_COLLATE,LC_CTYPE,LC_MONETARY,LC_NUMERIC,LC_TIME,LC_MESSAGES}'
+        )
+    fi
     ./configure \
+        "${HOST_LOCALE_ARGS[@]}" \
         --target=wasm32-unknown-none \
         --disable-mod=re \
         --prefix=/usr \
@@ -679,7 +690,7 @@ echo "==> Building Perl (this takes a while)..."
 # `all` (not just `perl`) so the non-XS extension trees are assembled and their
 # generated modules (XSLoader.pm etc.) exist for the stdlib install below; the
 # `perl` target alone links the interpreter but leaves those ungenerated.
-if ! make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" all > "$BUILD_LOG" 2>&1; then
+if ! make -j"${WASM_POSIX_BUILD_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}" all > "$BUILD_LOG" 2>&1; then
     echo "==> 'make all' FAILED; last 160 lines:"
     tail -160 "$BUILD_LOG"
     exit 1

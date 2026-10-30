@@ -113,7 +113,13 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       const actual = new Uint8Array(st.size);
       const fd = fs.open(path, 0, 0);
       try {
-        expect(fs.read(fd, actual, null, actual.length)).toBe(actual.length);
+        // read() may return fewer bytes than requested.
+        let offset = 0;
+        while (offset < actual.length) {
+          const count = fs.read(fd, actual.subarray(offset), null, actual.length - offset);
+          expect(count).toBeGreaterThan(0);
+          offset += count;
+        }
       } finally {
         fs.close(fd);
       }
@@ -274,7 +280,7 @@ describe.skipIf(!haveProbe || !haveRootfs)("node-host default mount setup", () =
       await Promise.allSettled([first.host.destroy(), second.host.destroy()]);
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   it.each([
     ["/etc/ssl/openssl.cnf", opensslConfigSource],

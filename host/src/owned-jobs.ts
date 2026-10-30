@@ -89,7 +89,8 @@ export class OwnedJobs {
   }
   output(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) {
     const id = this.owners.get(pid);
-    if (!id || !bytes.length) return;
+    if (!id) return false;
+    if (!bytes.length) return true;
     const job = this.jobs.get(id)!;
     job.chunks.push({ stream, bytes: bytes.slice() });
     job.end += bytes.length;
@@ -102,6 +103,7 @@ export class OwnedJobs {
       job.start += drop;
       excess -= drop;
     }
+    return true;
   }
   cancel(id: string, reason: 'cancelled' | 'timed_out' = 'cancelled') {
     const job = this.require(id);

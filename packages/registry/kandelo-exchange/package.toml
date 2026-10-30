@@ -21,16 +21,20 @@ script_path = "packages/registry/kandelo-exchange/build-kandelo-exchange.sh"
 [[outputs]]
 name = "kxchgd"
 wasm = "kxchgd.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "kandelo-exchange"
 wasm = "kandelo-exchange.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "kandelo-publish"
 wasm = "kandelo-publish.wasm"
+fork_instrumentation = "disabled"
 
 # The catch-all `99-save` handler.
 [[outputs]]
 name = "exchange-save"
 wasm = "exchange-save.wasm"
+fork_instrumentation = "disabled"

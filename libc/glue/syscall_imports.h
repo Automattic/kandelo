@@ -676,7 +676,7 @@ int32_t kernel_wait4(int32_t pid, int32_t *wstatus_ptr, uint32_t options,
 /* ------------------------------------------------------------------ */
 
 KERNEL_IMPORT(kernel_push_argv)
-void kernel_push_argv(const uint8_t *ptr, uint32_t len);
+int32_t kernel_push_argv(const uint8_t *ptr, uint32_t len);
 
 KERNEL_IMPORT(kernel_get_argc)
 uint32_t kernel_get_argc(void);

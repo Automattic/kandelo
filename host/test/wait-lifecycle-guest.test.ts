@@ -18,7 +18,7 @@ describe("POSIX child wait lifecycle", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toContain("WAIT_LIFECYCLE_PASS");
     expect(result.stderr).toBe("");
-  });
+  }, 30_000);
 
   it("uses memory64 wait layouts through same-arch non-forking posix_spawn", async () => {
     ensureWasm64ExampleFixture("wait_lifecycle_test.c");

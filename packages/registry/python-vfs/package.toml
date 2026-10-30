@@ -23,3 +23,4 @@ script_path = "packages/registry/python-vfs/build-python-vfs.sh"
 [[outputs]]
 name = "python-vfs"
 wasm = "python-vfs.vfs.zst"
+fork_instrumentation = "disabled"

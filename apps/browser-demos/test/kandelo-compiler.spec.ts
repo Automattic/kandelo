@@ -1,27 +1,15 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
+import { runTerminalCommand } from "./support/terminal-command";
+import { gotoMachineOrSkip } from "./support/kandelo-machine";
 import { guestCompileCommand, guestCompilerCases } from "../../../host/test/fixtures/in-guest-compiler";
 
 async function terminalText(page: Page): Promise<string> {
   return page.locator(".xterm-rows").first().evaluate((node) => node.textContent ?? "");
 }
 
-let scriptNumber = 0;
 async function runScript(page: Page, script: string, expected: string): Promise<void> {
-  const completion = `compiler-script-complete:${++scriptNumber}`;
-  // A subshell preserves set -e within the program while allowing the outer
-  // script to report completion after failure. Separate printf arguments keep
-  // the completion marker out of the echoed source. Fail promptly on a real
-  // compiler error instead of spending four minutes waiting for success.
-  const action = `(\n${script}\n)\nprintf '%s%s%s\\n' compiler-script- complete: '${scriptNumber}'`;
-  const run = page.locator(".kdemo-run").first();
-  await page.locator(".kdemo textarea").first().fill(action);
-  await run.click();
-  // One script can compile, archive and link; under WebKit that exceeds
-  // four minutes now that a link runs the build machine's SDK jobs.
-  await expect.poll(() => terminalText(page), { timeout: 600_000 }).toContain(completion);
-  expect(await terminalText(page)).toContain(expected);
-  await expect(run).toHaveText("Run script", { timeout: 600_000 });
-  await expect(run).toBeEnabled();
+  await runTerminalCommand(page, script, expected, 600_000);
 }
 
 test("base shell lazily fetches one SDK, compiles C/C++, and reports engine limits", async ({ page, browserName }, testInfo) => {
@@ -44,9 +32,8 @@ test("base shell lazily fetches one SDK, compiles C/C++, and reports engine limi
         url.pathname.endsWith(".zip")) requests.push(request.url());
   });
   try {
-    await page.goto("/?profile=shell", { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 180_000 });
-    await expect.poll(() => page.locator("aside.kdemo").innerText(), { timeout: 180_000 }).toContain("Ready");
+    await gotoMachineOrSkip(page, "shell");
+    await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
     await runScript(page, "printf '%s %s\\n' 'compiler baseline' 'ready'", "compiler baseline ready");
     expect(requests).toEqual([]);
 
@@ -116,9 +103,8 @@ test("Firefox compiles template-heavy C++ in a fresh base shell", async ({ page,
   test.skip(browserName !== "firefox", "Firefox executable-code boundary companion");
   test.setTimeout(360_000);
   const sample = guestCompilerCases.find(sample => sample.name === "cpp-entropy")!;
-  await page.goto("/?profile=shell", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "Demo guide" }).click({ timeout: 180_000 });
-  await expect.poll(() => page.locator("aside.kdemo").innerText(), { timeout: 180_000 }).toContain("Ready");
+  await gotoMachineOrSkip(page, "shell");
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 180_000 });
   const script = `set -e\n${guestCompileCommand(sample)}\n` +
     `actual=$(/tmp/${sample.name})\n` +
     `if [ "$actual" = "${sample.output}" ]; then\n` +

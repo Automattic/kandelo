@@ -517,6 +517,7 @@ run_pages_shaped_browser_build() {
 
 case "$suite" in
     cargo-workspace)
+        python3 "$REPO_ROOT/scripts/build-program-baseline.py"
         # Host-run unit + integration tests for every workspace crate EXCEPT
         # xtask: kandelo (kernel), fork-instrument, wasm-posix-shared,
         # wasm-local-root-spill. `--workspace` is
@@ -812,6 +813,7 @@ case "$suite" in
                     npx playwright test \
                     test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
+                    test/machine-audio-activation.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \
                     test/wasm-gc-reference-transport.spec.ts \
                     test/wasm-trap-signal.spec.ts \

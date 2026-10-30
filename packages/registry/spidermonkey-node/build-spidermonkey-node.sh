@@ -10,26 +10,24 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 source "$REPO_ROOT/sdk/activate.sh"
 
 ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-spidermonkey-node}"
+case "$PACKAGE_NAME" in
+    node|spidermonkey-node) ;;
+    *) echo "ERROR: unexpected Node-compatible package '$PACKAGE_NAME'." >&2; exit 1 ;;
+esac
 if [ "$ARCH" != "wasm32" ]; then
     echo "ERROR: spidermonkey-node currently supports wasm32 only, got '$ARCH'." >&2
     exit 1
 fi
 
 SPIDERMONKEY_PREFIX="${WASM_POSIX_DEP_SPIDERMONKEY_DIR:-}"
-NODE_WASM=""
-
-for candidate in \
-    "${SPIDERMONKEY_PREFIX:+$SPIDERMONKEY_PREFIX/node.wasm}" \
-    "$REPO_ROOT/packages/registry/spidermonkey/bin/node.wasm" \
-    "$REPO_ROOT/local-binaries/programs/$ARCH/spidermonkey-node.wasm"; do
-    if [ -z "$NODE_WASM" ] && [ -f "$candidate" ]; then
-        NODE_WASM="$candidate"
+if [ -z "$SPIDERMONKEY_PREFIX" ]; then
+    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        echo "ERROR: resolver did not provide the declared spidermonkey dependency." >&2
+        exit 1
     fi
-done
-
-if [ -z "$NODE_WASM" ]; then
     if ! command -v rustc >/dev/null 2>&1 || ! command -v cargo >/dev/null 2>&1; then
-        echo "ERROR: node.wasm not found in the SpiderMonkey package build or local binaries, and rustc/cargo are unavailable for dependency resolution." >&2
+        echo "ERROR: rustc/cargo are unavailable for SpiderMonkey dependency resolution." >&2
         exit 1
     fi
 
@@ -41,13 +39,11 @@ if [ -z "$NODE_WASM" ]; then
 
     echo "==> Resolving spidermonkey via cargo xtask build-deps..."
     SPIDERMONKEY_PREFIX="$(resolve_dep spidermonkey)"
-    if [ -f "$SPIDERMONKEY_PREFIX/node.wasm" ]; then
-        NODE_WASM="$SPIDERMONKEY_PREFIX/node.wasm"
-    else
-        echo "ERROR: spidermonkey dependency did not provide node.wasm at $SPIDERMONKEY_PREFIX." >&2
-        echo "       Rebuild the spidermonkey package so its Node-compatible shell output is staged." >&2
-        exit 1
-    fi
+fi
+NODE_WASM="$SPIDERMONKEY_PREFIX/js.wasm"
+if [ ! -f "$NODE_WASM" ] || [ -L "$NODE_WASM" ]; then
+    echo "ERROR: spidermonkey dependency did not provide its declared js.wasm at $SPIDERMONKEY_PREFIX." >&2
+    exit 1
 fi
 
 if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ] && [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
@@ -62,24 +58,8 @@ NODE_SIZE="$(wc -c < "$BIN_DIR/node.wasm" | tr -d ' ')"
 echo "==> SpiderMonkey Node-compatible runtime staged: $BIN_DIR/node.wasm ($NODE_SIZE bytes)"
 
 # shellcheck source=/dev/null
-if command -v rustc >/dev/null 2>&1 && command -v cargo >/dev/null 2>&1; then
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-        export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
-    fi
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary spidermonkey-node "$BIN_DIR/node.wasm"
-    WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary node "$BIN_DIR/node.wasm"
-elif [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    # A resolver caller owns only its output root; never touch the
-    # checkout's local-binaries mirror from here.
-    mkdir -p "$WASM_POSIX_DEP_OUT_DIR"
-    cp "$BIN_DIR/node.wasm" "$WASM_POSIX_DEP_OUT_DIR/node.wasm"
-    echo "  installed $WASM_POSIX_DEP_OUT_DIR/node.wasm (resolver scratch)"
-else
-    for name in spidermonkey-node node; do
-        dest="$REPO_ROOT/local-binaries/programs/$ARCH/$name.wasm"
-        mkdir -p "$(dirname "$dest")"
-        cp "$BIN_DIR/node.wasm" "$dest"
-        echo "  installed $dest"
-    done
+source "$REPO_ROOT/scripts/install-local-binary.sh"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    export WASM_POSIX_INSTALL_LOCAL_MIRROR=0
 fi
+WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto install_local_binary "$PACKAGE_NAME" "$BIN_DIR/node.wasm" node.wasm

@@ -10,6 +10,7 @@ import type {
 
 interface TestableNodeKernelHost {
   worker: { postMessage(message: MainToKernelMessage): void };
+  workerStarted: boolean;
   handleWorkerMessage(message: KernelToMainMessage): void;
 }
 
@@ -18,6 +19,7 @@ function fixture() {
   const host = new NodeKernelHost();
   const testable = host as unknown as TestableNodeKernelHost;
   testable.worker = { postMessage: (message) => sent.push(message) };
+  testable.workerStarted = true;
   return { host, sent, testable };
 }
 

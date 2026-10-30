@@ -130,6 +130,31 @@ describe.skipIf(!tinyServerPath)("external HTTP request interface", () => {
       await host.destroy().catch(() => {});
     }
   }, 15_000);
+
+  it("receives an early server response while a request exceeds the TCP pipe capacity", async () => {
+    let listening!: () => void;
+    const ready = new Promise<void>(resolve => { listening = resolve; });
+    const host = new NodeKernelHost({
+      maxWorkers: 4,
+      onStderr: (_pid, bytes) => {
+        if (new TextDecoder().decode(bytes).includes("tiny-http-server: listening")) listening();
+      },
+    });
+    await host.init();
+    try {
+      const exited = host.spawn(loadWasm(tinyServerPath!), ["tiny-http-server", "8086"]);
+      await ready;
+      const response = await host.fetchInKernel(8086, {
+        method: "POST", url: "/large", headers: { Host: "kernel.local" },
+        body: new Uint8Array(300_000),
+      }, { timeoutMs: 5000 });
+      expect(response.status).toBe(200);
+      expect(JSON.parse(new TextDecoder().decode(response.body)).path).toBe("/large");
+      expect(await exited).toBe(0);
+    } finally {
+      await host.destroy();
+    }
+  }, 30_000);
 });
 
 describe("buildRawHttpRequest / parseRawHttpResponse", () => {

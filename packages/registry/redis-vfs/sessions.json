@@ -16,7 +16,8 @@
         "/usr/local/bin/redis-server",
         "/var/www/redis-board/router.php"
       ],
-      "fields": []
+      "fields": [],
+      "category": "services"
     }
   ],
   "joins": [

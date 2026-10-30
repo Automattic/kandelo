@@ -483,6 +483,9 @@ export async function buildLampVfsImage(
 
   console.log("Writing WordPress core files...");
   const wpCount = copyWordPressCoreSource(fs, inputs.wordpressDirectory);
+  ensureDirRecursive(fs, "/var/www/html/wp-content/uploads");
+  fs.chown("/var/www/html/wp-content/uploads", 65534, 65534);
+  fs.chmod("/var/www/html/wp-content/uploads", 0o775);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 

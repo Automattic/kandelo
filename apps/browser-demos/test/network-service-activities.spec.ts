@@ -19,7 +19,7 @@ async function share(p: Page, activity: string, offer = "service") {
   const form = p.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption(`${activity}/${offer}`);
   await expect(form.getByRole("checkbox")).toHaveCount(0);
-  await form.getByRole("button", { name: "Share running activity", exact: true }).click();
+  await form.getByRole("button", { name: "Show join link", exact: true }).click();
   await expect(p.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 90_000 });
   const link = (await p.locator("[data-network-link]").getAttribute("data-network-link"))!;
   // The package requests the standard client computer, without a demo profile.
@@ -39,13 +39,14 @@ test.beforeEach(async ({ context, browserName, page }) => {
   test.skip(browserName !== "chromium", "the local WebRTC fixture needs Chromium loopback candidates");
   await context.grantPermissions(["microphone"]);
 });
-for (const [profile, pkg, title, marker] of [
-  ["nginx", "nginx-vfs", "nginx website", "nginx"],
-  ["nginx-php", "nginx-php-vfs", "nginx and PHP website", "Database schema"],
-  ["nginx-python", "nginx-python-vfs", "nginx and Python website", "Python"],
-  ["wordpress-sqlite", "wordpress", "WordPress website", "Hello world!"],
-  ["wordpress-mariadb", "lamp", "WordPress with MariaDB", "Hello world!"],
-  ["ruby-todo", "ruby-todo-vfs", "Ruby todo app", "todo"],
+// Each machine comes from an image family, which owns its website offer.
+for (const [profile, pkg, title, marker, joinTitle = "website"] of [
+  ["nginx", "web-stack-vfs", "nginx website", "nginx"],
+  ["nginx-php", "web-stack-vfs", "nginx and PHP website", "Database schema"],
+  ["nginx-python", "web-stack-vfs", "nginx and Python website", "Python"],
+  ["wordpress-sqlite", "wordpress-family-vfs", "WordPress website", "Hello world!"],
+  ["wordpress-mariadb", "wordpress-family-vfs", "WordPress with MariaDB", "Hello world!"],
+  ["ruby-todo", "ruby-todo-vfs", "Ruby todo app", "todo", "Ruby todo app"],
 ]) {
   test(`${title} invites a separate client without starting another service`, async ({ page, browser }) => {
     test.setTimeout(480_000);
@@ -56,11 +57,11 @@ for (const [profile, pkg, title, marker] of [
     try {
       await guest.goto(link); await running(guest);
       const form = guest.getByRole("form", { name: "Join activity" });
-      await form.getByRole("button", { name: `Join and open ${title}`, exact: true }).click();
+      await form.getByRole("button", { name: `Join and open ${joinTitle}`, exact: true }).click();
       const frame = guest.frameLocator("iframe.kweb-frame");
       await expect(frame.locator("body")).toContainText(new RegExp(marker, "i"), { timeout: 150_000 });
-      await expect(guest.getByRole("button", { name: "Demo", exact: true })).toBeEnabled();
-      if (pkg === "wordpress") {
+      await expect(guest.getByRole("button", { name: "Web", exact: true })).toBeEnabled();
+      if (pkg === "wordpress-family-vfs") {
         const address = guest.getByRole("textbox", { name: "Preview URL path" });
         await address.fill("/wp-login.php"); await address.press("Enter");
         await expect(frame.locator("#loginform")).toBeVisible({ timeout: 120_000 });
@@ -73,7 +74,7 @@ for (const [profile, pkg, title, marker] of [
         await frame.getByPlaceholder("What needs doing?").fill("Added through a Kandelo invitation");
         await frame.getByRole("button", { name: "Add", exact: true }).click();
         await expect(frame.locator("body")).toContainText("Added through a Kandelo invitation");
-        await page.getByRole("button", { name: "Demo", exact: true }).click();
+        await page.getByRole("button", { name: "Web", exact: true }).click();
         await page.getByRole("button", { name: "Reload preview", exact: true }).click();
         await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Added through a Kandelo invitation");
       }
@@ -96,12 +97,12 @@ test("Redis voting board shares real Redis data with a separate web client", asy
   expect(await hostBoard.locator("body").evaluate(() =>
     Boolean((window as unknown as { __kandeloBlobIframePatched?: boolean }).__kandeloBlobIframePatched),
   )).toBe(true);
-  const link = await share(page, "redis-vfs");
+  const link = await share(page, "web-stack-vfs");
   const context = await browser.newContext({ permissions: ["microphone"] });
   const guest = await context.newPage();
   try {
     await guest.goto(link); await running(guest);
-    await guest.getByRole("form", { name: "Join activity" }).getByRole("button", { name: "Join and open Redis voting board", exact: true }).click();
+    await guest.getByRole("form", { name: "Join activity" }).getByRole("button", { name: "Join and open website", exact: true }).click();
     const board = guest.frameLocator("iframe.kweb-frame");
     await board.getByRole("textbox", { name: "Your idea" }).fill("Ship a tiny shared website");
     await board.getByRole("button", { name: "Add idea", exact: true }).click();
@@ -180,7 +181,7 @@ test("Redis voting board shares real Redis data with a separate web client", asy
 test("WordPress MySQL connection opens a real interactive client on the website database", async ({ page, browser }) => {
   test.setTimeout(480_000);
   await gotoMachine(page, "wordpress-mariadb");
-  const link = await share(page, "lamp", "database");
+  const link = await share(page, "wordpress-family-vfs", "database");
   const context = await browser.newContext({ permissions: ["microphone"] });
   const guest = await context.newPage();
   try {
@@ -200,7 +201,7 @@ test("WordPress MySQL connection opens a real interactive client on the website 
     await expect.poll(() => terminal(guest)).toContain("history-result-2");
     await enter(guest, "UPDATE wp_options SET option_value = 'Shared SQL website' WHERE option_name = 'blogname';");
     await expect.poll(() => terminal(guest)).toContain("Query OK");
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Web", exact: true }).click();
     await page.getByRole("button", { name: "Reload preview", exact: true }).click();
     await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Shared SQL website", { timeout: 120_000 });
     await guest.screenshot({ path: "../../.context/activity-wordpress-mysql-client.png" });
@@ -210,11 +211,11 @@ test("WordPress MySQL connection opens a real interactive client on the website 
     await guest.getByRole("button", { name: "Network session: connected", exact: true }).click();
     await guest.getByRole("button", { name: "Change activity", exact: true }).click();
     const activities = guest.getByLabel("Activity", { exact: true });
-    await expect(activities.locator("option")).toHaveText(["Keep current activity", "WordPress with MariaDB"]);
+    await expect(activities.locator("option")).toHaveText(["Keep current activity", "WordPress website"]);
     await expect(guest.getByRole("form", { name: "Host activity" })).toHaveCount(0);
-    await activities.selectOption("lamp/service");
+    await activities.selectOption("wordpress-family-vfs/service");
     await guest.screenshot({ path: "../../.context/session-remote-activities.png" });
-    await guest.getByRole("button", { name: "Join and open WordPress with MariaDB", exact: true }).click();
+    await guest.getByRole("button", { name: "Join and open website", exact: true }).click();
     await expect(guest.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Shared SQL website", { timeout: 120_000 });
     await guest.getByRole("button", { name: "Network session: connected", exact: true }).click();
     expect(new URL((await guest.locator("[data-network-link]").getAttribute("data-network-link"))!).searchParams.get("network")).toBe(room);

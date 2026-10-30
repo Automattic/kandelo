@@ -6,6 +6,7 @@ import {
   hasValidatedKernelEntryExport,
   isKernelExportFailure,
   invokeKernelEntrySerializedHostOperation,
+  invokeKernelEntryScopedOperation,
   KernelEntryGate,
   KernelReentrantEntryError,
   validatedKernelEntryCallable,
@@ -1240,6 +1241,31 @@ describe("KernelEntryGate", () => {
     gate.invokeKernelExport("after detached failure", after);
     expect(after).toHaveBeenCalledOnce();
     report.mockRestore();
+  });
+
+  it("runs an ownership handoff without lending it an export permit", () => {
+    const gate = new KernelEntryGate();
+    const order: string[] = [];
+    const implementation = vi.fn(() => { order.push("export"); return 7; });
+    const { gated } = testInstance(4, gate, { kernel_transfer_scratch_cancel: implementation });
+    let staleScope!: Parameters<typeof invokeKernelEntryScopedOperation>[0];
+    gate.runImmediateVoidIngress("ownership handoff", (scope) => {
+      staleScope = scope;
+      const scoped = createKernelEntryScopedInstance(gated, scope);
+      const ordinaryCall = gated.exports.kernel_transfer_scratch_cancel as (token: bigint) => number;
+      const scopedCall = scoped.exports.kernel_transfer_scratch_cancel as (token: bigint) => number;
+      expect(invokeKernelEntryScopedOperation(scope, gated, () => ordinaryCall(1n), () => {
+        order.push("handoff");
+        expect(() => ordinaryCall(2n)).toThrow(KernelReentrantEntryError);
+        expect(() => scopedCall(3n)).toThrow(KernelReentrantEntryError);
+      })).toBe(7);
+      return undefined;
+    });
+    expect(order).toEqual(["handoff", "export"]);
+    expect(implementation).toHaveBeenCalledOnce();
+    const marker = vi.fn();
+    expect(() => invokeKernelEntryScopedOperation(staleScope, gated, () => 0, marker)).toThrow(/scope is no longer active/);
+    expect(marker).not.toHaveBeenCalled();
   });
 
   it("binds scoped exports only to a registered gated instance", () => {

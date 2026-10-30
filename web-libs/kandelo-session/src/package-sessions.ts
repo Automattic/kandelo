@@ -1,3 +1,4 @@
+import type { ActivityCategory } from "./demo-config";
 import { validateDependencies, validateOfferedDependencies, resolveDependencies, type SessionDependency, type OfferedDependency } from "./session-dependencies";
 import { validLevel, levelArguments, type LevelFormat } from "./game-levels";
 /** Package-owned session procedures. URL offers carry values, never commands. */
@@ -35,6 +36,7 @@ export interface SessionProgramLaunch {
   displayScale?: number;
 }
 export interface SessionOfferType {
+  category?: ActivityCategory;
   id: string;
   title: string;
   description: string;
@@ -210,10 +212,11 @@ export function parsePackageSessions(source: string): PackageSessions {
   const offers = new Set<string>();
   for (const raw of m.offers) {
     const offer = record(raw);
-    keys(offer, ["id", "title", "description", "join", "attachExisting", "requiresHost", "fields", "launch", "hostRequires", "warning", "existingWarning"]);
+    keys(offer, ["id", "title", "description", "join", "attachExisting", "requiresHost", "fields", "launch", "hostRequires", "warning", "existingWarning", "category"]);
     if (offer.warning !== undefined) text(offer.warning);
     if (offer.existingWarning !== undefined) text(offer.existingWarning);
     id(offer.id); text(offer.title); text(offer.description, 1024); fields(offer.fields);
+    if (offer.category !== undefined && !["apps", "services", "demos"].includes(offer.category as string)) fail("invalid activity category");
     if (offer.requiresHost !== undefined && typeof offer.requiresHost !== "boolean") fail("invalid hosting requirement");
     if (offers.has(offer.id)) fail("duplicate offer type");
     offers.add(offer.id);

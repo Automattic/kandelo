@@ -17,8 +17,8 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use core::cell::UnsafeCell;
+use wasm_posix_shared::Errno;
 
 /// Global, monotonic bo id. Never reused; freed bos leave a tombstone
 /// gap so a leaked prime-fd cookie cannot resurrect a different bo.
@@ -51,10 +51,14 @@ pub struct GbmBo {
     pub tier: BoTier,
 }
 
+impl crate::prepared_map::MapMemory for GbmBo {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
 pub struct BoRegistry {
     next_id: BoId,
     next_cookie: PrimeCookie,
-    map: BTreeMap<BoId, GbmBo>,
+    map: crate::PreparedMap<BoId, GbmBo>,
 }
 
 impl BoRegistry {
@@ -62,11 +66,11 @@ impl BoRegistry {
         Self {
             next_id: 1,
             next_cookie: 1,
-            map: BTreeMap::new(),
+            map: crate::PreparedMap::new(),
         }
     }
 
-    pub fn try_alloc(&mut self, width: u32, height: u32, bpp: u32) -> Option<&mut GbmBo> {
+    pub fn try_alloc(&mut self, width: u32, height: u32, bpp: u32) -> Result<&mut GbmBo, Errno> {
         self.try_alloc_tier(width, height, bpp, BoTier::CpuShared)
     }
 
@@ -74,20 +78,20 @@ impl BoRegistry {
     /// still computed for the LINEAR-equivalent layout so `gbm_bo_get_stride`
     /// returns a sensible value, but the bo carries no CPU-side SAB and
     /// cannot be `mmap`'d — the host backs it with a `WebGLTexture`.
-    pub fn try_alloc_gpu(&mut self, width: u32, height: u32, bpp: u32) -> Option<&mut GbmBo> {
+    pub fn try_alloc_gpu(&mut self, width: u32, height: u32, bpp: u32) -> Result<&mut GbmBo, Errno> {
         self.try_alloc_tier(width, height, bpp, BoTier::GpuTexture)
     }
 
-    fn try_alloc_tier(&mut self, width: u32, height: u32, bpp: u32, tier: BoTier) -> Option<&mut GbmBo> {
+    fn try_alloc_tier(&mut self, width: u32, height: u32, bpp: u32, tier: BoTier) -> Result<&mut GbmBo, Errno> {
         let id = self.next_id;
         // Stride rounded up to a 4-byte boundary so every row is
         // u32-aligned (matches Mesa's `gbm_bo_get_stride` for the
         // equivalent dumb buffer).
-        let bits_per_row = width.checked_mul(bpp)?;
-        let bytes_per_row = bits_per_row.checked_add(7)? / 8;
-        let stride = bytes_per_row.checked_add(3)? & !3;
-        let size = (stride as u64).checked_mul(height as u64)?;
-        self.next_id = self.next_id.checked_add(1)?;
+        let bits_per_row = width.checked_mul(bpp).ok_or(Errno::EINVAL)?;
+        let bytes_per_row = bits_per_row.checked_add(7).ok_or(Errno::EINVAL)? / 8;
+        let stride = bytes_per_row.checked_add(3).ok_or(Errno::EINVAL)? & !3;
+        let size = (stride as u64).checked_mul(height as u64).ok_or(Errno::EINVAL)?;
+        let next_id = self.next_id.checked_add(1).ok_or(Errno::EOVERFLOW)?;
         let bo = GbmBo {
             id,
             stride,
@@ -96,10 +100,13 @@ impl BoRegistry {
             prime_cookie: None,
             tier,
         };
-        self.map.insert(id, bo);
-        Some(self.map.get_mut(&id).unwrap())
+        let prepared = self.map.prepare_io(id, bo)?;
+        self.next_id = next_id;
+        self.map.publish_io(prepared);
+        Ok(self.map.get_mut(&id).unwrap())
     }
 
+    #[cfg(test)]
     pub fn alloc(&mut self, width: u32, height: u32, bpp: u32) -> &mut GbmBo {
         self.try_alloc(width, height, bpp)
             .expect("GBM bo dimensions must fit in registry arithmetic")
@@ -190,6 +197,33 @@ pub fn next_id_for_test() -> BoId {
 mod tests {
     use super::*;
 
+    #[test]
+    fn registry_admission_preserves_identity_and_releases_metadata() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut registry = BoRegistry::new();
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(registry.try_alloc(8, 8, 32), Err(Errno::ENOMEM)));
+            assert!(matches!(registry.try_alloc_gpu(8, 8, 32), Err(Errno::ENOMEM)));
+        }
+        assert_eq!(registry.next_id, 1);
+        assert!(registry.map.is_empty());
+        let first = registry.try_alloc(8, 8, 32).unwrap().id;
+        let second = registry.try_alloc_gpu(8, 8, 32).unwrap().id;
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        assert!(held > baseline);
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(registry.try_alloc(8, 8, 32), Err(Errno::ENOMEM)));
+            assert_eq!(registry.next_id, second + 1);
+            assert_eq!(registry.incref(first), Some(2));
+            assert_eq!(registry.decref(first), Some(1));
+            assert_eq!(registry.decref(first), Some(0));
+            assert_eq!(registry.decref(second), Some(0));
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
     fn fresh() -> std::sync::MutexGuard<'static, ()> {
         let g = TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         reset_registry();
@@ -276,9 +310,9 @@ mod tests {
         let _g = fresh();
         with_registry(|r| {
             let before = r.next_id;
-            assert!(r.try_alloc(u32::MAX, 1, 32).is_none());
+            assert!(r.try_alloc(u32::MAX, 1, 32).is_err());
             assert_eq!(r.next_id, before);
-            assert!(r.try_alloc(64, 64, 32).is_some());
+            assert!(r.try_alloc(64, 64, 32).is_ok());
             assert_eq!(r.next_id, before + 1);
         });
     }

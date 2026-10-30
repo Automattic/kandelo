@@ -1,5 +1,6 @@
 script_path = "images/vfs/scripts/build-ruby-todo-vfs-image.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "web-libs/kandelo-session/src/session-dependencies.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
   "web-libs/kandelo-session/src/game-levels.ts",
@@ -27,7 +28,8 @@ inputs = [
   "cargo:kandelo-image-module",
   "cargo:runtime-core",
   "crates/kandelo-image-module/build-wasm.sh",
+  "images/vfs/lib/positioned-image-targets.ts",
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 10
+revision = 12

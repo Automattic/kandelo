@@ -67,6 +67,7 @@ function safeSinglePathComponent(value) {
 
 function portableArtifactPath(value) {
   return typeof value === "string"
+    && value.isWellFormed()
     && value.length > 0
     && !value.startsWith("/")
     && !value.includes("\\")
@@ -235,6 +236,7 @@ function readProgramPackageProjection(registryRoot) {
         "mirrorPath",
         "outputName",
         "forkInstrumentation",
+        ...(member?.originalWasm === undefined ? [] : ["originalWasm"]),
       ];
       const runtimeKeys = [
         "kind",
@@ -263,6 +265,10 @@ function readProgramPackageProjection(registryRoot) {
             || (
               member.forkInstrumentation !== "auto"
               && member.forkInstrumentation !== "disabled"
+            )
+            || (
+              member.originalWasm !== undefined
+              && !portableArtifactPath(member.originalWasm)
             )
           )
         )
@@ -301,6 +307,17 @@ function readProgramPackageProjection(registryRoot) {
       throw new Error(
         `invalid generated program package projection layout for ${packageName}: ${indexPath}`,
       );
+    }
+    const originalArtifacts = [];
+    for (const member of members) {
+      if (member.originalWasm === undefined) continue;
+      if ([...members.map((entry) => entry.sourceArtifact), ...originalArtifacts]
+        .some((artifact) => filePathsConflict(artifact, member.originalWasm))) {
+        throw new Error(
+          `invalid generated original artifact layout for ${packageName}: ${indexPath}`,
+        );
+      }
+      originalArtifacts.push(member.originalWasm);
     }
     const identity = parsed.identities[packageName];
     if (

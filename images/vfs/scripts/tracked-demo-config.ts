@@ -64,6 +64,8 @@ export function writeTrackedDemoConfig(
  * baked-equals-tracked check walks this list.
  */
 export const TRACKED_DEMO_CONFIG_SOURCES = [
+  "packages/registry/web-stack-vfs/demo.json",
+  "packages/registry/wordpress-family-vfs/demo.json",
   "packages/registry/redis-vfs/redis-demo.json",
   "packages/registry/shell/source-rootfs-shell-demo.json",
   "packages/registry/shell/source-rootfs-shell-demo-profiles.json",

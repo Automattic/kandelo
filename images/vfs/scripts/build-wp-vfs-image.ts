@@ -406,6 +406,7 @@ export async function buildWordPressVfsImage(
   );
   console.log(`  SQLite plugin: ${sqliteCount} files`);
   wpCount += sqliteCount;
+  ensureWritableByPhpFpm(fs, "/var/www/html/wp-content/uploads");
 
   // Drop-in db.php → routes WP_DB_HOST to the SQLite plugin instead of
   // MySQL. setup.sh copies sqlite-database-integration/db.copy into
