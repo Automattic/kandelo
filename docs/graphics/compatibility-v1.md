@@ -9579,3 +9579,13 @@ remain necessary. This is a publication foundation; retained query preparation,
 program-generation pins, owned adapter adoption, normal guests, real browsers,
 CTS and combined conformance remain open. No ABI or public pending behavior is
 activated by this change.
+
+The publication foundation is integrated at `05680c503f`, after private
+kernel-control routing `2cb8556ac1`. Its combined canonical host JavaScript/
+declaration build and graphics source selection pass **912/912** across
+40 files with zero skips. The parent's dependency annotations are present;
+the older lane's bare-tsc diagnostics are not presented as a passing gate.
+Logs: `.context/graphics-location-record-combined-{host,source}.log`.
+Typed uniform-query candidates, executable pins and adapter adoption remain
+in progress; record migration alone does not establish retained lookup
+publication or normal linked guest behavior.
