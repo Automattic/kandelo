@@ -1153,6 +1153,12 @@ every callback boundary in the dependency stack is correct:
   every GTest case trapped before it ran. The patched `gtestutils.c`
   keeps the typed callbacks on the test case and calls each through
   its own type, with upstream's teardown/free ordering unchanged.
+- Source closure lifetime callbacks use matching `void(gpointer)`
+  adapters. `g_closure_ref` returns a pointer, so it cannot be invoked
+  directly through the source table's void-returning callback type.
+- Generic signal return conversion reads `G_TYPE_INT64` and
+  `G_TYPE_UINT64` at their full width. `ffi_arg` is only 32 bits on
+  wasm32; reading a 64-bit result through it discards the upper bits.
 
 GTK 3 carries the same idiom in its own code. The port's
 `packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
@@ -1192,6 +1198,11 @@ need their own contract checks:
   through `_gdk_event_emit`, so this traps on the first event.
   Replaced by a 2-argument `gtk_main_do_event_wasm_cb` wrapper.
 
+The separate `wasm-application-default-vfuncs.patch` supplies correctly
+typed defaults for all fourteen `GtkApplicationImplClass` virtual
+methods. It preserves the original no-op, zero and false behavior;
+parent chaining still invokes the actual declared method signature.
+
 Audit each registration together with its eventual invocation. Record
 the callback's real type, the dispatcher's argument and return types,
 and any metadata that controls signal or libffi marshalling. An erased
@@ -1222,6 +1233,17 @@ These are ordinary implementation gaps. Required GLib signatures need
 actual support; signatures outside the supported contract need correct
 preparation failure. Do not extend one observed signature and infer full
 coverage, or describe these limits as unavoidable Wasm boundaries.
+
+The `gobject-callback-tests` package and
+`host/test/gobject-callback-contract.test.ts` provide a durable CPU gate:
+fifty separate-unit argument/return/source cases plus ten pinned upstream
+GObject targets. Build with `./run.sh build gobject-callback-tests` before
+running the host test in the declared dev shell. Missing artifacts fail.
+The focused diagnostic matrix passes with the shared repairs, but the
+new normal package's combined build/run remains pending. Upstream
+generic-marshaller and all-types cases already reproduce accepted
+signatures that abort in the current libffi dispatcher. Keep those
+failures and original assertions visible until their contracts work.
 
 For a new trap, map the exact loaded binary and its inputs before
 attributing a cause. Compare headers, static libraries and side modules

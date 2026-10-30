@@ -1,7 +1,7 @@
 script_path = "packages/registry/gtk3/build-gtk3.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "cf81d0f7c"
-revision    = 6
+revision    = 7
 
 # The fetched `gtk3-src/` tree lives under the build's work root; the
 # resolver hashes these tracked inputs on a clean checkout.
@@ -11,5 +11,6 @@ inputs = [
   "packages/registry/gtk3/src/fix-slowdown-prototype.patch",
   "packages/registry/gtk3/src/wayland-shm-gbm-pool.patch",
   "packages/registry/gtk3/src/wasm-interface-init-contract.patch",
+  "packages/registry/gtk3/src/wasm-application-default-vfuncs.patch",
   "scripts/package-build-roots.sh",
 ]

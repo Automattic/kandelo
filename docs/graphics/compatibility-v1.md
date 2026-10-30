@@ -9421,9 +9421,9 @@ past the earlier failure. Pinned GTK 3.24.34 installs zero-argument
 defaults into fourteen virtual slots with different argument and return
 types; its Wayland implementation calls the parent window-realize slot.
 Separate-unit controls reproduce all fourteen original signature traps
-and pass correctly typed replacements at O0/O2. This isolated proposal
-has not yet been integrated or normally rebuilt. It does not establish
-working SFWBar startup, menu behavior or teardown.
+and pass correctly typed replacements at O0/O2. GTK7's typed defaults
+are integrated in source but have not been normally rebuilt. This does
+not establish working SFWBar startup, menu behavior or teardown.
 
 The broader callback audit identified a source-closure ref callback cast
 with incompatible return type and wasm32 truncation in GLib's conversion
@@ -9440,9 +9440,21 @@ the SFWBar window-realize crash. Evidence is
 `.context/glib-callback-audit/{contract-before-build,contract-after-build}.json`
 and `results-before.jsonl`, `results-after.jsonl`, and retained worker logs.
 
-The in-tree libffi generated signature families are incomplete. Source
-inspection also finds signatures admitted at preparation but missing at
-call time, ignored ABI validation and unproven true variadic lowering.
+GLib6 integrates those two shared repairs. A normal
+`gobject-callback-tests` recipe and prepared-product host runner retain
+the fifty separate-unit cases plus ten pinned upstream GObject targets;
+missing artifacts fail and upstream assertions are unchanged. Its normal
+build and execution remain pending. The existing strict GTK14 controls,
+package metadata/script syntax and integration whitespace checks pass.
+
+The in-tree libffi generated signature families are incomplete. Actual
+upstream `generic-marshaller-1` and `all-types` controls get `FFI_OK` for
+nine- and twenty-argument signatures, then abort134 at missing dispatch
+keys 11534408 and 87964688318624. Original assertions are unchanged; a
+passthrough link observer only records actual preparation results.
+Evidence is `.context/glib-callback-audit/upstream-signals-*-result.json`.
+Source inspection also finds ignored ABI validation and unproven true
+variadic lowering.
 These ordinary gaps require support and correct failure behavior; they
 are not hard platform boundaries. Broad upstream GObject tests remain
 required, separately from the focused matrix. Header/library version

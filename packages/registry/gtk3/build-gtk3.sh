@@ -106,6 +106,8 @@ if [ ! -d "$SRC_DIR" ]; then
     # same shape foot and mako already use.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
+    # Base application virtuals must preserve their exact function signatures.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-application-default-vfuncs.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
