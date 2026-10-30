@@ -90,12 +90,22 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
 
   // Drag the server-side title, above the client background. The renderer
   // must move the same-sized client, exposing root at its original position.
-  const dx = bounds.x + bounds.width + 100 < first.width ? 80 : -80;
-  const dy = bounds.y + bounds.height + 90 < first.height ? 60 : -60;
-  await movePointer(page, first, bounds.x + bounds.width / 2, bounds.y - 12);
+  const titleX = bounds.x + bounds.width / 2, titleY = bounds.y - 12;
+  // Labwc's stock 10px outer-edge snapping maximizes a top-edge drop.
+  // Choose a real interior move: keep the whole client on the output and
+  // the title/drop point at least 20px from its edges, preserving enough
+  // displacement to prove translation. Never turn this into a snap test.
+  const dx = [80, -80].find(delta => bounds.x + delta >= 8
+    && bounds.x + bounds.width + delta <= first.width - 8
+    && titleX + delta >= 20 && titleX + delta <= first.width - 20);
+  const dy = [40, -40].find(delta => bounds.y + bounds.height + delta <= first.height - 8
+    && titleY + delta >= 20 && titleY + delta <= first.height - 20);
+  expect(dx, "floating window has room for a horizontal interior drag").toBeDefined();
+  expect(dy, "floating window has room for a vertical interior drag").toBeDefined();
+  await movePointer(page, first, titleX, titleY);
   await page.mouse.down();
   try {
-    await movePointer(page, first, bounds.x + bounds.width / 2 + dx, bounds.y - 12 + dy, 12);
+    await movePointer(page, first, titleX + dx!, titleY + dy!, 12);
   } finally { await page.mouse.up(); }
   await expect.poll(async () => {
     const after = (await footFrame(page)).foot;
