@@ -9383,3 +9383,44 @@ added. Evidence is `.context/scumm-gles-readback-probe/result-summary.json`
 and its actual stdout, screenshot, build input hashes and browser log.
 The preceding frozen cohort identity check is unchanged; these are
 diagnostic results, not consumer rendering or graphics completion.
+
+### Rebuilt callback stack and shared-dispatch audit (2026-10-30)
+
+Normal cohort `808a13235f` completed the desktop graph, both SDK graphics
+archives, ABI/freshness, actual selected image paths, module admission,
+current static GTK link and Node SFWBar help. Source, SDK, dependency and
+artifact identities remained unchanged across the consumers. The full
+job `sfwbar-desktop-808-v6-1030-104432-dc37` nevertheless exits one:
+both actual Chromium SFWBar desktops fail before painting their panel,
+and ScummVM still maps an empty client. Evidence is
+`.context/desktop-candidate-808a13235f-v6/status.tsv` and its retained
+traces. These are rebuilt-consumer failures, not a test-pass gate that
+prevents experimental preview access.
+
+Mapping the actual rebuilt SFWBar binary now reaches GTK's base
+`GtkApplicationImpl` window-realize virtual method through signal
+marshalling. The original shared GLib interface-initializer repair gets
+past the earlier failure. Pinned GTK 3.24.34 installs zero-argument
+defaults into fourteen virtual slots with different argument and return
+types; its Wayland implementation calls the parent window-realize slot.
+Separate-unit controls reproduce all fourteen original signature traps
+and pass correctly typed replacements at O0/O2. This isolated proposal
+has not yet been integrated or normally rebuilt. It does not establish
+working SFWBar startup, menu behavior or teardown.
+
+The broader callback audit also identified a source-closure ref callback
+cast with incompatible return type and a potential wasm32 truncation in
+64-bit libffi return conversion. Actual-library executable controls are
+being prepared; these findings are not yet validated root causes of a
+consumer failure. Header/library version mixing is not supported by the
+recorded cohort identities. GLib 2.84.4 and GTK 3.24.34 remain the pinned
+versions. The porting guide now requires checking registration and
+eventual invocation together, with typed adapters and argument/return
+coverage, instead of claiming all callback casts are repaired.
+
+Separately, the normal isolated b43d8a4ea2 Cage and Bibata package builds
+pass. The produced theme ZIP exactly matches the focused pack's size
+and SHA256 above. Full shell composition for that source is running;
+actual HiDPI geometry, browser cursor bounds and responsiveness remain
+unvalidated. Existing previews are immutable and do not acquire these
+fixes until a separate coherent product cohort is served.

@@ -1083,17 +1083,20 @@ All build scripts are in `packages/registry/`. They serve as reference implement
 | waybar | `packages/registry/waybar/build-waybar.sh` | meson bypass | 0.14.0, the O2 gate's bar: core + the dependency-free compositor module families (hyprland, sway, river, dwl, niri, wayfire, wlr-taskbar) + `simpleclock`. The `is_linux` modules (battery, cpu, memory, systemd units) stay out — their headers are guarded on `__linux__`, which wasm32-unknown-unknown does not define, and nothing here serves `/proc`, `/sys` or logind. `src/glib-static-init.c` forces glib's initializer ahead of gobject's with a priority-101 constructor: upstream relies on shared-library load order for that, which a static link does not have |
 | FFmpeg | `packages/registry/ffmpeg/build-ffmpeg.sh` | custom configure | n9.0, unpatched: `--arch=wasm --target-os=none` (upstream knows wasm and its simd128 extension; `--target-os=none` makes configure probe everything instead of assuming the build machine's OS). Never `--disable-asm`, which also turns off simd128. `--disable-autodetect` keeps the dependency set equal to `depends_on`, and then needs `--enable-pthreads`, since threads are autodetected. The configure arguments compiled into the binaries name dependency prefixes symbolically (`ffmpeg_normalize_configuration`), so the build is the same on every machine. ffplay draws through SDL2's GLES2 renderer, so it needs GL: browser only |
 
-## Callback casts that change arity trap on wasm
+## Callback signatures across GLib and GTK dispatch
 
-Wasm checks the exact type of every `call_indirect`. A C idiom that
-casts a function pointer to a type with a different argument count (or
-a different return type) compiles fine, works on every native ABI, and
-traps at runtime on wasm with `null function or function signature
-mismatch`.
+Wasm checks the function type of every `call_indirect`. Calling through
+a cast with incompatible arguments or return type is undefined behavior
+in C. Some native calling conventions tolerate particular mismatches;
+that does not make the call portable. On Wasm, a mismatch in the lowered
+function signature traps with `null function or function signature
+mismatch`. Casting a pointer does not adapt the function it points to.
 
-glib is built on this idiom. The port carries
+GLib and GTK contain callback casts that need explicit adaptation for
+this target. The port carries
 `packages/registry/glib/src/wasm-callback-signatures.patch`, which
-routes every arity-changing cast through a typed thunk:
+repairs the following dispatch paths. This list is not evidence that
+every callback boundary in the dependency stack is correct:
 
 - `g_list_free_full` / `g_slist_free_full` / `g_queue_free_full` call
   the `GDestroyNotify` (1 argument) through `GFunc` (2 arguments).
@@ -1153,7 +1156,8 @@ routes every arity-changing cast through a typed thunk:
 
 GTK 3 carries the same idiom in its own code. The port's
 `packages/registry/gtk3/src/wasm-callback-arity.patch` fixes the
-instances the smoke test hits, in seven shapes:
+following seven shapes. Other registrations and virtual methods still
+need their own contract checks:
 
 - Handlers connected with fewer arguments than the signal
   (`default_display_notify_cb`, `display_opened_cb`,
@@ -1188,14 +1192,30 @@ instances the smoke test hits, in seven shapes:
   through `_gdk_event_emit`, so this traps on the first event.
   Replaced by a 2-argument `gtk_main_do_event_wasm_cb` wrapper.
 
-When a new GTK code path traps with this signature, symbolize the
-stack (rebuild with a no-op `wasm-opt` shim on PATH so the name
-section survives) and extend the patch with the same shapes.
+Audit each registration together with its eventual invocation. Record
+the callback's real type, the dispatcher's argument and return types,
+and any metadata that controls signal or libffi marshalling. An erased
+storage type such as `GCallback` does not by itself prove a defect;
+the eventual call must match the function. Conversely, a cast can hide
+a mismatched default virtual method even without a registration macro.
+Use explicitly typed adapters where signatures differ, preserving the
+public callback contract, return value and callback lifetime. Do not
+replace a public binary callback contract with a universal unary thunk.
 
-When porting a GObject-based library, watch for the same pattern in
-the library's own code: any `(SomeFunc)` cast where the target has a
-different argument count needs a thunk. The failure mode is a trap at
-first use, not a build error. Current executable links reject missing
+Validate shared dispatch with separate translation units and actual
+library execution. Cover static and dynamic type/interface construction,
+normal and swapped signal handlers, class and interface virtual methods,
+GValue and variadic marshalling, and source/weak/destroy callbacks. Check
+return values as well as argument counts, including 64-bit integers on
+wasm32. Existing focused checks cover only their named paths; upstream
+GObject tests and rebuilt consumers remain necessary. A successful demo
+startup does not establish callback completeness.
+
+For a new trap, map the exact loaded binary and its inputs before
+attributing a cause. Compare headers, static libraries and side modules
+with the normal resolver's selected dependency closure to distinguish a
+stale build from a callback type defect. Keep diagnostic binaries separate
+from normal product artifacts. Current executable links reject missing
 symbols outside the declared host import list. Shared-library side modules
 resolve imports dynamically, so inspect their unresolved symbols with
 `wasm32posix-nm` when a port traps before `main`.
