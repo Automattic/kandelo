@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { gotoMachine } from "./support/kandelo-machine";
+import { typePhysicalText } from "./support/physical-typing";
 import { readFileSync } from "node:fs";
 import { resolveBinary } from "../../../host/src/binary-resolver";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
@@ -354,14 +355,14 @@ for (const deviceScaleFactor of [1, 2]) {
       // Sway's real IPC state through its shell; preserve it across exit so
       // the parent terminal can report scale and the committed input marker.
       await clickOutput(out, out.width / 3, out.height / 3);
-      await page.keyboard.type(`echo HIDPI_CLICK_${deviceScaleFactor} > /tmp/sway-hidpi-click\n`, { delay: 40 });
-      await page.keyboard.type("swaymsg -t get_outputs > /tmp/sway-hidpi-outputs\n", { delay: 40 });
-      await page.keyboard.type("swaymsg exit\n", { delay: 40 });
+      await typePhysicalText(page, `echo HIDPI_CLICK_${deviceScaleFactor} > /tmp/sway-hidpi-click\n`, { delay: 40 });
+      await typePhysicalText(page, "swaymsg -t get_outputs > /tmp/sway-hidpi-outputs\n", { delay: 40 });
+      await typePhysicalText(page, "swaymsg exit\n", { delay: 40 });
       await expect.poll(() => displayOwner(page), { timeout: 60_000 }).toBe(0);
       await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
         .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
       await page.locator(".xterm").first().click();
-      await page.keyboard.type("echo HIDPI_EXIT=$?; cat /tmp/sway-hidpi-click; "
+      await typePhysicalText(page, "echo HIDPI_EXIT=$?; cat /tmp/sway-hidpi-click; "
         + `while IFS= read -r line; do case "$line" in *'"scale"'*) echo HIDPI_SCALE:$line;; esac; done < /tmp/sway-hidpi-outputs\n`, { delay: 20 });
       await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain("HIDPI_EXIT=0");
       await expect.poll(() => terminalText(page), { timeout: 30_000 }).toContain(`HIDPI_CLICK_${deviceScaleFactor}`);
