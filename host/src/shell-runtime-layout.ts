@@ -10,7 +10,8 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   for (const dir of [
     "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
     "/usr/share", "/usr/share/misc", "/usr/share/file",
-    "/etc", "/root", "/tmp", "/home", "/home/maker", "/dev", "/usr/sbin",
+    "/etc", "/root", "/tmp", "/home", "/home/maker", "/home/projects",
+    "/dev", "/usr/sbin",
   ]) {
     ensureDirRecursive(fs, dir);
   }
@@ -18,6 +19,8 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
   fs.chmod("/tmp", 0o1777);
   fs.chmod("/root", 0o700);
   fs.chown("/home/maker", 1000, 1000);
+  fs.chown("/home/projects", 1000, 1000);
+  fs.chmod("/home/projects", 0o755);
 
   const gitconfig = [
     "[maintenance]",
@@ -34,6 +37,31 @@ export function populateShellRuntimeLayout(fs: VfsImageFilesystem): void {
     "",
   ].join("\n");
   writeVfsFile(fs, "/etc/gitconfig", gitconfig);
+  writeVfsFile(fs, "/usr/local/bin/kandelo-preview", `#!/bin/sh
+set -eu
+if [ "$#" = 1 ] && [ "$1" = --help ]; then
+  printf '%s\n' 'Usage: kandelo-preview http://localhost:PORT/path' 'Also accepts host, peer-N, or a connected 10.89.0.N guest.' 'Requires an attached Kandelo terminal. Requests a preview; connection errors appear in Web.'
+  exit 0
+fi
+if [ "$#" != 1 ]; then
+  printf '%s\n' 'Usage: kandelo-preview http://localhost:PORT/path' >&2
+  exit 2
+fi
+if [ ! -t 1 ]; then
+  printf '%s\n' 'kandelo-preview: standard output must be an attached Kandelo terminal' >&2
+  exit 1
+fi
+address=$1
+if [ "\${#address}" -gt 4096 ]; then
+  printf '%s\n' 'kandelo-preview: address is too long' >&2
+  exit 2
+fi
+case "$address" in
+  *[![:print:]]*|*\\\\*) printf '%s\n' 'kandelo-preview: use an address without control characters or backslashes' >&2; exit 2 ;;
+esac
+printf '\\033]777;kandelo-preview;1;%s\\007' "$address"
+printf 'Preview requested: %s\n' "$address"
+`, 0o755);
 
   // ELinks reads this system-wide file before the user's own
   // ~/.config/elinks/elinks.conf, so everything here is only a default.

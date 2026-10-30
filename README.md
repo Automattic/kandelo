@@ -267,6 +267,37 @@ npx tsx examples/run-example.ts hello
 
 ### 4. Try Kandelo in the browser
 
+The dock's **Library** opens saved computers; its **New computer** button
+chooses an image, boot profile, name and storage type. Temporary is the default.
+Library also reopens, renames, keeps, and deletes local computers. Reloading a
+`?computer=<UUID>` URL reopens the same filesystem automatically. **Temporary**
+computers also use OPFS disk storage, but become eligible for cleanup after
+24 hours without opening them. Checkpoints are optional, and browser storage
+is not a backup. See [computer retention](docs/browser-support.md#computer-library-and-retention).
+
+> **Experimental persistence — not upgradeable:** saved computers from this
+> release will not work in the next release. Export important files before
+> updating Kandelo. Transactional software upgrades are not implemented yet.
+
+**Activities** starts installed applications on the running computer without
+rebooting it. Independent activities coexist; conflicting display owners or
+managed web-service ports are stopped before their replacement starts. Graphics
+devices are available from the ordinary shell, including for newly compiled
+programs, without selecting a graphics boot profile.
+
+Separate **Web** and **Graphics** dock buttons select the website preview and
+the computer's graphical display. Switching views keeps both mounted; it does
+not reload the website or restart its programs. **Activities** stays to the
+right of **Terminal**. In Web Stack and WordPress computers, `kandelo-service
+list` shows managed service state separately from next-boot preferences.
+
+The image-family prototype offers **Base Shell**, **Web Stack**, and
+**WordPress** in the computer Library. Web Stack includes static nginx,
+PHP/Adminer, Python Notes, Ruby Todo, and the Redis voting board as live service
+activities. WordPress offers SQLite or MariaDB when creating a computer; an
+existing site's database backend cannot be silently changed. **Apps & tools**
+and **Group activities** are separate activity lists.
+
 ```bash
 # Build/reuse the local SourceOnly products, then start the dev server
 ./run.sh browser

@@ -182,6 +182,30 @@ test("coalesces concurrent group activation and retains the settled manifest", a
   assert.equal(imageFetches, 1);
 });
 
+test("resolving a grouped product authenticates only its manifest", async () => {
+  const fixture = groupFixture("/a/");
+  const fetched: string[] = [];
+  const loader = createPagesVfsProductLoaderForBase(
+    [{ ...fixture.entry, load: "eager" }],
+    async (url) => {
+      fetched.push(url);
+      if (url === fixture.manifestPath) return response(fixture.manifest);
+      throw new Error(`image was fetched while resolving ${url}`);
+    },
+    "/a/",
+    { prefetchEager: false },
+  );
+  const resolved = await loader.resolve("browser-node");
+  assert.equal(resolved.imageUrl, fixture.imageUrl);
+  assert.deepEqual(resolved.lazyAssets, {
+    deploymentBase: "/a/",
+    directoryUrl: "https://kandelo.invalid/a/vfs-groups/release-1/",
+    manifestUrl: "https://kandelo.invalid/a/vfs-groups/release-1/manifest.json",
+  });
+  assert.deepEqual(fetched, [fixture.manifestPath]);
+  assert.equal(loader.progress("browser-node"), undefined);
+});
+
 test("retries transient group and image failures without replacing settled activations", async () => {
   const groupFailure = groupFixture("/a/");
   let groupFetches = 0;

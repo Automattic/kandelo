@@ -4,12 +4,14 @@ members = [
     "crates/shared",
     "crates/program-abi",
     "crates/runtime-core",
+    "crates/overlay-prototype",
     "crates/kandelo-image-module",
     "crates/kernel",
     "crates/fork-instrument",
     "crates/kandelo-cc",
     "crates/wasm-local-root-spill",
     "crates/wasm-artifact",
+    "crates/program-policy",
     "tools/xtask",
 ]
 

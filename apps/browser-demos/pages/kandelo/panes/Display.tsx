@@ -5,6 +5,7 @@ import { useKernelHost, useWebPreview } from "../kernel-host/react";
 import { Framebuffer, type FramebufferProps } from "./Framebuffer";
 import { Modeset } from "./Modeset";
 import type { PrimarySurface } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { parseWebPreviewAddress, type WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 
 export interface WordPressLoginOptions {
   username: string;
@@ -19,6 +20,7 @@ export interface DisplayHandle {
 }
 
 export interface DisplayProps extends FramebufferProps {
+  onChangeWebTarget?: (target?: WebPreviewTarget) => void;
   active?: boolean;
   /**
    * Which demo surface the parent decided to mount. The mount is one of
@@ -46,9 +48,10 @@ export const Display = React.forwardRef<DisplayHandle, DisplayProps>(({ active, 
 Display.displayName = "Display";
 
 const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
+  onChangeWebTarget?: (target?: WebPreviewTarget) => void;
   preview: NonNullable<ReturnType<typeof useWebPreview>>;
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
-}>(({ preview, autoFocus = false, onDockControlsChange }, ref) => {
+}>(({ preview, autoFocus = false, onDockControlsChange, onChangeWebTarget }, ref) => {
   const host = useKernelHost();
   const [loading, setLoading] = React.useState(true);
   const [path, setPath] = React.useState(preview.initialPath ?? "/");
@@ -56,6 +59,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   const ready = preview.status === "running";
   const pendingRequests = preview.pendingRequests ?? 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
+  const destination = React.useMemo(() => preview.destination ?? (preview.port === undefined ? undefined : { hostname: "localhost", port: preview.port }), [preview.destination, preview.port]);
 
   React.useEffect(() => {
     beginPreviewNavigation(host, preview.initialPath ?? "/");
@@ -108,9 +112,8 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
     setNavigationError(null);
     if (/^https?:\/\//i.test(raw) && relativePathFromHref(preview.url, raw) === null) {
       try {
-        const url = new URL(raw);
-        if (url.protocol !== "http:" || url.username || url.password || !host.openWebPreview) throw new Error("Use an HTTP address on this computer or its Kandelo network");
-        void host.openWebPreview({ hostname: url.hostname, port: Number(url.port || 80), path: url.pathname + url.search + url.hash })
+        if (!host.openWebPreview) throw new Error("This computer cannot open a web preview");
+        void host.openWebPreview(parseWebPreviewAddress(raw))
           .catch(error => setNavigationError(String(error instanceof Error ? error.message : error)));
       } catch (error) { setNavigationError(String(error instanceof Error ? error.message : error)); }
       return;
@@ -163,6 +166,8 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 
   const dockControls = React.useMemo(() => (
     <WebPreviewDockControls
+      origin={destination ? new URL(`http://${destination.hostname}:${destination.port}`).origin : undefined}
+      onChangeTarget={onChangeWebTarget ? () => onChangeWebTarget(destination ? { ...destination, path } : undefined) : undefined}
       baseUrl={preview.url}
       path={path}
       ready={ready}
@@ -172,7 +177,7 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
       onNavigate={navigate}
       onReload={reloadPreview}
     />
-  ), [loading, navigate, path, pendingRequests, preview.message, preview.url, ready, reloadPreview]);
+  ), [destination, loading, navigate, onChangeWebTarget, path, pendingRequests, preview.message, preview.url, ready, reloadPreview]);
 
   React.useEffect(() => {
     if (!onDockControlsChange) return;
@@ -265,6 +270,8 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
 WebPreviewPane.displayName = "WebPreviewPane";
 
 const WebPreviewDockControls: React.FC<{
+  origin?: string;
+  onChangeTarget?: () => void;
   baseUrl: string;
   path: string;
   ready: boolean;
@@ -273,7 +280,7 @@ const WebPreviewDockControls: React.FC<{
   message?: string;
   onNavigate: (path: string) => void;
   onReload: () => void;
-}> = ({ baseUrl, path, ready, pendingRequests, loading, message, onNavigate, onReload }) => {
+}> = ({ baseUrl, path, ready, pendingRequests, loading, message, onNavigate, onReload, origin, onChangeTarget }) => {
   const [draftPath, setDraftPath] = React.useState(path);
   const loadingTitle = loading
     ? `Waiting for the preview document (${pendingRequests} pending requests)`
@@ -304,6 +311,12 @@ const WebPreviewDockControls: React.FC<{
           <path d="M13 6.5A5 5 0 1 0 11.4 11" />
           <path d="M13 3.5v3h-3" />
         </svg>
+      </button>
+      <button type="button" className="kweb-origin" onClick={onChangeTarget} disabled={!onChangeTarget}
+        aria-label={origin ? `Change website target (${origin})` : "Choose website target"}
+        title={origin ? `${origin} — Change website target` : "Choose website target"}>
+        <span>{origin ?? "Choose website"}</span>
+        <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m4 6 4 4 4-4" /></svg>
       </button>
       <input
         className="kweb-urlbar-input"

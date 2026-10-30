@@ -93,7 +93,7 @@
       },
       "assets": [
         {
-          "path": "/doom1.wad",
+          "path": "/usr/share/doom/doom1.wad",
           "url": "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad",
           "sha256": "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771",
           "mode": 420
@@ -105,14 +105,14 @@
           "label": "LAN game",
           "description": "Play with the other computers in this network session: host a game that starts once every player has joined (or press Space in its waiting room to start sooner), or join one hosted on the session. Everyone plays the shareware WAD.",
           "menu": [
-            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 2" },
-            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 3" },
-            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 4" },
-            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 2 -deathmatch" },
-            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 3 -deathmatch" },
-            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -server -privateserver -nodes 4 -deathmatch" },
-            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad -autojoin" },
-            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/local/bin/fbdoom -iwad /doom1.wad" }
+            { "id": "coop-2", "label": "2 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2" },
+            { "id": "coop-3", "label": "3 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3" },
+            { "id": "coop-4", "label": "4 players", "group": "Host co-op", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4" },
+            { "id": "deathmatch-2", "label": "2 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 2 -deathmatch" },
+            { "id": "deathmatch-3", "label": "3 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 3 -deathmatch" },
+            { "id": "deathmatch-4", "label": "4 players", "group": "Host deathmatch", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -server -privateserver -nodes 4 -deathmatch" },
+            { "id": "join", "label": "Join a LAN game", "group": "Join", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin" },
+            { "id": "single", "label": "Back to single player", "group": "Single player", "restart": "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad" }
           ]
         }
       ],

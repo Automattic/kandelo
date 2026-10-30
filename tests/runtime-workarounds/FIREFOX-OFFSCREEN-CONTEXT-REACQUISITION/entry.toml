@@ -1,0 +1,47 @@
+id = "FIREFOX-OFFSCREEN-CONTEXT-REACQUISITION"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "Firefox 159 rejects repeated WebGL2 getContext calls on the same transferred canvas in the same worker"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+timeout_seconds = 30
+
+[[observed]]
+runtime = "firefox"
+version = "159.0"
+os = "macos"
+reproduced = true
+date = 2026-10-29
+source = "manual"
+released = true
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = false
+date = 2026-10-29
+source = "suite"
+released = false
+
+[[sites_without_tags]]
+path = "host/src/webgl/canvas-context.ts"
+note = "Weak canvas-keyed acquisition cache; recorded here because task agent instructions prohibit adding inline code comments."
+
+[[sites_without_tags]]
+path = "host/src/kernel.ts"
+note = "Guest EGL acquisition uses the canvas-owned context; no inline code comment per task instructions."
+
+[[sites_without_tags]]
+path = "host/src/kernel-worker.ts"
+note = "Scanout presenter shares acquisition with guest EGL; no inline code comment per task instructions."
+
+[[sites_without_tags]]
+path = "host/src/webgl/main-forward.ts"
+note = "Forwarded sessions use the same acquisition contract; no inline code comment per task instructions."

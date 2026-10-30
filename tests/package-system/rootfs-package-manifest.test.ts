@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -85,9 +86,181 @@ function makeRootfsBuildFixture() {
   };
 }
 
+function makeOriginalRootfsFixture(install = "lazy") {
+  const scratch = makeScratch();
+  const selectedRoot = join(scratch, "selected-binaries");
+  const original = Buffer.from("\0asm\x01\0\0\0");
+  const digest = sha256(original);
+  const name = Buffer.from("kandelo.original-program");
+  const reference = Buffer.alloc(44);
+  reference.writeUInt32LE(1);
+  reference.writeBigUInt64LE(BigInt(original.length), 4);
+  Buffer.from(digest, "hex").copy(reference, 12);
+  const program = Buffer.concat([original, Buffer.from([0, 1 + name.length + reference.length, name.length]), name, reference]);
+  const binaryRel = "programs/wasm32/fixture.wasm";
+  const executable = join(selectedRoot, binaryRel);
+  mkdirSync(dirname(executable), { recursive: true });
+  writeFileSync(executable, program);
+  const originalFile = join(scratch, "original.wasm");
+  writeFileSync(originalFile, original, { mode: 0o444 });
+  const originalRel = `programs/wasm32/.originals/fixture/${"a".repeat(64)}/originals/fixture.wasm`;
+  const metadata = { schema: 1, kind: "kandelo-dependency-original-inputs", consumerPackage: "rootfs", inputs: [{
+    packageName: "fixture", resolverPath: binaryRel, executablePath: executable,
+    executableSize: program.length, executableSha256: sha256(program), original: {
+      packageName: "fixture", path: originalFile, relPath: originalRel, sourceArtifact: "originals/fixture.wasm",
+      cacheKey: "a".repeat(64), mode: 0o444, size: original.length, sha256: digest,
+    },
+  }] };
+  const inputs = join(scratch, "inputs.json");
+  const saveInputs = () => writeFileSync(inputs, JSON.stringify(metadata));
+  saveInputs();
+  const packages = join(scratch, "PACKAGES.toml");
+  writeFileSync(packages, `default_install = "${install}"\nlazy_url_prefix = "binaries/"\n[[packages]]\nname = "fixture"\n[[packages.outputs]]\nbinary = "${binaryRel}"\npath = "/usr/bin/fixture"\n`);
+  const out = join(scratch, "original.MANIFEST");
+  const args = ["--packages", packages, "--binaries-dir", selectedRoot, "--original-inputs", inputs, "--out", out];
+  const env = { WASM_POSIX_DEP_NAME: "rootfs", WASM_POSIX_DEPS_REGISTRY: join(scratch, "absent-registry") };
+  return { scratch, selectedRoot, original, program, executable, originalFile, originalRel, digest, metadata,
+    inputs, saveInputs, packages, out, args, env };
+}
+
 afterEach(() => {
   for (const root of scratchRoots.splice(0))
     rmSync(root, { recursive: true, force: true });
+});
+
+describe("rootfs retained original programs", () => {
+  it.each(["lazy", "eager"])("delivers a readonly lazy original for an %s program", (install) => {
+    const value = makeOriginalRootfsFixture(install);
+    const result = runGenerator(value.args, value.env);
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(value.out, "utf8");
+    expect(manifest).toContain(`/usr/lib/kandelo/originals/${value.digest}.wasm f 0444 0 0 lazy_url=kandelo-lazy:${value.originalRel} lazy_size=8 lazy_sha256=${value.digest}`);
+    expect(manifest).not.toContain(`src=${value.originalFile}`);
+    if (install === "lazy") expect(manifest).toContain(`lazy_sha256=${sha256(value.program)}`);
+    else expect(manifest).toContain(`src=${relative(repoRoot, value.executable)}`);
+  }, 30_000);
+
+  it.each(["prepared", "original", "stripped-reference", "owner"])("refuses changed %s before publishing the manifest", (mutation) => {
+    const value = makeOriginalRootfsFixture();
+    if (mutation === "prepared") writeFileSync(value.executable, Buffer.concat([value.program, Buffer.from([0])]));
+    if (mutation === "original") {
+      chmodSync(value.originalFile, 0o644);
+      writeFileSync(value.originalFile, Buffer.alloc(value.original.length));
+      chmodSync(value.originalFile, 0o444);
+    }
+    if (mutation === "stripped-reference") {
+      writeFileSync(value.executable, value.original);
+      value.metadata.inputs[0]!.executableSize = value.original.length;
+      value.metadata.inputs[0]!.executableSha256 = value.digest;
+      value.saveInputs();
+    }
+    if (mutation === "owner") { value.metadata.consumerPackage = "another-image"; value.saveInputs(); }
+    const result = runGenerator(value.args, value.env);
+    expect(result.status, result.stderr).toBe(1);
+    expect(() => readFileSync(value.out)).toThrow();
+    expect(readFileSync(value.originalFile)).toEqual(mutation === "original" ? Buffer.alloc(value.original.length) : value.original);
+  }, 30_000);
+
+  it("deduplicates originals across executable aliases", () => {
+    const value = makeOriginalRootfsFixture();
+    writeFileSync(value.packages, `${readFileSync(value.packages, "utf8")}[[packages.outputs]]\nbinary = "programs/wasm32/fixture.wasm"\npath = "/bin/fixture"\n`);
+    const result = runGenerator(value.args, value.env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(value.out, "utf8").split("\n").filter(line => line.startsWith("/usr/lib/kandelo/originals/"))).toHaveLength(1);
+  }, 30_000);
+
+  it("keeps unrelated non-Wasm data when dependency original bindings are present", () => {
+    const value = makeOriginalRootfsFixture();
+    const data = writeArtifact(value.selectedRoot, "programs/wasm32/runtime.dat", "runtime data");
+    writeFileSync(value.packages, `${readFileSync(value.packages, "utf8")}[[packages.outputs]]\nbinary = "programs/wasm32/runtime.dat"\npath = "/usr/share/runtime.dat"\ninstall = "eager"\nmode = "0644"\n`);
+    const result = runGenerator(value.args, value.env);
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(value.out, "utf8")).toContain(`/usr/share/runtime.dat f 0644 0 0 src=${relative(repoRoot, data)}`);
+  }, 30_000);
+
+  it("does not treat a stripped declared program as data based on its filename", () => {
+    const value = makeOriginalRootfsFixture();
+    const binaryRel = "programs/wasm32/program.dat";
+    const executable = join(value.selectedRoot, binaryRel);
+    writeFileSync(executable, value.original);
+    writeFileSync(value.packages, readFileSync(value.packages, "utf8").replace("programs/wasm32/fixture.wasm", binaryRel));
+    Object.assign(value.metadata.inputs[0]!, { resolverPath: binaryRel, executablePath: executable,
+      executableSize: value.original.length, executableSha256: value.digest });
+    value.saveInputs();
+    const result = runGenerator(value.args, value.env);
+    expect(result.status, result.stderr).toBe(1);
+    expect(result.stderr).toContain("ENOEXEC");
+    expect(() => readFileSync(value.out)).toThrow();
+  }, 30_000);
+
+  it("carries original bindings through real image export", () => {
+    const value = makeOriginalRootfsFixture();
+    const out = join(value.scratch, "rootfs.vfs");
+    const result = spawnSync("bash", [join(repoRoot, "scripts/build-rootfs.sh")], {
+      cwd: repoRoot, encoding: "utf8", env: { ...process.env, ...value.env,
+        ROOTFS_PACKAGES_CONFIG: value.packages, ROOTFS_BINARIES_DIR: value.selectedRoot,
+        ROOTFS_ORIGINAL_INPUTS: value.inputs, ROOTFS_PACKAGE_MANIFEST: value.out, ROOTFS_OUT: out,
+        ROOTFS_SKIP_PACKAGE_RESOLVE: "1", ROOTFS_SEALED_BUILD: "1" },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(new Uint8Array(readFileSync(out)));
+    const path = `/usr/lib/kandelo/originals/${value.digest}.wasm`;
+    expect(filesystem.lstat(path)).toMatchObject({ deferred: true, size: value.original.length, uid: 0, gid: 0 });
+    expect(filesystem.lstat(path).mode & 0o7777).toBe(0o444);
+    const entry = filesystem.lazyEntries().files.find(entry => entry.path === path)!;
+    expect(entry.uri).toBe(`kandelo-lazy:${value.originalRel}`);
+    expect(Buffer.from(entry.digest).toString("hex")).toBe(value.digest);
+  }, 60_000);
+
+  it("carries exact dependency bindings through private resolver staging", () => {
+    const value = makeOriginalRootfsFixture();
+    const stage = join(value.scratch, "staged");
+    const result = runGenerator(["--packages", value.packages, "--stage-resolver-binaries", stage,
+      "--original-inputs", value.inputs, "--out", value.out], {
+      ...value.env, WASM_POSIX_DEP_FIXTURE_DIR: dirname(value.executable),
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(join(stage, "programs/wasm32/fixture.wasm"))).toEqual(value.program);
+    expect(readFileSync(value.out, "utf8")).toContain(`lazy_url=kandelo-lazy:${value.originalRel}`);
+  }, 30_000);
+
+  it.each([false, true])("consults explicit selected-tree declarations without a metadata map (stripped=%s)", (stripped) => {
+    const value = makeOriginalRootfsFixture();
+    const key = "a".repeat(64);
+    const manifestSha256 = "b".repeat(64);
+    const program = stripped ? value.original : value.program;
+    writeFileSync(value.executable, program, { mode: 0o755 });
+    chmodSync(value.executable, 0o755);
+    const rawPath = join(value.selectedRoot, value.originalRel);
+    mkdirSync(dirname(rawPath), { recursive: true });
+    writeFileSync(rawPath, value.original, { mode: 0o444 });
+    const authority = {
+      format: "kandelo-source-only-program-projection-v1", graphAuthoritySha256: "c".repeat(64),
+      projection: { format: "kandelo-program-packages-v2", identities: {
+        fixture: { manifestSha256, cacheKeys: { wasm32: key, wasm64: "e".repeat(64) } },
+      }, packages: { fixture: { manifestSha256, arches: ["wasm32"], cacheKeys: { wasm32: key },
+        dependencyClosures: { wasm32: [] }, members: [{ kind: "output", sourceArtifact: "fixture.wasm",
+          mirrorPath: "fixture.wasm", outputName: "fixture", forkInstrumentation: "disabled", originalWasm: "originals/fixture.wasm" }],
+      } } },
+      nodes: [{ node: { kind: "package", name: "fixture", targetArch: "wasm32" }, manifestSha256,
+        cacheKeySha256: key, cacheReceiptSha256: "d".repeat(64), members: [
+          { sourceArtifact: "originals/fixture.wasm", mirrorPath: value.originalRel, mode: 0o444,
+            size: value.original.length, sha256: value.digest },
+          { sourceArtifact: "fixture.wasm", mirrorPath: "programs/wasm32/fixture.wasm", mode: 0o755,
+            size: program.length, sha256: sha256(program) },
+        ] }],
+    };
+    const metadataRoot = join(value.selectedRoot, ".kandelo");
+    mkdirSync(metadataRoot);
+    writeFileSync(join(metadataRoot, "source-only-program-projection-v1.json"), JSON.stringify(authority));
+    const result = runGenerator(["--packages", value.packages, "--binaries-dir", value.selectedRoot, "--out", value.out], value.env);
+    expect(result.status, result.stderr).toBe(stripped ? 1 : 0);
+    if (stripped) {
+      expect(result.stderr).toContain("ENOEXEC");
+      expect(() => readFileSync(value.out)).toThrow();
+    } else expect(readFileSync(value.out, "utf8")).toContain(`lazy_url=kandelo-lazy:${value.originalRel}`);
+  }, 30_000);
 });
 
 describe("generate-rootfs-package-manifest artifact provenance", () => {

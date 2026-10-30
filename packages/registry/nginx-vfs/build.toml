@@ -1,5 +1,6 @@
 script_path = "images/vfs/scripts/build-nginx-vfs-image.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "web-libs/kandelo-session/src/session-dependencies.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
   "web-libs/kandelo-session/src/game-levels.ts",
@@ -13,6 +14,8 @@ inputs = [
   "images/vfs/scripts/package-shell-vfs-build.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/program-originals.ts",
+  "images/vfs/scripts/dependency-original-inputs.ts",
   "images/vfs/scripts/package-session-files.ts",
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/vfs-image-helpers.ts",
@@ -46,4 +49,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 11
+revision = 12

@@ -6,13 +6,15 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use wasm_posix_shared::Errno;
+use crate::io_buffer::{IoBuffer, IO_MEMORY};
+use crate::metadata_budget::MetadataBytes;
+use crate::prepared_map::{MapMemory, PreparedEntry, PreparedMap};
 
 /// Entry in the Unix socket registry.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct UnixSocketEntry {
     /// PID of the process that owns the listening socket.
     pub pid: u32,
@@ -21,35 +23,66 @@ pub struct UnixSocketEntry {
     /// Every process-local socket table entry that inherited this bound
     /// endpoint. The public pid/sock_idx pair above is the current lookup
     /// target; ownership moves to another live entry when that owner closes.
-    owners: Vec<(u32, usize)>,
+    owners: IoBuffer<(u32, usize)>,
+}
+
+impl MapMemory for UnixSocketEntry {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
+pub(crate) struct PreparedUnixName(PreparedEntry<Vec<u8>, UnixSocketEntry>);
+
+impl PreparedUnixName {
+    fn new(prefix: &[u8], suffix: &[u8], value: UnixSocketEntry) -> Result<Self, Errno> {
+        let length = prefix.len().checked_add(suffix.len()).ok_or(Errno::ENOMEM)?;
+        let reservation = PreparedEntry::<Vec<u8>, UnixSocketEntry>::reserve_in(&IO_MEMORY, length)?;
+        let mut path = Vec::new();
+        path.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
+        path.extend_from_slice(prefix);
+        path.extend_from_slice(suffix);
+        Ok(Self(PreparedEntry::new_reserved_in(&IO_MEMORY, path, value, reservation)?))
+    }
+}
+
+pub(crate) struct PreparedUnixRename {
+    moves: IoBuffer<(MetadataBytes<'static>, PreparedUnixName)>,
+    displaced: Option<MetadataBytes<'static>>,
 }
 
 /// Global registry mapping resolved paths to listening Unix sockets.
 pub struct UnixSocketRegistry {
-    entries: BTreeMap<Vec<u8>, UnixSocketEntry>,
+    entries: PreparedMap<Vec<u8>, UnixSocketEntry>,
 }
 
 impl UnixSocketRegistry {
     pub const fn new() -> Self {
         UnixSocketRegistry {
-            entries: BTreeMap::new(),
+            entries: PreparedMap::new(),
         }
     }
 
     /// Register a bound Unix socket at the given path.
     /// Returns false if the path is already in use.
+    #[cfg(test)]
     pub fn register(&mut self, path: Vec<u8>, pid: u32, sock_idx: usize) -> bool {
-        if self.entries.contains_key(&path) {
-            return false;
+        match self.prepare_registration(&path, pid, sock_idx) {
+            Ok(prepared) => self.publish_registration(prepared),
+            Err(Errno::EADDRINUSE) => false,
+            Err(error) => panic!("Unix socket fixture registration failed: {error:?}"),
         }
-        self.entries.insert(
-            path,
-            UnixSocketEntry {
-                pid,
-                sock_idx,
-                owners: alloc::vec![(pid, sock_idx)],
-            },
-        );
+    }
+
+    pub(crate) fn prepare_registration(&self, path: &[u8], pid: u32, sock_idx: usize) -> Result<PreparedUnixName, Errno> {
+        if self.entries.contains_key(path) {
+            return Err(Errno::EADDRINUSE);
+        }
+        let owners = IoBuffer::copy_from(&[(pid, sock_idx)])?;
+        PreparedUnixName::new(path, &[], UnixSocketEntry { pid, sock_idx, owners })
+    }
+
+    pub(crate) fn publish_registration(&mut self, prepared: PreparedUnixName) -> bool {
+        if self.entries.contains_key(prepared.0.key()) { return false; }
+        self.entries.insert_prepared(prepared.0);
         true
     }
 
@@ -66,24 +99,18 @@ impl UnixSocketRegistry {
         child_pid: u32,
         child_sock_idx: usize,
     ) -> Result<bool, Errno> {
-        let Some(entry) = self
-            .entries
-            .values_mut()
-            .find(|entry| entry.owners.contains(&(parent_pid, parent_sock_idx)))
-        else {
-            // Unlinked/replaced pathname sockets no longer own a registry
-            // name, so there is no machine-wide name authority to inherit.
-            return Ok(false);
-        };
-        if entry.owners.contains(&(child_pid, child_sock_idx)) {
-            return Ok(false);
-        }
-        entry
-            .owners
-            .try_reserve_exact(1)
-            .map_err(|_| Errno::ENOMEM)?;
-        entry.owners.push((child_pid, child_sock_idx));
-        Ok(true)
+        let mut found = false;
+        let mut result = Ok(false);
+        self.entries.for_each_mut(|entry| {
+            if found || !entry.owners.contains(&(parent_pid, parent_sock_idx)) { return; }
+            found = true;
+            if entry.owners.contains(&(child_pid, child_sock_idx)) { return; }
+            result = entry.owners.try_reserve(1).map(|()| {
+                entry.owners.push((child_pid, child_sock_idx));
+                true
+            });
+        });
+        result
     }
 
     /// Drop the exact process-local owner independently of its current name.
@@ -116,15 +143,41 @@ impl UnixSocketRegistry {
     /// Re-key filesystem-backed socket metadata after a successful VFS
     /// rename. Replacing an existing destination removes that destination's
     /// old name, exactly as the filesystem operation did.
+    #[cfg(test)]
     pub fn rename_path(&mut self, oldpath: &[u8], newpath: &[u8]) -> bool {
-        let old_entry = self.entries.remove(oldpath);
-        let replaced = self.entries.remove(newpath).is_some();
-        if let Some(entry) = old_entry {
-            self.entries.insert(newpath.to_vec(), entry);
-            true
-        } else {
-            replaced
+        let prepared = self.prepare_rename(oldpath, newpath).unwrap();
+        self.publish_rename(prepared)
+    }
+
+    pub(crate) fn prepare_rename(&self, oldpath: &[u8], newpath: &[u8]) -> Result<PreparedUnixRename, Errno> {
+        let mut moves = IoBuffer::new();
+        if oldpath == newpath { return Ok(PreparedUnixRename { moves, displaced: None }); }
+        let suffix_for = |path: &[u8]| {
+            path == oldpath || (path.starts_with(oldpath) && path.get(oldpath.len()) == Some(&b'/'))
+        };
+        let count = self.entries.keys().filter(|path| suffix_for(path)).count();
+        moves.try_reserve_exact(count)?;
+        for (path, entry) in &self.entries {
+            if !suffix_for(path) { continue; }
+            let old = MetadataBytes::copy_from(&IO_MEMORY, path)?;
+            let new = PreparedUnixName::new(newpath, &path[oldpath.len()..], UnixSocketEntry {
+                pid: entry.pid, sock_idx: entry.sock_idx, owners: IoBuffer::new() })?;
+            moves.push((old, new));
         }
+        let displaced = if count == 0 && self.entries.contains_key(newpath) {
+            Some(MetadataBytes::copy_from(&IO_MEMORY, newpath)?)
+        } else { None };
+        Ok(PreparedUnixRename { moves, displaced })
+    }
+
+    pub(crate) fn publish_rename(&mut self, mut prepared: PreparedUnixRename) -> bool {
+        let changed = !prepared.moves.is_empty() || prepared.displaced.is_some();
+        for (old, new) in &mut prepared.moves {
+            *new.0.value_mut() = self.entries.remove(old.as_ref()).expect("prepared Unix socket source disappeared");
+        }
+        for (_, entry) in prepared.moves { self.entries.insert_prepared(entry.0); }
+        if let Some(path) = prepared.displaced { self.entries.remove(path.as_ref()); }
+        changed
     }
 
     /// Look up a Unix socket by path.
@@ -143,7 +196,7 @@ impl UnixSocketRegistry {
     /// kernel removes on its own.
     pub fn unregister_under(&mut self, prefix: &[u8]) {
         self.entries
-            .retain(|path, _| crate::fifo::rebase_path(path, prefix, prefix).is_none());
+            .retain(|path, _| !crate::fifo::contains_path(path, prefix));
     }
 
     /// Remove all registrations for a given pid (process cleanup).
@@ -186,6 +239,41 @@ pub unsafe fn global_unix_socket_registry() -> &'static mut UnixSocketRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_rename_prepares_prefix_moves_and_publishes_without_allocation() {
+        let mut registry = UnixSocketRegistry::new();
+        assert!(registry.register(b"/old/one".to_vec(), 31, 1));
+        assert!(registry.register(b"/old/two".to_vec(), 32, 2));
+        assert!(registry.register(b"/oldish/three".to_vec(), 33, 3));
+        assert!(registry.register(b"/new/one".to_vec(), 34, 4));
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert!(matches!(registry.prepare_registration(b"/next", 35, 5), Err(Errno::ENOMEM)));
+            assert!(matches!(registry.prepare_rename(b"/old", b"/new"), Err(Errno::ENOMEM)));
+        }
+        crate::prepared_map::fail_after_allocations(1);
+        let result = registry.prepare_rename(b"/old", b"/new");
+        crate::prepared_map::fail_after_allocations(usize::MAX);
+        assert!(matches!(result, Err(Errno::ENOMEM)));
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        assert_eq!(registry.lookup(b"/old/one").unwrap().pid, 31);
+        assert_eq!(registry.lookup(b"/new/one").unwrap().pid, 34);
+        let prepared = registry.prepare_rename(b"/old", b"/new").unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert!(registry.publish_rename(prepared));
+        }
+        assert!(registry.lookup(b"/old/one").is_none());
+        assert!(registry.lookup(b"/old/two").is_none());
+        assert_eq!(registry.lookup(b"/new/one").unwrap().pid, 31);
+        assert_eq!(registry.lookup(b"/new/two").unwrap().pid, 32);
+        assert_eq!(registry.lookup(b"/oldish/three").unwrap().pid, 33);
+        registry.add_inherited_owner(31, 1, 36, 6).unwrap();
+        assert!(registry.remove_owner_exact(31, 1));
+        assert_eq!(registry.lookup(b"/new/one").unwrap().pid, 36);
+    }
 
     #[test]
     fn test_register_and_lookup() {

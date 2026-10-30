@@ -133,6 +133,8 @@ pub struct ProgramOutput {
     pub wasm: String,
     #[serde(default)]
     pub fork_instrumentation: ForkInstrumentationPolicy,
+    #[serde(default)]
+    pub original_wasm: Option<String>,
 }
 
 /// A non-Wasm file that a program package needs at runtime.
@@ -1905,6 +1907,9 @@ impl DepsManifest {
                         return Err(format!("[[outputs]][{idx}].wasm must not be empty"));
                     }
                     validate_output_path(&out.wasm, &format!("[[outputs]][{idx}].wasm"))?;
+                    if let Some(original) = &out.original_wasm {
+                        validate_output_path(original, &format!("[[outputs]][{idx}].original_wasm"))?;
+                    }
                 }
                 (Outputs::default(), program_outputs)
             }
@@ -1932,6 +1937,20 @@ impl DepsManifest {
         };
 
         if matches!(raw.kind, ManifestKind::Program) {
+            let mut original_artifacts = Vec::<&str>::new();
+            for output in &program_outputs {
+                if let Some(original) = &output.original_wasm {
+                    for artifact in program_outputs.iter().map(|output| output.wasm.as_str())
+                        .chain(runtime_files.iter().map(|file| file.artifact.as_str()))
+                        .chain(original_artifacts.iter().copied())
+                    {
+                        if file_paths_conflict(original, artifact) {
+                            return Err(format!("original_wasm {original:?} conflicts with package artifact {artifact:?}"));
+                        }
+                    }
+                    original_artifacts.push(original);
+                }
+            }
             let mut output_artifacts: Vec<&str> = Vec::new();
             let mut output_mirrors: Vec<PathBuf> = Vec::new();
             for (idx, out) in program_outputs.iter().enumerate() {
@@ -1948,6 +1967,9 @@ impl DepsManifest {
                     program_outputs.len() + runtime_files.len(),
                     out,
                 );
+                if mirror.components().next().is_some_and(|component| component.as_os_str() == ".originals") {
+                    return Err("program output collides with the reserved original-companion namespace".into());
+                }
                 for prior in &output_mirrors {
                     if file_paths_conflict(&prior.to_string_lossy(), &mirror.to_string_lossy()) {
                         return Err(format!(
@@ -3404,6 +3426,10 @@ probe = { args = ["--version"], version_regex = "(unclosed" }
     // relative path the resolver writes its symlinks to.
 
     fn program_manifest(name: &str, outputs_section: &str) -> DepsManifest {
+        try_program_manifest(name, outputs_section).unwrap()
+    }
+
+    fn try_program_manifest(name: &str, outputs_section: &str) -> Result<DepsManifest, String> {
         let text = format!(
             r#"
 kind = "program"
@@ -3421,7 +3447,37 @@ spdx = "TestLicense"
 {outputs_section}
 "#
         );
-        DepsManifest::parse(&text, PathBuf::from("/x")).unwrap()
+        DepsManifest::parse(&text, PathBuf::from("/x"))
+    }
+
+    #[test]
+    fn associated_original_does_not_change_the_executable_layout() {
+        let manifest = program_manifest("dash", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = \"originals/dash.wasm\"\n");
+        assert_eq!(manifest.program_outputs[0].original_wasm.as_deref(), Some("originals/dash.wasm"));
+        assert_eq!(manifest.output_dest_rel("dash.wasm").unwrap(), PathBuf::from("dash.wasm"));
+        assert!(!manifest.uses_package_mirror_directory());
+    }
+
+    #[test]
+    fn associated_original_rejects_unsafe_and_overlapping_artifact_paths() {
+        for original in ["", "../raw.wasm", "/raw.wasm", "raw/../raw.wasm", "raw//file.wasm", "dash.wasm", "dash.wasm/child"] {
+            let section = format!("[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = {original:?}\n");
+            assert!(try_program_manifest("dash", &section).is_err(), "{original:?}");
+        }
+        for suffix in [
+            "[[outputs]]\nname = \"other\"\nwasm = \"other.wasm\"\noriginal_wasm = \"originals/dash.wasm\"\n",
+            "[[outputs]]\nname = \"other\"\nwasm = \"originals\"\n",
+            "[[runtime_files]]\nartifact = \"originals\"\nguest_path = \"/usr/share/data\"\n",
+        ] {
+            let section = format!("[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = \"originals/dash.wasm\"\n{suffix}");
+            assert!(try_program_manifest("dash", &section).is_err(), "{suffix}");
+        }
+    }
+
+    #[test]
+    fn original_companion_namespace_is_not_an_executable_projection_entry() {
+        assert!(try_program_manifest("ordinary", "[[outputs]]\nname = \".originals\"\nwasm = \"artifact\"\n").is_err());
+        assert!(try_program_manifest(".originals", "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\n[[runtime_files]]\nartifact = \"data\"\nguest_path = \"/usr/share/data\"\n").is_err());
     }
 
     #[test]

@@ -2,12 +2,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import * as kernelScratchModule from "../src/kernel-scratch";
 import {
+  allocateOwnedHostByteDestination,
   allocateKernelScratchRegion,
   checkedKernelExportPointer,
   checkedMemoryRange,
   type KernelScratchDataView,
   type KernelScratchLease,
   KernelScratchError,
+  ownedHostByteDestinationPrefix,
+  type OwnedHostByteDestination,
   reserveKernelScratchRegion,
 } from "../src/kernel-scratch";
 import {
@@ -138,6 +141,59 @@ function installDataViewConstructorCounter(): {
 }
 
 describe("KernelScratchRegion", () => {
+  it("copies into a factory-owned backing across growth but not after revocation", () => {
+    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    const region = allocateKernelScratchRegion(kernelMemory, () => 4096, 32, 4, "owned host copy");
+    const destination = allocateOwnedHostByteDestination(16);
+    let expired!: KernelScratchLease;
+    new Uint8Array(kernelMemory.buffer, 4096, 16).fill(0x39);
+    region.withLease(lease => { expired = lease; lease.copyToOwnedHostDestination(destination, 0, 16); });
+    const bytes = ownedHostByteDestinationPrefix(destination, 16);
+    expect(bytes.buffer).not.toBe(kernelMemory.buffer);
+    expect([...bytes]).toEqual(Array(16).fill(0x39));
+    kernelMemory.grow(1);
+    new Uint8Array(kernelMemory.buffer, 4096, 16).fill(0x5a);
+    region.withLease(lease => lease.copyToOwnedHostDestination(destination, 0, 16));
+    expect([...bytes]).toEqual(Array(16).fill(0x5a));
+    expect(() => expired.copyToOwnedHostDestination(destination, 0, 16)).toThrow(KernelScratchError);
+    expect(Object.isFrozen(destination)).toBe(true);
+    expect(Reflect.ownKeys(destination)).toEqual([]);
+  });
+
+  it("rejects forged host destinations including shared and non-shared Wasm aliases", () => {
+    const kernelMemory = memory();
+    const region = allocateKernelScratchRegion(kernelMemory, () => 4096, 32, 4, "owned destination provenance");
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
+    const shared = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
+    const destination = allocateOwnedHostByteDestination(16);
+    const forged = [{}, kernelMemory.buffer, new Uint8Array(kernelMemory.buffer), processMemory.buffer,
+      new Uint8Array(processMemory.buffer), shared.buffer, new Uint8Array(shared.buffer), Object.create(destination)];
+    region.withLease(lease => {
+      for (const value of forged) {
+        expect(() => lease.copyToOwnedHostDestination(value as OwnedHostByteDestination, 0, 4)).toThrow(KernelScratchError);
+        expect(() => ownedHostByteDestinationPrefix(value as OwnedHostByteDestination, 4)).toThrow(KernelScratchError);
+      }
+    });
+  });
+
+  it("rejects detached, out-of-bounds and unreadable copies before writing the destination", () => {
+    const kernelMemory = memory();
+    const region = allocateKernelScratchRegion(kernelMemory, () => 4096, 32, 4, "owned destination bounds");
+    const destination = allocateOwnedHostByteDestination(8);
+    region.withLease(lease => {
+      expect(() => lease.copyToOwnedHostDestination(destination, -1, 1)).toThrow(KernelScratchError);
+      expect(() => lease.copyToOwnedHostDestination(destination, 0, 9)).toThrow(KernelScratchError);
+      expect(() => lease.copyToOwnedHostDestination(destination, 32, 1)).toThrow(KernelScratchError);
+      lease.writeAddress(0, 8, 8, "u32-le");
+      expect(() => lease.copyToOwnedHostDestination(destination, 0, 4)).toThrow(KernelScratchError);
+    });
+    expect([...ownedHostByteDestinationPrefix(destination, 8)]).toEqual(Array(8).fill(0));
+    const bytes = ownedHostByteDestinationPrefix(destination, 8);
+    structuredClone(bytes.buffer, { transfer: [bytes.buffer] });
+    region.withLease(lease => expect(() => lease.copyToOwnedHostDestination(destination, 8, 4)).toThrow(KernelScratchError));
+    expect(() => ownedHostByteDestinationPrefix(destination, 4)).toThrow(KernelScratchError);
+  });
+
   it("exports only structural scratch capabilities, not concrete constructors", () => {
     expect(Object.hasOwn(kernelScratchModule, "KernelScratchRegion")).toBe(false);
     expect(Object.hasOwn(kernelScratchModule, "KernelScratchLease")).toBe(false);
@@ -776,6 +832,32 @@ describe("KernelScratchRegion", () => {
       instance,
     )).toThrow(/not the bound instance.*allocator/i);
     expect(wrapper).not.toHaveBeenCalled();
+  });
+
+  it("runs an ownership handoff only after every scratch borrow is validated and remains sealed", () => {
+    const kernelMemory = memory();
+    const calls = vi.fn(() => 0);
+    const raw = importedKernelExportInstance(kernelMemory, "kernel_send", ["i32", "i32", "i32", "i32"], calls);
+    const gate = new KernelEntryGate();
+    const owner = createKernelEntryGatedInstance(raw, gate);
+    const region = allocateKernelScratchRegion(kernelMemory,
+      owner.exports.kernel_alloc_scratch as (capacity: number) => number, 32, 4, "handoff scratch", owner);
+    const marker = vi.fn();
+    gate.runImmediateVoidIngress("scratch ownership handoff", (scope) => {
+      region.withLease((lease) => {
+        const pointer = lease.exportPointer(0, 8);
+        expect(() => lease.invokeKernelExportScoped(scope, "kernel_send", [1, pointer, 9, 0], marker)).toThrow(/declares 9 bytes but borrows 8/);
+        expect(marker).not.toHaveBeenCalled();
+        expect(calls).not.toHaveBeenCalled();
+        expect(lease.invokeKernelExportScoped(scope, "kernel_send", [1, pointer, 8, 0], () => {
+          marker();
+          expect(() => lease.copyFrom(Uint8Array.of(1))).toThrow();
+        })).toBe(0);
+      });
+      return undefined;
+    });
+    expect(marker).toHaveBeenCalledOnce();
+    expect(calls).toHaveBeenCalledOnce();
   });
 
   it("binds a scoped allocator call to its persistent gated generation", () => {

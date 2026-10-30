@@ -43,6 +43,7 @@ import {
   populateSourceRootfsShellOverlay,
   PACKAGE_ROOTFS_SHELL_COMPOSITION,
 } from "./source-rootfs-shell-overlay";
+import type { ProgramOriginalResolver } from "./program-originals";
 
 const REGULAR_FILE_MODE = 0o100000;
 const DIRECTORY_MODE = 0o040000;
@@ -84,6 +85,7 @@ export interface SourceRootfsShellInputs {
   demoProfileOverlayPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
+  resolveOriginal?: ProgramOriginalResolver;
   sourceDateEpoch?: string;
 }
 
@@ -325,7 +327,7 @@ const DOOM_LAUNCH_SCRIPT = `#!/bin/sh
 USER_WAD=/usr/share/doom/user.wad
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    wad=/doom1.wad
+    wad=/usr/share/doom/doom1.wad
     [ -f "$USER_WAD" ] && wad="$USER_WAD"
     /usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
     engine=$!
@@ -437,7 +439,7 @@ supervise /tmp/quake-launch.pid "$@"
  * engine is the lazy /usr/bin/fbdoom. Doom keeps its settings in the user's
  * config file ($HOME/.fdoom.tar/default.cfg, read at startup and saved again
  * when Doom quits; fbdoom's 0009 patch restores both) and has no system-wide
- * one, and the home directory is an empty tmpfs on every boot. So, as a distribution's skeleton files would, the wrapper writes
+ * one. As a distribution's skeleton files would, the wrapper writes
  * this machine's defaults into a missing config on first launch:
  *
  * - screenblocks 10: the full-width view with the status bar. Doom's own
@@ -1253,6 +1255,7 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const path of [
     "/etc/gitconfig",
     "/etc/profile",
+    "/home/projects",
     `${NETHACK_PLAYGROUND}/perm`,
     `${NETHACK_PLAYGROUND}/record`,
   ]) {
@@ -1263,6 +1266,14 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   const nethack = fs.stat("/usr/bin/nethack");
   const playground = fs.stat(NETHACK_PLAYGROUND);
   const save = fs.stat(`${NETHACK_PLAYGROUND}/save`);
+  const projects = fs.stat("/home/projects");
+  if (
+    projects.uid !== 1000 ||
+    projects.gid !== 1000 ||
+    (projects.mode & 0o777) !== 0o755
+  ) {
+    throw new Error("source-rootfs shell lost the persistent projects directory contract");
+  }
   if (
     nethack.uid !== 0 ||
     (nethack.mode & 0o7777) !== 0o2755 ||
@@ -1646,7 +1657,10 @@ export async function buildSourceRootfsShellImage(
   requireMaterializedBashIdentity(fs, sourceBash, bash);
   requirePreservedLazyState(unrelatedLazyBefore, fs, "Bash materialization");
 
-  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact);
+  populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact, {
+    existingProgramDependencies: SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCY_SET,
+    resolveOriginal: inputs.resolveOriginal,
+  });
   requirePreservedLazyState(
     unrelatedLazyBefore,
     fs,

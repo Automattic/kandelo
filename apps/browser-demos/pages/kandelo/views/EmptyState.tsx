@@ -7,6 +7,7 @@
 
 import * as React from "react";
 import markUrl from "../assets/kandelo-mark.png";
+import { computerTemplates } from "./computer-templates";
 import { useGalleryItems } from "../kernel-host/react";
 import { decodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
@@ -30,7 +31,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   const [pasteError, setPasteError] = React.useState<string | null>(null);
   const { items: presets } = useGalleryItems("presets");
 
-  const featured = presets.slice(0, 6);
+  const featured = computerTemplates(presets).slice(0, 6).map(template => ({ ...template.representative, title: template.title }));
 
   const tryPaste = async () => {
     if (!pasteUrl) return;

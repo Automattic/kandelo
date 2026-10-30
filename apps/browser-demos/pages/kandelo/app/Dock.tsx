@@ -1,10 +1,13 @@
 import * as React from "react";
+import { flushSync } from "react-dom";
 import markUrl from "../assets/kandelo-mark.png";
 import type { MachineStatus } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import type { SessionPhase } from "../../../lib/network-session";
+import { CommunityLinks } from "./CommunityLinks";
+import { PersistenceReleaseWarning } from "./PersistenceReleaseWarning";
 
-export type DockPaneId = "gallery";
-export type DockViewId = "demo" | "terminal";
+export type DockPaneId = "gallery" | "library" | "activities";
+export type DockViewId = "web" | "graphics" | "terminal";
 
 const REPOSITORY_URL = "https://github.com/Automattic/kandelo";
 
@@ -23,11 +26,17 @@ interface DockItem<T extends string> {
   icon: React.ReactNode;
 }
 
-const VIEW_ITEMS: DockItem<DockViewId>[] = [
+const VIEW_ITEMS: DockItem<DockViewId | "activities">[] = [
   {
-    id: "demo",
-    label: "Demo",
-    title: "Demo surface",
+    id: "web",
+    label: "Web",
+    title: "Web preview",
+    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="8" cy="8" r="6" /><ellipse cx="8" cy="8" rx="2.5" ry="6" /><path d="M2 8h12M3 5h10M3 11h10" /></svg>,
+  },
+  {
+    id: "graphics",
+    label: "Graphics",
+    title: "Graphics display",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="3" width="12" height="8" rx="1.2" /><path d="M5 13.5h6M8 11v2.5" /></svg>,
   },
   {
@@ -36,12 +45,18 @@ const VIEW_ITEMS: DockItem<DockViewId>[] = [
     title: "Terminal",
     icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M3 4.5 6.5 8 3 11.5" /><path d="M8 11.5h5" /></svg>,
   },
+  {
+    id: "activities",
+    label: "Activities",
+    title: "Activities installed on this computer",
+    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m6 3 7 5-7 5z" /></svg>,
+  },
 ];
 
 const SHARE_ITEM: DockItem<"share"> = {
   id: "share",
-  label: "Share",
-  title: "Share this computer as a link",
+  label: "Share setup",
+  title: "Share setup",
   icon: <svg width="16" height="16" viewBox="0 0 22 22" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="5.5" cy="11" r="2.4" /><circle cx="16" cy="5" r="2.4" /><circle cx="16" cy="17" r="2.4" /><path d="M7.6 10l6.4-3.6M7.6 12l6.4 3.6" /></svg>,
 };
 
@@ -54,24 +69,24 @@ const INTERNALS_ITEM: DockItem<"internals"> = {
 
 const GUIDE_ITEM: DockItem<"guide"> = {
   id: "guide",
-  label: "Demo",
-  title: "Demo guide",
+  label: "Shortcuts",
+  title: "Shortcuts",
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M4 2.5h6.5L13 5v8.5H4z" /><path d="M10.5 2.5V5H13" /><path d="M6 7h5M6 9.5h5M6 12h3" /></svg>,
 };
 
 const THEME_ITEM: DockItem<"theme"> = {
   id: "theme",
-  label: "Theme",
+  label: "Appearance",
   title: "Theme",
   icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="4" /><path d="M8 1.8v1.4M8 12.8v1.4M1.8 8h1.4M12.8 8h1.4M3.6 3.6l1 1M11.4 11.4l1 1M12.4 3.6l-1 1M4.6 11.4l-1 1" /></svg>,
 };
 
 const PANE_ITEMS: DockItem<DockPaneId>[] = [
   {
-    id: "gallery",
-    label: "New",
-    title: "Launch new computer",
-    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6"><path d="M8 3v10M3 8h10" /></svg>,
+    id: "library",
+    label: "Library",
+    title: "Saved computers",
+    icon: <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="2.5" width="3" height="11" rx=".5" /><rect x="6.5" y="2.5" width="3" height="11" rx=".5" /><path d="m11 3 2-.5 2.5 10-2 .5z" /></svg>,
   },
 ];
 
@@ -107,6 +122,8 @@ export const Dock: React.FC<{
   onOpenNetwork?: () => void;
   activePane: DockPaneId | null;
   activeView: DockViewId | null;
+  serviceNotice?: string | null;
+  persistenceWarning?: boolean;
   viewControls?: React.ReactNode;
   guidePopup?: React.ReactNode;
   internalsPopup?: React.ReactNode;
@@ -119,6 +136,8 @@ export const Dock: React.FC<{
   shareAvailable: boolean;
   status: MachineStatus;
   machineTitle?: string;
+  temporary?: boolean;
+  onKeepComputer?: () => void;
   viewDisabled?: Partial<Record<DockViewId, boolean>>;
   onSelectPane: (pane: DockPaneId | null) => void;
   onSelectView: (view: DockViewId) => void;
@@ -126,6 +145,9 @@ export const Dock: React.FC<{
   onToggleInternals: () => void;
   onToggleTheme: () => void;
   onOpenShare: () => void;
+  onOpenAbout: () => void;
+  servicesAvailable?: boolean;
+  onOpenServices?: () => void;
   onCloseGuide: () => void;
   onCloseInternals: () => void;
   onCloseTheme: () => void;
@@ -137,6 +159,8 @@ export const Dock: React.FC<{
   onOpenNetwork,
   activePane,
   activeView,
+  serviceNotice,
+  persistenceWarning = false,
   viewControls,
   guidePopup,
   internalsPopup,
@@ -149,6 +173,8 @@ export const Dock: React.FC<{
   shareAvailable,
   status,
   machineTitle,
+  temporary = false,
+  onKeepComputer,
   viewDisabled = {},
   onSelectPane,
   onSelectView,
@@ -156,6 +182,9 @@ export const Dock: React.FC<{
   onToggleInternals,
   onToggleTheme,
   onOpenShare,
+  onOpenAbout,
+  servicesAvailable = false,
+  onOpenServices,
   onCloseGuide,
   onCloseInternals,
   onCloseTheme,
@@ -168,6 +197,10 @@ export const Dock: React.FC<{
   const guideButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const internalsButtonRef = React.useRef<HTMLButtonElement | null>(null);
   const themeButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const moreRef = React.useRef<HTMLDivElement | null>(null);
+  const moreButtonRef = React.useRef<HTMLButtonElement | null>(null);
+  const [moreOpen, setMoreOpen] = React.useState(false);
+  const moreId = React.useId();
   const guidePopoverRef = React.useRef<HTMLDivElement | null>(null);
   const internalsPopoverRef = React.useRef<HTMLDivElement | null>(null);
   const themePopoverRef = React.useRef<HTMLDivElement | null>(null);
@@ -188,6 +221,7 @@ export const Dock: React.FC<{
   const guideAnchor = useDockPopoverAnchor(guideOpen, guidePopup, shellRef, guideButtonRef, 380);
   const internalsAnchor = useDockPopoverAnchor(internalsOpen, internalsPopup, shellRef, internalsButtonRef, 980);
   const themeAnchor = useDockPopoverAnchor(themeOpen, themePopup, shellRef, themeButtonRef, 360);
+  const moreAnchor = useDockPopoverAnchor(moreOpen, true, shellRef, moreButtonRef, 260);
   const statusLabel = formatMachineStatus(status);
   const title = machineTitle || "Kandelo computer";
 
@@ -255,6 +289,7 @@ export const Dock: React.FC<{
 
   React.useEffect(() => {
     if (!collapsed) return;
+    moreRef.current?.hidePopover();
     onCloseGuide();
     onCloseInternals();
     onCloseTheme();
@@ -266,6 +301,7 @@ export const Dock: React.FC<{
     const handleOutsidePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
+      if (moreRef.current?.contains(target)) return;
 
       if (guideOpen) {
         if (!guidePopoverRef.current?.contains(target) && !guideButtonRef.current?.contains(target)) {
@@ -404,6 +440,16 @@ export const Dock: React.FC<{
         style={dockStyle}
         aria-label="Kandelo tools"
       >
+        {persistenceWarning && <PersistenceReleaseWarning />}
+        {serviceNotice && (
+          <div className="kweb-service-notice" role="status">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <path d="M7.1 2.6a1 1 0 0 1 1.8 0l5.4 9.7a1 1 0 0 1-.9 1.5H2.6a1 1 0 0 1-.9-1.5zM8 6v3" />
+              <circle cx="8" cy="11.3" r=".7" fill="currentColor" stroke="none" />
+            </svg>
+            <span>{serviceNotice}</span>
+          </div>
+        )}
         <div
           ref={bodyRef}
           className="kdock-body"
@@ -488,22 +534,17 @@ export const Dock: React.FC<{
           </div>
 
           <div ref={rowRef} className="kdock-row">
-            <button
-              type="button"
-              className="kdock-status"
-              onClick={() => onSelectPane(null)}
-              title={`${title}: ${statusLabel}`}
-              aria-label={`Current computer: ${title}, ${statusLabel}`}
-            >
+            <div className="kdock-status">
               <img src={markUrl} alt="" />
               <span className="kdock-status-copy">
-                <span className="kdock-status-title">{title}</span>
+                <button type="button" className="kdock-status-title" onClick={() => onSelectPane(null)} title={`${title}: ${statusLabel}`} aria-label={`Current computer: ${title}, ${statusLabel}`}>{title}</button>
                 <span className="kdock-status-text" data-status={status}>
                   <span className="kdock-status-dot" />
                   {statusLabel}
+                  {temporary && <button type="button" className="kdock-temporary-badge" title="Keep this temporary computer on this device" aria-label="Keep this temporary computer" disabled={!onKeepComputer} onClick={onKeepComputer}>Temporary</button>}
                 </span>
               </span>
-            </button>
+            </div>
             <div className="kdock">
               <div className="kdock-section" aria-label="Computer tools">
                 {PANE_ITEMS.map((item) => (
@@ -523,16 +564,16 @@ export const Dock: React.FC<{
               <div className="kdock-separator" aria-hidden="true" />
               <div className="kdock-section" aria-label="Computer views">
                 {VIEW_ITEMS.map((item) => {
-                  const disabled = viewDisabled[item.id] === true;
+                  const disabled = item.id !== "activities" && viewDisabled[item.id] === true;
                   return (
                     <button
                       key={item.id}
                       type="button"
                       className="kdock-item"
-                      aria-current={activePane === null && activeView === item.id}
+                      aria-current={item.id === "activities" ? activePane === "activities" : activePane === null && activeView === item.id}
                       title={item.title}
                       disabled={disabled}
-                      onClick={() => onSelectView(item.id)}
+                      onClick={() => item.id === "activities" ? onSelectPane(item.id) : onSelectView(item.id)}
                     >
                       <span className="kdock-icon">{item.icon}</span>
                       <span className="kdock-label">{item.label}</span>
@@ -542,43 +583,20 @@ export const Dock: React.FC<{
               </div>
               <div className="kdock-separator" aria-hidden="true" />
               <div className="kdock-section kdock-section-actions" aria-label="Computer overlays">
-                <button
-                  ref={internalsButtonRef}
-                  type="button"
-                  className="kdock-item"
-                  aria-pressed={internalsOpen}
-                  aria-expanded={internalsOpen}
-                  title={INTERNALS_ITEM.title}
-                  disabled={!internalsAvailable}
-                  onClick={onToggleInternals}
-                >
-                  <span className="kdock-icon">{INTERNALS_ITEM.icon}</span>
-                  <span className="kdock-label">{INTERNALS_ITEM.label}</span>
+                <button type="button" className="kdock-item" popoverTarget={moreId} aria-haspopup="dialog" title="More tools and help" ref={button => { moreButtonRef.current = button; internalsButtonRef.current = button; themeButtonRef.current = button; }}>
+                  <span className="kdock-icon"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="3" cy="8" r="1.3" /><circle cx="8" cy="8" r="1.3" /><circle cx="13" cy="8" r="1.3" /></svg></span>
+                  <span className="kdock-label">More</span>
                 </button>
-                <button
-                  ref={themeButtonRef}
-                  type="button"
-                  className="kdock-item"
-                  aria-pressed={themeOpen}
-                  aria-expanded={themeOpen}
-                  title={THEME_ITEM.title}
-                  onClick={onToggleTheme}
-                >
-                  <span className="kdock-icon">{THEME_ITEM.icon}</span>
-                  <span className="kdock-label">{THEME_ITEM.label}</span>
-                </button>
-                <button
-                  type="button"
-                  className="kdock-item"
-                  title={SHARE_ITEM.title}
-                  aria-label={SHARE_ITEM.title}
-                  disabled={!shareAvailable}
-                  onClick={onOpenShare}
-                >
-                  <span className="kdock-icon">{SHARE_ITEM.icon}</span>
-                  <span className="kdock-label">{SHARE_ITEM.label}</span>
-                </button>
-                <button
+                <div id={moreId} ref={moreRef} popover="auto" className="kdock-more-popover" role="dialog" aria-label="More tools and help" onBeforeToggle={event => { if (event.newState === "open") flushSync(() => setMoreOpen(true)); else setMoreOpen(false); }} style={popoverStyle(moreAnchor, 260)}>
+                  <button type="button" autoFocus={shareAvailable} disabled={!shareAvailable} onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenShare(); }}><span className="kdock-menu-icon" aria-hidden="true">{SHARE_ITEM.icon}</span>Share setup…</button>
+                  {servicesAvailable && <button type="button" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenServices?.(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><path d="M2 4h12M2 8h12M2 12h12" /><circle cx="5" cy="4" r="1.5" fill="var(--k-surface)" /><circle cx="10" cy="8" r="1.5" fill="var(--k-surface)" /><circle cx="6" cy="12" r="1.5" fill="var(--k-surface)" /></svg></span>Services</button>}
+                  <button type="button" autoFocus={!shareAvailable && internalsAvailable} disabled={!internalsAvailable} aria-pressed={internalsOpen} onClick={() => { moreRef.current?.hidePopover(); onToggleInternals(); }}><span className="kdock-menu-icon" aria-hidden="true">{INTERNALS_ITEM.icon}</span>{INTERNALS_ITEM.label}</button>
+                  <button type="button" autoFocus={!shareAvailable && !internalsAvailable} aria-pressed={themeOpen} onClick={() => { moreRef.current?.hidePopover(); onToggleTheme(); }}><span className="kdock-menu-icon" aria-hidden="true">{THEME_ITEM.icon}</span>{THEME_ITEM.label}</button>
+                  <button type="button" onClick={() => { moreRef.current?.hidePopover(); moreButtonRef.current?.focus(); onOpenAbout(); }}><span className="kdock-menu-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4"><circle cx="8" cy="8" r="6" /><path d="M8 7v5M8 4v1" /></svg></span>About Kandelo</button>
+                  <h3>Help &amp; About</h3>
+                  <CommunityLinks />
+                </div>
+                {guideAvailable && <button
                   ref={guideButtonRef}
                   type="button"
                   className="kdock-item"
@@ -591,7 +609,7 @@ export const Dock: React.FC<{
                 >
                   <span className="kdock-icon">{GUIDE_ITEM.icon}</span>
                   <span className="kdock-label">{GUIDE_ITEM.label}</span>
-                </button>
+                </button>}
               </div>
             </div>
           </div>
@@ -618,6 +636,7 @@ export const Dock: React.FC<{
             onPointerUp={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
+            <PopoverHeading title="Internals" onClose={onCloseInternals} />
             {internalsPopup}
           </div>
         </>
@@ -643,6 +662,7 @@ export const Dock: React.FC<{
             onPointerUp={(event) => event.stopPropagation()}
             onClick={(event) => event.stopPropagation()}
           >
+            <PopoverHeading title="Appearance" onClose={onCloseTheme} />
             {themePopup}
           </div>
         </>
@@ -662,7 +682,7 @@ export const Dock: React.FC<{
             ref={guidePopoverRef}
             className="kdock-popover kdock-guide-popover"
             role="dialog"
-            aria-label="Demo guide"
+            aria-label="Shortcuts"
             style={guidePopoverStyle}
             onPointerDown={(event) => event.stopPropagation()}
             onPointerUp={(event) => event.stopPropagation()}
@@ -675,6 +695,10 @@ export const Dock: React.FC<{
     </>
   );
 };
+
+const PopoverHeading: React.FC<{ title: string; onClose: () => void }> = ({ title, onClose }) => (
+  <header className="kdock-popover-heading"><h2>{title}</h2><button type="button" className="kdock-pane-close" onClick={onClose} title="Close" aria-label="Close"><svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 3l7 7M10 3l-7 7" /></svg></button></header>
+);
 
 function useDockPopoverAnchor(
   open: boolean,

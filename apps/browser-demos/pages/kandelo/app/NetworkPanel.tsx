@@ -8,6 +8,7 @@ import type { PackageSessionControls } from "./use-package-sessions";
 import { ActivityJoinForm, ActivityOfferForm, ActivityClientForm, ActivityMetadata } from "./ActivityForms";
 import { SessionNotice } from "./SessionNotice";
 import { randomSessionName } from "./session-name";
+import { networkJoinReadiness } from "./network-join-readiness";
 
 export const NetworkPanel: React.FC<{ session: NetworkSession; activity: PackageSessionControls; running: boolean; failed?: boolean }> = ({ session, activity, running, failed }) => {
   const { state, invitation } = session;
@@ -26,14 +27,12 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
   const joined = state.snapshot?.state === "joined";
   const canChange = !joined || activity.remoteChoices.length > 0;
   const title = invitation ? "Session invitation" : active ? "Active session" : editing === "new" ? "New session" : state.phase === "connected" ? "Change activity" : "Network session";
+  const readiness = networkJoinReadiness({ failed, error: state.error ?? activity.error, invitationError: activity.invitationError,
+    running, ready: activity.ready, busy, progress: activity.progress });
 
   const notice = invitation ? <SessionNotice readiness transfer={activity.transfer}
-            tone={failed || activity.invitationError ? "error" : running && activity.ready && !busy ? "success" : "working"}>
-            {failed ? "Computer failed to start."
-              : !running ? "Starting computer…"
-              : !activity.ready ? "Loading activity…"
-              : activity.progress ?? (busy ? "Connecting to host…"
-              : activity.invitationError ? "Cannot join this activity." : "Ready to join.")}
+            tone={readiness.tone}>
+            {readiness.message}
           </SessionNotice> : activity.progress || busy ? <SessionNotice transfer={activity.transfer}>
             {activity.progress ?? (state.phase === "joining" ? "Connecting to host…" : "Preparing session…")}
           </SessionNotice> : active && activity.copyStatus !== "idle" ? <SessionNotice key={activity.copySequence}
@@ -47,7 +46,6 @@ export const NetworkPanel: React.FC<{ session: NetworkSession; activity: Package
             <strong>{invitation?.name ?? state.name ?? "No session"}</strong>
             <span>{NETWORK_PHASE_LABEL[state.phase]}{self ? ` · this computer is ${self}` : ""}</span>
           </div>} notice={notice} actions={<>
-          <button className="kshare-btn" onClick={close}>Close</button>
           <div style={{ flex: 1 }} />
           {activity.busy && !inSession && !state.room && <button className="kshare-btn" onClick={activity.cancel}>Cancel preparation</button>}
           {(inSession || state.room) && <button className="kshare-btn" onClick={() => void leave()}>Leave session</button>}

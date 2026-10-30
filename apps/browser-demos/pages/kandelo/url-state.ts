@@ -5,6 +5,18 @@ import type {
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 
 export const VFS_IMAGE_QUERY_PARAM = "vfs";
+export const COMPUTER_QUERY_PARAM = "computer";
+
+export function computerUrl(id: string, href = currentHref()): string {
+  const url = new URL(href);
+  clearVfsImageQueryParams(url.searchParams);
+  for (const key of ["profile", "demo", "idle", "experimentalPersistence", "experimentalPersistenceMode", "experimentalPersistenceIntegrity"]) {
+    url.searchParams.delete(key);
+  }
+  url.searchParams.set(COMPUTER_QUERY_PARAM, id);
+  url.hash = "";
+  return url.href;
+}
 
 /**
  * `&profile=<id>` — which machine inside the image to boot.
@@ -52,10 +64,12 @@ export function readKandeloBootQuery(search = currentSearch()): KandeloBootQuery
 }
 
 export function galleryItemUrl(
-  item: GalleryItem,
+  item: Pick<GalleryItem, "id" | "vfsImageUrl">,
   href = currentHref(),
 ): string {
   const url = new URL(href);
+  url.searchParams.delete(COMPUTER_QUERY_PARAM);
+  for (const key of ["experimentalPersistence", "experimentalPersistenceMode", "experimentalPersistenceIntegrity"]) url.searchParams.delete(key);
   // `?demo=` is gone. Strip it so a legacy link the visitor arrived on does
   // not keep a parameter nothing reads any more.
   url.searchParams.delete("demo");

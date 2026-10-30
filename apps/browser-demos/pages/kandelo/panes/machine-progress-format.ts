@@ -1,5 +1,12 @@
 import type { MachineProgress } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
+export function isMachineProgressBlocking(progress: MachineProgress | null): boolean {
+  if (progress === null) return false;
+  return !(progress.phase === "image" && progress.operation === "download"
+    && progress.status === "complete"
+    && (progress.decompression === undefined || progress.decompression.status === "complete"));
+}
+
 export interface FormattedMachineProgress {
   headline: string;
   detail: string;
@@ -20,8 +27,14 @@ function humanBytes(bytes: number): string {
 export function formatMachineProgress(
   progress: MachineProgress,
 ): FormattedMachineProgress {
-  const headline = progress.phase === "destroying"
+  const headline = progress.operation === "checkpoint"
+    ? progress.label
+    : progress.phase === "destroying"
     ? `Unloading ${progress.label}`
+    : progress.operation === "download"
+    ? `Downloading ${progress.label}`
+    : progress.operation === "mount"
+    ? `Opening ${progress.label} from OPFS`
     : `Loading ${progress.label}`;
   const percent = progress.total && progress.total > 0
     ? Math.min(100, Math.max(0, (progress.completed / progress.total) * 100))
@@ -37,6 +50,13 @@ export function formatMachineProgress(
   }
 
   if (progress.unit === "bytes") {
+    if (progress.operation === "mount") {
+      const detail = "Reading filesystem metadata and recovering journal; file blocks load on demand";
+      return { headline, detail, percent: null, valueText: detail };
+    }
+    if (progress.operation === "checkpoint" && progress.completed === 0 && progress.total === undefined) {
+      return { headline, detail: "Working…", percent: null, valueText: "Working; total not yet known" };
+    }
     const detail = progress.total === undefined
       ? humanBytes(progress.completed)
       : `${humanBytes(progress.completed)} / ${humanBytes(progress.total)}`;
@@ -44,7 +64,9 @@ export function formatMachineProgress(
   }
 
   if (progress.total === undefined) {
-    const detail = `${progress.completed} processes`;
+    const detail = progress.completed === 0
+      ? "Waiting for guest processes to stop…"
+      : `${progress.completed} processes`;
     return { headline, detail, percent, valueText: detail };
   }
   const marker = progress.totalProvisional ? "+" : "";

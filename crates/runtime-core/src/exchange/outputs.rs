@@ -114,10 +114,12 @@ pub fn publish(old: &[u8], new: &[u8], now_ms: u64) -> Result<(), Errno> {
         return Err(Errno::ENOSPC);
     }
     let output = batches::issue_id(now_ms)?;
+    let prepared_fifo = if stream_pipe.is_some() {
+        Some(unsafe { crate::fifo::global_fifo_table() }.prepare_rename(old, new)?)
+    } else { None };
     crate::tmpfs::rename(old, new)?;
-    if stream_pipe.is_some() {
-        let replaced = unsafe { crate::fifo::global_fifo_table() }.rename_path(old, new);
-        debug_assert!(replaced.is_empty(), "the outbox name was new");
+    if let Some(prepared) = prepared_fifo {
+        unsafe { crate::fifo::global_fifo_table() }.publish_rename(prepared, |_| unreachable!("the outbox name was new"));
     }
     with(|paths| paths.insert(output, new.to_vec()));
     crate::tmpfs::freeze(new)?;

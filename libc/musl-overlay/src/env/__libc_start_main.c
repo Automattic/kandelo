@@ -155,9 +155,10 @@ static _Noreturn void fork_child_exec(void)
 		for (int32_t i = 0; i < exec_argc; i++) {
 			int32_t arg_len = kernel_get_fork_exec_argv(i, arg_buf, sizeof(arg_buf));
 			if (arg_len > 0) {
-				extern void kernel_push_argv(const uint8_t *, uint32_t)
+				extern int32_t kernel_push_argv(const uint8_t *, uint32_t)
 					__attribute__((import_module("kernel"), import_name("kernel_push_argv")));
-				kernel_push_argv(arg_buf, arg_len);
+				if (kernel_push_argv(arg_buf, arg_len) < 0)
+					kernel_exit(127);
 			}
 		}
 	}

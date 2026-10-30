@@ -25,6 +25,32 @@ function deferredMemory() {
 }
 
 describe("asynchronous process memory admission", () => {
+  it("reports native constructor exhaustion as ENOMEM and releases pending credits", async () => {
+    const exhausted = new RangeError("native reservation exhausted");
+    let first = true;
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: WASM_PAGE_SIZE,
+      createMemoryAsync: async () => {
+        if (first) {
+          first = false;
+          throw exhausted;
+        }
+        return memory();
+      },
+    });
+    await expect(allocator.acquireWhenAvailable(request)).rejects.toMatchObject({
+      name: "ProcessMemoryCapacityError", errno: 12, cause: exhausted,
+      requestedBytes: WASM_PAGE_SIZE, chargedBytes: 0, maxTotalBytes: WASM_PAGE_SIZE,
+    });
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 0, chargedMemories: 0, chargedBytes: 0,
+    });
+    const healthy = await allocator.acquireWhenAvailable(request);
+    healthy.release();
+    allocator.clear();
+  });
+
   it("charges pending allocations before a concurrent creator can enter", async () => {
     const pending = deferredMemory();
     let calls = 0;
@@ -56,8 +82,9 @@ describe("asynchronous process memory admission", () => {
       createMemoryAsync: () => pending.promise,
     });
     const allocation = allocator.acquireWhenAvailable(request);
-    const rejected = expect(allocation).rejects.toThrow("cancelled");
-    pending.reject(new Error("cancelled"));
+    const cancelled = new Error("cancelled");
+    const rejected = expect(allocation).rejects.toBe(cancelled);
+    pending.reject(cancelled);
     await rejected;
     expect(allocator.getRetirementStats()).toMatchObject({
       liveMemories: 0, chargedMemories: 0, chargedBytes: 0,

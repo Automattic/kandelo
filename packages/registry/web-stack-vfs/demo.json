@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "image": {
+    "title": "Web Stack"
+  },
+  "defaultProfile": "nginx-php",
+  "profiles": {
+    "nginx": {
+      "identity": {
+        "title": "nginx",
+        "summary": "Static HTTP service supervised by dinit and exposed through the browser bridge.",
+        "accent": "#3a8f41",
+        "glyph": "nx",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "web-static"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start web-static"
+      }
+    },
+    "nginx-php": {
+      "identity": {
+        "title": "nginx + PHP",
+        "summary": "Adminer database manager: nginx → FastCGI → PHP-FPM, backed by SQLite.",
+        "accent": "#6b63a6",
+        "glyph": "php",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "web-php"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start web-php"
+      }
+    },
+    "nginx-python": {
+      "identity": {
+        "title": "nginx + Python",
+        "summary": "nginx reverse-proxying to a Python (wsgiref) JSON API over SQLite.",
+        "accent": "#4b8bbe",
+        "glyph": "py",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "cpython@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "web-python"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start web-python"
+      }
+    },
+    "ruby-todo": {
+      "identity": {
+        "title": "Ruby + Roda todo",
+        "summary": "A Roda web app on Ruby 4 with a SQLite database, served on :8080. Not Rails.",
+        "accent": "#b31217",
+        "glyph": "rb",
+        "packages": [
+          "ruby@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "web-ruby"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start web-ruby"
+      }
+    },
+    "redis": {
+      "identity": {
+        "title": "Redis voting board",
+        "summary": "Pitch ideas and vote together. PHP serves a live board backed by Redis.",
+        "accent": "#a33c36",
+        "glyph": "↑"
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "web-redis"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          6379
+        ],
+        "probeHttp": true,
+        "probePath": "/health"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start web-redis"
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      }
+    }
+  }
+}

@@ -21,6 +21,12 @@ the change:
 
 Do not ship an incompatible change under an existing version.
 
+Persistent-program baseline enforcement is stricter than the ordinary
+additive snapshot classifier. Preserve the declared supported baseline even
+when bumping a program version; see
+`docs/persistent-program-compatibility.md`. Do not replace or restamp its
+frozen executable fixtures to make a new runtime pass.
+
 Treat these as ABI surface:
 
 - Syscall numbers, host-intercepted syscall numbers, and syscall argument

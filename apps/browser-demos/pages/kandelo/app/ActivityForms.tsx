@@ -8,6 +8,7 @@ import type { PackageSessionControls } from "./use-package-sessions";
 import type { NetworkSession } from "./use-network-session";
 import { SessionFields } from "./SessionFields";
 import { useActivityLevels } from "./use-activity-levels";
+import { canLaunchLocally, installedActivityChoices } from "./activity-launcher";
 
 const NO_FIELDS: [] = [];
 const NO_DEPENDENCIES: [] = [];
@@ -41,41 +42,44 @@ export function InvitationMetadata({ offer, presentation = offer?.presentation, 
   </div>;
 }
 
-export function ActivityOfferForm({ activity, blocked, name, setName, session, onComplete, replaceSession = false }: {
-  activity: PackageSessionControls; blocked: boolean; name: string; setName: (name: string) => void; session: NetworkSession; onComplete: () => void; replaceSession?: boolean;
+export function ActivityOfferForm({ activity, blocked, name, setName, session, onComplete, replaceSession = false, local = false, initialSelection = "" }: {
+  activity: PackageSessionControls; blocked: boolean; name: string; setName: (name: string) => void; session: NetworkSession; onComplete: () => void; replaceSession?: boolean; local?: boolean; initialSelection?: string;
 }) {
-  const [selected, setSelected] = React.useState("");
-  const [values, setValues] = React.useState<SessionValues>({});
+  const choices = installedActivityChoices(activity.catalog).filter(choice => !local || canLaunchLocally(choice.type));
+  const [selected, setSelected] = React.useState(initialSelection);
+  const [values, setValues] = React.useState<SessionValues>(() => sessionDefaults(choices.find(choice => choice.key === initialSelection)?.type.fields ?? []));
   const [existing, setExisting] = React.useState(false);
   const [replace, setReplace] = React.useState(replaceSession);
   const [selections, setSelections] = React.useState<DependencySelections>({});
   const [delivery, setDelivery] = React.useState<"peer" | "hint">("peer");
-  const connected = session.state.phase === "connected";
-  const choices = activity.catalog.flatMap(entry => entry.manifest.offers.filter(type => !entry.clientOnly && !entry.unavailableOffers?.includes(type.id)).map(type => ({ entry, type, key: `${entry.manifest.package}/${type.id}` })))
-    .sort((a, b) => a.type.title.localeCompare(b.type.title, "en", { sensitivity: "base" }) || a.key.localeCompare(b.key));
+  const connected = !local && session.state.phase === "connected";
   const choice = choices.find(choice => choice.key === selected);
   const dependencies = choice?.entry.manifest.dependencies ?? NO_DEPENDENCIES;
   const levelChoices = useActivityLevels(choice?.type.fields ?? NO_FIELDS, dependencies, selections, values, setValues);
   const guestHosting = connected && session.state.snapshot?.state === "joined" && !!choice && activityRequiresHost(choice.entry.manifest, choice.type) && !replace;
-  return <form aria-label="Host activity" onSubmit={event => {
+  return <form aria-label={local ? "Start local activity" : "Host activity"} onSubmit={event => {
     event.preventDefault();
-    void activity.offer(choice?.entry ?? null, choice?.type.id ?? "", values, existing || !!choice && !choice.type.launch, name, connected && replace, selections, delivery).then(success => { if (success) onComplete(); });
+    if (blocked || !levelChoices.ready || guestHosting || local && !choice) return;
+    if (connected && replace && !window.confirm("Restart the network session? This disconnects the current peers and creates a new join link.")) return;
+    const operation = local && choice ? activity.startLocal(choice.entry, choice.type.id, values, selections)
+      : activity.offer(choice?.entry ?? null, choice?.type.id ?? "", values, existing || !!choice && !choice.type.launch, name, connected && replace, selections, delivery);
+    void operation.then(success => { if (success) onComplete(); });
   }}>
     {connected && !replaceSession && <label className="knetwork-field">Session
       <select aria-label="Session" value={replace ? "replace" : "keep"} disabled={blocked} onChange={e => setReplace(e.target.value === "replace")}>
-        <option value="keep">Keep current session</option><option value="replace">Replace current session</option>
+        <option value="keep">Use current network session</option><option value="replace">Restart network session</option>
       </select>
     </label>}
-    {connected && replace && session.state.snapshot?.state === "hosting" && <p className="knetwork-note">Replacing this room disconnects its guests.</p>}
-    {(!connected || replace) && <label className="knetwork-field">Session name
+    {connected && replace && <p className="knetwork-note" role="status">Restarting disconnects the current peers and creates a new join link.</p>}
+    {!local && (!connected || replace) && <label className="knetwork-field">Session name
       <input value={name} maxLength={64} onChange={e => setName(e.target.value)} disabled={blocked} />
     </label>}
-    <label className="knetwork-field">Activity (optional)
+    <label className="knetwork-field">{local ? "Activity" : "Activity (optional)"}
       <select aria-label="Activity" value={selected} disabled={blocked || !activity.ready} onChange={event => {
         const next = choices.find(choice => choice.key === event.target.value);
         setSelected(event.target.value); setValues(next ? sessionDefaults(next.type.fields) : {}); setExisting(!!next && !next.type.launch); setSelections({});
       }}>
-        <option value="">No activity — just join the network</option>
+        <option value="">{local ? "Choose an activity…" : "No activity — just join the network"}</option>
         {choices.map(choice => <option key={choice.key} value={choice.key}>{choice.type.title}</option>)}
       </select>
     </label>
@@ -83,7 +87,7 @@ export function ActivityOfferForm({ activity, blocked, name, setName, session, o
       {choice.type.warning && <p className="knetwork-note" data-activity-warning>{choice.type.warning}</p>}
       {connected && activity.offered && !existing && choice.type.launch && <p className="knetwork-note">Replaces the current activity.</p>}
       <SessionFields fields={choice.type.fields.filter(field => field.type !== "level")} values={values} onChange={setValues} disabled={blocked} />
-      {choice.type.attachExisting && choice.type.launch && <label className="knetwork-field">
+      {!local && choice.type.attachExisting && choice.type.launch && <label className="knetwork-field">
         <span><input type="checkbox" checked={existing} disabled={blocked} onChange={event => setExisting(event.target.checked)} /> Already running</span>
       </label>}
       {dependencies.map(dependency => {
@@ -113,16 +117,16 @@ export function ActivityOfferForm({ activity, blocked, name, setName, session, o
       <SessionFields fields={choice.type.fields.filter(field => field.type === "level")} values={values} onChange={setValues} disabled={blocked} levels={levelChoices.levels} sources={Object.fromEntries(dependencies.map(d => [d.id, selections[d.id]?.source ?? d.sources[0]?.id ?? "file"]))} />
       {existing && choice.type.existingWarning && <p className="knetwork-note" data-activity-warning>{choice.type.existingWarning}</p>}
       {levelChoices.errors.map(error => <p className="knetwork-error" role="alert" key={error}>{error}</p>)}
-      {dependencies.length > 0 && <label className="knetwork-field">Guest data
+      {!local && dependencies.length > 0 && <label className="knetwork-field">Guest data
         <select aria-label="Guest data" value={delivery} disabled={blocked} onChange={e => setDelivery(e.target.value as "peer" | "hint")}>
           <option value="peer">Send files to guests</option>
           <option value="hint">Guests get their own copy</option>
         </select>
       </label>}
     </>}
-    {guestHosting && <p className="knetwork-note">Choose Replace current session to host this activity.</p>}
+    {guestHosting && <p className="knetwork-note">This activity requires the hosting computer. Choose Restart network session to host it yourself.</p>}
     {choice && <details className="knetwork-note"><summary>About this activity</summary>{choice.type.description}</details>}
-    <button className="kshare-btn kshare-btn-primary" disabled={blocked || guestHosting || !levelChoices.ready}>{activity.busy ? "Preparing invitation…" : choice ? existing || !choice.type.launch ? "Share running activity" : "Start and invite" : "Create invite"}</button>
+    <button className="kshare-btn kshare-btn-primary" disabled={blocked || guestHosting || !levelChoices.ready || local && !choice}>{activity.busy ? "Preparing activity…" : local ? "Start locally" : choice ? existing || !choice.type.launch ? "Show join link" : "Start activity" : connected && !replace ? "Show join link" : "Start network session"}</button>
   </form>;
 }
 

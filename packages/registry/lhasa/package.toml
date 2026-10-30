@@ -23,3 +23,4 @@ script_path = "packages/registry/lhasa/build-lhasa.sh"
 [[outputs]]
 name = "lha"
 wasm = "lha.wasm"
+fork_instrumentation = "disabled"

@@ -9,7 +9,6 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::hint::spin_loop;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -33,21 +32,57 @@ struct SharedBacking<T> {
 
 /// A stable-index table with one reference per owning OFD in each process.
 pub struct SharedBackingTable<T> {
-    entries: Vec<Option<SharedBacking<T>>>,
+    entries: crate::IoBuffer<Option<SharedBacking<T>>>,
     #[cfg(test)]
     next_generation: u64,
+}
+
+#[must_use]
+pub struct SharedBackingRelease<T> {
+    pub final_reference: bool,
+    pub value: Option<T>,
+}
+
+#[must_use]
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct BackingReleaseEffects {
+    pub final_ofd_reference: bool,
+    host_closes: [Option<i64>; 2],
+}
+
+impl BackingReleaseEffects {
+    pub(crate) fn push_host_close(&mut self, handle: i64) {
+        let slot = self.host_closes.iter_mut().find(|slot| slot.is_none())
+            .expect("regular backing release exceeded its two raw constituents");
+        *slot = Some(handle);
+    }
+
+    pub fn into_host_closes(self) -> [Option<i64>; 2] { self.host_closes }
+
+    pub fn close_with(self, host: &mut dyn crate::process::HostIO) -> Result<(), Errno> {
+        let mut failure = None;
+        for handle in self.host_closes.into_iter().flatten() {
+            if let Err(error) = host.host_close(handle) { failure.get_or_insert(error); }
+        }
+        failure.map_or(Ok(()), Err)
+    }
 }
 
 impl<T> SharedBackingTable<T> {
     fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            entries: crate::IoBuffer::new(),
             #[cfg(test)]
             next_generation: 1,
         }
     }
 
-    pub fn alloc(&mut self, value: T) -> usize {
+    #[cfg(test)]
+    pub fn alloc(&mut self, value: T) -> usize { self.try_alloc(value).unwrap() }
+
+    pub fn try_alloc(&mut self, value: T) -> Result<usize, Errno> {
+        let index = self.entries.iter().position(Option::is_none).unwrap_or(self.entries.len());
+        if index == self.entries.len() { self.entries.try_reserve(1)?; }
         #[cfg(test)]
         let entry = {
             let generation = self.next_generation;
@@ -62,19 +97,9 @@ impl<T> SharedBackingTable<T> {
         #[cfg(not(test))]
         let entry = SharedBacking { refs: 1, pins: 0, value };
 
-        if let Some((idx, slot)) = self
-            .entries
-            .iter_mut()
-            .enumerate()
-            .find(|(_, slot)| slot.is_none())
-        {
-            *slot = Some(entry);
-            return idx;
-        }
-
-        let idx = self.entries.len();
-        self.entries.push(Some(entry));
-        idx
+        if index == self.entries.len() { self.entries.push(Some(entry)); }
+        else { self.entries[index] = Some(entry); }
+        Ok(index)
     }
 
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
@@ -113,24 +138,30 @@ impl<T> SharedBackingTable<T> {
     /// one: the descriptions' lifetime is over. The value itself is freed
     /// then too, unless a shared mapping still pins it (see [`Self::pin`]).
     pub fn release(&mut self, idx: usize) -> bool {
+        self.release_take(idx).final_reference
+    }
+
+    pub fn release_take(&mut self, idx: usize) -> SharedBackingRelease<T> {
+        let mut result = SharedBackingRelease { final_reference: false, value: None };
         let Some(slot) = self.entries.get_mut(idx) else {
-            return false;
+            return result;
         };
         let Some(entry) = slot.as_mut() else {
-            return false;
+            return result;
         };
         if entry.refs == 0 {
-            return false;
+            return result;
         }
         if entry.refs > 1 {
             entry.refs -= 1;
-            return false;
+            return result;
         }
         entry.refs = 0;
+        result.final_reference = true;
         if entry.pins == 0 {
-            *slot = None;
+            result.value = slot.take().map(|entry| entry.value);
         }
-        true
+        result
     }
 
     /// Keep a value alive for a shared mapping after its descriptors close.
@@ -152,16 +183,22 @@ impl<T> SharedBackingTable<T> {
     /// Drop a [`Self::pin`], freeing the value once no OFD and no other
     /// mapping holds it.
     pub fn unpin(&mut self, idx: usize) {
+        drop(self.unpin_take(idx));
+    }
+
+    #[must_use]
+    pub fn unpin_take(&mut self, idx: usize) -> Option<T> {
         let Some(slot) = self.entries.get_mut(idx) else {
-            return;
+            return None;
         };
         let Some(entry) = slot.as_mut() else {
-            return;
+            return None;
         };
         entry.pins = entry.pins.saturating_sub(1);
         if entry.pins == 0 && entry.refs == 0 {
-            *slot = None;
+            return slot.take().map(|entry| entry.value);
         }
+        None
     }
 
     /// Whether some OFD still owns the value, as opposed to only a mapping.
@@ -191,7 +228,7 @@ impl<T> SharedBackingTable<T> {
 /// Shared contents and cursor for a memfd open file description.
 #[derive(Debug)]
 pub struct MemFdBacking {
-    pub data: Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
     pub offset: i64,
     /// Advanced by every mutation of `data` (write, pwrite, ftruncate, a
     /// shared-mapping writeback). The shared-mapping layer compares it to
@@ -202,7 +239,7 @@ pub struct MemFdBacking {
 impl MemFdBacking {
     pub fn new() -> Self {
         Self {
-            data: Vec::new(),
+            data: crate::IoBuffer::new(),
             offset: 0,
             content_gen: 0,
         }
@@ -212,12 +249,32 @@ impl MemFdBacking {
     pub fn touch_modified(&mut self) {
         self.content_gen = self.content_gen.wrapping_add(1);
     }
+
+    pub fn write_at(&mut self, offset: usize, bytes: &[u8]) -> Result<usize, Errno> {
+        if bytes.is_empty() { return Ok(0); }
+        let end = offset.checked_add(bytes.len()).ok_or(Errno::EFBIG)?;
+        if end > self.data.len() {
+            self.data.try_reserve(end - self.data.len())?;
+            self.data.resize(end, 0);
+        }
+        self.data[offset..end].copy_from_slice(bytes);
+        self.touch_modified();
+        Ok(bytes.len())
+    }
+
+    pub fn resize(&mut self, length: usize) -> Result<(), Errno> {
+        if length > self.data.len() { self.data.try_reserve(length - self.data.len())?; }
+        if length == 0 { self.data = crate::IoBuffer::new(); }
+        else { self.data.resize(length, 0); }
+        self.touch_modified();
+        Ok(())
+    }
 }
 
 /// Immutable procfs snapshot plus the shared open-file-description cursor.
 #[derive(Debug)]
 pub struct ProcfsBacking {
-    pub data: Vec<u8>,
+    pub data: crate::IoBuffer<u8>,
     pub offset: i64,
 }
 
@@ -235,12 +292,12 @@ impl SyntheticRegularBacking {
 }
 
 impl ProcfsBacking {
-    pub fn new(data: Vec<u8>) -> Self {
+    pub fn new(data: crate::IoBuffer<u8>) -> Self {
         Self { data, offset: 0 }
     }
 }
 
-struct GlobalBackingTable<T> {
+pub(crate) struct GlobalBackingTable<T> {
     locked: AtomicBool,
     table: UnsafeCell<Option<SharedBackingTable<T>>>,
 }
@@ -254,14 +311,14 @@ impl Drop for UnlockOnDrop<'_> {
 }
 
 impl<T> GlobalBackingTable<T> {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             locked: AtomicBool::new(false),
             table: UnsafeCell::new(None),
         }
     }
 
-    fn with<R>(&'static self, f: impl for<'a> FnOnce(&'a mut SharedBackingTable<T>) -> R) -> R {
+    pub(crate) fn with<R>(&'static self, f: impl for<'a> FnOnce(&'a mut SharedBackingTable<T>) -> R) -> R {
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -329,10 +386,13 @@ fn with_synthetic_regulars<R>(
     SYNTHETIC_REGULARS.with(f)
 }
 
-pub fn alloc_synthetic_regular() -> i64 {
-    let idx = with_synthetic_regulars(|table| table.alloc(SyntheticRegularBacking::new()));
-    -(SYNTHETIC_REGULAR_HANDLE_BASE + idx as i64)
+pub fn try_alloc_synthetic_regular() -> Result<i64, Errno> {
+    let idx = with_synthetic_regulars(|table| table.try_alloc(SyntheticRegularBacking::new()))?;
+    Ok(-(SYNTHETIC_REGULAR_HANDLE_BASE + idx as i64))
 }
+
+#[cfg(test)]
+pub fn alloc_synthetic_regular() -> i64 { try_alloc_synthetic_regular().unwrap() }
 
 pub fn is_synthetic_regular_handle(host_handle: i64) -> bool {
     // Bounded below by the tmpfs file-handle base so the two negative-handle
@@ -392,6 +452,7 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
             | FileType::Epoll
     ) || (file_type == FileType::Regular
         && (crate::procfs::is_procfs_buf_handle(host_handle)
+            || crate::executable_backing::is_executable_handle(host_handle)
             || is_synthetic_regular_handle(host_handle)
             || crate::tmpfs::is_tmpfs_file_handle(host_handle)
             || crate::rootfs::is_rootfs_file_handle(host_handle)))
@@ -404,6 +465,9 @@ pub fn manages_ofd(file_type: FileType, host_handle: i64) -> bool {
 /// file description.
 pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
     match file_type {
+        FileType::Regular if crate::executable_backing::is_executable_handle(host_handle) => {
+            crate::executable_backing::is_live(host_handle)
+        }
         FileType::EventFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_eventfds(|table| table.get(idx).is_some())),
         FileType::TimerFd => negative_handle_idx(host_handle)
@@ -449,15 +513,14 @@ pub fn is_live_managed_ofd(file_type: FileType, host_handle: i64) -> bool {
 pub fn removed_backings_for_exec(
     old: &Process,
     replacement: &Process,
-) -> Result<Vec<(FileType, i64)>, Errno> {
-    let old_backings: Vec<(FileType, i64)> = old
-        .ofd_table
-        .iter()
-        .filter_map(|(_, ofd)| {
-            manages_ofd(ofd.file_type, ofd.host_handle).then_some((ofd.file_type, ofd.host_handle))
-        })
-        .collect();
-    let mut retained = alloc::vec![false; old_backings.len()];
+) -> Result<crate::IoBuffer<(FileType, i64)>, Errno> {
+    let count = old.ofd_table.iter().filter(|(_, ofd)| manages_ofd(ofd.file_type, ofd.host_handle)).count();
+    let mut old_backings = crate::IoBuffer::try_with_capacity(count)?;
+    for (_, ofd) in old.ofd_table.iter() {
+        if manages_ofd(ofd.file_type, ofd.host_handle) { old_backings.push((ofd.file_type, ofd.host_handle)); }
+    }
+    let mut retained = crate::IoBuffer::try_with_capacity(count)?;
+    retained.resize(count, false);
 
     for (_, ofd) in replacement.ofd_table.iter() {
         if !manages_ofd(ofd.file_type, ofd.host_handle) {
@@ -473,11 +536,13 @@ pub fn removed_backings_for_exec(
         retained[idx] = true;
     }
 
-    Ok(old_backings
-        .into_iter()
-        .zip(retained)
-        .filter_map(|(key, retained)| (!retained).then_some(key))
-        .collect())
+    let mut position = 0;
+    old_backings.retain(|_| {
+        let removed = !retained[position];
+        position += 1;
+        removed
+    });
+    Ok(old_backings)
 }
 
 #[cfg_attr(
@@ -571,6 +636,9 @@ pub fn set_current_offset(
 /// Returns `Ok(false)` for descriptor types without a backing in this module.
 pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Errno> {
     match file_type {
+        FileType::Regular if crate::executable_backing::is_executable_handle(host_handle) => {
+            crate::executable_backing::add_ref(host_handle)?;
+        }
         FileType::EventFd => {
             with_eventfds(|table| table.add_ref(negative_handle_idx(host_handle)?))?
         }
@@ -613,6 +681,8 @@ pub fn add_ref_for_ofd(file_type: FileType, host_handle: i64) -> Result<bool, Er
 /// machine-wide reference and the backing was freed. Descriptor types not
 /// owned by this module, and stale/corrupt handles, return false.
 pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
+    assert!(file_type != FileType::Regular || !crate::executable_backing::is_executable_handle(host_handle),
+        "paired executable backings require an IO-aware release");
     match file_type {
         FileType::EventFd => negative_handle_idx(host_handle)
             .is_ok_and(|idx| with_eventfds(|table| table.release(idx))),
@@ -654,9 +724,142 @@ pub fn release_for_ofd(file_type: FileType, host_handle: i64) -> bool {
     }
 }
 
+pub fn release_for_ofd_effects(file_type: FileType, host_handle: i64) -> BackingReleaseEffects {
+    if file_type == FileType::Regular && crate::executable_backing::is_executable_handle(host_handle) {
+        return crate::executable_backing::release(host_handle);
+    }
+    let mut effects = BackingReleaseEffects::default();
+    effects.final_ofd_reference = release_for_ofd(file_type, host_handle);
+    effects
+}
+
+pub fn release_added_ref_for_ofd(file_type: FileType, host_handle: i64) {
+    let effects = release_for_ofd_effects(file_type, host_handle);
+    assert!(!effects.final_ofd_reference, "inheritance rollback released the original owner");
+    assert!(effects.into_host_closes().iter().all(Option::is_none), "inheritance rollback owns no host-close effect");
+}
+
 #[cfg(test)]
 mod tests {
     use super::{GlobalBackingTable, SharedBackingTable};
+
+    #[test]
+    fn take_release_and_final_mapping_unpin_transfer_values_without_allocation() {
+        let mut table = SharedBackingTable::new();
+        let slot = table.alloc(41u32);
+        table.add_ref(slot).unwrap();
+        table.pin(slot).unwrap();
+        table.pin(slot).unwrap();
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(held);
+        let first = table.release_take(slot);
+        assert!(!first.final_reference && first.value.is_none());
+        let final_reference = table.release_take(slot);
+        assert!(final_reference.final_reference && final_reference.value.is_none());
+        assert_eq!(table.add_ref(slot), Err(wasm_posix_shared::Errno::EBADF));
+        assert_eq!(table.pin(slot), Err(wasm_posix_shared::Errno::EBADF));
+        assert_eq!(table.unpin_take(slot), None);
+        assert_eq!(table.get(slot), Some(&41));
+        assert_eq!(table.unpin_take(slot), Some(41));
+        assert_eq!(table.get(slot), None);
+        assert!(!table.release_take(slot).final_reference);
+        assert_eq!(table.unpin_take(slot), None);
+        assert_eq!(table.alloc(42), slot);
+        let last = table.release_take(slot);
+        assert!(last.final_reference);
+        assert_eq!(last.value, Some(42));
+    }
+
+    #[test]
+    fn taken_values_are_destroyed_after_the_global_table_borrow_ends() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        struct Probe {
+            table: &'static GlobalBackingTable<Probe>,
+            drops: &'static AtomicUsize,
+        }
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                assert!(!self.table.locked.load(Ordering::Acquire));
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let arena = Box::leak(Box::new(GlobalBackingTable::new()));
+        let drops = Box::leak(Box::new(AtomicUsize::new(0)));
+        let slot = arena.with(|table| table.try_alloc(Probe { table: arena, drops })).unwrap();
+        let released = arena.with(|table| table.release_take(slot));
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+        drop(released.value);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        let slot = arena.with(|table| {
+            let slot = table.try_alloc(Probe { table: arena, drops }).unwrap();
+            table.pin(slot).unwrap();
+            assert!(table.release_take(slot).value.is_none());
+            slot
+        });
+        let value = arena.with(|table| table.unpin_take(slot));
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        drop(value);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn arena_refusal_and_mapping_pins_preserve_payload_ownership_and_indices() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut table = SharedBackingTable::new();
+        let payload = crate::IoBuffer::copy_from(b"owned").unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(table.try_alloc(payload), Err(wasm_posix_shared::Errno::ENOMEM)));
+            assert!(table.entries.is_empty());
+            assert_eq!(table.next_generation, 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let payload = crate::IoBuffer::copy_from(b"owned").unwrap();
+        let payload_credit = crate::io_buffer::IO_MEMORY.usage().0 - baseline;
+        let index = table.try_alloc(payload).unwrap();
+        table.pin(index).unwrap();
+        assert!(table.release(index));
+        assert!(!table.is_owned(index));
+        assert_eq!(table.get(index).unwrap(), b"owned");
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            let second = table.try_alloc(crate::IoBuffer::new()).unwrap();
+            assert_ne!(second, index);
+            assert!(table.release(second));
+            table.unpin(index);
+            assert!(table.get(index).is_none());
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held - payload_credit);
+        }
+        drop(table);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn memfd_payload_refusal_preserves_bytes_cursor_and_generation() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut backing = super::MemFdBacking::new();
+        backing.write_at(0, b"original").unwrap();
+        backing.offset = 4;
+        let generation = backing.content_gen;
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(backing.write_at(64, b"new"), Err(wasm_posix_shared::Errno::ENOMEM));
+            assert_eq!(backing.resize(64), Err(wasm_posix_shared::Errno::ENOMEM));
+            assert_eq!(backing.data, b"original");
+            assert_eq!(backing.offset, 4);
+            assert_eq!(backing.content_gen, generation);
+            assert_eq!(backing.write_at(usize::MAX, b""), Ok(0));
+            assert_eq!(backing.content_gen, generation);
+            assert_eq!(backing.write_at(0, b"changed!"), Ok(8));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            backing.resize(0).unwrap();
+            assert_eq!(backing.offset, 4);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+    }
 
     #[test]
     fn shared_backing_reuses_only_freed_slots() {

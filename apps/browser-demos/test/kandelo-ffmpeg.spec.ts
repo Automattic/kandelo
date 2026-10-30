@@ -146,7 +146,7 @@ async function testsrcTopRowRedBlue(
   }, png);
 }
 
-async function openSurface(page: Page, label: "Demo" | "Terminal") {
+async function openSurface(page: Page, label: "Graphics" | "Terminal") {
   const view = page
     .getByLabel("Computer views")
     .getByRole("button", { name: label, exact: true });
@@ -235,7 +235,7 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
 
   // CTRL+Return opens foot; type the command into it with real keys.
   await expect.poll(async () => {
-    await openSurface(page, "Demo");
+    await openSurface(page, "Graphics");
     await page.locator("body").click({ position: { x: 5, y: 5 } });
     await page.keyboard.down("Control");
     await page.keyboard.press("Enter");
@@ -244,7 +244,7 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
     await page.waitForTimeout(15_000);
     return terminalText(page);
   }, { timeout: 180_000, intervals: [0] }).toMatch(/GLDRAW app_id=foot/);
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   for (const key of "ffplay -an -f lavfi testsrc") {
     await page.keyboard.press(key === " " ? "Space" : key === "-" ? "Minus" : key);
@@ -259,7 +259,7 @@ test("ffplay runs as a Wayland client in the Omarchy desktop", async ({ page }) 
   // ...and keeps drawing the desktop. ffplay and the compositor share one
   // WebGL context; when they shared vertex-attribute state, ffplay's draws
   // broke every compositor draw and the whole display went black.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const canvas = displayCanvas(page);
   await expect.poll(() => testsrcBarColours(page, canvas),
     { timeout: 60_000, intervals: [1_000, 2_000, 5_000] }).toBe(6);

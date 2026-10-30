@@ -9,7 +9,7 @@
  * so every boot's staging memory accumulates until Safari throws
  * `Out of memory`. Running composition inside
  * a disposable worker makes the staging filesystem die with its realm, and
- * hands the main thread nothing but plain transferable bytes. (This replaced
+ * hands the main thread only plain transferable bytes or bounded chunks. (This replaced
  * the `trackTransientImageBuffer`/`settleWebKitReclaim` GC nudge, which was
  * best-effort with a deadline; terminating a realm is not.)
  *
@@ -21,8 +21,15 @@
  * as plain data on {@link ComposeImageJob}.
  */
 
-import { KandeloImageFs } from "../../../../../images/vfs/lib/kandelo-image-fs";
-import { ensureImageWriterInstalled } from "../../../lib/kernel-owned-boot";
+import { KandeloImageFs, type PersistentImageIntegrityPolicy } from "../../../../../images/vfs/lib/kandelo-image-fs";
+import type { StorageMemoryUsage } from "../../../../../host/src/vfs/storage-memory-budget";
+import { readComposerFile } from "./composer-file";
+import { OpfsImageReader, type OpfsImageIntegrity } from "../../../../../host/src/vfs/opfs-image-reader";
+import { isOpfsImageIntegrity } from "../../../../../host/src/vfs/image-integrity";
+import { StorageCloseLedger } from "../../../../../host/src/storage-close-ledger";
+import type { ImageOwnedRuntimeLazyAssets } from "../../../lib/init/image-owned-runtime-urls";
+import type { FixedPersistenceImageHandle } from "./fixed-persistence-image";
+import { ensureImageWriterInstalled, loadPositionedImageWriterModuleBytes } from "../../../lib/kernel-owned-boot";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -59,7 +66,7 @@ import {
   type KandeloDemoConfig,
 } from "../../../../../web-libs/kandelo-session/src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../../../../../web-libs/kandelo-session/src/demo-config-vfs";
-import { readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
+import { MAX_DINIT_SERVICE_CLOSURE, readDinitBootTargets } from "../../../../../web-libs/kandelo-session/src/dinit-boot-targets";
 import {
   EXPERIMENTAL_TERMINAL_SESSION_PATH,
   MAX_EXPERIMENTAL_TERMINAL_SESSION_BYTES,
@@ -73,9 +80,12 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/boot-inputs";
 import type { BootDescriptor } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import {
+  assertVfsImageCapacityMetadata,
   assertVfsImageFitsProfile,
   declaredVfsMaxByteLength,
 } from "../../../../../web-libs/kandelo-session/src/vfs-capacity";
+import { MAX_STAGED_VFS_IMAGE_BYTES } from "./opfs-source-image";
+import { openOpfsFileReference, type OpfsFileReference } from "../../../../../host/src/vfs/opfs-file-reference";
 import { ABI_VERSION, ERRNO } from "../../../../../host/src/generated/abi";
 import { stageConfiguredAssets } from "./configured-assets";
 
@@ -130,8 +140,20 @@ request_slowlog_trace_depth = 0
  * read them from a `window` it does not have.
  */
 export interface ComposeImageJob {
-  /** Raw fetched image bytes (transferred in, not copied). */
+  /** Raw fetched bytes, or empty when positionedSource supplies OPFS reads. */
   imageBytes: Uint8Array;
+  positionedSource?: {
+    file: OpfsFileReference;
+    integrity: OpfsImageIntegrity;
+  };
+  frozenImageBytes?: Uint8Array;
+  persistentImage?: {
+    name: string;
+    identity: string;
+    journalName?: string;
+    lazyAssets?: ImageOwnedRuntimeLazyAssets;
+    integrityPolicy: PersistentImageIntegrityPolicy;
+  };
   /** Host filesystem budget; the image's own capacity still governs. */
   maxVfsByteLength: number;
   /** Human-readable image name for error messages. */
@@ -156,8 +178,10 @@ export interface ComposeImageJob {
 }
 
 export interface ComposeImageResult {
-  /** Serialized image, ready to hand to the kernel worker. */
+  memoryUsage?: { wasmPages: number; sourceBytes: number; frozenSourceBytes: number; returnedBytes: number; manifest?: StorageMemoryUsage };
+  /** Serialized image for nonpersistent boots; persistent boots return no bytes. */
   imageBytes: Uint8Array;
+  imageFile?: FixedPersistenceImageHandle;
   /** Image-declared demo config; composition fails when the image has none. */
   imageConfig: KandeloDemoConfig;
   /** The profile actually selected (requested, or the image's default). */
@@ -200,7 +224,9 @@ export function imageMachine(
 /**
  * Build the demo's image in a filesystem this realm owns, then serialize it.
  *
- * The caller aborts by terminating the realm. That is why there is no
+ * The caller aborts by terminating the realm. Persistent chunks cross to the
+ * page one at a time with acknowledgement; the page owns OPFS publication.
+ * That is why there is no
  * supersession check threaded through the staging steps: the staged
  * filesystem is private to this worker and dies with it, so a superseded
  * composition cannot leak partially-staged state anywhere observable. On the
@@ -210,14 +236,57 @@ export function imageMachine(
 export async function composeKandeloImage(
   job: ComposeImageJob,
   tick: (message: string) => void,
+  persistImage?: (
+    chunks: Iterable<Uint8Array>,
+    composition: Pick<ComposeImageResult, "imageConfig" | "profileId" | "terminalSession" | "requiredServices">,
+    payloadLength: number,
+  ) => Promise<void>,
 ): Promise<ComposeImageResult> {
-  await ensureImageWriterInstalled();
-  // Load once for validation, metadata, capacity, and composition. Each
-  // additional reader instantiates another Wasm heap holding the entire image;
-  // those dropped heaps can coexist until WebKit collects them on iOS.
-  const buildFs = KandeloImageFs.create();
+  const sourceImage = job.frozenImageBytes ?? job.imageBytes;
+  const positionedSource = job.positionedSource;
+  if (positionedSource !== undefined && (
+    job.persistentImage === undefined ||
+    job.frozenImageBytes !== undefined ||
+    sourceImage.byteLength !== 0
+  )) {
+    throw new Error("positioned composition requires an empty source byte buffer and persistent output");
+  }
+  let vfsMetadata: ReturnType<typeof KandeloImageFs.readImageMetadata>;
+  let buildFs: KandeloImageFs;
+  let sourceLength: number;
+  let positionedReader: OpfsImageReader | null = null;
+  const sourceStorage = new StorageCloseLedger();
+  let sourceFailure: { error: unknown } | undefined;
   try {
-    buildFs.loadImage(job.imageBytes);
+  try {
+    if (positionedSource !== undefined) {
+      if (!isOpfsImageIntegrity(positionedSource.integrity)) throw new Error("Positioned source integrity is invalid");
+      const sourceSha256 = positionedSource.integrity.imageSha256;
+      const file = await sourceStorage.run(() => openOpfsFileReference(positionedSource.file));
+      positionedReader = sourceSha256 === undefined
+        ? await sourceStorage.run(() => OpfsImageReader.open(file, positionedSource.integrity, sourceStorage))
+        : await sourceStorage.run(() => OpfsImageReader.open(file, undefined, sourceStorage, true));
+      if (positionedReader.length !== positionedSource.integrity.length) throw new Error("Positioned source length differs from its integrity");
+      const moduleBytes = await loadPositionedImageWriterModuleBytes();
+      buildFs = KandeloImageFs.createFromPositionedImage(
+        moduleBytes,
+        positionedReader.length,
+        (offset, destination) => positionedReader!.readAt(offset, destination),
+        undefined,
+        sourceSha256,
+      );
+      sourceLength = positionedReader.length;
+    } else {
+      if (job.persistentImage !== undefined) {
+        buildFs = KandeloImageFs.createPositioned(await loadPositionedImageWriterModuleBytes());
+      } else {
+        await ensureImageWriterInstalled();
+        buildFs = KandeloImageFs.create();
+      }
+      buildFs.loadImage(sourceImage);
+      sourceLength = sourceImage.byteLength;
+    }
+    vfsMetadata = buildFs.getImageMetadata();
   } catch (error) {
     if ((error as { errno?: number } | null)?.errno === ERRNO.EPROTO) {
       throw new Error(
@@ -227,18 +296,20 @@ export async function composeKandeloImage(
     }
     throw error;
   }
-  const vfsMetadata = buildFs.getImageMetadata();
-  assertVfsImageFitsProfile(
-    // `byteLength` is the image as fetched; `maxByteLength` is what it
-    // DECLARES it may grow to.
-    {
-      byteLength: job.imageBytes.byteLength,
-      maxByteLength: buildFs.exportCapacityBytes(),
-    },
-    job.maxVfsByteLength,
-    declaredVfsMaxByteLength(vfsMetadata),
-    job.imageLabel,
-  );
+  const capacity = { byteLength: sourceLength, maxByteLength: buildFs.loadedImageCapacityBytes() };
+  if (positionedSource !== undefined) {
+    assertVfsImageCapacityMetadata(capacity, declaredVfsMaxByteLength(vfsMetadata), job.imageLabel);
+    if (sourceLength > MAX_STAGED_VFS_IMAGE_BYTES) {
+      throw new Error(`${job.imageLabel} exceeds the staged VFS image byte limit`);
+    }
+  } else {
+    assertVfsImageFitsProfile(
+      capacity,
+      job.maxVfsByteLength,
+      declaredVfsMaxByteLength(vfsMetadata),
+      job.imageLabel,
+    );
+  }
   // Assemble the demo image in a TRANSIENT build-time filesystem, read and
   // written by the same module the image was BUILT with, so its SDEF section
   // (deferred/lazy entries) survives the round trip unchanged. After
@@ -249,9 +320,13 @@ export async function composeKandeloImage(
   // Seals are verified by the load itself: `loadImage` runs
   // `seal::verify_cohorts` and unloads the image if it fails, so an
   // unverified loaded image is unrepresentable.
-  buildFs.setImageCapacity(job.maxVfsByteLength);
+  if (job.frozenImageBytes === undefined) {
+    buildFs.setImageCapacity(positionedSource === undefined
+      ? job.maxVfsByteLength
+      : Math.max(job.maxVfsByteLength, buildFs.loadedImageCapacityBytes()));
+  }
   const terminalSession = readImageExperimentalTerminalSession(buildFs);
-  if (!job.hasCandidateEvidence) {
+  if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
     // Keyed on what the image ACTUALLY CONTAINS, never on a machine id: an
     // image that ships a PHP-FPM config gets the host's worker-pool patch, and
     // one that ships WordPress gets the runtime wp-config this page's prefix
@@ -269,7 +344,7 @@ export async function composeKandeloImage(
     if (vfsPathExists(buildFs, "/var/www/html/wp-includes")) {
       if (vfsPathExists(buildFs, "/etc/dinit.d/mariadb")) {
         patchMariaDbUnixSocketConfig(buildFs);
-        patchWordPressRuntimeConfig(buildFs, "mariadb", job.appPath, job.proto);
+        patchWordPressRuntimeConfig(buildFs, vfsPathExists(buildFs, "/etc/kandelo/wordpress-backends") ? "selectable" : "mariadb", job.appPath, job.proto);
       } else {
         patchWordPressRuntimeConfig(buildFs, "sqlite", job.appPath, job.proto);
       }
@@ -305,7 +380,7 @@ export async function composeKandeloImage(
       ...dinitServiceClosure(buildFs, machine.init.target),
     );
   }
-  if (!job.hasCandidateEvidence) {
+  if (!job.hasCandidateEvidence && job.frozenImageBytes === undefined) {
     const assets = resolveDemoAssets(imageConfig, profileId);
     // Supersession is enforced by terminating this worker, so the per-await
     // ownership check the main-thread path needed is a no-op here.
@@ -319,7 +394,7 @@ export async function composeKandeloImage(
   // materialization failure must fail the boot loudly rather than silently
   // continue without the input the link promised.
   let bootInputManifest: BootInputManifest | undefined;
-  if (job.descriptor.boot.inputs?.length) {
+  if (job.descriptor.boot.inputs?.length && job.frozenImageBytes === undefined) {
     tick("materializing boot inputs...");
     bootInputManifest = await materializeBootInputs(job.descriptor, {
       resolvers: {},
@@ -332,17 +407,42 @@ export async function composeKandeloImage(
   // canonical addresses and the page hands the deployment's lazy-asset directory to the
   // kernel worker beside the image (see `imageOwnedLazyAssetDirectory`).
   tick("assembling kernel-owned VFS image...");
-  // `saveImage()` emits plain bytes the kernel worker restores directly;
+  // Nonpersistent boots emit plain bytes; persistent boots stream bounded
+  // chunks to the page, which verifies and publishes the OPFS generation.
   // buildFs and its module memory die with this realm.
-  const imageBytes = await buildFs.saveImage();
+  if (job.persistentImage !== undefined) {
+    if (persistImage === undefined) throw new Error("persistent image stream has no writer");
+    const payloadLength = buildFs.exportImageLength();
+    await persistImage(
+      buildFs.exportImageChunks(65536),
+      { imageConfig, profileId, terminalSession, requiredServices },
+      payloadLength,
+    );
+  }
+  const imageBytes = job.frozenImageBytes
+    ?? (job.persistentImage === undefined ? await buildFs.saveImage() : new Uint8Array());
   return {
     imageBytes,
+    memoryUsage: { wasmPages: buildFs.getMemoryPages(), sourceBytes: job.imageBytes.byteLength,
+      frozenSourceBytes: job.frozenImageBytes?.byteLength ?? 0, returnedBytes: imageBytes.byteLength },
     imageConfig,
     profileId,
     terminalSession,
     requiredServices,
     bootInputManifest,
   };
+  } catch (error) {
+    sourceFailure = { error };
+    throw error;
+  } finally {
+    try {
+      await sourceStorage.beginRetirement();
+      sourceStorage.closeAll();
+    } catch (error) {
+      throw Object.assign(new AggregateError(sourceFailure === undefined ? [error] : [sourceFailure.error, error],
+        "Image source handle cleanup is unproven; retain its staged source"), { retainSource: true });
+    }
+  }
 }
 
 const TOP_LEVEL_PROFILE_ID = "";
@@ -354,7 +454,7 @@ function declaredProfileIds(config: KandeloDemoConfig): string[] {
     : [];
 }
 
-function resolveImageProfileId(
+export function resolveImageProfileId(
   config: KandeloDemoConfig,
   requestedProfileId: string | null,
   requestedProfileSource: string | null,
@@ -383,9 +483,6 @@ function resolveImageProfileId(
   }
   return defaultProfileId;
 }
-
-/** Far above any real service tree; a hostile image cannot spin this. */
-const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 /**
  * The readiness service list, derived from the image's own dinit tree
@@ -689,20 +786,7 @@ function isMissingVfsPath(err: unknown): boolean {
 }
 
 function readVfsFile(fs: KandeloImageFs, path: string): ArrayBuffer {
-  const st = fs.stat(path);
-  const fd = fs.open(path, 0, 0);
-  try {
-    const out = new Uint8Array(st.size);
-    let off = 0;
-    while (off < out.byteLength) {
-      const n = fs.read(fd, out.subarray(off), null, out.byteLength - off);
-      if (n <= 0) break;
-      off += n;
-    }
-    return out.buffer.slice(out.byteOffset, out.byteOffset + off);
-  } finally {
-    fs.close(fd);
-  }
+  return readComposerFile(fs, path);
 }
 
 function dirname(path: string): string {

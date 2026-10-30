@@ -13,7 +13,7 @@ crate-type = ["rlib"]
 [dependencies]
 # The ABI epoch and the WPK_FORK_* section names, used to recognize (not
 # judge) fork-instrumentation surface. `no_std`, dependency-free.
-wasm-posix-shared = { path = "../shared" }
+wasm-posix-program-abi = { path = "../program-abi" }
 
 # The container walk itself. `default-features = false` keeps wasmparser in its
 # `no_std + alloc` configuration, which is what lets one walker serve the

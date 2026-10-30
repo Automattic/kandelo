@@ -696,9 +696,8 @@ for src in "$REPO_ROOT/programs/"*.c; do
     # (sysroot/lib/libdrm.a, libgbm.a). EGL/GLES2 stubs are picked up
     # by build_program's header-based auto-detection.
     case "$(basename "$src")" in
-        login.c|sudo-lite.c)
-            # Package recipes own the image artifacts. Keep ordinary local
-            # copies only as runtime test fixtures.
+        login.c|sudo-lite.c|persistence-overwrite.c|persistence-boot-counter.c|persistence-mapping-memory.c|persistence-aggregate-pressure.c|http-retirement-server.c|exec-memory-refusal.c|exec-memory-refusal-small.c|exec-memory-refusal-large.c)
+            # Keep runtime-only test programs outside the ordinary resolver mirror.
             build_program "$src" "$TEST_FIXTURE_DIR/wasm32"
             ;;
         modeset.c|dri-modeset.c|dumb_roundtrip.c|gbm_surface_smoke.c)

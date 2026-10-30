@@ -113,8 +113,10 @@ const SOURCE_ONLY_RECIPE_AMBIENT_ENVIRONMENT: &[&str] = &[
     "WASM_POSIX_BINARY_CACHE_ROOT",
     "WASM_POSIX_BINARY_INDEX_URL",
     "WASM_POSIX_BINARY_RESOLVER_REPO_ROOT",
+    "WASM_POSIX_BUILD_ORIGINAL_STORE",
     "WASM_POSIX_DEFAULT_ARCH",
     "WASM_POSIX_DEPS_REGISTRY",
+    "WASM_POSIX_INSTALL_OUTPUT_METADATA",
     "WASM_POSIX_SOURCE_ONLY_CACHE_ROOT",
     "WASM_POSIX_USE_PR_STAGING",
     SOURCE_ONLY_POLICY_ENV,
@@ -2208,6 +2210,8 @@ pub(crate) struct ProgramPackageProjectionMember {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) fork_instrumentation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) original_wasm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) guest_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) mode: Option<u32>,
@@ -2264,9 +2268,110 @@ struct PreparedProgramProjection {
     members: Vec<PreparedProgramProjectionMember>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DependencyOriginalInput {
+    package_name: String,
+    resolver_path: String,
+    executable_path: PathBuf,
+    executable_size: u64,
+    executable_sha256: String,
+    original: DependencyOriginalArtifact,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DependencyOriginalArtifact {
+    package_name: String,
+    path: PathBuf,
+    rel_path: String,
+    source_artifact: String,
+    cache_key: String,
+    mode: u32,
+    size: u64,
+    sha256: String,
+}
+
+#[cfg(unix)]
+fn write_dependency_original_inputs(
+    target: &DepsManifest,
+    registry: &Registry,
+    dependencies: &BTreeMap<String, PathBuf>,
+    arch: TargetArch,
+    abi_version: u32,
+    policy: ResolvePolicy,
+    work: &Path,
+) -> Result<Option<PathBuf>, String> {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    let mut inputs = Vec::new();
+    for (name, root) in dependencies {
+        let manifest = registry.load(name)?;
+        if !manifest.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+            continue;
+        }
+        let arch = dependency_target_arch(target, &manifest, arch)?;
+        let root = canonical_real_directory(root, "dependency original input root")?;
+        let key = manifest_cache_key_sha_for_policy(&manifest, registry, arch, abi_version, policy)?;
+        let expected = canonical_path(Path::new(""), &manifest, arch, abi_version, &hex_to_32(&key)?);
+        if !root.ends_with(&expected) {
+            return Err(format!("dependency original input does not name selected generation {}: {}", expected.display(), root.display()));
+        }
+        validate_cache_entry(&manifest, &root, arch, abi_version, &key)?;
+        let members = canonical_program_members(&manifest, &root, arch, &key)?;
+        for output in &manifest.program_outputs {
+            let Some(original_artifact) = &output.original_wasm else { continue };
+            let executable = members.iter().find(|member| member.source_artifact == output.wasm)
+                .ok_or_else(|| "dependency original input lost its executable".to_string())?;
+            let original = members.iter().find(|member| member.source_artifact == *original_artifact)
+                .ok_or_else(|| "dependency original input lost its original".to_string())?;
+            inputs.push(DependencyOriginalInput {
+                package_name: name.clone(), resolver_path: executable.mirror_path.clone(),
+                executable_path: root.join(&output.wasm), executable_size: executable.size,
+                executable_sha256: executable.sha256.clone(),
+                original: DependencyOriginalArtifact {
+                    package_name: name.clone(), path: root.join(original_artifact),
+                    rel_path: original.mirror_path.clone(), source_artifact: original_artifact.clone(),
+                    cache_key: key.clone(), mode: original.mode, size: original.size,
+                    sha256: original.sha256.clone(),
+                },
+            });
+            if inputs.len() > 4096 { return Err("dependency original inputs exceed 4096 outputs".into()); }
+        }
+    }
+    if inputs.is_empty() { return Ok(None); }
+    inputs.sort_by(|left, right| (&left.package_name, &left.resolver_path).cmp(&(&right.package_name, &right.resolver_path)));
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "schema": 1, "kind": "kandelo-dependency-original-inputs", "consumerPackage": target.name,
+        "inputs": inputs,
+    })).map_err(|error| format!("serialize dependency original inputs: {error}"))?;
+    if bytes.len() > 4 * 1024 * 1024 { return Err("dependency original inputs exceed 4 MiB".into()); }
+    let path = work.join("dependency-original-inputs-v1.json");
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&path)
+        .map_err(|error| format!("create dependency original inputs: {error}"))?;
+    file.write_all(&bytes).map_err(|error| format!("write dependency original inputs: {error}"))?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o444))
+        .map_err(|error| format!("protect dependency original inputs: {error}"))?;
+    Ok(Some(path))
+}
+
+#[cfg(not(unix))]
+fn write_dependency_original_inputs(
+    _target: &DepsManifest, registry: &Registry, dependencies: &BTreeMap<String, PathBuf>,
+    _arch: TargetArch, _abi_version: u32, _policy: ResolvePolicy, _work: &Path,
+) -> Result<Option<PathBuf>, String> {
+    for name in dependencies.keys() {
+        if registry.load(name)?.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+            return Err("dependency original inputs require Unix no-follow filesystem semantics".into());
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(unix)]
 struct OwnedEntryTransaction {
     live: PathBuf,
+    immutable: bool,
     parent_guard: SourceOnlyProjectionParentGuard,
     private_root: OwnedPrivateDirectory,
     transaction_root: PathBuf,
@@ -2359,7 +2464,33 @@ impl SourceOnlyProjectionParentGuard {
                 self.parent.display()
             ));
         }
+        self.open_ancestry()?;
         Ok(())
+    }
+
+    fn open_ancestry(&self) -> Result<Vec<AnchoredDirectory>, String> {
+        let relative = self.parent.strip_prefix(&self.root)
+            .map_err(|_| "projection parent escapes its anchored root".to_string())?;
+        let mut ancestry = vec![self.root_anchor.try_clone("projection ancestry root")?];
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err("projection ancestry is not a portable path".into());
+            };
+            let child = ancestry.last().unwrap().open_child_directory(name, "projection ancestry")?;
+            ancestry.push(child);
+        }
+        if ancestry.last().unwrap().identity != self.parent_anchor.identity {
+            return Err("projection ancestry no longer reaches the opened parent".into());
+        }
+        Ok(ancestry)
+    }
+
+    fn sync_ancestry(&self) -> Result<(), String> {
+        self.validate()?;
+        for directory in self.open_ancestry()?.iter().rev() {
+            directory.sync("original companion ancestry")?;
+        }
+        self.validate()
     }
 
     fn try_clone(&self) -> Result<Self, String> {
@@ -2424,6 +2555,7 @@ impl OwnedEntryTransaction {
         let backup = transaction_root.join("backup");
         let mut transaction = Self {
             live,
+            immutable: false,
             parent_guard,
             private_root,
             transaction_root,
@@ -3038,7 +3170,7 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
                 target.spec()
             ));
         }
-        let expected_members = if before.manifest.kind == ManifestKind::Program {
+        let mut expected_members = if before.manifest.kind == ManifestKind::Program {
             program_projection_members(&before.manifest)?
                 .into_iter()
                 .map(|member| {
@@ -3063,6 +3195,11 @@ impl SourceOnlyProgramProjectionAuthority<'_> {
         } else {
             BTreeMap::new()
         };
+        for (source_artifact, mirror_relative, mode) in original_companion_declarations(&before.manifest, &before.cache_key_sha256)? {
+            let destination = program_projection_destination_relative(&before.manifest, arch, &mirror_relative);
+            let destination = portable_projection_path(&before.manifest, &destination, "original companion path")?;
+            expected_members.insert((destination, source_artifact), mode);
+        }
         if sorted_members.len() != expected_members.len() {
             return Err(format!(
                 "{}: retained materialized-member count does not match the declared program closure",
@@ -3430,6 +3567,7 @@ where
         manifest,
         canonical,
         None,
+        None,
         output_root,
         arch,
         after_copy,
@@ -3442,6 +3580,7 @@ fn materialize_source_only_program_target_with_cache_root<AfterCopy, BeforePubli
     manifest: &DepsManifest,
     canonical: &Path,
     canonical_root: Option<&AnchoredDirectory>,
+    cache_key_sha: Option<&str>,
     output_root: &Path,
     arch: TargetArch,
     after_copy: &mut AfterCopy,
@@ -3464,6 +3603,18 @@ where
         arch,
         after_copy,
     )?;
+    let mut originals = if manifest.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+        let cache_key = cache_key_sha.ok_or_else(|| "original companion publication requires a verified package cache key".to_string())?;
+        let declarations = original_companion_declarations(manifest, cache_key)?;
+        let live_relative = program_projection_destination_relative(manifest, arch,
+            &original_companion_generation_relative(&manifest.name, cache_key)?);
+        let prepared = prepare_program_projection_entry(manifest, &canonical, canonical_root,
+            &output_root, arch, after_copy, declarations, true, live_relative, true)?;
+        sync_original_companion_stage(&prepared.transaction)?;
+        Some(prepared)
+    } else {
+        None
+    };
     let shared_output_root = prepared
         .transaction
         .parent_guard
@@ -3471,12 +3622,23 @@ where
         .try_clone("source-only projection output root")?;
     let subject = manifest.spec();
     let result = with_source_only_projection_lock_guard_from_root(shared_output_root, |lock| {
+        if let Some(originals) = &mut originals {
+            publish_owned_entry_transaction(&subject, &output_root, &mut originals.transaction,
+                lock, before_publish)?;
+        }
+        let mut before_executable_publish = |path: &Path| {
+            before_publish(path)?;
+            if let Some(originals) = &originals {
+                validate_original_companion_publication(originals)?;
+            }
+            Ok(())
+        };
         publish_owned_entry_transaction(
             &subject,
             &output_root,
             &mut prepared.transaction,
             lock,
-            before_publish,
+            &mut before_executable_publish,
         )
     });
     match result {
@@ -3486,6 +3648,9 @@ where
                 .into_iter()
                 .map(|member| member.receipt)
                 .collect::<Vec<_>>();
+            if let Some(originals) = originals {
+                receipts.extend(originals.members.into_iter().map(|member| member.receipt));
+            }
             receipts.sort_by(|left, right| {
                 (&left.mirror_path, &left.source_artifact)
                     .cmp(&(&right.mirror_path, &right.source_artifact))
@@ -3494,6 +3659,18 @@ where
         }
         Err(error) => Err(error),
     }
+}
+
+#[cfg(unix)]
+fn validate_original_companion_publication(originals: &PreparedProgramProjection) -> Result<(), String> {
+    originals.transaction.parent_guard.validate()?;
+    let expected = originals.transaction.stage_snapshot()?;
+    let actual = projection_live_snapshot(&originals.transaction)?
+        .ok_or_else(|| "published original companion generation disappeared".to_string())?;
+    if !projection_snapshots_semantically_equal(&actual, expected) {
+        return Err("published original companion generation changed before executable activation".into());
+    }
+    originals.transaction.parent_guard.validate()
 }
 
 #[cfg(not(unix))]
@@ -3528,6 +3705,7 @@ fn canonical_program_members(
     manifest: &DepsManifest,
     canonical: &Path,
     arch: TargetArch,
+    cache_key_sha: &str,
 ) -> Result<Vec<MaterializedProgramMemberV1>, String> {
     if manifest.kind != ManifestKind::Program {
         return Ok(Vec::new());
@@ -3547,6 +3725,7 @@ fn canonical_program_members(
             Some(runtime_file.mode),
         )
     }));
+    declarations.extend(original_companion_declarations(manifest, cache_key_sha)?);
     if declarations.is_empty() {
         return Err(format!(
             "{}: program has no declared output/runtime closure to materialize",
@@ -3558,7 +3737,10 @@ fn canonical_program_members(
     for (source_artifact, mirror_relative, declared_mode) in declarations {
         let mut source = StableProjectionSource::open(canonical, &source_artifact)
             .map_err(|error| format!("{}: {error}", manifest.spec()))?;
-        let mode = declared_mode.unwrap_or(source.file_snapshot.mode);
+        let mut mode = declared_mode.unwrap_or(source.file_snapshot.mode);
+        if manifest.program_outputs.iter().any(|output| output.original_wasm.as_deref() == Some(source_artifact.as_str())) {
+            mode &= 0o444;
+        }
         let destination_relative =
             program_projection_destination_relative(manifest, arch, &mirror_relative);
         let mut hash = Sha256::new();
@@ -3633,7 +3815,7 @@ fn write_canonical_receipt(
         cache_key_sha,
     )?;
     let cache_receipt_sha256 = cache_receipt_sha256(&snapshot.receipt)?;
-    let materialized_members = canonical_program_members(manifest, canonical, arch)?;
+    let materialized_members = canonical_program_members(manifest, canonical, arch, cache_key_sha)?;
     let receipt = PackageNodeReceiptV1 {
         manifest_sha256,
         cache_key_sha256: cache_key_sha.to_string(),
@@ -3670,6 +3852,27 @@ fn program_projection_destination_relative(
             .join(arch.as_str())
             .join(mirror_relative)
     }
+}
+
+pub(crate) fn original_companion_generation_relative(package_name: &str, cache_key: &str) -> Result<PathBuf, String> {
+    validate_single_path_component(OsStr::new(package_name), "original companion package")?;
+    if cache_key.len() != 64 || !cache_key.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) {
+        return Err("original companion generation requires a lowercase package cache key".into());
+    }
+    Ok(PathBuf::from(".originals").join(package_name).join(cache_key))
+}
+
+fn original_companion_declarations(manifest: &DepsManifest, cache_key: &str) -> Result<Vec<(String, PathBuf, Option<u32>)>, String> {
+    let mut declarations = Vec::new();
+    for output in &manifest.program_outputs {
+        if let Some(original) = &output.original_wasm {
+            if manifest.uses_root_binary_mirror() {
+                return Err("boot kernel artifacts cannot declare original program companions".into());
+            }
+            declarations.push((original.clone(), original_companion_generation_relative(&manifest.name, cache_key)?.join(original), None));
+        }
+    }
+    Ok(declarations)
 }
 
 #[cfg(unix)]
@@ -3926,7 +4129,6 @@ where
     }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         let mut declarations = Vec::<(String, PathBuf, Option<u32>)>::new();
         for output in &manifest.program_outputs {
             declarations.push((
@@ -3957,18 +4159,36 @@ where
         } else {
             program_projection_destination_relative(manifest, arch, &declarations[0].1)
         };
+        prepare_program_projection_entry(manifest, canonical, canonical_root, output_root,
+            arch, after_copy, declarations, is_package, live_relative, false)
+    }
+}
+
+#[cfg(unix)]
+fn prepare_program_projection_entry<F>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    canonical_root: Option<&AnchoredDirectory>,
+    output_root: &Path,
+    arch: TargetArch,
+    after_copy: &mut F,
+    declarations: Vec<(String, PathBuf, Option<u32>)>,
+    is_package: bool,
+    live_relative: PathBuf,
+    immutable: bool,
+) -> Result<PreparedProgramProjection, String>
+where
+    F: FnMut(&Path),
+{
+    use std::os::unix::fs::PermissionsExt;
+    {
         let live = output_root.join(&live_relative);
         let parent_guard = SourceOnlyProjectionParentGuard::prepare(output_root, &live)?;
         let allowed_stage_files = declarations
             .iter()
             .map(|(_, mirror_relative, _)| {
-                if is_package {
-                    package_owned_relative_path(manifest, mirror_relative).map_err(|error| {
-                        format!("{}: invalid package projection path: {error}", manifest.spec())
-                    })
-                } else {
-                    Ok(PathBuf::new())
-                }
+                projection_entry_stage_relative(&live_relative,
+                    &program_projection_destination_relative(manifest, arch, mirror_relative), is_package)
             })
             .collect::<Result<BTreeSet<_>, _>>()?;
         let mut transaction = OwnedEntryTransaction::reserve(
@@ -3978,6 +4198,7 @@ where
             &manifest.name,
             allowed_stage_files,
         )?;
+        transaction.immutable = immutable;
         let stage = transaction.stage.clone();
 
         let mut prepared = Vec::new();
@@ -3990,16 +4211,10 @@ where
                 None => StableProjectionSource::open(canonical, &source_artifact),
             }
             .map_err(|error| format!("{}: {error}", manifest.spec()))?;
-            let mode = declared_mode.unwrap_or(source.file_snapshot.mode);
+            let mode = if immutable { source.file_snapshot.mode & 0o444 } else { declared_mode.unwrap_or(source.file_snapshot.mode) };
             let destination_relative =
                 program_projection_destination_relative(manifest, arch, &mirror_relative);
-            let stage_relative = if is_package {
-                package_owned_relative_path(manifest, &mirror_relative).map_err(|error| {
-                    format!("{}: invalid package projection path: {error}", manifest.spec())
-                })?
-            } else {
-                PathBuf::new()
-            };
+            let stage_relative = projection_entry_stage_relative(&live_relative, &destination_relative, is_package)?;
             let (stage_parent, stage_name, stage_member) =
                 projection_stage_file_parent(&transaction, &stage_relative)?;
             let mut stage_file = stage_parent.create_child_file_new(
@@ -4111,6 +4326,43 @@ where
             members: prepared,
         })
     }
+}
+
+fn projection_entry_stage_relative(live: &Path, destination: &Path, directory: bool) -> Result<PathBuf, String> {
+    let relative = destination.strip_prefix(live)
+        .map_err(|_| format!("projected member {} escapes live entry {}", destination.display(), live.display()))?;
+    if directory {
+        if relative.as_os_str().is_empty() || relative.components().any(|component| !matches!(component, Component::Normal(_))) {
+            return Err("directory projection member must be a nonempty portable path".into());
+        }
+    } else if !relative.as_os_str().is_empty() {
+        return Err("scalar projection member differs from its live entry".into());
+    }
+    Ok(relative.to_path_buf())
+}
+
+#[cfg(unix)]
+fn sync_original_companion_stage(transaction: &OwnedEntryTransaction) -> Result<(), String> {
+    transaction.parent_guard.validate()?;
+    transaction.validate_private_tree(&transaction.transaction_root)?;
+    let PreparedProjectionSnapshot::PackageDirectory(tree) = transaction.stage_snapshot()? else {
+        return Err("original companions require a directory generation".into());
+    };
+    let stage = transaction.stage_anchor.as_ref().ok_or_else(|| "missing original companion stage directory".to_string())?;
+    for relative in tree.directories.keys().rev() {
+        let mut directory = stage.try_clone("original companion stage")?;
+        for component in relative.components() {
+            let Component::Normal(name) = component else {
+                return Err("original companion stage directory is not portable".into());
+            };
+            directory = directory.open_child_directory(name, "original companion stage directory")?;
+        }
+        directory.sync("original companion stage directory")?;
+    }
+    stage.sync("original companion stage root")?;
+    transaction.private_root.root.sync("original companion stage link")?;
+    transaction.parent_guard.sync_ancestry()?;
+    transaction.validate_private_tree(&transaction.transaction_root)
 }
 
 #[cfg(unix)]
@@ -4860,6 +5112,11 @@ where
         return Ok(());
     }
 
+    if transaction.immutable && initial_live.is_some() {
+        return fail_owned_entry_transaction(transaction, lock,
+            format!("{subject}: immutable original companion generation differs; refusing replacement"));
+    }
+
     let publication = if let Some(live) = initial_live {
         if let Err(error) = phase_hook(
             OwnedEntryPublishPhase::BeforeQuarantineRename,
@@ -5562,6 +5819,7 @@ fn program_package_index_for_root_once(
                 mirror_path,
                 output_name: Some(output.name.clone()),
                 fork_instrumentation: Some(output.fork_instrumentation.as_str().to_string()),
+                original_wasm: output.original_wasm.clone(),
                 guest_path: None,
                 mode: None,
             });
@@ -5585,6 +5843,7 @@ fn program_package_index_for_root_once(
                 mirror_path,
                 output_name: None,
                 fork_instrumentation: None,
+                original_wasm: None,
                 guest_path: Some(runtime_file.guest_path.clone()),
                 mode: Some(runtime_file.mode),
             });
@@ -5852,6 +6111,7 @@ fn program_projection_members(
             mirror_path,
             output_name: Some(output.name.clone()),
             fork_instrumentation: Some(output.fork_instrumentation.as_str().to_string()),
+            original_wasm: output.original_wasm.clone(),
             guest_path: None,
             mode: None,
         });
@@ -5875,6 +6135,7 @@ fn program_projection_members(
             mirror_path,
             output_name: None,
             fork_instrumentation: None,
+            original_wasm: None,
             guest_path: Some(runtime_file.guest_path.clone()),
             mode: Some(runtime_file.mode),
         });
@@ -5886,6 +6147,13 @@ fn program_projection_members(
         ));
     }
     Ok(members)
+}
+
+fn require_no_local_original_companions(manifest: &DepsManifest) -> Result<(), String> {
+    if manifest.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+        return Err(format!("{}: original Wasm companions require complete atomic local-generation installation", manifest.spec()));
+    }
+    Ok(())
 }
 
 fn program_package_index_for_root_with<F>(
@@ -7129,6 +7397,11 @@ fn compute_sha_with_identity_context_for_platform(
                 if out.fork_instrumentation != ForkInstrumentationPolicy::Auto {
                     h.update(b"|fork_instrumentation=");
                     h.update(out.fork_instrumentation.as_str().as_bytes());
+                }
+                if let Some(original) = &out.original_wasm {
+                    h.update(b"|original_wasm=");
+                    h.update((original.len() as u64).to_le_bytes());
+                    h.update(original.as_bytes());
                 }
                 h.update(b"\n");
             }
@@ -9822,6 +10095,7 @@ where
         &authority.manifest,
         &canonical,
         Some(&authority.cache_root),
+        Some(&authority.cache_key_sha256),
         output_root,
         arch,
         after_copy,
@@ -12858,6 +13132,18 @@ fn validate_source_only_cache_artifacts_from_receipt(
                         failures.join("; ")
                     ));
                 }
+                if let Some(original) = &output.original_wasm {
+                    let entry = require_source_only_receipt_entry(target, receipt, original, "original Wasm", true)?;
+                    if entry.mode & 0o7111 != 0 {
+                        return Err("original Wasm must not have executable or special mode bits".into());
+                    }
+                    let reference = required_original_reference(&bytes)?;
+                    let mut source = StableProjectionSource::open_from_anchored_root(root, original)?;
+                    let snapshot = fork_instrument::artifact_io::MappedArtifact::snapshot(&mut source.file, reference.length)
+                        .map_err(|error| format!("snapshot original {original:?}: {error}"))?;
+                    source.validate()?;
+                    verify_original_receipt(snapshot.bytes(), &reference, entry.size, entry.sha256.as_deref())?;
+                }
             }
             for runtime_file in &target.runtime_files {
                 require_source_only_receipt_entry(
@@ -14095,6 +14381,8 @@ fn build_into_cache(
         Ok(paths) => paths,
         Err(error) => return Err(error),
     };
+    let dependency_original_inputs = write_dependency_original_inputs(target, registry, &dependency_paths,
+        arch, abi_version, policy, &work.recipe_work)?;
 
     let git_inputs_result = match policy {
         ResolvePolicy::Default => ProvisionedGitInputs::provision(target, canonical),
@@ -14168,6 +14456,18 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_REVISION", target.revision.to_string());
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
+        cmd.env_remove("WASM_POSIX_DEP_ORIGINAL_INPUTS");
+        if let Some(path) = &dependency_original_inputs {
+            cmd.env("WASM_POSIX_DEP_ORIGINAL_INPUTS", path);
+        }
+        cmd.env("WASM_POSIX_INSTALL_OUTPUT_METADATA", serde_json::to_string(
+            &target.program_outputs.iter().map(|output| output_metadata_value(target, output))
+                .collect::<Vec<_>>()).map_err(|error| format!("serialize install metadata: {error}"))?);
+        if target.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+            cmd.env("WASM_POSIX_BUILD_ORIGINAL_STORE", work.recipe_work.join("original-programs"));
+        } else {
+            cmd.env_remove("WASM_POSIX_BUILD_ORIGINAL_STORE");
+        }
         // WHY: child recipes can invoke the TypeScript/standalone resolver.
         // Passing the exact ResolveOpts root keeps those nested lookups on the
         // same cache even when archive-stage selected --cache-root and the
@@ -16816,6 +17116,26 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
                     out.fork_instrumentation,
                     required_exports_for_program_output(target, out),
                 )?;
+                if let Some(original) = &out.original_wasm {
+                    let original_path = validate_declared_artifact(target, dir, original,
+                        "original Wasm", "missing from cache entry", true)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = std::fs::metadata(&original_path)
+                            .map_err(|error| format!("inspect {}: {error}", original_path.display()))?
+                            .permissions().mode();
+                        if mode & 0o7111 != 0 {
+                            return Err("original Wasm must not have executable or special mode bits".into());
+                        }
+                    }
+                    let bytes = std::fs::read(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+                    let reference = required_original_reference(&bytes)?;
+                    let (snapshot, _) = fork_instrument::artifact_io::MappedArtifact::read(&original_path, reference.length)
+                        .map_err(|error| format!("snapshot {}: {error}", original_path.display()))?;
+                    fork_instrument::original_artifact::verify_original(snapshot.bytes(), &reference, reference.length)
+                        .map_err(|error| format!("verify {}: {error}", original_path.display()))?;
+                }
             }
             for runtime_file in &target.runtime_files {
                 validate_declared_artifact(
@@ -16829,6 +17149,26 @@ pub(crate) fn validate_cache_artifacts(target: &DepsManifest, dir: &Path) -> Res
             }
         }
         ManifestKind::Source => {}
+    }
+    Ok(())
+}
+
+fn required_original_reference(bytes: &[u8]) -> Result<fork_instrument::original_artifact::OriginalReference, String> {
+    fork_instrument::original_artifact::original_reference(bytes)
+        .map_err(|error| format!("read original-program reference: {error}"))?
+        .ok_or_else(|| "declared original Wasm requires a content-bound original-program reference".to_string())
+}
+
+fn verify_original_receipt(
+    bytes: &[u8],
+    reference: &fork_instrument::original_artifact::OriginalReference,
+    size: Option<u64>,
+    digest: Option<&str>,
+) -> Result<(), String> {
+    fork_instrument::original_artifact::verify_original(bytes, reference, reference.length)
+        .map_err(|error| format!("verify declared original Wasm: {error}"))?;
+    if size != Some(reference.length) || digest != Some(hex(&reference.sha256).as_str()) {
+        return Err("declared original Wasm differs from its complete cache receipt".to_string());
     }
     Ok(())
 }
@@ -17708,16 +18048,24 @@ fn cmd_output_path(m: &DepsManifest, wasm_basename: &str) -> Result<(), String> 
 /// prevents separate manifest reads from observing different registry state.
 fn cmd_output_metadata(m: &DepsManifest, wasm_artifact: &str) -> Result<(), String> {
     let output = m.output_for_wasm_artifact(wasm_artifact)?;
-    let value = serde_json::json!({
-        "source_artifact": output.wasm,
-        "mirror_path": m.output_dest_rel_for(output),
-        "fork_instrumentation": output.fork_instrumentation.as_str(),
-    });
+    let value = output_metadata_value(m, output);
     println!(
         "{}",
         serde_json::to_string(&value).map_err(|e| format!("serialize output metadata: {e}"))?
     );
     Ok(())
+}
+
+fn output_metadata_value(m: &DepsManifest, output: &crate::pkg_manifest::ProgramOutput) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "source_artifact": output.wasm,
+        "mirror_path": m.output_dest_rel_for(output),
+        "fork_instrumentation": output.fork_instrumentation.as_str(),
+    });
+    if let Some(original) = &output.original_wasm {
+        value["original_wasm"] = serde_json::json!(original);
+    }
+    value
 }
 
 /// `runtime-file-path <name|path> <artifact>`: print the mirror path
@@ -18320,6 +18668,7 @@ fn install_local_artifact(
     binaries_dir: &Path,
     arch: TargetArch,
 ) -> Result<LocalArtifactInstall, String> {
+    require_no_local_original_companions(manifest)?;
     if !matches!(manifest.kind, ManifestKind::Program) {
         return Err(format!(
             "{}: direct local artifact installation is program-only",
@@ -19739,9 +20088,23 @@ fn replace_mirror_symlink_no_follow(
     target: &Path,
     destination: &Path,
 ) -> Result<(), String> {
+    replace_mirror_symlink_with_validation(manifest, target, destination, &mut |_| Ok(()))
+}
+
+fn replace_mirror_symlink_with_validation<F>(
+    manifest: &DepsManifest,
+    target: &Path,
+    destination: &Path,
+    before_publish: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
     let mut transaction = LocalFileTransaction::prepare_symlink(manifest, target, destination)?;
     let mut rename = |from: &Path, to: &Path| std::fs::rename(from, to);
+    before_publish(destination)?;
     transaction.move_existing_aside_with(manifest, &mut rename)?;
+    before_publish(destination)?;
     transaction.publish_with(manifest, &mut rename)?;
     transaction.finish()
 }
@@ -20723,37 +21086,96 @@ fn cleanup_reserved_local_stage(
 /// transaction. One-member and first-party flat layouts retain their
 /// historical replace-one-link behavior.
 fn place_binaries_symlinks(
-    m: &DepsManifest,
+    manifest: &DepsManifest,
     canonical: &Path,
     binaries_dir: &Path,
     arch: TargetArch,
     expected_cache_key_sha: &str,
 ) -> Result<(), String> {
-    let outputs = &m.program_outputs;
+    place_binaries_symlinks_with_validation(manifest, canonical, binaries_dir, arch,
+        expected_cache_key_sha, &mut |_| Ok(()))
+}
+
+fn place_binaries_symlinks_with_validation<F>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    expected_cache_key_sha: &str,
+    before_publish: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    if !manifest.program_outputs.iter().any(|output| output.original_wasm.is_some()) {
+        return place_binaries_symlinks_after_originals(manifest, canonical, binaries_dir, arch,
+            expected_cache_key_sha, before_publish);
+    }
+    #[cfg(unix)]
+    {
+        validate_cache_artifacts(manifest, canonical)?;
+        let canonical = canonical_real_directory(canonical, "package cache entry")?;
+        let binaries_dir = canonical_real_directory(binaries_dir, "binaries publication root")?;
+        let declarations = original_companion_declarations(manifest, expected_cache_key_sha)?;
+        let live_relative = program_projection_destination_relative(manifest, arch,
+            &original_companion_generation_relative(&manifest.name, expected_cache_key_sha)?);
+        let mut originals = prepare_program_projection_entry(manifest, &canonical, None,
+            &binaries_dir, arch, &mut |_| {}, declarations, true, live_relative, true)?;
+        sync_original_companion_stage(&originals.transaction)?;
+        let root = originals.transaction.parent_guard.root_anchor.try_clone("original companion publication root")?;
+        return with_source_only_projection_lock_guard_from_root(root, |lock| {
+            publish_owned_entry_transaction(&manifest.spec(), &binaries_dir, &mut originals.transaction,
+                lock, before_publish)?;
+            validate_original_companion_publication(&originals)?;
+            let mut before_executable = |path: &Path| {
+                before_publish(path)?;
+                validate_original_companion_publication(&originals)
+            };
+            place_binaries_symlinks_after_originals(manifest, &canonical, &binaries_dir, arch,
+                expected_cache_key_sha, &mut before_executable)
+        });
+    }
+    #[cfg(not(unix))]
+    Err("original companion mirror publication requires Unix no-follow filesystem semantics".into())
+}
+
+fn place_binaries_symlinks_after_originals<F>(
+    manifest: &DepsManifest,
+    canonical: &Path,
+    binaries_dir: &Path,
+    arch: TargetArch,
+    expected_cache_key_sha: &str,
+    before_publish: &mut F,
+) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
+    let outputs = &manifest.program_outputs;
     if outputs.is_empty() {
-        return Err(format!("program {:?} has no [[outputs]]", m.name));
+        return Err(format!("program {:?} has no [[outputs]]", manifest.name));
     }
     let binaries_dir = canonical_real_directory(binaries_dir, "binaries publication root")?;
     let programs_root = binaries_dir.join("programs");
     ensure_real_child_directory(&binaries_dir, &programs_root, "program publication root")?;
     let arch_root = programs_root.join(arch.as_str());
     ensure_real_child_directory(&programs_root, &arch_root, "architecture publication root")?;
-    if m.uses_package_mirror_directory() {
-        let package_dir = arch_root.join(&m.name);
+    if manifest.uses_package_mirror_directory() {
+        let package_dir = arch_root.join(&manifest.name);
         if package_mirror_selects_local_generation(
-            m,
+            manifest,
             &binaries_dir,
             arch,
             expected_cache_key_sha,
             &package_dir,
         )? {
+            require_no_local_original_companions(manifest)?;
             return Ok(());
         }
-        let plan = PackageClosureMirrorPlan::validate(m, canonical, &arch_root)?;
+        let plan = PackageClosureMirrorPlan::validate(manifest, canonical, &arch_root)?;
         if package_mirror_matches_plan(&plan)? {
             return Ok(());
         }
-        return install_package_closure_mirror(plan);
+        return install_package_closure_mirror_with_validation(plan, before_publish);
     }
 
     for out in outputs {
@@ -20772,23 +21194,24 @@ fn place_binaries_symlinks(
                 src.display()
             ));
         }
-        let dest = if m.uses_root_binary_mirror() {
+        let dest = if manifest.uses_root_binary_mirror() {
             binaries_dir.join(format!("{}.wasm", out.name))
         } else {
-            arch_root.join(m.output_dest_rel_for(out))
+            arch_root.join(manifest.output_dest_rel_for(out))
         };
         let dest_dir = dest
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
         ensure_existing_real_directory(dest_dir, "artifact publication parent")?;
         if scalar_mirror_selects_local_generation(
-            m,
+            manifest,
             out,
             &binaries_dir,
             arch,
             expected_cache_key_sha,
             &dest,
         )? {
+            require_no_local_original_companions(manifest)?;
             continue;
         }
         if let Ok(metadata) = std::fs::symlink_metadata(&dest) {
@@ -20804,9 +21227,9 @@ fn place_binaries_symlinks(
                 ));
             }
         }
-        replace_mirror_symlink_no_follow(m, &src, &dest)?;
+        replace_mirror_symlink_with_validation(manifest, &src, &dest, before_publish)?;
     }
-    for runtime_file in &m.runtime_files {
+    for runtime_file in &manifest.runtime_files {
         let src = canonical.join(&runtime_file.artifact);
         let metadata = std::fs::symlink_metadata(&src).map_err(|e| {
             format!(
@@ -20822,7 +21245,7 @@ fn place_binaries_symlinks(
                 src.display()
             ));
         }
-        let dest = arch_root.join(m.runtime_file_dest_rel_for(runtime_file));
+        let dest = arch_root.join(manifest.runtime_file_dest_rel_for(runtime_file));
         let dest_dir = dest
             .parent()
             .ok_or_else(|| format!("dest path {} has no parent", dest.display()))?;
@@ -20840,7 +21263,7 @@ fn place_binaries_symlinks(
                 ));
             }
         }
-        replace_mirror_symlink_no_follow(m, &src, &dest)?;
+        replace_mirror_symlink_with_validation(manifest, &src, &dest, before_publish)?;
     }
     Ok(())
 }
@@ -21434,9 +21857,18 @@ impl Drop for PackageDirectoryTransaction {
 }
 
 fn install_package_closure_mirror(plan: PackageClosureMirrorPlan) -> Result<(), String> {
+    install_package_closure_mirror_with_validation(plan, &mut |_| Ok(()))
+}
+
+fn install_package_closure_mirror_with_validation<F>(plan: PackageClosureMirrorPlan, before_publish: &mut F) -> Result<(), String>
+where
+    F: FnMut(&Path) -> Result<(), String>,
+{
     let mut transaction = PackageDirectoryTransaction::prepare(plan)?;
     let mut rename = |from: &Path, to: &Path| std::fs::rename(from, to);
+    before_publish(&transaction.live_dir)?;
     transaction.move_existing_aside_with(&mut rename)?;
+    before_publish(&transaction.live_dir)?;
     transaction.publish_with(&mut rename)?;
     transaction.finish()
 }
@@ -24342,6 +24774,11 @@ allow_uninitialized_gitlinks = true
             "program ABI dir missing: {paths:?}"
         );
         assert!(
+            paths.iter().any(|path| path == "crates/wasm-artifact"),
+            "shared original-program reader missing: {paths:?}"
+        );
+        assert!(!paths.iter().any(|path| path == "crates/shared"));
+        assert!(
             paths.iter().any(|p| p == ".cargo/config.toml"),
             "cargo config missing: {paths:?}"
         );
@@ -25372,6 +25809,432 @@ fork_instrumentation = "disabled"
             "re-ordering program outputs is a meaningful change (not normalized) and must \
              invalidate the cache key"
         );
+    }
+
+    #[test]
+    fn associated_original_declaration_changes_the_cache_key_without_moving_executable() {
+        let root = tempdir("sha-original-output");
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let initial = sha_of(&registry, "dash");
+        for original in ["originals/dash.wasm", "originals/other.wasm"] {
+            write_program_manifest(&root, "dash", "1.0.0", &format!("[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = {original:?}\n"));
+            assert_ne!(initial, sha_of(&registry, "dash"));
+            let manifest = registry.load("dash").unwrap();
+            assert_eq!(manifest.output_dest_rel("dash.wasm").unwrap(), PathBuf::from("dash.wasm"));
+            assert_eq!(output_metadata_value(&manifest, &manifest.program_outputs[0])["original_wasm"], original);
+        }
+        let last = sha_of(&registry, "dash");
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = \"originals/dash.wasm\"\n");
+        assert_ne!(last, sha_of(&registry, "dash"));
+    }
+
+    #[test]
+    fn associated_original_projection_declares_companions_and_manual_install_stays_guarded() {
+        let root = tempdir("original-projection-refusal");
+        write_program_manifest(&root, "dash", "1.0.0", "[[outputs]]\nname = \"dash\"\nwasm = \"dash.wasm\"\noriginal_wasm = \"originals/dash.wasm\"\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("dash").unwrap();
+        let members = program_projection_members(&manifest).unwrap();
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].original_wasm.as_deref(), Some("originals/dash.wasm"));
+        let mirror = root.join("mirror");
+        assert!(install_local_artifact(&manifest, &"a".repeat(64), "dash.wasm", &root.join("dash.wasm"),
+            "session", &mirror, TargetArch::Wasm32).unwrap_err().contains("atomic local-generation"));
+        assert!(!mirror.exists());
+    }
+
+    #[cfg(unix)]
+    fn original_projection_fixture() -> (DepsManifest, PathBuf, PathBuf, Vec<u8>) {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempdir("original-companion-publication");
+        write_program_manifest(&root, "originalfixture", "1.0.0", "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\noriginal_wasm = \"originals/app.wasm\"\n");
+        let manifest = Registry { roots: vec![root.clone()] }.load("originalfixture").unwrap();
+        let canonical = root.join("canonical");
+        let output = root.join("projection");
+        fs::create_dir_all(canonical.join("originals")).unwrap();
+        fs::create_dir(&output).unwrap();
+        let original = minimal_executable_wasm();
+        let reference = fork_instrument::original_artifact::OriginalReference {
+            length: original.len() as u64,
+            sha256: Sha256::digest(&original).into(),
+        };
+        let source = fork_instrument::artifact_io::MappedArtifact::snapshot(original.as_slice(), 4096).unwrap();
+        let prepared = fork_instrument::original_artifact::attach_original_reference(&source, &reference, 4096).unwrap();
+        fs::write(canonical.join("app.wasm"), prepared.bytes()).unwrap();
+        fs::write(canonical.join("originals/app.wasm"), &original).unwrap();
+        fs::set_permissions(canonical.join("originals/app.wasm"), fs::Permissions::from_mode(0o444)).unwrap();
+        (manifest, canonical, output, original)
+    }
+
+    #[cfg(unix)]
+    fn publish_original_fixture(manifest: &DepsManifest, canonical: &Path, output: &Path, key: &str) -> Result<Vec<MaterializedProgramMemberV1>, String> {
+        materialize_source_only_program_target_with_cache_root(manifest, canonical, None, Some(key), output,
+            TargetArch::Wasm32, &mut |_| {}, &mut |_| Ok(()))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_original_inputs_bind_native_members_and_refuse_reuse() {
+        use std::os::unix::fs::PermissionsExt;
+        for consumer_arch in [TargetArch::Wasm32, TargetArch::Wasm64] {
+        let (manifest, canonical, work, original) = original_projection_fixture();
+        let registry = Registry { roots: vec![manifest.dir.parent().unwrap().to_path_buf()] };
+        let key = manifest_cache_key_sha_for_policy(&manifest, &registry, TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default).unwrap();
+        let selected = canonical_path(&work, &manifest, TargetArch::Wasm32, TEST_ABI, &hex_to_32(&key).unwrap());
+        fs::create_dir_all(selected.parent().unwrap()).unwrap();
+        fs::rename(&canonical, &selected).unwrap();
+        let canonical = selected;
+        let dependencies = BTreeMap::from([(manifest.name.clone(), canonical.clone())]);
+        let path = write_dependency_original_inputs(&manifest, &registry, &dependencies,
+            consumer_arch, TEST_ABI, ResolvePolicy::Default, &work).unwrap().unwrap();
+        let bytes = fs::read(&path).unwrap();
+        let metadata: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(metadata["schema"], 1);
+        assert_eq!(metadata["kind"], "kandelo-dependency-original-inputs");
+        assert_eq!(metadata["consumerPackage"], manifest.name);
+        let input = &metadata["inputs"][0];
+        assert_eq!(input["resolverPath"], "programs/wasm32/app.wasm");
+        assert_eq!(input["executableSha256"], hex(&Sha256::digest(fs::read(canonical.join("app.wasm")).unwrap())));
+        assert_eq!(input["original"]["sha256"], hex(&Sha256::digest(&original)));
+        assert_eq!(input["original"]["size"], original.len());
+        assert_eq!(input["original"]["mode"], 0o444);
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o7777, 0o444);
+        assert!(write_dependency_original_inputs(&manifest, &registry, &dependencies,
+            consumer_arch, TEST_ABI, ResolvePolicy::Default, &work).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_original_inputs_refuse_changed_originals_before_publishing_metadata() {
+        use std::os::unix::fs::PermissionsExt;
+        let (manifest, canonical, work, original) = original_projection_fixture();
+        let registry = Registry { roots: vec![manifest.dir.parent().unwrap().to_path_buf()] };
+        let key = manifest_cache_key_sha_for_policy(&manifest, &registry, TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default).unwrap();
+        let selected = canonical_path(&work, &manifest, TargetArch::Wasm32, TEST_ABI, &hex_to_32(&key).unwrap());
+        fs::create_dir_all(selected.parent().unwrap()).unwrap();
+        fs::rename(&canonical, &selected).unwrap();
+        let canonical = selected;
+        let dependencies = BTreeMap::from([(manifest.name.clone(), canonical.clone())]);
+        let path = canonical.join("originals/app.wasm");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&path, vec![0; original.len()]).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        assert!(write_dependency_original_inputs(&manifest, &registry, &dependencies,
+            TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default, &work).is_err());
+        assert!(!work.join("dependency-original-inputs-v1.json").exists());
+        assert!(write_dependency_original_inputs(&manifest, &registry, &BTreeMap::new(),
+            TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default, &work).unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_original_inputs_refuse_an_unselected_generation() {
+        let (manifest, canonical, work, _) = original_projection_fixture();
+        let registry = Registry { roots: vec![manifest.dir.parent().unwrap().to_path_buf()] };
+        let dependencies = BTreeMap::from([(manifest.name.clone(), canonical)]);
+        assert!(write_dependency_original_inputs(&manifest, &registry, &dependencies,
+            TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default, &work).unwrap_err().contains("selected generation"));
+        assert!(!work.join("dependency-original-inputs-v1.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_original_inputs_reach_a_normal_consumer_recipe() {
+        let (manifest, canonical, cache, original) = original_projection_fixture();
+        let registry_root = manifest.dir.parent().unwrap().to_path_buf();
+        write_lib(&registry_root, "originalconsumer", "1.0.0", &["originalfixture@1.0.0"],
+            r#"test -f "$WASM_POSIX_DEP_ORIGINAL_INPUTS"
+test -f "$WASM_POSIX_DEP_ORIGINALFIXTURE_DIR/originals/app.wasm"
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+cp "$WASM_POSIX_DEP_ORIGINAL_INPUTS" "$WASM_POSIX_DEP_OUT_DIR/lib/inputs.json"
+printf 'consumer' > "$WASM_POSIX_DEP_OUT_DIR/lib/libconsumer.a""#,
+            "[outputs]\nlibs = [\"lib/libconsumer.a\"]\n");
+        let registry = Registry { roots: vec![registry_root] };
+        let key = manifest_cache_key_sha_for_policy(&manifest, &registry, TargetArch::Wasm32, TEST_ABI, ResolvePolicy::Default).unwrap();
+        let selected = canonical_path(&cache, &manifest, TargetArch::Wasm32, TEST_ABI, &hex_to_32(&key).unwrap());
+        fs::create_dir_all(selected.parent().unwrap()).unwrap();
+        fs::rename(&canonical, &selected).unwrap();
+        let consumer = registry.load("originalconsumer").unwrap();
+        let published = ensure_built(&consumer, &registry, TargetArch::Wasm32, TEST_ABI, &resolve_opts(&cache, None)).unwrap();
+        let metadata: serde_json::Value = serde_json::from_slice(&fs::read(published.join("lib/inputs.json")).unwrap()).unwrap();
+        assert_eq!(metadata["consumerPackage"], consumer.name);
+        assert_eq!(metadata["inputs"][0]["original"]["sha256"], hex(&Sha256::digest(&original)));
+        assert_eq!(metadata["inputs"][0]["original"]["path"], selected.join("originals/app.wasm").to_str().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_cache_mirror_keeps_scalar_layout_and_immutable_companions() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        for arch in [TargetArch::Wasm32, TargetArch::Wasm64] {
+            let (manifest, canonical, output, original) = original_projection_fixture();
+            let key = "a".repeat(64);
+            place_binaries_symlinks(&manifest, &canonical, &output, arch, &key).unwrap();
+            let executable = output.join("programs").join(arch.as_str()).join("app.wasm");
+            assert_eq!(fs::read_link(&executable).unwrap(), canonical.join("app.wasm"));
+            let companion = output.join("programs").join(arch.as_str()).join(".originals/originalfixture").join(&key).join("originals/app.wasm");
+            assert_eq!(fs::read(&companion).unwrap(), original);
+            assert_eq!(fs::metadata(&companion).unwrap().permissions().mode() & 0o7777, 0o444);
+            let inode = fs::metadata(&companion).unwrap().ino();
+            place_binaries_symlinks(&manifest, &canonical, &output, arch, &key).unwrap();
+            assert_eq!(fs::metadata(&companion).unwrap().ino(), inode);
+            place_binaries_symlinks(&manifest, &canonical, &output, arch, &"b".repeat(64)).unwrap();
+            assert_eq!(fs::read(&companion).unwrap(), original);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_cache_mirror_publishes_complete_package_layout() {
+        let (mut manifest, canonical, output, original) = original_projection_fixture();
+        manifest.runtime_files.push(crate::pkg_manifest::RuntimeFile {
+            artifact: "settings.txt".into(), guest_path: "/etc/settings.txt".into(), mode: 0o644,
+        });
+        fs::write(canonical.join("settings.txt"), b"package settings").unwrap();
+        let key = "a".repeat(64);
+        place_binaries_symlinks(&manifest, &canonical, &output, TargetArch::Wasm32, &key).unwrap();
+        let package = output.join("programs/wasm32/originalfixture");
+        assert_eq!(fs::read_link(package.join("app.wasm")).unwrap(), canonical.join("app.wasm"));
+        assert_eq!(fs::read(package.join("settings.txt")).unwrap(), b"package settings");
+        assert_eq!(fs::read(output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm")).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_cache_mirror_refuses_corrupt_generations_without_executable_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let (manifest, canonical, output, original) = original_projection_fixture();
+        let key = "a".repeat(64);
+        place_binaries_symlinks(&manifest, &canonical, &output, TargetArch::Wasm32, &key).unwrap();
+        let executable = output.join("programs/wasm32/app.wasm");
+        let previous = fs::read_link(&executable).unwrap();
+        let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&companion, vec![0; original.len()]).unwrap();
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o444)).unwrap();
+        let error = place_binaries_symlinks(&manifest, &canonical, &output, TargetArch::Wasm32, &key).unwrap_err();
+        assert!(error.contains("immutable original companion generation differs"), "{error}");
+        assert_eq!(fs::read_link(&executable).unwrap(), previous);
+        assert_eq!(fs::read(&companion).unwrap(), vec![0; original.len()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_cache_mirror_rechecks_companions_at_each_executable_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+        for package_layout in [false, true] {
+            for fail_at in [1, 2] {
+                let (mut manifest, canonical, output, original) = original_projection_fixture();
+                if package_layout {
+                    manifest.runtime_files.push(crate::pkg_manifest::RuntimeFile {
+                        artifact: "settings.txt".into(), guest_path: "/etc/settings.txt".into(), mode: 0o644,
+                    });
+                    fs::write(canonical.join("settings.txt"), b"package settings").unwrap();
+                }
+                let destination = output.join("programs/wasm32").join(if package_layout { "originalfixture" } else { "app.wasm" });
+                let previous = canonical.parent().unwrap().join("previous");
+                fs::create_dir(&previous).unwrap();
+                fs::copy(canonical.join("app.wasm"), previous.join("app.wasm")).unwrap();
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                if package_layout {
+                    fs::create_dir(&destination).unwrap();
+                    fs::copy(canonical.join("settings.txt"), previous.join("settings.txt")).unwrap();
+                    symlink_file(&previous.join("app.wasm"), &destination.join("app.wasm")).unwrap();
+                    symlink_file(&previous.join("settings.txt"), &destination.join("settings.txt")).unwrap();
+                } else {
+                    symlink_file(&previous.join("app.wasm"), &destination).unwrap();
+                }
+                let key = "a".repeat(64);
+                let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+                let mut mutations = 0;
+                let error = place_binaries_symlinks_with_validation(&manifest, &canonical, &output,
+                    TargetArch::Wasm32, &key, &mut |path| {
+                        if path == destination {
+                            mutations += 1;
+                            if mutations == fail_at {
+                                fs::set_permissions(&companion, fs::Permissions::from_mode(0o644)).unwrap();
+                                fs::write(&companion, vec![0; original.len()]).unwrap();
+                                fs::set_permissions(&companion, fs::Permissions::from_mode(0o444)).unwrap();
+                            }
+                        }
+                        Ok(())
+                    }).unwrap_err();
+                assert!(error.contains("companion generation changed"), "{error}");
+                assert_eq!(mutations, fail_at);
+                let executable = if package_layout { destination.join("app.wasm") } else { destination };
+                assert_eq!(fs::read_link(executable).unwrap(), previous.join("app.wasm"));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_preserves_scalar_layout_and_complete_receipts() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let (manifest, canonical, output, original) = original_projection_fixture();
+        let key = "a".repeat(64);
+        let members = publish_original_fixture(&manifest, &canonical, &output, &key).unwrap();
+        assert_eq!(members.len(), 2);
+        let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+        assert_eq!(fs::read(&companion).unwrap(), original);
+        assert_eq!(fs::metadata(&companion).unwrap().permissions().mode() & 0o7777, 0o444);
+        assert!(output.join("programs/wasm32/app.wasm").is_file());
+        assert!(!output.join("programs/wasm32/originalfixture/app.wasm").exists());
+        assert_eq!(members, canonical_program_members(&manifest, &canonical, TargetArch::Wasm32, &key).unwrap());
+        let inode = fs::metadata(&companion).unwrap().ino();
+        assert_eq!(publish_original_fixture(&manifest, &canonical, &output, &key).unwrap(), members);
+        assert_eq!(fs::metadata(&companion).unwrap().ino(), inode);
+        publish_original_fixture(&manifest, &canonical, &output, &"b".repeat(64)).unwrap();
+        assert_eq!(fs::read(&companion).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_normal_source_only_cache_and_projection_share_receipts() {
+        let repo = tempdir("original-normal-source-only-repo");
+        prepare_local_rebuild_fixture_repo(&repo);
+        let original = minimal_executable_wasm();
+        let reference = fork_instrument::original_artifact::OriginalReference {
+            length: original.len() as u64,
+            sha256: Sha256::digest(&original).into(),
+        };
+        let source = fork_instrument::artifact_io::MappedArtifact::snapshot(original.as_slice(), 4096).unwrap();
+        let prepared = fork_instrument::original_artifact::attach_original_reference(&source, &reference, 4096).unwrap();
+        let script = format!("{}\nmkdir -p \"$WASM_POSIX_DEP_OUT_DIR/originals\"\n{}",
+            emit_wasm_build_script("app.wasm", prepared.bytes()),
+            emit_wasm_build_script("originals/app.wasm", &original));
+        write_program(&repo, "originalfixture", "1.0.0", &[], &script, &[("app", "app.wasm")]);
+        write_source_only_repository_inputs(&repo, "originalfixture");
+        let manifest_path = repo.join("originalfixture/package.toml");
+        fs::write(&manifest_path, fs::read_to_string(&manifest_path).unwrap().replace("wasm = \"app.wasm\"",
+            "wasm = \"app.wasm\"\noriginal_wasm = \"originals/app.wasm\"\nfork_instrumentation = \"disabled\"")).unwrap();
+        let registry = Registry { roots: vec![repo.clone()] };
+        let _repo_root = crate::install_repo_root_override(repo.clone()).unwrap();
+        let target = registry.load("originalfixture").unwrap();
+        let (base, compiled) = source_only_test_roots("original-normal-source-only-cache");
+        let canonical = ensure_built(&target, &registry, TEST_ARCH, TEST_ABI, &source_only_test_opts(&base, &compiled)).unwrap();
+        let roots = SourceOnlyCacheRoots { base, compiled };
+        let output = tempdir("original-normal-source-only-output");
+        let projected = run_local_rebuild_fixture(&target, &registry, &roots, &repo, &output, false).unwrap();
+        let receipt = projected.package_receipt.unwrap();
+        assert_eq!(receipt.materialized_members.len(), 2);
+        assert_eq!(read_source_only_cache_receipt(&canonical, &receipt.cache_key_sha256).unwrap().unwrap(), receipt);
+        with_source_only_program_projection_lock(&output, |authority| {
+            authority.validate_package_receipt(&target, &registry, &roots, TEST_ARCH, TEST_ABI, true, &receipt)
+        }).unwrap();
+        let original_member = receipt.materialized_members.iter().find(|member| member.source_artifact == "originals/app.wasm").unwrap();
+        assert_eq!(fs::read(output.join(&original_member.mirror_path)).unwrap(), original);
+        assert_eq!(original_member.mode & 0o7333, 0);
+        assert!(output.join("programs/wasm32/app.wasm").is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_refuses_to_replace_a_corrupt_generation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (manifest, canonical, output, original) = original_projection_fixture();
+        let key = "a".repeat(64);
+        publish_original_fixture(&manifest, &canonical, &output, &key).unwrap();
+        let executable = output.join("programs/wasm32/app.wasm");
+        let previous = fs::read(&executable).unwrap();
+        let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o644)).unwrap();
+        let corrupt = vec![0; original.len()];
+        fs::write(&companion, &corrupt).unwrap();
+        fs::set_permissions(&companion, fs::Permissions::from_mode(0o444)).unwrap();
+        let error = publish_original_fixture(&manifest, &canonical, &output, &key).unwrap_err();
+        assert!(error.contains("immutable original companion generation differs"), "{error}");
+        assert_eq!(fs::read(&companion).unwrap(), corrupt);
+        assert_eq!(fs::read(&executable).unwrap(), previous);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_can_leave_only_unselected_companions_after_activation_failure() {
+        let (manifest, canonical, output, original) = original_projection_fixture();
+        let key = "a".repeat(64);
+        let executable = output.join("programs/wasm32/app.wasm");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"previous selected executable").unwrap();
+        let error = materialize_source_only_program_target_with_cache_root(&manifest, &canonical, None,
+            Some(&key), &output, TargetArch::Wasm32, &mut |_| {}, &mut |path| {
+                if path == executable { Err("injected executable activation failure".into()) } else { Ok(()) }
+            }).unwrap_err();
+        assert!(error.contains("injected executable activation failure"), "{error}");
+        assert_eq!(fs::read(&executable).unwrap(), b"previous selected executable");
+        let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+        assert_eq!(fs::read(&companion).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_rechecks_companions_before_executable_activation() {
+        use std::os::unix::fs::PermissionsExt;
+        let (manifest, canonical, output, original) = original_projection_fixture();
+        let key = "a".repeat(64);
+        let executable = output.join("programs/wasm32/app.wasm");
+        let companion = output.join("programs/wasm32/.originals/originalfixture").join(&key).join("originals/app.wasm");
+        let mut changed = false;
+        let error = materialize_source_only_program_target_with_cache_root(&manifest, &canonical, None,
+            Some(&key), &output, TargetArch::Wasm32, &mut |_| {}, &mut |path| {
+                if path == executable && !changed {
+                    changed = true;
+                    fs::set_permissions(&companion, fs::Permissions::from_mode(0o644)).unwrap();
+                    fs::write(&companion, vec![0; original.len()]).unwrap();
+                    fs::set_permissions(&companion, fs::Permissions::from_mode(0o444)).unwrap();
+                }
+                Ok(())
+            }).unwrap_err();
+        assert!(error.contains("companion generation changed"), "{error}");
+        assert!(changed);
+        assert!(!executable.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_refuses_symlink_parents_and_missing_cache_identity() {
+        let (manifest, canonical, output, _) = original_projection_fixture();
+        let programs = output.join("programs/wasm32");
+        fs::create_dir_all(&programs).unwrap();
+        let outside = output.join("outside");
+        fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, programs.join(".originals")).unwrap();
+        assert!(publish_original_fixture(&manifest, &canonical, &output, &"a".repeat(64)).is_err());
+        assert!(!programs.join("app.wasm").exists());
+        assert!(fs::read_dir(outside).unwrap().next().is_none());
+        assert!(materialize_source_only_program_target(&manifest, &canonical, &output, TargetArch::Wasm32)
+            .unwrap_err().contains("verified package cache key"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_publication_refuses_changed_or_symlinked_ancestry_before_activation() {
+        for symlink_ancestor in [false, true] {
+            let (manifest, canonical, output, _) = original_projection_fixture();
+            let executable = output.join("programs/wasm32/app.wasm");
+            let namespace = output.join("programs/wasm32/.originals");
+            let retired = output.join("programs/wasm32/retired-originals");
+            let mut changed = false;
+            let result = materialize_source_only_program_target_with_cache_root(&manifest, &canonical, None,
+                Some(&"a".repeat(64)), &output, TargetArch::Wasm32, &mut |_| {}, &mut |path| {
+                    if path == executable && !changed {
+                        changed = true;
+                        fs::rename(&namespace, &retired).unwrap();
+                        if symlink_ancestor {
+                            std::os::unix::fs::symlink(&retired, &namespace).unwrap();
+                        } else {
+                            fs::create_dir(&namespace).unwrap();
+                        }
+                    }
+                    Ok(())
+                });
+            assert!(result.is_err(), "symlink ancestor: {symlink_ancestor}");
+            assert!(changed);
+            assert!(!executable.exists());
+        }
     }
 
     #[test]
@@ -30040,6 +30903,66 @@ ln -s {:?} "$WASM_POSIX_DEP_OUT_DIR/icu.dat""#,
         let err =
             ensure_built(&m, &reg, TargetArch::Wasm32, 4, &resolve_opts(&cache, None)).unwrap_err();
         assert!(err.contains("must not be a symlink"), "got: {err}");
+    }
+
+    #[test]
+    fn associated_original_cache_admission_requires_exact_raw_content_and_reference() {
+        let root = tempdir("original-output-cache");
+        write_program_manifest(&root, "originalfixture", "1.0.0", "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\noriginal_wasm = \"originals/app.wasm\"\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("originalfixture").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir_all(canonical.join("originals")).unwrap();
+        let original = minimal_executable_wasm();
+        let reference = fork_instrument::original_artifact::OriginalReference {
+            length: original.len() as u64,
+            sha256: Sha256::digest(&original).into(),
+        };
+        let source = fork_instrument::artifact_io::MappedArtifact::snapshot(original.as_slice(), 4096).unwrap();
+        let prepared = fork_instrument::original_artifact::attach_original_reference(&source, &reference, 4096).unwrap();
+        fs::write(canonical.join("app.wasm"), prepared.bytes()).unwrap();
+        assert!(validate_cache_artifacts(&manifest, &canonical).unwrap_err().contains("original Wasm"));
+        fs::write(canonical.join("originals/app.wasm"), &original).unwrap();
+        validate_cache_artifacts(&manifest, &canonical).unwrap();
+        fs::write(canonical.join("originals/app.wasm"), vec![0u8; original.len()]).unwrap();
+        assert!(validate_cache_artifacts(&manifest, &canonical).unwrap_err().contains("content mismatch"));
+        fs::write(canonical.join("originals/app.wasm"), &original).unwrap();
+        fs::write(canonical.join("app.wasm"), &original).unwrap();
+        assert!(validate_cache_artifacts(&manifest, &canonical).unwrap_err().contains("content-bound"));
+        fs::write(canonical.join("app.wasm"), prepared.bytes()).unwrap();
+        fs::write(canonical.join("originals/app.wasm"), prepared.bytes()).unwrap();
+        assert!(validate_cache_artifacts(&manifest, &canonical).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn associated_original_source_only_admission_checks_receipt_and_nofollow_source() {
+        let root = tempdir("original-source-only-admission");
+        write_program_manifest(&root, "originalfixture", "1.0.0", "[[outputs]]\nname = \"app\"\nwasm = \"app.wasm\"\noriginal_wasm = \"originals/app.wasm\"\n");
+        let registry = Registry { roots: vec![root.clone()] };
+        let manifest = registry.load("originalfixture").unwrap();
+        let canonical = root.join("canonical");
+        fs::create_dir_all(canonical.join("originals")).unwrap();
+        let original = minimal_executable_wasm();
+        let reference = fork_instrument::original_artifact::OriginalReference {
+            length: original.len() as u64,
+            sha256: Sha256::digest(&original).into(),
+        };
+        let source = fork_instrument::artifact_io::MappedArtifact::snapshot(original.as_slice(), 4096).unwrap();
+        let prepared = fork_instrument::original_artifact::attach_original_reference(&source, &reference, 4096).unwrap();
+        fs::write(canonical.join("app.wasm"), prepared.bytes()).unwrap();
+        fs::write(canonical.join("originals/app.wasm"), &original).unwrap();
+        let receipt = complete_cache_receipt_v1(&canonical, ResolvePolicy::SourceOnlyV1, "originalfixture", TargetArch::Wasm32, &"b".repeat(64)).unwrap();
+        let anchored = AnchoredDirectory::open_existing(&canonical, "test canonical entry").unwrap();
+        validate_source_only_cache_artifacts_from_receipt(&manifest, &anchored, &receipt).unwrap();
+        let mut wrong_receipt = receipt.clone();
+        let entry = wrong_receipt.entries.iter_mut().find(|entry| entry.path == "originals/app.wasm").unwrap();
+        entry.sha256 = Some("a".repeat(64));
+        assert!(validate_source_only_cache_artifacts_from_receipt(&manifest, &anchored, &wrong_receipt).unwrap_err().contains("complete cache receipt"));
+        let outside = root.join("outside.wasm");
+        fs::rename(canonical.join("originals/app.wasm"), &outside).unwrap();
+        std::os::unix::fs::symlink(&outside, canonical.join("originals/app.wasm")).unwrap();
+        assert!(validate_source_only_cache_artifacts_from_receipt(&manifest, &anchored, &receipt).is_err());
     }
 
     #[test]

@@ -413,6 +413,45 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.close).not.toHaveBeenCalledWith(backing.handle);
   });
 
+  it("keeps a host-backed mapping intact when munmap publication fails", () => {
+    const harness = createFileHarness();
+    const pid = harness.pids[0];
+    const address = 0x1000;
+    const channel = harness.channels.get(pid)!;
+    expect(harness.map(pid, 4, address)).toBe(true);
+    const original = (harness.kw as any).sharedMappings.get(pid).get(address);
+    new Uint8Array(channel.memory.buffer)[address + 9] = 0xee;
+    harness.io.write.mockReturnValueOnce(0);
+    const { completeChannel } = configureKernelSyscallHarness(harness, pid);
+    const args = [0, 65536, 0, 0, 0, 0];
+    writeChannelSyscall(channel, ABI_SYSCALLS.Munmap, args);
+    harness.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
+    expect(completeChannel).toHaveBeenCalledWith(channel, ABI_SYSCALLS.Munmap,
+      args, undefined, -1, 5);
+    expect(harness.releaseHostFileHandle).not.toHaveBeenCalled();
+    expect((harness.kw as any).sharedMappings.get(pid).get(address)).toBe(original);
+  });
+
+  it.each([28, 12, 30, 5])("keeps kernel-owned mappings intact when munmap publication refuses with errno %i", errno => {
+    const harness = createFileHarness();
+    const pid = harness.pids[0];
+    const address = 0x1000;
+    asKernelOwnedFile(harness, 4096);
+    expect(harness.map(pid, 4, address)).toBe(true);
+    const channel = harness.channels.get(pid)!;
+    const flush = vi.fn().mockReturnValue(-errno);
+    harness.kernelShared.exports.kernel_shared_mapping_flush = flush;
+    const { completeChannel } = configureKernelSyscallHarness(harness, pid);
+    const args = [0, 65536, 0, 0, 0, 0];
+    writeChannelSyscall(channel, ABI_SYSCALLS.Munmap, args);
+    harness.kw.testAuthority.dispatchScratchBoundarySyscallForTest(channel as any);
+    expect(flush).toHaveBeenCalledWith(pid, 0n, 65536n);
+    expect(completeChannel).toHaveBeenCalledWith(channel, ABI_SYSCALLS.Munmap,
+      args, undefined, -1, errno);
+    expect(harness.kernelShared.fileMappings.get(pid)?.has(address)).toBe(true);
+    expect(harness.kernelShared.callsTo("kernel_shared_mapping_unmap")).toEqual([]);
+  });
+
   it("fails MAP_FIXED before the kernel when process memory cannot cover it", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
@@ -1101,7 +1140,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     process[addr + 150] = 0xf1;
     expect((h.kw as any).flushSharedMappings(
       h.channels.get(pid), [addr, 4096],
-    )).toBe(true);
+    )).toBe(0);
     expect(h.logicalSize()).toBe(100);
     expect(h.storage[50]).toBe(0xa5);
     expect(h.io.write.mock.calls.at(-1)?.[3]).toBe(100);
@@ -1453,6 +1492,19 @@ describe("file/POSIX MAP_SHARED page cache", () => {
       .toEqual({ kind: "error", errno: 13 });
   });
 
+  it.each([28, 12, 30, 5])("preserves kernel mapping flush errno %i and permits retry", (errno) => {
+    const h = createFileHarness();
+    const pid = h.pids[0];
+    const addr = 0x1000;
+    asKernelOwnedFile(h, 4096);
+    expect(h.map(pid, 4, addr)).toBe(true);
+    const flush = vi.fn().mockReturnValueOnce(-errno).mockReturnValue(0);
+    h.kernelShared.exports.kernel_shared_mapping_flush = flush;
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096])).toBe(-errno);
+    expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096])).toBe(0);
+    expect(flush).toHaveBeenCalledTimes(2);
+  });
+
   it("drives msync, munmap, mremap and mprotect of kernel-owned mappings through the kernel", () => {
     const h = createFileHarness();
     const pid = h.pids[0];
@@ -1461,7 +1513,7 @@ describe("file/POSIX MAP_SHARED page cache", () => {
     expect(h.map(pid, 4, addr)).toBe(true);
 
     expect((h.kw as any).flushSharedMappings(h.channels.get(pid), [addr, 4096]))
-      .toBe(true);
+      .toBe(0);
     expect(h.kernelShared.callsTo("kernel_shared_mapping_flush")).toEqual([{
       name: "kernel_shared_mapping_flush",
       args: [pid, BigInt(addr), 4096n],

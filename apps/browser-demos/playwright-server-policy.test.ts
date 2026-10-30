@@ -11,6 +11,14 @@ import {
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 
+test("offline program compatibility owns a production fixture instead of borrowing a development server", () => {
+  const spec = "/checkout/apps/browser-demos/test/program-compatibility.spec.ts";
+  assert.equal(playwrightTestIgnoreForEnvironment({}).some(pattern => pattern.test(spec)), true);
+  assert.equal(playwrightTestIgnoreForEnvironment({
+    KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL: "http://127.0.0.1:57413/program-compatibility.vfs",
+  }).some(pattern => pattern.test(spec)), false);
+});
+
 test("assembled-site proof runs only with its sealed site root", () => {
   const ordinaryIgnore = playwrightTestIgnoreForEnvironment({});
   assert.equal(

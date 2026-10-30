@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "programAbi": 55,
+  "programContractDigest": "1358eca04a8d33fa5bcc27d1c672af2f6e7aaf466a398ad598d991347b1a4415",
+  "fixtures": [
+    {
+      "name": "echo",
+      "file": "echo.wasm",
+      "size": 22024,
+      "sha256": "34584dfa49166c6f065130ce2fafd96264412adac437e452b442103c9bfcc6db",
+      "sourcePath": "examples/echo.c",
+      "sourceSha256": "d153f64dceca0b2253d922f2ff49e5a0dc96c18df130b276bee342d61866880e"
+    },
+    {
+      "name": "spawn-smoke",
+      "file": "spawn-smoke.wasm",
+      "size": 53126,
+      "sha256": "c276207dba33150efe7040b53a2b77bfd0fb48942fa5bd098393fced72b8a7e7",
+      "sourcePath": "examples/spawn-smoke.c",
+      "sourceSha256": "dcc36dfd9c37da7bede8d8033ba355e0ff059cc0ac3c48f1676053d5643649eb"
+    },
+    {
+      "name": "fstatat-empty-path",
+      "file": "fstatat-empty-path.wasm",
+      "size": 45980,
+      "sha256": "6425953826d9b91d598d938ac51b359a02a0c1fe83f44955d9a2554d721abfca",
+      "sourcePath": "examples/fstatat_empty_path_test.c",
+      "sourceSha256": "ad26b806d74b17cf55b787617fe648a6912e5c85d61ccfb4579c921dd4117ee5"
+    },
+    {
+      "name": "mmap-file",
+      "file": "mmap-file.wasm",
+      "size": 44790,
+      "sha256": "f26bafc8336d274a8b46e5ab1908b431e5a9cdfb3007eaf26392893ad66f06f9",
+      "sourcePath": "examples/mmap_file_test.c",
+      "sourceSha256": "f12c9871dc3c2f0c2b36880d3074a37acd8cdc0a1d4aa55559c45d40f9348d22"
+    },
+    {
+      "name": "pthread",
+      "file": "pthread.wasm",
+      "size": 47807,
+      "sha256": "e7e9e5b037776aab4489db5870153029ac4e147130eefa25e87e3d314bf02c5a",
+      "sourcePath": "examples/test-pthread.c",
+      "sourceSha256": "b6497e8c695c315e7bc93053e83d298bcf427e78a815ed2def4a99d4952ef08a"
+    },
+    {
+      "name": "environment-lifecycle",
+      "file": "environment-lifecycle.wasm",
+      "size": 55659,
+      "sha256": "d993114f08438d9cdce2f558b2da5faff8676234d665967803aa3ecfbc25278e",
+      "sourcePath": "examples/environment_lifecycle_test.c",
+      "sourceSha256": "2ac6a885f00f49920ef522752e6e048de5b1d07249939d03c209039918f92b1e"
+    }
+  ],
+  "sourceRevision": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "producer": "Frozen outputs of scripts/build-programs.sh; never rebuilt by the compatibility tests",
+  "preparationSource": {
+    "file": "raw-fork.wasm",
+    "size": 194388,
+    "sha256": "a1a1b6bba51c21efdd1123434e2736e670396eabb83ec3cc44b9a40de99774f0",
+    "sourcePath": "examples/mmap_shared_anonymous_fork.c",
+    "sourceSha256": "d1d419f72194ca573ef9803a41635b7a0b736cc74feba14cdf3d04ea1d331edc"
+  }
+}

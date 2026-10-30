@@ -19,7 +19,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use fork_instrument::artifact_io::MappedArtifact;
+#[path = "cli/io.rs"]
+mod io;
 #[path = "cli/options.rs"]
 mod options;
 #[path = "cli/transform.rs"]
@@ -38,12 +39,37 @@ use fork_instrument::{
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    let (snapshot, permissions) = MappedArtifact::read(&cli.input, cli.max_input_bytes)?;
+    let io::Inputs { artifact: mut snapshot, permissions, name: input_name, output } = io::Inputs::open(&cli)?;
+    if cli.original_reference {
+        match fork_instrument::original_artifact::original_reference(snapshot.bytes())? {
+            Some(reference) => {
+                let digest: String = reference.sha256.iter().map(|byte| format!("{byte:02x}")).collect();
+                println!("{}\t{digest}", reference.length);
+            }
+            None => println!("none"),
+        }
+        return Ok(());
+    }
+    if let Some(original_path) = &cli.verify_original {
+        let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
+            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
+        anyhow::ensure!(reference.length <= cli.max_input_bytes,
+            "original program exceeds artifact byte budget");
+        fork_instrument::original_artifact::load_original_file(
+            original_path, &reference, cli.max_input_bytes)?;
+        return Ok(());
+    }
+    if cli.reprepare_from_original {
+        let reference = fork_instrument::original_artifact::original_reference(snapshot.bytes())?
+            .ok_or_else(|| anyhow::anyhow!("input has no retained original-program reference"))?;
+        snapshot = fork_instrument::original_artifact::load_original(
+            cli.original_store.as_ref().expect("clap requires an original store"), &reference, cli.max_input_bytes)?;
+    }
     let input = snapshot.bytes();
 
     if cli.streaming_scan {
         let scan = fork_instrument::streaming::scan(&input)
-            .with_context(|| format!("scanning original module: {}", cli.input.display()))?;
+            .with_context(|| format!("scanning original module: {input_name}"))?;
         println!("input-bytes\t{}", input.len());
         println!("functions\t{}", scan.functions.len());
         println!("operators\t{}", scan.operators);
@@ -75,31 +101,31 @@ fn main() -> Result<()> {
 
     if cli.contract_inventory {
         let inventory = fork_contract_inventory(&input)
-            .with_context(|| format!("inventorying {}", cli.input.display()))?;
+            .with_context(|| format!("inventorying {input_name}"))?;
         println!("{inventory}");
         return Ok(());
     }
     if cli.artifact_identity {
         let identity = artifact_identity(&input)
-            .with_context(|| format!("inspecting artifact identity: {}", cli.input.display()))?;
+            .with_context(|| format!("inspecting artifact identity: {input_name}"))?;
         println!("{identity}");
         return Ok(());
     }
     if cli.fork_capability_hex {
         let hex = fork_capability_section_hex(&input)
-            .with_context(|| format!("reading fork capability: {}", cli.input.display()))?;
+            .with_context(|| format!("reading fork capability: {input_name}"))?;
         println!("{hex}");
         return Ok(());
     }
     if cli.linked_frame_descriptor_hex {
         let hex = linked_frame_descriptor_section_hex(&input)
-            .with_context(|| format!("reading linked-frame descriptor: {}", cli.input.display()))?;
+            .with_context(|| format!("reading linked-frame descriptor: {input_name}"))?;
         println!("{hex}");
         return Ok(());
     }
     if cli.legacy_asyncify_exports {
         let names = legacy_asyncify_exports(&input)
-            .with_context(|| format!("inventorying exports: {}", cli.input.display()))?;
+            .with_context(|| format!("inventorying exports: {input_name}"))?;
         for name in names {
             println!("{name}");
         }
@@ -107,7 +133,7 @@ fn main() -> Result<()> {
     }
     if cli.reserved_env_imports {
         let imports = reserved_env_imports(&input)
-            .with_context(|| format!("inventorying reserved imports: {}", cli.input.display()))?;
+            .with_context(|| format!("inventorying reserved imports: {input_name}"))?;
         for import in imports {
             println!("{}\t{}", import.kind, import.identity);
         }
@@ -128,7 +154,7 @@ fn main() -> Result<()> {
 
     if cli.sink_report {
         let report = sink_report(input, &opts)
-            .with_context(|| format!("analyzing {}", cli.input.display()))?;
+            .with_context(|| format!("analyzing {input_name}"))?;
         println!("source\t{}", report.source.as_str());
         if let Some(f) = &report.facts {
             println!(
@@ -150,28 +176,50 @@ fn main() -> Result<()> {
 
     if cli.discover_only {
         let analysis =
-            analyze(input, &opts).with_context(|| format!("analyzing {}", cli.input.display()))?;
+            analyze(input, &opts).with_context(|| format!("analyzing {input_name}"))?;
         print_analysis_json(&analysis);
         return Ok(());
     }
 
-    let output_path = cli.output.as_ref().ok_or_else(|| {
+    let output = output.ok_or_else(|| {
         anyhow::anyhow!(
-            "--output is required unless an analysis or contract-inspection mode is set"
+            "--output or --output-fd is required unless an analysis or contract-inspection mode is set"
         )
     })?;
-    transform::run(
+    let original_store = if cli.bind_original { None } else {
+        cli.original_store.or_else(||
+            std::env::var_os("WASM_POSIX_BUILD_ORIGINAL_STORE").map(std::path::PathBuf::from))
+    };
+    let original = if cli.bind_original {
+        Some(fork_instrument::original_artifact::reference_for_original(snapshot.bytes())?)
+    } else {
+        original_store.as_ref().map(|store|
+            fork_instrument::original_artifact::retain_original(&snapshot, store, permissions.clone())).transpose()?
+    };
+    if let (Some(store), Some(original), Some(output_path)) = (&original_store, &original, output.path()) {
+        let original_directory = std::fs::canonicalize(original.path(store).parent().unwrap())?;
+        let output_directory = output_path.parent().filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        anyhow::ensure!(!std::fs::canonicalize(output_directory)?.starts_with(&original_directory),
+            "output must be outside the immutable original-program store");
+    }
+    if cli.retain_uninstrumented {
+        let retained = fork_instrument::original_artifact::attach_original_reference(
+            &snapshot, original.as_ref().expect("clap requires an original store"), cli.max_output_bytes)?;
+        return output.publish(&retained, permissions);
+    }
+    let artifact = transform::run(
         input,
         &opts,
-        output_path,
-        permissions,
         transform::Settings {
             optimize: &cli.post_optimize,
             keep_names: cli.keep_names,
             output_bytes: cli.max_output_bytes,
+            original: original.as_ref(),
         },
     )
-    .with_context(|| format!("instrumenting {}", cli.input.display()))
+    .with_context(|| format!("instrumenting {input_name}"))?;
+    output.publish(&artifact, permissions)
 }
 
 fn print_analysis_json(analysis: &fork_instrument::Analysis) {

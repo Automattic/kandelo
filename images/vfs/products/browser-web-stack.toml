@@ -1,0 +1,64 @@
+schema = 1
+id = "browser-web-stack"
+architecture = "wasm32"
+output = "web-stack-vfs.vfs.zst"
+builder = "packages/registry/web-stack-vfs/build.sh"
+
+[[composition.product]]
+id = "browser-nginx-php"
+materialization = "embedded"
+
+[[composition.product]]
+id = "browser-nginx"
+materialization = "embedded"
+
+[[composition.product]]
+id = "browser-nginx-python"
+materialization = "embedded"
+
+[[composition.product]]
+id = "browser-ruby-todo"
+materialization = "embedded"
+
+[[composition.product]]
+id = "browser-redis"
+materialization = "embedded"
+
+[[software.package]]
+name = "web-stack-vfs"
+outputs = ["web-stack-vfs"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/bin/sh", "/sbin/kandelo-init", "web-php"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+USER = "root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "web-stack-service-switch"
+
+[evidence.browser]
+test = "web-stack-live-activities"

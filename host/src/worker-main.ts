@@ -513,7 +513,7 @@ function buildKernelImports(
       _buf: number | bigint,
       _max: number,
     ): number => 0,
-    kernel_push_argv: (_ptr: number | bigint, _len: number): void => {},
+    kernel_push_argv: (_ptr: number | bigint, _len: number): number => -38,
     kernel_clear_fork_exec: (): number => 0,
 
     // Exec dispatches through channel

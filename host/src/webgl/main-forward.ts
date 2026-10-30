@@ -1,4 +1,5 @@
 import { GlContextRegistry } from "./registry.js";
+import { getCanvasWebGl2Context } from "./canvas-context.js";
 import { decodeAndDispatch } from "./bridge.js";
 
 export interface ForwardWorkerLike {
@@ -27,13 +28,7 @@ export function setupMainForward(
     if (!b) return;
     switch (msg.type) {
       case "gl_forward_create_context": {
-        const gl = canvas.getContext("webgl2", {
-          antialias: false,
-          premultipliedAlpha: false,
-          depth: true,
-          stencil: true,
-          preserveDrawingBuffer: true,
-        }) as WebGL2RenderingContext | null;
+        const gl = getCanvasWebGl2Context(canvas);
         if (gl) {
           // Pavel's fluid sim renders the velocity/dye/pressure passes
           // into RGBA16F framebuffers and samples them with LINEAR

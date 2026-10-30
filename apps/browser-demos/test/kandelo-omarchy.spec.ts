@@ -1,5 +1,7 @@
+import { setInternalsOpen } from "./support/dock";
 import { expect, test, type Page } from "@playwright/test";
 import { gotoApp } from "./support/kandelo-machine";
+import { configureNewComputer } from "./support/computer-library";
 
 
 /**
@@ -9,16 +11,8 @@ import { gotoApp } from "./support/kandelo-machine";
  */
 async function launchOmarchy(page: Page) {
   await gotoApp(page, "/");
-  await page
-    .getByRole("button", { name: /^(New|Launch new computer)$/ })
-    .first()
-    .click();
-  await expect(page.locator("tr.kgal-row").first()).toBeVisible();
-  await page
-    .locator("tr.kgal-row")
-    .filter({ hasText: /Omarchy/i })
-    .first()
-    .click();
+  await configureNewComputer(page, "omarchy");
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
 }
 
 /**
@@ -26,11 +20,8 @@ async function launchOmarchy(page: Page) {
  * Internals is an overlay toggle in the dock (aria-pressed); showing the demo
  * or the terminal means closing it and selecting that view.
  */
-async function openSurface(page: Page, label: "Internals" | "Demo" | "Terminal") {
-  const internals = page.getByRole("button", { name: "Internals", exact: true });
-  await internals.waitFor({ state: "visible", timeout: 30_000 });
-  const open = (await internals.getAttribute("aria-pressed")) === "true";
-  if (open !== (label === "Internals")) await internals.click();
+async function openSurface(page: Page, label: "Internals" | "Graphics" | "Terminal") {
+  await setInternalsOpen(page, label === "Internals");
   if (label !== "Internals") {
     const view = page
       .getByLabel("Computer views")
@@ -91,7 +82,7 @@ async function expectTerminalHistory(page: Page, pattern: RegExp) {
  *  Focus off the canvas placeholder first (BrowserInputSource listens on
  *  window). */
 async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.down("Control");
   if (shift) await page.keyboard.down("Shift");
@@ -104,7 +95,7 @@ async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
 
 /** Press bare keys with the Demo surface focused. */
 async function pressKeys(page: Page, keys: string[]) {
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   for (const key of keys) await page.keyboard.press(key);
 }
@@ -230,7 +221,7 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // Gate 4: the desktop composited to the canvas. The Modeset pane uses
   // transferControlToOffscreen, so PNG byteLength stands in for pixel readback
   // — a blank frame is ~3 KB; wallpaper + bar + tiled windows is far larger.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   const canvas = canvasLocator(page);
   await expect(canvas).toBeVisible({ timeout: 30_000 });
   await expect
@@ -420,7 +411,7 @@ test("Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS 
   await expectTerminal(page, /WORKSPACE active=2/, 30_000);
 
   // Eight wlclock launches back-to-back (CTRL+K, no delay).
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.down("Control");
   for (let i = 0; i < 8; i++) await page.keyboard.press("KeyK", { delay: 0 });
@@ -565,7 +556,7 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
           /GLBUFFER app=SDL_App bw=(\d+) bh=(\d+)/g,
         )].at(-1)!;
         const outputScale = Number(buffer[1]) / Number(tile[3]);
-        await openSurface(page, "Demo");
+        await openSurface(page, "Graphics");
         const canvas = canvasLocator(page);
         // The pane fits the display after it becomes visible. Await its
         // first captured frame before converting guest coordinates to CSS.
@@ -663,7 +654,7 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await pressCtrl(page, "Enter");
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.type("echo notify-send clip-ok\n", { delay: 20 });
 
@@ -727,7 +718,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
 
   // The host clipboard holds a command; paste it with the platform chord.
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.evaluate(() => navigator.clipboard.writeText("notify-send host-paste-ok"));
   await page.keyboard.press("ControlOrMeta+KeyV");
@@ -748,7 +739,7 @@ test("Kandelo omarchy pastes text from the host clipboard into foot", async ({ p
   await page.waitForTimeout(2_000);
   await page.evaluate(() => navigator.clipboard.writeText("echo should-not-arrive"));
   const receivesBefore = ((await terminalText(page)).match(/SELECTION_RECEIVE/g) ?? []).length;
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("ControlOrMeta+KeyV");
   await expect(page.getByTestId("kms-paste-error")).toContainText(
@@ -795,7 +786,7 @@ test("Kandelo omarchy copies foot's selection to the host clipboard", async ({ p
   await expectTerminal(page, /TILE n=1 i=0 [\s\S]*KBD_FOCUS app_id=foot|KBD_FOCUS app_id=foot[\s\S]*TILE n=1 i=0 /, 60_000);
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await page.waitForTimeout(3_000); // let foot's shell reach its prompt
-  await openSurface(page, "Demo");
+  await openSurface(page, "Graphics");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.type("echo copyout-first; echo copyout-second\n", { delay: 20 });
   await page.evaluate(() => navigator.clipboard.writeText("host-before"));

@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "id": "wordpress-sqlite",
+      "title": "WordPress SQLite",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress SQLite",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "wordpress-mariadb",
+      "title": "WordPress MariaDB",
+      "port": 8080,
+      "shortcuts": {
+        "title": "WordPress MariaDB",
+        "summary": "Open the preinstalled WordPress admin area using the demo credentials.",
+        "groups": [
+          {
+            "title": "Admin",
+            "actions": [
+              {
+                "id": "wp-admin-login",
+                "label": "Log in as admin",
+                "description": "Open wp-admin with the bundled admin account.",
+                "kind": "web.wordpressLogin",
+                "payload": "{\"username\":\"admin\",\"password\":\"password\",\"loginPath\":\"/wp-login.php\",\"adminPath\":\"/wp-admin/\"}"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

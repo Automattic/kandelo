@@ -699,6 +699,13 @@ the imports the host provides (`libc/glue/kandelo-host-imports.txt`), so a bare
 
 ## Fork instrumentation (`wasm-fork-instrument`)
 
+**Persistence warning:** user-built forking programs cannot currently be
+upgraded automatically. Fork instrumentation is versioned but not yet stable;
+an incompatible Kandelo release may require rebuilding your program with the
+current SDK. Keep your source and build instructions. Failed admission
+preserves the executable rather than rewriting it. See
+[staged fork compatibility](persistent-program-compatibility.md#staged-fork-compatibility).
+
 Programs that call `fork()` or fork-like APIs need the in-tree
 `wasm-fork-instrument` tool to save/restore the Wasm call stack across fork.
 Fork-like APIs include `vfork()`, `_Fork()`, shell pipelines, command

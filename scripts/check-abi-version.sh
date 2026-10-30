@@ -81,6 +81,8 @@ if [ "$drift" -eq 1 ]; then
     exit 1
 fi
 
+run_xtask check-program-baseline
+
 # Detect whether ABI_VERSION or the committed ABI snapshot changed in this
 # branch. A no-bump snapshot diff is acceptable only if it is narrowly
 # additive: new syscalls, new host-intercepted syscalls, new kernel exports,

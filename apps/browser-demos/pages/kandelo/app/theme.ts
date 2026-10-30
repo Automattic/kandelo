@@ -13,7 +13,7 @@ export type StoredThemePreference = ThemePreference & {
   version: typeof THEME_STORAGE_VERSION;
 };
 
-const DEFAULT_THEME: ThemePreference = { family: "kandelo", mode: "auto" };
+const DEFAULT_THEME: ThemePreference = { family: "kandelo", mode: "dark" };
 export function readThemePreference(): ThemePreference {
   if (typeof window === "undefined") return DEFAULT_THEME;
 

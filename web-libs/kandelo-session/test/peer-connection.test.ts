@@ -176,7 +176,7 @@ describe("peer channel lifecycle", () => {
   it("reports ICE failure while waiting for channel arrival", async () => {
     const join = await answerPeerConnectionInvite(offer(), network);
     FakeConnection.instances[0].fail();
-    await expect(join.connected).rejects.toThrow("no direct route");
+    await expect(join.connected).rejects.toThrow("the peer connection failed; no TURN relay is configured");
   });
   it("rejects undeclared and incorrectly configured incoming channels", async () => {
     const join = await answerPeerConnectionInvite(offer(), network);
@@ -194,7 +194,7 @@ describe("peer channel lifecycle", () => {
     const link = await join.connected;
     const failed = vi.fn(); link.onFailure(failed);
     rtc.fail();
-    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("no direct route") }));
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: "the peer connection failed; no TURN relay is configured" }));
     expect(channel.readyState).toBe("closed");
   });
   it("replays a real failure to a consumer subscribing after the setup handoff", async () => {
@@ -207,7 +207,7 @@ describe("peer channel lifecycle", () => {
     const failed = vi.fn();
     link.onFailure(failed);
     expect(failed).toHaveBeenCalledTimes(1);
-    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining("no direct route") }));
+    expect(failed).toHaveBeenCalledWith(expect.objectContaining({ message: "the peer connection failed; no TURN relay is configured" }));
     rtc.fail();
     expect(failed).toHaveBeenCalledTimes(1);
   });

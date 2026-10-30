@@ -35,7 +35,7 @@ async function showGame(page: Page, { pointerLock = false } = {}) {
     }
     scope.__releaseTestPointerLock();
   }, pointerLock);
-  await page.getByRole("button", { name: "Demo", exact: true }).click({ timeout: 60_000 });
+  await page.getByRole("button", { name: "Graphics", exact: true }).click({ timeout: 60_000 });
   await expect(canvas(page)).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText(/Waiting for PAGE_FLIP on CRTC/)).toBeHidden({ timeout: 120_000 });
   await expect.poll(async () => (await canvas(page).screenshot()).byteLength,
@@ -51,7 +51,7 @@ async function terminalLines(page: Page) {
   await screen.screenshot(); // Observe its painted screen before hiding it again.
   const output = await page.locator(".kshell-terminal-slot:not([hidden]) .xterm-rows").evaluate(
     node => [...node.children].map(row => row.textContent).join("\n"));
-  const demo = page.getByRole("button", { name: "Demo", exact: true });
+  const demo = page.getByRole("button", { name: "Graphics", exact: true });
   if (await demo.isEnabled()) await demo.click();
   return output;
 }
@@ -433,7 +433,7 @@ test.describe("local Freeciv peer routing", () => {
     console.log("Creating the network session");
     await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
     await page.getByLabel("Session name").fill("Freeciv night");
-    await page.getByRole("button", { name: "Create invite", exact: true }).click();
+    await page.getByRole("button", { name: "Start network session", exact: true }).click();
     await expect(page.getByRole("button", { name: "Network session: connected", exact: true }))
       .toBeAttached({ timeout: 30_000 });
     const link = await page.locator("[data-network-link]").getAttribute("data-network-link");

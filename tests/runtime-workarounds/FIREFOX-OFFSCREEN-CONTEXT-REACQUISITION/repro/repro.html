@@ -1,0 +1,48 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Repeated worker OffscreenCanvas WebGL2 acquisition</title>
+<canvas id="display" width="64" height="64"></canvas>
+<pre id="result"></pre>
+<script>
+const report = (verdict, details) => {
+  window.__reproVerdict = { verdict, details };
+  document.getElementById("result").textContent = JSON.stringify(window.__reproVerdict);
+};
+const source = `let canvas;
+  let initial;
+  onmessage = event => {
+    try {
+      if (event.data.canvas) canvas = event.data.canvas;
+      const context = canvas.getContext("webgl2");
+      if (!context) { postMessage({ verdict: "inconclusive", details: "WebGL2 unavailable" }); return; }
+      if (!initial) {
+        initial = context;
+        context.clearColor(0, 1, 0, 1);
+        context.clear(context.COLOR_BUFFER_BIT);
+        postMessage({ ready: true });
+      } else {
+        postMessage({ verdict: context === initial ? "not-reproduced" : "inconclusive", details: "Repeated acquisition returned a context" });
+      }
+    } catch (error) {
+      postMessage({ verdict: initial && String(error).includes("Cannot update created context to different thread") ? "reproduced" : "inconclusive", details: String(error) });
+    }
+  };`;
+const workerUrl = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+const worker = new Worker(workerUrl);
+const deadline = setTimeout(() => { worker.terminate(); report("inconclusive", "Worker did not report within 10 seconds"); }, 10000);
+worker.onerror = event => {
+  clearTimeout(deadline);
+  worker.terminate();
+  URL.revokeObjectURL(workerUrl);
+  report("inconclusive", event.message);
+};
+worker.onmessage = event => {
+  if (event.data.ready) { worker.postMessage({}); return; }
+  clearTimeout(deadline);
+  worker.terminate();
+  URL.revokeObjectURL(workerUrl);
+  report(event.data.verdict, event.data.details);
+};
+const canvas = document.getElementById("display").transferControlToOffscreen();
+worker.postMessage({ canvas }, [canvas]);
+</script>

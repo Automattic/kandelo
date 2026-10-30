@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { ProcessMemoryCreatorGate } from "../src/process-memory-creator-gate";
 
@@ -11,6 +12,71 @@ function deferred() {
 }
 
 describe("process memory creator destroy gate", () => {
+  it("cancels suspended initialization before compactor creation and readiness", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const bootCompaction = deferred();
+    const createCompactor = vi.fn();
+    const publishReady = vi.fn();
+    const closeStorage = vi.fn();
+    const initialization = gate.run("kernel initialization", async () => {
+      await bootCompaction.promise;
+      gate.assertOpen("persistent compactor initialization");
+      createCompactor();
+      gate.assertOpen("kernel readiness");
+      publishReady();
+    });
+    const rejected = expect(initialization).rejects.toThrow("being destroyed");
+    const destroyed = gate.closeAndRunAfterDrain(closeStorage);
+    expect(closeStorage).not.toHaveBeenCalled();
+    await expect(gate.run("kernel initialization", publishReady)).rejects.toThrow("being destroyed");
+    bootCompaction.resolve();
+    await rejected;
+    await destroyed;
+    expect(createCompactor).not.toHaveBeenCalled();
+    expect(publishReady).not.toHaveBeenCalled();
+    expect(closeStorage).toHaveBeenCalledOnce();
+  });
+
+  it("drains a previously installed compactor before closing its storage", async () => {
+    const gate = new ProcessMemoryCreatorGate();
+    const stopCompaction = deferred();
+    const order: string[] = [];
+    let compactor: { stop: () => Promise<void> } | undefined;
+    await gate.run("kernel initialization", () => {
+      gate.assertOpen("persistent compactor initialization");
+      compactor = { stop: async () => {
+        order.push("stop");
+        await stopCompaction.promise;
+        order.push("stopped");
+      } };
+      gate.assertOpen("kernel readiness");
+      order.push("ready");
+    });
+    const destroyed = gate.closeAndRunAfterDrain(async () => {
+      await compactor?.stop();
+      order.push("close");
+    });
+    await Promise.resolve();
+    expect(order).toEqual(["ready", "stop"]);
+    stopCompaction.resolve();
+    await destroyed;
+    expect(order).toEqual(["ready", "stop", "stopped", "close"]);
+  });
+
+  it.each(["browser", "node"])("%s initialization joins the terminal creator gate", (host) => {
+    const source = readFileSync(new URL(`../src/${host}-kernel-worker-entry.ts`, import.meta.url), "utf8");
+    const initialization = source.slice(source.indexOf("async function handleInit("), source.indexOf("async function compileTopLevelProgram("));
+    expect(source).toContain('void processMemoryCreators.run("kernel initialization",');
+    const compactorCheck = initialization.indexOf('assertOpen("persistent compactor initialization")');
+    const compactorCreation = initialization.indexOf("new LiveOverlayCompactor(");
+    expect(compactorCheck).toBeGreaterThan(0);
+    expect(compactorCreation).toBeGreaterThan(compactorCheck);
+    const readinessCheck = initialization.indexOf('assertOpen("kernel readiness")');
+    expect(readinessCheck).toBeGreaterThan(compactorCreation);
+    expect(initialization.indexOf("initReady = true")).toBeGreaterThan(readinessCheck);
+    expect(source).toContain("processMemoryCreators.closeAndRunAfterDrain(");
+  });
+
   it("drains an admitted creator before running one terminal destroy sweep", async () => {
     const gate = new ProcessMemoryCreatorGate();
     const spawn = deferred();

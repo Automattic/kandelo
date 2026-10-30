@@ -624,13 +624,52 @@ pub struct ChannelRecordCopyBack {
     pub len: usize,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct ChannelRecordCopyBackPlan {
+    spans: crate::IoBuffer<ChannelRecordCopyBack>,
+    bytes: crate::IoBuffer<u8>,
+}
+
+impl ChannelRecordCopyBackPlan {
+    fn prepare(spans: crate::IoBuffer<ChannelRecordCopyBack>) -> Result<Self, Errno> {
+        let length = spans.iter().try_fold(0usize, |length, span| length.checked_add(span.len).ok_or(Errno::ENOMEM))?;
+        let mut bytes = crate::IoBuffer::try_with_capacity(length)?;
+        bytes.resize(length, 0);
+        Ok(Self { spans, bytes })
+    }
+
+    pub unsafe fn apply(mut self) {
+        let mut offset = 0;
+        for span in &self.spans {
+            if span.len != 0 {
+                let source = unsafe { core::slice::from_raw_parts(span.scratch_src as *const u8, span.len) };
+                self.bytes[offset..offset + span.len].copy_from_slice(source);
+            }
+            offset += span.len;
+        }
+        let mut offset = 0;
+        for span in &self.spans {
+            if span.len != 0 {
+                let destination = unsafe { core::slice::from_raw_parts_mut(span.channel_dest as *mut u8, span.len) };
+                destination.copy_from_slice(&self.bytes[offset..offset + span.len]);
+            }
+            offset += span.len;
+        }
+    }
+}
+
+impl core::ops::Deref for ChannelRecordCopyBackPlan {
+    type Target = [ChannelRecordCopyBack];
+    fn deref(&self) -> &[ChannelRecordCopyBack] { &self.spans }
+}
+
 /// Inputs for the legacy channel dispatch, reconstructed kernel-side from an
 /// opaque self-marshalled record.
 #[derive(Debug, PartialEq, Eq)]
 pub struct PreparedChannelRecord {
     pub syscall_nr: u32,
     pub args: [i64; 6],
-    pub copy_back: alloc::vec::Vec<ChannelRecordCopyBack>,
+    pub copy_back: ChannelRecordCopyBackPlan,
     /// The scratch this request may touch: the record itself, plus the zeroed
     /// fixed select/pselect6 slots that can extend past a short record.
     /// Dispatch validates rewritten arguments against this, never the whole
@@ -674,7 +713,7 @@ unsafe fn prepare_select_record(
     }
     let region = dispatch_region;
     let mut args = decoded.scalars;
-    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+    let mut copy_back = crate::IoBuffer::try_with_capacity(decoded.spans.len())?;
 
     for span in &decoded.spans {
         // Neither select nor pselect6 carries a nested iovec/msghdr span.
@@ -720,7 +759,7 @@ unsafe fn prepare_select_record(
     Ok(PreparedChannelRecord {
         syscall_nr: decoded.syscall as u32,
         args,
-        copy_back,
+        copy_back: ChannelRecordCopyBackPlan::prepare(copy_back)?,
         dispatch_region,
     })
 }
@@ -803,12 +842,17 @@ pub unsafe fn prepare_channel_record(
 
     // Read-once: copy the record out before touching it, so the decoder and
     // the layout below observe an immutable snapshot.
-    let data: alloc::vec::Vec<u8> =
-        unsafe { core::slice::from_raw_parts(region_start as *const u8, record_len) }.to_vec();
+    let data = match crate::IoBuffer::copy_from(
+        unsafe { core::slice::from_raw_parts(region_start as *const u8, record_len) },
+    ) {
+        Ok(data) => data,
+        Err(error) => return Some(Err(error)),
+    };
 
     let decoded = match decode(&data, record_len) {
         Ok(decoded) => decoded,
         // A malformed record is a truthful failure, never a silent success.
+        Err(crate::channel_record_decode::DecodeError::Memory) => return Some(Err(Errno::ENOMEM)),
         Err(_) => return Some(Err(Errno::EINVAL)),
     };
 
@@ -836,7 +880,10 @@ pub unsafe fn prepare_channel_record(
     // with the absolute scratch addresses their spans are laid at, exactly as
     // the host rewrites `CH_ARGS + argIndex*ARG_SIZE`.
     let mut args = decoded.scalars;
-    let mut copy_back: alloc::vec::Vec<ChannelRecordCopyBack> = alloc::vec::Vec::new();
+    let mut copy_back = match crate::IoBuffer::try_with_capacity(decoded.spans.len()) {
+        Ok(copy_back) => copy_back,
+        Err(error) => return Some(Err(error)),
+    };
     let mut cursor = region_start;
     let record_region = match ChannelScratchRegion::new(region_start, record_len) {
         Ok(record_region) => record_region,
@@ -937,6 +984,10 @@ pub unsafe fn prepare_channel_record(
         Ok(dispatch_region) => dispatch_region,
         Err(errno) => return Some(Err(errno)),
     };
+    let copy_back = match ChannelRecordCopyBackPlan::prepare(copy_back) {
+        Ok(copy_back) => copy_back,
+        Err(error) => return Some(Err(error)),
+    };
     Some(Ok(PreparedChannelRecord {
         syscall_nr: decoded.syscall as u32,
         args,
@@ -949,9 +1000,9 @@ pub unsafe fn prepare_channel_record(
 /// `REQUEST_FLAG_OPAQUE_RECORD`, so the region must hold a record for
 /// `header_syscall`.
 ///
-/// Every refusal is `EINVAL` for the one calling syscall and dispatches
-/// nothing: the request is untrusted guest input, and a malformed one must not
-/// reach dispatch or disturb any other process.
+/// Malformed requests return `EINVAL`; memory admission returns `ENOMEM`.
+/// Neither dispatches: an untrusted request must not reach dispatch or disturb
+/// another process unless complete preparation succeeds.
 ///
 /// # Safety
 ///
@@ -989,6 +1040,34 @@ mod tests {
 
     fn pointer_arg(pointer: usize) -> i64 {
         i64::try_from(pointer).expect("native test pointer fits widened channel slot")
+    }
+
+    #[test]
+    fn copy_back_plan_admits_before_effects_and_snapshots_overlapping_outputs() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut storage = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+        let original = storage;
+        let start = storage.as_mut_ptr() as usize;
+        let spans = [
+            ChannelRecordCopyBack { scratch_src: start, channel_dest: start + 6, len: 6 },
+            ChannelRecordCopyBack { scratch_src: start + 6, channel_dest: start, len: 6 },
+            ChannelRecordCopyBack { scratch_src: 0, channel_dest: 0, len: 0 },
+        ];
+        let owned = crate::IoBuffer::copy_from(&spans).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert!(matches!(ChannelRecordCopyBackPlan::prepare(owned), Err(Errno::ENOMEM)));
+        }
+        assert_eq!(storage, original);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        let plan = ChannelRecordCopyBackPlan::prepare(crate::IoBuffer::copy_from(&spans).unwrap()).unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            unsafe { plan.apply(); }
+        }
+        assert_eq!(&storage[..6], &original[6..]);
+        assert_eq!(&storage[6..], &original[..6]);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]

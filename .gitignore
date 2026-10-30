@@ -55,8 +55,9 @@ node_modules/
 # Wasm binaries are build artifacts. The kernel wasm lives under
 # binaries/ (fetched) or local-binaries/ (locally built); test
 # fixtures under host/test/fixtures/ are produced by the vitest
-# global-setup from .wat sources. Nothing tracked under git.
+# global-setup from .wat sources.
 *.wasm
+!abi/program-fixtures/v55/*.wasm
 
 # VFS images are build artifacts produced by
 # images/vfs/scripts/build-*-vfs-image.ts. Reproducible from

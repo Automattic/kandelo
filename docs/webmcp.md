@@ -61,6 +61,11 @@ matching the gallery's existing no-op behavior.
 Every name below has the `kandelo_` prefix. Inspect the registered JSON schemas for
 parameter bounds and required fields. Unknown fields and invalid types are rejected.
 
+Owned command stdout and stderr go to the command's bounded capture, not the
+computer's global output stream or boot log. Command failures remain available
+with their exit status and captured diagnostics. Interactive terminal output
+and ordinary boot services keep their existing output destinations on both hosts.
+
 | Tool | Inputs | Main result / effect |
 | --- | --- | --- |
 | `list_profiles` | `search?` | Dynamic `profiles` with `profileId`, name, description, availability. `resolved_on_launch` means asset resolution has not yet been attempted. |

@@ -21,6 +21,7 @@ import {
 import { browserBinariesImports } from "./browser-binary-imports.mjs";
 import {
   browserImageModule32ModuleSpecifier,
+  browserPositionedImageModule32ModuleSpecifier,
   browserKernelModuleSpecifier,
   browserRepositoryAliases,
   browserRootfsModuleSpecifier,
@@ -362,6 +363,7 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
   const KERNEL = browserKernelModuleSpecifier;
   const ROOTFS = browserRootfsModuleSpecifier;
   const IMAGE_MODULE32 = browserImageModule32ModuleSpecifier;
+  const POSITIONED_IMAGE_MODULE32 = browserPositionedImageModule32ModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -401,6 +403,17 @@ function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
           "kandelo_image_module32.wasm not found. Run " +
             "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.\n" +
             `  Looked at: ${local}\n  Looked at: ${hosted}`,
+        );
+      }
+      if (pathPart === POSITIONED_IMAGE_MODULE32) {
+        if (sourceOnlyViteAssets !== null) {
+          return sourceOnlyViteAssets.resolve("kandelo_image_module_positioned32.wasm");
+        }
+        const resolved = tryResolveBinary("kandelo_image_module_positioned32.wasm");
+        if (resolved) return access.approve(resolved) + query;
+        this.error(
+          "kandelo_image_module_positioned32.wasm not found. Run " +
+            "`scripts/dev-shell.sh bash crates/kandelo-image-module/build-wasm.sh`.",
         );
       }
       if (pathPart === ROOTFS) {
@@ -1007,6 +1020,8 @@ const demoInputs = {
   "sqlite-test": path.resolve(__dirname, "pages/sqlite-test/index.html"),
   benchmark: path.resolve(__dirname, "pages/benchmark/index.html"),
   "php-test": path.resolve(__dirname, "pages/php-test/index.html"),
+  "program-compatibility-test": path.resolve(__dirname, "pages/program-compatibility-test/index.html"),
+  "program-policy-test": path.resolve(__dirname, "pages/program-policy-test/index.html"),
   // The perl, python, ruby, erlang, texlive, and redis demos are not bundled
   // into this static build while their slow builds live in package sources.
   // The demo app exposes only repository-defined gallery entries.
@@ -1017,11 +1032,11 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
 ): T {
   if (configuredSourceOnlyRoot === null) return selected;
   const unsupported = Object.keys(selected).filter(
-    (name) => !(name in defaultDemoInputs) && name !== "peer-network",
+    (name) => !(name in defaultDemoInputs) && name !== "peer-network" && name !== "program-compatibility-test" && name !== "program-policy-test",
   );
   if (unsupported.length > 0) {
     throw new Error(
-      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs; " +
+      "SourceOnly browser builds admit only the root main, kandelo, network, peer-network, program-compatibility-test, and program-policy-test inputs; " +
         `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
     );
   }

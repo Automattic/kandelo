@@ -1,32 +1,34 @@
 import * as React from "react";
 import type { DemoActionConfig, DemoGuideConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
-import { useDemoGuide, useKernelHost, useStatus, useWebPreview } from "../kernel-host/react";
+import { useKernelHost, useStatus, useWebPreview } from "../kernel-host/react";
 
 export interface DemoGuideProps {
+  guide: DemoGuideConfig;
+  busy?: boolean;
   onClose: () => void;
   onOpenTerminal: () => void;
   onRunWebAction: (action: DemoActionConfig) => Promise<string | void>;
 }
 
-export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, onRunWebAction }) => {
+export const DemoGuide: React.FC<DemoGuideProps> = ({ guide, busy = false, onClose, onOpenTerminal, onRunWebAction }) => {
   const host = useKernelHost();
   const status = useStatus();
   const webPreview = useWebPreview();
   const descriptor = host.getBootDescriptor();
-  const guide = useDemoGuide();
   const [scriptText, setScriptText] = React.useState(() => guide?.script?.initialText ?? "");
   const [runningId, setRunningId] = React.useState<string | null>(null);
   const [message, setMessage] = React.useState<string | null>(null);
   const runningIdRef = React.useRef<string | null>(null);
   const editorRef = React.useRef<HTMLTextAreaElement | null>(null);
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
+  const guideKey = JSON.stringify(guide);
 
   React.useEffect(() => {
     setScriptText(guide?.script?.initialText ?? "");
     setMessage(null);
     setRunningId(null);
     runningIdRef.current = null;
-  }, [guide]);
+  }, [guideKey]);
 
   const actionsById = React.useMemo(() => actionMap(guide), [guide]);
 
@@ -91,14 +93,14 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
   if (!guide) return null;
 
   const waitingForWeb = webPreview !== null && webPreview.status !== "running";
-  const disabled = status !== "running" || waitingForWeb;
+  const disabled = status !== "running" || waitingForWeb || busy;
   const groups = guide.groups ?? [];
 
   return (
-    <aside className="kdemo" aria-label="Demo actions">
+    <aside className="kdemo" aria-label={`${guide.title} shortcuts`}>
       <div className="kdemo-head">
         <div className="kdemo-head-main">
-          <div className="kdemo-kicker">DEMO</div>
+          <div className="kdemo-kicker">SHORTCUTS</div>
           <h2>{guide.title}</h2>
         </div>
         <div className="kdemo-head-tools">
@@ -106,8 +108,8 @@ export const DemoGuide: React.FC<DemoGuideProps> = ({ onClose, onOpenTerminal, o
           <button
             type="button"
             className="kdemo-close"
-            title="Close demo guide"
-            aria-label="Close demo guide"
+            title="Close shortcuts"
+            aria-label="Close shortcuts"
             onClick={onClose}
           >
             <svg width="14" height="14" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5">

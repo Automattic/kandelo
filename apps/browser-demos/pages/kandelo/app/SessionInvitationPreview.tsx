@@ -14,7 +14,7 @@ export function SessionInvitationPreview({ invitation, close, dismiss, error }: 
       <span className="knetwork-dot" aria-hidden="true" /><strong>{invitation.name}</strong><span>Not connected</span>
     </div>} notice={<SessionNotice readiness tone={error ? "error" : "working"}>
       {error ? `This computer could not start: ${error}` : "Starting computer…"}
-    </SessionNotice>} actions={<button className="kshare-btn" onClick={close}>Close</button>}>
+    </SessionNotice>}>
     <InvitationMetadata offer={offer} />
     {offer?.presentation ? <JoinActivityForm offer={offer} presentation={offer.presentation} room={invitation.name}
       values={sessionDefaults(offer.presentation.join.fields)} setValues={() => {}} blocked dismiss={dismiss} />

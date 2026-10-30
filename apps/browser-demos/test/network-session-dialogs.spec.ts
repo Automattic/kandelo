@@ -1,5 +1,6 @@
-import { expect, test } from "@playwright/test";
-import { gotoMachine } from "./support/kandelo-machine";
+import { expect } from "@playwright/test";
+import { test } from "./support/persistent-page";
+import { gotoMachine, machineUrl } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -34,7 +35,7 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
   expect(titles).toEqual([...titles].sort((a, b) => a.localeCompare(b, "en", { sensitivity: "base" })));
   expect(await host.getByLabel("Activity", { exact: true }).evaluate(el => getComputedStyle(el).backgroundPosition)).toContain("12px");
   await page.screenshot({ path: `../../.context/session-setup-${browserName}.png`, animations: "disabled" });
-  await host.getByRole("button", { name: "Create invite", exact: true }).click();
+  await host.getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(host).toHaveCount(0);
   expect(await page.locator(".knetwork").boundingBox()).toEqual(frame);
@@ -65,7 +66,19 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
   expect(await page.locator(".knetwork").boundingBox()).toEqual(activeFrame);
   await host.getByLabel("Session", { exact: true }).selectOption("replace");
   await host.getByLabel("Session name").fill("Cosmic Otters");
-  await host.getByRole("button", { name: "Create invite", exact: true }).click();
+  page.once("dialog", dialog => dialog.dismiss());
+  await host.getByRole("button", { name: "Start network session", exact: true }).click();
+  await expect(host).toBeVisible();
+  await expect(page.getByRole("button", { name: "Network session: connected", exact: true })).toBeVisible();
+  await host.getByLabel("Session", { exact: true }).selectOption("keep");
+  await host.getByRole("button", { name: "Show join link", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible();
+  expect(new URL((await link(page).getAttribute("data-network-link"))!).searchParams.get("network")).toBe(new URL(first).searchParams.get("network"));
+  await page.getByRole("button", { name: "Change activity", exact: true }).click();
+  await host.getByLabel("Session", { exact: true }).selectOption("replace");
+  await host.getByLabel("Session name").fill("Cosmic Otters");
+  page.once("dialog", dialog => dialog.accept());
+  await host.getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   const second = (await link(page).getAttribute("data-network-link"))!;
   expect(new URL(second).searchParams.get("network")).not.toBe(new URL(first).searchParams.get("network"));
@@ -85,14 +98,15 @@ test("friendly names, alphabetical activities and inset arrows lead to a separat
   expect(shortFrame.y).toBeGreaterThanOrEqual(12);
   expect(shortFrame.y + shortFrame.height).toBeLessThanOrEqual(378);
   expect(await page.locator(".knetwork .kshare-body").evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
-  await expect(page.locator(".knetwork .kshare-actions").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+  await expect(page.locator(".knetwork .kshare-hd").getByRole("button", { name: "Close", exact: true })).toBeInViewport();
+  await expect(page.locator(".knetwork .kshare-actions").getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
 });
 
 test("clipboard denial preserves the active invitation and a manual copy route", async ({ page }) => {
   test.setTimeout(240_000);
   await page.addInitScript(() => Object.defineProperty(navigator, "clipboard", { value: { writeText: () => Promise.reject(new Error("Clipboard denied")) } }));
   await setup(page);
-  await form(page).getByRole("button", { name: "Create invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.getByText("Couldn’t copy.", { exact: false })).toBeVisible();
   await expect(link(page)).toHaveAttribute("data-network-link", /network=/);
@@ -115,7 +129,7 @@ test("Doom and Quake levels follow the data source and uploaded WAD contents", a
   await expect(level).toHaveValue("E2M3"); await expect(level.locator("option")).toHaveCount(1);
   await host.getByLabel("File for Game WAD", { exact: true }).setInputFiles({ name: "bad.wad", mimeType: "application/octet-stream", buffer: Buffer.from("invalid") });
   await expect(host.getByRole("alert")).toContainText("Invalid WAD");
-  await expect(host.getByRole("button", { name: "Start and invite", exact: true })).toBeDisabled();
+  await expect(host.getByRole("button", { name: "Start activity", exact: true })).toBeDisabled();
   await host.getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
   await expect(level.locator("option")).toHaveCount(9);
   await host.getByLabel("Quake game data", { exact: true }).selectOption("openquartz");
@@ -139,7 +153,7 @@ test("invitation metadata is visible while the recipient's real computer is stil
   await setup(page); await form(page).getByLabel("Session name").fill("Dancing Fireflies");
   await form(page).getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
   await form(page).getByLabel("Your name").fill("alice");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(link(page)).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 90_000 });
   const invitation = (await link(page).getAttribute("data-network-link"))!;
   const context = await browser.newContext({ permissions: ["microphone"] });
@@ -184,6 +198,46 @@ test("invitation metadata is visible while the recipient's real computer is stil
     await guest.getByRole("button", { name: "Join and open chat", exact: true }).click();
     await expect.poll(() => guest.locator(".kshell-host:visible .xterm-rows").innerText(), { timeout: 90_000 }).toContain("alice is online");
   } finally { releaseImport(); release(); await context.close(); }
+});
+
+test("managed computer startup retains activity invitations and failed joins never claim readiness", async ({ page, browserName }) => {
+  test.setTimeout(240_000);
+  const bytes = readFileSync(new URL("../../../packages/registry/termchat/sessions.json", import.meta.url), "utf8");
+  const manifest = parsePackageSessions(bytes), type = manifest.offers[0];
+  const offer: SessionOffer = { version: 1, package: manifest.package, packageVersion: manifest.packageVersion,
+    manifestSha256: createHash("sha256").update(bytes).digest("hex"), offer: type.id, values: sessionDefaults(type.fields) };
+  offer.presentation = sessionPresentation(manifest, type, offer);
+  const url = new URL(await machineUrl(page, "shell"));
+  url.searchParams.set("network", "abcdefghijklmnopqrstuvwx");
+  url.searchParams.set("networkName", "Retained Fireflies");
+  url.hash = encodeSessionInvitation(offer);
+  await page.addInitScript(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      if (url.pathname.endsWith("/__kandelo_signalling") && url.searchParams.get("room") === "abcdefghijklmnopqrstuvwx") {
+        return Promise.resolve(new Response(JSON.stringify({ error: "Intentional signalling outage" }), { status: 503, headers: { "Content-Type": "application/json" } }));
+      }
+      return fetch(input, init);
+    };
+  });
+  await page.goto(url.href);
+  await running(page);
+  expect(new URL(page.url()).searchParams.has("computer")).toBe(true);
+  expect(new URL(page.url()).searchParams.has("network")).toBe(false);
+  expect(new URL(page.url()).hash).toBe("");
+  const invitation = page.getByRole("dialog", { name: "Session invitation", exact: true });
+  await expect(invitation.locator(".knetwork-metadata")).toContainText("Terminal chat");
+  await expect(invitation).not.toContainText("Shared network · no activity selected");
+  const join = invitation.getByRole("button", { name: "Join and open chat", exact: true });
+  await expect(join).toBeEnabled({ timeout: 60_000 });
+  await join.click();
+  await expect(invitation.locator('[data-join-readiness][data-tone="error"]')).toContainText("Couldn’t join. Try again.", { timeout: 60_000 });
+  await expect(invitation.locator(".knetwork-error").filter({ hasText: "Intentional signalling outage" })).toBeVisible();
+  await expect(invitation.locator("[data-join-readiness]")).not.toContainText("Ready to join");
+  await expect(invitation.locator(".knetwork-metadata")).toContainText("Terminal chat");
+  await expect(join).toBeEnabled();
+  await page.screenshot({ path: `../../.context/activity-invitation-after-failed-join-${browserName}.png`, animations: "disabled" });
 });
 
 test("game invitations show host choices and acquisition details before host initialization, then reject mismatched display details", async ({ page }) => {
@@ -269,30 +323,30 @@ test("changing activity stops Kandelo's previous foreground program and launches
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
   await form(page).getByLabel("Starting level", { exact: true }).selectOption("e1m2");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(link(page)).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
   await expect(page.locator(".knetwork-metadata")).toContainText("e1m2");
   await page.locator(".knetwork .kshare-x").click();
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
   await page.screenshot({ path: `../../.context/session-quake-level-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
   await form(page).getByLabel("Starting level", { exact: true }).selectOption("e1m3");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".knetwork-metadata")).toContainText("e1m3");
   await page.locator(".knetwork .kshare-x").click();
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
   await page.screenshot({ path: `../../.context/session-quake-replacement-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("php/server");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 60_000 });
   await expect(page.locator(".knetwork-metadata")).toContainText("PHP web server");
   await page.locator(".knetwork .kshare-x").click();
@@ -312,20 +366,20 @@ test("replacing a Freeciv activity retires its server, client and KMS owner befo
   await setup(page);
   await form(page).getByLabel("Activity", { exact: true }).selectOption("freeciv-browser-bundle/game");
   await form(page).getByLabel("Your name", { exact: true }).fill("ActivityHost");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(link(page)).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
   await page.locator(".knetwork .kshare-x").click();
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("ActivityHost has connected");
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/, { timeout: 60_000 });
   await page.getByRole("button", { name: "Network session: connected", exact: true }).click();
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form(page).getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
-  await form(page).getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form(page).getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 90_000 });
   await page.locator(".knetwork .kshare-x").click();
   await expect.poll(() => terminalText(page), { timeout: 120_000 }).toContain("Using protocol");
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 60_000 });
   await page.screenshot({ path: `../../.context/session-kms-replacement-${browserName}.png`, animations: "disabled" });
   await page.getByRole("button", { name: "Terminal", exact: true }).click();

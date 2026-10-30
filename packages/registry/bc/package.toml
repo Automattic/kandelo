@@ -19,3 +19,4 @@ script_path = "packages/registry/bc/build-bc.sh"
 [[outputs]]
 name = "bc"
 wasm = "bc.wasm"
+fork_instrumentation = "disabled"

@@ -11,16 +11,16 @@ import { encodeSessionInvitation } from "../../../../../web-libs/kandelo-session
 import type { NetworkSession } from "./use-network-session";
 import type { SessionTransfer } from "./SessionNotice";
 import { readGameLevels } from "../../../../../web-libs/kandelo-session/src/game-levels";
+import { activityPorts, canLaunchLocally } from "./activity-launcher";
+import type { ImageActivity } from "../../../../../web-libs/kandelo-session/src/image-activities";
 
 export function usePackageSessions(
   host: KernelHost, network: NetworkSession,
-  launch: (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch) => Promise<void>,
-  displayOccupied = false,
+  launch: (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch, identity: string, ports?: number[]) => Promise<void>,
   clientImageUrl?: string,
-  replacement?: { available(): boolean; stop(): Promise<void> },
 ) {
-  const occupied = React.useRef(displayOccupied); occupied.current = displayOccupied;
   const [catalog, setCatalog] = React.useState<InstalledPackageSessions[]>([]);
+  const [imageCatalog, setImageCatalog] = React.useState<ImageActivity[]>([]);
   const [ready, setReady] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [busy, setBusy] = React.useState(false);
@@ -45,10 +45,10 @@ export function usePackageSessions(
     const load = () => {
       operationAbort.current?.abort();
       const current = ++generation.current;
-      setReady(false); setCatalog([]); setOffered(null); setError(null);
+      setReady(false); setCatalog([]); setImageCatalog([]); setOffered(null); setError(null);
       if (host.getStatus() !== "running") return;
-      void loadPackageSessions(host).then(entries => {
-        if (!disposed && generation.current === current) { setCatalog(entries); setReady(true); }
+      void Promise.all([loadPackageSessions(host), host.imageActivities?.list() ?? Promise.resolve([])]).then(([entries, imageEntries]) => {
+        if (!disposed && generation.current === current) { setCatalog(entries); setImageCatalog(imageEntries); setReady(true); }
       }, err => {
         if (!disposed && generation.current === current) setError(String(err));
       });
@@ -88,7 +88,7 @@ export function usePackageSessions(
     const timeout = setTimeout(() => abort.abort(), 120_000);
     const current = generation.current;
     const assertCurrent = () => {
-      if (abort.signal.aborted) throw new Error("Invitation preparation cancelled");
+      if (abort.signal.aborted) throw new Error("Activity preparation cancelled");
       if (generation.current !== current || host.getStatus() !== "running") throw new Error("The activity's computer was replaced or stopped");
     };
     try { await operation(assertCurrent, abort.signal); return true; }
@@ -96,8 +96,8 @@ export function usePackageSessions(
     finally { clearTimeout(timeout); operationAbort.current = null; locked.current = false; setBusy(false); setProgress(null); setTransfer(null); }
   };
   const offer = (entry: InstalledPackageSessions | null, id: string, values: SessionValues, existing: boolean, name: string,
-    replace = false, selections: DependencySelections = {}, delivery: "peer" | "hint" = "peer") => run(async (assertCurrent, signal) => {
-    const initialRoom = network.getState().phase === "connected" ? network.getState().room : null;
+    replace = false, selections: DependencySelections = {}, delivery: "peer" | "hint" = "peer", local = false) => run(async (assertCurrent, signal) => {
+    const initialRoom = !local && network.getState().phase === "connected" ? network.getState().room : null;
     const assertPreparing = () => {
       assertCurrent();
       if (initialRoom && (network.getState().phase !== "connected" || network.getState().room !== initialRoom)) throw new Error("The session ended while preparing the invitation");
@@ -105,15 +105,15 @@ export function usePackageSessions(
     if (entry?.clientOnly) throw new Error("This computer has the client procedure, but no installed hosting procedure");
     const type = entry?.manifest.offers.find(type => type.id === id);
     if (entry && !type) throw new Error("Unknown activity");
+    if (local && (!type || !canLaunchLocally(type) || existing)) throw new Error("This activity does not declare a local launch procedure");
     if (type) {
       validateSessionValues(type.fields, values);
       if (existing && !type.attachExisting) throw new Error("This activity must be configured before starting");
-      if (!existing && type.launch?.surface === "display" && (host.getSurfaceAvailability().framebuffer || occupied.current) && !replacement?.available()) throw new Error("Quit the program using the display before starting a new activity.");
       for (const path of type.hostRequires ?? []) if (!(await host.stat(path))) throw new Error(`This activity requires an installed service: ${path}`);
       if (type.launch && type.launch.surface !== "web" && !(await host.stat(type.launch.executable))) throw new Error(`This activity requires an installed program: ${type.launch.executable}`);
     }
     const requiresHost = entry && type ? activityRequiresHost(entry.manifest, type) : false;
-    if (requiresHost && !replace && initialRoom && (await host.remoteNetworkSnapshot()).state === "joined") throw new Error("This activity requires the room’s hosting computer. Choose Replace current session to host it yourself.");
+    if (requiresHost && !replace && initialRoom && (await host.remoteNetworkSnapshot()).state === "joined") throw new Error("This activity requires the room’s hosting computer. Choose Restart network session to host it yourself.");
     assertPreparing();
     // Prepare data before disrupting an existing room, so a cancelled picker or
     // failed download does not disconnect the people already there.
@@ -136,16 +136,15 @@ export function usePackageSessions(
     assertPreparing();
     const next: SessionOffer | null = entry && type ? { version: 1, package: entry.manifest.package, packageVersion: entry.manifest.packageVersion, manifestSha256: entry.sha256, procedureSha256: entry.procedureSha256?.[id], offer: id, values: { ...values }, ...(prepared.length ? { dependencies: prepared.map(p => p.content) } : {}) } : null;
     if (next && entry && type) next.presentation = sessionPresentation(entry.manifest, type, next);
-    if (next) encodeSessionInvitation(next); // Fail before replacing a room or starting software if the display snapshot exceeds the URL limit.
-    if (!existing && type?.launch && replacement?.available()) {
-      setProgress("Stopping the previous activity…");
-      await replacement.stop(); assertPreparing();
-      const deadline = Date.now() + 3000;
-      while ((host.getSurfaceAvailability().framebuffer || occupied.current) && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 25)); assertPreparing();
-      }
+    if (next && !local) encodeSessionInvitation(next); // Fail before replacing a room or starting software if the display snapshot exceeds the URL limit.
+    if (local && type?.launch) {
+      setOffered(null);
+      for (const { dependency, bytes } of prepared) { await host.writeFile(dependency.path, bytes, 0o644); assertCurrent(); }
+      setProgress("Starting activity…");
+      await launch(type.launch.surface === "web" ? "" : sessionCommand(type, null, values, {}, prepared.map(item => item.content)), type.title, assertCurrent, type.launch, `${entry!.manifest.package}/${type.id}`, activityPorts(entry!, type));
+      assertCurrent();
+      return;
     }
-    if (!existing && type?.launch?.surface === "display" && (host.getSurfaceAvailability().framebuffer || occupied.current)) throw new Error("Quit the program using the display before starting a new activity.");
     if (replace && network.getState().room) { await network.leave(); assertCurrent(); }
     if (!network.getState().link) { await network.create(name); assertCurrent(); }
     const room = network.getState().room;
@@ -160,9 +159,8 @@ export function usePackageSessions(
       if (snapshot.state !== "hosting" && (requiresHost || snapshot.state !== "joined")) throw new Error("The activity’s network did not start");
     }
     assertSessionCurrent();
-    if (!existing && type?.launch?.surface === "display" && (host.getSurfaceAvailability().framebuffer || occupied.current)) throw new Error("Quit the program using the display before starting a new activity.");
     for (const { dependency, bytes } of prepared) { await host.writeFile(dependency.path, bytes, 0o644); assertSessionCurrent(); }
-    if (type?.launch && !existing) { await launch(type.launch.surface === "web" ? "" : sessionCommand(type, null, values, {}, prepared.map(p => p.content)), type.title, assertSessionCurrent, type.launch); assertSessionCurrent(); }
+    if (type?.launch && !existing) { await launch(type.launch.surface === "web" ? "" : sessionCommand(type, null, values, {}, prepared.map(p => p.content)), type.title, assertSessionCurrent, type.launch, `${entry!.manifest.package}/${type.id}`, activityPorts(entry!, type)); assertSessionCurrent(); }
     network.publishDependencies(new Map(prepared.filter(p => p.content.delivery === "peer").map(p => [p.content.sha256, p.bytes])));
     setOffered(next);
     await copyLink(invitationLink(network.getState().link, next));
@@ -196,9 +194,6 @@ export function usePackageSessions(
     assertAdvertised();
     validateSessionValues(invitation.join.fields, values);
     const command = invitation.join.launch.surface === "web" ? "" : sessionCommand(invitation.type, invitation.join, invited.values, values, invited.dependencies);
-    if (invitation.join.launch.surface === "display" && (host.getSurfaceAvailability().framebuffer || occupied.current) && !(selectedRemote && replacement?.available())) {
-      throw new Error("Quit the program using the display before starting a new activity.");
-    }
     const dependencies = resolveDependencies(invitation.manifest.dependencies ?? [], invited.dependencies ?? []);
     if (invitation.join.launch.surface !== "web") for (const path of [invitation.join.launch.executable, ...invitation.join.launch.requires.filter(path => !dependencies.some(d => d.dependency.path === path))]) {
       if (!(await host.stat(path))) throw new Error(`This activity requires an installed file: ${path}`);
@@ -244,9 +239,8 @@ export function usePackageSessions(
         && !readGameLevels(bytes, field.format).includes(String(invited.values[field.id]))) throw new Error("The invited starting level is not in the uploaded game data");
       await host.writeFile(dependency.path, bytes, 0o644); assertSessionCurrent();
     }
-    if (selectedRemote && replacement?.available()) { await replacement.stop(); assertSessionCurrent(); }
     setProgress("Starting activity…");
-    await launch(command, invitation.join.title, assertSessionCurrent, invitation.join.launch);
+    await launch(command, invitation.join.title, assertSessionCurrent, invitation.join.launch, `${invitation.manifest.package}/${invitation.type.id}`);
     assertSessionCurrent();
     setOffered(invited);
     setSelectedRemote(null);
@@ -269,7 +263,15 @@ export function usePackageSessions(
   const link = invitationLink(network.state.link, offered);
   const copyStatus = copyResult.link === link ? copyResult.status : "idle";
   const offeredTitle = offered ? catalog.find(entry => entry.manifest.package === offered.package)?.manifest.offers.find(type => type.id === offered.offer)?.title : null;
-  return { catalog, ready, error, busy, progress, transfer, remoteChoices, cancel, offered, offeredTitle, offer, invited, invitation, invitationError, join, link, copyStatus, copySequence,
+  return { catalog, imageCatalog, ready, error, busy, progress, transfer, remoteChoices, cancel, offered, offeredTitle, offer, invited, invitation, invitationError, join, link, copyStatus, copySequence,
+    startImage: (id: string) => run(async assertCurrent => {
+      if (!host.imageActivities) throw new Error("This computer has no image activity controller");
+      const activity = await host.imageActivities.prepare(id, setProgress, assertCurrent);
+      assertCurrent();
+      await launch(activity.command, activity.title, assertCurrent, activity.launch, `image/${activity.id}`);
+      assertCurrent();
+    }),
+    startLocal: (entry: InstalledPackageSessions, id: string, values: SessionValues, selections: DependencySelections = {}) => offer(entry, id, values, false, "", false, selections, "hint", true),
     selectRemote: setSelectedRemote,
     joinNetworkOnly: () => run(async assertCurrent => {
       if (!target) throw new Error("No session invitation");

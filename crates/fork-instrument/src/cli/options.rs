@@ -7,15 +7,66 @@ use std::path::PathBuf;
     name = "wasm-fork-instrument",
     about = "Instrument a wasm module with save/restore machinery for POSIX fork()",
     long_about = None,
+    group(clap::ArgGroup::new("input_source").args(["input", "input_fd"]).required(true)),
+    group(clap::ArgGroup::new("output_target").args(["output", "output_fd"])),
 )]
 pub(super) struct Cli {
     /// Input wasm file to instrument.
-    pub(super) input: PathBuf,
+    pub(super) input: Option<PathBuf>,
+
+    #[arg(long, value_name = "FD", value_parser = clap::value_parser!(i32).range(3..), help = "Snapshot a readonly regular descriptor from offset zero without changing its offset")]
+    pub(super) input_fd: Option<i32>,
 
     /// Output path for the instrumented wasm file. Required unless an
     /// analysis or contract-inspection mode is set.
     #[arg(short, long)]
     pub(super) output: Option<PathBuf>,
+
+    #[arg(long, value_name = "FD", value_parser = clap::value_parser!(i32).range(3..), help = "Write validated output to an empty, unlinked, writable regular descriptor; the caller owns publication")]
+    pub(super) output_fd: Option<i32>,
+
+    #[arg(long, requires = "output_target", conflicts_with_all = [
+        "original_store", "reprepare_from_original", "retain_uninstrumented", "original_reference",
+        "verify_original", "discover_only", "sink_report", "contract_inventory", "artifact_identity",
+        "fork_capability_hex", "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan",
+        "legacy_asyncify_exports",
+    ], help = "Bind the raw input's content identity without storing it; ignore the ambient original store")]
+    pub(super) bind_original: bool,
+
+    /// Retain the exact uninstrumented input in STORE/originals and bind its
+    /// content identity into the output for explicit future re-preparation.
+    #[arg(long, value_name = "STORE", requires = "output_target", conflicts_with_all = [
+        "discover_only", "sink_report", "contract_inventory", "artifact_identity",
+        "fork_capability_hex", "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan",
+        "legacy_asyncify_exports",
+    ])]
+    pub(super) original_store: Option<PathBuf>,
+
+    /// Resolve INPUT's content-bound original from --original-store and
+    /// prepare it again with this tool and the selected options.
+    #[arg(long, requires = "original_store")]
+    pub(super) reprepare_from_original: bool,
+
+    #[arg(long, help = "Print the retained original's byte length and SHA-256, or none, without writes", conflicts_with_all = [
+        "output_target", "original_store", "reprepare_from_original", "discover_only",
+        "sink_report", "contract_inventory", "artifact_identity", "fork_capability_hex",
+        "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) original_reference: bool,
+
+    #[arg(long, value_name = "ORIGINAL", help = "Verify INPUT's retained original bytes and immutable file mode without writes", conflicts_with_all = [
+        "output_target", "original_store", "reprepare_from_original", "original_reference", "retain_uninstrumented",
+        "discover_only", "sink_report", "contract_inventory", "artifact_identity", "fork_capability_hex",
+        "linked_frame_descriptor_hex", "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) verify_original: Option<PathBuf>,
+
+    #[arg(long, help = "Retain and bind a raw module without instrumenting it", requires_all = ["output_target", "original_store"], conflicts_with_all = [
+        "reprepare_from_original", "original_reference", "verify_original", "discover_only", "sink_report",
+        "contract_inventory", "artifact_identity", "fork_capability_hex", "linked_frame_descriptor_hex",
+        "reserved_env_imports", "streaming_scan", "legacy_asyncify_exports",
+    ])]
+    pub(super) retain_uninstrumented: bool,
 
     /// Maximum bytes in the private immutable input snapshot.
     #[arg(long, default_value_t = 8_u64 * 1024 * 1024 * 1024)]
@@ -61,7 +112,7 @@ pub(super) struct Cli {
     /// (`source\t<closure|builtin|facts>`), then the set and its
     /// boundaries as `A\t<name>` and `B\t<name>` rows. Emits no output
     /// file.
-    #[arg(long, hide = true, conflicts_with = "output")]
+    #[arg(long, hide = true, conflicts_with = "output_target")]
     pub(super) sink_report: bool,
 
     /// wasm-opt level to run over an instrumented output, or `none`.
@@ -82,14 +133,14 @@ pub(super) struct Cli {
     /// set as JSON to stdout. Skips instrumentation and output emission.
     /// Useful for validating call-graph discovery against
     /// hand-maintained onlylists.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "output_target")]
     pub(super) discover_only: bool,
 
     /// Diagnose the bounded original-binary scanner without producing an
     /// instrumented artifact. Reports compact
     /// summary counts and definition binding, not a complete sink/fork plan.
     #[arg(long, conflicts_with_all = [
-        "output", "discover_only", "sink_report", "contract_inventory",
+        "output_target", "discover_only", "sink_report", "contract_inventory",
         "artifact_identity", "fork_capability_hex", "linked_frame_descriptor_hex",
         "reserved_env_imports",
     ])]
@@ -103,7 +154,7 @@ pub(super) struct Cli {
             "discover_only",
             "artifact_identity",
             "reserved_env_imports",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) contract_inventory: bool,
@@ -118,7 +169,7 @@ pub(super) struct Cli {
             "fork_capability_hex",
             "linked_frame_descriptor_hex",
             "reserved_env_imports",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) artifact_identity: bool,
@@ -132,7 +183,7 @@ pub(super) struct Cli {
             "artifact_identity",
             "linked_frame_descriptor_hex",
             "reserved_env_imports",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) fork_capability_hex: bool,
@@ -146,7 +197,7 @@ pub(super) struct Cli {
             "artifact_identity",
             "fork_capability_hex",
             "reserved_env_imports",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) linked_frame_descriptor_hex: bool,
@@ -160,7 +211,7 @@ pub(super) struct Cli {
             "artifact_identity",
             "fork_capability_hex",
             "linked_frame_descriptor_hex",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) reserved_env_imports: bool,
@@ -176,7 +227,7 @@ pub(super) struct Cli {
             "fork_capability_hex",
             "linked_frame_descriptor_hex",
             "reserved_env_imports",
-            "output"
+            "output_target"
         ]
     )]
     pub(super) legacy_asyncify_exports: bool,

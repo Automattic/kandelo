@@ -19,7 +19,7 @@ async function share(p: Page, activity: string, offer = "service") {
   const form = p.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption(`${activity}/${offer}`);
   await expect(form.getByRole("checkbox")).toHaveCount(0);
-  await form.getByRole("button", { name: "Share running activity", exact: true }).click();
+  await form.getByRole("button", { name: "Show join link", exact: true }).click();
   await expect(p.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 90_000 });
   const link = (await p.locator("[data-network-link]").getAttribute("data-network-link"))!;
   // The package requests the standard client computer, without a demo profile.
@@ -59,7 +59,7 @@ for (const [profile, pkg, title, marker] of [
       await form.getByRole("button", { name: `Join and open ${title}`, exact: true }).click();
       const frame = guest.frameLocator("iframe.kweb-frame");
       await expect(frame.locator("body")).toContainText(new RegExp(marker, "i"), { timeout: 150_000 });
-      await expect(guest.getByRole("button", { name: "Demo", exact: true })).toBeEnabled();
+      await expect(guest.getByRole("button", { name: "Web", exact: true })).toBeEnabled();
       if (pkg === "wordpress") {
         const address = guest.getByRole("textbox", { name: "Preview URL path" });
         await address.fill("/wp-login.php"); await address.press("Enter");
@@ -73,7 +73,7 @@ for (const [profile, pkg, title, marker] of [
         await frame.getByPlaceholder("What needs doing?").fill("Added through a Kandelo invitation");
         await frame.getByRole("button", { name: "Add", exact: true }).click();
         await expect(frame.locator("body")).toContainText("Added through a Kandelo invitation");
-        await page.getByRole("button", { name: "Demo", exact: true }).click();
+        await page.getByRole("button", { name: "Web", exact: true }).click();
         await page.getByRole("button", { name: "Reload preview", exact: true }).click();
         await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Added through a Kandelo invitation");
       }
@@ -200,7 +200,7 @@ test("WordPress MySQL connection opens a real interactive client on the website 
     await expect.poll(() => terminal(guest)).toContain("history-result-2");
     await enter(guest, "UPDATE wp_options SET option_value = 'Shared SQL website' WHERE option_name = 'blogname';");
     await expect.poll(() => terminal(guest)).toContain("Query OK");
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Web", exact: true }).click();
     await page.getByRole("button", { name: "Reload preview", exact: true }).click();
     await expect(page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("Shared SQL website", { timeout: 120_000 });
     await guest.screenshot({ path: "../../.context/activity-wordpress-mysql-client.png" });

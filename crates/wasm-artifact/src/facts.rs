@@ -19,7 +19,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use alloc::format;
 
-use wasm_posix_shared::abi;
+use wasm_posix_program_abi::abi;
 use wasmparser::{
     CompositeInnerType, ExternalKind, HeapType, Parser, Payload, RefType, TableType, TypeRef,
     ValType,
@@ -1082,8 +1082,6 @@ pub fn read_i32_const_export(bytes: &[u8], export_name: &str) -> Option<i32> {
     }
     let mut function_index: Option<u32> = None;
     let mut imported_functions: u32 = 0;
-    let mut bodies: Vec<(u32, Vec<u8>)> = Vec::new();
-    let mut body_ordinal: u32 = 0;
 
     for payload in Parser::new(0).parse_all(bytes) {
         match payload {
@@ -1101,20 +1099,12 @@ pub fn read_i32_const_export(bytes: &[u8], export_name: &str) -> Option<i32> {
                     }
                 }
             }
-            Ok(Payload::CodeSectionEntry(body)) => {
-                if let Ok(range) = body.get_binary_reader().read_bytes(
-                    body.range().end - body.get_binary_reader().original_position(),
-                ) {
-                    bodies.push((body_ordinal, range.to_vec()));
-                }
-                body_ordinal += 1;
-            }
             _ => {}
         }
     }
 
     let index = function_index?;
-    read_i32_const_from_function(index, imported_functions, &bodies, 0)
+    read_i32_const_from_function(bytes, index, imported_functions, 0)
 }
 
 /// How far a wrapper chain is followed before giving up.
@@ -1142,9 +1132,9 @@ const MAX_MARKER_WRAPPER_DEPTH: u32 = 4;
 /// value a marker returns is the constant, or the callee's constant, that is
 /// immediately followed by a `return` or by the body's final `end`.
 fn read_i32_const_from_function(
+    bytes: &[u8],
     function_index: u32,
     imported_functions: u32,
-    bodies: &[(u32, Vec<u8>)],
     depth: u32,
 ) -> Option<i32> {
     if depth > MAX_MARKER_WRAPPER_DEPTH {
@@ -1153,14 +1143,15 @@ fn read_i32_const_from_function(
     // A constant accessor is always module-defined; an imported function has no
     // body to read.
     let defined_ordinal = function_index.checked_sub(imported_functions)?;
-    let (_, body) = bodies.iter().find(|(ord, _)| *ord == defined_ordinal)?;
+    let body_reader = Parser::new(0).parse_all(bytes).filter_map(|payload| match payload {
+        Ok(Payload::CodeSectionEntry(body)) => Some(body),
+        _ => None,
+    }).nth(defined_ordinal as usize)?;
 
     // `OperatorsReader` decodes each instruction's immediates properly, which is
     // the whole reason this is not a hand-rolled byte skipper: the previous
     // TypeScript had to enumerate every opcode's immediate shape, and an opcode
     // it did not know desynchronized the walk silently.
-    let reader = wasmparser::BinaryReader::new(body, 0);
-    let body_reader = wasmparser::FunctionBody::new(reader);
     // `get_operators_reader` skips the locals declarations itself. They are read
     // here first purely to REJECT a body whose locals are malformed: without
     // that, a corrupt body would fall through to "no constant found", which the
@@ -1182,9 +1173,9 @@ fn read_i32_const_from_function(
                 return match pending.take()? {
                     Pending::Constant(value) => Some(value),
                     Pending::Call(callee) => read_i32_const_from_function(
+                        bytes,
                         callee,
                         imported_functions,
-                        bodies,
                         depth + 1,
                     ),
                 };

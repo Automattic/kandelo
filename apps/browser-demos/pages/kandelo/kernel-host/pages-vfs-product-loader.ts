@@ -8,6 +8,8 @@ import {
   readExactSizedBody,
   type SizedDownloadProgress,
 } from "../../../../../web-libs/kandelo-session/src/sized-download";
+import type { StagedSourceImage } from "./opfs-source-image";
+import type { ImageDecompressionProgress } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface PagesVfsAssetGroupIdentity {
   bytes: number;
@@ -32,6 +34,14 @@ export interface ActivatedPagesVfsProduct {
     manifestUrl: string;
   };
 }
+export interface ResolvedPagesVfsProduct {
+  id: string;
+  imageUrl: string;
+  lazyAssets?: ActivatedPagesVfsProduct["lazyAssets"];
+}
+export interface PositionedPagesVfsProduct extends ResolvedPagesVfsProduct {
+  source: StagedSourceImage;
+}
 export type PagesVfsProductFetcher = (
   url: string,
   init: RequestInit,
@@ -49,9 +59,13 @@ export interface PagesVfsProductProgress {
   totalBytes: number;
   status: "loading" | "complete" | "error";
   error?: string;
+  operation?: "download";
+  decompression?: ImageDecompressionProgress;
 }
 export interface PagesVfsProductLoader {
   activate(id: string): Promise<ActivatedPagesVfsProduct>;
+  activatePositioned(id: string, directory: FileSystemDirectoryHandle): Promise<PositionedPagesVfsProduct>;
+  resolve(id: string): Promise<ResolvedPagesVfsProduct>;
   bytes(id: string): Promise<ArrayBuffer>;
   /** Latest image-load record for `id`, if one has been observed. */
   progress(id: string): PagesVfsProductProgress | undefined;
@@ -75,11 +89,13 @@ const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/u;
 export function createPagesVfsProductLoader(
   entries: readonly PagesVfsProductEntry[],
   fetcher: PagesVfsProductFetcher,
+  options: { prefetchEager?: boolean } = {},
 ): PagesVfsProductLoader {
   return createPagesVfsProductLoaderForBase(
     entries,
     fetcher,
     configuredViteBase(),
+    options,
   );
 }
 
@@ -87,6 +103,7 @@ export function createPagesVfsProductLoaderForBase(
   entries: readonly PagesVfsProductEntry[],
   fetcher: PagesVfsProductFetcher,
   deploymentBase: string,
+  options: { prefetchEager?: boolean } = {},
 ): PagesVfsProductLoader {
   const base = normalizeDeploymentBase(deploymentBase);
   const byId = new Map<string, PagesVfsProductEntry>();
@@ -150,6 +167,32 @@ export function createPagesVfsProductLoaderForBase(
     );
     return pending;
   };
+  const resolveProduct = async (id: string): Promise<ResolvedPagesVfsProduct & { fetchUrl: string }> => {
+    const entry = byId.get(id);
+    if (entry === undefined) throw new Error(`unknown Pages VFS product ${JSON.stringify(id)}`);
+    const assetGroup = entry.asset_group;
+    if (assetGroup === undefined) {
+      return { id, imageUrl: absoluteUrl(entry.path), fetchUrl: entry.path };
+    }
+    const manifest = await loadGroup();
+    const product = manifest.products.find((candidate) => candidate.id === id);
+    if (product === undefined) throw new Error(`VFS asset group lacks product ${id}`);
+    if (product.image.bytes !== entry.bytes || product.image.sha256 !== entry.sha256) {
+      throw new Error(`Pages VFS product ${id} differs from its group image identity`);
+    }
+    const manifestUrl = absoluteUrl(assetGroup.path);
+    const imageUrl = resolveGroupedAssetUrl(manifestUrl, product.image.path, base);
+    return {
+      id,
+      imageUrl,
+      fetchUrl: imageUrl,
+      lazyAssets: Object.freeze({
+        deploymentBase: base,
+        directoryUrl: new URL("./", manifestUrl).href,
+        manifestUrl,
+      }),
+    };
+  };
   const activate = (id: string): Promise<ActivatedPagesVfsProduct> => {
     const entry = byId.get(id);
     if (entry === undefined)
@@ -158,63 +201,22 @@ export function createPagesVfsProductLoaderForBase(
       );
     const prior = activations.get(id);
     if (prior !== undefined) return prior;
-    // Bind the group to a local so its narrowing survives into the async
-    // callback below; TypeScript drops property narrowing across that boundary.
-    const assetGroup = entry.asset_group;
-    const pending = (assetGroup === undefined
-      ? fetchAndValidate(
-          entry.path,
-          entry.bytes,
-          entry.sha256,
-          `Pages VFS product ${id}`,
-          fetcher,
-          imageProgress(id),
-        ).then((image) => ({
-          id,
-          imageBytes: image.slice().buffer,
-          imageUrl: absoluteUrl(entry.path),
-        }))
-      : loadGroup().then(async (manifest) => {
-          const product = manifest.products.find(
-            (candidate) => candidate.id === id,
-          );
-          if (product === undefined)
-            throw new Error(`VFS asset group lacks product ${id}`);
-          if (
-            product.image.bytes !== entry.bytes ||
-            product.image.sha256 !== entry.sha256
-          ) {
-            throw new Error(
-              `Pages VFS product ${id} differs from its group image identity`,
-            );
-          }
-          const manifestUrl = absoluteUrl(assetGroup.path);
-          const imageUrl = resolveGroupedAssetUrl(
-            manifestUrl,
-            product.image.path,
-            base,
-          );
-          const image = await fetchAndValidate(
-            imageUrl,
-            product.image.bytes,
-            product.image.sha256,
-            `Pages VFS product ${id}`,
-            fetcher,
-            imageProgress(id),
-          );
-          return {
-            id,
-            imageBytes: image.slice().buffer,
-            imageUrl,
-            // A cached activation is shared by consumers; do not expose authority
-            // that one consumer can redirect before another serializes its image.
-            lazyAssets: Object.freeze({
-              deploymentBase: base,
-              directoryUrl: new URL("./", manifestUrl).href,
-              manifestUrl,
-            }),
-          };
-        }));
+    const pending = resolveProduct(id).then(async (resolved) => {
+      const image = await fetchAndValidate(
+        resolved.fetchUrl,
+        entry.bytes,
+        entry.sha256,
+        `Pages VFS product ${id}`,
+        fetcher,
+        imageProgress(id),
+      );
+      return {
+        id,
+        imageBytes: image.slice().buffer,
+        imageUrl: resolved.imageUrl,
+        ...(resolved.lazyAssets === undefined ? {} : { lazyAssets: resolved.lazyAssets }),
+      };
+    });
     // WHY: settle progress inside the chain, so a caller awaiting activate()
     // observes the terminal record rather than racing a detached handler.
     const tracked = pending.then(
@@ -248,9 +250,48 @@ export function createPagesVfsProductLoaderForBase(
     return tracked;
   };
   for (const entry of byId.values())
-    if (entry.load === "eager") void activate(entry.id).catch(() => undefined);
+    if (entry.load === "eager" && options.prefetchEager !== false) void activate(entry.id).catch(() => undefined);
   return {
     activate,
+    async activatePositioned(id, directory) {
+      const entry = byId.get(id);
+      if (entry === undefined) throw new Error(`unknown Pages VFS product ${JSON.stringify(id)}`);
+      try {
+        const { stageRawVfsSourceImage } = await import("./opfs-source-image");
+        const resolved = await resolveProduct(id);
+        const response = await fetcher(resolved.fetchUrl, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Pages VFS product ${id} returned HTTP ${response.status}`);
+        const source = await stageRawVfsSourceImage(
+          response,
+          (loadedBytes) => publishProgress({
+            ...progressById.get(id), id, loadedBytes, totalBytes: entry.bytes,
+            status: "loading", operation: "download",
+          }),
+          directory,
+          { bytes: entry.bytes, sha256: entry.sha256 },
+          (decompression) => publishProgress({
+            ...progressById.get(id), id,
+            loadedBytes: progressById.get(id)?.loadedBytes ?? 0,
+            totalBytes: entry.bytes, status: "loading", operation: "download", decompression,
+          }),
+        );
+        publishProgress({ ...progressById.get(id), id, loadedBytes: entry.bytes, totalBytes: entry.bytes, status: "complete", operation: "download" });
+        return { id, imageUrl: resolved.imageUrl, lazyAssets: resolved.lazyAssets, source };
+      } catch (error) {
+        publishProgress({
+          id,
+          loadedBytes: progressById.get(id)?.loadedBytes ?? 0,
+          totalBytes: entry.bytes,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    async resolve(id) {
+      const { fetchUrl: _fetchUrl, ...resolved } = await resolveProduct(id);
+      return resolved;
+    },
     deploymentLazyAssets() {
       if (group === undefined) return undefined;
       const manifestUrl = absoluteUrl(group.path);

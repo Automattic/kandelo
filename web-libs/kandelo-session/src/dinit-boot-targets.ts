@@ -1,7 +1,8 @@
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const O_RDONLY = 0;
-const MAX_DINIT_SERVICE_FILE_BYTES = 65_536;
+export const MAX_DINIT_SERVICE_FILE_BYTES = 65_536;
+export const MAX_DINIT_SERVICE_CLOSURE = 256;
 
 export interface DinitBootTargetsFileSystem {
   lstat(path: string): { mode: number; size: number };
@@ -80,6 +81,14 @@ export function readDinitBootTargets(
     fs.close(handle);
   }
 
+  return parseDinitBootTargets(bytes, target);
+}
+
+export function parseDinitBootTargets(bytes: Uint8Array, target: string): string[] {
+  const path = `/etc/dinit.d/${target}`;
+  if (bytes.byteLength > MAX_DINIT_SERVICE_FILE_BYTES) {
+    throw new Error(`${path} exceeds ${MAX_DINIT_SERVICE_FILE_BYTES} bytes`);
+  }
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);

@@ -1,5 +1,6 @@
 script_path = "packages/registry/mariadb-vfs/build-mariadb-vfs.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "packages/registry/mariadb-vfs/build-mariadb-vfs.sh",
   "packages/registry/mariadb/package.toml",
   "images/vfs/scripts/build-mariadb-vfs-image.sh",

@@ -7,6 +7,7 @@ import type {
 } from "./demo-config";
 import type { ClipboardPasteFailure } from "./clipboard-paste";
 import { ExchangeSession, type ExchangeLike } from "./exchange-session";
+import type { WebPreviewTarget } from "./web-preview-address";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
@@ -117,6 +118,13 @@ export interface LazyDownloadEvent {
 /** Stage of a machine switch that can report progress. */
 export type MachinePhase = "destroying" | "image";
 
+export interface ImageDecompressionProgress {
+  completed: number;
+  total?: number;
+  status: "loading" | "complete" | "error";
+  error?: string;
+}
+
 /**
  * Progress of a machine switch: tearing the outgoing machine down, then
  * loading the incoming machine's VFS image.
@@ -124,8 +132,8 @@ export type MachinePhase = "destroying" | "image";
  * Deliberately separate from {@link LazyDownloadEvent}: both halves run while
  * no kernel is attached, and `attachKernel` clears the lazy-download ledger.
  *
- * Every field is a scalar. This record must never retain image bytes or
- * process memory — the main thread is not an owner of machine memory.
+ * Progress counters contain only scalars. This record must never retain image
+ * bytes or process memory — the main thread is not an owner of machine memory.
  *
  * `total` is absent when no total is known, which callers render as
  * indeterminate rather than inventing a denominator. `totalProvisional` marks
@@ -141,6 +149,8 @@ export interface MachineProgress {
   unit: "processes" | "bytes";
   status: "loading" | "complete" | "error";
   error?: string;
+  operation?: "download" | "mount" | "checkpoint";
+  decompression?: ImageDecompressionProgress;
 }
 
 /**
@@ -221,13 +231,22 @@ export interface KernelOwnedJobOptions {
   stdin?: Uint8Array;
 }
 
+export interface KernelOwnedJobScope {
+  closed(): boolean;
+  start(id: string, program: string, argv: string[], options: KernelOwnedJobOptions): Promise<void>;
+  read(id: string, offset?: number, limit?: number, cancel?: boolean): Promise<KernelOwnedJobRead>;
+  release(id: string): Promise<void>;
+}
+
 export interface KernelLike {
+  getOwnedJobLifetime?(): { readonly closed: boolean };
   // WHY there is no synchronous VFS handle here: the kernel worker owns the
   // filesystem, and the main thread must never hold worker-shared memory —
   // on WebKit only Worker.terminate() reclaims it. Every read below is an
   // async round-trip to the worker, the same way writeFileToVfs is.
   /** Read a regular file. Resolves null when the path does not exist. */
   readFileFromVfs?(path: string): Promise<Uint8Array | null>;
+  readFileRangeFromVfs?(path: string, offset: number, length: number): Promise<Uint8Array | null>;
   /** List a directory. Resolves null when the path does not exist. */
   readDirFromVfs?(path: string): Promise<KernelVfsDirEntry[] | null>;
   /** Describe a path, following symlinks. Resolves null when it is missing. */
@@ -573,6 +592,16 @@ export interface DmesgLine {
   level: DmesgLevel;
   facility: string;                 // "kernel", "systemd", "init", "audit"
   msg: string;
+  progress?: DmesgProgress;
+}
+
+export interface DmesgProgress {
+  id: string;
+  label: string;
+  completed: number;
+  total?: number;
+  unit: "bytes" | "items" | "processes";
+  status: "loading" | "complete" | "error";
 }
 
 export interface PtySize {
@@ -722,13 +751,7 @@ export type WebPreviewStatus =
   | "offline"
   | "reconnecting";
 
-export interface WebPreviewTarget {
-  /** localhost/127.0.0.1 select this machine; host or a session address select its Kandelo network. */
-  hostname: string;
-  port: number;
-  path?: string;
-  label?: string;
-}
+export type { WebPreviewTarget } from "./web-preview-address";
 export interface WebPreviewState {
   label: string;
   url: string;
@@ -838,6 +861,19 @@ export interface MountInfo {
   opts: string;
 }
 
+export interface FilesystemConfiguration {
+  storage: "memory" | "opfs";
+  computerId?: string;
+  format?: string;
+  directory?: string;
+  mode?: "fixed" | "resizable";
+  baseFile?: string;
+  baseGeneration?: number;
+  baseBytes?: number;
+  verification?: "crc32c" | "sha256";
+  journalNamespace?: string;
+}
+
 export interface KernelStateKV {
   k: string;
   v: string;
@@ -889,6 +925,7 @@ export type GalleryTab = "presets" | "recent" | "saved" | "shared" | "public";
 
 export interface GalleryItem {
   id: string;
+  image?: { id: string; title: string; defaultProfileId: string | null };
   title: string;
   summary: string;
   base: string;
@@ -918,6 +955,11 @@ export interface GalleryQuery {
 // ── The interface ──────────────────────────────────────────────────────────
 
 export interface KernelHost {
+  captureOwnedJobs?(): KernelOwnedJobScope;
+  services?: import("./computer-services").ComputerServiceController;
+  readonly computers?: import("./computer-library").ComputerLibrary;
+  readonly imageActivities?: import("./image-activities").ImageActivityController;
+  getDisplayOwners?(): number[];
   // status
   getStatus(): MachineStatus;
   subscribeStatus(cb: (s: MachineStatus) => void): () => void;
@@ -927,6 +969,8 @@ export interface KernelHost {
   applyBootDescriptor(desc: BootDescriptor): Promise<void>;
   halt(): Promise<void>;
   reboot(): Promise<void>;
+  supportsPersistentImageCheckpoint?(): boolean;
+  checkpointPersistentImage?(): Promise<void>;
 
   // dmesg ring
   subscribeDmesg(cb: (line: DmesgLine) => void): () => void;
@@ -1014,7 +1058,7 @@ export interface KernelHost {
   // not there resolves null instead of throwing. Callers that present a
   // listing to a person want readFile/readDir; callers that hand bytes and
   // numbers to a program want these.
-  readVfsFile(path: string): Promise<Uint8Array | null>;
+  readVfsFile(path: string, maxBytes?: number): Promise<Uint8Array | null>;
   readVfsDir(path: string): Promise<KernelVfsDirEntry[] | null>;
 
   // owned jobs
@@ -1066,6 +1110,7 @@ export interface KernelHost {
   enumProcs(): Promise<ProcessInfo[]>;
   readMemMap(pid: number): Promise<MemMapEntry[]>;
   getMounts(): Promise<MountInfo[]>;
+  getFilesystemConfiguration?(): FilesystemConfiguration | null;
   getKernelState(): Promise<KernelStateKV[]>;
   subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void;
   syscallHistory(filter?: SyscallFilter): SyscallEvent[];
@@ -1339,6 +1384,7 @@ export interface LiveKernelHostOptions {
   presentation?: DemoPresentation;
   /** Live-mode reboot hook supplied by the browser page. */
   applyBootDescriptor?: (desc: BootDescriptor, host: LiveKernelHost) => Promise<void>;
+  checkpointPersistentImage?: (host: LiveKernelHost) => Promise<void>;
   /** Preset list for galleryQuery("presets"). */
   galleryItems?: GalleryItem[];
 }
@@ -1390,6 +1436,19 @@ const NOT_IMPLEMENTED = (m: string) =>
   );
 
 export class LiveKernelHost implements KernelHost {
+  services?: import("./computer-services").ComputerServiceController;
+  private filesystemConfiguration: Readonly<FilesystemConfiguration> | null = null;
+  computers?: import("./computer-library").ComputerLibrary;
+  imageActivities?: import("./image-activities").ImageActivityController;
+
+  getDisplayOwners(): number[] {
+    const owners = new Set(this.kernel?.framebuffers?.list().map(binding => binding.pid) ?? []);
+    for (const stats of this.kmsOwnerStats.values()) {
+      const pid = stats.length > 8 ? Atomics.load(stats, 8) : 0;
+      if (pid > 0) owners.add(pid);
+    }
+    return [...owners];
+  }
   private readonly exchange = new ExchangeSession();
   private _status: MachineStatus;
   private statusListeners = new ListenerSet<MachineStatus>();
@@ -1419,6 +1478,7 @@ export class LiveKernelHost implements KernelHost {
   private _descriptor: BootDescriptor;
   private presentation: DemoPresentation;
   private applyBootDescriptorImpl?: NonNullable<LiveKernelHostOptions["applyBootDescriptor"]>;
+  private checkpointPersistentImageImpl?: NonNullable<LiveKernelHostOptions["checkpointPersistentImage"]>;
   private galleryItems: GalleryItem[];
   private webPreview: WebPreviewState | null = null;
   private webPreviewHandler?: { open: (target: WebPreviewTarget) => Promise<void>; closeNetwork: () => void; dispose: () => void };
@@ -1463,6 +1523,7 @@ export class LiveKernelHost implements KernelHost {
    * drop naturally when the canvas itself is GC'd.
    */
   private kmsHandles = new WeakMap<HTMLCanvasElement, KmsDisplayHandle>();
+  private kmsOwnerStats = new Map<number, Int32Array>();
   /** The one display canvas per CRTC for the current kernel
    *  (kmsDisplayCanvas). Scoped to the kernel: detachKernel clears it. */
   private kmsDisplayCanvases = new Map<number, HTMLCanvasElement>();
@@ -1482,10 +1543,9 @@ export class LiveKernelHost implements KernelHost {
    * at boot, and permanently if its GLES probe or a GL frame fails. In
    * the browser the compositor's own GL context normally claims the
    * canvas for GPU compositing as the steady state, standing the
-   * presenter down (`"2d"` is the legacy CPU blit). GL-driven demos keep
-   * the `"webgl2"` default and let the GL bridge claim the canvas.
+   * presenter down (`"2d"` is the legacy CPU blit).
    */
-  private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = null;
+  private kmsDisplayModeDefault: "auto" | "2d" | "webgl2" | "webgl2-scanout" | null = "webgl2-scanout";
   /**
    * Last display size (device pixels) reported per CRTC by the
    * attachKmsDisplay ResizeObserver, which also forwards it to the kernel
@@ -1510,6 +1570,7 @@ export class LiveKernelHost implements KernelHost {
     this.exchange.detach();
     this.shell = opts.shell;
     this.applyBootDescriptorImpl = opts.applyBootDescriptor;
+    this.checkpointPersistentImageImpl = opts.checkpointPersistentImage;
     this.galleryItems = opts.galleryItems ?? [];
     if (opts.kernel) {
       this.attachKernel(opts.kernel);
@@ -1525,7 +1586,11 @@ export class LiveKernelHost implements KernelHost {
 
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
+    this.services = undefined;
+    this.filesystemConfiguration = null;
     const previousKernel = this.kernel;
+    this.imageActivities = undefined;
+    this.kmsOwnerStats.clear();
     this.webPreviewHandler?.dispose();
     this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel replaced");
@@ -1571,6 +1636,8 @@ export class LiveKernelHost implements KernelHost {
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
     const detachedKernel = this.kernel;
+    this.imageActivities = undefined;
+    this.kmsOwnerStats.clear();
     this.webPreviewHandler?.dispose();
     this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel detached");
@@ -1781,6 +1848,10 @@ export class LiveKernelHost implements KernelHost {
 
   /** Update the status and fan out to subscribers. */
   setStatus(s: MachineStatus): void {
+    if (s === "booting" || s === "idle" || s === "halted" || s === "error") {
+      this.filesystemConfiguration = null;
+      this.services = undefined;
+    }
     if (s === this._status) return;
     this._status = s;
     // The boot screen owns this record; once the machine leaves `booting`
@@ -1798,12 +1869,18 @@ export class LiveKernelHost implements KernelHost {
    * lazy-download ledger.
    */
   setMachineProgress(progress: MachineProgress | null): void {
-    this.machineProgress = progress === null ? null : { ...progress };
+    this.machineProgress = progress === null ? null : {
+      ...progress,
+      ...(progress.decompression === undefined ? {} : { decompression: { ...progress.decompression } }),
+    };
     this.machineProgressListeners.emit(this.machineProgress);
   }
 
   getMachineProgress(): MachineProgress | null {
-    return this.machineProgress === null ? null : { ...this.machineProgress };
+    return this.machineProgress === null ? null : {
+      ...this.machineProgress,
+      ...(this.machineProgress.decompression === undefined ? {} : { decompression: { ...this.machineProgress.decompression } }),
+    };
   }
 
   subscribeMachineProgress(
@@ -1989,7 +2066,20 @@ export class LiveKernelHost implements KernelHost {
     await this.applyBootDescriptorImpl(desc, this);
   }
 
+  supportsPersistentImageCheckpoint(): boolean {
+    return this.checkpointPersistentImageImpl !== undefined;
+  }
+
+  async checkpointPersistentImage(): Promise<void> {
+    if (!this.checkpointPersistentImageImpl) {
+      throw new Error("persistent image checkpoint is unavailable");
+    }
+    await this.checkpointPersistentImageImpl(this);
+  }
+
   async halt(): Promise<void> {
+    this.imageActivities = undefined;
+    this.kmsOwnerStats.clear();
     this.webPreviewHandler?.dispose();
     this.webPreviewHandler = undefined;
     this.setStatus("halted");
@@ -2545,11 +2635,19 @@ export class LiveKernelHost implements KernelHost {
     return this.kernel.subscribeVfsChanges(prefix, cb);
   }
 
-  async readVfsFile(path: string): Promise<Uint8Array | null> {
-    if (!this.kernel?.readFileFromVfs) {
+  async readVfsFile(path: string, maxBytes?: number): Promise<Uint8Array | null> {
+    const kernel = this.kernel;
+    if (maxBytes !== undefined) {
+      if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes >= Number.MAX_SAFE_INTEGER) throw new Error("Invalid bounded VFS read limit");
+      if (!kernel?.readFileRangeFromVfs) throw new Error("The attached kernel cannot bound VFS reads");
+      const bytes = await kernel.readFileRangeFromVfs(path, 0, maxBytes + 1);
+      if (bytes !== null && bytes.byteLength > maxBytes) throw new Error(`VFS file exceeds ${maxBytes} bytes: ${path}`);
+      return bytes;
+    }
+    if (!kernel?.readFileFromVfs) {
       throw new Error("LiveKernelHost.readVfsFile: the attached kernel has no VFS surface.");
     }
-    return this.kernel.readFileFromVfs(path);
+    return kernel.readFileFromVfs(path);
   }
 
   async readVfsDir(path: string): Promise<KernelVfsDirEntry[] | null> {
@@ -2560,6 +2658,30 @@ export class LiveKernelHost implements KernelHost {
   }
 
   // ── KernelHost: owned jobs ──────────────────────────────────────────────
+
+  captureOwnedJobs(): KernelOwnedJobScope {
+    const kernel = this.kernel;
+    const owner = kernel?.getOwnedJobLifetime?.();
+    if (!kernel?.spawnFromVfs || !kernel.readOwnedJob || !kernel.releaseOwnedJob || !owner) throw new Error("The attached kernel cannot bind owned command lifetimes");
+    const check = () => {
+      if (owner.closed) throw new Error("OWNED_JOB_OWNER_CLOSED");
+      if (kernel.getOwnedJobLifetime?.() !== owner) throw new Error("OWNED_JOB_OWNER_CHANGED");
+    };
+    return {
+      closed: () => owner.closed,
+      start: async (id, program, argv, options) => {
+        check();
+        const spawned = await kernel.spawnFromVfs!(program, argv, {
+          ownedJob: { id, timeoutMs: options.timeoutMs }, cwd: options.cwd,
+          env: options.env, uid: options.uid, gid: options.gid,
+          stdin: options.stdin ?? new Uint8Array(0),
+        });
+        void spawned.exit.catch(() => {});
+      },
+      read: async (id, offset, limit, cancel) => { check(); return kernel.readOwnedJob!(id, offset, limit, cancel); },
+      release: async (id) => { check(); return kernel.releaseOwnedJob!(id); },
+    };
+  }
 
   async startOwnedJob(
     id: string,
@@ -2764,13 +2886,13 @@ export class LiveKernelHost implements KernelHost {
   }
 
   async getMounts(): Promise<MountInfo[]> {
-    // Mounts are configured at boot time from the BootDescriptor; the
-    // kernel doesn't grow new mounts dynamically. Source-of-truth is
-    // descriptor.mounts. If a future kernel adds runtime mount/umount
-    // syscalls and exposes /proc/mounts, the catch falls through to
-    // the kernel view.
     const fromDesc = descriptorMountsToInfo(this._descriptor.mounts);
-    if (fromDesc.length > 0) return fromDesc;
+    if (fromDesc.length > 0) {
+      const filesystem = this.filesystemConfiguration;
+      return fromDesc.map(mount => mount.target === "/" && filesystem?.storage === "opfs"
+        ? { ...mount, source: `opfs:${filesystem.directory ?? ""}${filesystem.baseFile ? `/${filesystem.baseFile}` : ""}`, opts: `${mount.opts},journaled` }
+        : mount);
+    }
     const text = await this.readFileText("/proc/mounts").catch(() => "");
     return parseMounts(text);
   }
@@ -2795,11 +2917,16 @@ export class LiveKernelHost implements KernelHost {
         // /proc/sys tree, more rows show up automatically.
       }
     }
-    // Synthetic kandelo.* keys for image/url metadata. The image hash and
-    // url size are computed from the current descriptor; they're not
-    // sysctls so we synthesize them on every call.
-    out.push({ k: "kandelo.image_hash", v: this._descriptor.runtime.kernel });
+    out.push({ k: "kandelo.kernel", v: this._descriptor.runtime.kernel });
     return out;
+  }
+
+  setFilesystemConfiguration(configuration: FilesystemConfiguration): void {
+    this.filesystemConfiguration = Object.freeze({ ...configuration });
+  }
+
+  getFilesystemConfiguration(): FilesystemConfiguration | null {
+    return this.filesystemConfiguration === null ? null : { ...this.filesystemConfiguration };
   }
 
   subscribeSyscalls(cb: (e: SyscallEvent) => void, filter?: SyscallFilter): () => void {
@@ -3223,6 +3350,7 @@ export class LiveKernelHost implements KernelHost {
     // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
+    this.kmsOwnerStats.set(crtcId, stats);
     const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {

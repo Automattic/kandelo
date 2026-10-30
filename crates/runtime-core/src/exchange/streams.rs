@@ -160,14 +160,12 @@ fn mark(idx: u32) {
 /// Create the input FIFO at `path` for host stream `source`, owned by `uid`
 /// and the exchange group, mode 0440. The host is its writer from now on.
 pub fn create_input(path: &[u8], source: u64, uid: u32, gid: u32) -> Result<(), Errno> {
+    let pipe_idx = pipes().prepare_slot()?;
+    let prepared_name = unsafe { crate::fifo::global_fifo_table() }.prepare_registration(path, pipe_idx)?;
     crate::tmpfs::mknod_special(path, 0o440, uid, gid, S_IFIFO)?;
     let metadata = crate::tmpfs::lstat(path)?;
-    let pipe_idx = pipes().alloc(PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, metadata));
-    if !unsafe { crate::fifo::global_fifo_table() }.register(path.to_vec(), pipe_idx) {
-        pipes().remove_fifo_name(pipe_idx);
-        let _ = crate::tmpfs::unlink(path);
-        return Err(Errno::EEXIST);
-    }
+    pipes().publish_prepared(pipe_idx, PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, metadata));
+    assert!(unsafe { crate::fifo::global_fifo_table() }.publish_registration(prepared_name));
     STREAMS.with(|streams| {
         if let Some(pipe) = pipes().get_mut(pipe_idx) {
             pipe.add_fifo_path_ref();

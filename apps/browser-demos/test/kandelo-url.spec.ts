@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { ABI_VERSION } from "../../../host/src/generated/abi";
 import { appUrl, gotoMachine } from "./support/kandelo-machine";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 
 test("Kandelo dock defaults to full width", async ({ page }) => {
   await gotoMachine(page, "shell");
@@ -15,41 +16,25 @@ test("Kandelo dock defaults to full width", async ({ page }) => {
     .toHaveClass(/\bis-dock-full-width\b/);
 });
 
-test("Kandelo gallery launch updates the browser URL with a VFS image", async ({ page }) => {
+test("Kandelo Library creates a local computer with the chosen image and profile", async ({ page }) => {
   await gotoMachine(page, "shell");
 
-  await page.getByRole("button", { name: "New", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Launch New Computer" })).toBeVisible();
-
-  await page
-    .locator(".kgal-row", {
-      has: page.locator(".kgal-machine-title", { hasText: /^Node\.js$/ }),
-    })
-    .getByRole("button", { name: "Launch" })
-    .click();
-
-  // The app rewrites the URL only after the new machine has booted (#1410),
-  // so a failed boot never leaves the address bar naming a machine that is
-  // not running. Shell and Node.js share one image, so waiting on `vfs`
-  // would pass on the pre-launch URL: wait on the profile instead.
+  await configureNewComputer(page, "node", "Node.js");
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
   await expect
-    .poll(() => new URL(page.url()).searchParams.get("profile"), {
+    .poll(async () => (await currentComputerMetadata(page)).profileId, {
       timeout: 120_000,
     })
     .toBe("node");
   const url = new URL(page.url());
-  expect(url.searchParams.get("vfs")).toContain("/shell.vfs.zst");
-  // The machine is named by the profile the IMAGE declares, not by an app-side
-  // id: `&profile=` carries it. The image URL itself never carries a
-  // fragment, and the removed `?demo=` must not come back.
-  expect(url.searchParams.get("profile")).toBe("node");
-  expect(url.searchParams.get("vfs")).not.toContain("#");
-  expect(url.searchParams.get("vfs")).not.toContain("%23");
+  expect(url.searchParams.get("computer")).toMatch(/^[0-9a-f-]{36}$/);
+  expect(url.searchParams.get("vfs")).toBeNull();
+  expect(url.searchParams.get("profile")).toBeNull();
+  const image = (await currentComputerMetadata(page)).descriptor.mounts.find(mount => mount.path === "/")?.ref;
+  expect(image).toContain("/shell.vfs.zst");
+  expect(image).not.toContain("#");
+  expect(image).not.toContain("%23");
   expect(url.searchParams.get("demo")).toBeNull();
-  // WHY: selecting a VFS updates the URL before the replacement machine has
-  // finished its service-worker reload and VFS assembly. Assert the stable
-  // accessible machine identity across that boundary instead of racing a
-  // transient descendant from the old dock.
   await expect(
     page.getByRole("button", {
       name: /^Current computer: Node\.js,/,

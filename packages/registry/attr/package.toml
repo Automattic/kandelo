@@ -24,7 +24,9 @@ script_path = "packages/registry/attr/build-attr.sh"
 [[outputs]]
 name = "getfattr"
 wasm = "getfattr.wasm"
+fork_instrumentation = "disabled"
 
 [[outputs]]
 name = "setfattr"
 wasm = "setfattr.wasm"
+fork_instrumentation = "disabled"

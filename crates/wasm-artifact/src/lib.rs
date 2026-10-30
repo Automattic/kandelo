@@ -39,7 +39,9 @@
 extern crate alloc;
 
 pub mod facts;
+pub mod original_program;
 pub mod policy;
+pub mod policy_surface;
 
 pub use facts::{
     detect_pointer_width, is_wasm_module, read_artifact_facts, read_custom_section, read_heap_base,
@@ -84,6 +86,6 @@ pub fn read_abi_version(bytes: &[u8]) -> Option<i32> {
 pub fn read_thread_slot_declaration(bytes: &[u8]) -> Option<i32> {
     facts::read_i32_const_export(
         bytes,
-        wasm_posix_shared::process_memory::THREAD_SLOT_DECL_EXPORT,
+        wasm_posix_program_abi::abi::THREAD_SLOT_DECL_EXPORT,
     )
 }

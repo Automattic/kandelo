@@ -5,12 +5,19 @@
  * Extracted from the duplicated initBridge() function in those demo pages.
  */
 import { HttpBridgeHost } from "../http-bridge";
+import { persistentWebRouteLock, persistentWebRouteName } from "./persistent-web-route";
 import {
   deploymentScopeFromServiceWorkerUrl,
   normalizeDeploymentBase,
 } from "../../../../web-libs/kandelo-session/src/deployment-scope";
 
 const SERVICE_WORKER_READY_TIMEOUT_MS = 10_000;
+
+export class UnconfirmedPersistentWebBridgeOwnership extends Error {
+  constructor(cause: unknown) {
+    super("persistent HTTP bridge claim drainage is unconfirmed; reload before restarting this computer", { cause });
+  }
+}
 
 function waitForOwnedServiceWorker(
   registration: ServiceWorkerRegistration,
@@ -159,6 +166,7 @@ export async function initServiceWorkerBridge(
   swUrl: string,
   scopePath: string,
   sessionId: string,
+  persistentComputerName?: string,
 ): Promise<{ bridge: HttpBridgeHost; name: string; appPrefix: string } | null> {
   if (!("serviceWorker" in navigator)) {
     return null;
@@ -166,22 +174,42 @@ export async function initServiceWorkerBridge(
 
   const bridge = new HttpBridgeHost();
   const controller = await ensureServiceWorkerReady(swUrl, scopePath);
+  const persistentName = persistentComputerName === undefined ? undefined
+    : await persistentWebRouteName(scopePath, persistentComputerName);
+  let releaseProof: (() => void) | undefined;
+  let holdingProof: Promise<unknown> | undefined;
 
   // Send bridge port and wait for the SW to mint and confirm the machine name.
-  const minted = await new Promise<{ name: string; appPrefix: string }>(
+  try {
+    const minted = await new Promise<{ name: string; appPrefix: string }>(
     (resolve, reject) => {
       const reply = new MessageChannel();
       let settled = false;
+      const timeout = persistentName === undefined ? undefined : window.setTimeout(() => finish(() => reject(new Error(
+        "Timed out initializing service worker HTTP bridge",
+      ))), SERVICE_WORKER_READY_TIMEOUT_MS);
       const finish = (complete: () => void) => {
         if (settled) return;
         settled = true;
+        if (timeout !== undefined) window.clearTimeout(timeout);
         reply.port1.onmessage = null;
         reply.port1.close();
         complete();
       };
       reply.port1.onmessage = (event) => {
         const message = event.data;
-        if (
+        if (message?.type === "bridge-lease-challenge" && persistentName !== undefined &&
+          typeof message.nonce === "string" && /^[a-f0-9-]{36}$/.test(message.nonce) && !holdingProof) {
+          const released = new Promise<void>(complete => { releaseProof = complete; });
+          holdingProof = navigator.locks.request(`kandelo-http-bridge-proof:${message.nonce}`,
+            { mode: "exclusive", ifAvailable: true }, async lock => {
+              if (!lock) throw new Error("HTTP bridge proof lease unavailable");
+              if (settled) return;
+              reply.port1.postMessage({ type: "bridge-lease-proof", nonce: message.nonce });
+              await released;
+            });
+          void holdingProof.catch(error => finish(() => reject(error)));
+        } else if (
           message?.type === "bridge-ready" &&
           typeof message.name === "string" &&
           typeof message.appPrefix === "string"
@@ -204,7 +232,8 @@ export async function initServiceWorkerBridge(
       };
       try {
         controller.postMessage(
-          { type: "init-bridge", sessionId },
+          { type: "init-bridge", sessionId,
+            ...(persistentComputerName === undefined ? {} : { persistentComputerName }) },
           [bridge.getSwPort(), reply.port2],
         );
       } catch (error) {
@@ -213,5 +242,19 @@ export async function initServiceWorkerBridge(
     },
   );
 
-  return { bridge, name: minted.name, appPrefix: minted.appPrefix };
+    return { bridge, name: minted.name, appPrefix: minted.appPrefix };
+  } finally {
+    releaseProof?.();
+    try {
+      await holdingProof;
+    } finally {
+      if (persistentName !== undefined) {
+        try {
+          await navigator.locks.request(persistentWebRouteLock(scopePath, persistentName), () => {});
+        } catch (error) {
+          throw new UnconfirmedPersistentWebBridgeOwnership(error);
+        }
+      }
+    }
+  }
 }

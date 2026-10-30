@@ -350,6 +350,10 @@ _wasm_posix_output_metadata() {
     local host_target="$2"
     local package="$3"
     local artifact="$4"
+    if [ -n "${WASM_POSIX_XTASK_BIN:-}" ]; then
+        "$WASM_POSIX_XTASK_BIN" build-deps output-metadata "$package" "$artifact"
+        return
+    fi
     (
         cd "$repo_root"
         env -u CC -u CXX -u AR -u RANLIB -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS \
@@ -411,17 +415,33 @@ install_local_binary() {
     local mirror_path=""
     local declared_artifact="$requested_artifact"
     local declared_policy=""
-    if [ "$install_local_mirror" = "1" ]; then
-        host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
-        if [ -z "$host_target" ]; then
-            echo "install_local_binary: rustc did not report a host target" >&2
-            return 1
+    local original_artifact=""
+    if [ "$install_local_mirror" = "1" ] || [ -n "${WASM_POSIX_INSTALL_OUTPUT_METADATA:-}" ]; then
+        if [ "$install_local_mirror" = "1" ]; then
+            host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
+            if [ -z "$host_target" ]; then
+                echo "install_local_binary: rustc did not report a host target" >&2
+                return 1
+            fi
         fi
 
         # Resolve destination and policy together before any operation below
         # can instrument the source or mutate a destination.
         local metadata
-        if ! metadata="$(_wasm_posix_output_metadata \
+        if [ "$install_local_mirror" = "0" ] && [ -n "${WASM_POSIX_INSTALL_OUTPUT_METADATA:-}" ]; then
+            if [ "${WASM_POSIX_DEP_NAME:-}" != "$program" ]; then
+                echo "install_local_binary: resolver metadata belongs to a different package" >&2
+                return 1
+            fi
+            metadata="$(node -e '
+                const outputs = JSON.parse(process.env.WASM_POSIX_INSTALL_OUTPUT_METADATA);
+                const requested = process.argv[1];
+                const exact = outputs.filter(output => output.source_artifact === requested);
+                const matches = exact.length ? exact : outputs.filter(output => output.source_artifact.split("/").pop() === requested);
+                if (matches.length !== 1) throw new Error("output declaration is missing or ambiguous");
+                process.stdout.write(JSON.stringify(matches[0]));
+            ' "$requested_artifact")" || return 1
+        elif ! metadata="$(_wasm_posix_output_metadata \
             "$repo_root" "$host_target" "$program" "$requested_artifact")"; then
             echo "install_local_binary: package '$program' does not uniquely declare output '$requested_artifact'" >&2
             return 1
@@ -435,14 +455,18 @@ install_local_binary() {
                 throw new Error(`invalid output metadata field ${key}`);
               }
             }
+            if (value.original_wasm !== undefined && (typeof value.original_wasm !== "string" ||
+                !value.original_wasm.length || /[\t\n]/.test(value.original_wasm))) {
+                throw new Error("invalid original_wasm metadata");
+            }
             process.stdout.write(
-              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}`,
+              `${value.mirror_path}\t${value.fork_instrumentation}\t${value.source_artifact}\t${value.original_wasm ?? ""}`,
             );
           ' "$metadata")"; then
             echo "install_local_binary: invalid output metadata for '$program:$requested_artifact'" >&2
             return 1
         fi
-        IFS=$'\t' read -r mirror_path declared_policy declared_artifact <<<"$fields"
+        IFS=$'\t' read -r mirror_path declared_policy declared_artifact original_artifact <<<"$fields"
         if ! _wasm_posix_require_portable_relative_path "$mirror_path" \
             || ! _wasm_posix_require_portable_relative_path "$declared_artifact"; then
             echo "install_local_binary: xtask returned an unsafe output path" >&2
@@ -456,8 +480,17 @@ install_local_binary() {
         fi
     fi
 
+    if [ -n "$original_artifact" ]; then
+        if ! _wasm_posix_require_portable_relative_path "$original_artifact" \
+            || [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ] \
+            || [ -z "${WASM_POSIX_BUILD_ORIGINAL_STORE:-}" ]; then
+            echo "install_local_binary: declared originals require safe artifact paths and resolver-owned output/retention roots" >&2
+            return 1
+        fi
+    fi
+
     local requested_policy="${WASM_POSIX_INSTALL_FORK_INSTRUMENTATION:-}"
-    if [ "$install_local_mirror" = "1" ] \
+    if { [ "$install_local_mirror" = "1" ] || [ -n "${WASM_POSIX_INSTALL_OUTPUT_METADATA:-}" ]; } \
         && [ -n "$requested_policy" ] \
         && [ "$requested_policy" != "$declared_policy" ]; then
         echo "install_local_binary: requested fork policy '$requested_policy' disagrees with package policy '$declared_policy'" >&2
@@ -537,6 +570,31 @@ install_local_binary() {
             return 2
             ;;
     esac
+    if [ -n "$original_artifact" ]; then
+        local reference original_length original_sha original_path
+        reference="$("$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" --original-reference)" || return 1
+        if [ "$reference" = "none" ]; then
+            local retained
+            retained="$(mktemp "${TMPDIR:-/tmp}/wpk-retained-original.XXXXXX.wasm")" || return 1
+            if ! "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" -o "$retained" \
+                --original-store "$WASM_POSIX_BUILD_ORIGINAL_STORE" --retain-uninstrumented \
+                || ! mv -f "$retained" "$src"; then
+                rm -f "$retained"
+                return 1
+            fi
+            reference="$("$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" --original-reference)" || return 1
+        fi
+        IFS=$'\t' read -r original_length original_sha <<<"$reference"
+        if ! [[ "$original_length" =~ ^[0-9]+$ ]] || ! [[ "$original_sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "install_local_binary: invalid original-program reference" >&2
+            return 1
+        fi
+        original_path="$WASM_POSIX_BUILD_ORIGINAL_STORE/originals/$original_sha.wasm"
+        "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" --verify-original "$original_path" || return 1
+        _wasm_posix_copy_file_no_follow "$original_path" "$WASM_POSIX_DEP_OUT_DIR" "$original_artifact" || return 1
+        "$repo_root/scripts/run-wasm-fork-instrument.sh" "$src" \
+            --verify-original "$WASM_POSIX_DEP_OUT_DIR/$original_artifact" || return 1
+    fi
     wasm_drop_compiler_facts "$src" || return 1
 
     if [ "$install_local_mirror" = "1" ]; then

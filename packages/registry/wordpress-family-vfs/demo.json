@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "image": {
+    "title": "WordPress"
+  },
+  "defaultProfile": "wordpress-sqlite",
+  "profiles": {
+    "wordpress-sqlite": {
+      "identity": {
+        "title": "WordPress SQLite",
+        "summary": "WordPress on nginx + PHP-FPM with the SQLite database plugin.",
+        "accent": "#21759b",
+        "glyph": "wp",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "wordpress@local",
+          "sqlite@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "wordpress-sqlite"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080
+        ]
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start wordpress-sqlite"
+      }
+    },
+    "wordpress-mariadb": {
+      "identity": {
+        "title": "WordPress MariaDB",
+        "summary": "WordPress on nginx + PHP-FPM with MariaDB.",
+        "accent": "#5f8f73",
+        "glyph": "wp+",
+        "packages": [
+          "dinit@local",
+          "nginx@local",
+          "php-fpm@local",
+          "mariadb@local",
+          "wordpress@local",
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "requests": {
+          "maxWorkers": 24,
+          "memoryPages": 16384
+        }
+      },
+      "init": {
+        "program": "/bin/sh",
+        "args": [
+          "/sbin/kandelo-init",
+          "wordpress-mariadb"
+        ],
+        "cwd": "/root",
+        "uid": 0,
+        "gid": 0
+      },
+      "web": {
+        "requiredPorts": [
+          8080,
+          9000
+        ],
+        "probeHttp": true,
+        "probePath": "/kandelo-ready.php"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "web",
+          "syslog",
+          "terminal"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      },
+      "activity": {
+        "shellCommand": "/usr/local/bin/kandelo-service start wordpress-mariadb"
+      }
+    }
+  }
+}

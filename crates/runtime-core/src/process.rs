@@ -20,7 +20,7 @@ use crate::terminal::TerminalState;
 /// A handle to an open directory stream for readdir iteration.
 pub struct DirStream {
     pub host_handle: i64,
-    pub path: Vec<u8>, // resolved directory path (for rewinddir)
+    pub path: crate::ofd::OfdPath,
     pub position: u64, // entry counter (for telldir/seekdir)
     /// Synthetic "." / ".." state: 0 = emit ".", 1 = emit "..", 2 = host entries
     pub synth_dot_state: u8,
@@ -738,10 +738,11 @@ pub struct ShmMapping {
 }
 
 /// Exact Rust-owned timer identities whose platform handles must be retired.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
 pub struct HostTimerCleanup {
     pub cancel_alarm: bool,
-    pub posix_timer_ids: Vec<u32>,
+    pub posix_timer_ids: crate::IoBuffer<u32>,
 }
 
 const MAX_SYSV_SHM_MAPPINGS_PER_PROCESS: usize = 4096;
@@ -895,7 +896,8 @@ pub struct EpollInterest {
 /// [`crate::descriptor_backing::with_epolls`]. A `fork` child's duplicated
 /// descriptor therefore reaches the same instance, and `epoll_ctl` through
 /// either descriptor is visible to both processes.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 pub struct EpollInstance {
     pub interests: Vec<EpollInterest>,
     pub cursor: usize,
@@ -996,7 +998,8 @@ pub struct SignalFdState {
 }
 
 /// File descriptor action to apply in a fork child before exec.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 pub enum FdAction {
     Dup2 {
         old_fd: i32,
@@ -1007,7 +1010,7 @@ pub enum FdAction {
     },
     Open {
         fd: i32,
-        path: Vec<u8>,
+        path: crate::IoBuffer<u8>,
         flags: i32,
         mode: i32,
     },
@@ -1042,7 +1045,7 @@ pub enum FdAction {
 #[doc(hidden)]
 pub struct ProcessIdentity {
     pub pid: u32,
-    pub threads: Vec<ThreadInfo>,
+    pub threads: crate::IoBuffer<ThreadInfo>,
 }
 
 /// Per-process kernel state: file descriptor table, OFD table, pipes, cwd, and directory streams.
@@ -1142,8 +1145,8 @@ pub struct Process {
     pub pipes: Vec<Option<PipeBuffer>>,
     pub sockets: SocketTable,
     pub epoll_waits: Vec<(u32, crate::epoll::WaitLease)>,
-    pub cwd: Vec<u8>,
-    pub dir_streams: Vec<Option<DirStream>>,
+    pub cwd: crate::ofd::OfdPath,
+    pub dir_streams: crate::IoBuffer<Option<DirStream>>,
     /// Process-directed pending signals and process-wide dispositions. The
     /// blocked mask remains the main thread's mask for historical ABI reasons.
     pub signals: SignalState,
@@ -1153,8 +1156,8 @@ pub struct Process {
     pub main_thread_signals: PerThreadSignalState,
     pub memory: MemoryManager,
     pub terminal: TerminalState,
-    pub environ: Vec<Vec<u8>>,
-    pub argv: Vec<Vec<u8>>,
+    pub environ: ProcessStrings,
+    pub argv: ProcessStrings,
     /// In-progress host replacement, invisible until one token-bound commit
     /// swaps the complete argv/environment pair.
     metadata_replacement: Option<ProcessMetadataReplacement>,
@@ -1182,15 +1185,15 @@ pub struct Process {
     pub caught_handler_depth: u32,
     pub returned_handler_depths: Vec<u32>,
     /// Path to exec after fork (set by posix_spawn before forking).
-    pub fork_exec_path: Option<Vec<u8>>,
+    pub fork_exec_path: Option<crate::IoBuffer<u8>>,
     /// Argv for exec after fork.
-    pub fork_exec_argv: Option<Vec<Vec<u8>>>,
+    pub fork_exec_argv: Option<ProcessStrings>,
     /// FD actions to apply before exec in fork child.
-    pub fork_fd_actions: Vec<FdAction>,
+    pub fork_fd_actions: crate::IoBuffer<FdAction>,
     /// Next ephemeral port to assign for bind(port=0).
     pub next_ephemeral_port: u16,
     /// POSIX timers (timer_create / timer_settime).
-    pub posix_timers: Vec<Option<PosixTimerState>>,
+    pub posix_timers: crate::IoBuffer<Option<PosixTimerState>>,
     /// Alternate signal stack (sigaltstack): ss_sp, ss_flags, ss_size.
     pub alt_stack_sp: u64,
     pub alt_stack_flags: u32,
@@ -1202,7 +1205,7 @@ pub struct Process {
     /// re-execution. Each entry is (read_fd, write_fd). sys_pipe pops
     /// from this list to return the correct FDs when the child re-runs
     /// code before fork(). Empty in non-fork-child processes.
-    pub fork_pipe_replay: Vec<(i32, i32)>,
+    pub(crate) fork_pipe_replay: crate::io_buffer::IoBuffer<(i32, i32)>,
     /// True if this process has called exec (for POSIX setpgid EACCES check).
     pub has_exec: bool,
     /// Live mmap of `/dev/fb0`, if any. `Some` between successful
@@ -1211,10 +1214,10 @@ pub struct Process {
     /// Active mmaps of DRI buffer objects. Each entry pairs a wasm
     /// memory region with the bo currently bound there so `sys_munmap`
     /// can issue the matching [`HostIO::gbm_bo_unbind`].
-    pub dri_bindings: Vec<DriBoBinding>,
+    pub dri_bindings: crate::IoBuffer<DriBoBinding>,
     /// SysV shared-memory attachments keyed by the process virtual address
     /// returned from `shmat`.
-    pub shm_mappings: Vec<ShmMapping>,
+    pub shm_mappings: crate::IoBuffer<ShmMapping>,
     /// Counts how many times this process has called fork() (parent side, on success).
     /// Read-only from outside the kernel via `kernel_get_fork_count`.
     /// Used as a regression guardrail by the spawn test suite to confirm
@@ -1287,10 +1290,73 @@ impl StdioConfig {
     }
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+#[cfg_attr(test, derive(Clone))]
+pub struct ProcessStrings(crate::IoBuffer<crate::IoBuffer<u8>>);
+
+impl ProcessStrings {
+    pub const fn new() -> Self { Self(crate::IoBuffer::new()) }
+
+    pub fn try_with_capacity(capacity: usize) -> Result<Self, Errno> {
+        Ok(Self(crate::IoBuffer::try_with_capacity(capacity)?))
+    }
+
+    pub fn copy_from(entries: &[impl AsRef<[u8]>]) -> Result<Self, Errno> {
+        let mut result = Self::try_with_capacity(entries.len())?;
+        for entry in entries { result.try_push(entry.as_ref())?; }
+        Ok(result)
+    }
+
+    pub fn try_push(&mut self, entry: &[u8]) -> Result<(), Errno> {
+        self.try_push_owned(crate::IoBuffer::copy_from(entry)?)
+    }
+
+    pub(crate) fn try_push_owned(&mut self, entry: crate::IoBuffer<u8>) -> Result<(), Errno> {
+        self.0.try_reserve(1)?;
+        self.0.push(entry);
+        Ok(())
+    }
+
+    pub(crate) fn retain(&mut self, keep: impl FnMut(&crate::IoBuffer<u8>) -> bool) {
+        self.0.retain(keep);
+    }
+}
+
+impl Deref for ProcessStrings {
+    type Target = [crate::IoBuffer<u8>];
+    fn deref(&self) -> &Self::Target { &self.0 }
+}
+
+impl core::ops::DerefMut for ProcessStrings {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.0 }
+}
+
+impl<'a> IntoIterator for &'a ProcessStrings {
+    type Item = &'a crate::IoBuffer<u8>;
+    type IntoIter = core::slice::Iter<'a, crate::IoBuffer<u8>>;
+    fn into_iter(self) -> Self::IntoIter { self.0.iter() }
+}
+
+#[cfg(test)]
+impl PartialEq<Vec<Vec<u8>>> for ProcessStrings {
+    fn eq(&self, other: &Vec<Vec<u8>>) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(left, right)| left == right)
+    }
+}
+
+#[cfg(test)]
+impl FromIterator<Vec<u8>> for ProcessStrings {
+    fn from_iter<Entries: IntoIterator<Item = Vec<u8>>>(entries: Entries) -> Self {
+        let mut result = Self::new();
+        for entry in entries { result.try_push(&entry).unwrap(); }
+        result
+    }
+}
+
 struct ProcessMetadataReplacement {
     token: u32,
-    argv: Vec<Vec<u8>>,
-    environment: Vec<Vec<u8>>,
+    argv: ProcessStrings,
+    environment: ProcessStrings,
     failed: bool,
 }
 
@@ -1298,7 +1364,7 @@ impl ProcessMetadataReplacement {
     fn entries_mut(
         &mut self,
         kind: u32,
-    ) -> Result<(&mut Vec<Vec<u8>>, usize), Errno> {
+    ) -> Result<(&mut ProcessStrings, usize), Errno> {
         match kind {
             process_metadata_contract::KIND_ARGV => Ok((
                 &mut self.argv,
@@ -1319,7 +1385,7 @@ impl ProcessMetadataReplacement {
         allocate: F,
     ) -> Result<(), Errno>
     where
-        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
+        F: FnOnce(&[u8]) -> Result<crate::IoBuffer<u8>, Errno>,
     {
         if self.failed {
             return Err(Errno::EINVAL);
@@ -1339,8 +1405,7 @@ impl ProcessMetadataReplacement {
             // already-staged prefix intact for cancellation and cannot touch
             // the live process metadata.
             let owned = allocate(entry)?;
-            entries.try_reserve(1).map_err(|_| Errno::ENOMEM)?;
-            entries.push(owned);
+            entries.try_push_owned(owned)?;
             Ok(())
         })();
 
@@ -1354,9 +1419,62 @@ impl ProcessMetadataReplacement {
     }
 }
 
+pub struct PreparedDescriptor {
+    pid: u32,
+    fd: i32,
+    ofd: crate::ofd::PreparedOfd,
+}
+
+impl PreparedDescriptor {
+    pub fn fd(&self) -> i32 { self.fd }
+    pub fn description_mut(&mut self) -> &mut crate::ofd::OpenFileDesc { self.ofd.value_mut() }
+}
+
+impl core::fmt::Debug for PreparedDescriptor {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("PreparedDescriptor").field("pid", &self.pid).field("fd", &self.fd).finish_non_exhaustive()
+    }
+}
+
 impl Process {
+    pub fn prepare_descriptor(&mut self, kind: FileType, flags: u32, path: &[u8]) -> Result<PreparedDescriptor, Errno> {
+        let fd = self.fd_table.reserve()?;
+        match self.ofd_table.prepare(kind, flags, path) {
+            Ok(ofd) => Ok(PreparedDescriptor { pid: self.pid, fd, ofd }),
+            Err(error) => {
+                self.fd_table.release_reserved(fd);
+                Err(error)
+            }
+        }
+    }
+
+    pub fn cancel_descriptor(&mut self, prepared: PreparedDescriptor) {
+        assert_eq!(prepared.pid, self.pid, "prepared descriptor changed process");
+        self.ofd_table.cancel(prepared.ofd);
+        assert!(self.fd_table.release_reserved(prepared.fd), "prepared descriptor reservation changed");
+    }
+
+    pub fn publish_descriptor(&mut self, prepared: PreparedDescriptor, handle: i64, flags: u32) -> i32 {
+        assert_eq!(prepared.pid, self.pid, "prepared descriptor changed process");
+        let index = self.ofd_table.publish(prepared.ofd, handle);
+        self.fd_table.install_reserved(prepared.fd, crate::fd::OpenFileDescRef(index), flags)
+            .expect("prepared descriptor reservation changed before publication");
+        prepared.fd
+    }
+
+    pub fn open_descriptor(
+        &mut self, kind: FileType, flags: u32, path: &[u8], fd_flags: u32,
+        open: impl FnOnce(&mut Self, &mut crate::ofd::OpenFileDesc) -> Result<i64, Errno>,
+    ) -> Result<i32, Errno> {
+        let mut prepared = self.prepare_descriptor(kind, flags, path)?;
+        match open(self, prepared.description_mut()) {
+            Ok(handle) => Ok(self.publish_descriptor(prepared, handle, fd_flags)),
+            Err(error) => { self.cancel_descriptor(prepared); Err(error) },
+        }
+    }
+
     /// Create a process for an identity allocated by `ProcessTable`.
-    pub fn new_allocated(task_id: crate::process_table::AllocatedTaskId) -> Self {
+    pub fn new_allocated(task_id: crate::process_table::AllocatedTaskId) -> Result<Self, Errno> {
         Self::new_allocated_with_stdio(task_id, StdioConfig::captured())
     }
 
@@ -1364,9 +1482,9 @@ impl Process {
     pub fn new_allocated_with_stdio(
         task_id: crate::process_table::AllocatedTaskId,
         stdio: StdioConfig,
-    ) -> Self {
+    ) -> Result<Self, Errno> {
         let pid = task_id.into_raw();
-        Self::new_inner(pid, Some(stdio))
+        Self::try_new_inner(pid, stdio)
     }
 
     /// Create an empty process record for fork-state restoration. The caller
@@ -1374,53 +1492,42 @@ impl Process {
     /// before publishing the record.
     pub fn new_allocated_empty(task_id: crate::process_table::AllocatedTaskId) -> Self {
         let pid = task_id.into_raw();
-        Self::new_inner(pid, None)
+        Self::new_inner(pid)
     }
 
     /// Construct an isolated process fixture with a caller-selected PID.
     #[cfg(test)]
     pub fn new(pid: u32) -> Self {
-        Self::new_inner(pid, Some(StdioConfig::captured()))
+        Self::try_new_inner(pid, StdioConfig::captured()).unwrap()
     }
 
     /// Construct an isolated process fixture with caller-selected stdio.
     #[cfg(test)]
     pub fn new_with_stdio(pid: u32, stdio: StdioConfig) -> Self {
-        Self::new_inner(pid, Some(stdio))
+        Self::try_new_inner(pid, stdio).unwrap()
     }
 
     /// Construct an empty isolated fixture for deserialization tests.
     #[cfg(test)]
     pub fn new_empty_for_test(pid: u32) -> Self {
-        Self::new_inner(pid, None)
+        Self::new_inner(pid)
     }
 
-    fn new_inner(pid: u32, stdio: Option<StdioConfig>) -> Self {
+    fn try_new_inner(pid: u32, stdio: StdioConfig) -> Result<Self, Errno> {
         use wasm_posix_shared::flags::{O_RDONLY, O_WRONLY};
-
-        let mut ofd_table = OfdTable::new();
-        let mut fd_table = FdTable::new();
-        if let Some(stdio) = stdio {
-            ofd_table.create(
-                stdio.kind_for_fd(0).file_type(),
-                O_RDONLY,
-                0,
-                b"/dev/stdin".to_vec(),
-            );
-            ofd_table.create(
-                stdio.kind_for_fd(1).file_type(),
-                O_WRONLY,
-                1,
-                b"/dev/stdout".to_vec(),
-            );
-            ofd_table.create(
-                stdio.kind_for_fd(2).file_type(),
-                O_WRONLY,
-                2,
-                b"/dev/stderr".to_vec(),
-            );
-            fd_table.preopen_stdio(); // fds 0,1,2 → OFD refs 0,1,2
+        let mut process = Self::new_inner(pid);
+        for (fd, path, flags) in [(0, b"/dev/stdin".as_slice(), O_RDONLY),
+            (1, b"/dev/stdout", O_WRONLY), (2, b"/dev/stderr", O_WRONLY)] {
+            let prepared = process.ofd_table.prepare(stdio.kind_for_fd(fd).file_type(), flags, path)?;
+            process.ofd_table.publish(prepared, fd as i64);
         }
+        process.fd_table.preopen_stdio();
+        Ok(process)
+    }
+
+    fn new_inner(pid: u32) -> Self {
+        let ofd_table = OfdTable::new();
+        let fd_table = FdTable::new();
 
         let mut rlimits = [[u64::MAX; 2]; 16]; // Default: infinity for all
         rlimits[7] = [1024, 4096]; // RLIMIT_NOFILE: soft=1024, hard=4096
@@ -1431,7 +1538,7 @@ impl Process {
         Process {
             identity: ProcessIdentity {
                 pid,
-                threads: Vec::new(),
+                threads: crate::IoBuffer::new(),
             },
             ppid: 0,
             credentials: Credentials::root(),
@@ -1456,14 +1563,14 @@ impl Process {
             pipes: Vec::new(),
             sockets: SocketTable::new(),
             epoll_waits: Vec::new(),
-            cwd: alloc::vec![b'/'],
-            dir_streams: Vec::new(),
+            cwd: crate::ofd::OfdPath::root(),
+            dir_streams: crate::IoBuffer::new(),
             signals: SignalState::new(),
             main_thread_signals: PerThreadSignalState::new(),
             memory: MemoryManager::new(),
             terminal,
-            environ: Vec::new(),
-            argv: Vec::new(),
+            environ: ProcessStrings::new(),
+            argv: ProcessStrings::new(),
             metadata_replacement: None,
             next_metadata_replacement_token: 1,
             umask: 0o022,
@@ -1479,18 +1586,18 @@ impl Process {
             returned_handler_depths: Vec::new(),
             fork_exec_path: None,
             fork_exec_argv: None,
-            fork_fd_actions: Vec::new(),
+            fork_fd_actions: crate::IoBuffer::new(),
             next_ephemeral_port: 49152,
-            posix_timers: Vec::new(),
+            posix_timers: crate::IoBuffer::new(),
             alt_stack_sp: 0,
             alt_stack_flags: 2, // SS_DISABLE
             alt_stack_size: 0,
             alt_stack_depth: 0,
-            fork_pipe_replay: Vec::new(),
+            fork_pipe_replay: crate::io_buffer::IoBuffer::new(),
             has_exec: false,
             fb_binding: None,
-            dri_bindings: Vec::new(),
-            shm_mappings: Vec::new(),
+            dri_bindings: crate::IoBuffer::new(),
+            shm_mappings: crate::IoBuffer::new(),
             fork_count: 0,
         }
     }
@@ -1800,6 +1907,10 @@ impl Process {
         (idx, idx + 1)
     }
 
+    pub(crate) fn prepare_thread(&mut self) -> Result<(), Errno> {
+        self.identity.threads.try_reserve(1)
+    }
+
     /// Consume a `ProcessTable`-allocated identity and attach its thread record.
     pub fn add_allocated_thread(
         &mut self,
@@ -1820,6 +1931,7 @@ impl Process {
     /// Add an isolated caller-constructed thread fixture.
     #[cfg(test)]
     pub fn add_thread(&mut self, info: ThreadInfo) {
+        self.prepare_thread().unwrap();
         self.identity.threads.push(info);
     }
 
@@ -1898,9 +2010,7 @@ impl Process {
         if self.shm_mappings.len() >= MAX_SYSV_SHM_MAPPINGS_PER_PROCESS {
             return Err(Errno::ENOMEM);
         }
-        self.shm_mappings
-            .try_reserve_exact(1)
-            .map_err(|_| Errno::ENOMEM)?;
+        self.shm_mappings.try_reserve(1)?;
         self.shm_mappings.push(ShmMapping { addr, shmid, size });
         Ok(())
     }
@@ -1917,8 +2027,19 @@ impl Process {
     }
 
     /// Drain every SysV attachment owned by the discarded address space.
-    pub fn take_shm_mappings(&mut self) -> Vec<ShmMapping> {
+    pub fn take_shm_mappings(&mut self) -> crate::IoBuffer<ShmMapping> {
         core::mem::take(&mut self.shm_mappings)
+    }
+
+    pub fn alloc_posix_timer(&mut self, timer: PosixTimerState) -> Result<usize, Errno> {
+        if let Some(slot) = self.posix_timers.iter().position(Option::is_none) {
+            self.posix_timers[slot] = Some(timer);
+            return Ok(slot);
+        }
+        self.posix_timers.try_reserve(1)?;
+        let slot = self.posix_timers.len();
+        self.posix_timers.push(Some(timer));
+        Ok(slot)
     }
 
     /// Drain the complete process-owned host timer identity list when it fits.
@@ -1939,10 +2060,7 @@ impl Process {
         if timer_count > max_posix_timer_ids {
             return Err(Errno::ERANGE);
         }
-        let mut posix_timer_ids = Vec::new();
-        posix_timer_ids
-            .try_reserve_exact(timer_count)
-            .map_err(|_| Errno::ENOMEM)?;
+        let mut posix_timer_ids = crate::IoBuffer::try_with_capacity(timer_count)?;
         if timer_count != 0 {
             for (timer_id, slot) in self.posix_timers.iter().enumerate() {
                 if slot.is_none() {
@@ -2538,6 +2656,17 @@ impl Process {
         }
     }
 
+    pub fn finish_matching_signal_mask_retry_for(
+        &mut self, tid: u32, kind: crate::signal::SignalMaskWaitKind, replacement_mask: u64,
+    ) -> bool {
+        let matching = self.mask_waits_for(tid).and_then(|waits| waits.last()).is_some_and(|wait|
+            wait.kind == kind && wait.replacement_mask == replacement_mask
+                && wait.state == crate::signal::SignalMaskWaitState::Active);
+        if matching && self.blocked_for(tid) == replacement_mask {
+            self.finish_signal_mask_wait_for(tid, kind)
+        } else { false }
+    }
+
     /// Record one normal or nonlocal rt_sigreturn boundary.
     pub fn return_from_caught_handler_for(&mut self, tid: u32) -> bool {
         let depth = self.caught_handler_depth_for(tid);
@@ -2686,8 +2815,8 @@ impl Process {
         self.next_metadata_replacement_token = token + 1;
         self.metadata_replacement = Some(ProcessMetadataReplacement {
             token,
-            argv: Vec::new(),
-            environment: Vec::new(),
+            argv: ProcessStrings::new(),
+            environment: ProcessStrings::new(),
             failed: false,
         });
         Ok(token)
@@ -2701,7 +2830,7 @@ impl Process {
         allocate: F,
     ) -> Result<(), Errno>
     where
-        F: FnOnce(&[u8]) -> Result<Vec<u8>, Errno>,
+        F: FnOnce(&[u8]) -> Result<crate::IoBuffer<u8>, Errno>,
     {
         let transaction = self
             .metadata_replacement
@@ -2717,14 +2846,7 @@ impl Process {
         kind: u32,
         entry: &[u8],
     ) -> Result<(), Errno> {
-        self.stage_metadata_entry_with(token, kind, entry, |source| {
-            let mut owned = Vec::new();
-            owned
-                .try_reserve_exact(source.len())
-                .map_err(|_| Errno::ENOMEM)?;
-            owned.extend_from_slice(source);
-            Ok(owned)
-        })
+        self.stage_metadata_entry_with(token, kind, entry, crate::IoBuffer::copy_from)
     }
 
     pub fn commit_metadata_replacement(&mut self, token: u32) -> Result<(), Errno> {
@@ -3300,10 +3422,60 @@ mod tests {
     }
 
     #[test]
+    fn metadata_admission_refusal_preserves_live_pair_and_releases_prepared_bytes() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut proc = Process::new(77);
+        proc.argv = ProcessStrings::copy_from(&[b"old".as_slice()]).unwrap();
+        proc.environ = ProcessStrings::copy_from(&[b"OLD=value".as_slice()]).unwrap();
+        for extra in [0, 6] {
+            let token = proc.begin_metadata_replacement().unwrap();
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            {
+                let _limit = crate::io_buffer::test_budget(held + extra);
+                assert_eq!(proc.stage_metadata_entry(token, process_metadata_contract::KIND_ARGV, b"new"), Err(Errno::ENOMEM));
+                assert_eq!(proc.commit_metadata_replacement(token), Err(Errno::EINVAL));
+                assert_eq!(proc.argv[0], b"old");
+                assert_eq!(proc.environ[0], b"OLD=value");
+                assert!(proc.metadata_replacement.as_ref().unwrap().argv.is_empty());
+                assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+                proc.cancel_metadata_replacement(token).unwrap();
+            }
+        }
+        let token = proc.begin_metadata_replacement().unwrap();
+        proc.stage_metadata_entry(token, process_metadata_contract::KIND_ARGV, b"new").unwrap();
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            proc.commit_metadata_replacement(token).unwrap();
+            assert_eq!(proc.argv[0], b"new");
+            assert!(proc.environ.is_empty());
+        }
+        drop(proc);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn metadata_slot_growth_refusal_retains_staged_prefix_and_poisoned_transaction() {
+        let mut proc = Process::new(78);
+        let token = proc.begin_metadata_replacement().unwrap();
+        for _ in 0..4 {
+            proc.stage_metadata_entry(token, process_metadata_contract::KIND_ENVIRONMENT, b"PREFIX=value").unwrap();
+        }
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let _limit = crate::io_buffer::test_budget(held);
+        assert_eq!(proc.stage_metadata_entry(token, process_metadata_contract::KIND_ENVIRONMENT, b""), Err(Errno::ENOMEM));
+        assert_eq!(proc.metadata_replacement.as_ref().unwrap().environment.len(), 4);
+        assert_eq!(proc.metadata_replacement.as_ref().unwrap().environment[3], b"PREFIX=value");
+        assert_eq!(proc.commit_metadata_replacement(token), Err(Errno::EINVAL));
+        assert!(proc.environ.is_empty());
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        proc.cancel_metadata_replacement(token).unwrap();
+    }
+
+    #[test]
     fn metadata_replacement_commits_both_vectors_and_preserves_empty_values() {
         let mut proc = Process::new(77);
-        proc.argv = vec![b"old".to_vec()];
-        proc.environ = vec![b"OLD=value".to_vec()];
+        proc.argv = crate::process::ProcessStrings::copy_from(&vec![b"old".to_vec()]).unwrap();
+        proc.environ = crate::process::ProcessStrings::copy_from(&vec![b"OLD=value".to_vec()]).unwrap();
 
         let token = proc.begin_metadata_replacement().unwrap();
         proc.stage_metadata_entry(
@@ -3327,8 +3499,8 @@ mod tests {
     #[test]
     fn metadata_replacement_later_environment_allocation_failure_rolls_back_pair() {
         let mut proc = Process::new(78);
-        proc.argv = vec![b"old-program".to_vec(), b"old-argument".to_vec()];
-        proc.environ = vec![b"OLD=value".to_vec()];
+        proc.argv = crate::process::ProcessStrings::copy_from(&vec![b"old-program".to_vec(), b"old-argument".to_vec()]).unwrap();
+        proc.environ = crate::process::ProcessStrings::copy_from(&vec![b"OLD=value".to_vec()]).unwrap();
 
         let token = proc.begin_metadata_replacement().unwrap();
         proc.stage_metadata_entry(
@@ -3375,8 +3547,8 @@ mod tests {
     #[test]
     fn metadata_replacement_rejects_overlap_stale_tokens_and_unknown_kinds() {
         let mut proc = Process::new(79);
-        proc.argv = vec![b"old".to_vec()];
-        proc.environ = vec![b"OLD=value".to_vec()];
+        proc.argv = crate::process::ProcessStrings::copy_from(&vec![b"old".to_vec()]).unwrap();
+        proc.environ = crate::process::ProcessStrings::copy_from(&vec![b"OLD=value".to_vec()]).unwrap();
 
         let first = proc.begin_metadata_replacement().unwrap();
         assert_eq!(
@@ -3450,7 +3622,7 @@ mod tests {
     #[test]
     fn accepting_timer_notification_snapshots_overrun() {
         let mut proc = Process::new(1);
-        proc.posix_timers.push(Some(PosixTimerState {
+        proc.posix_timers.try_push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 32,
             sigev_value_bits: 7,
@@ -3463,7 +3635,7 @@ mod tests {
             notification_pending: true,
             overrun_current: 3,
             overrun_last: 1,
-        }));
+        })).unwrap();
 
         assert_eq!(proc.accept_posix_timer_notification(0), Some(3));
         let timer = proc.posix_timers[0].as_ref().unwrap();
@@ -3496,7 +3668,7 @@ mod tests {
     #[test]
     fn legacy_interval_fire_preserves_host_signal_contract() {
         let mut proc = Process::new(1);
-        proc.posix_timers.push(Some(PosixTimerState {
+        proc.posix_timers.try_push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
             sigev_value_bits: 7,
@@ -3509,7 +3681,7 @@ mod tests {
             notification_pending: false,
             overrun_current: 0,
             overrun_last: 4,
-        }));
+        })).unwrap();
 
         assert!(!proc.note_legacy_posix_timer_interval_fire(0));
         assert_eq!(proc.posix_timers[0].as_ref().unwrap().overrun_last, 0);
@@ -3525,7 +3697,7 @@ mod tests {
     fn deleting_timer_notification_prevents_slot_reuse_aba() {
         let mut proc = Process::new(1);
         proc.add_thread(ThreadInfo::new(2, 0, 0, 0));
-        proc.posix_timers.push(Some(PosixTimerState {
+        proc.posix_timers.try_push(Some(PosixTimerState {
             clock_id: 1,
             sigev_signo: 10,
             sigev_value_bits: 7,
@@ -3538,7 +3710,7 @@ mod tests {
             notification_pending: true,
             overrun_current: 2,
             overrun_last: 0,
-        }));
+        })).unwrap();
         proc.get_thread_mut(2)
             .unwrap()
             .signals
@@ -3630,6 +3802,69 @@ mod tests {
     }
 
     #[test]
+    fn shm_mapping_records_admit_before_publication_and_keep_drained_credit() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut proc = Process::new(1);
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(proc.record_shm_mapping(0x20000, 7, 4096), Err(Errno::ENOMEM));
+            assert!(proc.shm_mappings.is_empty());
+        }
+        proc.record_shm_mapping(0x20000, 7, 4096).unwrap();
+        {
+            let held = crate::io_buffer::IO_MEMORY.usage().0;
+            let _limit = crate::io_buffer::test_budget(held);
+            proc.record_shm_mapping(0x20000, 7, 4096).unwrap();
+            let drained = proc.take_shm_mappings();
+            assert!(proc.shm_mappings.is_empty());
+            assert_eq!(drained.len(), 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+            drop(drained);
+            assert!(crate::io_buffer::IO_MEMORY.usage().0 < held);
+        }
+        drop(proc);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
+    fn posix_timer_admission_preserves_slots_alarm_and_cleanup_on_refusal() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut proc = Process::new(1);
+        let timer = PosixTimerState {
+            clock_id: 1, sigev_signo: 14, sigev_value_bits: 42, sigev_notify: 0,
+            sigev_tid: 0, interval_sec: 0, interval_nsec: 0, value_sec: 0,
+            value_nsec: 0, notification_pending: false, overrun_current: 0, overrun_last: 0,
+        };
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(proc.alloc_posix_timer(timer.clone()), Err(Errno::ENOMEM));
+            assert!(proc.posix_timers.is_empty());
+        }
+        assert_eq!(proc.alloc_posix_timer(timer.clone()).unwrap(), 0);
+        proc.alarm_deadline_ns = 10;
+        proc.alarm_interval_ns = 5;
+        {
+            let _limit = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(proc.take_host_timer_cleanup(1), Err(Errno::ENOMEM));
+            assert_eq!(proc.alarm_deadline_ns, 10);
+            assert_eq!(proc.alarm_interval_ns, 5);
+            assert_eq!(proc.posix_timers[0].as_ref().unwrap().sigev_value_bits, 42);
+            proc.posix_timers[0] = None;
+            assert_eq!(proc.alloc_posix_timer(timer).unwrap(), 0);
+        }
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let cleanup = proc.take_host_timer_cleanup(1).unwrap();
+        assert!(cleanup.cancel_alarm);
+        assert_eq!(cleanup.posix_timer_ids, [0]);
+        assert!(proc.posix_timers[0].is_none());
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > held);
+        drop(cleanup);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, held);
+        drop(proc);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn host_timer_cleanup_is_bounded_and_transactional() {
         let timer = |signo| PosixTimerState {
             clock_id: 1,
@@ -3648,9 +3883,9 @@ mod tests {
         let mut proc = Process::new(1);
         proc.alarm_deadline_ns = 10;
         proc.alarm_interval_ns = 5;
-        proc.posix_timers.push(Some(timer(14)));
-        proc.posix_timers.push(None);
-        proc.posix_timers.push(Some(timer(15)));
+        proc.posix_timers.try_push(Some(timer(14))).unwrap();
+        proc.posix_timers.try_push(None).unwrap();
+        proc.posix_timers.try_push(Some(timer(15))).unwrap();
 
         assert_eq!(proc.take_host_timer_cleanup(1), Err(Errno::ERANGE));
         assert_eq!(proc.alarm_deadline_ns, 10);
@@ -3669,9 +3904,53 @@ mod tests {
             proc.take_host_timer_cleanup(1).unwrap(),
             HostTimerCleanup {
                 cancel_alarm: false,
-                posix_timer_ids: alloc::vec![],
+                posix_timer_ids: crate::IoBuffer::new(),
             }
         );
+    }
+
+    #[test]
+    fn spawn_descriptor_admission_failure_does_not_publish_or_mutate_a_child() {
+        use crate::metadata_budget::MetadataBudget;
+        use crate::process_table::ProcessTable;
+        use crate::spawn::SpawnAttrs;
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let parent = table.get_mut(parent_pid).unwrap();
+        let ofd_index = parent.ofd_table.create(
+            FileType::CharDevice, 0, -1, b"/dev/null".to_vec(),
+        );
+        let mut descriptors = FdTable::with_budget(1024, &BUDGET);
+        for (fd, entry) in parent.fd_table.iter() {
+            descriptors.restore_entry(fd as usize, *entry).unwrap();
+        }
+        descriptors.alloc(crate::fd::OpenFileDescRef(ofd_index), 0).unwrap();
+        parent.fd_table = descriptors;
+        let usage = BUDGET.usage().0;
+        BUDGET.set_limit(usage).unwrap();
+        let process_count = table.processes.len();
+        let mut host = test_host::NoopHost;
+        let result = table.spawn_child_for_caller(
+            parent_pid, parent_pid, &[b"/bin/child"], &[], &[],
+            &SpawnAttrs::empty(), &mut host,
+        );
+        assert_eq!(result, Err(Errno::ENOMEM));
+        assert_eq!(table.processes.len(), process_count);
+        let parent = table.get(parent_pid).unwrap();
+        assert_eq!(parent.fd_table.get(3).unwrap().ofd_ref.0, ofd_index);
+        assert_eq!(parent.ofd_table.get(ofd_index).unwrap().ref_count, 1);
+        assert_eq!(parent.fork_count(), 0);
+        assert_eq!(BUDGET.usage().0, usage);
+        BUDGET.set_limit(4096).unwrap();
+        let child_pid = table.spawn_child_for_caller(
+            parent_pid, parent_pid, &[b"/bin/child"], &[], &[],
+            &SpawnAttrs::empty(), &mut host,
+        ).unwrap();
+        assert_eq!(table.get(child_pid).unwrap().fd_table.get(3).unwrap().ofd_ref.0, ofd_index);
+        assert!(BUDGET.usage().0 > usage);
+        drop(table);
+        assert_eq!(BUDGET.usage().0, 0);
     }
 
     #[test]
@@ -3680,7 +3959,7 @@ mod tests {
         use crate::spawn::SpawnAttrs;
         let mut table = ProcessTable::new();
         let parent_pid = table.create_process().unwrap();
-        table.processes.get_mut(&parent_pid).unwrap().cwd = b"/tmp".to_vec();
+        table.processes.get_mut(&parent_pid).unwrap().cwd = crate::ofd::OfdPath::copy_from(&b"/tmp".to_vec()).unwrap();
 
         let mut host = test_host::NoopHost;
         let child_pid = table
@@ -3816,7 +4095,7 @@ mod tests {
         );
         kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+            Some(crate::IoBox::new(DriOfdState::Card { dri, kms }));
         parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -3878,7 +4157,7 @@ mod tests {
         dri.handles.insert(5, bo);
         let mut kms = KmsFdState::default();
         kms.cursor_bo = Some(bo);
-        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+        proc.ofd_table.get_mut(idx).unwrap().dri_state = Some(crate::io_owner::IoBox::new(DriOfdState::Card { dri, kms }));
         proc.fd_table.alloc(crate::fd::OpenFileDescRef(idx), 0).unwrap();
         let mut host = test_host::NoopHost;
         let child = table.spawn_child_for_caller(pid, pid, &[b"child"], &[], &[], &SpawnAttrs::empty(), &mut host).unwrap();
@@ -3939,7 +4218,7 @@ mod tests {
         );
         kms.next_fb_id = 43;
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
-            Some(alloc::boxed::Box::new(DriOfdState::Card { dri, kms }));
+            Some(crate::IoBox::new(DriOfdState::Card { dri, kms }));
         parent
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
@@ -4041,8 +4320,8 @@ mod tests {
         // Parent has a UDP socket with a pending datagram and a TCP socket
         // with a pending OOB byte.
         let mut udp = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 0);
-        udp.dgram_queue.push(Datagram {
-            data: b"hello".to_vec(),
+        udp.dgram_queue.try_push(Datagram {
+            data: crate::IoBuffer::copy_from(b"hello").unwrap(),
             src_addr: [127, 0, 0, 1],
             src_addr6: [0; 16],
             dst_addr: [127, 0, 0, 1],
@@ -4053,8 +4332,8 @@ mod tests {
             src_pid: parent_pid,
             src_uid: 0,
             src_gid: 0,
-            ancillary_fds: Vec::new(),
-        });
+            ancillary_fds: crate::pipe::AncillaryFds::new(),
+        }).unwrap();
         let mut tcp = SocketInfo::new(SocketDomain::Inet, SocketType::Stream, 0);
         tcp.oob_byte = Some(0xAB);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
@@ -4132,6 +4411,7 @@ mod tests {
         // Parent has a listening AF_UNIX socket with pending pre-accepted
         // connections.
         let mut listener = SocketInfo::new(SocketDomain::Unix, SocketType::Stream, 0);
+        listener.listen_backlog.try_reserve(2).unwrap();
         listener.listen_backlog.push(7);
         listener.listen_backlog.push(11);
         let parent = table.processes.get_mut(&parent_pid).unwrap();
@@ -4324,9 +4604,10 @@ mod tests {
             .fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();
+        process.dir_streams.try_reserve(1).unwrap();
         process.dir_streams.push(Some(DirStream {
             host_handle: 8,
-            path: b"/var".to_vec(),
+            path: crate::ofd::OfdPath::copy_from(b"/var").unwrap(),
             position: 0,
             synth_dot_state: 0,
         }));

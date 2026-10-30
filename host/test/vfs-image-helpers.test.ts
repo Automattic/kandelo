@@ -24,6 +24,7 @@ import {
 } from "../../images/vfs/scripts/vfs-image-helpers";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { KANDELO_REFERENCE_EPOCH_SECONDS } from "../src/generated/abi";
+import { assertVfsImageCapacityMetadata } from "../../web-libs/kandelo-session/src/vfs-capacity";
 
 /**
  * The fixture is the producer that ships: these helpers are
@@ -395,6 +396,25 @@ describe("product image capacity and headroom contract", () => {
     fs.writeFile("/probe", new Uint8Array(8), 0o644);
     return fs;
   }
+
+  it("reads the saved ceiling independently of the proposed export", async () => {
+    const image = await probeImageFs().saveImage();
+    const capacity = KandeloImageFs.readImageCapacity(image).maxByteLength;
+    const filesystem = KandeloImageFs.create();
+    filesystem.loadImage(image);
+    filesystem.setImageCapacity(capacity + 1024 * 1024);
+    expect(filesystem.loadedImageCapacityBytes()).toBe(capacity);
+    expect(filesystem.exportCapacityBytes()).toBeGreaterThanOrEqual(capacity + 1024 * 1024);
+    expect(KandeloImageFs.readImageCapacity(image).maxByteLength).toBe(capacity);
+  });
+
+  it("validates an image whose container extends past its filesystem ceiling", async () => {
+    const image = await probeImageFs().saveImage();
+    const capacity = { byteLength: image.byteLength, ...KandeloImageFs.readImageCapacity(image) };
+    expect(capacity.byteLength).toBeGreaterThan(capacity.maxByteLength);
+    expect(() => assertVfsImageCapacityMetadata(capacity, capacity.maxByteLength, "full.vfs"))
+      .not.toThrow();
+  });
 
   it("validates the serialized product capacity contract and reports drift", async () => {
     const image = await probeImageFs().saveImage();

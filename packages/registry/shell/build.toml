@@ -1,5 +1,8 @@
 script_path = "packages/registry/shell/build-shell.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
+  "packages/registry/web-stack-vfs/sessions.json",
+  "packages/registry/wordpress-family-vfs/sessions.json",
   "images/vfs/scripts/image-session-files.ts",
   "packages/registry/nginx-vfs/sessions.json",
   "packages/registry/nginx-php-vfs/sessions.json",
@@ -16,6 +19,8 @@ inputs = [
   "packages/registry/shell/scummvm-freeware-games.json",
   "images/vfs/scripts/build-source-rootfs-shell-image.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/program-originals.ts",
+  "images/vfs/scripts/dependency-original-inputs.ts",
   "images/vfs/scripts/package-session-files.ts",
   "scripts/package-runtime-file.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
@@ -60,7 +65,7 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 63
+revision = 70
 # WHY: source-package composition changes the product bytes. Keep ordinary
 # resolution closed until this exact revision is rebuilt and admitted.
 publication_state = "pending"

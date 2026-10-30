@@ -44,6 +44,9 @@ import {
   WAKE_PROCESS_STOPPED,
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_TYPES,
+  WAIT_COMPLETION_FIELDS,
+  WAIT_COMPLETION_RECORD_BYTES,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -560,6 +563,97 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.threadForkContexts.has("7:256")).toBe(false);
   });
 
+  it.each(["channel", "process"] as const)(
+    "rejects stale native wait completion after %s retirement and mailbox reuse",
+    async retirement => {
+      const kernelMemory = createSharedMemory();
+      const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
+      const oldChannel = createChannel(7, memory);
+      const thread = createChannel(7, memory, CH_TOTAL_SIZE + 64);
+      const other = createChannel(8, createSharedMemory());
+      oldChannel.kernelWaitGeneration = 11;
+      thread.kernelWaitGeneration = 22;
+      other.kernelWaitGeneration = 33;
+      let wakeArmed = false;
+      let decisions: Array<{ generation: number; pid: number; tid: number; value: number }> = [];
+      const worker = createWorkerHarness({
+        kernel_drain_wakeup_events: (outPtr: number | bigint) => {
+          if (!wakeArmed) return 0;
+          wakeArmed = false;
+          const view = new DataView(kernelMemory.buffer, Number(outPtr), WAKEUP_EVENT_RECORD_BYTES);
+          new Uint8Array(view.buffer, view.byteOffset, view.byteLength).fill(0);
+          view.setUint32(WAKEUP_EVENT_FIELDS.idx.offset, 0, true);
+          view.setUint8(WAKEUP_EVENT_FIELDS.wakeType.offset, WAKEUP_EVENT_TYPES.waitComplete);
+          return 1;
+        },
+        kernel_drain_wait_completions: (outPtr: number | bigint, outLen: number, maxRecords: number) => {
+          const batch = decisions.splice(0, Math.min(maxRecords, Math.floor(outLen / WAIT_COMPLETION_RECORD_BYTES)));
+          for (const [index, decision] of batch.entries()) {
+            const view = new DataView(kernelMemory.buffer, Number(outPtr) + index * WAIT_COMPLETION_RECORD_BYTES, WAIT_COMPLETION_RECORD_BYTES);
+            view.setBigUint64(WAIT_COMPLETION_FIELDS.generation.offset, BigInt(decision.generation), true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.pid.offset, decision.pid, true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.tid.offset, decision.tid, true);
+            view.setInt32(WAIT_COMPLETION_FIELDS.value.offset, decision.value, true);
+            view.setUint32(WAIT_COMPLETION_FIELDS.flags.offset, 0, true);
+          }
+          return batch.length;
+        },
+        kernel_wait_next_timeout_ns: () => -1n,
+      }, 4, kernelMemory);
+      worker.processes = new Map([
+        [7, { pid: 7, memory, channels: [oldChannel, thread] }],
+        [8, { pid: 8, memory: other.memory, channels: [other] }],
+      ]);
+      worker.activeChannels = [oldChannel, thread, other];
+      worker.channelTids.set(`7:${thread.channelOffset}`, 99);
+      if (retirement === "channel") worker.removeChannel(7, 0);
+      else expect(worker.deactivateProcess(7, memory)).toBe(true);
+      const sibling = retirement === "channel" ? thread : other;
+      expect(worker.activeChannels).toContain(sibling);
+      expect(worker.activeChannels).not.toContain(oldChannel);
+      expect(sibling.kernelWaitGeneration).toBe(retirement === "channel" ? 22 : 33);
+      const successor = createChannel(7, memory);
+      successor.kernelWaitGeneration = 44;
+      worker.processes.set(7, {
+        pid: 7, memory, channels: retirement === "channel" ? [successor, thread] : [successor],
+      });
+      worker.activeChannels.push(successor);
+      markPending(successor);
+      markPending(sibling);
+      const view = new DataView(memory.buffer, successor.channelOffset);
+      view.setBigInt64(CH_RETURN, 12345n, true);
+      let releaseSibling!: () => void;
+      let releaseSuccessor!: () => void;
+      const siblingComplete = new Promise<void>(resolve => { releaseSibling = resolve; });
+      const successorComplete = new Promise<void>(resolve => { releaseSuccessor = resolve; });
+      const relisten = vi.fn(channel => {
+        if (channel === sibling) releaseSibling();
+        if (channel === successor) releaseSuccessor();
+      });
+      configureBoundaryHooks(worker, { relistenChannel: relisten });
+      decisions = [
+        { generation: 11, pid: 7, tid: 7, value: 777 },
+        { generation: sibling.kernelWaitGeneration, pid: sibling.pid, tid: retirement === "channel" ? 99 : 8, value: 21 },
+      ];
+      wakeArmed = true;
+      worker.testAuthority.drainWakeupEventsForTest();
+      await siblingComplete;
+      expect(readCompletion(successor)).toMatchObject({ retVal: 12345, status: CHANNEL_STATUS_PENDING });
+      expect(successor.kernelWaitGeneration).toBe(44);
+      expect(readCompletion(sibling)).toEqual({ retVal: 21, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
+      expect(sibling.kernelWaitGeneration).toBeUndefined();
+      expect(relisten).not.toHaveBeenCalledWith(oldChannel);
+      expect(relisten).not.toHaveBeenCalledWith(successor);
+      decisions = [{ generation: 44, pid: 7, tid: 7, value: 31 }];
+      wakeArmed = true;
+      worker.testAuthority.drainWakeupEventsForTest();
+      await successorComplete;
+      expect(readCompletion(successor)).toEqual({ retVal: 31, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
+      expect(successor.kernelWaitGeneration).toBeUndefined();
+      expect(decisions).toEqual([]);
+    },
+  );
+
   it("parks exact mailbox notifications while materializing completed output", async () => {
     const kernelMemory = createSharedMemory();
     const processMemory = createSharedMemory();
@@ -896,7 +990,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(relistenChannel).toHaveBeenCalledWith(channel);
   });
 
-  it("discards every parked and deferred channel without publication on signal death", () => {
+  it("replaces parked and deferred completions with terminal retirement on signal death", () => {
     const memory = createSharedMemory();
     const first = createChannel(42, memory, 0);
     const second = createChannel(42, memory, 256);
@@ -929,8 +1023,10 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.stoppedPids.has(42)).toBe(false);
     expect(worker.parkedChannelCompletions.size).toBe(0);
     expect(worker.deferredStoppedChannels.size).toBe(0);
-    expect(readStatus(first)).toBe(CHANNEL_STATUS_PENDING);
-    expect(readStatus(second)).toBe(CHANNEL_STATUS_PENDING);
+    for (const retired of [first, second]) {
+      expect(readCompletion(retired)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(retired.memory.buffer, retired.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    }
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
@@ -1089,8 +1185,8 @@ describe("Rust-owned process wait lifecycle", () => {
       expect(setCurrentTid).toHaveBeenCalledWith(pid, tid);
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(channel.handling).toBe(true);
-      expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(channel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, channel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         "[handleSyscall] FATAL task binding error: " +
           `Kernel rejected tid ${tid} for process ${pid}: errno 3`,
@@ -1133,8 +1229,8 @@ describe("Rust-owned process wait lifecycle", () => {
 
       expect(markSignaled).toHaveBeenCalledWith(pid, 11);
       expect(onExit).toHaveBeenCalledWith(pid, 139);
-      expect(threadChannel.handling).toBe(true);
-      expect(readStatus(threadChannel)).toBe(CHANNEL_STATUS_PENDING);
+      expect(readCompletion(threadChannel)).toEqual({ retVal: -1, errVal: 4, status: CHANNEL_STATUS_COMPLETE });
+      expect(new DataView(memory.buffer, threadChannel.channelOffset).getUint32(CH_SIG_SIGNUM, true)).toBe(9);
       expect(error).toHaveBeenCalledWith(
         `[handleSyscall] FATAL task binding error: ${expected}`,
       );
@@ -1351,7 +1447,7 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(worker.hostReaped.has(42)).toBe(true);
     expect(onExit).toHaveBeenCalledWith(42, 128 + SIGTERM);
     expect(commitProcessExit).not.toHaveBeenCalled();
-    expect(readStatus(channel)).toBe(CHANNEL_STATUS_PENDING);
+    expect(readCompletion(channel)).toEqual({ retVal: 0, errVal: 0, status: CHANNEL_STATUS_COMPLETE });
   });
 
   it("fails closed when Rust returns a different committed exit status", () => {

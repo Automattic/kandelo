@@ -16,6 +16,7 @@ path = "src/lib.rs"
 
 [dependencies]
 wasm-posix-program-abi = { path = "../program-abi" }
+wasm-artifact = { path = "../wasm-artifact" }
 
 # anyhow — ergonomic error chaining for a CLI / build tool.
 anyhow = "1"
@@ -34,6 +35,7 @@ tempfile = "3"
 # Read-only maps are created only from private, unlinked snapshots whose last
 # writable handle is then closed. Never map a mutable user/optimizer file.
 memmap2 = "0.9.10"
+libc = "0.2"
 # Deep compiler-generated structured control grows only the current native
 # walk's stack, on the same thread as its borrowed analysis environment.
 stacker = "0.1.25"
