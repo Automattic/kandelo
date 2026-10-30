@@ -128,6 +128,12 @@ fn vitest(report: &Value, root: &Path) -> Result<Value, String> {
     Ok(json!({"cases": out}))
 }
 
+fn playwright_error(result: &Value) -> Option<&str> {
+    result["error"]["message"]
+        .as_str()
+        .or_else(|| result["errors"][0]["message"].as_str())
+}
+
 fn playwright_suites(suites: &[Value], parents: &[String], out: &mut Cases) -> Result<(), String> {
     for suite in suites {
         let mut titles = parents.to_vec();
@@ -165,14 +171,14 @@ fn playwright_suites(suites: &[Value], parents: &[String], out: &mut Cases) -> R
                     titles.join(" > "),
                     string(spec, "title")?
                 );
-                let reason = results
-                    .iter()
-                    .find_map(|r| {
-                        r["error"]["message"]
-                            .as_str()
-                            .or_else(|| r["errors"][0]["message"].as_str())
-                    })
-                    .unwrap_or(status);
+                // Terminal outcomes describe the final attempt; intermittent
+                // results retain a failure diagnostic even after a passing retry.
+                let reason = if status == "flaky" {
+                    results.iter().find_map(playwright_error)
+                } else {
+                    results.last().and_then(playwright_error)
+                }
+                .unwrap_or_else(|| observed.last().copied().unwrap_or(status));
                 add(out, id.clone(), outcome, reason)?;
                 out.get_mut(&id).unwrap()["observed"] = json!(observed);
             }

@@ -109,7 +109,9 @@ The initial `.log` excerpts remain historical records; they are not inputs
 to the Vitest/Playwright JSON importer.
 
 Playwright retry statuses are preserved in `observed`; mixed outcomes are
-intermittent. Vitest JSON omits retry history: retain console evidence and
+intermittent. Terminal outcomes use the final attempt's diagnostic;
+intermittent results retain a failure diagnostic after a passing retry.
+Vitest JSON omits retry history: retain console evidence and
 document observed retries separately, without inventing rates. Conformance
 `FLAKE-*` labels annotate known-flaky tests after a single attempt; preserve
 the actual failure/timeout (or `known-flaky-pass`) with `known_flaky: true`.

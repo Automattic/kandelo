@@ -200,3 +200,45 @@ fn flaky_annotations_do_not_invent_mixed_observations() {
         assert_eq!(case["known_flaky"], true);
     }
 }
+
+#[test]
+fn playwright_retry_diagnostics_match_the_recorded_outcome() {
+    let first = json!({"status":"failed","error":{"message":"first assertion failed"}});
+    for (status, last, outcome, reason) in [
+        (
+            "unexpected",
+            json!({"status":"timedOut","errors":[{"message":"final timeout"}]}),
+            "timeout",
+            "final timeout",
+        ),
+        (
+            "unexpected",
+            json!({"status":"failed","error":{"message":"final assertion failed"}}),
+            "fail",
+            "final assertion failed",
+        ),
+        (
+            "unexpected",
+            json!({"status":"interrupted"}),
+            "error",
+            "interrupted",
+        ),
+        (
+            "flaky",
+            json!({"status":"passed"}),
+            "intermittent",
+            "first assertion failed",
+        ),
+    ] {
+        let report = json!({"stats":{"expected":0},"errors":[],"suites":[{
+            "title":"file", "specs":[{"file":"a.spec.ts","title":"case","tests":[{
+                "projectName":"webkit","expectedStatus":"passed","status":status,
+                "results":[first.clone(),last]
+            }]}]
+        }]});
+        let parsed = parse("playwright", &report.to_string(), Path::new("/repo")).unwrap();
+        let case = &parsed["cases"]["[webkit] a.spec.ts > file > case"];
+        assert_eq!(case["outcome"], outcome);
+        assert_eq!(case["reason"], reason);
+    }
+}
