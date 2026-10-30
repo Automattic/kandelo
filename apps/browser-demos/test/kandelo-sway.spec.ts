@@ -129,17 +129,18 @@ async function barHeight(out: Output): Promise<number> {
     const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
     bitmap.close();
     return Array.from({ length: image.height }, (_, y) => {
-      let black = 0;
+      let background = 0;
       for (let x = 0; x < image.width; x++) {
         const p = (y * image.width + x) * 4;
-        if (image.data[p] < 20 && image.data[p + 1] < 20 && image.data[p + 2] < 20) black++;
+        if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
       }
-      return black / image.width;
+      return background / image.width;
     });
   }, png.toString("base64"));
   // Read the actual painted bar boundary, not a fixed font-dependent height.
-  // The status text occupies less than half a row; foot/wallpaper is lighter.
-  const boundary = rows.findIndex(black => black < 0.5);
+  // The shipped /etc/sway/config sets background #323232. Text occupies
+  // less than half a row; the foot client and its blue title differ.
+  const boundary = rows.findIndex(background => background < 0.5);
   expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
   return boundary * height / rows.length;
 }
