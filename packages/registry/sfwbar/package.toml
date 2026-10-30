@@ -1,0 +1,79 @@
+kind = "program"
+name = "sfwbar"
+version = "1.0_beta17"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = [
+  "gtk3@3.24.34",
+  "gtk-layer-shell@0.9.2",
+  "glib@2.84.4",
+  "json-c@0.19",
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/LBCrion/sfwbar/archive/refs/tags/v1.0_beta17.tar.gz"
+sha256 = "a4915bc7dd0873c45d0d6b01b070e39a91fd16cfadf730d6a9e48db68a8cd09e"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-only"
+url = "https://github.com/LBCrion/sfwbar/blob/v1.0_beta17/LICENSE"
+
+[build]
+script_path = "packages/registry/sfwbar/build-sfwbar.sh"
+
+[[outputs]]
+name = "sfwbar"
+wasm = "sfwbar.wasm"
+fork_instrumentation = "auto"
+
+[[runtime_files]]
+artifact = "appmenu.so"
+guest_path = "/usr/lib/sfwbar/appmenu.so"
+
+[[runtime_files]]
+artifact = "sfwbar.config"
+guest_path = "/etc/xdg/sfwbar/sfwbar.config"
+
+[[runtime_files]]
+artifact = "sway.config"
+guest_path = "/etc/xdg/sfwbar/sway.config"
+
+[[runtime_files]]
+artifact = "winops.widget"
+guest_path = "/etc/xdg/sfwbar/winops.widget"
+
+[[runtime_files]]
+artifact = "kandelo-terminal"
+guest_path = "/usr/local/bin/kandelo-terminal"
+mode = 0o755
+
+[[runtime_files]]
+artifact = "kandelo-terminal.desktop"
+guest_path = "/usr/share/applications/kandelo-terminal.desktop"
+
+[[runtime_files]]
+artifact = "scummvm.desktop"
+guest_path = "/usr/share/applications/scummvm.desktop"
+
+[[runtime_files]]
+artifact = "wayland-demo.desktop"
+guest_path = "/usr/share/applications/wayland-demo.desktop"

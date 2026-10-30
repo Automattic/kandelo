@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=ScummVM
+Comment=Adventure game launcher
+Exec=/usr/local/bin/scummvm
+Terminal=false
+Categories=Game;

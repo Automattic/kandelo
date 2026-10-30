@@ -1,7 +1,7 @@
 kind = "program"
 name = "shell"
 version = "0.1.0"
-kernel_abi = 52
+kernel_abi = 56
 # The canonical browser shell is composed only from resolver-owned package
 # outputs. Keep this list synchronized with the package-owned dependency
 # contract used by the wrapper and composer.
@@ -43,6 +43,7 @@ depends_on = [
   "cage@0.3.1",
   "sway@1.12",
   "labwc@0.20.2",
+  "sfwbar@1.0_beta17",
   "swaybg@1.2.1",
   "dbus@1.14.10",
   "qtgallery@0.1.0",

@@ -8564,6 +8564,39 @@ the original log, screenshot and trace are retained at
 ScummVM rendering result. A new normal combined product build and separate
 headless preview verification remain required before offering that fix.
 
+### SFWBar desktop panel port in progress (2026-10-30)
+
+The requested SFWBar port pins upstream `v1.0_beta17` and reuses the existing
+GTK3 3.24.34, gtk-layer-shell 0.9.2, GLib 2.84.4, JSON-C 0.19 and Wayland
+packages. The recipe builds the core statically and the unchanged application
+menu as an actual GModule side module. Its real imports must resolve against
+the main program before and after fork instrumentation; a static archive is
+not substituted for the module that upstream opens with `g_module_open`.
+
+The normal shell product declares the program, module, panel configuration
+and actual XDG application entries. The selected entries launch Terminal,
+ScummVM and the existing native Wayland Paint client. Sway's bar replacement
+includes its current configuration, retaining larger fonts, shortcuts and
+native density behavior. Labwc starts the panel and foot through an explicit
+normal shell command. The optional service modules are disabled explicitly;
+the selected desktop contract is Start menu, task list/window actions and
+clock. Program 56 / host 3 / GL 17 / fork 21 remain unchanged.
+
+Source review found three GTK signal handlers missing parameters required
+by their actual signal signatures. The portable patch retains behavior and
+supplies the full popped-up, delete-event and swapped notify prototypes.
+Clean patch application and Wasm32 syntax/type controls pass for both full
+translation units; original sources fail all three exact type assertions.
+Evidence: `.context/sfwbar-callback-review/check.log` and `handoff.md`.
+Those checks used ABI 55 GTK/layer-shell headers and current GLib headers;
+they are syntax/API evidence, not a current target link or application run.
+
+The new recipe and demo configuration do not yet establish a working port.
+Normal package/image builds, Node and three headless browser consumers,
+menu launch/focus/close/exit behavior and repeated memory switching remain
+required. Existing previews and the separate frozen cursor build do not
+contain SFWBar. Payload size, memory cost and performance are unmeasured.
+
 ### Labwc fixture releases real pointer capture before dock selection
 
 The original three-case Chromium preview run remains preserved at
