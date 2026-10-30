@@ -286,11 +286,17 @@ const SOURCE_ROOTFS_DEMO_COMMANDS = {
  * an asynchronous list).
  *
  * `supervise PIDFILE ARGS...` expects a function `start_engine` that starts
- * the engine in the background with ARGS and sets `engine` to its pid.
+ * the engine in the background with ARGS, its standard input redirected from
+ * descriptor 3 (`<&3 3<&-`), and sets `engine` to its pid. Why fd 3: POSIX
+ * gives an asynchronous list in a shell without job control /dev/null as its
+ * standard input, and these engines read the keyboard from standard input,
+ * so an engine started with a bare `&` never saw a key. supervise saves the
+ * terminal on fd 3 before the first start.
  */
 const SUPERVISE_FUNCTION = `supervise() {
     pidfile="$1"
     shift
+    exec 3<&0
     echo $$ > "$pidfile"
     restart=0
     trap 'restart=1; kill -TERM "$engine" 2>/dev/null' HUP
@@ -321,7 +327,7 @@ ${SUPERVISE_FUNCTION}
 start_engine() {
     wad=/doom1.wad
     [ -f "$USER_WAD" ] && wad="$USER_WAD"
-    /usr/local/bin/fbdoom -iwad "$wad" "$@" &
+    /usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &
     engine=$!
 }
 supervise /tmp/doom-launch.pid "$@"
@@ -420,7 +426,7 @@ if [ ! -f "$PAK" ] && [ -f "$ZIP" ]; then
 fi
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/quake -basedir "$BASE" "$@" &
+    /usr/bin/quake -basedir "$BASE" "$@" <&3 3<&- &
     engine=$!
 }
 supervise /tmp/quake-launch.pid "$@"
@@ -499,7 +505,7 @@ fi
 set +e
 ${SUPERVISE_FUNCTION}
 start_engine() {
-    /usr/bin/scummvm --config="$INI" "$@" &
+    /usr/bin/scummvm --config="$INI" "$@" <&3 3<&- &
     engine=$!
 }
 supervise /tmp/scummvm-launch.pid "$@"

@@ -926,7 +926,10 @@ describe("canonical source-rootfs shell", () => {
     });
     const doomLaunch = text(readVfsFile(fs, "/usr/local/bin/doom-launch"));
     expect(doomLaunch).toContain("wad=/doom1.wad");
-    expect(doomLaunch).toContain('/usr/local/bin/fbdoom -iwad "$wad" "$@" &');
+    // The engine reads the keyboard from the terminal the supervisor saved
+    // on fd 3, not the /dev/null a background command would get.
+    expect(doomLaunch).toContain("exec 3<&0");
+    expect(doomLaunch).toContain('/usr/local/bin/fbdoom -iwad "$wad" "$@" <&3 3<&- &');
     expect(resolveDemoPresentation(demo!, "doom")?.touchControls).toBe(true);
     expect(resolveDemoPresentation(demo!, "doom")?.runningPrimary).toEqual([
       "framebuffer",
