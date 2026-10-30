@@ -279,3 +279,14 @@ unchanged five-second deadline. The complete selection is 169/170 and
 remains a failed run; the full audit must pass before final readiness.
 Normal current-source artifacts, rendered consumers, browser-memory and
 conformance remain pending.
+
+### Fresh-checkout GBM native validation inputs
+
+The native GBM harness now resolves public DRM headers from the current
+source-only libdrm package, instead of assuming an older dependency install
+in the SDK sysroot. On a fresh primary checkout the old harness fails at
+missing `sysroot/include/libdrm/xf86drm.h`. After the repair the normal resolver
+provisions the current SDK and libdrm; all 38 public GBM symbols and the actual
+metadata, modifier, format and retained CPU-mapping checks pass under UBSan.
+The GBM implementation and public headers are unchanged. This repairs source
+validation provisioning; it does not establish a new compositor/browser pass.
