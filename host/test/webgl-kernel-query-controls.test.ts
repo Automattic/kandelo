@@ -78,6 +78,17 @@ it("routes retirement controls to captured custody after public context removal 
   expect(f.invoke({control:"cancel",token:1n},4,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
 });
 
+it("keeps the old registration through numeric session reuse without admitting replacement work",()=>{
+  const f=fixture(4);
+  expect(f.invoke(f.begin(1n))).toEqual({phase:"pending"});f.kernel.gl.unbind(7,11);
+  f.kernel.gl.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
+  const replacement=f.kernel.gl.get(7,11)!;expect(replacement.operations).not.toBe(f.binding.operations);
+  const capture=vi.spyOn(f.kernel.gl,"retainSubmitExecution");
+  expect(f.invoke(f.begin(2n))).toEqual({phase:"rejected",error:13});expect(capture).not.toHaveBeenCalled();
+  expect(f.invoke({control:"cancel",token:1n},4,"cancel")).toEqual({phase:"retired",mode:"cancel",accepted:true});
+  expect(f.kernel.gl.get(7,11)).toBe(replacement);
+});
+
 it("retains actual failed cleanup and terminal ACK metadata until independently completed lifecycle cleanup",()=>{
   const f=fixture(4),texture=f.gl.createTexture()!;f.binding.textures.set(99,texture);
   expect(f.invoke(f.begin(1n))).toEqual({phase:"pending"});
