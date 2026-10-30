@@ -874,23 +874,51 @@ if (typeof window !== "undefined") {
       url.pathname.startsWith(SCOPE_PATH + "vfs-groups/");
   }
 
+  // Cache a lazy group asset while the page reads it. The page gets the
+  // native response at once, so its download progress counts bytes as they
+  // arrive; waiting for the whole body first made a 177 MB program show no
+  // progress until it had finished. The cache gets a clone of that response,
+  // never a rebuilt one: rebuilding would remove the authenticated
+  // Content-Length the lazy VFS integrity check consumes.
+  //
+  // Only a complete body becomes an entry. cache.put() reads the clone to its
+  // end before it stores anything, and rejects if the body errors, so a
+  // download the network drops leaves no entry. The rejection needs no
+  // report: the page sees the same failure on its own copy of the stream.
+  // A page that aborts ends only its own copy. Chromium, Firefox and WebKit
+  // keep this worker's fetch running (as they did when the worker held the
+  // response), so the download still completes into the cache.
+  //
+  // Memory: the clone tees the body, and a tee holds each chunk until both
+  // copies have read it. Whichever copy reads slower (the page, if it stalls
+  // while the cache keeps writing) leaves its unread bytes queued in this
+  // worker, up to the whole body. Holding the response until the cache was
+  // done held all of it, twice, every time.
   function cacheCompleteLazyVfsResponse(request, response) {
     if (response.status !== 200 || response.type !== "basic" || response.body === null) {
-      return Promise.resolve(response);
+      return Promise.resolve();
     }
-    // Keep the native response intact: rebuilding it would remove the
-    // authenticated Content-Length the lazy VFS integrity check consumes.
-    return response.clone().arrayBuffer().then(function () {
-      return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
-        return cache.put(request, response.clone());
-      });
-    }).then(function () {
-      return response;
+    var copy = response.clone();
+    return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
+      return cache.put(request, copy);
+    }).catch(function () {
+      if (copy.bodyUsed) return;
+      // The cache never started reading; release the tee so it does not
+      // hold the page's bytes for a reader that will never come.
+      return copy.body.cancel().catch(function () {});
     });
   }
 
-  function fetchScopedLazyVfsRequest(request) {
-    return caches.keys().then(function (cacheNames) {
+  function fetchScopedLazyVfsRequest(event) {
+    var request = event.request;
+    // Keep the worker alive until the cache write finishes, which is after
+    // the page already has its response. Register the promise now, while
+    // the event is dispatching, where every engine accepts waitUntil().
+    var finishCacheWrite;
+    event.waitUntil(new Promise(function (resolve) {
+      finishCacheWrite = resolve;
+    }));
+    var answer = caches.keys().then(function (cacheNames) {
       if (cacheNames.indexOf(LAZY_ASSET_CACHE) === -1) return null;
       return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
         return cache.match(request);
@@ -898,9 +926,14 @@ if (typeof window !== "undefined") {
     }).then(function (cached) {
       if (cached) return cached;
       return fetch(request).then(function (response) {
-        return cacheCompleteLazyVfsResponse(request, response);
+        finishCacheWrite(cacheCompleteLazyVfsResponse(request, response));
+        return response;
       });
     });
+    // A cache hit or a failed fetch has no cache write to wait for. (A
+    // second resolve() after the one above changes nothing.)
+    answer.then(function () { finishCacheWrite(); }, function () { finishCacheWrite(); });
+    return answer;
   }
 
   /**
@@ -1190,7 +1223,7 @@ if (typeof window !== "undefined") {
     // Group assets have an immutable deployment-local identity. Cache only
     // their complete native responses before bridge/proxy/header rewriting.
     if (isScopedLazyVfsRequest(event.request, url)) {
-      event.respondWith(fetchScopedLazyVfsRequest(event.request));
+      event.respondWith(fetchScopedLazyVfsRequest(event));
       return;
     }
 

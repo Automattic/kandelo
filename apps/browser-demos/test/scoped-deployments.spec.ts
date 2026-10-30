@@ -163,12 +163,14 @@ test.describe.serial("real scoped production deployments", () => {
 
       server.clearRequests(); await runVimVersion(pageA); assertOnlyGroupRequests(server, "/a/");
       server.clearRequests(); await runVimVersion(pageB); assertOnlyGroupRequests(server, "/candidate-b/");
-      await expect(cacheNames(pageA)).resolves.toEqual(expect.arrayContaining([
+      // The service worker writes each lazy cache entry while the page
+      // reads the download, so an entry can land just after the page is done.
+      await expect.poll(() => cacheNames(pageA)).toEqual(expect.arrayContaining([
         lazyCacheA, lazyCacheB, "unrelated-site-cache",
       ]));
-      expect(await cachePaths(pageA, lazyCacheA)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\/vfs-groups\//)]));
+      await expect.poll(() => cachePaths(pageA, lazyCacheA)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\/vfs-groups\//)]));
       expect(await cachePaths(pageA, lazyCacheA)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\//)]));
-      expect(await cachePaths(pageB, lazyCacheB)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\/vfs-groups\//)]));
+      await expect.poll(() => cachePaths(pageB, lazyCacheB)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\/vfs-groups\//)]));
       expect(await cachePaths(pageB, lazyCacheB)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\//)]));
       const corrupted = await corruptCachedVimArchive(pageA);
       expect(corrupted.original).toEqual(vimArchiveIdentity);

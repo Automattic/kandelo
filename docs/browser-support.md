@@ -3805,6 +3805,14 @@ that prefix, and machine cookies live in the owning tab (see [Guest web
 previews run on their own origin](#guest-web-previews-run-on-their-own-origin)).
 Activation deletes the scope's retired `bridge-v2` cookie-jar cache.
 
+The worker answers a `vfs-groups/` request with the server's own response
+while it is still arriving, so a lazy download's progress counts bytes as
+they come, and stores a copy in the prefix's lazy cache only once the whole
+body has arrived. A download the network drops or the page aborts leaves no
+entry, and a failed or `206` response is never stored. The entry therefore
+appears just after the page reads the last byte, not before the page sees
+the first.
+
 The production coexistence scenario has been measured in Chromium with `/a/`
 and `/candidate-b/`: both shells booted, Vim materialized from each prefix's
 own lazy cache, and restarting/updating `/a/` left `/candidate-b/` usable and

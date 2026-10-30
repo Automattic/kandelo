@@ -3,6 +3,7 @@ import {
   test,
   type Page,
 } from "@playwright/test";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 
@@ -37,7 +38,52 @@ type LazyAssetResponse =
   | { kind: "ok"; body: string }
   | { kind: "failed"; body: string }
   | { kind: "partial"; body: string }
-  | { kind: "truncated"; body: string };
+  | { kind: "truncated"; body: string }
+  | { kind: "held"; asset: HeldLazyAsset };
+
+/**
+ * A lazy asset whose server sends the first part of the body, then waits for
+ * the test to finish the body or drop the connection. It models a large
+ * group asset (codex.wasm is 177 MB) still arriving over a slow network.
+ */
+interface HeldLazyAsset {
+  head: Buffer;
+  tail: Buffer;
+  /** Settles when the server has sent the head. */
+  headSent: Promise<void>;
+  /** Whether the server sent the whole body. */
+  completed(): boolean;
+  finish(): void;
+  drop(): void;
+}
+
+function holdLazyAsset(pathname: string, head: Buffer, tail: Buffer): HeldLazyAsset {
+  let markHeadSent!: () => void;
+  let release!: (outcome: "finish" | "drop") => void;
+  const released = new Promise<"finish" | "drop">((resolve) => { release = resolve; });
+  let completed = false;
+  const asset: HeldLazyAsset = {
+    head,
+    tail,
+    headSent: new Promise((resolve) => { markHeadSent = resolve; }),
+    completed: () => completed,
+    finish: () => release("finish"),
+    drop: () => release("drop"),
+  };
+  heldLazyAssetControls.set(asset, {
+    released,
+    headSent: () => markHeadSent(),
+    complete: () => { completed = true; },
+  });
+  lazyAssetResponses.set(pathname, { kind: "held", asset });
+  return asset;
+}
+
+const heldLazyAssetControls = new WeakMap<HeldLazyAsset, {
+  released: Promise<"finish" | "drop">;
+  headSent(): void;
+  complete(): void;
+}>();
 
 const lazyAssetResponses = new Map<string, LazyAssetResponse>();
 
@@ -103,6 +149,25 @@ test.beforeAll(async () => {
     }
 
     const lazyAsset = lazyAssetResponses.get(url.pathname);
+    if (lazyAsset?.kind === "held") {
+      const { asset } = lazyAsset;
+      const control = heldLazyAssetControls.get(asset)!;
+      response.writeHead(200, {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/octet-stream",
+        "Content-Length": String(asset.head.byteLength + asset.tail.byteLength),
+      });
+      response.write(asset.head, () => control.headSent());
+      void control.released.then((outcome) => {
+        if (response.destroyed) return;
+        if (outcome === "drop") {
+          response.destroy();
+          return;
+        }
+        response.end(asset.tail, () => control.complete());
+      });
+      return;
+    }
     if (lazyAsset) {
       if (lazyAsset.kind === "failed") {
         response.writeHead(503, {
@@ -207,6 +272,8 @@ test("a scoped lazy VFS asset cache preserves full bytes and Content-Length duri
     body: expectedBody,
     contentLength: String(Buffer.byteLength(expectedBody)),
   });
+  // The page has the response before the cache entry is written.
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
   lazyAssetResponses.set(assetPath, {
     kind: "failed",
     body: "origin is unavailable after the first full response",
@@ -217,7 +284,7 @@ test("a scoped lazy VFS asset cache preserves full bytes and Content-Length duri
     body: expectedBody,
     contentLength: String(Buffer.byteLength(expectedBody)),
   });
-  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
 });
 
 test("a grouped deployment replaces an old unversioned lazy cache at the same public URL", async ({
@@ -234,7 +301,7 @@ test("a grouped deployment replaces an old unversioned lazy cache at the same pu
     body: legacyBody,
     status: 200,
   });
-  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
 
   groupedWorkerCacheVersion = GROUP_B_SHA256;
   lazyAssetResponses.set(assetPath, { kind: "ok", body: replacementBody });
@@ -245,7 +312,7 @@ test("a grouped deployment replaces an old unversioned lazy cache at the same pu
     status: 200,
   });
   await expect.poll(() => cacheNames(page)).not.toContain(LAZY_CACHE_A);
-  expect(await lazyCacheEntries(page, lazyCacheName("/a/", GROUP_B_SHA256)))
+  await expect.poll(() => lazyCacheEntries(page, lazyCacheName("/a/", GROUP_B_SHA256)))
     .toEqual([assetPath]);
 });
 
@@ -264,7 +331,7 @@ test("a grouped deployment replaces its prior manifest-version cache at the same
     body: firstBody,
     status: 200,
   });
-  expect(await lazyCacheEntries(page, lazyCacheName("/a/", GROUP_A_SHA256)))
+  await expect.poll(() => lazyCacheEntries(page, lazyCacheName("/a/", GROUP_A_SHA256)))
     .toEqual([assetPath]);
 
   groupedWorkerCacheVersion = GROUP_B_SHA256;
@@ -278,7 +345,7 @@ test("a grouped deployment replaces its prior manifest-version cache at the same
   await expect.poll(() => cacheNames(page)).not.toContain(
     lazyCacheName("/a/", GROUP_A_SHA256),
   );
-  expect(await lazyCacheEntries(page, lazyCacheName("/a/", GROUP_B_SHA256)))
+  await expect.poll(() => lazyCacheEntries(page, lazyCacheName("/a/", GROUP_B_SHA256)))
     .toEqual([assetPath]);
 });
 
@@ -303,10 +370,10 @@ test("scoped lazy VFS caches keep identical filenames distinct across deployment
       body: "candidate-b shared bytes",
     });
 
-  expect(await lazyCacheEntries(pageA, LAZY_CACHE_A)).toEqual([
+  await expect.poll(() => lazyCacheEntries(pageA, LAZY_CACHE_A)).toEqual([
     `/a${assetSuffix}`,
   ]);
-  expect(await lazyCacheEntries(pageCandidateB, LAZY_CACHE_CANDIDATE_B)).toEqual([
+  await expect.poll(() => lazyCacheEntries(pageCandidateB, LAZY_CACHE_CANDIDATE_B)).toEqual([
     `/candidate-b${assetSuffix}`,
   ]);
 });
@@ -338,6 +405,113 @@ test("a 206 lazy VFS response returns raw bytes without creating a cache entry",
       contentLength: String(Buffer.byteLength("partial lazy asset bytes")),
     });
   expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
+});
+
+// A deployed Kandelo serves lazy programs from <scope>vfs-groups/, and the
+// page shows each download's progress as its bytes arrive. The service worker
+// must hand the page the response while it is still arriving and cache it
+// only once it is complete. Holding the response until the cache had the
+// whole body made a 177 MB download show "0 B" until it finished.
+test("a scoped lazy VFS download reaches the page while it arrives, then is cached complete", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const assetPath = "/a/vfs-groups/release-1/assets/streamed.bin";
+  const asset = holdLazyAsset(assetPath, patternBytes(256 * 1024, 1), patternBytes(256 * 1024, 7));
+  const total = asset.head.byteLength + asset.tail.byteLength;
+
+  await startLazyDownload(page, assetPath);
+  await asset.headSent;
+  await expect.poll(() => lazyDownload(page), {
+    message: "the page sees the download's bytes before the server finishes it",
+    timeout: 15_000,
+  }).toMatchObject({ received: asset.head.byteLength });
+  expect(await lazyDownload(page)).toEqual({
+    status: 200,
+    contentLength: String(total),
+    received: asset.head.byteLength,
+    sha256: null,
+    error: null,
+  });
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
+
+  asset.finish();
+  await expect.poll(() => lazyDownload(page)).toMatchObject({ received: total });
+  expect(await lazyDownload(page)).toEqual({
+    status: 200,
+    contentLength: String(total),
+    received: total,
+    sha256: sha256Hex(Buffer.concat([asset.head, asset.tail])),
+    error: null,
+  });
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+  expect(await cachedLazyAsset(page, LAZY_CACHE_A, assetPath)).toEqual({
+    contentLength: String(total),
+    sha256: sha256Hex(Buffer.concat([asset.head, asset.tail])),
+  });
+
+  // The next request is the cached complete response, not the network.
+  lazyAssetResponses.set(assetPath, { kind: "failed", body: "origin is gone" });
+  expect(await fetchResponse(page, assetPath)).toMatchObject({
+    status: 200,
+    contentLength: String(total),
+  });
+});
+
+test("a scoped lazy VFS download the network drops mid-way creates no cache entry", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const assetPath = "/a/vfs-groups/release-1/assets/dropped.bin";
+  const asset = holdLazyAsset(assetPath, patternBytes(256 * 1024, 3), patternBytes(256 * 1024, 5));
+
+  await startLazyDownload(page, assetPath);
+  await expect.poll(() => lazyDownload(page), { timeout: 15_000 })
+    .toMatchObject({ received: asset.head.byteLength });
+  asset.drop();
+  await expect.poll(async () => (await lazyDownload(page)).error).not.toBeNull();
+  expect((await lazyDownload(page)).sha256).toBeNull();
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
+
+  // No partial body stands in for the asset: the next request reaches the
+  // network and caches that complete response.
+  lazyAssetResponses.set(assetPath, { kind: "ok", body: "complete after the drop" });
+  expect(await fetchResponse(page, assetPath)).toMatchObject({
+    status: 200,
+    body: "complete after the drop",
+  });
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+});
+
+test("a scoped lazy VFS download the page aborts mid-way is cached only once complete", async ({
+  page,
+}) => {
+  await page.goto(`${FIXTURE_ORIGIN}/a/`);
+  await registerScope(page, "/a/");
+  const assetPath = "/a/vfs-groups/release-1/assets/aborted.bin";
+  const asset = holdLazyAsset(assetPath, patternBytes(256 * 1024, 11), patternBytes(256 * 1024, 13));
+
+  await startLazyDownload(page, assetPath);
+  await expect.poll(() => lazyDownload(page), { timeout: 15_000 })
+    .toMatchObject({ received: asset.head.byteLength });
+  await page.evaluate(() => (window as any).__lazyDownloadAbort.abort());
+  await expect.poll(async () => (await lazyDownload(page)).error).not.toBeNull();
+
+  // The page's abort ends the page's copy of the stream only. Chromium,
+  // Firefox and WebKit all leave the worker's own fetch running (they did
+  // before the worker streamed, too), so the cache's copy keeps arriving.
+  // Half of it is never an entry.
+  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([]);
+  expect(asset.completed()).toBe(false);
+
+  asset.finish();
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([assetPath]);
+  expect(await cachedLazyAsset(page, LAZY_CACHE_A, assetPath)).toEqual({
+    contentLength: String(asset.head.byteLength + asset.tail.byteLength),
+    sha256: sha256Hex(Buffer.concat([asset.head, asset.tail])),
+  });
 });
 
 test("production COI reload state is scoped while the theme remains origin-wide", async ({
@@ -506,7 +680,7 @@ test("the lazy VFS cache excludes computer/, static, query, navigation, sibling,
     ).catch(() => undefined);
   });
 
-  expect(await lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([
+  await expect.poll(() => lazyCacheEntries(page, LAZY_CACHE_A)).toEqual([
     "/a/vfs-groups/release-1/assets/shared.bin",
   ]);
 });
@@ -650,6 +824,89 @@ async function fetchBytes(page: Page, pathname: string): Promise<void> {
     const response = await fetch(path, { cache: "no-store" });
     await response.arrayBuffer();
   }, pathname);
+}
+
+function patternBytes(length: number, seed: number): Buffer {
+  const bytes = Buffer.alloc(length);
+  for (let index = 0; index < length; index++) bytes[index] = (index * seed + seed) & 0xff;
+  return bytes;
+}
+
+function sha256Hex(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+interface LazyDownloadState {
+  status: number | null;
+  contentLength: string | null;
+  received: number;
+  sha256: string | null;
+  error: string | null;
+}
+
+// Read a lazy asset the way the page's download progress does: chunk by
+// chunk from the response stream, counting bytes as they arrive.
+async function startLazyDownload(page: Page, pathname: string): Promise<void> {
+  await page.evaluate((path) => {
+    const state = {
+      status: null as number | null,
+      contentLength: null as string | null,
+      received: 0,
+      sha256: null as string | null,
+      error: null as string | null,
+    };
+    const abort = new AbortController();
+    (window as any).__lazyDownload = state;
+    (window as any).__lazyDownloadAbort = abort;
+    void (async () => {
+      try {
+        const response = await fetch(path, { cache: "no-store", signal: abort.signal });
+        state.status = response.status;
+        state.contentLength = response.headers.get("content-length");
+        const reader = response.body!.getReader();
+        const chunks: Uint8Array[] = [];
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          state.received += value.byteLength;
+        }
+        const body = new Uint8Array(state.received);
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body));
+        state.sha256 = Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      } catch (error) {
+        state.error = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      }
+    })();
+  }, pathname);
+}
+
+async function lazyDownload(page: Page): Promise<LazyDownloadState> {
+  return page.evaluate(() => ({ ...(window as any).__lazyDownload }));
+}
+
+async function cachedLazyAsset(
+  page: Page,
+  cacheName: string,
+  pathname: string,
+): Promise<{ contentLength: string | null; sha256: string } | null> {
+  return page.evaluate(async ({ name, path }) => {
+    const cache = await caches.open(name);
+    const response = await cache.match(path);
+    if (!response) return null;
+    const digest = new Uint8Array(
+      await crypto.subtle.digest("SHA-256", await response.arrayBuffer()),
+    );
+    return {
+      contentLength: response.headers.get("content-length"),
+      sha256: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
+    };
+  }, { name: cacheName, path: pathname });
 }
 
 async function lazyCacheEntries(page: Page, cacheName: string): Promise<string[]> {
