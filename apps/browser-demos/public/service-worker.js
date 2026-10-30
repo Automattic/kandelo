@@ -968,6 +968,22 @@ if (typeof window !== "undefined") {
   // escape the bridge and 404 against the static origin.
   var BLOB_IFRAME_INTERCEPTOR_SRC = "__BLOB_IFRAME_INTERCEPTOR__";
 
+  // Whether a Content-Security-Policy header value (one or more
+  // comma-separated policies) sets the policy for inline <script> elements:
+  // script-src-elem, script-src, or the default-src they fall back to. A
+  // policy without them, such as WordPress admin's
+  // `frame-ancestors 'self'`, leaves inline scripts allowed, so the helper
+  // can run there without touching the policy.
+  function cspGovernsScripts(value) {
+    if (!value) return false;
+    return value.split(",").some(function (policy) {
+      return policy.split(";").some(function (directive) {
+        var name = directive.trim().split(/\s+/)[0].toLowerCase();
+        return name === "script-src-elem" || name === "script-src" || name === "default-src";
+      });
+    });
+  }
+
   // Insert the interceptor as the first <head> child so it runs before any
   // app script creates a blob iframe. Idempotent and HTML-only.
   function injectBlobIframeInterceptor(html) {
@@ -2119,7 +2135,7 @@ if (typeof window !== "undefined") {
           // An application's CSP owns its script policy. Do not insert an
           // undeclared inline helper or loosen that policy to accommodate it.
           if (contentType.indexOf("text/html") === 0 &&
-              !respHeaders.has("Content-Security-Policy")) {
+              !cspGovernsScripts(respHeaders.get("Content-Security-Policy"))) {
             rewritten = injectBlobIframeInterceptor(rewritten);
           }
           if (rewritten !== text) {

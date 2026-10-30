@@ -1709,11 +1709,15 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents without
-a Content Security Policy, so it applies to app demos, not just WordPress.
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents whose
+Content Security Policy, if any, allows it, so it applies to app demos, not
+just WordPress.
 Documents carrying a
-`Content-Security-Policy` response header retain their declared script policy:
-the bridge does not inject the inline helper or change that header. The
+`Content-Security-Policy` response header that governs scripts (a
+`script-src-elem`, `script-src` or `default-src` directive) retain their
+declared script policy: the bridge does not inject the inline helper or change
+that header. A policy that does not govern scripts, such as WordPress admin's
+`frame-ancestors 'self'`, still gets the helper. The
 blob-iframe adapter is therefore unavailable in those documents; ordinary
 HTML, assets, requests and same-origin iframes still use the bridge.
 
