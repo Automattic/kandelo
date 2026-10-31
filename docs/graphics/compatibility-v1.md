@@ -13860,3 +13860,57 @@ kernel/guest readiness/signal/lifecycle controls, Node/browser/memory/POSIX
 and all benchmark gates remain open. The source-only ownership selections
 do not waive the full combined ownership audit. The matched focus-crossing
 trace remains the primary next responsiveness investigation.
+
+
+### First focus-operation trace rejected, 2026-10-31
+
+Job `desktop-boundary-trace-r1-1031-120959-f70d` fails workload1/collector0/
+guard0after44seconds. All19actual HTTP source compositions pass beforehand,
+applying the exacta196 production selection delta once to normalc775, then
+private frame/retry observers. The user5678server is not changed. Sixty-seven
+sealed helpers bind the inputs. This is a new instrumented cohort, separate
+from the completed unprofiled cursor-response evidence.
+
+The first within-terminal block completes all three moves and a logical
+9,000ms capture, with0.97ms actual stop lateness and restored native methods.
+No page/console error, recorder overflow, unknown-frame or internal error is
+recorded. The retry observer nevertheless flags103request mismatches, so the
+block is rejected and no crossing block runs. Normal same-page replacement
+and all unchanged source/SDK/kernel/93owner245member/host guards complete.
+This failed trace establishes no within/cross operation comparison or causal
+retry conclusion. Raw30second-complete=false is retained for the9second
+logical window; shorter coverage is not relabelled as30seconds.
+
+Source diagnosis finds a missing observer path: retained blocking snapshots
+can replay without entering the ordinary syscall handler, and completion can
+remove the active request before materialization. Treating every completion
+as a handler join can misbind legitimate lifecycle stages; the103dynamic
+causes are not individually reconstructed from sampled spans. A fresh
+observer revision must distinguish actual replay entry, exact known finish
+and completion, while retaining hard known-request mismatch detection and
+explicit unbound/unknown causes. No original runtime work may be suppressed
+to make the recorder pass. All failed inputs and raw captures remain frozen.
+
+Report SHA256:
+`9422fb7656410219d494408026ac948b1d96d15d286969234117095398a5a2c0`.
+Raw first-block SHA256:
+`3ba7ccc9447092fe64c50bd87a8807db8f9504ae7029f5a9cdb2763cdb155271`.
+Served-composition SHA256:
+`005e5ba3e9343e389613e6cf6e5a5a1b450f9cc729cc3cba9d32e5d2ce5d448d`.
+Helper manifest SHA256:
+`0c08f98e54f38f9a32dbd4f991b7f187edbe52d8c0c11d166e68ac6ff5c7ad01`.
+Raw evidence and rejection audit live under `.context/desktop-boundary-trace-r1/`
+and `.context/desktop-boundary-trace-analysis-r1/` respectively.
+
+A separate pinned-source audit narrows the focus lead. Sway hover focus with
+unchanged native content dimensions does not increment its client-configure
+waiting count; its200ms transaction timeout is not an explanation merely
+because response times look similar. A focus transaction can queue behind an
+earlier resize transaction, whose readiness requires a matching surface
+commit. Each SFWBar focus event also requests Sway's whole window tree and
+invalidates old/new panel items; a100ms panel source services invalidation.
+These are source facts and trace targets, not measured contributions. Normal
+panel icons/previews are disabled, so icon reloading must not be assumed.
+No focus disabling, application bypass or timeout adjustment is proposed.
+The source audit is `.context/desktop-focus-render-source-r1/focus-transaction-audit.md`,
+SHA256: `d2a3665c52e4bb0715bbd4a5ad3140e826d530ef488cb0fc50f497b864c6fb3b`.
