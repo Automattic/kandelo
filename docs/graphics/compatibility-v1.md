@@ -64,10 +64,13 @@ and isolation/normal artifact checks pass; actual consumer coverage and desktop
 response are measured separately. Receipt SHA256:
 `481ec64daee34be960e32e373b951785a7fcb846cf2a3ccc60dd992c9089b5e6`.
 The incremental normal host bundle/declarations pass in7s. A separate bounded
-native fixture passes15 assertion groups in each canonical headless Chromium,
+native fixture passes16 assertion groups in each canonical headless Chromium,
 Firefox and WebKit; it is synthetic scratch-kernel correctness, not actual
-desktop, normal compiled Rust, memory or performance acceptance. Fresh Sway
-response comparison is in progress. Availability was announced before its
+desktop, normal compiled Rust, memory or performance acceptance. The first
+fresh Sway pair completes all48 moves across both sides. Crossing medians
+are lower, but ranges overlap and the candidate five-terminal maximum is
+higher; sustained-motion and single-terminal benefit remain unproven.
+Availability was announced before its
 validation completed, and frozen5679/5680 remain unchanged.
 
 Previous experimental5680 at `ce7a86c8bafe` remains available with its separately
@@ -14625,3 +14628,92 @@ Evidence: `.context/host-source-preview-r2/`,
 `.context/kms-selector-delta-native-results-r1/`, and
 `.context/kms-selector-delta-native-analysis-r1/`. Fresh sparse response and
 sustained-motion investigation remain separate from native correctness.
+
+### Selector candidate sparse response pair, 2026-10-31
+
+Fresh baseline5680/ce7 and candidate5681/606 complete the original24 moves
+each, original Foot/compositor/bar lifetime checks, recovery to the original
+single client and normal same-page Bare-shell replacement. Both retain own
+normalb6 SDK/kernel/program/image artifacts. All workload/collector/guard
+stages finish0. Full ten-module HTTP admission and nine actually consumed
+browser modules match exact source bytes; forwarding remains unexecuted.
+Canonical headless Chromium153 runs native2880x1620/DPR2. No profiler or native
+operation recorder is active; public pixel observation still has cost.
+
+| Cursor request-to-observation median ms | Baseline5680 | Candidate5681 |
+|---|---:|---:|
+|Three clients, within|69.75|66.20|
+|Three clients, crossing|134.79|115.36|
+|Five clients, within|65.82|66.59|
+|Five clients, crossing|132.37|98.55|
+
+Each cell has six96native-pixel moves. Actual intra-block issue spacing is
+about3s; pixel polls are about28-34ms apart despite the requested25ms delay.
+These are public-pixel first-positive upper envelopes, not physical latency.
+Five-client crossing cursor ranges are98.77-159.02ms baseline and93.04-190.38ms
+candidate. Its title-transition median is separately125.48ms; it must not be
+called98.55ms. Three-client crossing ranges also overlap. No outlier is removed.
+The candidate includes two additional correctness increments. One baseline-
+first NONQUIET pair, under possible user/peer load, establishes neither an
+isolated selector-change effect nor uniform tail or application improvement.
+Actual single-client motion is not measured in this sparse cohort.
+
+Independent offline audit verifies all48 endpoints and retained26helper seals,
+27-entry report closures, unchanged before/owners/after normal93/245/dual-SDK/
+kernel/host guards, and2,540 additional source/endpoint/cadence assertions.
+Result/page/console/module error arrays are empty. Candidate five-client PNG
+shows the actual second-terminal highlight, cursor, five prompts and panel.
+Jobs are `kms-selector-boundary-baseline-r1-1031-142939-a61d` and
+`kms-selector-boundary-candidate-r1-1031-143142-fff1`; these whole job durations
+include boot, collection and cleanup and are not performance measurements.
+Evidence: `.context/kms-selector-boundary-response-r1/` and
+`.context/kms-selector-boundary-response-analysis-r1/`, whose handoff SHA256 is
+`805606bbbacf1a816fa979649afc82443bc7f0cecd5a3828f0deba6c596a0973`.
+
+### Lower-cost dirty tracking admission review, 2026-10-31
+
+The source-only follow-up finds that existing PENDING/blocked/handling states
+are not authenticated all-writer quiescence. In particular timed waits can
+execute glue while PENDING, and both ordinary completion and direct Rust-to-
+host completion can release a worker. Pending instantiation/TLS/pthread starts
+and borrowed-vfork memories also belong to the physical-memory writer set.
+Draining dirty bits from a plain all-PENDING snapshot can overwrite an unseen
+write during refresh. These are ordinary protocol gaps, not platform boundaries.
+
+A worker-private bitmap could avoid the costly per-store shared gates in the
+standalone screen, but requires held park/resume/start exclusion, complete
+writer coverage and every alias baseline's acknowledgment. Locally clean
+pages must still import newer canonical bytes. Failed try-holds retain full
+scanning; arbitrary Wasm stores cannot be skipped or replaced by EAGAIN.
+No such protocol is implemented or benchmarked by this review. Proposed causal
+controls and concrete failure schedules are in
+`.context/shared-store-quiescent-bitmap-review-r1/HANDOFF.md`, SHA256
+`4a3e5c7bcf9de1beaf17c291c58d0e603532d385ef793376fa945c39fa8689a7`.
+
+### Half-alpha native checkpoint R2, 2026-10-31
+
+Fresh job `kms-selector-delta-native-r2-1031-143552-a865` completes0 in6s
+at exact606 source. Chromium153.0.8010.12, Firefox155.0 and WebKit26.6 each
+pass the original15 groups plus one substantive half-alpha group (48total).
+The new group poisons the destination red, draws a real4x2 source BO with
+RGBA[64,128,191,128], then verifies all eight destination pixels have preserved
+RGB and alpha255 while all source pixels retain alpha128. Captured clear RGB
+is distinct, already-suitable selectors incur zero writes, and native preimages
+remain restored. Channel tolerance remains the original plus/minus1. These
+are executed assertions; raw pixel arrays are not retained in scalar reports.
+
+Independent offline audit verifies85 sealed hashes,62 before/after inputs,
+61 production files against git606 and exact source-only bundle identity.
+All result/page/worker/workload/cleanup error arrays are empty; earlier noted
+raw engine diagnostics remain qualified. Six BO retirement acknowledgments per
+engine, restored observers, context/browser close acknowledgments, actual three
+browser process exits0 and owned Firefox-home cleanup are retained. Worker
+termination is invoked; that browser API supplies no separate acknowledgment.
+This is synthetic scratch-kernel native-source correctness, not normal guest,
+desktop, browser-memory or performance acceptance. Sealed preparation prose
+remains historical; actual reviewed config/results establish later execution.
+
+Evidence: `.context/kms-selector-delta-native-r2/`,
+`.context/kms-selector-delta-native-results-r2/` and
+`.context/kms-selector-delta-native-analysis-r2/`. Report SHA256:
+`50f21307885959f00a6296e2d1636eb9f068028ee1db78b2652e45fecfa48355`.
