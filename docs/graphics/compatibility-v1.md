@@ -12983,3 +12983,25 @@ analysis SHA256
 `6c8b3ae749c94e156bba626307a8ec232b04c0b414cf3ae8f40959044ac62889`.
 No Kandelo runtime source or SDK/kernel/program/image rebuild is needed for
 these two standalone diagnostic controls.
+
+
+The first real-guest native-clock capture is incomplete:
+`import-metadata-cold-cpu-trace-r1-1031-083539-527e` finishes1 in1m08s,
+with workload/collector/guard1/0/0. Its real menu and same-page normal
+replacement complete, and source/artifact checks remain stable with no
+runtime/observer errors. Native trace output reaches the hard64MiB cap;
+`tracingComplete.dataLossOccurred` is also true. The partial stream is
+retained, stream-close and native CDP detach acknowledge, and the original
+failure remains red. No guest CPU totals or completeness follow from this
+truncated/lost capture. Narrow categories/window guided by retained event
+volume before rerunning; increasing only the output cap cannot repair
+native buffer loss.
+
+Raw report SHA256
+`090a86d60e0522d652ad5050705f731b084fe5852b3fc7e975b40f8c26c74c40`;
+native capture report
+`b8410a834ff9de91af82c6afdba14f681391678ebe85aa16441acb63bba26a89`;
+64MiB partial trace
+`e80ae43b63a16e2897cd9c27ba906f554261302750f5d02589503dc93ac4621d`.
+All live under `.context/import-metadata-cold-cpu-trace-r1/`; this attempt
+requires no rebuild and changes no production source or published preview.
