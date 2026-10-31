@@ -11879,3 +11879,142 @@ entry-to-completion ticket would need proven quiescence of every aliasing
 writer and tracked intervening writes. Neither model is implemented.
 This is ordinary platform work, not a demonstrated engine boundary, and
 does not justify skipping synchronization by syscall or application name.
+
+
+### Existing trace phase and profile limits (2026-10-31)
+
+Single-terminal performance remains unproven, following the user's explicit
+correction. No whole-desktop benefit follows from the bounded native draw
+microbenchmark or the existing pointer/idle captures.
+
+Read-only phase accounting of the verified `gl-transaction-trace-r2`
+windows finds 73/73/144 candidate entry/completion comparison pairs at
+one/three/five terminals. Each candidate shares an incoming invocation,
+PID and 4,190,208-byte requested length. Every eligibility value remains
+false: those fields do not establish exact Memory/mapping generations,
+all-writer quiescence or absence of intersecting host writes. Three entry
+requests per window lack a completion within that capture; one completion
+per window lacks classified incoming ancestry. Different capture preludes
+make this neither a matched scaling curve nor measured elided work. No
+synchronization is skipped. Evidence under
+`.context/shared-mapping-phase-accounting-r1/` includes the read-only
+analyzer, raw-source verification and declared-dev-shell verification;
+accounting SHA256:
+`0ea9a13a1619a3704cbbaa44d44477485881118eaeb49bab6aa52ac09f90c507`.
+
+A separate offline review rechecks all 217 raw CPU profiles and 240 input
+hashes from historical runtime `e660a7be39d7` in
+`.context/native-snapshot-cpu-r1/`. The earlier snapshot-comparison and
+getError percentages describe the calibrated kernel profile only. All
+208 nonkernel profiles lack usable clock calibration; most observations
+land in low-index Wasm syscall/wrapper functions, which may include parked
+workers. Summing these observations cannot establish active CPU shares.
+Function-index/body-offset correspondence supports inferred executable
+families, not exact guest PIDs or instruction-level wait attribution.
+Raw nonkernel envelopes span about 8.7–10.5 seconds around roughly
+5.1-second motion markers, so exact phase trimming is unavailable. The
+cold Start recording also omits eight late-attached workers despite its
+initially selected-worker coverage flag. These are ordinary evidence
+limitations, not a demonstrated browser defect or platform boundary.
+
+Exact target URLs, call trees, offsets, artifact hashes, calibration bounds,
+late-worker identities and unchanged-input receipts are retained under
+`.context/native-snapshot-all-worker-analysis-r1/`. Analysis SHA256:
+`8ad4875311110162184bbefd92163f377fba9c9e47497a98e6e8dabf79d7f649`;
+review note SHA256:
+`8a9aedbdaea2704a0c6bb89203c4b4ee784564f97ae2a06e5dcfcb7901e52763`.
+No browser, build or runtime mutation was needed for either reanalysis.
+
+
+### Active trace and cursor-pool lifecycle evidence (2026-10-31)
+
+These fresh headless Chromium diagnostics use coherent baseline `71a283c2`
+on 5673, with native DPR 2 and 2880×1620 output. The normal DAD producer
+runs concurrently, so none is a quiet performance comparison. The next
+preview is not available from these diagnostics.
+
+The first active-output attempt enters shifted punctuation incorrectly
+through logical Playwright typing; its actual screenshot shows `$` as `4`
+and `%` as `5`. Its intended workload did not run. The second uses the
+existing physical-key helper and captures genuine output, but its upper
+crop misses new output in an already filled terminal. Actual screenshots
+also disprove the no-sleep-only settling inference. Both failures remain
+under `.context/active-baseline-trace-r{1,2}/` with workload 1, collector 0
+and guard 0; they provide no workload timing acceptance.
+
+Fresh R3 observes bounded top and bottom crops and requires an actual
+root-reviewed screenshot showing the natural prompt after output before
+advancing a stage. The first three reviews bind exact images and repeated
+real process observations. R3 retains four complete raw captures at
+one/three/five/recovered-one Foot windows, each with two consecutive
+selected-Sway DRM latch intervals containing returned native guest draws,
+followed by the matching device draw. All spans close, native error
+observations are zero, metadata caps hold and the normal own 93 owners /
+245 members, source, SDK, kernel, host and sealed helpers stay unchanged.
+However, the recovery screen detector cannot distinguish another pass
+of identical text, so **the overall workload still fails** (1/0/0), with
+no accepted four-stage timing comparison. Complete raw intervals remain
+usable for separately labeled operation accounting.
+
+| Stage | Guest draws per interval | Primary passes and 64×64 cursor readbacks per interval | Native getError calls per interval | Comparison requests per interval |
+|---|---|---|---|---|
+| 1 | 1 / 1 | 6 / 12 | 375 / 664 | 146 / 186 |
+| 3 | 1 / 1 | 5 / 15 | 325 / 984 | 140 / 232 |
+| 5 | 2 / 1 | 11 / 6 | 774 / 375 | 260 / 156 |
+| recovered 1 | 1 / 1 | 6 / 18 | 373 / 1561 | 146 / 272 |
+
+Each primary device pass contributes 23 error queries and each cursor
+readback 25 within these intervals. Other queries still belong to guest
+execution, queries, switching or cleanup. Comparisons request both
+4,190,208 and 16,760,832-byte ranges for Sway and SFWBar, with equal results
+in all eight intervals: about 1.4–2.7 GiB of requested comparison bytes
+per interval. Request bytes are not independent measured bus traffic or
+safe elisions. The instrumented 81–288 ms logical intervals include
+scheduling and driver waits; they are not CPU cost, physical frame rates
+or a matched scaling curve. Raw capture/analysis/verification live under
+`.context/active-baseline-trace-r3/` and
+`.context/active-frame-accounting-r1/`. Accounting SHA256:
+`658547b25decac697e82d3d4f26662c075cc67261ebe8ee83069df27f2987382`;
+native attribution SHA256:
+`1ae6c33a40e3e8319576a98e13b5d4353662a5af7232ddeeb062273f6ef0503c`;
+verification SHA256:
+`ca62771e5b46b6c2da39d6440fc6bb0c450ad74614d1688ea0c0e97338535bf4`.
+
+The independent menu lifecycle probe first records six metadata checkpoints
+successfully, but its descriptor attachment captures the parent directory
+before asynchronous navigation finishes. That attachment is not descriptor
+evidence. Fresh R2 explicitly waits for each observed mapping FD row and
+passes workload/collector/guard 0/0/0 in 66 seconds. Before first Start,
+preparation history contains the 4,190,208-byte cursor pool. At the painted
+cold menu, a second pool has grown to 16,760,832 bytes. The final VFS view, after dismissal, a 30-second wait and warm
+opening/dismissal, shows both FD symlinks open; normal VFS
+`/proc/109/fd` identifies both as `memfd:wayland-cursor`.
+No descriptor is opened and no file payload is read. Preparation history
+is not a current live-mapping inventory: later repeated comparisons of
+both sizes are the separate R3 evidence above. Neither open descriptors
+nor this growth alone proves a leak or immutable storage.
+
+Menu evidence is under `.context/pool-menu-lifecycle-r{1,2}/`; R2 report
+SHA256 `f2ff6ed171c83bc4d004240b557e50050fe2d734e60944863e14eca83867cbcc`,
+verification SHA256:
+`ab031014404967276140a27f7435331c2bddca73dcbd0e22aba1c749ebcd25f9`.
+No rebuild was needed for any diagnostic. Future matched observations
+will use ordinary numbered lines to make repeated scrolling visible,
+with new workload identities and the same physical typing/visual settling
+requirements; that revised workload remains unrun. There is no new
+single-terminal or multi-terminal improvement claim.
+
+
+A source-only authority review in `.context/gpu-content-epoch-design-r1.md`
+finds no existing authoritative GPU pixel-content generation. The native
+image revision, BO allocation identity and cursor version serve other
+contracts. Cursor readback reuse needs a physical-renderer write epoch
+covering aliases, attempted/after-effect writes, retained executions,
+unknown writers and loss/repair. Primary blit reuse additionally needs
+an exact canvas/default-buffer preservation and ownership generation.
+An observational screen should count prospective cases while executing
+every original operation before any such elision is implemented. Device
+paths account for 3,792 of 5,431 recorded getError calls in the eight
+intervals above (69.8%); that is a bounded call count, not CPU share or
+proof those presentations saw unchanged pixels. No cache or write epoch
+is implemented by this evidence update.
