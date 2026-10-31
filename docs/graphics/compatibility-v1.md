@@ -11248,3 +11248,122 @@ and is diagnostic only. It is not a desktop-ready cohort. The next normal
 shell-vfs/rootfs build will resolve the missing owners using the existing
 SDK/cache, followed by a fresh post-writer identity capture. No unconditional
 SDK reconstruction or copied artifact bridge is introduced.
+
+### Incremental desktop preview and bounded operation traces (2026-10-31)
+
+The normal shell-vfs/rootfs preparation subsequently finishes0 as
+`kms-sequence-incremental-desktop-1031-005150-24eb` in6m27s. Both SDK
+ensure checks reuse current cores. The normal graph rebuilds Nethack
+because its recipe declares the host runtime used by its guest build;
+that dependency is retained. Post-writer capture has all93 owners and245
+members. Normal `scripts/build-host.sh` refreshes the host distribution
+and input stamp after the producer releases. Kernel remains1835532-byte
+`edb881f99ee69bc83bd441d98dc865de8ead15a30c52cf71d4b1f817de822e82`,
+with freshness and selected-kernel ABI checks passing. This reuses the
+normal cache and compatible artifacts; it is not a cold full build.
+
+Temporary preview `http://127.0.0.1:5672/pages/kandelo/` serves primary
+source deece03e6327f6fa023e05cf5069df39ad66cdb8, runtime24d36 plus the
+shared-backing admission correction. Its server is
+`kms-sequence-temporary-preview5672-1031-010306-64c0`. Own incremental
+receipt SHA256 is
+`af8ceafe54849bf228b3b78b079773a247d9b688e6d54d3fef5bb4060c17e03e`;
+HTML200/COOP/COEP evidence is
+`.context/kms-incremental-consumer-r1/http-proof.json`. Availability was
+announced before desktop acceptance. The user explicitly clarified that
+they are unsure whether the single-terminal case is better. Neither that
+case nor degradation with additional terminals is established as fixed.
+The ordinary uninstrumented candidate comparison remains unrun.
+
+Operation tracing uses a fresh canonical headless Chromium153.0.8010.12
+context with native2880x1620 output, context DPR2 and force-DPR2. Its
+context-level request interception instruments ten exact platform source
+modules only in that test browser. Every original/overlaid response hash
+and seam is retained; the serving source, SDK, kernel, packages, host
+distribution and user preview are unchanged. No SDK, kernel, program or
+image rebuild is needed for this investigation. The trace lives in the
+disposable kernel worker and serializes scalar records only: no command
+payloads, shaders, pixels, guest pointers/views/memories or native handles.
+Synthetic weak object identities distinguish observed owners; no new GL
+query, flush, fence, scheduler policy or application bypass is introduced.
+
+The recorder has a32768-row,3MiB fixed buffer, a2s stop, explicit overflow
+and incomplete states, nested spans, and finally-based native wrapper
+restoration. Compact rows retain both endpoints and scalar results.
+Nine controls pass, covering exact receiver/argument/result/throw and query
+counts, nested order, caps, reset, failed copies, context replacement,
+DRM latch completion, framebuffer-generation matching and source seams.
+This is diagnostic transparency coverage, not full runtime acceptance.
+
+Frame boundaries follow the actual consumer. A GL submission is a command
+batch. EGL window swaps can complete immutable front copies without
+`host_gl_present`; this Sway session goes further and renders surfaceless
+buffers followed by DRM latches. Its measured intervals are between
+successful `host_kms_set_fb` calls for the selected process/CRTC, with
+framebuffer generation recorded. Capture stops after three latches and a
+subsequent accepted draw of that exact selected framebuffer. These are two
+complete display-commit cycles, not EGL producer cycles or physical display
+completion. Producer presentation/front-copy markers remain distinct.
+
+Job `run.sh-1031-012047-cc27` finishes0 in1m02s: one persistent Sway,
+separate actual Foot PID and painted-body/title observations through1/3/5
+terminals, complete bounded captures at each count, unchanged helper inputs,
+recorder uninstall, normal before/after93-owner245-member collection,
+source/SDK/kernel/artifact equality, receipt and freshness guards all pass.
+The captures contain26262/5220/13649 scalar records with no unclosed spans.
+No reload or forced GC occurs between counts. These capture windows have
+different activity and prelude lengths; they are not matched scaling or
+before/after performance benchmarks. External concurrent work is NONQUIET.
+
+| Terminals | Complete commit interval | Comparison requests | Requested comparison MiB | Native getError calls |
+|---|---|---:|---:|---:|
+| 1 | first | 262 | 1046.98 | 1788 |
+| 1 | second | 68 | 271.73 | 337 |
+| 3 | first | 74 | 295.71 | 327 |
+| 3 | second | 50 | 199.80 | 213 |
+| 5 | first | 208 | 831.19 | 789 |
+| 5 | second | 188 | 751.27 | 773 |
+
+Every comparison and native error result inside those intervals is0.
+Requested comparison bytes are not bytes copied or necessarily inspected
+before an early mismatch. The recurring4190208-byte comparisons belong to
+observed Sway/SFWBar PIDs; their backing identity remains to be established.
+Across the entire captures, including prelude,42/9/25 full muxer replays
+each issue145 direct native calls. Of these,41/8/25 select the same owner
+as that muxer's previous selection. The trace observes scanout and cursor
+`withGraphicsState` calling `prepareRetirement` and final invalidation on
+each device tick. That explains loss of the selector cache in these paths;
+it does not prove a cached owner can safely survive retirement or failure.
+Removing only the final invalidation would leave the earlier invalidation.
+
+The next investigation is authoritative ownership of these repeated
+comparisons and state transitions. Do not skip synchronization, native error
+checks, live cursor writes or loss checks on the strength of unchanged
+samples. JS method spans include observer overhead and host waits, not GPU
+execution time. Rust-internal copies/allocations and physical presentation
+remain outside these seams. Repeated device draws can reuse a prior latch.
+No application speedup, no-regression, exact latency, FPS, browser-memory,
+conformance or completed graphics-baseline claim follows from this trace.
+
+Evidence and read-only analyses are under `.context/frame-trace-r6/`.
+Report SHA256:
+`a39cdcf4afe71beb96141565beda9d1fb1c05079b8667ec3786a9e5897972321`.
+Trace SHA256 by1/3/5 terminals:
+`06c6b93579142cc1831c49f2c67c8f8ac0dc88884e4ed76514b9e584d27cd3ab`,
+`45e002ad2870cce72a79baa20fe1e2267805c0324c8ed68bc50c5ee6f887689f`,
+`e0f192d57234a348d952089d9d904f6a11b735fd101fa630bf6d294541dc48b7`.
+Recorder/overlay source SHA256:
+`97eb41ad5d6568f3763626e073a1f65b2418bd79fb27f7353c0fa69605b558fd`,
+`9d3ad78103b676066f5a906b8f7a6a867968c3d3e8581bee3176dc2747b44ec5`.
+Analysis SHA256:
+`7d2ac8a3d207f50c9ef58f39e632d13071b5779f1a4686b2bad6aae46706d730`.
+
+Original failures and partial captures are retained. r1/r2 refuse relative
+output/missing explicit xtask before launching a browser. r3 refuses
+positive coverage because page-level routing misses worker imports. r4
+uses context routing but overflows every capture; r5 compacts records but
+still selects unused producer boundaries and later times out on additional
+terminal readiness. r6 uses actual DRM latches and preserves that readiness
+assertion. None of these failures is an established engine/platform defect
+or erased by the successful diagnostic. Full ordinary desktop comparison,
+browser-memory, the three-engine gates and broader baseline remain open.
