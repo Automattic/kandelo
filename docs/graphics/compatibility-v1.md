@@ -13914,3 +13914,83 @@ panel icons/previews are disabled, so icon reloading must not be assumed.
 No focus disabling, application bypass or timeout adjustment is proposed.
 The source audit is `.context/desktop-focus-render-source-r1/focus-transaction-audit.md`,
 SHA256: `d2a3665c52e4bb0715bbd4a5ad3140e826d530ef488cb0fc50f497b864c6fb3b`.
+
+
+### Focus-crossing operation accounting, 2026-10-31
+
+Fresh R2 `desktop-boundary-trace-r2-1031-122453-6ad7` completes workload/
+collector/guard0in2m05s. The corrected observer distinguishes stored-snapshot
+replays, exact logical finishes and completion materialization. Thirteen
+actual-source/pure controls include the old false-mismatch counterexample and
+preserve genuine known-request mismatch failures. An independent offline audit
+passes590checks across69sealed inputs,19actual HTTP module compositions,
+24observed cursor/title responses and8complete9second diagnostic windows.
+Normal replacement and source/SDK/kernel/93owner245member guards pass. The
+concurrent normal producer is explicitly recorded: this NONQUIET instrumented
+capture supports operation accounting, not timing, CPU share or speedup.
+
+Each cell below sums two equal9second blocks and six96pixel moves. Runtime
+is normalc775 plus the exacta196 selection overlay, excluding the newer epoll
+probe and resize kernel. The public5678preview itself is never instrumented.
+
+| Foot windows | Motion | Guest GL queries | GL submissions | Returned guest draws | Comparison starts | Native error queries outside device | Cursor readbacks |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Three | Within | 201 | 93 | 37 | 6,288 | 2,259 | 1,125 |
+| Three | Cross | 639 | 378 | 424 | 10,694 | 16,779 | 1,122 |
+| Five | Within | 199 | 88 | 46 | 6,147 | 2,551 | 1,124 |
+| Five | Cross | 618 | 369 | 421 | 10,266 | 16,614 | 1,123 |
+
+All observed queries, submissions and returned draws are attributed to Sway101
+Ioctl entry. Device polling/readback counts stay nearly constant; extra native
+error queries occur outside device scopes. Main checked-query increases are
+Q34image bind (117→408at3,110→396at5), Q42framebuffer bind (56→122,59→116)
+and Q49flush (28→61,30→58). These checked paths preserve native acceptance
+before publishing logical bindings. They do not call generic withGraphicsState;
+R2 has no execution group for that generic wrapper. Extending its inverse-based
+preservation is therefore not a demonstrated repair for this measured work.
+
+Completed comparisons all report equal and request4,190,208bytes each, for
+Sway101 or SFWBar109; size does not identify a file or buffer. Requested ranges
+sum26.35→44.81GB at3 and25.76→43.02GB at5. These are not physical bus traffic.
+One five-window crossing comparison is cutoff-censored. Sway Ioctl entry and
+completion account for2,151of4,406additional starts at3 and2,040of4,119at5;
+clock/IPC/read/poll activity also grows. No syscall exclusion is justified by
+this association. Direct BO import/publish scopes also grow; these scopes
+still include all-writer scans, so their durations do not isolate copy cost.
+
+Every accepted block has zero retry mismatch, unbound completion/replay,
+overflow and live scope depth. Epoll fallback normal-handler counts actually
+fall for crossing versus within at each window count, while their baseline
+rises with more clients. Thus fallback count amplification is separate from
+the focus-specific increment. Unknown-reason attempts remain explicitly joined
+to snapshot replay, not invented notification identities; reason masks are
+nonexclusive and cannot be summed as unique wakeups.
+
+Twenty-five synchronous spans remain censored.178logical DRM latches delimit
+170complete internal intervals with partial leading/trailing intervals. Raw
+30second-complete=false remains visible for every9second window. First-second
+exemplar quotas omit later ordered spans; this is not a complete ordered log
+of all rendering commands or physical frames. Root reviews the original
+five-window crossing PNG with the second terminal highlighted and cursor in
+its body. All raw captures and limits remain available for deeper tracing.
+
+Source also shows that a nonempty libc GL command flush uses GLIO_SUBMIT,
+and each checked query first flushes then separately invokes GLIO_QUERY.
+A compound transport preserving command ordering, native errors, rollback
+and accepted C shadow state is a potential platform investigation. Current
+aggregates do not pair individual queries with nonempty preceding submissions;
+no compound implementation or safety-check removal is claimed here. Cursor
+source review separately finds a server-shape deduplication path, so matching
+cursor pixels or repeated cursor ioctls do not prove cursor BO replacement.
+
+Report SHA256:
+`6cc8e12a52a2c09ddd02b0c0c493af21f5e4db68a638057c5a4039cf6049b0f5`.
+Helper manifest SHA256:
+`31d9544e0a61bd221d1b764501bbb59d0049e06c25f8829caffdff30efbcf7f7`.
+Served-composition SHA256:
+`d7eb25fc9e78b5b4bbabad505796ccc02082898a1a7766cee0eba588f5e9c56d`.
+Independent accounting SHA256:
+`87976f984ba3ccdc4db6c197a9c9094d28b86d87451cc0246ce811f7efd0d70f`.
+Evidence is under `.context/desktop-boundary-trace-r2/` and
+`.context/desktop-boundary-trace-analysis-r2/`. No candidate responsiveness
+improvement or complete graphics acceptance follows from these counts.
