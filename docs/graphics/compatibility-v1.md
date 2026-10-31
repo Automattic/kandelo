@@ -13703,3 +13703,56 @@ is established. Further tracing prioritizes exact retry scheduling reasons
 and independently verified output from all active clients. Raw evidence is
 under `.context/desktop-long-state-candidate-r1/`; independent analysis is
 under `.context/desktop-long-state-analysis-r1/`.
+
+### Direct interactive-response capture and user focus lead, 2026-10-31
+
+The user reports the5678preview feels improved but remains far too slow,
+with a repeatable pause whenever pointer crossing changes which terminal is
+highlighted. This is user feedback, not a measured single-terminal speedup.
+The next discriminator is matched within-window versus boundary-crossing
+motion with actual cursor/title pixels, followed by operation tracing of the
+same workload. Broad graphics completion remains deferred behind performance.
+
+Two fresh canonical headless Chromium sessions measure normal physical
+keyboard requests to actual public display pixels, without frame tracing or
+CPU profiling. Each requests eight uppercase M characters, then Ctrl+u erasure,
+three trials separated by15seconds at1/3/5/recovered1terminal. Small public
+crops (at most600×80) are requested every25ms with15second phase bounds.
+Node issue/ACK/observation timestamps share one clock. These upper brackets
+include input-train dispatch, polling, pixel reads and scheduling; they are
+not single-key/hardware latency, CPU savings or before/after improvement.
+Actual production module response hashes bind normalc775 plus thea196 source
+proxy. Source/SDK/93owner245member/kernel guards remain unchanged.
+
+R1 `desktop-responsiveness-r1-1031-112911-f647` fails1/0/0 after2m37s:
+one/three/five echo+erase captures complete, but recovery kills the original
+Foot when the driver sends a close shortcut without observing that its click
+has changed focus. R2 adds a real selected-title pixel check before dependent
+keyboard actions and captures all four stages. Observed focus-change brackets
+are119.8/164.3ms for stage3/5and120.4–320.4ms while closing extras; targets
+already selected are explicitly not zero-latency measurements.
+
+| R2 stage, three trials | Eight-character echo median / range ms | Erasure median / range ms |
+|---|---:|---:|
+| One terminal | 329.4 / 274.8–573.7 | 152.6 / 148.9–193.1 |
+| Three terminals | 327.6 / 258.4–451.7 | 158.5 / 149.5–231.1 |
+| Five terminals | 424.5 / 238.9–564.8 | 146.5 / 128.9–194.3 |
+| Recovered one | 506.1 / 300.7–636.0 | 164.1 / 159.2–213.3 |
+
+These are one ordered NONQUIET session with other clients idle and no cold
+Start click. They do not establish monotonic degradation, its absence in
+active workloads, or a candidate gain. Representative original one/three/five
+paint/erase PNGs are read by root; the classifier is not literal-text OCR.
+
+R2 `desktop-responsiveness-r2-1031-113733-7264` remains FAILED1/0/0in3m15s:
+a final separate three-iteration timed Bash read screen crashes the guest
+with `RuntimeError: function signature mismatch`, after pselect6/sigprocmask/
+terminal restoration. Exact visible command is retained; before1.25seconds
+the Foot window disappears. No timed-read or concurrent-output success is
+claimed, and the proposed900iteration workload is NOT admitted. This is an
+ordinary open platform failure, not a demonstrated runtime boundary. The
+response samples precede it; normal same-page replacement and all artifact
+checks pass, but the failed overall result is retained. R1/R2 report SHAs:
+`62605d7fb23112dc63d63b3345f61a668c3f88e79e38869f191326869e9583f5` and
+`551194a3f69c81eaa967b52d0c825912d21f1ef5e88eafdca9bfd9eb08fab8d8`.
+Evidence is under `.context/desktop-responsiveness-r1/` and`-r2/`.
