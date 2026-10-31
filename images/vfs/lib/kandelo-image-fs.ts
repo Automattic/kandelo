@@ -95,6 +95,11 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_free(ptr: number, len: number): void;
   sm_overlay_activation_codec?: (operation: number, input: number, inputLength: number, output: number, outputCapacity: number) => number;
   sm_original_program_reference?: (program: number, length: number, originalLength: bigint, digest: number) => number;
+  sm_package_inventory_begin?: (programAbi: number, digest: number, name: number, nameLength: number, version: number, versionLength: number) => number;
+  sm_package_inventory_add?: (path: number, length: number, declaredDigest: number) => number;
+  sm_package_inventory_finish?: () => number;
+  sm_package_inventory_read?: (offset: number, output: number, length: number) => number;
+  sm_package_inventory_cancel?: () => void;
   sm_reset(rootMode: number, uid: number, gid: number): number;
   sm_image_metadata(out: number, outLen: number): number;
   sm_loaded_image_capacity(): bigint;
@@ -496,6 +501,46 @@ export class KandeloImageFs {
     if (typeof inspect !== "function") throw new Error("Kandelo image module lacks its original-reference reader; rebuild the image modules");
     this.withBytes(program, (pointer, length) => this.withBytes(sha256HexToBytes(original.sha256), (digest) =>
       this.check(inspect(pointer, length, BigInt(original.size), digest), "check original-program reference", "")));
+  }
+
+  buildPackageInventory(options: {
+    name: string; version: string; programAbi: number; programDigest: string;
+    paths: Iterable<string>; deferredDigests?: ReadonlyMap<string, string>;
+  }): Uint8Array {
+    const { sm_package_inventory_begin: begin, sm_package_inventory_add: add,
+      sm_package_inventory_finish: finish, sm_package_inventory_read: read,
+      sm_package_inventory_cancel: cancel } = this.exports;
+    if (!begin || !add || !finish || !read || !cancel) throw new Error("Image module lacks native package inventories; rebuild it");
+    if (!Number.isInteger(options.programAbi) || options.programAbi < 1 || options.programAbi > 0x7fff_ffff) throw new RangeError("Invalid package program ABI");
+    const digest = sha256HexToBytes(options.programDigest);
+    this.withBytes(digest, contract => this.withPath(options.name, (name, nameLength) =>
+      this.withPath(options.version, (version, versionLength) =>
+        this.check(begin(options.programAbi, contract, name, nameLength, version, versionLength), "begin package inventory", options.name))));
+    try {
+      for (const path of options.paths) {
+        const declared = options.deferredDigests?.get(path);
+        this.withPath(path, (pointer, length) => {
+          if (declared === undefined) this.check(add(pointer, length, 0), "capture package file", path);
+          else this.withBytes(sha256HexToBytes(declared), digest => this.check(add(pointer, length, digest), "capture deferred package file", path));
+        });
+      }
+      const length = this.check(finish(), "finish package inventory", options.name);
+      if (length > 8 * 1024 * 1024) throw new RangeError("Native package inventory exceeds its size bound");
+      const bytes = new Uint8Array(length);
+      const capacity = Math.min(length, 64 * 1024);
+      const pointer = this.exports.sm_alloc(capacity);
+      if (pointer === 0) throw new Error("Package inventory read allocation failed");
+      try {
+        for (let offset = 0; offset < length;) {
+          const amount = Math.min(capacity, length - offset);
+          const count = this.check(read(offset, pointer, amount), "read package inventory", options.name);
+          if (count !== amount) throw new Error("Native package inventory returned a short read");
+          bytes.set(this.mem.subarray(pointer, pointer + count), offset);
+          offset += count;
+        }
+      } finally { this.exports.sm_free(pointer, capacity); }
+      return bytes;
+    } finally { cancel(); }
   }
 
   overlayActivationCodecCall(operation: number, input: Uint8Array): Uint8Array | number {

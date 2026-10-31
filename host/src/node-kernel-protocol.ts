@@ -45,6 +45,7 @@ export type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  PackageMaintenanceMessage,
   ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
@@ -90,6 +91,7 @@ import type {
   WakeBlockedWritersMessage,
   HttpRequestMessage,
   WriteVfsFileMessage,
+  PackageMaintenanceMessage,
   ReadVfsFileRangeMessage,
   ProcEventMessage,
   AttachRemotePeerMessage,
@@ -371,6 +373,7 @@ export type MainToKernelMessage =
   | ReadVfsDirMessage
   | StatVfsPathMessage
   | WriteVfsFileMessage
+  | PackageMaintenanceMessage
   | OwnedJobMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage

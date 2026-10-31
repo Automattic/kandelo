@@ -86,6 +86,8 @@ export type { ProcessMemoryLayout } from "./process-memory";
 export { WasiShim, WasiExit } from "./wasi-shim";
 export { isWasiModule, wasiModuleImportsMemory, wasiModuleDefinesMemory } from "./wasi-detect";
 export { NodeKernelHost } from "./node-kernel-host";
+export { PackageMaintenanceError } from "./package-maintenance";
+export type { PackageMaintenanceRequest, PackageMaintenanceResponse } from "./package-maintenance";
 export type { NodeKernelHostOptions, SpawnOptions } from "./node-kernel-host";
 export type {
   ClipboardOfferFailure,

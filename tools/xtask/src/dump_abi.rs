@@ -2665,6 +2665,11 @@ fn render_ts_module() -> String {
         "export const SCHED_AFFINITY_MASK_SIZE = {} as const;\n\n",
         shared::SCHED_AFFINITY_MASK_SIZE
     ));
+    out.push_str("export const PACKAGE_MAINTENANCE_WIRE = {\n");
+    for (name, value) in shared::package_maintenance_wire::CONSTANTS {
+        out.push_str(&format!("  {name}: {value},\n"));
+    }
+    out.push_str("} as const;\n\n");
     out.push_str(&format!(
         "export const PROCESS_SNAPSHOT_COUNT_OFFSET = {} as const;\n",
         shared::process_snapshot_wire::COUNT_OFFSET
@@ -4355,6 +4360,7 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "process_metadata_contract", process_metadata_contract());
     // The process table the kernel hands the host (ps, the inspector).
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
+    s.add(KernelHost, "package_maintenance_wire", package_maintenance_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
     s.add(Program, "io_multiplexing", io_multiplexing());
@@ -4464,6 +4470,10 @@ fn process_snapshot_wire() -> Value {
             ],
         ),
     })
+}
+
+fn package_maintenance_wire() -> Value {
+    json!(shared::package_maintenance_wire::CONSTANTS.iter().copied().collect::<BTreeMap<_, _>>())
 }
 
 struct WakeupEventField {

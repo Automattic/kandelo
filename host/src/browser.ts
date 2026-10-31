@@ -29,6 +29,8 @@ export { backendPathconf } from "./pathconf";
 export type { PathconfProfile } from "./pathconf";
 export type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
 export type { HostDiagnostic } from "./host-diagnostic";
+export { PackageMaintenanceError } from "./package-maintenance";
+export type { PackageMaintenanceRequest, PackageMaintenanceResponse } from "./package-maintenance";
 export {
   BrowserCorsProxy,
   BrowserCorsProxyRequestError,

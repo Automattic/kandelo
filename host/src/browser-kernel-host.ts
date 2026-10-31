@@ -4,6 +4,7 @@ import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-s
 import type { RemoteSessionSnapshot } from "./networking/remote-segment-runtime";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES, vfsPathIsWithin } from "./vfs/vfs";
 import { assertVfsFileRange } from "./vfs/file-range";
+import { checkedPackageMaintenanceResponse, copyPackageMaintenanceRequest, type PackageMaintenanceRequest, type PackageMaintenanceResponse } from "./package-maintenance";
 import { validateStorageMemoryUsage, type StorageMemoryUsage } from "./vfs/storage-memory-budget";
 import type { VfsChangeEvent } from "./vfs/types";
 import { isStagedRootfsImageIntegrity } from "./vfs/staged-rootfs-image";
@@ -1750,6 +1751,13 @@ export class BrowserKernel {
       throw new Error("kernel worker returned invalid VFS file range");
     }
     return result;
+  }
+
+  async packageMaintenance(command: PackageMaintenanceRequest): Promise<PackageMaintenanceResponse> {
+    if (!this.initialized) throw new Error("Package maintenance requires an initialized kernel");
+    const request = copyPackageMaintenanceRequest(command);
+    const requestId = this.nextRequestId++;
+    return checkedPackageMaintenanceResponse(await this.request(requestId, { type: "package_maintenance", requestId, request }));
   }
 
   /**

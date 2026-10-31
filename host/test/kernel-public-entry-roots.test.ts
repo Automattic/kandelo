@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { PACKAGE_MAINTENANCE_WIRE as maintenanceWire } from "../src/generated/abi";
+import { checkedPackageMaintenanceResponse, copyPackageMaintenanceRequest, PackageMaintenanceError } from "../src/package-maintenance";
 
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -51,6 +53,7 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
     kernel_read_proc_maps: () => 0,
     kernel_set_cwd: () => 0,
     kernel_set_process_credentials: () => 0,
+    kernel_package_maintenance: () => 0,
   };
   const gate = new KernelEntryGate();
   const rawInstance = createKernelScratchTestInstance(
@@ -66,6 +69,7 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
       "kernel_read_proc_maps",
       "kernel_set_cwd",
       "kernel_set_process_credentials",
+      "kernel_package_maintenance",
     ],
   );
   const instance = createKernelEntryGatedInstance(rawInstance, gate);
@@ -84,6 +88,7 @@ function makeRootHarness(pointerWidth: 4 | 8): RootHarness {
     gate,
     mainScratch: scratch,
     tcpScratch: scratch,
+    programContractDigest: new Uint8Array(32).fill(55),
   });
   return { worker, gate, kernelBytes, implementations };
 }
@@ -128,6 +133,60 @@ function processSnapshotBytes(): Uint8Array {
 }
 
 describe("CentralizedKernelWorker public kernel-entry roots", () => {
+  it.each([4, 8] as const)("uses a bounded scoped maintenance lease at pointer width %i", pointerWidth => {
+    const harness = makeRootHarness(pointerWidth);
+    let enters = 0;
+    harness.implementations.kernel_package_maintenance = (opcode: number, _index: number, _lo: number, _hi: number, pointer: number | bigint, length: number) => {
+      const start = Number(pointer);
+      if (opcode === maintenanceWire.OP_ENTER) {
+        enters += 1;
+        expect(length).toBe(maintenanceWire.ENTER_BYTES);
+        expect(new DataView(harness.kernelBytes.buffer).getUint32(start, true)).toBe(maintenanceWire.VERSION);
+        expect(harness.kernelBytes.slice(start + 8, start + 40)).toEqual(new Uint8Array(32).fill(55));
+        return 0;
+      }
+      if (opcode === maintenanceWire.OP_PROGRESS) {
+        expect(length).toBe(65536);
+        harness.kernelBytes.fill(42, start, start + 64);
+        return 64;
+      }
+      if (opcode === maintenanceWire.OP_LAST_ERROR) return maintenanceWire.ERROR_CHANGED;
+      return -16;
+    };
+    expect(harness.worker.packageMaintenance({ action: "enter" }).status).toBe(0);
+    expect(enters).toBe(1);
+    const progress = harness.worker.packageMaintenance({ action: "progress" });
+    expect(progress.data).toEqual(new Uint8Array(64).fill(42));
+    expect(progress.data.buffer).not.toBe(harness.kernelBytes.buffer);
+    harness.kernelBytes.fill(0);
+    expect(progress.data[0]).toBe(42);
+    const refused = harness.worker.packageMaintenance({ action: "commit" });
+    expect(refused.status).toBe(-16);
+    expect(refused.errorKind).toBe(maintenanceWire.ERROR_CHANGED);
+    expect(() => checkedPackageMaintenanceResponse(refused)).toThrow(PackageMaintenanceError);
+    harness.gate.invokeKernelExport("outer maintenance test export", () => {
+      expect(() => harness.worker.packageMaintenance({ action: "progress" })).toThrow(KernelReentrantEntryError);
+    });
+  });
+
+  it("snapshots bounded maintenance inputs and refuses caller-selected runtime contracts", () => {
+    const backing = new Uint8Array(1024 * 1024);
+    backing[123] = 9;
+    const copied = copyPackageMaintenanceRequest({ action: "stage", data: backing.subarray(123, 124) });
+    expect(copied.data?.buffer.byteLength).toBe(1);
+    backing[123] = 0;
+    expect(copied.data?.[0]).toBe(9);
+    const hostile = new Uint8Array([3, 4]);
+    Object.defineProperty(hostile, Symbol.iterator, { value: () => { throw new Error("iterator must not run"); } });
+    Object.defineProperty(hostile, "byteLength", { get: () => { throw new Error("getter must not run"); } });
+    expect(copyPackageMaintenanceRequest({ action: "stage", data: hostile }).data).toEqual(new Uint8Array([3, 4]));
+    expect(() => copyPackageMaintenanceRequest({ action: "enter", data: new Uint8Array(32) })).toThrow(/current runtime contract/);
+    expect(() => copyPackageMaintenanceRequest({ action: "stage", data: new Uint8Array(65537) })).toThrow(/64 KiB/);
+    expect(() => copyPackageMaintenanceRequest({ action: "stage", offset: -1 })).toThrow(RangeError);
+    expect(() => checkedPackageMaintenanceResponse({ status: 0, errorKind: 0, data: new Uint8Array(new SharedArrayBuffer(1)) })).toThrow(/Invalid/);
+    expect(() => checkedPackageMaintenanceResponse({ status: 0, errorKind: 0, data: backing.subarray(0, 1) })).toThrow(/Invalid/);
+  });
+
   it.each([
     ["wasm32", 4],
     ["wasm64", 8],

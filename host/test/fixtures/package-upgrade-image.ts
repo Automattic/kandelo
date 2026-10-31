@@ -1,0 +1,42 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
+import { resolveBinary } from "../../src/binary-resolver";
+import { ABI_VERSION } from "../../src/generated/abi";
+import { ABI_CONTRACT_SECTION, readWasmCustomSectionPayload } from "../../src/constants";
+
+const encoder = new TextEncoder();
+
+export async function softwareImage(version: 1 | 2, lazyOrigin = "https://packages.invalid/") {
+  const filesystem = KandeloImageFs.create();
+  filesystem.setImageCapacity(32 * 1024 * 1024);
+  for (const path of ["/software", "/user", "/var", "/var/lib", "/var/lib/kandelo", "/var/lib/kandelo/packages"]) {
+    filesystem.mkdir(path, path.endsWith("/packages") ? 0o700 : 0o755);
+  }
+  const bodies = new Map<string, Uint8Array>([
+    ["/software/tool", encoder.encode(version === 1 ? "old program" : "new program\n".repeat(7000))],
+    ["/software/config", encoder.encode("package default")],
+  ]);
+  if (version === 1) bodies.set("/software/remove", encoder.encode("old package file"));
+  else {
+    filesystem.mkdir("/software/new", 0o755);
+    filesystem.mkdir("/software/new/sub", 0o755);
+    bodies.set("/software/new/sub/pkg", encoder.encode("new nested package file"));
+  }
+  for (const [path, bytes] of bodies) filesystem.writeFile(path, bytes, 0o644);
+  filesystem.writeFile("/user/notes", encoder.encode("user data"), 0o644);
+  const lazy = encoder.encode(`lazy package ${version}`);
+  const lazyUri = new URL(`program-${version}`, lazyOrigin).href;
+  filesystem.registerLazyFile("/software/lazy", lazyUri, lazy.length, 0o644,
+    createHash("sha256").update(lazy).digest("hex"));
+  const kernel = readFileSync(resolveBinary("kernel.wasm"));
+  const digest = readWasmCustomSectionPayload(kernel, ABI_CONTRACT_SECTION);
+  if (!digest || digest.byteLength !== 32) throw new Error("Current kernel lacks its program contract");
+  const inventory = filesystem.buildPackageInventory({
+    name: "fixture-software-set", version: String(version), programAbi: ABI_VERSION,
+    programDigest: Buffer.from(digest).toString("hex"),
+    paths: ["/software", ...bodies.keys(), "/software/lazy", ...(version === 2 ? ["/software/new", "/software/new/sub"] : [])],
+  });
+  filesystem.writeFile("/var/lib/kandelo/packages/installed", inventory, 0o600);
+  return { bytes: await filesystem.saveImage(), inventory, bodies, lazy, lazyUri };
+}

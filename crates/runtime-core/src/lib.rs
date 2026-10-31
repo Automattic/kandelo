@@ -58,6 +58,7 @@ pub mod net_readiness;
 pub mod netif;
 pub mod ofd;
 pub mod overlay_activation;
+pub mod package_inventory;
 mod overlay_seal;
 mod overlay_recovery;
 mod overlay_generation_policy;

@@ -317,6 +317,7 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
 );
 const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
+let refreshRootfsTransport: (() => Map<string, number>) | undefined;
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 const vforkMechanismTraceEnabled = Boolean(process.env.KERNEL_SYSCALL_LOG);
 
@@ -1214,7 +1215,7 @@ async function handleInit(msg: InitMessage) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them.
-  let finalizeRootfsTransport: (() => Map<string, number>) | undefined;
+  refreshRootfsTransport = undefined;
   if (rootImage.has()) {
     const reader = nodeImageReader;
     const rootfsContainer = msg.rootfsImage === undefined
@@ -1224,7 +1225,7 @@ async function handleInit(msg: InitMessage) {
       if (sessionDir === null) throw new Error("Persistent rootfs byte storage requires a session directory");
       deferredByteSpool = await DeferredByteSpool.open(() => openNodeDeferredByteStorage(sessionDir!), kernelWorker.rootfsTransportMetadataBudget());
     }
-    finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
+    refreshRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: reader === null
         ? imageReadFromContainer(rootfsContainer!)
         : (at, destination) => reader.readAt(at, destination),
@@ -1257,7 +1258,7 @@ async function handleInit(msg: InitMessage) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
   await kernelWorker.init(msg.kernelWasmBytes);
-  const rootfsResourceLimits = finalizeRootfsTransport?.();
+  const rootfsResourceLimits = refreshRootfsTransport?.();
   if (rootImage.has() && msg.rootfsLazyAssets === undefined && msg.rootfsLazyAssetSources === undefined) {
     // Read metadata after native validation, outside a Wasm import callback.
     // Freshness checking still starts only on the first lazy read, off-thread.
@@ -1381,6 +1382,7 @@ async function handleInit(msg: InitMessage) {
     }
   }
 
+  refreshRootfsTransport?.();
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;
   liveOverlayCompactor?.start();
@@ -4080,6 +4082,18 @@ async function handleStatVfsPath(
   }
 }
 
+function handlePackageMaintenance(msg: Extract<MainToKernelMessage, { type: "package_maintenance" }>) {
+  if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("package maintenance");
+    if (msg.request.action === "leave") refreshRootfsTransport?.();
+    respond(msg.requestId, kernelWorker.packageMaintenance(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, error instanceof Error ? error.message : String(error));
+  } finally { releaseMutation?.(); }
+}
+
 function handleWriteVfsFile(
   msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>,
 ) {
@@ -4250,6 +4264,9 @@ port.on("message", (msg: MainToKernelMessage) => {
       break;
     case "write_vfs_file":
       handleWriteVfsFile(msg);
+      break;
+    case "package_maintenance":
+      handlePackageMaintenance(msg);
       break;
     case "read_owned_job":
     case "cancel_owned_job":

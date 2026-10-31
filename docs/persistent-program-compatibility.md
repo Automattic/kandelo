@@ -59,8 +59,9 @@ ID are refused without repairing or rewriting the journal. Updating a durable
 descriptor requires staging a new binding and activating it transactionally;
 the image-builder descriptor setters cannot silently edit such a live inode.
 
-This is a Rust storage foundation. It is not yet an exposed package updater,
-maintenance coordinator or accepted Node/browser upgrade workflow.
+The native coordinator can stage and activate these bindings with package
+inventory and rollback references. It is not yet an exposed or accepted
+Node/browser upgrade workflow; see [package upgrades](package-upgrades.md).
 
 Existing journals are opened without truncating incomplete tails. Recovery
 retains a logical committed end, validates filesystem metadata, and leaves
@@ -676,9 +677,10 @@ operation. An unresolved reference still names expected content, size, archive
 membership and dependencies. A new location can supply the same verified
 content; replacing that content requires a package upgrade. Retaining resolved
 files while changing unresolved references must not mix incompatible package
-versions or overwrite user edits. The durable provider/inode activation needed
-for these updates is not implemented yet. Missing old providers must fail
-explicitly rather than fetching unrelated latest bytes.
+versions or overwrite user edits. Durable provider/inode activation and native
+coordination now exist; distribution and host integration remain pending.
+Missing old providers must fail explicitly rather than fetching unrelated
+latest bytes.
 
 The upgrade policy must distinguish three operations:
 
@@ -695,8 +697,8 @@ The upgrade policy must distinguish three operations:
 
 Resolution is a cache/materialization state, not an upgrade boundary. Updating
 only unresolved references can mix library and executable versions. Durable
-provider records, rollback references and interruption tests are prerequisites
-for accepting this policy, not functionality provided by this document.
+provider records and native rollback references implement the storage
+foundation, not Node/browser upgrade acceptance.
 
 The native activation foundation can prepare and commit a canonical batch of
 existing leaf-inode replacements, namespace timestamps, and an inventory-file
@@ -708,13 +710,17 @@ An interrupted final flush is outcome-uncertain: the old live graph remains,
 the failed journal refuses further writes, and reopening determines whether the
 old or new complete transaction is present.
 
-This is an internal primitive, not an exposed package updater. It does not
-authenticate packages, detect in-place user edits, provide maintenance admission,
-or install durable lazy-provider records. Directory/special-node updates,
-set-ID regular leaves, and transactions exceeding the journal's size limit
-are refused without weakening permissions or splitting the commit. The release goal
-still requires the ownership inventory, maintenance coordinator, durable lazy
-provider activation, and Node/browser upgrade acceptance.
+This is not yet an application-facing package updater. Native coordination
+and bounded Node/browser control add content-bound inventories, user-edit
+verification, maintenance admission and durable provider staging above it.
+Distribution authentication remains a separate integration requirement. New nested
+directories and in-place directory metadata changes join the same atomic
+commit; removed directories remain available for user-created children.
+Directory/file type changes, special-node updates, set-ID regular leaves,
+and transactions exceeding the journal's size limit are refused without
+weakening permissions or splitting the commit. The release goal
+still requires full-package mutation support, producer/host integration and
+Node/browser upgrade acceptance.
 
 Ordinary persistent namespace and metadata writers also refuse records that
 recovery cannot admit. Immutable regular/lazy set-ID leaves cannot be linked,

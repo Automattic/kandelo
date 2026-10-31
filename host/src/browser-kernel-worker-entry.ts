@@ -202,6 +202,7 @@ let initReady = false;
 let initFailure: string | null = null;
 let kernelFatalReported = false;
 const rootfsSnapshotGate = new RootfsSnapshotGate();
+let refreshRootfsTransport: (() => Map<string, number>) | undefined;
 const processMemoryCreators = new ProcessMemoryCreatorGate();
 let vforkMechanismTraceEnabled = false;
 let injectVforkWorkerStartFailure = false;
@@ -1183,12 +1184,12 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 
   // The kernel owns `/`: hand it the boot image and the byte pipe for what the
   // image does not carry before `init` loads them. Mirrors the Node entry.
-  let finalizeRootfsTransport: (() => void) | undefined;
+  refreshRootfsTransport = undefined;
   if (rootImage.has()) {
     if (msg.experimentalFixedPersistenceName !== undefined || msg.experimentalResizablePersistenceName !== undefined) {
       deferredByteSpool = await DeferredByteSpool.open(() => openOpfsDeferredByteStorage(msg.experimentalResizablePersistenceName ?? msg.experimentalFixedPersistenceName), kernelWorker.rootfsTransportMetadataBudget());
     }
-    finalizeRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
+    refreshRootfsTransport = configureRootfsOverlayFromImage(kernelWorker, {
       imageRead: opfsImageReader === null
         ? imageReadFromContainer(msg.vfsImage)
         : (at, destination) => opfsImageReader!.readAt(at, destination),
@@ -1222,7 +1223,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     kernelWorker.setExchangeByteLimit(msg.config.exchangeByteLimit);
   }
   await kernelWorker.init(msg.kernelWasmBytes);
-  finalizeRootfsTransport?.();
+  refreshRootfsTransport?.();
 
   // Install the TLS-MITM CA certificate so guest OpenSSL trusts it. This runs
   // after `init` because the kernel owns `/`, and before any guest process is
@@ -1396,6 +1397,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     });
   }
 
+  refreshRootfsTransport?.();
   if (msg.experimentalResizablePersistenceName !== undefined) installBrowserCa();
 
   processMemoryCreators.assertOpen("kernel readiness");
@@ -3888,6 +3890,18 @@ function handleWatchVfsChanges(msg: Extract<MainToKernelMessage, { type: "watch_
   }
 }
 
+function handlePackageMaintenance(msg: Extract<MainToKernelMessage, { type: "package_maintenance" }>) {
+  if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
+  let releaseMutation: (() => void) | undefined;
+  try {
+    releaseMutation = rootfsSnapshotGate.beginMutation("package maintenance");
+    if (msg.request.action === "leave") refreshRootfsTransport?.();
+    respond(msg.requestId, kernelWorker.packageMaintenance(msg.request));
+  } catch (error) {
+    respondError(msg.requestId, formatError(error));
+  } finally { releaseMutation?.(); }
+}
+
 function handleWriteVfsFile(msg: Extract<MainToKernelMessage, { type: "write_vfs_file" }>) {
   if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
@@ -4772,6 +4786,7 @@ sw.onmessage = (e: MessageEvent) => {
     case "read_vfs_dir": void handleReadVfsDir(msg); break;
     case "stat_vfs_path": void handleStatVfsPath(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;
+    case "package_maintenance": handlePackageMaintenance(msg); break;
     case "unlink_vfs_file": handleUnlinkVfsFile(msg); break;
     case "export_rootfs_image": void handleExportRootfsImage(msg); break;
     case "export_rootfs_image_to_file":

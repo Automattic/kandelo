@@ -292,6 +292,12 @@ export interface WriteVfsFileMessage {
   mode: number;
 }
 
+export interface PackageMaintenanceMessage {
+  type: "package_maintenance";
+  requestId: number;
+  request: import("./package-maintenance").PackageMaintenanceRequest;
+}
+
 /** Read a bounded positioned range from a regular file in the live VFS. */
 export interface ReadVfsFileRangeMessage {
   type: "read_vfs_file_range";

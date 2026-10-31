@@ -68,6 +68,8 @@ use runtime_core::seal;
 use runtime_core::rootfs;
 use wasm_posix_shared::Errno;
 
+mod package_inventory;
+
 #[cfg(feature = "positioned-image")]
 mod persistent_writer;
 
@@ -201,6 +203,7 @@ static IMAGE: AdoptedImage = AdoptedImage(core::cell::UnsafeCell::new(None));
 
 /// Free the adopted image, if there is one. Idempotent.
 fn release_image() {
+    package_inventory::sm_package_inventory_cancel();
     // SAFETY: single-threaded module; no reference into the cell outlives this.
     let slot = unsafe { &mut *IMAGE.0.get() };
     if let Some(ImageBacking::Adopted(ptr, len)) = slot.take() {

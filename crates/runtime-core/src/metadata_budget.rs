@@ -6,6 +6,8 @@ use wasm_posix_shared::Errno;
 pub(crate) const DEFAULT_ROOTFS_METADATA_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) static FILESYSTEM_ADMISSION: AdmissionTracker = AdmissionTracker::new();
 pub(crate) static ROOTFS_METADATA: MetadataBudget = MetadataBudget::tracked(DEFAULT_ROOTFS_METADATA_BYTES, &FILESYSTEM_ADMISSION);
+pub(crate) const PACKAGE_METADATA_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) static PACKAGE_METADATA: MetadataBudget = MetadataBudget::tracked(PACKAGE_METADATA_BYTES, &FILESYSTEM_ADMISSION);
 
 #[derive(Debug)]
 pub(crate) struct AdmissionTracker { state: Mutex<(u128, u128)> }
@@ -237,6 +239,7 @@ impl<Other: AsRef<[u8]> + ?Sized> PartialEq<Other> for MetadataBytes<'_> {
 pub(crate) fn render_filesystem_memory() -> Result<crate::IoBuffer<u8>, Errno> {
     let owners = [
         ("namespace", ROOTFS_METADATA.snapshot()),
+        ("packages", PACKAGE_METADATA.snapshot()),
         ("journal", crate::prepared_map::JOURNAL_STATE_MEMORY.snapshot()),
         ("journal_writeback", crate::prepared_map::JOURNAL_WRITEBACK_MEMORY.snapshot()),
         ("io", crate::io_buffer::IO_MEMORY.snapshot()),

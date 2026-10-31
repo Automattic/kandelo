@@ -2784,6 +2784,15 @@ component arrays admit capacity before allocating; vector growth admits the
 old/new overlap. These owners are released after loading or a reset-on-error,
 separately from the retained inode and namespace charges.
 The image module exposes the same Rust budget for composition and validation.
+Package inventories have a separate bounded native workset: 64 MiB of
+admission credits for encoded manifests, decoded ownership tables and producer
+records. These are package metadata, not file-read or writeback cache bytes.
+The workset is charged to the shared filesystem admission tracker and appears
+as `packages` in `/proc/kandelo/fs_memory`; it is released with the inventory
+or maintenance owner. Bulk use occurs during explicit image authoring and
+maintenance, not ordinary boot, which reads only small recovery authority.
+Actual heap exhaustion can still refuse an operation earlier. This does not
+raise kernel/process Wasm ceilings or change the I/O and writeback allowances.
 Its resident and positioned image loaders preserve the image's own namespace.
 Only computer boot adds kernel runtime mount directories; loading an image
 for inspection, editing or composition must not create `/run` or reject an

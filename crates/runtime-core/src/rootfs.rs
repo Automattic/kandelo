@@ -50,6 +50,10 @@ use wasm_posix_shared::mode::{S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSO
 
 mod metadata_export;
 mod namespace_activation;
+pub mod package_plan;
+pub mod package_upgrade;
+pub mod package_maintenance;
+pub mod package_producer;
 mod provider_record;
 mod recovery_slots;
 
@@ -624,6 +628,23 @@ impl RootfsState {
             self.archive_verified_reads.invalidate(*archive_id as u64);
             self.archive_readers.retain(|(cached_id, _)| cached_id != archive_id);
             self.archive_directories.retain(|(cached_id, _)| cached_id != archive_id);
+            archive.raw = None;
+            archive.directory = None;
+            archive.members.clear();
+        }
+    }
+
+    fn invalidate_archive_source(&mut self, archive_id: u32) {
+        for inode in self.inodes.iter_mut().flatten() {
+            if matches!(inode.kind, InodeKind::LazyMember { archive_id: id, .. } if id == archive_id) {
+                self.verified_reads.invalidate(inode.ino);
+                inode.content_gen = inode.content_gen.wrapping_add(1);
+            }
+        }
+        self.archive_verified_reads.invalidate(archive_id as u64);
+        self.archive_readers.retain(|(id, _)| *id != archive_id);
+        self.archive_directories.retain(|(id, _)| *id != archive_id);
+        if let Some(archive) = self.archives.get_mut(&archive_id) {
             archive.raw = None;
             archive.directory = None;
             archive.members.clear();
@@ -1886,6 +1907,8 @@ fn enable_persistence_internal(
         resizable,
         base_dirents,
     });
+    drop(active);
+    package_maintenance::inspect_boot_admission(&mut byte_source);
     Ok(())
 }
 
@@ -2565,6 +2588,8 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// Clear the whole overlay (drops every inode and open stream). Used before
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
+    package_plan::invalidate_filesystem();
+    package_maintenance::reset_boot_admission();
     PERSISTENCE_RECOVERY_PRISTINE.store(false, Ordering::SeqCst);
     #[cfg(test)]
     FAIL_PERSISTENCE_FIFO_RESTORE.store(false, Ordering::SeqCst);
@@ -3152,10 +3177,17 @@ pub fn set_deferred_source(path: &[u8], uri: &[u8], digest: &[u8]) -> Result<(),
     ROOTFS.with(|state| {
         let root = state.mount_root()?;
         let idx = state.walk(root, &comps)?;
-        let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
-        if !inode.persistent_provider.is_empty() { return Err(Errno::EBUSY); }
-        inode.deferred_uri = own_metadata(uri)?;
-        inode.deferred_digest = digest;
+        let owned = own_metadata(uri)?;
+        let invalidate = {
+            let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+            if !inode.persistent_provider.is_empty() { return Err(Errno::EBUSY); }
+            let changed = inode.deferred_uri.as_ref() != uri || inode.deferred_digest != digest;
+            if changed { inode.content_gen = inode.content_gen.wrapping_add(1); }
+            inode.deferred_uri = owned;
+            inode.deferred_digest = digest;
+            changed.then_some(inode.ino)
+        };
+        if let Some(ino) = invalidate { state.verified_reads.invalidate(ino); }
         Ok(())
     })
 }
@@ -3373,6 +3405,10 @@ pub fn insert_lazy_file(
 
 pub fn stage_persistent_deferred_file(path: &[u8], provider: &[u8], mode: u32, uid: u32, gid: u32) -> Result<u64, Errno> {
     provider_record::stage(path, provider, mode, uid, gid)
+}
+
+pub(crate) fn persistent_provider_identity(provider: &[u8]) -> Result<(u64, [u8; 32]), Errno> {
+    provider_record::identity(provider)
 }
 
 /// What a builder needs to know about whether `path`'s bytes are in the image.
@@ -3778,13 +3814,14 @@ where
     result
 }
 
-pub fn load_image_for_composition<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
+pub fn load_image_for_composition<F>(image_len: u64, mut byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     reset();
-    let result = load_image_inner(image_len, byte_source).and_then(|count| {
+    let result = load_image_inner(image_len, &mut byte_source).and_then(|count| {
         restore_fifo_registry()?;
+        package_maintenance::inspect_boot_admission(&mut byte_source);
         Ok(count)
     });
     if result.is_err() {
@@ -3798,17 +3835,18 @@ pub fn load_persistent_image<F>(
     expected: [u8; 32],
     cache: crate::persistent_image::CacheConfig,
     read: PhysicalImageRead,
-    byte_source: F,
+    mut byte_source: F,
 ) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
     reset();
     let result = crate::rootfs_image::install(physical_length, expected, cache, read)
-        .and_then(|identity| load_image_inner(identity.payload_length, byte_source))
+        .and_then(|identity| load_image_inner(identity.payload_length, &mut byte_source))
         .and_then(|count| {
             restore_fifo_registry()?;
             ensure_kernel_mount_points()?;
+            package_maintenance::inspect_boot_admission(&mut byte_source);
             Ok(count)
         });
     if result.is_err() { reset(); }
@@ -8793,13 +8831,15 @@ pub fn set_archive_source(archive_id: u32, uri: &[u8], digest: &[u8]) -> Result<
         return Err(Errno::EINVAL);
     }
     let digest = crate::sdef::digest_from(digest)?;
-    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
-        Some(entry) => {
-            entry.uri = own_metadata(uri)?;
-            entry.digest = digest;
-            Ok(())
-        }
-        None => Err(Errno::ENOENT),
+    ROOTFS.with(|state| {
+        let entry = state.archives.get(&archive_id).ok_or(Errno::ENOENT)?;
+        let changed = entry.uri.as_ref() != uri || entry.digest != digest;
+        let owned = own_metadata(uri)?;
+        if changed { state.invalidate_archive_source(archive_id); }
+        let entry = state.archives.get_mut(&archive_id).ok_or(Errno::ENOENT)?;
+        entry.uri = owned;
+        entry.digest = digest;
+        Ok(())
     })
 }
 
@@ -8816,12 +8856,13 @@ pub fn set_archive_payload(archive_id: u32, payload: &[u8]) -> Result<(), Errno>
         !inode.persistent_provider.is_empty()
             && matches!(inode.kind, InodeKind::LazyMember { archive_id: id, .. } if id == archive_id)))
     { return Err(Errno::EBUSY); }
-    ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
-        Some(entry) => {
-            entry.payload = own_metadata(payload)?;
-            Ok(())
-        }
-        None => Err(Errno::ENOENT),
+    ROOTFS.with(|state| {
+        let entry = state.archives.get(&archive_id).ok_or(Errno::ENOENT)?;
+        let changed = entry.payload.as_ref() != payload;
+        let owned = own_metadata(payload)?;
+        if changed { state.invalidate_archive_source(archive_id); }
+        state.archives.get_mut(&archive_id).ok_or(Errno::ENOENT)?.payload = owned;
+        Ok(())
     })
 }
 
@@ -14880,6 +14921,10 @@ mod tests {
 
     mod persistent_image;
     mod persistent_providers;
+    mod package_plan;
+    mod package_upgrade;
+    mod package_maintenance;
+    mod package_producer;
 
     /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
     /// archive requests are `ENOSYS`, so a test that accidentally reaches for

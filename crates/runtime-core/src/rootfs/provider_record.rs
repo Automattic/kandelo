@@ -12,6 +12,50 @@ impl Decoded {
     }
 }
 
+pub(super) fn identity(bytes: &[u8]) -> Result<(u64, [u8; 32]), Errno> {
+    let decoded = decode(bytes)?;
+    Ok((decoded.record().size, decoded.record().digest))
+}
+
+fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
+    let mut output = Vec::new();
+    output.try_reserve_exact(bytes.len()).map_err(|_| Errno::ENOMEM)?;
+    output.extend_from_slice(bytes);
+    Ok(output)
+}
+
+pub(super) fn describe(state: &RootfsState, inode: &Inode, digest: [u8; 32]) -> Result<OwnedMetadata, Errno> {
+    if !inode.persistent_provider.is_empty() {
+        let (size, expected) = identity(&inode.persistent_provider)?;
+        if size != inode.stat().st_size || expected != digest { return Err(Errno::EIO); }
+        return own_metadata(&inode.persistent_provider);
+    }
+    let (size, archive_id, source_path) = match &inode.kind {
+        InodeKind::LazyMember { size, archive_id, source_path } => (*size, *archive_id, source_path.as_ref()),
+        InodeKind::BaseRegular { size, source: BaseSource::Host, .. }
+            if inode.deferred_base || !inode.deferred_payload.is_empty() => (*size, 0, &[][..]),
+        _ => return Err(Errno::EINVAL),
+    };
+    let archive = if archive_id == 0 { None } else { Some(state.archives.get(&archive_id).ok_or(Errno::EIO)?) };
+    let length = source_path.len().checked_add(inode.deferred_uri.len())
+        .and_then(|length| length.checked_add(inode.deferred_payload.len()))
+        .and_then(|length| length.checked_add(archive.map_or(0, |archive| archive.uri.len() + archive.payload.len())))
+        .and_then(|length| length.checked_add(256)).ok_or(Errno::ENOMEM)?;
+    if length > crate::persistent_overlay::MAX_INODE_RECORD_BYTES - PERSISTENT_REGULAR_RECORD_BYTES { return Err(Errno::E2BIG); }
+    let _scratch = ROOTFS_METADATA.reserve_temporary(length.checked_mul(6).ok_or(Errno::ENOMEM)?)?;
+    let record = DeferredRecord {
+        ino: 1, size, archive_id, source_path: copy_bytes(source_path)?,
+        uri: copy_bytes(&inode.deferred_uri)?, digest, payload: copy_bytes(&inode.deferred_payload)?,
+    };
+    let archives = archive.map(|archive| Ok::<_, Errno>(DeferredArchive {
+        archive_id, bytes: archive.size, uri: copy_bytes(&archive.uri)?,
+        digest: archive.digest, payload: copy_bytes(&archive.payload)?,
+    })).transpose()?;
+    let encoded = crate::sdef::encode(archives.as_slice(), &[record])?;
+    decode(&encoded)?;
+    own_metadata(&encoded)
+}
+
 pub(super) fn decode(bytes: &[u8]) -> Result<Decoded, Errno> {
     if bytes.len()
         > crate::persistent_overlay::MAX_INODE_RECORD_BYTES - PERSISTENT_REGULAR_RECORD_BYTES
@@ -98,11 +142,51 @@ pub(super) fn inode(
     Ok(inode)
 }
 
+pub(super) fn matches_unhashed_archive_member(state: &RootfsState, inode: &Inode, provider: &[u8], size: u64, digest: [u8; 32]) -> Result<bool, Errno> {
+    if inode.deferred_digest != crate::sdef::DIGEST_NONE { return Ok(false); }
+    let InodeKind::LazyMember { archive_id, source_path, size: actual_size } = &inode.kind else { return Ok(false); };
+    let decoded = decode(provider)?;
+    let record = decoded.record();
+    let Some(expected) = decoded.section.archives.first() else { return Ok(false); };
+    let Some(actual) = state.archives.get(archive_id) else { return Err(Errno::EIO); };
+    Ok(*actual_size == size && record.size == size && record.digest == digest
+        && record.source_path.as_slice() == source_path.as_ref()
+        && record.payload.as_slice() == inode.deferred_payload.as_ref()
+        && archive_matches(actual, expected))
+}
+
 fn archive_matches(entry: &ArchiveEntry, archive: &DeferredArchive) -> bool {
     entry.size == archive.bytes
         && entry.uri.as_ref() == archive.uri.as_slice()
         && entry.digest == archive.digest
         && entry.payload.as_ref() == archive.payload.as_slice()
+}
+
+pub(super) fn remap_for_staging(bytes: &[u8]) -> Result<OwnedMetadata, Errno> {
+    let mut decoded = decode(bytes)?;
+    if let Some(archive) = decoded.section.archives.first_mut() {
+        let identity = ROOTFS.with(|state| {
+            if let Some((&identity, _)) = state.archives.iter().find(|(_, entry)| archive_matches(entry, archive)) {
+                return Ok(identity);
+            }
+            if !state.archives.contains_key(&archive.archive_id) { return Ok(archive.archive_id); }
+            let mut candidate = 1u32;
+            for &identity in state.archives.keys() {
+                if identity > candidate { break; }
+                if identity == candidate { candidate = candidate.checked_add(1).ok_or(Errno::ENOSPC)?; }
+            }
+            Ok(candidate)
+        })?;
+        if identity != archive.archive_id {
+            archive.archive_id = identity;
+            decoded.section.records[0].archive_id = identity;
+            let mut scratch = ROOTFS_METADATA.reserve_temporary(bytes.len().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+            let encoded = crate::sdef::encode(&decoded.section.archives, &decoded.section.records)?;
+            scratch.resize(encoded.capacity().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+            return own_metadata(&encoded);
+        }
+    }
+    own_metadata(bytes)
 }
 
 pub(super) fn prepare_archives<'a>(

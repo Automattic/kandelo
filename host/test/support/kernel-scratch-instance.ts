@@ -168,6 +168,10 @@ function signatures(
       parameters: [i32, pointer, i32],
       result: i32,
     },
+    kernel_package_maintenance: {
+      parameters: [i32, i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_rootfs_export_container_read: {
       parameters: [i32, i32, pointer, i32],
       result: i32,

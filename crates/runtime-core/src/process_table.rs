@@ -15,7 +15,7 @@ extern crate alloc;
 use crate::prepared_map::{PreparedMap, PreparedMapSlot};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::AtomicI32;
+use core::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 
 use wasm_posix_shared::Errno;
 use wasm_posix_shared::flags::O_ACCMODE;
@@ -40,6 +40,16 @@ const MAX_TASK_ID: u32 = i32::MAX as u32;
 /// capability: production process/thread constructors must consume it, while
 /// code outside this module cannot manufacture or duplicate one.
 pub struct AllocatedTaskId(u32);
+
+#[derive(Debug)]
+pub struct MaintenanceToken(u64);
+
+static NEXT_MAINTENANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn allocate_maintenance_identity(sequence: &AtomicU64) -> Result<u64, Errno> {
+    sequence.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |identity| identity.checked_add(1))
+        .map_err(|_| Errno::EOVERFLOW)
+}
 
 impl AllocatedTaskId {
     pub fn as_raw(&self) -> u32 {
@@ -87,6 +97,7 @@ pub struct ProcessTable {
     /// allocated by this kernel instance. `MAX_TASK_ID + 1` is the exhausted
     /// sentinel, so successful IDs always fit in the positive `i32` ABI.
     next_task_id: u32,
+    maintenance: Option<u64>,
     /// Kernel/libc thread id for the syscall currently being serviced.
     ///
     /// The host already selected a syscall channel by its `channelOffset`; this
@@ -670,6 +681,7 @@ impl ProcessTable {
             advisory_locks: AdvisoryLockManager::new(),
             current_pid: 0,
             next_task_id: FIRST_TASK_ID,
+            maintenance: None,
             current_tid: 0,
             current_tid_pid: 0,
             tcp_listener_rr: PreparedMap::new(),
@@ -753,6 +765,7 @@ impl ProcessTable {
 
     /// Create a new process with explicit stdio wiring and add it to the table.
     pub fn create_process_with_stdio(&mut self, stdio: StdioConfig) -> Result<u32, Errno> {
+        self.require_guest_admission()?;
         self.ensure_init()?;
         let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let task_id = self.allocate_task_id()?;
@@ -800,6 +813,7 @@ impl ProcessTable {
     /// process group, and no descriptors (the caller opens its stdio). It is
     /// hidden as a pending spawn child until the host publishes its launch.
     pub fn create_init_child(&mut self, argv: alloc::vec::Vec<alloc::vec::Vec<u8>>) -> Result<u32, Errno> {
+        self.require_guest_admission()?;
         self.ensure_init()?;
         let slot = PreparedMapSlot::new_in(&crate::io_buffer::IO_MEMORY, 0)?;
         let task_id = self.allocate_task_id()?;
@@ -1769,6 +1783,7 @@ impl ProcessTable {
     /// after process reaping or thread exit. Exhaustion is reported instead of
     /// wrapping into reserved IDs or the negative half of the `i32` ABI.
     fn allocate_task_id(&mut self) -> Result<AllocatedTaskId, Errno> {
+        self.require_guest_admission()?;
         let mut candidate = self.next_task_id;
         while candidate <= MAX_TASK_ID {
             let in_use = self.processes.contains_key(&candidate)
@@ -1784,6 +1799,35 @@ impl ProcessTable {
         }
         self.next_task_id = MAX_TASK_ID + 1;
         Err(Errno::EAGAIN)
+    }
+
+    fn require_guest_admission(&self) -> Result<(), Errno> {
+        if self.maintenance.is_some() || crate::rootfs::package_maintenance::guest_admission_blocked() { Err(Errno::EBUSY) } else { Ok(()) }
+    }
+
+    pub fn enter_maintenance(&mut self) -> Result<MaintenanceToken, Errno> {
+        if self.maintenance.is_some()
+            || self.processes.iter().any(|(&pid, _)| pid != SYNTHETIC_INIT_PID)
+        { return Err(Errno::EBUSY); }
+        let token = allocate_maintenance_identity(&NEXT_MAINTENANCE_ID)?;
+        self.maintenance = Some(token);
+        Ok(MaintenanceToken(token))
+    }
+
+    pub fn leave_maintenance(&mut self, token: &MaintenanceToken) -> Result<(), Errno> {
+        if self.maintenance != Some(token.0) { return Err(Errno::EINVAL); }
+        self.maintenance = None;
+        Ok(())
+    }
+
+    pub fn is_in_maintenance(&self) -> bool { self.maintenance.is_some() }
+
+    pub fn holds_maintenance(&self, token: &MaintenanceToken) -> bool {
+        self.maintenance == Some(token.0)
+    }
+
+    pub(crate) fn maintenance_identity(&self, token: &MaintenanceToken) -> Result<u64, Errno> {
+        if self.holds_maintenance(token) { Ok(token.0) } else { Err(Errno::EPERM) }
     }
 
     /// Create a pthread task in an existing live process.
@@ -2989,6 +3033,71 @@ mod wait_tests {
         assert_eq!(table.create_process(), Err(Errno::EAGAIN));
         table.remove_process(MAX_TASK_ID).unwrap();
         assert_eq!(table.create_process(), Err(Errno::EAGAIN));
+    }
+
+    #[test]
+    fn maintenance_blocks_allocation_without_creating_init_or_consuming_task_ids() {
+        let mut table = ProcessTable::new();
+        let token = table.enter_maintenance().unwrap();
+        assert!(table.is_in_maintenance());
+        assert_eq!(table.create_process(), Err(Errno::EBUSY));
+        assert_eq!(table.create_init_child(Vec::new()), Err(Errno::EBUSY));
+        assert!(matches!(table.allocate_task_id(), Err(Errno::EBUSY)));
+        assert!(table.all_pids().is_empty());
+        assert_eq!(table.next_task_id, FIRST_TASK_ID);
+        table.leave_maintenance(&token).unwrap();
+        assert!(!table.is_in_maintenance());
+        assert_eq!(table.create_process(), Ok(FIRST_TASK_ID));
+    }
+
+    #[test]
+    fn maintenance_requires_live_and_retained_exited_processes_to_be_removed() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_init_child(Vec::new()).unwrap();
+        table.get_mut(pid).unwrap().state = ProcessState::Running;
+        assert!(matches!(table.enter_maintenance(), Err(Errno::EBUSY)));
+        assert!(!table.is_in_maintenance());
+        table.get_mut(pid).unwrap().state = ProcessState::Exited;
+        assert!(matches!(table.enter_maintenance(), Err(Errno::EBUSY)));
+        table.remove_process(pid).unwrap();
+        let token = table.enter_maintenance().unwrap();
+        assert_eq!(table.all_pids(), alloc::vec![SYNTHETIC_INIT_PID]);
+        table.leave_maintenance(&token).unwrap();
+    }
+
+    #[test]
+    fn stale_maintenance_tokens_cannot_release_a_later_session() {
+        let mut table = ProcessTable::new();
+        let previous = table.enter_maintenance().unwrap();
+        assert!(matches!(table.enter_maintenance(), Err(Errno::EBUSY)));
+        table.leave_maintenance(&previous).unwrap();
+        let current = table.enter_maintenance().unwrap();
+        assert_eq!(table.leave_maintenance(&previous), Err(Errno::EINVAL));
+        assert!(table.is_in_maintenance());
+        assert_eq!(table.create_process(), Err(Errno::EBUSY));
+        table.leave_maintenance(&current).unwrap();
+        assert!(table.create_process().is_ok());
+    }
+
+    #[test]
+    fn maintenance_identity_exhaustion_fails_without_locking_the_computer() {
+        let sequence = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(allocate_maintenance_identity(&sequence), Ok(u64::MAX - 1));
+        assert_eq!(allocate_maintenance_identity(&sequence), Err(Errno::EOVERFLOW));
+        assert_eq!(allocate_maintenance_identity(&sequence), Err(Errno::EOVERFLOW));
+    }
+
+    #[test]
+    fn maintenance_tokens_do_not_authorize_another_process_table() {
+        let mut first = ProcessTable::new();
+        let mut second = ProcessTable::new();
+        let first_token = first.enter_maintenance().unwrap();
+        let second_token = second.enter_maintenance().unwrap();
+        assert!(!first.holds_maintenance(&second_token));
+        assert!(!second.holds_maintenance(&first_token));
+        assert_eq!(first.leave_maintenance(&second_token), Err(Errno::EINVAL));
+        first.leave_maintenance(&first_token).unwrap();
+        second.leave_maintenance(&second_token).unwrap();
     }
 
     #[test]

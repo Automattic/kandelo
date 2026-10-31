@@ -920,6 +920,28 @@ describe("BrowserKernel", () => {
     expect(seen).toEqual([inside]);
   });
 
+  it("copies bounded maintenance messages and preserves native conflict reasons", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const initialized = kernel.initFromImage({ kernelWasm: new ArrayBuffer(8), vfsImage: new Uint8Array(0) });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initialized;
+    const backing = new Uint8Array(1024 * 1024);
+    backing[100] = 9;
+    const staged = kernel.packageMaintenance({ action: "stage", index: 3, offset: 4096, data: backing.subarray(100, 101) });
+    const message = worker.lastMessage("package_maintenance");
+    expect(message.request.action).toBe("stage");
+    expect(message.request.data.buffer.byteLength).toBe(1);
+    backing[100] = 0;
+    expect(message.request.data[0]).toBe(9);
+    worker.simulateMessage({ type: "response", requestId: message.requestId, result: { status: -16, errorKind: 6, data: new Uint8Array(0) } });
+    await expect(staged).rejects.toMatchObject({ errno: 16, kind: 6 });
+    await expect(kernel.packageMaintenance({ action: "enter", data: new Uint8Array(32) })).rejects.toThrow(/current runtime contract/);
+    await expect(kernel.packageMaintenance({ action: "stage", data: new Uint8Array(65537) })).rejects.toThrow(/64 KiB/);
+  });
+
   it("signalProcess round-trips through the browser kernel worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
