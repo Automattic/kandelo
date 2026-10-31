@@ -1,0 +1,95 @@
+{
+  "main_commit": "e4bca8639e4b6853080ca7f3a09b0e95488c9d50",
+  "run_date": "2026-10-30",
+  "archive": "/Users/brandon/conductor/archived-contexts/kandelo/batched-follow-ups-for-main-correctness",
+  "runs": {
+    "vitest-node": {
+      "source": "main-validation-v1/vitest.log",
+      "sha256": "8ab08cab4a88bdac314658b8316692ebf29a0c3428d8dc60a2e82d71b6a7da27",
+      "exit_code": 1,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "scripts/ci-run-test-suite.sh",
+        "vitest"
+      ],
+      "lines": [19620, 19621, 19632, 19633, 19645, 19646, 19664, 19665, 19677, 19678, 19690, 19691, 19702, 19703, 19714, 19715, 19726, 19727, 19738, 19739, 19751, 19752, 19764, 19765, 19788, 19789, 19812, 19813, 19825, 19826, 19838, 19839, 19861, 19862, 19885, 19886, 19909, 19910, 19933, 19934, 19957, 19958, 19981, 19982, 20378, 20379, 20399, 20400, 20431, 20432, 20496, 20497, 20546, 20547, 20565, 20566, 20596, 20597, 20609, 20610],
+      "note": "30 failures; 21 skipped cases are not all named by the reporter. Load averages: 7.5 at start, 6.3 at end (18 CPUs)."
+    },
+    "sortix-node": {
+      "source": "main-validation-v1/node-sortix.log",
+      "sha256": "8e6f310ebf14d652b0d291b1d4ad37e73a41db23a485540e69e3741cd1828880",
+      "exit_code": 1,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "scripts/run-sortix-tests.sh",
+        "--all"
+      ],
+      "lines": [298, 299, 850, 851, 3103, 3104, 3107, 3108],
+      "note": "One runner incident: 1,357 timeouts and 19 XFAIL-MISMATCH results; stale per-test xtask checker rebuilds diagnosed in PR #1600. Examples only; not 1,376 established guest defects."
+    },
+    "posix-chromium": {
+      "source": "main-validation-v1/browser-posix.log",
+      "sha256": "12fc65e7ad3c019d11e25f1de2f2ccf0edda67a63a63ac283a370bb6543d9e92",
+      "exit_code": 0,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "-c",
+        "KANDELO_BROWSER_TEST_RUNNER_PORT=5612 bash scripts/run-browser-posix-tests.sh"
+      ],
+      "lines": [398, 405, 406, 421, 426, 457, 556, 558, 560]
+    },
+    "libc-chromium": {
+      "source": "main-validation-v1/browser-libc.log",
+      "sha256": "bb468c991f3350f3ba168bb2b816c6781cfb092ca9e7d00fe283a1e5b13956d7",
+      "exit_code": 0,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "-c",
+        "KANDELO_BROWSER_TEST_RUNNER_PORT=5612 bash scripts/run-browser-libc-tests.sh"
+      ],
+      "lines": [397, 456, 496, 497, 503, 509, 540, 590, 594, 595, 599, 601, 602, 675, 688, 694, 695, 699, 704]
+    },
+    "sortix-chromium": {
+      "source": "main-validation-v1/browser-sortix.log",
+      "sha256": "1e503fafafc9eb3025d1140af8cc2ba5d6fc9c168c8395b279a37d16c60adc38",
+      "exit_code": 1,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "-c",
+        "KANDELO_BROWSER_TEST_RUNNER_PORT=5612 bash scripts/run-browser-sortix-tests.sh --all"
+      ],
+      "lines": [572, 1006, 1009, 1105, 1135, 1379, 1380, 1406, 1436, 1437, 1553, 1554, 1581, 1583, 1587, 1591, 1614, 1617, 1628, 1630, 1632, 1634, 1636, 1644, 1646, 1651, 1652, 1653, 1654, 1656, 1691, 1693, 1716, 1717, 1718, 1720]
+    },
+    "playwright-chromium": {
+      "source": "main-validation-v1/playwright-chromium.log",
+      "sha256": "64b86450da3625b04512c9ebb4a88bd26acf37116a14baa07bb056e094bf6fad",
+      "exit_code": 1,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "-c",
+        "export KANDELO_PLAYWRIGHT_PORT=5613; cd apps/browser-demos; npx playwright test test/dock-action-dispatch.spec.ts test/dri-egl-resize.spec.ts test/kandelo-ffmpeg.spec.ts:224 test/kandelo-kms-context-loss.spec.ts test/kandelo-network-session.spec.ts test/kandelo-omarchy.spec.ts test/kandelo-wayland.spec.ts test/kandelo-wordpress.spec.ts:251 test/network-session-dialogs.spec.ts test/pty-signal-sleep.spec.ts test/theme-contrast.spec.ts test/terminal-links.spec.ts test/terminal-autofocus.spec.ts test/terminal-repaint.spec.ts --project=chromium --workers=1 --retries=0 --reporter=list"
+      ],
+      "lines": [95, 97, 116, 118, 152, 154, 182, 184, 210, 212, 239, 241, 306, 308, 366, 368, 406, 408, 446, 448, 486, 488, 526, 528, 563, 565, 603, 605, 642, 644, 672, 674, 693, 695, 711, 713, 729, 731, 747, 749, 765, 767, 790, 792, 815, 817, 840, 842, 865, 867, 890, 892, 915, 917],
+      "note": "Selected specs only, not the complete suite; retries disabled."
+    },
+    "playwright-webkit": {
+      "source": "main-validation-v1/playwright-webkit.log",
+      "sha256": "6781f4b7df1cbf37e20315b5fea7f602d05970bf6b1750bf847ce65e1413276b",
+      "exit_code": 1,
+      "command": [
+        "scripts/dev-shell.sh",
+        "bash",
+        "-c",
+        "export KANDELO_PLAYWRIGHT_PORT=5613; cd apps/browser-demos; npx playwright test test/dock-action-dispatch.spec.ts test/dri-egl-resize.spec.ts test/kandelo-ffmpeg.spec.ts:224 test/kandelo-kms-context-loss.spec.ts test/kandelo-network-session.spec.ts test/kandelo-omarchy.spec.ts test/kandelo-wayland.spec.ts test/kandelo-wordpress.spec.ts:251 test/network-session-dialogs.spec.ts test/pty-signal-sleep.spec.ts test/theme-contrast.spec.ts test/terminal-links.spec.ts test/terminal-autofocus.spec.ts test/terminal-repaint.spec.ts --project=webkit --workers=1 --retries=0 --reporter=list"
+      ],
+      "lines": [41, 42, 43, 44, 45, 47, 49, 50, 51, 53, 54, 55, 61, 62, 68, 92, 94, 113, 115, 152, 154, 171, 173, 201, 203, 241, 243, 281, 283, 321, 323, 361, 363, 400, 402, 421, 423, 441, 443, 461, 463, 481, 483, 501, 503, 526, 528, 551, 553, 576, 578, 601, 603, 626, 628, 651, 653],
+      "note": "Selected specs only, not the complete suite; retries disabled."
+    }
+  }
+}

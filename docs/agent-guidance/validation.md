@@ -72,6 +72,32 @@ header values, credentials, and referrer policy; copies do not replay a
 test subclass's `append` calls. Preserve checks for dropped fields and
 the order of repeated values.
 
+## Recorded failures and anomalies
+
+`tests/baselines/` keeps failure evidence, not test allowances. See its
+[recording workflow](../../tests/baselines/README.md). Record failures,
+expected failures, unexpected passes, skips, timeouts, runner errors and
+intermittent results; omit ordinary passes and success counters. Store each
+main run or targeted rerun separately; never replace unrelated evidence
+with a partial report. Existing conformance expectation lists still own
+accepted failures and reasons.
+
+Consult recorded failures before repeating an expensive main run. Compare
+names, reasons, host, command and recorded commit; a known name alone does
+not establish the same defect. If the evidence is insufficient, rerun only
+the relevant failures on main through the normal build path. Historical
+results must be described as historical. Records never turn a failed run
+green, and there is no freshness check or merge requirement.
+
+Use `KANDELO_TEST_REPORT_DIR` inside the dev shell to record JSON and
+console output from each normal Vitest/browser suite process. Keep the
+recorded exit code: JSON alone can omit Vitest unhandled errors.
+Keep raw logs and record provenance: commit, date, selection/command,
+host/runtime versions and load when available. Do not fill unknown historical
+fields from today's environment. Treat load-related failures as anomalies
+to investigate. Preserve observed retry outcomes and report mixed outcomes
+as intermittent; do not select a favorable retry and call it a pass.
+
 ## Validation scope and suite selection
 
 Do not use a narrow check to support a broad claim. A passing unit test does
