@@ -2387,6 +2387,17 @@ and preserves the new program-only contract digest and exact kernel-host
 version check. Keep 56 across increments of this unpublished effort.
 Kernel-host version 3 covers the incompatible graphics import signatures,
 session routing, acknowledged resources and exact DRM file/grant identity.
+The same unpublished host3 contract also includes the required read-only
+`host_proc_compare_bytes(pid: i32, addr: i64, snapshot: i32, len: i32) -> i32`
+import used by file-mapping publication. The snapshot pointer names an
+initialized Rust slice lent only for that synchronous comparison. Results
+are exactly0 for equal,1 for different,2 for unavailable native comparison,
+or negative errno. A result of2 triggers the normal separately validated
+owned-copy read; it never means equality. All native authority remains
+inside the synchronous host call. Both hosts must implement it. Earlier development
+host3 kernels and hosts are not interchangeable with this regenerated
+contract; rebuild them together. This completes the already-reserved
+successor to main's host2 rather than allocating another development ABI.
 The GL operation table stays 17 and fork-state record version stays 21.
 
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver
@@ -2649,6 +2660,16 @@ and device constants, platform limits, the ABI custom sections and
 process-expected globals, the `env` imports programs link against, and
 the fork-instrumentation artifact contract (`wpk_fork_*` exports,
 save-buffer and frame formats).
+
+The `gl_inline_client_draw` program section also binds the owned client-array
+draw record emitted by libGLESv2: opcode, header and attribute layouts,
+component types, size limits and original vertex-index interpretation.
+Programs emit these bytes even though the host decodes them, so this is a
+program contract. Adding the section changes the program digest and rebuilds
+programs, libraries and images through the normal build graph. The unpublished
+combined graphics effort keeps its reserved program 56 / host 3 / GL table 17 /
+fork 21 numbers across increments at the user's request; that does not permit
+artifacts with an older contract digest to run against a newer candidate.
 
 The sections under `abi_surfaces.kernel_host` are not in it: kernel
 exports, kernel imports (`env.host_*`), host-adapter metadata, the

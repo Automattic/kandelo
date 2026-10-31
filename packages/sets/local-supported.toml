@@ -213,6 +213,10 @@ name = "glibmm"
 class = "platform"
 
 [[packages]]
+name = "gobject-callback-tests"
+class = "test-support"
+
+[[packages]]
 name = "grep"
 class = "user-software"
 
@@ -641,6 +645,10 @@ name = "wlroots"
 class = "platform"
 
 [[packages]]
+name = "bibata-cursor-theme"
+class = "platform"
+
+[[packages]]
 name = "cage"
 class = "user-software"
 
@@ -650,6 +658,14 @@ class = "platform"
 
 [[packages]]
 name = "sway"
+class = "user-software"
+
+[[packages]]
+name = "labwc"
+class = "user-software"
+
+[[packages]]
+name = "sfwbar"
 class = "user-software"
 
 [[packages]]

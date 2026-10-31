@@ -1,0 +1,42 @@
+--- a/gobject/gclosure.c
++++ b/gobject/gclosure.c
+@@ -1335,10 +1335,10 @@
+       g_value_set_ulong (gvalue, (gulong) *int_val);
+       break;
+     case G_TYPE_INT64:
+-      g_value_set_int64 (gvalue, (gint64) *int_val);
++      g_value_set_int64 (gvalue, *(gint64 *) value);
+       break;
+     case G_TYPE_UINT64:
+-      g_value_set_uint64 (gvalue, (guint64) *int_val);
++      g_value_set_uint64 (gvalue, *(guint64 *) value);
+       break;
+     case G_TYPE_BOXED:
+       g_value_take_boxed (gvalue, *(gpointer*)value);
+--- a/gobject/gsourceclosure.c
++++ b/gobject/gsourceclosure.c
+@@ -219,9 +219,23 @@
+   *data = cb_data;
+ }
+
++/* GSourceCallbackFuncs is an exact void(gpointer) contract. In particular,
++ * g_closure_ref returns a pointer; discard it in a correctly typed adapter. */
++static void
++closure_callback_ref (gpointer data)
++{
++  g_closure_ref (data);
++}
++
++static void
++closure_callback_unref (gpointer data)
++{
++  g_closure_unref (data);
++}
++
+ static GSourceCallbackFuncs closure_callback_funcs = {
+-  (void (*) (gpointer)) g_closure_ref,
+-  (void (*) (gpointer)) g_closure_unref,
++  closure_callback_ref,
++  closure_callback_unref,
+   closure_callback_get
+ };

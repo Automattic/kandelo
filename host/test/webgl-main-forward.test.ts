@@ -561,3 +561,31 @@ it("preserves a zero-sized forwarded pbuffer and flushes it without a canvas bli
   expect(viewport.at(-1)).toEqual([0,0,0,0]); expect(storage[0].slice(3,5)).toEqual([1,1]);
   expect([canvas.width,canvas.height]).toEqual([8,6]); dispose();
 });
+
+it.each(["late","completion race"] as const)("does not dirty an already-selected drawable after an unacknowledged rebind: %s",mode=>{
+  const worker=new FakeWorker(),stub=new RecordingGl();let selections=0;
+  Object.assign(stub,{bindVertexArray(){selections++;},bindFramebuffer(which:number,value:unknown){stub.log.push(["bindFramebuffer",[which,value]]);}});
+  const {canvas}=fakeCanvas(stub),dispose=setupMainForward(worker,canvas,7);
+  let refuse=false;const late:GlForwardMessage[]=[];
+  const channel=createMainForwardChannel({postMessage(message){
+    if(refuse&&mode==="late"&&message.type==="gl_forward_make_current")late.push(message);else worker.fire(message);
+  }},7);
+  expect(channel.onCreateContext()).toBe(0);
+  const drawable={drawSurfaceId:0,readSurfaceId:0,width:0,height:0};
+  expect(channel.onMakeCurrent!(drawable)).toBe(0);channel.onSubmit(clearCmdbuf());
+  const before=selections;stub.log=[];refuse=true;
+  const compare=Atomics.compareExchange;
+  const intercept=mode==="late"?vi.spyOn(Atomics,"wait").mockReturnValue("timed-out"):
+    vi.spyOn(Atomics,"compareExchange").mockImplementation(((words:Int32Array,index:number,expected:number,value:number)=>{
+      if(expected===1&&value===2)Atomics.store(words,index,3);return compare(words,index,expected,value);
+    })as typeof Atomics.compareExchange);
+  try{expect(channel.onMakeCurrent!(drawable)).toBe(-5);}finally{intercept.mockRestore();}
+  if(mode==="late")worker.fire(late[0]);
+  const next=createMainForwardChannel({postMessage:message=>worker.fire(message)},7);
+  next.onSubmit(clearCmdbuf());expect(selections).toBe(before);
+  expect(stub.log.filter(([name])=>name==="clear")).toHaveLength(1);
+  expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
+  refuse=false;expect(next.onMakeCurrent!(drawable)).toBe(0);next.onSubmit(clearCmdbuf());
+  expect(selections).toBe(before);expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
+  dispose();
+});

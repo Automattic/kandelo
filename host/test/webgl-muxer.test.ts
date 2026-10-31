@@ -393,3 +393,13 @@ for (const sameOwner of [true,false]) it(`publishes client-array completion befo
   expect(gl.callsOf("bindBuffer").at(-1)).toEqual([0x8892,saved]);
   expect(b.clientArrayRestore).toBeUndefined(); expect(b.clientArrayEndRequested).toBe(false);
 });
+
+it("revokes the outgoing owner before any prefix of a full peer replay can throw",()=>{
+  const {gl,mux}=mk(),a=newTarget(),b=newTarget();a.shadow.fbo={};b.shadow.fbo={};
+  mux.switchTo(a);const program=gl.useProgram;
+  gl.useProgram=()=>{throw Error("peer replay refused after selector writes");};
+  expect(()=>mux.switchTo(b)).toThrow("peer replay refused");
+  gl.useProgram=program;const before=gl.callsOf("bindVertexArray").length;
+  mux.switchTo(a);expect(gl.callsOf("bindVertexArray")).toHaveLength(before+1);
+  expect(gl.callsOf("bindFramebuffer").at(-2)).toEqual([GL_FRAMEBUFFER,a.shadow.fbo]);
+});

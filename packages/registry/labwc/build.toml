@@ -1,0 +1,22 @@
+script_path = "packages/registry/labwc/build-labwc.sh"
+repo_url = "https://github.com/Automattic/kandelo.git"
+commit = "UNPUBLISHED"
+revision = 2
+
+inputs = [
+  "packages/registry/labwc/build-labwc.sh",
+  "packages/registry/labwc/config",
+  "packages/registry/labwc/patches",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/gl_abi.h",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/write-graphics-pkgconfig.sh",
+  "sdk/meson/wasm32posix.ini",
+  "scripts/package-build-roots.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+]

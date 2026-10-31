@@ -1,6 +1,6 @@
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
-import { KmsCursorPlane } from "./dri/cursor-plane";
+import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
 import type { HostFb } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
@@ -11592,8 +11592,10 @@ export class CentralizedKernelWorker {
    * WHY: `kernel_transfer_io_execute` calls host I/O while Rust still owns
    * mutable process-table state. The mailbox remains PENDING—fabricating
    * EBUSY would change syscall semantics and could make a non-retryable call
-   * fail. The channel object is the dedupe key because one mailbox can encode
-   * only one pending syscall. The queued closure calls the already-gated body
+   * fail. Ordinary retries dedupe by channel because one mailbox can encode
+   * only one pending syscall. A fallback proof uses its exact timer row instead
+   * so an intervening real notification can still queue the full channel retry.
+   * The queued closure calls the already-gated body
    * directly; recursively calling `handleSyscall` would enqueue itself forever
    * behind its own selected entry.
    */
@@ -11601,6 +11603,7 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     label: string,
     operation: (entry: KernelWorkerEntryContext) => undefined,
+    dedupeKey: object = channel,
   ): void {
     const deferred = this.#runOrDeferKernelEntry(
       `${label} pid=${channel.pid}`,
@@ -11633,7 +11636,7 @@ export class CentralizedKernelWorker {
         }
         operation(entry);
       },
-      channel,
+      dedupeKey,
     );
     if (deferred) channel.handling = true;
   }
@@ -19324,26 +19327,107 @@ export class CentralizedKernelWorker {
         entry,
       )
     ) return;
-    const retryMs = remainingMs === WAIT_REMAINING_INFINITE
-      ? 10
-      : Math.min(Math.max(remainingMs, 1), 10);
+    // Only this fallback belongs to the same still-blocked epoll invocation.
+    // Real notifications/cancellation keep using the ordinary retry boundary.
+    // Capture scalar request bytes and exact host registration before parking;
+    // neither an exec nor a reused/malformed mailbox grants negative proof.
+    const registration = this.processes.get(channel.pid);
+    const request = this.activeChannelRequests.get(channel);
+    const waitToken = channel.epollWaitToken;
+    const deadlineHandle = channel.waitHandle;
+    const frozenArgs = rawArgs?.slice();
     entry.deferProtocolEffect(() => {
-      const timer = this.#registerTimeout(() => {
-        const pending = this.pendingPollRetries.get(channel);
-        if (!pending || pending.timer !== timer) return;
-        this.pendingPollRetries.delete(channel);
-        if (this.isRegisteredChannel(channel)) {
-          this.retrySyscall(channel);
-        }
-      }, retryMs);
-      this.pendingPollRetries.set(channel, {
+      const pending = {
         ...this.#cancellationPointIdentity(channel),
-        timer,
+        timer: null as ReturnType<typeof setTimeout> | null,
         channel,
         pipeIndices,
         acceptIndices,
         deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
-      });
+      };
+      const arm = (remaining: number): void => {
+        const delay = remaining === WAIT_REMAINING_INFINITE
+          ? 10 : Math.min(Math.max(remaining, 1), 10);
+        const timer = this.#registerTimeout(() => {
+          if (this.pendingPollRetries.get(channel) !== pending
+            || pending.timer !== timer) return;
+          this.#runOrDeferChannelKernelEntry(
+            channel,
+            "epoll fallback",
+            (retryEntry) => {
+              if (this.pendingPollRetries.get(channel) !== pending
+                || pending.timer !== timer) return undefined;
+              let stillBlocked = false;
+              let nextRemaining = remaining;
+              const probe = retryEntry.instance.exports.kernel_epoll_wait_retry_state as
+                ((pid: number, tid: number, token: bigint, deadline: bigint) => number)
+                | undefined;
+              if (
+                probe && registration && request && frozenArgs
+                && frozenArgs.length === CH_ARGS_COUNT
+                && waitToken !== undefined && waitToken > 0n
+                && (timeoutMs < 0 ? deadlineHandle === undefined : deadlineHandle !== undefined)
+                && channel.epollWaitToken === waitToken
+                && channel.waitHandle === deadlineHandle
+                && this.processes.get(channel.pid) === registration
+                && this.activeChannelRequests.get(channel) === request
+                && !this.pendingCancels.has(channel)
+                && !this.stoppedPids.has(channel.pid)
+                && !this.pendingResumePids.has(channel.pid)
+                && !this.resumePreparedSignals?.has(channel)
+              ) {
+                // Do not retain this view outside the synchronous check. A
+                // changed argument/header must reach the full protocol path.
+                let unchanged: boolean;
+                {
+                  const view = new DataView(channel.memory.buffer, channel.channelOffset);
+                  unchanged = view.getUint32(CH_SYSCALL, true) === syscallNr
+                    && view.getUint32(CH_REQUEST_FLAGS, true) === 0
+                    && frozenArgs.every((arg, index) => arg === view.getBigInt64(
+                      CH_ARGS + index * CH_ARG_SIZE, true,
+                    ));
+                }
+                if (unchanged) {
+                  try {
+                    stillBlocked = probe(channel.pid, this.guestTidForChannel(channel),
+                      waitToken, deadlineHandle ?? 0n) === 1;
+                    if (stillBlocked && deadlineHandle !== undefined) {
+                      nextRemaining = this.#waitRemainingMsForHandle(deadlineHandle, retryEntry);
+                      stillBlocked = nextRemaining > 0;
+                    }
+                  } catch (error) {
+                    this.#rethrowKernelEntryFatal(error);
+                    // An unsupported/failed proof is never a blocked result.
+                    // The ordinary path owns errno/signal/protocol handling.
+                    stillBlocked = false;
+                  }
+                }
+              }
+              if (stillBlocked) {
+                retryEntry.deferProtocolEffect(() => {
+                  // A targeted wake may have retired this row while entry
+                  // effects ran. Never put that old invocation back in a map.
+                  if (this.pendingPollRetries.get(channel) !== pending
+                    || pending.timer !== timer) return;
+                  pending.deadlineHintMs = this.waitDeadlineHintMs(nextRemaining);
+                  arm(nextRemaining);
+                });
+              } else {
+                this.pendingPollRetries.delete(channel);
+                this.#retrySyscallWithinKernelEntry(channel, retryEntry);
+              }
+              return undefined;
+            },
+            // A notification can retire this row while its probe is queued.
+            // Its full channel retry must not dedupe against that now-inert
+            // probe, or both callbacks could discard the only wakeup.
+            pending,
+          );
+        }, delay);
+        pending.timer = timer;
+      };
+      this.pendingPollRetries.set(channel, pending);
+      arm(remainingMs);
     });
   }
 
@@ -31123,6 +31207,7 @@ export class CentralizedKernelWorker {
         // WHY: consume coalesced state before touching the old cursor BO: a
         // newer ioctl may already have released it. All Wasm reads stay in
         // this entry, and the presenter receives only owned pixel copies.
+        let cursor: KmsCursor | undefined;
         if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
           this.#requireMainScratchRegion().withLease(lease => {
             const pointer = lease.exportPointer(0, KMS_CURSOR_RECORD_BYTES);
@@ -31130,12 +31215,16 @@ export class CentralizedKernelWorker {
               entry, lease, "kernel_kms_cursor_read", [pointer, KMS_CURSOR_RECORD_BYTES],
             );
             if (count === KMS_CURSOR_RECORD_BYTES) {
-              this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
+              cursor = this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
             }
             else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
           });
         }
-        const cursor = this.#kernel.kms.cursorSnapshot();
+        // An accepted record already sampled its live BO in this entry.
+        // Reuse that owned snapshot once; ticks without an accepted record
+        // must still observe mapping writes and native context loss.
+        cursor ??= this.#kernel.kms.cursorSnapshot();
+        const cursorSnapshot = cursor;
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
@@ -31143,7 +31232,7 @@ export class CentralizedKernelWorker {
         });
         entry.deferObserverEffect(() => {
           if (this.vblankTimer !== timer) return undefined;
-          for (const { plane, width, height } of cursorPlanes) plane.present(cursor, width, height);
+          for (const { plane, width, height } of cursorPlanes) plane.present(cursorSnapshot, width, height);
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
           for (const [crtcId, frame] of gpuFrames) {

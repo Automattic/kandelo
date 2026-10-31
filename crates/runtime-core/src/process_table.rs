@@ -1227,6 +1227,90 @@ impl ProcessTable {
         self.processes.get_mut(&pid)
     }
 
+    /// Apply an ioctl for the bound task. All cross-process effects are
+    /// consumed under table ownership after the caller borrow has ended.
+    pub fn ioctl(
+        &mut self,
+        host: &mut dyn crate::process::HostIO,
+        fd: i32,
+        request: u32,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        let mut effects = crate::syscalls::IoctlEffects::default();
+        let result = {
+            let (proc, _) = self
+                .current_process_and_advisory_locks()
+                .ok_or(Errno::ESRCH)?;
+            crate::syscalls::sys_ioctl_local(proc, host, fd, request, buf, &mut effects)
+        };
+        if let Some(resize) = effects.terminal_resize {
+            self.apply_terminal_resize(resize, host);
+        }
+        let (proc, locks) = self
+            .current_process_and_advisory_locks()
+            .ok_or(Errno::ESRCH)?;
+        crate::signal::deliver_pending_signals_with_locks(proc, locks, host);
+        result
+    }
+
+    /// Host terminal resize uses the same storage and group routing as ioctl.
+    /// The host's rows/cols-only interface historically clears pixel sizes but
+    /// signals only when the cell dimensions change; retain that contract.
+    pub fn set_pty_winsize(
+        &mut self,
+        pty_idx: usize,
+        rows: u16,
+        cols: u16,
+        host: &mut dyn crate::process::HostIO,
+    ) -> Result<(), Errno> {
+        let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOENT)?;
+        let effect = pty.terminal.replace_winsize(crate::terminal::WinSize {
+            ws_row: rows,
+            ws_col: cols,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        });
+        if let Some(effect) = effect.filter(|effect| effect.cell_dimensions_changed) {
+            self.apply_terminal_resize(effect, host);
+        }
+        Ok(())
+    }
+
+    fn apply_terminal_resize(
+        &mut self,
+        effect: crate::terminal::TerminalResizeEffect,
+        host: &mut dyn crate::process::HostIO,
+    ) {
+        // An unclaimed terminal has no authoritative controlling session.
+        // In particular, never substitute the outside ioctl setter's session.
+        if effect.foreground_pgid <= 0 || effect.session_id <= 0 {
+            return;
+        }
+        let mut generated = false;
+        for pid in self.pids_in_group(effect.foreground_pgid as u32) {
+            let Some((proc, locks)) = self.process_and_advisory_locks(pid) else {
+                continue;
+            };
+            if !proc.is_live_explicit_tid(proc.pid) || proc.sid != effect.session_id as u32 {
+                continue;
+            }
+            let signum = wasm_posix_shared::signal::SIGWINCH;
+            proc.raise_signal(signum);
+            generated = true;
+            if let Some(tid) = proc.pick_thread_for_shared_signal(signum) {
+                let _ = crate::signal::deliver_pending_signals_for_tid_with_locks(
+                    proc, locks, host, tid,
+                );
+            }
+        }
+        if generated {
+            // A caught resize can interrupt a host-owned PTY read/poll even
+            // without any new input bytes. Reuse the retained terminal
+            // readiness notification; hosts recheck actual kernel signals.
+            crate::wakeup::push_pty_readiness();
+        }
+    }
+
     /// Borrow the current process and machine-wide lock manager together.
     /// These references are safe and disjoint because they originate from
     /// separate `ProcessTable` fields.
@@ -3163,6 +3247,459 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ResizeFixture {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        table: ProcessTable,
+        pty: usize,
+        pids: [u32; 4],
+        fds: [i32; 4],
+    }
+    impl ResizeFixture {
+        fn new() -> Self {
+            use crate::signal::{SignalAction, SignalHandler};
+            use wasm_posix_shared::signal::SIGWINCH;
+            let guard = crate::pty::test_table_lock();
+            let _ = crate::wakeup::take_pty_readiness_changed();
+            let mut table = ProcessTable::new();
+            let pids = core::array::from_fn(|_| table.create_process().unwrap());
+            let pty = crate::pty::alloc_pty(0, 0).unwrap();
+            let pair = crate::pty::get_pty(pty).unwrap();
+            pair.locked = false;
+            pair.master_refs = 1;
+            pair.slave_refs = 3;
+            pair.terminal.foreground_pgid = pids[1] as i32;
+            pair.terminal.session_id = pids[1] as i32;
+            let fds = core::array::from_fn(|index| {
+                let proc = table.get_mut(pids[index]).unwrap();
+                proc.sid = if index == 0 { pids[0] } else { pids[1] };
+                proc.pgid = if index == 2 { pids[1] } else { pids[index] };
+                proc.signals
+                    .set_action(
+                        SIGWINCH,
+                        SignalAction {
+                            handler: SignalHandler::Handler(1),
+                            flags: 0,
+                            mask: 0,
+                        },
+                    )
+                    .unwrap();
+                let kind = if index == 0 {
+                    FileType::PtyMaster
+                } else {
+                    FileType::PtySlave
+                };
+                let ofd = proc.ofd_table.create(
+                    kind,
+                    wasm_posix_shared::flags::O_RDWR,
+                    pty as i64,
+                    b"/dev/resize-test".to_vec(),
+                );
+                proc.fd_table
+                    .alloc(crate::fd::OpenFileDescRef(ofd), 0)
+                    .unwrap()
+            });
+            Self {
+                _guard: guard,
+                table,
+                pty,
+                pids,
+                fds,
+            }
+        }
+        fn ioctl(&mut self, index: usize, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+            self.table
+                .bind_current_tid(self.pids[index], self.pids[index])
+                .unwrap();
+            self.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                self.fds[index],
+                request,
+                buf,
+            )
+        }
+        fn size(rows: u16, cols: u16, x: u16, y: u16) -> [u8; 8] {
+            let mut bytes = [0; 8];
+            for (at, value) in [rows, cols, x, y].into_iter().enumerate() {
+                bytes[at * 2..at * 2 + 2].copy_from_slice(&value.to_le_bytes());
+            }
+            bytes
+        }
+        fn pending(&self) -> [bool; 4] {
+            self.pids.map(|pid| {
+                self.table
+                    .get(pid)
+                    .unwrap()
+                    .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+            })
+        }
+        fn clear(&mut self) {
+            for pid in self.pids {
+                self.table
+                    .get_mut(pid)
+                    .unwrap()
+                    .discard_pending_signal(wasm_posix_shared::signal::SIGWINCH);
+            }
+            let _ = crate::wakeup::take_pty_readiness_changed();
+        }
+    }
+    impl Drop for ResizeFixture {
+        fn drop(&mut self) {
+            crate::pty::free_pty(self.pty);
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_signals_foreground_group_not_master_caller() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(40, 120, 1200, 800);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, true, false],
+            "master setter outside foreground group must not replace either foreground recipient"
+        );
+        for index in 0..4 {
+            let mut got = [0; 8];
+            f.ioctl(index, crate::terminal::TIOCGWINSZ, &mut got)
+                .unwrap();
+            assert_eq!(got, size, "both PTY endpoints share the same full winsize");
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_identical_dimensions_do_not_signal() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(24, 80, 0, 0);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false; 4],
+            "a no-op resize must generate no SIGWINCH"
+        );
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_slave_setter_and_foreground_caller_are_group_scoped() {
+        let mut f = ResizeFixture::new();
+        for setter in [3, 1] {
+            let mut size = ResizeFixture::size(30 + setter as u16, 50, 500, 300);
+            f.ioctl(setter, crate::terminal::TIOCSWINSZ, &mut size)
+                .unwrap();
+            assert_eq!(f.pending(), [false, true, true, false]);
+            assert!(crate::wakeup::take_pty_readiness_changed());
+            f.clear();
+        }
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_full_size_and_host_cell_noops_remain_distinct() {
+        let mut f = ResizeFixture::new();
+        let mut size = ResizeFixture::size(24, 80, 800, 480);
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, true, false],
+            "guest pixel-only changes are real winsize changes"
+        );
+        f.clear();
+        f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut size).unwrap();
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        f.table
+            .set_pty_winsize(f.pty, 24, 80, &mut crate::process::test_host::NoopHost)
+            .unwrap();
+        assert_eq!(
+            f.pending(),
+            [false; 4],
+            "host cell no-op retains its rows/cols-only signal contract"
+        );
+        let mut got = [0; 8];
+        f.ioctl(1, crate::terminal::TIOCGWINSZ, &mut got).unwrap();
+        assert_eq!(got, ResizeFixture::size(24, 80, 0, 0));
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        f.table
+            .set_pty_winsize(f.pty, 30, 50, &mut crate::process::test_host::NoopHost)
+            .unwrap();
+        assert_eq!(f.pending(), [false, true, true, false]);
+        assert!(crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_rejections_do_not_mutate_or_generate_effects() {
+        let mut f = ResizeFixture::new();
+        assert_eq!(
+            f.ioctl(0, crate::terminal::TIOCSWINSZ, &mut [0; 7]),
+            Err(Errno::EINVAL)
+        );
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                999,
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::EBADF)
+        );
+        let (pipe, _) = crate::syscalls::sys_pipe2(f.table.get_mut(f.pids[0]).unwrap(), 0).unwrap();
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                pipe,
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::ENOTTY)
+        );
+        f.table.clear_current_tid_binding();
+        assert_eq!(
+            f.table.ioctl(
+                &mut crate::process::test_host::NoopHost,
+                f.fds[0],
+                crate::terminal::TIOCSWINSZ,
+                &mut [0; 8]
+            ),
+            Err(Errno::ESRCH)
+        );
+        let mut got = [0; 8];
+        f.ioctl(1, crate::terminal::TIOCGWINSZ, &mut got).unwrap();
+        assert_eq!(got, ResizeFixture::size(24, 80, 0, 0));
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_no_foreground_or_nonlive_member_gets_no_signal() {
+        let mut f = ResizeFixture::new();
+        crate::pty::get_pty(f.pty).unwrap().terminal.foreground_pgid = 0;
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false; 4]);
+        assert!(!crate::wakeup::take_pty_readiness_changed());
+        crate::pty::get_pty(f.pty).unwrap().terminal.foreground_pgid = f.pids[1] as i32;
+        f.table.get_mut(f.pids[2]).unwrap().state = ProcessState::Exited;
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(45, 65, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false, true, false, false]);
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_blocked_and_ignored_target_signals_use_own_task() {
+        use wasm_posix_shared::signal::SIGWINCH;
+        let mut f = ResizeFixture::new();
+        assert!(
+            f.table
+                .get_mut(f.pids[1])
+                .unwrap()
+                .set_blocked_for(f.pids[1], crate::signal::sig_bit(SIGWINCH))
+        );
+        f.table
+            .get_mut(f.pids[2])
+            .unwrap()
+            .signals
+            .set_action(
+                SIGWINCH,
+                crate::signal::SignalAction {
+                    handler: crate::signal::SignalHandler::Ignore,
+                    flags: 0,
+                    mask: 0,
+                },
+            )
+            .unwrap();
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(f.pending(), [false, true, false, false]);
+        assert_eq!(
+            f.table
+                .get(f.pids[1])
+                .unwrap()
+                .pick_thread_for_shared_signal(SIGWINCH),
+            None
+        );
+        assert!(crate::wakeup::take_pty_readiness_changed());
+        assert!(
+            f.table
+                .get_mut(f.pids[1])
+                .unwrap()
+                .set_blocked_for(f.pids[1], 0)
+        );
+        assert_eq!(
+            f.table
+                .get(f.pids[1])
+                .unwrap()
+                .pick_thread_for_shared_signal(SIGWINCH),
+            Some(f.pids[1])
+        );
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_completes_only_foreground_kernel_parks() {
+        use crate::wait_park::{Parks, Resume};
+        use crate::wait_queue::WaitKind;
+        let mut f = ResizeFixture::new();
+        crate::wait_park::with(|parks| {
+            *parks = Parks::new();
+            for pid in f.pids {
+                parks
+                    .park(
+                        pid,
+                        pid,
+                        WaitKind::Sleep,
+                        Vec::new(),
+                        Some(1_000_000_000),
+                        Resume::Sleep {
+                            remainder: None,
+                            deadline: 1_000_000_000,
+                        },
+                    )
+                    .unwrap();
+            }
+        });
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(40, 60, 0, 0),
+        )
+        .unwrap();
+        assert!(crate::wait_park::settle(&f.table));
+        crate::wait_park::with(|parks| {
+            let mut completed = parks.take_completions();
+            completed.sort_by_key(|event| event.pid);
+            assert_eq!(
+                completed
+                    .iter()
+                    .map(|event| (event.pid, event.tid, event.value))
+                    .collect::<Vec<_>>(),
+                vec![
+                    (f.pids[1], f.pids[1], -(Errno::EINTR as i32)),
+                    (f.pids[2], f.pids[2], -(Errno::EINTR as i32))
+                ]
+            );
+            assert_eq!(
+                parks.len(),
+                2,
+                "setter and background waits must remain parked"
+            );
+            *parks = Parks::new();
+        });
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_requires_the_terminals_session_not_the_setters() {
+        let mut f = ResizeFixture::new();
+        for session in [0, f.pids[3] as i32] {
+            crate::pty::get_pty(f.pty).unwrap().terminal.session_id = session;
+            f.ioctl(
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut ResizeFixture::size(30 + session as u16, 50, 0, 0),
+            )
+            .unwrap();
+            assert_eq!(
+                f.pending(),
+                [false; 4],
+                "uncontrolled/foreign session must not redirect group signals"
+            );
+            assert!(!crate::wakeup::take_pty_readiness_changed());
+        }
+        crate::pty::get_pty(f.pty).unwrap().terminal.session_id = f.pids[1] as i32;
+        f.table.get_mut(f.pids[2]).unwrap().sid = f.pids[3];
+        f.ioctl(
+            0,
+            crate::terminal::TIOCSWINSZ,
+            &mut ResizeFixture::size(60, 80, 0, 0),
+        )
+        .unwrap();
+        assert_eq!(
+            f.pending(),
+            [false, true, false, false],
+            "same numeric PGID in foreign session is not an authorized recipient"
+        );
+    }
+
+    #[test]
+    fn terminal_resize_ioctl_nonpty_terminal_is_uncontrolled_until_claimed() {
+        let mut table = ProcessTable::new();
+        let pid = table
+            .create_process_with_stdio(StdioConfig::terminal())
+            .unwrap();
+        table.bind_current_tid(pid, pid).unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        proc.signals
+            .set_action(
+                wasm_posix_shared::signal::SIGWINCH,
+                crate::signal::SignalAction {
+                    handler: crate::signal::SignalHandler::Handler(1),
+                    flags: 0,
+                    mask: 0,
+                },
+            )
+            .unwrap();
+        let mut size = ResizeFixture::size(30, 50, 0, 0);
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut size,
+            )
+            .unwrap();
+        assert!(
+            !table
+                .get(pid)
+                .unwrap()
+                .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+        );
+        let mut got = [0; 8];
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCGWINSZ,
+                &mut got,
+            )
+            .unwrap();
+        assert_eq!(
+            got, size,
+            "uncontrolled terminal still stores its actual size"
+        );
+        crate::syscalls::sys_setsid(table.get_mut(pid).unwrap()).unwrap();
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSCTTY,
+                &mut [],
+            )
+            .unwrap();
+        table
+            .ioctl(
+                &mut crate::process::test_host::NoopHost,
+                0,
+                crate::terminal::TIOCSWINSZ,
+                &mut ResizeFixture::size(40, 60, 0, 0),
+            )
+            .unwrap();
+        assert!(
+            table
+                .get(pid)
+                .unwrap()
+                .signal_pending_anywhere(wasm_posix_shared::signal::SIGWINCH)
+        );
+    }
 
     #[test]
     fn exec_target_kernel_table_removal_fallback_closes_each_lease_once() {

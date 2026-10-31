@@ -3,6 +3,7 @@ import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from 
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { knownTextureUnitLimit } from "./limits.js";
+import { checkedGlSequence } from "./program-objects.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import {
@@ -29,6 +30,7 @@ type GlMuxerOwner = {shadow: GlShadowState; textureViews?: Map<WebGLTexture,GlTe
 
 export class GlMuxer {
   private current: GlMuxerOwner | null = null;
+  private framebufferSelectorsDirty = false;
   private errorOwner: GlErrorState | null = null;
   private textureUnitCount = 32;
 
@@ -45,95 +47,125 @@ export class GlMuxer {
       this.invalidateCurrent();
       if (!reconcileClientArrayRestore(target,this.gl)) throw new Error("Client-array restoration remains pending");
     }
-    if (this.current === target) return;
+    if (this.current === target) {
+      if (!this.framebufferSelectorsDirty) return;
+      try {
+        this.captureCurrentErrors();
+        const owner = {gl:this.gl,errors:[] as number[]};
+        // This is permanent selection of desired logical state, not a
+        // temporary borrow whose inverse could use a mutable shadow preimage.
+        if (this.gl.isContextLost?.() ||
+            !checkedGlSequence(owner, [
+              () => this.gl.bindFramebuffer(0x8ca9, target.shadow.fbo),
+              () => this.gl.bindFramebuffer(0x8ca8, target.shadow.readFbo),
+            ]) ||
+            this.gl.isContextLost?.() || hasNativeRepair(this.gl))
+          throw new Error("Native drawable selection failed");
+        this.framebufferSelectorsDirty = false;
+        return;
+      } catch (error) { this.invalidateCurrent(); throw error; }
+    }
     captureNativeGlErrors(this.gl, this.errorOwner);
     this.errorOwner = null;
-    const s = target.shadow;
-    const gl = this.gl;
+    const previous = this.current;
+    // A thrown full replay must not leave the old owner's identity accepted
+    // after an arbitrary native prefix changed its state.
+    this.forgetCurrent();
+    try {
+      const s = target.shadow;
+      const gl = this.gl;
 
-    if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
-    gl.bindVertexArray(s.vao ?? s.defaultVao);
-    gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
-    if (s.readFbo !== s.fbo) gl.bindFramebuffer(0x8ca8, s.readFbo);
-    gl.viewport(...s.viewport);
+      if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
+      gl.bindVertexArray(s.vao ?? s.defaultVao);
+      gl.bindFramebuffer(GL_FRAMEBUFFER, s.fbo);
+      if (s.readFbo !== s.fbo) gl.bindFramebuffer(0x8ca8, s.readFbo);
+      gl.viewport(...s.viewport);
 
-    if (s.scissor.enabled) gl.enable(GL_SCISSOR_TEST); else gl.disable(GL_SCISSOR_TEST);
-    gl.scissor(...s.scissor.rect);
+      if (s.scissor.enabled) gl.enable(GL_SCISSOR_TEST); else gl.disable(GL_SCISSOR_TEST);
+      gl.scissor(...s.scissor.rect);
 
-    gl.clearColor(...s.clearColor);
-    gl.clearDepth(s.clearDepth);
-    gl.clearStencil(s.clearStencil);
-    gl.lineWidth(s.lineWidth);
-    gl.depthRange(...s.depthRange);
-    gl.polygonOffset(...s.polygonOffset);
-    gl.sampleCoverage(...s.sampleCoverage);
-    if (s.sampleCoverageEnabled) gl.enable(0x80a0); else gl.disable(0x80a0);
-    if (s.sampleAlphaToCoverageEnabled) gl.enable(0x809e); else gl.disable(0x809e);
-    gl.bindBuffer(0x8892, s.arrayBuffer);
-    gl.bindRenderbuffer(0x8d41, s.renderbuffer ? renderbufferNative(target,s.renderbuffer) : null);
-    gl.colorMask(...s.colorMask);
+      gl.clearColor(...s.clearColor);
+      gl.clearDepth(s.clearDepth);
+      gl.clearStencil(s.clearStencil);
+      gl.lineWidth(s.lineWidth);
+      gl.depthRange(...s.depthRange);
+      gl.polygonOffset(...s.polygonOffset);
+      gl.sampleCoverage(...s.sampleCoverage);
+      if (s.sampleCoverageEnabled) gl.enable(0x80a0); else gl.disable(0x80a0);
+      if (s.sampleAlphaToCoverageEnabled) gl.enable(0x809e); else gl.disable(0x809e);
+      gl.bindBuffer(0x8892, s.arrayBuffer);
+      gl.bindRenderbuffer(0x8d41, s.renderbuffer ? renderbufferNative(target,s.renderbuffer) : null);
+      gl.colorMask(...s.colorMask);
 
-    if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
-    if (s.depthTestEnabled) gl.enable(GL_DEPTH_TEST); else gl.disable(GL_DEPTH_TEST);
-    gl.depthMask(s.depthMask);
-    gl.depthFunc(s.depthFunc);
+      if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
+      if (s.depthTestEnabled) gl.enable(GL_DEPTH_TEST); else gl.disable(GL_DEPTH_TEST);
+      gl.depthMask(s.depthMask);
+      gl.depthFunc(s.depthFunc);
 
-    if (s.stencilTestEnabled) gl.enable(GL_STENCIL_TEST); else gl.disable(GL_STENCIL_TEST);
-    gl.stencilFuncSeparate(GL_FRONT, s.stencil.front.func, s.stencil.front.ref, s.stencil.front.valueMask);
-    gl.stencilFuncSeparate(GL_BACK, s.stencil.back.func, s.stencil.back.ref, s.stencil.back.valueMask);
-    gl.stencilMaskSeparate(GL_FRONT, s.stencil.front.writeMask);
-    gl.stencilMaskSeparate(GL_BACK, s.stencil.back.writeMask);
-    gl.stencilOpSeparate(GL_FRONT, s.stencil.front.fail, s.stencil.front.zfail, s.stencil.front.zpass);
-    gl.stencilOpSeparate(GL_BACK, s.stencil.back.fail, s.stencil.back.zfail, s.stencil.back.zpass);
+      if (s.stencilTestEnabled) gl.enable(GL_STENCIL_TEST); else gl.disable(GL_STENCIL_TEST);
+      gl.stencilFuncSeparate(GL_FRONT, s.stencil.front.func, s.stencil.front.ref, s.stencil.front.valueMask);
+      gl.stencilFuncSeparate(GL_BACK, s.stencil.back.func, s.stencil.back.ref, s.stencil.back.valueMask);
+      gl.stencilMaskSeparate(GL_FRONT, s.stencil.front.writeMask);
+      gl.stencilMaskSeparate(GL_BACK, s.stencil.back.writeMask);
+      gl.stencilOpSeparate(GL_FRONT, s.stencil.front.fail, s.stencil.front.zfail, s.stencil.front.zpass);
+      gl.stencilOpSeparate(GL_BACK, s.stencil.back.fail, s.stencil.back.zfail, s.stencil.back.zpass);
 
-    if (s.blendEnabled) gl.enable(GL_BLEND); else gl.disable(GL_BLEND);
+      if (s.blendEnabled) gl.enable(GL_BLEND); else gl.disable(GL_BLEND);
 
-    gl.blendColor(...s.blendColor);
-    gl.blendFuncSeparate(
-      s.blendFunc.srcRGB, s.blendFunc.dstRGB,
-      s.blendFunc.srcA, s.blendFunc.dstA,
-    );
-    gl.blendEquationSeparate(s.blendEquation.rgb, s.blendEquation.alpha);
+      gl.blendColor(...s.blendColor);
+      gl.blendFuncSeparate(
+        s.blendFunc.srcRGB, s.blendFunc.dstRGB,
+        s.blendFunc.srcA, s.blendFunc.dstA,
+      );
+      gl.blendEquationSeparate(s.blendEquation.rgb, s.blendEquation.alpha);
 
-    if (s.cullFaceEnabled) gl.enable(GL_CULL_FACE); else gl.disable(GL_CULL_FACE);
-    gl.cullFace(s.cullFace);
-    gl.frontFace(s.frontFace);
+      if (s.cullFaceEnabled) gl.enable(GL_CULL_FACE); else gl.disable(GL_CULL_FACE);
+      gl.cullFace(s.cullFace);
+      gl.frontFace(s.frontFace);
 
-    if (s.polygonOffsetFillEnabled) gl.enable(GL_POLYGON_OFFSET_FILL); else gl.disable(GL_POLYGON_OFFSET_FILL);
+      if (s.polygonOffsetFillEnabled) gl.enable(GL_POLYGON_OFFSET_FILL); else gl.disable(GL_POLYGON_OFFSET_FILL);
 
-    gl.useProgram(s.currentProgram);
+      gl.useProgram(s.currentProgram);
 
-    const indices = new Set([
-      ...s.vertexAttribValues.keys(),
-      ...(this.current?.shadow.vertexAttribValues.keys() ?? []),
-    ]);
-    for (const index of indices) {
-      const value = s.vertexAttribValues.get(index) ?? [0, 0, 0, 1];
-      gl.vertexAttrib4f(index, value[0], value[1], value[2], value[3]);
-    }
+      const indices = new Set([
+        ...s.vertexAttribValues.keys(),
+        ...(previous?.shadow.vertexAttribValues.keys() ?? []),
+      ]);
+      for (const index of indices) {
+        const value = s.vertexAttribValues.get(index) ?? [0, 0, 0, 1];
+        gl.vertexAttrib4f(index, value[0], value[1], value[2], value[3]);
+      }
 
-    // Clear units used by the outgoing owner even if the incoming owner
-    // has never selected them. Native WebGL2 implementations may expose
-    // more units than the 32 initially allocated in the guest shadow.
-    const units = this.textureUnitCount = Math.max(this.textureUnitCount,
-      knownTextureUnitLimit(gl),
-      s.textureUnits.length, s.cubeTextureUnits.length,
-      this.current?.shadow.textureUnits.length ?? 0,
-      this.current?.shadow.cubeTextureUnits.length ?? 0);
-    for (let i = 0; i < units; i++) {
-      gl.activeTexture(GL_TEXTURE0 + i);
-      gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i,target.textureViews));
-      gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i,target.textureViews));
-    }
-    gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
+      // Clear units used by the outgoing owner even if the incoming owner
+      // has never selected them. Native WebGL2 implementations may expose
+      // more units than the 32 initially allocated in the guest shadow.
+      const units = this.textureUnitCount = Math.max(this.textureUnitCount,
+        knownTextureUnitLimit(gl),
+        s.textureUnits.length, s.cubeTextureUnits.length,
+        previous?.shadow.textureUnits.length ?? 0,
+        previous?.shadow.cubeTextureUnits.length ?? 0);
+      for (let i = 0; i < units; i++) {
+        gl.activeTexture(GL_TEXTURE0 + i);
+        gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i,target.textureViews));
+        gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i,target.textureViews));
+      }
+      gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 
-    gl.pixelStorei(GL_UNPACK_ALIGNMENT, s.unpackAlignment);
-    gl.pixelStorei(GL_PACK_ALIGNMENT, s.packAlignment);
-    for (const [pname, value] of s.pixelStore) gl.pixelStorei(pname, value);
+      gl.pixelStorei(GL_UNPACK_ALIGNMENT, s.unpackAlignment);
+      gl.pixelStorei(GL_PACK_ALIGNMENT, s.packAlignment);
+      for (const [pname, value] of s.pixelStore) gl.pixelStorei(pname, value);
 
-    this.current = target;
-    // Retain only the error flags across invalidation, not a guest binding.
-    this.errorOwner = { errors: target.errors };
+      this.current = target;
+      // Retain only the error flags across invalidation, not a guest binding.
+      this.errorOwner = { errors: target.errors };
+    } catch (error) { this.invalidateCurrent(); throw error; }
+  }
+
+  /** Only reviewed drawable transitions may call this before changing their
+   * logical defaults. All other physical state remains owned; both FBO
+   * selectors must be checked before that exact owner executes again. */
+  invalidateFramebuffers(target: GlMuxerOwner): void {
+    if (this.current === target) this.framebufferSelectorsDirty = true;
   }
 
   /** Immutable device queries must preserve the selected owner and must stop
@@ -171,5 +203,6 @@ export class GlMuxer {
       this.current?.shadow.textureUnits.length ?? 0,
       this.current?.shadow.cubeTextureUnits.length ?? 0);
     this.current = null;
+    this.framebufferSelectorsDirty = false;
   }
 }

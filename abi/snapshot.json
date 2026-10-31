@@ -20,6 +20,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "gl_inline_client_draw",
       "host_env_imports",
       "host_intercepted_syscalls",
       "io_multiplexing",
@@ -1369,6 +1370,40 @@
       "__abi_"
     ]
   },
+  "gl_inline_client_draw": {
+    "attribute_bytes": 20,
+    "attribute_fields": {
+      "components_u32": 4,
+      "index_u32": 0,
+      "normalized_u32": 12,
+      "packed_bytes_u32": 16,
+      "type_u32": 8
+    },
+    "attribute_order": "strictly-increasing-index",
+    "byte_order": "little-endian",
+    "component_types": [
+      5120,
+      5121,
+      5122,
+      5123,
+      5126,
+      5132
+    ],
+    "data_layout": "count-packed-elements-at-original-vertex-indices",
+    "header_bytes": 16,
+    "header_fields": {
+      "attribute_count_u32": 12,
+      "count_i32": 8,
+      "first_i32": 4,
+      "mode_u32": 0
+    },
+    "max_attributes": 16,
+    "max_payload_bytes": 65535,
+    "minimum_count": 1,
+    "op_version": 17,
+    "opcode": 1286,
+    "public_buffer_names": false
+  },
   "host_adapter": {
     "kernel_export_lifecycles": [
       {
@@ -1463,6 +1498,7 @@
       "kernel_clipboard_guest_read",
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
+      "kernel_epoll_wait_retry_state",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -2768,6 +2804,11 @@
       "kind": "func",
       "name": "kernel_epoll_wait_finish",
       "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_epoll_wait_retry_state",
+      "signature": "(i32,i32,i64,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -4308,6 +4349,12 @@
       "module": "env",
       "name": "host_pread",
       "signature": "(i64,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_proc_compare_bytes",
+      "signature": "(i32,i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

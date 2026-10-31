@@ -2328,6 +2328,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
         HostAdapterKernelExport::required("kernel_exchange_add_entry"),
@@ -3977,6 +3978,14 @@ pub mod gl {
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
     pub const OP_VERSION: u32 = 17;
+    /// One owned TLV replaces public-name staging for bounded client draws.
+    /// Keep this record in the program digest even during the unpublished epoch.
+    pub mod inline_client_draw {
+        pub const HEADER_BYTES: u32 = 16;
+        pub const ATTRIBUTE_BYTES: u32 = 20;
+        pub const MAX_BYTES: u32 = 65535;
+        pub const MAX_ATTRIBUTES: u32 = 16;
+    }
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -4090,6 +4099,8 @@ pub mod gl {
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
+    /// Bounded, owned client-array bytes and one nonindexed draw. Never public buffer names.
+    pub const OP_DRAW_CLIENT_ARRAYS: u16 = 0x0506;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
     /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -6007,6 +6018,7 @@ mod gl_tests {
             OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
+            OP_DRAW_CLIENT_ARRAYS,
             OP_DRAW_ELEMENTS,
             OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,

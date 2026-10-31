@@ -168,6 +168,7 @@ host/test/getdents-boundary.test.ts	prepared-product
 host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
 host/test/glib-smoke.test.ts	prepared-product
+host/test/gobject-callback-contract.test.ts	prepared-product
 host/test/gtk3-smoke.test.ts	prepared-product
 host/test/guest-build-make.test.ts	prepared-product
 host/test/guest-build-run.test.ts	prepared-product
@@ -218,6 +219,7 @@ host/test/kernel-initialization-lifetime.test.ts	source-only
 host/test/kernel-ipc-shmat-entry.test.ts	source-only
 host/test/kernel-large-transfer-protocol.test.ts	source-only
 host/test/kernel-late-channel.test.ts	prepared-product
+host/test/kernel-native-comparison-fallback.test.ts	prepared-product
 host/test/kernel-network-cleanup-entry.test.ts	source-only
 host/test/kernel-process-registration-entry.test.ts	source-only
 host/test/kernel-public-entry-roots.test.ts	source-only
@@ -234,6 +236,7 @@ host/test/kernel-wasm-input-snapshot.test.ts	source-only
 host/test/kernel-worker-copyback.test.ts	source-only
 host/test/kernel-worker-entry-root-contract.test.ts	source-only
 host/test/kernel.test.ts	prepared-product
+host/test/labwc-smoke.test.ts	prepared-product
 host/test/lazy-fetch-bytes.test.ts	source-only
 host/test/lazy-url.test.ts	source-only
 host/test/libevdev-smoke.test.ts	prepared-product
@@ -330,6 +333,7 @@ host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
 host/test/process-memory.test.ts	source-only
 host/test/process-native-layout.test.ts	prepared-product
+host/test/process-snapshot-comparator.test.ts	source-only
 host/test/process-table-replication.test.ts	source-only
 host/test/process-view-teardown.test.ts	source-only
 host/test/process-wait-lifecycle.test.ts	source-only
@@ -458,6 +462,7 @@ host/test/vm-interrupt-timer.test.ts	source-only
 host/test/wait-lifecycle-guest.test.ts	prepared-product
 host/test/wasi-shim.test.ts	prepared-product
 host/test/wasm-binary-parse.test.ts	prepared-product
+host/test/wasm-function-imports.test.ts	source-only
 host/test/wasm-guest-pointer.test.ts	source-only
 host/test/wasm-memory-write-audit.test.ts	prepared-product
 host/test/wasm-module-cache-host.test.ts	prepared-product
@@ -473,6 +478,7 @@ host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
 host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-cpu-image-storage.test.ts	source-only
+host/test/webgl-error-sequence.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
@@ -481,11 +487,13 @@ host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-image-bindings.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
+host/test/webgl-inverse-sequence.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
+host/test/webgl-private-client-draw.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shader-upload.test.ts	source-only

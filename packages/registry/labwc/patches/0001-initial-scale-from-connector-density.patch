@@ -1,0 +1,60 @@
+Distribution policy: choose the initial output scale from real connector
+pixel and millimetre dimensions, including small high-density outputs.
+Preserve later client output-management choices and unknown-size fallback.
+
+--- a/src/output.c
++++ b/src/output.c
+@@ -13,0 +14 @@
++#include <math.h>
+@@ -522,0 +524,39 @@
++static float
++initial_output_scale(struct wlr_output *output, struct wlr_output_state *state)
++{
++	int width = output->width, height = output->height;
++	if (state->committed & WLR_OUTPUT_STATE_MODE) {
++		if (state->mode_type == WLR_OUTPUT_STATE_MODE_FIXED && state->mode) {
++			width = state->mode->width;
++			height = state->mode->height;
++		} else if (state->mode_type == WLR_OUTPUT_STATE_MODE_CUSTOM) {
++			width = state->custom_mode.width;
++			height = state->custom_mode.height;
++		}
++	}
++	if (width <= 0 || height <= 0
++			|| output->phys_width <= 0 || output->phys_height <= 0) {
++		return 1.0f;
++	}
++
++	/* Some EDIDs report an aspect ratio instead of millimetres. Match
++	 * the established compositor fallback rather than treating these
++	 * values as an extremely dense physical display. */
++	static const int aspect_sizes[][2] = {
++		{1600, 900}, {1600, 1000}, {160, 90},
++		{160, 100}, {16, 9}, {16, 10},
++	};
++	for (size_t i = 0; i < ARRAY_SIZE(aspect_sizes); ++i) {
++		if (output->phys_width == aspect_sizes[i][0]
++				&& output->phys_height == aspect_sizes[i][1]) {
++			return 1.0f;
++		}
++	}
++
++	/* Native mode and physical dimensions use the same axes, even for
++	 * a rotated output. Density does not depend on desktop pane size. */
++	float dpi_x = width * 25.4f / output->phys_width;
++	float dpi_y = height * 25.4f / output->phys_height;
++	return fmaxf(1.0f, roundf(fminf(dpi_x, dpi_y) / 96.0f));
++}
++
+@@ -533,0 +574,11 @@
++			wlr_output->name);
++		wlr_output_state_set_enabled(&output->pending, false);
++		return;
++	}
++
++	/* Distribution default for the first modeset only. Later explicit
++	 * output-management requests retain the client's chosen scale. */
++	wlr_output_state_set_scale(&output->pending,
++		initial_output_scale(wlr_output, &output->pending));
++	if (!wlr_output_test_state(wlr_output, &output->pending)) {
++		wlr_log(WLR_INFO, "initial scale test failed for output %s",

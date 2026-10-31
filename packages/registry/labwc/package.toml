@@ -1,0 +1,100 @@
+kind = "program"
+
+# Native Wayland stacking compositor and its notification client. Both spawn
+# child processes and use the manifest-driven fork instrumentation path.
+# Upstream release commit: 97f28877a343e062f3178d201f0248cd9c2610cf
+name = "labwc"
+version = "0.20.2"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = [
+  "wlroots@0.20.2",
+  "libwayland@1.24.0",
+  "wayland-protocols@1.47",
+  "libdrm@2.4.134",
+  "libxkbcommon@1.13.2",
+  "libinput@1.28.1",
+  "pixman@0.46.4",
+  "libxml2@2.13.8",
+  "glib@2.84.4",
+  "cairo@1.18.6",
+  "pango@1.56.4",
+  "libpng@1.6.43",
+  "librsvg@2.63.2",
+  "xkeyboard-config@2.48",
+]
+
+[[host_tools]]
+name = "meson"
+version_constraint = ">=1.4.0"
+install_hints = { darwin = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.meson); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "ninja"
+version_constraint = ">=1.8"
+install_hints = { darwin = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.ninja); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "wayland-scanner"
+version_constraint = ">=1.24"
+probe = { args = ["--version"], version_regex = "wayland-scanner (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh", linux = "provided by flake.nix (pkgs.wayland-scanner); enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "pkg-config"
+version_constraint = ">=0.29.2"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+probe = { args = ["--version"], version_regex = "patch (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://github.com/labwc/labwc/archive/refs/tags/0.20.2.tar.gz"
+sha256 = "fae023b6fe022f7057556707a17cdb2d98e0138c5dffaedaa1dade975699f9e8"
+provider = "archive"
+
+[license]
+spdx = "GPL-2.0-only"
+url = "https://github.com/labwc/labwc/blob/0.20.2/LICENSE"
+
+[build]
+script_path = "packages/registry/labwc/build-labwc.sh"
+
+[[outputs]]
+name = "labwc"
+wasm = "labwc.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "labnag"
+wasm = "labnag.wasm"
+fork_instrumentation = "auto"
+
+[[runtime_files]]
+artifact = "labwc-rc.xml"
+guest_path = "/etc/xdg/labwc/rc.xml"
+
+[[runtime_files]]
+artifact = "labwc-menu.xml"
+guest_path = "/etc/xdg/labwc/menu.xml"
+
+[[runtime_files]]
+artifact = "labwc-foot.ini"
+guest_path = "/etc/xdg/labwc/foot.ini"
+
+[[runtime_files]]
+artifact = "xkeyboard-config.zip"
+guest_path = "/usr/share/labwc/xkeyboard-config.zip"
+
+[[runtime_files]]
+artifact = "libinput-quirks.zip"
+guest_path = "/usr/share/labwc/libinput-quirks.zip"

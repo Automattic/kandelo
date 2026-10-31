@@ -1,0 +1,18 @@
+Bibata Modern Ice cursor theme 2.0.7
+Designed by Abdulkaiz Khatri (ful1e5).
+https://github.com/ful1e5/Bibata_Cursor
+
+Distributed under the GNU General Public License, version 3; see COPYING.
+The cursor artwork and compiled Xcursor image bytes are unchanged.
+Kandelo adds a standard default/index.theme that inherits Bibata-Modern-Ice.
+
+Official compiled release archive:
+https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz
+SHA256 a68cae60c4dc706350e194ebc91c5fe48bc7bc9d59e119555834a2a7ee5078ef
+
+Corresponding editable artwork, build configuration and instructions:
+https://github.com/ful1e5/Bibata_Cursor/tree/35ccfe209a808e40d6c2ca60a46cbe4faf68b690
+https://github.com/ful1e5/Bibata_Cursor/archive/35ccfe209a808e40d6c2ca60a46cbe4faf68b690.tar.gz
+
+COPYING is the unmodified LICENSE at that source commit.
+SHA256 fe92c7ac268ce17193b98298336d3793a843a94eba9efc7ad112f9f48ad9b214

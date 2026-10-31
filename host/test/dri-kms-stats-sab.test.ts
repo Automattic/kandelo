@@ -61,6 +61,7 @@ type TestKernel = ReturnType<typeof createCentralizedKernelWorkerTestDouble>;
 
 function makeKernel(
   kernelExports: Readonly<Record<string, unknown>> = {},
+  memory = new WebAssembly.Memory({ initial: 2 }),
 ): TestKernel {
   const kernel = createCentralizedKernelWorkerTestDouble({
     config: {
@@ -76,7 +77,7 @@ function makeKernel(
   };
   installKernelWorkerTestScratch(
     kernel,
-    new WebAssembly.Memory({ initial: 2 }),
+    memory,
     128,
     4,
     {
@@ -230,6 +231,55 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
 
     vi.advanceTimersByTime(17 * 4);
     expect(wake).toHaveBeenCalledTimes(1);
+  });
+
+  it("tickVblank samples cursor storage once per tick while accepting records and live writes", () => {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    let pending: Uint8Array | undefined;
+    const kernel = makeKernel({ kernel_kms_cursor_read: (pointer: number) => {
+      if (!pending) return 0;
+      new Uint8Array(memory.buffer, pointer, pending.length).set(pending);
+      pending = undefined;
+      return 40;
+    } }, memory);
+    const record = (lease: bigint, x: number, bo = 1) => {
+      pending = new Uint8Array(40);
+      const view = new DataView(pending.buffer);
+      view.setBigUint64(0, lease, true);
+      [bo, 2, 2, x, 4, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    };
+    kernel.bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
+    kernel.bos.pixelView(1)!.set([0, 0, 255, 255]);
+    kernel.kms.setMaster(7, 1n, 1n);
+    const sync = vi.spyOn(kernel.bos, "syncToSab");
+    const put = vi.fn();
+    const cursorCanvas = { width: 0, height: 0, getContext: () => ({ clearRect() {}, putImageData: put }),
+      addEventListener() {} } as unknown as OffscreenCanvas;
+    kernel.attachKmsCanvas(1, makeFakeCanvas(), undefined, { mode: "2d", cursorCanvas });
+    record(1n, 3);
+    vi.advanceTimersByTime(17);
+    expect(sync).toHaveBeenCalledTimes(1);
+    expect(put.mock.calls.at(-1)![0].data.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
+    // A tick without a record still samples live storage: no commit/version
+    // cache is allowed to hide writes through an already-mapped BO.
+    kernel.bos.pixelView(1)!.set([255, 0, 0, 255]);
+    vi.advanceTimersByTime(17);
+    expect(sync).toHaveBeenCalledTimes(2);
+    expect(put.mock.calls.at(-1)![0].data.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 0, 255, 255]));
+    record(1n, 19);
+    vi.advanceTimersByTime(17);
+    expect(sync).toHaveBeenCalledTimes(3);
+    expect(put.mock.calls.at(-1)!.slice(1)).toEqual([19, 4]);
+    // A stale record cannot select a retired/unknown BO, but the retained
+    // current cursor still receives its one live observation this tick.
+    record(0n, 77, 999);
+    vi.advanceTimersByTime(17);
+    expect(sync).toHaveBeenCalledTimes(4);
+    expect(put.mock.calls.at(-1)!.slice(1)).toEqual([19, 4]);
+    kernel.kms.dropMaster(1n, 1n);
+    record(1n, 99, 999);
+    vi.advanceTimersByTime(17);
+    expect(sync).toHaveBeenCalledTimes(4);
   });
 
   it("a webgl2-scanout attach stands the presenter down on loss and rebuilds on restore", () => {

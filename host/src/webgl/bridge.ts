@@ -26,6 +26,7 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
+import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
 import { installVertexAttribute } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
@@ -305,6 +306,8 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 
 function validPayload(op: number, v: DataView): boolean {
   switch (op) {
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      return validPrivateClientDraw(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
       return exact(v,0);
@@ -1152,6 +1155,8 @@ function dispatch(
       vao.attributes = attributes;
       return;
     }
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      drawPrivateClientArrays(b,v); return;
     case O.OP_DRAW_ARRAYS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }

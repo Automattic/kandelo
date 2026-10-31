@@ -350,6 +350,10 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
+    /// Compare a complete process range against a live initialized Rust
+    /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
+    /// The host may read but never mutate or retain the snapshot allocation.
+    fn host_proc_compare_bytes(pid: i32, addr: u64, snapshot_ptr: *const u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
     /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
@@ -1277,9 +1281,9 @@ impl HostIO for WasmHostIO {
 /// (`host/src/kernel-worker.ts`) and never reach this table, so a host handle
 /// is refused here rather than half-served.
 ///
-/// Only two operations cross to the host, both existing imports:
-/// `host_proc_read_bytes` / `host_proc_write_bytes`, because each process owns
-/// a separate linear memory the kernel cannot address.
+/// Each process owns a separate linear memory the kernel cannot address.
+/// Read/write byte copies cross to the host, and a read-only comparison can
+/// avoid allocating a full copy for an unchanged file-mapping publication.
 struct WasmSharedMappingIo {
     /// pid → committed linear-memory length, for the pids an entry point was
     /// handed a length for. See [`Self::process_memory_len`] for the rest.
@@ -1346,6 +1350,68 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         let result =
             unsafe { host_proc_read_bytes(pid as i32, addr, dst.as_mut_ptr(), len) };
         i32_to_result(result)
+    }
+
+    fn read_process_owned(&mut self, pid: u32, addr: u64, len: usize) -> Result<Vec<u8>, Errno> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let host_len = checked_host_buffer_len(len)?;
+        let mut bytes = Vec::<u8>::with_capacity(len);
+        // SAFETY: this allocation lends `len` writable bytes to the existing
+        // trusted synchronous import. No Rust slice is formed, and no byte is
+        // read before the import writes it. The host proves the full process
+        // source and allocator-lent destination ranges, then copies all bytes;
+        // only return value 0 guarantees the entire range is initialized.
+        let result = unsafe {
+            host_proc_read_bytes(pid as i32, addr, bytes.as_mut_ptr(), host_len)
+        };
+        i32_to_result(result)?;
+        if result != 0 {
+            // i32_to_result accepts positive values for other imports; they
+            // are not a full-write acknowledgement for this byte-copy import.
+            return Err(Errno::EIO);
+        }
+        // SAFETY: exact success above initialized every byte in 0..len and
+        // capacity is at least len. On errors the Vec retains length 0, so a
+        // partially initialized allocation is dropped without exposing bytes.
+        unsafe { bytes.set_len(len) };
+        Ok(bytes)
+    }
+
+    fn read_process_if_changed(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        len: usize,
+        snapshot: &[u8],
+    ) -> Result<Option<Vec<u8>>, Errno> {
+        if len == 0 {
+            return Ok(None);
+        }
+        if snapshot.len() != len {
+            return self.read_process_owned(pid, addr, len).map(Some);
+        }
+        let host_len = checked_host_buffer_len(len)?;
+        // SAFETY: snapshot names exactly len initialized bytes owned by the
+        // current Rust allocation. The trusted synchronous host import only
+        // reads that borrow, validates the full process range, and retains no
+        // view or capability. Equal is this observation, never a write epoch.
+        let compared = unsafe {
+            host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len)
+        };
+        match compared {
+            0 => Ok(None),
+            // 2 means the host lacks the optional native comparator; it is
+            // not equality. Revalidate and copy through the ordinary path.
+            1 | 2 => self.read_process_owned(pid, addr, len).map(Some),
+            other => {
+                // The compare protocol admits exactly 0/1/2, not every
+                // nonnegative value accepted by other host imports.
+                i32_to_result(other)?;
+                Err(Errno::EIO)
+            }
+        }
     }
 
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
@@ -3556,6 +3622,47 @@ pub extern "C" fn kernel_epoll_wait_token(pid: u32, tid: u32) -> u64 {
         .and_then(|proc| proc.epoll_waits.iter().find(|(owner, _)| *owner == tid))
         .map(|(_, lease)| lease.token)
         .unwrap_or(0)
+}
+
+/// A private non-delivering check of one retained epoll wait. Only 1 certifies
+/// StillBlocked; 0/negative means the host must run its ordinary retry. This
+/// is not a guest syscall/coherence boundary and never publishes a result.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wait_retry_state(
+    pid: u32,
+    tid: u32,
+    token: u64,
+    deadline_handle: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Err(error) = table.bind_current_tid(pid, tid) {
+        return -(error as i32);
+    }
+    let result = (|| {
+        let mut host = WasmHostIO;
+        if deadline_handle != 0 {
+            let now = crate::wait_park::now_ns(&mut host)?;
+            if !crate::wait_queue::global::epoll_deadline_pending(
+                crate::wait_queue::ChannelGeneration(deadline_handle),
+                pid,
+                tid,
+                now,
+            ) {
+                return Ok(false);
+            }
+        }
+        let (proc, mut peers, _) = table
+            .current_process_peers_and_locks()
+            .ok_or(Errno::ESRCH)?;
+        syscalls::epoll_wait_still_blocked(proc, &mut host, tid, token, &mut peers)
+    })();
+    table.clear_current_tid_binding();
+    match result {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(error) => -(error as i32),
+    }
 }
 
 /// Retire only this execution's wait. An old worker's asynchronous retirement
@@ -8225,8 +8332,9 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 // And the boundary sync must run before *every* syscall, including the ones
 // the host completes without entering the kernel.
 //
-// No new `env.host_*` import is required: reading and writing a process's
-// memory are the existing `host_proc_read_bytes` / `host_proc_write_bytes`.
+// Process byte transfer uses `host_proc_read_bytes` / `host_proc_write_bytes`.
+// `host_proc_compare_bytes` adds a checked read-only comparison against a
+// Rust-owned snapshot; it changes no boundary or backing-refresh obligation.
 
 /// `SHM_RDONLY`. `crate::ipc`'s copy is private, and fork inheritance is the
 /// only other site that must reproduce a guest's attach flags.
@@ -13025,60 +13133,77 @@ pub extern "C" fn kernel_ioctl(
     buf_len: u32,
     process_pointer_width: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.current_pid() == 0 {
+        panic!("no current process in table");
+    }
     let mut host = WasmHostIO;
-    let result = match wasm_posix_shared::ioctl_contract::request_contract(request) {
-        Some(contract) => (|| {
-            let pointer_width = u8::try_from(process_pointer_width)
-                .ok()
-                .filter(|width| *width == 4 || *width == 8)
-                .ok_or(Errno::EINVAL)?;
-            let expected_size = contract
-                .size_for_pointer_width(pointer_width)
-                .ok_or(Errno::EOVERFLOW)?;
-            use wasm_posix_shared::ioctl_contract::IoctlArgKind;
-            match contract.arg_kind {
-                IoctlArgKind::None => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut [])
+    let mut dispatched = false;
+    let result = {
+        let mut ioctl = |buf: &mut [u8]| {
+            dispatched = true;
+            table.ioctl(&mut host, fd, request, buf)
+        };
+        match wasm_posix_shared::ioctl_contract::request_contract(request) {
+            Some(contract) => (|| {
+                let pointer_width = u8::try_from(process_pointer_width)
+                    .ok()
+                    .filter(|width| *width == 4 || *width == 8)
+                    .ok_or(Errno::EINVAL)?;
+                let expected_size = contract
+                    .size_for_pointer_width(pointer_width)
+                    .ok_or(Errno::EOVERFLOW)?;
+                use wasm_posix_shared::ioctl_contract::IoctlArgKind;
+                match contract.arg_kind {
+                    IoctlArgKind::None => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            ioctl(&mut [])
+                        }
+                    }
+                    IoctlArgKind::ScalarI32 => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            // WHY: scalar ioctl arguments occupy the same channel
+                            // slot as pointers. Decode the value without ever
+                            // treating it as an address.
+                            let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
+                            ioctl(&mut scalar)
+                        }
+                    }
+                    IoctlArgKind::Pointer => {
+                        if buf_len != expected_size {
+                            Err(Errno::EINVAL)
+                        } else if buf_ptr.is_null() {
+                            Err(Errno::EFAULT)
+                        } else {
+                            let buf = unsafe {
+                                core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
+                            };
+                            ioctl(buf)
+                        }
                     }
                 }
-                IoctlArgKind::ScalarI32 => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        // WHY: scalar ioctl arguments occupy the same channel
-                        // slot as pointers. Decode the value without ever
-                        // treating it as an address.
-                        let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut scalar)
-                    }
-                }
-                IoctlArgKind::Pointer => {
-                    if buf_len != expected_size {
-                        Err(Errno::EINVAL)
-                    } else if buf_ptr.is_null() {
-                        Err(Errno::EFAULT)
-                    } else {
-                        let buf = unsafe {
-                            core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
-                        };
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, buf)
-                    }
-                }
-            }
-        })(),
-        // Unknown requests stage no caller pointer. Let the fd/device path
-        // choose EBADF/ENOTTY/ENOSYS using an empty slice.
-        None => syscalls::sys_ioctl(proc, &mut host, fd, request, &mut []),
+            })(),
+            // Unknown requests stage no caller pointer. Let the fd/device path
+            // choose EBADF/ENOTTY/ENOSYS using an empty slice.
+            None => ioctl(&mut []),
+        }
     };
+    if !dispatched {
+        // Layout rejection still finishes the caller's existing signal path.
+        let (proc, locks) = table
+            .current_process_and_advisory_locks()
+            .expect("current ioctl caller disappeared");
+        deliver_pending_signals_with_locks(proc, locks, &mut host);
+    }
     let result = match result {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -16404,40 +16529,12 @@ pub extern "C" fn kernel_pty_master_read(pty_idx: u32, buf_ptr: *mut u8, buf_len
 /// to it (ink/blessed re-render on 'resize'), corrupting cursor accounting.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> i32 {
-    let pty = match crate::pty::get_pty(pty_idx as usize) {
-        Some(p) => p,
-        None => return -(Errno::ENOENT as i32),
-    };
-
-    let new_rows = rows as u16;
-    let new_cols = cols as u16;
-    let changed =
-        pty.terminal.winsize.ws_row != new_rows || pty.terminal.winsize.ws_col != new_cols;
-
-    pty.terminal.winsize = crate::terminal::WinSize {
-        ws_row: new_rows,
-        ws_col: new_cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    if !changed {
-        return 0;
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.set_pty_winsize(pty_idx as usize, rows as u16, cols as u16, &mut WasmHostIO) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
-
-    // Send SIGWINCH to foreground process group
-    let fg_pgid = pty.terminal.foreground_pgid;
-    if fg_pgid > 0 {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        let pids = table.pids_in_group(fg_pgid as u32);
-        for pid in pids {
-            if let Some(proc) = table.get_mut(pid) {
-                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
-            }
-        }
-    }
-
-    0
 }
 
 // ---------------------------------------------------------------------------

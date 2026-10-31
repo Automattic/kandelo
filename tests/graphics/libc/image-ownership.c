@@ -346,6 +346,47 @@ static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
 static unsigned captured_chunks;
+static unsigned inline_draws, buffer_binds, buffer_deletes;
+static uint32_t inline_first, inline_count, inline_attributes, inline_payload_size;
+static unsigned char inline_payload[65535];
+static int capture_inline_record;
+static unsigned char inline_record[256];
+static uint32_t inline_record_length;
+static struct { uint32_t index, size, type, normalized, bytes, offset; } inline_layout[16];
+
+/* Interpret the actual packed record: reconstruct selected vertex positions for
+ * existing upload controls and retain all attribute bytes for mixed/layout tests.
+ * This deliberately does not create public buffer names or change selectors. */
+static void interpret_inline_draw(struct device_slot *slot, const unsigned char *payload, uint32_t length) {
+    assert(length >= 16 && length <= sizeof inline_payload && !slot->array_saved);
+    uint32_t header[4]; memcpy(header,payload,16);
+    assert(header[0] <= GL_TRIANGLE_FAN && header[1] <= INT32_MAX &&
+           header[2] > 0 && header[2] <= INT32_MAX && header[3] > 0 && header[3] <= 16);
+    inline_first = header[1]; inline_count = header[2]; inline_attributes = header[3];
+    inline_payload_size = length; memcpy(inline_payload,payload,length);
+    uint32_t at = 16, previous = 0;
+    for (uint32_t i=0; i<inline_attributes; i++) {
+        assert(at+20 <= length);
+        uint32_t a[5]; memcpy(a,payload+at,20); at += 20;
+        const uint32_t width = a[2] == GL_BYTE || a[2] == GL_UNSIGNED_BYTE ? 1 :
+            a[2] == GL_SHORT || a[2] == GL_UNSIGNED_SHORT ? 2 :
+            a[2] == GL_FLOAT || a[2] == GL_FIXED ? 4 : 0;
+        assert(a[0] < 16 && (!i || a[0] > previous) && a[1] >= 1 && a[1] <= 4 && width && a[3] <= 1);
+        assert((uint64_t)inline_count*a[1]*width == a[4] && a[4] <= length-at);
+        inline_layout[i].index=a[0]; inline_layout[i].size=a[1]; inline_layout[i].type=a[2];
+        inline_layout[i].normalized=a[3]; inline_layout[i].bytes=a[4]; inline_layout[i].offset=at;
+        if (capture_array_upload) {
+            const uint64_t capacity = ((uint64_t)inline_first+inline_count)*a[1]*width;
+            assert(capacity <= sizeof captured_bytes);
+            captured_size=(uint32_t)capacity; memset(captured_bytes,0,captured_size);
+            memcpy(captured_bytes+inline_first*a[1]*width,payload+at,a[4]);
+            captured_type=a[2]; captured_stride=0; captured_chunks++;
+        }
+        previous=a[0]; at += a[4];
+    }
+    assert(at == length); inline_draws++; draw_commands++;
+}
+
 
 /* Accepted C control operations plus actual encoder bytes. The source-browser
  * replay supplies kernel dispatch/identity translation, not guest marshalling. */
@@ -377,6 +418,7 @@ static uint32_t *object_image_source(struct device_slot *slot, uint32_t kind, ui
     return NULL;
 }
 static int native_buffer_bind(struct device_slot *slot, uint32_t target, uint32_t name) {
+    buffer_binds++;
     if (buffer_bind_failure) {
         buffer_bind_failure = 0;
         query_gl_error = GL_OUT_OF_MEMORY;
@@ -391,6 +433,7 @@ static int native_buffer_bind(struct device_slot *slot, uint32_t target, uint32_
     return 1;
 }
 static int native_buffer_delete(struct device_slot *slot, uint32_t name) {
+    buffer_deletes++;
     if (buffer_delete_failure) {
         buffer_delete_failure = 0;
         query_gl_error = GL_OUT_OF_MEMORY;
@@ -820,6 +863,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
             }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
+#ifdef OP_DRAW_CLIENT_ARRAYS
+            if (op == OP_DRAW_CLIENT_ARRAYS) {
+                interpret_inline_draw(slot,commands+at+4,len);
+                if (capture_inline_record) {
+                    assert((uint32_t)len+4 <= sizeof inline_record && inline_record_length == 0);
+                    inline_record_length=(uint32_t)len+4;
+                    memcpy(inline_record,commands+at,inline_record_length);
+                }
+            }
+#endif
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_TEX_IMAGE_2D || op == OP_GENERATE_MIPMAP ||
                 op == OP_COMPRESSED_TEX_IMAGE_2D || op == OP_COPY_TEX_IMAGE_2D) {
@@ -1625,7 +1678,7 @@ static void *sync_wait_thread(void *data) {
     return NULL;
 }
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (!strcmp(argv[1], "display-wayland-window")) {
         EGLDisplay client=eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display);
@@ -3259,15 +3312,166 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         printf("PASS %s\n",argv[1]); return 0;
     }
+    if (!strcmp(argv[1], "encoder-inline-export")) {
+        assert(argc == 3);
+        const GLfloat vertices[12] = {-1,-1,1,-1,1,1,-1,-1,1,1,-1,1};
+        GLuint before, after; glGenBuffers(1,&before);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        const unsigned binds=buffer_binds, deletes=buffer_deletes;
+        capture_inline_record=1;
+        glDrawArrays(GL_TRIANGLES,0,6); glFlush();
+        capture_inline_record=0;
+        glGenBuffers(1,&after);
+        assert(inline_draws == 1 && draw_commands == 1 && inline_first == 0 && inline_count == 6 &&
+               inline_attributes == 1 && inline_payload_size == 84 && inline_record_length == 88 &&
+               inline_layout[0].index == 0 && inline_layout[0].size == 2 && inline_layout[0].type == GL_FLOAT &&
+               !inline_layout[0].normalized && inline_layout[0].bytes == sizeof vertices &&
+               !memcmp(inline_payload+inline_layout[0].offset,vertices,sizeof vertices));
+        assert(buffer_binds == binds && buffer_deletes == deletes && buffer_uploads == 0 &&
+               array_captures == 0 && device_slots[0].array_binding == 0 &&
+               device_slots[0].element_binding == 0 && after == before+1 && glGetError() == GL_NO_ERROR);
+        FILE *output=fopen(argv[2],"wb"); assert(output);
+        assert(fwrite(inline_record,1,inline_record_length,output) == inline_record_length && !fclose(output));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-export"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-mixed")) {
+        const GLfloat positions[12] = {99,99,99,99, 1.5f,-2.5f,99,99, 3.5f,4.5f,99,99};
+        const GLbyte colors[9] = {99,99,99, -2,3,99, 4,-5,99};
+        const GLfixed fixed[15] = {99,99,99,99,99, -32768,98304,99,99,99, 16384,65536,99,99,99};
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,16,positions); glEnableVertexAttribArray(1);
+        glVertexAttribPointer(3,2,GL_BYTE,GL_TRUE,3,colors); glEnableVertexAttribArray(3);
+        glVertexAttribPointer(5,2,GL_FIXED,GL_TRUE,20,fixed); glEnableVertexAttribArray(5);
+        glVertexAttribPointer(2,1,GL_FLOAT,GL_FALSE,0,(const void *)1); // Disabled: must not read.
+        glBindBuffer(GL_ARRAY_BUFFER,17); glBufferData(GL_ARRAY_BUFFER,32,NULL,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,8,(const void *)4); glEnableVertexAttribArray(0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,71);
+        GLuint before, after; glGenBuffers(1,&before); glFlush();
+        const unsigned binds = buffer_binds, deletes = buffer_deletes, uploads = buffer_uploads;
+        const unsigned allocations_before = allocation_count();
+        fail_malloc = fail_calloc = 1;
+        glDrawArrays(GL_POINTS,1,2); glFlush();
+        fail_malloc = fail_calloc = 0;
+        assert(inline_draws == 1 && draw_commands == 1 && inline_first == 1 && inline_count == 2 && inline_attributes == 3);
+        assert(inline_payload_size == 16+3*20+16+4+16);
+        assert(inline_layout[0].index == 1 && inline_layout[0].type == GL_FLOAT && !inline_layout[0].normalized);
+        assert(!memcmp(inline_payload+inline_layout[0].offset,(const GLfloat[]){1.5f,-2.5f,3.5f,4.5f},16));
+        assert(inline_layout[1].index == 3 && inline_layout[1].type == GL_BYTE && inline_layout[1].normalized);
+        assert(!memcmp(inline_payload+inline_layout[1].offset,(const GLbyte[]){-2,3,4,-5},4));
+        assert(inline_layout[2].index == 5 && inline_layout[2].type == GL_FIXED && inline_layout[2].normalized);
+        assert(!memcmp(inline_payload+inline_layout[2].offset,(const GLfixed[]){-32768,98304,16384,65536},16));
+        assert(buffer_binds == binds && buffer_deletes == deletes && buffer_uploads == uploads &&
+               array_captures == 0 && array_restores == 0 && allocation_count() == allocations_before);
+        assert(device_slots[0].array_binding == 17 && device_slots[0].element_binding == 71);
+        GLint value; void *pointer;
+        glGetVertexAttribiv(1,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&value); assert(value == 16);
+        glGetVertexAttribiv(5,GL_VERTEX_ATTRIB_ARRAY_TYPE,&value); assert(value == GL_FIXED);
+        glGetVertexAttribiv(5,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&value); assert(value == GL_TRUE);
+        glGetVertexAttribPointerv(1,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == positions);
+        glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&value); assert(value == 17);
+        glGetVertexAttribPointerv(0,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == (void *)4);
+        glGenBuffers(1,&after); assert(after == before+1 && glGetError() == GL_NO_ERROR);
+        glDrawArrays(GL_POINTS,1,2); glFlush(); assert(inline_draws == 2 && draw_commands == 2);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-mixed"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-types")) {
+        const GLenum types[6] = {GL_BYTE,GL_UNSIGNED_BYTE,GL_SHORT,GL_UNSIGNED_SHORT,GL_FIXED,GL_FLOAT};
+        unsigned char sources[16][128];
+        for (unsigned i=0; i<16; i++) {
+            const unsigned width = i%6 < 2 ? 1 : i%6 < 4 ? 2 : 4, size = i%4+1;
+            for (unsigned j=0; j<128; j++) sources[i][j]=(unsigned char)(i*17+j);
+            glVertexAttribPointer(i,size,types[i%6],i&1,width*(size+1),sources[i]);
+            glEnableVertexAttribArray(i);
+        }
+        glDrawArrays(GL_POINTS,1,3); glFlush();
+        assert(inline_draws == 1 && inline_attributes == 16 && inline_first == 1 && inline_count == 3 &&
+               buffer_uploads == 0 && buffer_binds == 0 && buffer_deletes == 0);
+        for (unsigned i=0; i<16; i++) {
+            const unsigned width = i%6 < 2 ? 1 : i%6 < 4 ? 2 : 4, size=i%4+1;
+            assert(inline_layout[i].index == i && inline_layout[i].type == types[i%6] &&
+                   inline_layout[i].size == size && inline_layout[i].normalized == (i&1));
+            for (unsigned vertex=0; vertex<3; vertex++)
+                assert(!memcmp(inline_payload+inline_layout[i].offset+vertex*width*size,
+                               sources[i]+(vertex+1)*width*(size+1),width*size));
+        }
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-types"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-boundary")) {
+        const unsigned maximum = 65535-16-20;
+        GLubyte *vertices = malloc(maximum+1); assert(vertices);
+        for (unsigned i=0; i<=maximum; i++) vertices[i] = (GLubyte)(i*7);
+        capture_array_upload=1;
+        glVertexAttribPointer(0,1,GL_UNSIGNED_BYTE,GL_TRUE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        glDrawArrays(GL_POINTS,0,maximum); glFlush();
+        assert(inline_draws == 1 && inline_payload_size == 65535 && captured_size == maximum &&
+               !memcmp(captured_bytes,vertices,maximum) && buffer_uploads == 0 && array_captures == 0);
+        glDrawArrays(GL_POINTS,0,maximum+1); glFlush();
+        assert(inline_draws == 1 && draw_commands == 2 && captured_size == maximum+1 &&
+               !memcmp(captured_bytes,vertices,maximum+1) && buffer_uploads == 1 &&
+               array_captures == 1 && array_restores == 1 && glGetError() == GL_NO_ERROR);
+        free(vertices);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-boundary"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-preflight")) {
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(const void *)(UINTPTR_MAX-3)); glEnableVertexAttribArray(1);
+        glFlush(); const unsigned batches = submit_batches, allocations_before = allocation_count();
+        // A valid-arithmetic but unreadable first attr must not be copied before
+        // the later attribute's pointer overflow has been rejected.
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(glGetError() == GL_OUT_OF_MEMORY && inline_draws == 0 && draw_commands == 0 &&
+               submit_batches == batches && buffer_uploads == 0 && allocation_count() == allocations_before);
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,NULL); glFlush();
+        const unsigned before_null = submit_batches;
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(glGetError() == GL_INVALID_OPERATION && inline_draws == 0 && draw_commands == 0 && submit_batches == before_null);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-preflight"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-fallbacks")) {
+        glDrawArrays(GL_POINTS,0,1); glFlush(); // No clients.
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,0,0); glFlush(); // Must not read a zero-count source.
+        GLuint vao; glGenVertexArrays(1,&vao); glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER,17); glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        glEnableVertexAttribArray(0); glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(inline_draws == 0 && draw_commands == 3 && array_captures == 0 && glGetError() == GL_NO_ERROR);
+        glBindVertexArray(0); const GLfloat vertex[2] = {1.5f,-2.5f};
+        glBindBuffer(GL_ARRAY_BUFFER,0); glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex);
+        const GLubyte index=0; glDrawElements(GL_POINTS,1,GL_UNSIGNED_BYTE,&index); glFlush();
+        assert(inline_draws == 0 && draw_commands == 4 && array_captures == 1 && array_restores == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-fallbacks"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-reserve-failure")) {
+        const GLfloat vertices[2] = {1.5f,-2.5f};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        // Fill to within one CLEAR of the command limit. Reserving the whole
+        // inline record must flush first, and refusal must not publish it.
+        for (unsigned i=0; i<WPK_GL_CMDBUF_LEN/8-1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit=1; glDrawArrays(GL_POINTS,0,1); fail_submit=0; glFlush();
+        assert(draw_commands == 0 && inline_draws == 0 && clear_commands == 0 && glGetError() == GL_INVALID_OPERATION);
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(draw_commands == 1 && inline_draws == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-reserve-failure"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-client-scratch")) {
-        const GLfloat vertices[6] = {1.5f,0,0,-2.5f,0,0};
+        const unsigned count = 17000;
+        GLfloat *vertices = calloc(count,3*sizeof(GLfloat)); assert(vertices);
+        for (unsigned i=0; i<count; i++) vertices[i*3] = i & 1 ? -2.5f : 1.5f;
         capture_array_upload = 1;
         glVertexAttribPointer(0,1,GL_FLOAT,GL_FALSE,12,vertices); glEnableVertexAttribArray(0);
-        fail_malloc = 1; glDrawArrays(GL_POINTS,0,2); fail_malloc = 0; glFlush();
+        fail_malloc = 1; glDrawArrays(GL_POINTS,0,count); fail_malloc = 0; glFlush();
         assert(draw_commands == 0 && buffer_uploads == 0 && glGetError() == GL_OUT_OF_MEMORY);
-        glDrawArrays(GL_POINTS,0,2); glFlush();
-        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == 8);
-        assert(!memcmp(captured_bytes,(const GLfloat[]){1.5f,-2.5f},8));
+        glDrawArrays(GL_POINTS,0,count); glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == count*4 && inline_draws == 0);
+        for (unsigned i=0; i<count; i++) assert(!memcmp(captured_bytes+i*4,vertices+i*3,4));
+        free(vertices);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-client-scratch"); return 0;
     }
@@ -3335,49 +3539,66 @@ int main(int argc, char **argv) {
     }
 #ifdef OP_BEGIN_CLIENT_ARRAY
     if (!strcmp(argv[1], "encoder-array-render") ||
-        !strcmp(argv[1], "encoder-array-index-render")) {
+        !strcmp(argv[1], "encoder-array-index-render") ||
+        !strcmp(argv[1], "encoder-array-legacy-render") ||
+        !strcmp(argv[1], "encoder-array-index-legacy-render")) {
+        const int legacy = strstr(argv[1], "legacy") != NULL;
+        const GLsizei count = legacy ? 8192 : 1;
         const EGLint dimensions[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, NULL, dimensions);
         assert(surface && eglMakeCurrent(dpy, surface, surface, ctx));
         glViewport(0, 0, 1, 1);
-        const GLfloat position[2] = {0, 0}, red[4] = {1, 0, 0, 1};
+        GLfloat *position = calloc((size_t)count, 2*sizeof(GLfloat));
+        GLfloat *red = calloc((size_t)count, 4*sizeof(GLfloat));
+        assert(position && red);
+        for (GLsizei i=0; i<count; i++) { red[i*4] = 1; red[i*4+3] = 1; }
+        const GLsizeiptr color_bytes = (GLsizeiptr)count*4*sizeof(GLfloat);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, position);
         glEnableVertexAttribArray(1);
         glVertexAttrib4f(0, 0, 1, 0, 1);
-        if (!strcmp(argv[1], "encoder-array-index-render")) {
+        if (strstr(argv[1], "index")) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 17);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 17);
-        glBufferData(GL_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glBufferData(GL_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
         glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
         glEnableVertexAttribArray(0);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
-        assert(array_captures == 2 && array_restores == 2 && device_slots[0].array_binding == 17);
+        if (legacy) {
+            // The position payload alone exceeds u16, so both draws exercise
+            // genuine public staging/savepoints, including the mixed VBO draw.
+            assert(inline_draws == 0 && array_captures == 2 && array_restores == 2);
+        } else {
+            assert(inline_draws == 2 && array_captures == 0 && array_restores == 0);
+        }
+        assert(device_slots[0].array_binding == 17 && draw_commands == 2);
         assert(eglSwapBuffers(dpy, surface));
         GLuint buffer = 17;
         glDeleteBuffers(1, &buffer);
         assert(eglDestroySurface(dpy, surface) && eglDestroyContext(dpy, ctx));
+        free(position); free(red);
         assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
         return 0;
     }
     if (!strcmp(argv[1], "encoder-array-save")) {
-        const GLfloat vertex[2] = {0, 0};
+        const unsigned count = 8192;
+        GLfloat *vertex = calloc(count,2*sizeof(GLfloat)); assert(vertex);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertex);
         glEnableVertexAttribArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 17);
         glBufferData(GL_ARRAY_BUFFER, 24, NULL, GL_STATIC_DRAW);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
         assert(array_captures == 1 && array_restores == 1 && device_slots[0].array_binding == 17 &&
                draw_commands == 1);
         calloc_before_failure = 0;
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         calloc_before_failure = -1;
         glFlush();
         assert(glGetError() == GL_OUT_OF_MEMORY && array_captures == 2 && array_restores == 2 &&
@@ -3391,6 +3612,7 @@ int main(int argc, char **argv) {
         glDrawArrays(GL_POINTS, 0, 0);
         glFlush();
         assert(array_captures == 3 && array_restores == 3 && !device_slots[0].array_saved);
+        assert(inline_draws == 0); free(vertex);
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
                allocation_count() == 0);
         puts("PASS encoder-array-save");
@@ -3398,16 +3620,17 @@ int main(int argc, char **argv) {
     }
 #endif
     if (!strcmp(argv[1], "encoder-stage-allocation")) {
-        const GLfloat vertex[2] = {0,0};
+        const unsigned count = 8192;
+        GLfloat *vertex = calloc(count,2*sizeof(GLfloat)); assert(vertex);
         for (unsigned i = 0; i < 2; i++) {
             glVertexAttribPointer(i,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(i);
         }
         GLuint application; glGenBuffers(1,&application); glBindBuffer(GL_ARRAY_BUFFER,application);
         calloc_before_failure = 1; // First staging buffer succeeds, second fails.
-        glDrawArrays(GL_POINTS,0,1); glFlush();
+        glDrawArrays(GL_POINTS,0,count); glFlush();
         assert(draw_commands == 0 && buffer_uploads == 1 && glGetError() == GL_OUT_OF_MEMORY);
         calloc_before_failure = -1;
-        glDrawArrays(GL_POINTS,0,1); glFlush();
+        glDrawArrays(GL_POINTS,0,count); glFlush();
         assert(draw_commands == 1 && buffer_uploads == 3 && glGetError() == GL_NO_ERROR);
         const GLushort index = 0;
         fail_calloc = 1;
@@ -3416,6 +3639,7 @@ int main(int argc, char **argv) {
         fail_calloc = 0;
         glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
         assert(draw_commands == 2 && buffer_uploads == 6 && glGetError() == GL_NO_ERROR);
+        assert(inline_draws == 0); free(vertex);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-stage-allocation"); return 0;
     }
@@ -3436,7 +3660,7 @@ int main(int argc, char **argv) {
         const GLfloat vertex[2] = {0,0};
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(0);
         glDrawArrays(GL_POINTS,0,1); glFlush();
-        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(buffer_uploads == 0 && inline_draws == 1 && draw_commands == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-delete-array"); return 0;
     }
@@ -3465,7 +3689,7 @@ int main(int argc, char **argv) {
         GLuint array; glGenVertexArrays(1,&array); glBindVertexArray(array);
         glDrawArrays(GL_POINTS,0,1); glFlush(); assert(buffer_uploads == 0);
         glDeleteVertexArrays(1,&array); glDrawArrays(GL_POINTS,0,1); glFlush();
-        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(buffer_uploads == 0 && inline_draws == 1 && draw_commands == 2 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
     }

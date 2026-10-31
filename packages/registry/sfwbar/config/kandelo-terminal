@@ -1,0 +1,6 @@
+#!/bin/sh
+# Select the terminal configuration belonging to the actual Wayland session.
+if [ -n "${SWAYSOCK:-}" ]; then
+    exec /usr/local/bin/foot --config=/usr/share/kandelo/sway/foot.ini "$@"
+fi
+exec /usr/local/bin/foot --config=/etc/xdg/labwc/foot.ini "$@"

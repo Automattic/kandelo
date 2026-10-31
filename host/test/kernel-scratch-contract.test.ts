@@ -659,6 +659,10 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::queryToken(channel.pid, this.guestTidForChannel(channel))",
   ),
+  // Exact task/lease/deadline authority only; no process or kernel pointer.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::probe(channel.pid, this.guestTidForChannel(channel), waitToken, deadlineHandle ?? 0n)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
   ),
@@ -1079,6 +1083,52 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
 
 const auditAllowances: AuditAllowance[] = [
   {
+    key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-memory-escape::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
+    disposition: "rust-lent",
+    why: "Only the fixed structurally audited read-only comparator borrows the two existing Memories after whole-range and exact-generation proof. No start, store, defined memory, external callback, cached Instance or escaping export is admitted.",
+  },
+  {
+    key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::wasm-instance-authority::new IntrinsicWasmInstance(module, { env: { kernel: memory, process: processMemory }, })",
+    disposition: "rust-lent",
+    authorityOwner: "kernel",
+    why: "This exact native Instance has read authority over the Rust-lent kernel snapshot and validated process span. It imports both existing memories, exports only comparison, writes nothing, and remains local to this synchronous borrow; native reclamation is measured separately.",
+  },
+  {
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return memory;",
+    disposition: "kernel-control",
+    why: "The private factory returns its newly constructed kernel Memory after recording scalar actual-constructor metadata; it exposes no new public authority.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The module captures only the native buffer getter for genuine Memory authentication; no Memory instance or view is retained here.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::currentBufferShape::kernel-view::new IntrinsicUint8Array(buffer)",
+    disposition: "kernel-read",
+    why: "The captured native Memory getter authenticates this backing before the ephemeral base-class view is constructed. The view only measures the native shared span, is never cached or returned, and performs no copy or write.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::currentBufferShape::kernel-view-escape::intrinsicApply(intrinsicTypedArrayByteLength, view, [])",
+    disposition: "kernel-read",
+    why: "Only the captured native typed-array length getter observes this synchronous local view. The helper returns scalar shape metadata without retaining the view, buffer or Memory, including when no global SharedArrayBuffer constructor exists.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::lookupComparisonMemoryShape::kernel-memory-escape::intrinsicApply(intrinsicWeakMapGet, memoryShapes, [memory])",
+    disposition: "kernel-read",
+    why: "The private WeakMap lookup returns only frozen scalar constructor metadata; the Memory is a weak key and never enters a value or compiled-module cache.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::recordComparisonMemoryShape::kernel-memory-escape::intrinsicApply(intrinsicWeakMapGet, memoryShapes, [memory])",
+    disposition: "kernel-read",
+    why: "This exact weak lookup checks that scalar descriptor admission cannot change for an existing genuine Memory; no native reference escapes.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::recordComparisonMemoryShape::kernel-memory-escape::intrinsicApply(intrinsicWeakMapSet, memoryShapes, [memory, shape])",
+    disposition: "kernel-read",
+    why: "Only known constructor sites record exact frozen scalar descriptors under a weak Memory key. Values contain no Memory, buffer, Instance or function, so the record does not strongly own a process generation.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-export-direct-use::configureCursor(KMS_CURSOR_PROTOCOL_VERSION)",
     disposition: "kernel-control",
     why: "Startup negotiates the scalar cursor protocol 2 constant through the gated instance before publishing the initialized kernel. The call receives no pointer and exposes no memory view; cursor records use the entry-scoped scratch path instead.",
@@ -1239,7 +1289,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "These two standalone measurement allocations are the disposable parent and child process memories used to compare full and sparse cloning RSS.",
   },
   {
-    key: 'host/src/process-memory.ts::ProcessMemoryAllocator.createMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(request.initialPages) as any, maximum: BigInt(request.maximumPages) as any, shared: true, address: "i64", } as any)',
+    key: 'host/src/process-memory.ts::ProcessMemoryAllocator.createMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(request.initialPages), maximum: BigInt(request.maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "The memory64 branch creates one allocator-owned process generation and immediately records its exact ownership and byte charge.",
@@ -1275,14 +1325,26 @@ const auditAllowances: AuditAllowance[] = [
     why: "This closed import-free helper has no memory and exposes only the unconditional trap used for Worker exception semantics.",
   },
   {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
+    key: "packages/registry/glib/tests/interface-init/run.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(readFileSync(process.argv[2]), {})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone Node source-control runner instantiates only its private interface-init fixture with an empty import object, so it receives no kernel or process Memory. check-interface-init-contract.sh links the callback, registration, invocation and source-extracted thunk translation units freestanding with --no-entry and only run_case/calls exports; it admits no unresolved imports. The instance owns only fixture-local storage and is never published to the host runtime.",
+  },
+  {
+    key: "packages/registry/gtk3/tests/run-application-default-vfuncs.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(bytes, {})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone Node source-control runner instantiates the before/after GtkApplicationImpl default-vfunc fixture with an empty import object, so it receives no kernel or process Memory. check-application-default-vfuncs.sh extracts the pinned class/default definitions and links them with a separate sentinel-checking caller freestanding, with --no-entry and only run_case exported; it admits no unresolved imports. Each instance owns only private fixture storage and remains local to this runner.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: intrinsicBigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "kernel-control",
     authorityOwner: "kernel",
     why:
       "This true-private memory64 branch creates the dedicated kernel linear memory at the host memory profile's ceiling.",
   },
   {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, })",
+    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ // The linker minimum is 24 pages; the ceiling remains the host budget. initial: 24, maximum: maximumPages, shared: true, })",
     disposition: "kernel-control",
     authorityOwner: "kernel",
     why:
@@ -1295,7 +1357,7 @@ const auditAllowances: AuditAllowance[] = [
     why: "The captured intrinsic instantiates the kernel module with its private kernel-memory import object.",
   },
   {
-    key: 'host/src/process-memory.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(layout.initialPages) as any, maximum: BigInt(layout.maximumPages) as any, shared: true, address: "i64", } as any)',
+    key: 'host/src/process-memory.ts::createProcessMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(layout.initialPages), maximum: BigInt(layout.maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This ordinary memory64 factory creates caller-owned process memory.",
@@ -1455,16 +1517,6 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-memory-return::memory",
     disposition: "kernel-control",
     why: "The dedicated memory is returned only as env.memory inside the private kernel import object consumed by the reviewed instantiation path or module-secret test companion.",
-  },
-  {
-    key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ initial: 24n, maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor);',
-    disposition: "kernel-control",
-    why: "This true-private factory branch creates the dedicated memory64 kernel linear memory before it can be published to an instance or worker.",
-  },
-  {
-    key: "host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::kernel-memory-return::return new IntrinsicWasmMemory({ // 24 pages = 1.5 MiB of initial address space. This must remain above // the kernel Wasm's linker-derived minimum and leaves headroom for // future static data without re-tuning host construction each time. initial: 24, maximum: maximumPages, shared: true, });",
-    disposition: "kernel-control",
-    why: "This true-private factory branch creates the dedicated memory32 kernel linear memory before it can be published to an instance or worker.",
   },
   {
     key: "host/src/kernel.ts::WasmPosixKernel.#createTestAuthority::kernel-memory-return::this.#buildImportObject(memory)",
@@ -1754,6 +1806,17 @@ describe("kernel scratch static contract", () => {
     }
   });
 
+  it("keeps the retained epoll retry probe scalar-only", () => {
+    expect(rustKernelExportParameters(
+      kernelWasmApiSource, "kernel_epoll_wait_retry_state",
+    )).toEqual([
+      { name: "pid", type: "u32" },
+      { name: "tid", type: "u32" },
+      { name: "token", type: "u64" },
+      { name: "deadline_handle", type: "u64" },
+    ]);
+  });
+
   it("keeps the reviewed process-exit publication scalar-only", () => {
     expect(kernelExportSignatureFromSnapshot(
       abiSnapshotSource,
@@ -1886,11 +1949,12 @@ describe("kernel scratch static contract", () => {
     }
     expect(formatAuditFailures(result)).toEqual([]);
     // This builds one TypeScript program for every repository runtime source.
-    // The complete CI-shaped local run took 144 seconds under machine load;
-    // isolated runs took 87 seconds. Keep a finite three-minute watchdog for
-    // this CPU-bound source audit, preserving its scope and every assertion.
+    // The native-comparator integration took 205 seconds under load and hit
+    // the old 180-second watchdog (job native-snapshot-host-r2-1030-233953-a33e).
+    // Keep a finite five-minute watchdog for this full CPU-bound repository
+    // audit, preserving every source, ownership classification and assertion.
     // Runtime behavior tests retain their own, separate timeout budgets.
-  }, 180_000);
+  }, 300_000);
 
   it("keeps variable-transfer parsing private and allocation-region-bearing", () => {
     const prefixOnlyFixture = kernelExportNamesFromSnapshot(

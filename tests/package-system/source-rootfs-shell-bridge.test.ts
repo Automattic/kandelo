@@ -312,6 +312,11 @@ function fixturePaths(root: string) {
     mkdirSync(dir, { recursive: true });
     dependencyRoots.set(dependency, dir);
   }
+  writeFileSync(join(dependencyRoots.get("bibata-cursor-theme")!, "bibata-cursor-theme.zip"),
+    zipSync({
+      "icons/default/index.theme": new TextEncoder().encode("[Icon Theme]\nInherits=Bibata-Modern-Ice\n"),
+      "icons/Bibata-Modern-Ice/cursors/left_ptr": new TextEncoder().encode("cursor data fixture"),
+    }));
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (ROOTFS_LAZY_IDS.has(spec.id)) continue;
     const dependency = spec.id === "git-remote-http"
@@ -754,6 +759,36 @@ describe("canonical source-rootfs shell", () => {
       ).toMatchObject({ uri: url, size: `${spec!.id} fixture`.length });
       expect(fs.stat(guest).mode & 0o777, guest).toBe(0o755);
     }
+    // The shared desktop panel must arrive through its one package closure,
+    // including a real loadable module and executable terminal helper.
+    for (const [artifact, guest, mode] of [
+      ["sfwbar.wasm", "/usr/local/bin/sfwbar", 0o755],
+      ["appmenu.so", "/usr/lib/sfwbar/appmenu.so", 0o644],
+      ["sfwbar.config", "/etc/xdg/sfwbar/sfwbar.config", 0o644],
+      ["sway.config", "/etc/xdg/sfwbar/sway.config", 0o644],
+      ["winops.widget", "/etc/xdg/sfwbar/winops.widget", 0o644],
+      ["kandelo-sfwbar", "/usr/local/bin/kandelo-sfwbar", 0o755],
+      ["kandelo-terminal", "/usr/local/bin/kandelo-terminal", 0o755],
+      ["kandelo-terminal.desktop", "/usr/share/applications/kandelo-terminal.desktop", 0o644],
+      ["scummvm.desktop", "/usr/share/applications/scummvm.desktop", 0o644],
+      ["wayland-demo.desktop", "/usr/share/applications/wayland-demo.desktop", 0o644],
+    ] as const) {
+      const spec = SHELL_LAZY_BINARY_SPECS.find(entry => entry.vfsPath === guest)!;
+      expect(spec, guest).toBeDefined();
+      expect(shellLazySpecDependency(spec), guest).toBe("sfwbar");
+      expect(fs.lazyEntries().files.find(file => file.path === guest), guest)
+        .toMatchObject({ uri: `kandelo-lazy:programs/sfwbar/${artifact}` });
+      expect(fs.stat(guest).mode & 0o777, guest).toBe(mode);
+    }
+    // Start-menu entries must name programs actually installed in this image,
+    // including a native Wayland client rather than a nonexistent package name.
+    for (const desktop of ["kandelo-terminal", "scummvm", "wayland-demo"]) {
+      const source = readFileSync(join(repoRoot,
+        `packages/registry/sfwbar/config/${desktop}.desktop`), "utf8");
+      const executable = source.match(/^Exec=(\S+)/m)?.[1];
+      expect(executable, desktop).toBeDefined();
+      expect(fs.stat(executable!).mode & 0o111, `${desktop} executable`).not.toBe(0);
+    }
     // Fixed guest paths retain real metadata without downloading optional
     // voice data. The serialized image must retain the exact ZIP identity.
     expect(fs.isPathDeferred("/usr/share/espeak-ng-data/en_dict")).toBe(true);
@@ -762,7 +797,8 @@ describe("canonical source-rootfs shell", () => {
     );
     for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
       const source = spec.id === "ca-certificates" ? paths.caBundlePath
-        : spec.id === "desktop-data" ? paths.desktopDataPath : paths.espeakNgDataPath;
+        : spec.id === "desktop-data" ? paths.desktopDataPath
+        : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency) : paths.espeakNgDataPath;
       const bytes = readFileSync(source);
       expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
       expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
@@ -1027,6 +1063,23 @@ describe("canonical source-rootfs shell", () => {
       "terminal",
       "syslog",
     ]);
+  });
+
+  it("starts the shared panel through each compositor's normal session contract", () => {
+    const source = JSON.parse(readFileSync(join(repoRoot,
+      "packages/registry/shell/source-rootfs-shell-demo.json"), "utf8"));
+    const sway = source.profiles.sway.init.shellCommand;
+    expect(sway).toContain("/usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config");
+    const labwc = source.profiles.labwc.init.shellCommand;
+    // Labwc parses -s without a shell: the explicit shell is required for
+    // background panel startup followed by the foreground terminal exec.
+    expect(labwc).toContain("/usr/local/bin/labwc -s '/bin/sh -c \"sfwbar");
+    expect(labwc).toContain("-f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini");
+    for (const id of ["sway", "labwc"]) {
+      expect(source.profiles[id].identity.summary).toContain("Start");
+      expect(source.profiles[id].identity.summary).toMatch(/task list/);
+      expect(source.profiles[id].identity.summary).toContain("clock");
+    }
   });
 
   it("treats structurally identical package-owned profiles as one shared contract", () => {

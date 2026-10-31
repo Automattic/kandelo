@@ -105,6 +105,13 @@ if [ ! -d "$SRC_DIR" ]; then
     # no pixels. The patch allocates the pool as a DRI bo instead — the
     # same shape foot and mako already use.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
+    # Base application virtuals must preserve their exact function signatures.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-application-default-vfuncs.patch"
+    # Connected GTK widget signals preserve the closure userdata argument.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-widget-signal-contracts.patch"
+    # Closure/weak cleanup retains the public two-argument notifier contract.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-notifier-contract.patch"
 fi
 
 # Fresh build dir each run — autoconf bakes --prefix into Makefiles.
@@ -218,6 +225,19 @@ echo "==> Configuring gtk+ for wasm32..."
     make -C gtk install
     make install-pkgconfigDATA
 )
+
+# The Wayland pool patch gives GDK a direct GBM dependency. Configure's
+# LIBS above links GTK's own tools but is not exported by upstream's .pc
+# templates; every static GDK consumer needs this dependency too.
+for name in gdk-3.0 gdk-wayland-3.0; do
+    pc="$INSTALL_DIR/lib/pkgconfig/$name.pc"
+    if ! grep -q '^Requires.private:' "$pc"; then
+        echo "ERROR: GDK pkg-config metadata lacks Requires.private: $pc" >&2
+        exit 1
+    fi
+    sed '/^Requires.private:/s/$/ gbm/' "$pc" > "$pc.tmp"
+    mv "$pc.tmp" "$pc"
+done
 
 for lib in libgdk-3.a libgtk-3.a; do
     if [ ! -f "$INSTALL_DIR/lib/$lib" ]; then

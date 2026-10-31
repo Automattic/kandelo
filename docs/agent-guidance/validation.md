@@ -59,6 +59,10 @@ The kernel-memory ownership audit excludes the fork instrumenter's offline
 JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
 private synthetic module memories, never views into a live kernel. Production
 host sources, other scripts, and browser runtime fixtures remain in scope.
+The import-free GLib/GTK callback source fixtures remain audited with exact
+private-memory origin classifications. A direct awaited instantiate result
+may bind only one static `instance` property (optionally renamed); unknown
+or unstable bindings must still fail rather than lose authority tracking.
 
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining

@@ -71,6 +71,13 @@ if [ ! -d "$SRC_DIR" ]; then
     # GCredentials backend selection keys off platform macros;
     # wasm32-posix-kernel follows the Linux ucred contract.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-credentials.patch"
+    # Keep the public two-argument interface contract; known unary callbacks
+    # opt into its explicit adapter instead of changing every consumer's arity.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
+    # Preserve exact GSource ref/unref types and full-width ffi return values.
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-dispatch-contract.patch"
+    # Closure/weak cleanup retains the public two-argument notifier contract.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-notifier-contract.patch"
 fi
 
 # Fresh build + install each run — stale objects would shadow config

@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -43,7 +44,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
-import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
+import { prepareDrawableTransition, applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
@@ -70,9 +71,9 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
-import { copyGbmFront, readGbmFront, packGbmFront } from "./webgl/gbm-front-copy";
+import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { repairNativeState } from "./webgl/native-recovery";
+import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
@@ -192,6 +193,7 @@ const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
   "byteLength",
 )!.get!;
 const IntrinsicUint8Array = Uint8Array;
+const IntrinsicWasmInstance = WebAssembly.Instance;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicDataView = DataView;
 const IntrinsicWasmMemory = WebAssembly.Memory;
@@ -1012,13 +1014,17 @@ export class WasmPosixKernel {
 
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
-      if (!this.gl.retryExecutionRetirements(b.gl)) return false;
+      const muxer = this.gl_muxers.get(b.gl);
+      // A retirement's guard can own the renderer without owning this muxer.
+      // Revoke its selection before any cleanup or pending inverse can run.
+      if (this.gl.hasExecutionRetirements(b.gl) || hasNativeRepair(b.gl)) muxer?.invalidateCurrent();
       try {
-        // Cleanup may belong to an already retired owner. Preserve the
-        // currently selected peer's flags before replaying that cleanup.
-        this.gl_muxers.get(b.gl)?.captureCurrentErrors();
-        if (!repairNativeState(b.gl)) return false;
-      } catch { return false; }
+        // Refuse before cleanup if the selected peer's flags cannot be read,
+        // including when invalidation above retained that unread ownership.
+        muxer?.captureCurrentErrors();
+        if (!this.gl.retryExecutionRetirements(b.gl)) { muxer?.invalidateCurrent(); return false; }
+        if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
+      } catch { muxer?.invalidateCurrent(); return false; }
     }
     if (!this.gl.hasForeignRetirements()) return true;
     for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
@@ -1049,14 +1055,46 @@ export class WasmPosixKernel {
     } finally { muxer.invalidateCurrent(); }
   }
 
+  /** Only fixed scanout and GBM front helpers may borrow selected device state:
+   * success proves their complete checked inverse, unlike a generic presenter. */
+  private withRestoredGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
+    const muxer = this.glMuxerFor(gl);
+    try {
+      muxer.captureCurrentErrors();
+      // WHY: cleanup/repair may change selectors independently of this owner.
+      // Invalidate before either can mutate, including cleanup registered with
+      // another guard for this same physical context. The idle path has no
+      // such mutation and need not replay the guest's entire texture state.
+      if (this.gl.hasExecutionRetirements(gl) && !muxer.prepareRetirement())
+        throw new Error("Native graphics retirement is not ready for device presentation");
+      if (!this.gl.retryExecutionRetirements(gl))
+        throw new Error("Native graphics retirement remains pending");
+      if (hasNativeRepair(gl)) muxer.invalidateCurrent();
+      if (!repairNativeState(gl)) throw new Error("Native graphics restoration remains pending");
+      const result = work();
+      const errors: number[] = [];
+      captureNativeGlErrors(gl, { errors });
+      if (errors.length) throw new Error(`Device graphics operation failed: ${errors.join(",")}`);
+      if (gl.isContextLost() || hasNativeRepair(gl))
+        throw new Error("Device graphics state was not restored");
+      return result;
+    } catch (error) {
+      muxer.invalidateCurrent();
+      throw error;
+    }
+  }
+
   private gpuCursor(bo: number, width: number, height: number): Uint8Array<ArrayBuffer> | null | undefined {
     const storage = this.gl.gpuBo(bo);
     if (!storage) return undefined;
-    if (storage.gl.isContextLost()) return null;
+    if (storage.gl.isContextLost()) {
+      this.glMuxerFor(storage.gl).invalidateCurrent();
+      return null;
+    }
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
         || width > 64 || height > 64 || width > storage.w || height > storage.h)
       throw new Error("Invalid GPU cursor storage dimensions");
-    return this.withGraphicsState(storage.gl, () => {
+    return this.withRestoredGraphicsState(storage.gl, () => {
       const pixels = readGpuScanout(storage, width, height);
       if (!pixels) throw new Error("GPU cursor readback failed");
       return pixels;
@@ -1069,13 +1107,18 @@ export class WasmPosixKernel {
     if (!storage) return null;
     // Context loss already reaches the guest through its EGL/GL failure
     // channel. A device tick must stand down rather than kill the machine.
-    if (storage.gl.isContextLost()) return null;
+    if (storage.gl.isContextLost()) {
+      this.glMuxerFor(storage.gl).invalidateCurrent();
+      return null;
+    }
     if (fb.width > storage.w || fb.height > storage.h)
       throw new Error("Invalid GPU scanout storage dimensions");
-    return this.withGraphicsState(storage.gl, () => {
+    return this.withRestoredGraphicsState(storage.gl, () => {
       const target = allowDirect ? canvas.getContext("webgl2") : null;
       if (target === storage.gl) {
         if (canvas.width !== fb.width || canvas.height !== fb.height) {
+          // A drawing-buffer resize is outside the helper's selector inverse.
+          this.glMuxerFor(storage.gl).invalidateCurrent();
           canvas.width = fb.width; canvas.height = fb.height;
         }
         if (!drawGpuScanout(storage, fb.width, fb.height)) throw new Error("GPU scanout blit failed");
@@ -1691,22 +1734,21 @@ export class WasmPosixKernel {
     if (!Number.isSafeInteger(maximumPages) || maximumPages < 24) {
       throw new Error(`invalid kernel maximum pages: ${maximumPages}`);
     }
-    if (pointerWidth === 8) {
-      return new IntrinsicWasmMemory({
-        initial: 24n,
-        maximum: BigInt(maximumPages),
-        shared: true,
-        address: "i64",
-      } as unknown as WebAssembly.MemoryDescriptor);
-    }
-    return new IntrinsicWasmMemory({
-      // 24 pages = 1.5 MiB of initial address space. This must remain above
-      // the kernel Wasm's linker-derived minimum and leaves headroom for
-      // future static data without re-tuning host construction each time.
-      initial: 24,
-      maximum: maximumPages,
-      shared: true,
-    });
+    const memory = pointerWidth === 8
+      ? new IntrinsicWasmMemory({
+          initial: 24n,
+          maximum: intrinsicBigInt(maximumPages),
+          shared: true,
+          address: "i64",
+        } as unknown as WebAssembly.MemoryDescriptor)
+      : new IntrinsicWasmMemory({
+          // The linker minimum is 24 pages; the ceiling remains the host budget.
+          initial: 24,
+          maximum: maximumPages,
+          shared: true,
+        });
+    recordComparisonMemoryShape(memory, pointerWidth, true, maximumPages);
+    return memory;
   }
 
   /**
@@ -2850,8 +2892,16 @@ export class WasmPosixKernel {
                   (format !== 0 && format !== 0x34324241 && format !== 0x34325241) || (!format && pitch)) return -22;
               if (!this.prepareForeignRetirements(b)) return -5;
               const muxer = this.glMuxerFor(gl);
-              const capture = () => { muxer.captureCurrentErrors(); muxer.invalidateCurrent(); };
-              if (copy) return copyGbmFront(b.surface, copy, capture);
+              const capture = () => { muxer.captureCurrentErrors(); };
+              if (copy) {
+                if (!validGbmFrontCopy(b.surface, copy)) return -22;
+                let rc = -5;
+                try {
+                  this.withRestoredGraphicsState(gl, () => { rc = copyGbmFront(b.surface, copy, capture); });
+                } catch { if (rc === 0) rc = -5; }
+                if (rc !== 0) muxer.invalidateCurrent();
+                return rc;
+              }
               const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
               const rowBytes = size.width * 4;
               if (!dimensions || !canonical || (format !== 0x34324241 && format !== 0x34325241) || pitch !== dimensions.stride ||
@@ -2861,12 +2911,27 @@ export class WasmPosixKernel {
                 return -22;
               let linear: Uint8Array<ArrayBuffer>;
               try { linear = new Uint8Array(canonical.byteLength); } catch { return -12; }
-              const read = readGbmFront(b.surface, capture);
-              if (read.rc !== 0 || !read.pixels) return read.rc || -5;
+              if (!validGbmFrontRead(b.surface)) return -22;
+              let read: ReturnType<typeof readGbmFront> = {rc: -5};
               try {
-                packGbmFront(read.pixels,linear,size.width,size.height,pitch,format);
-              } catch { return -12; }
-              return this.bos.publishDevicePixels(copyId, linear) ? 0 : -5;
+                read = this.withRestoredGraphicsState(gl, () => {
+                  read = readGbmFront(b.surface, capture);
+                  return read;
+                });
+              } catch {
+                muxer.invalidateCurrent();
+                return read.rc === 0 ? -5 : read.rc;
+              }
+              if (read.rc !== 0 || !read.pixels) { muxer.invalidateCurrent(); return read.rc || -5; }
+              // Publication follows the wrapper's final loss/repair/error guard.
+              // An unsuccessful export never authorizes selection reuse.
+              let published = false;
+              try {
+                try { packGbmFront(read.pixels,linear,size.width,size.height,pitch,format); }
+                catch { return -12; }
+                published = this.bos.publishDevicePixels(copyId, linear);
+                return published ? 0 : -5;
+              } finally { if (!published) muxer.invalidateCurrent(); }
             }
             if (format || pitch) return -22;
             const target = this.gl.gpuBo(targetId);
@@ -2900,8 +2965,16 @@ export class WasmPosixKernel {
             // Revoking a kernel binding does not alter the cached native
             // context or wait on a renderer. Queued forwarded commands still
             // observe their old drawable; a new bind is acknowledged in order.
-            if (b) { releaseSurfaceResources(b); b.currentDrawable = null; }
-            return 0;
+            try {
+              if (b) {
+                const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+                const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+                const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!));
+                releaseSurfaceResources(b); b.currentDrawable = null;
+                if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
+              }
+              return 0;
+            } catch { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           }
           if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;
           if ((drawId === 0) !== (readId === 0)) return -22;
@@ -2923,9 +2996,16 @@ export class WasmPosixKernel {
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
             } catch { return -5; }
           }
-          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          try { if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) return -12; }
-          catch { return -5; }
+          try {
+            const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+            const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+            const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!),drawable);
+            if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
+              muxer?.invalidateCurrent();
+              return -12;
+            }
+            if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
+          } catch { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           return 0;
         },
         host_gl_submit: (
@@ -3313,6 +3393,14 @@ export class WasmPosixKernel {
         },
         // `addr` arrives as a BigInt and is checked at width 8 for the same
         // reason as `host_proc_write_bytes` above.
+        // The immutable snapshot span is lent by Rust for this import only.
+        // Equal means an observed comparison, never a persistent no-write epoch.
+        host_proc_compare_bytes: (
+          pid: number,
+          addr: bigint,
+          snapshot_ptr: KernelPointer,
+          len: number,
+        ): number => this.#compareProcessSnapshot(pid, addr, snapshot_ptr, len),
         host_proc_read_bytes: (
           pid: number,
           addr: bigint,
@@ -3352,8 +3440,11 @@ export class WasmPosixKernel {
               source.pointer,
               source.length,
             );
-            const copy = sliceUint8Array(processView);
-            this.#writeKernelBytes(destination, copy);
+            // WHY: this import consumes the authenticated Rust destination
+            // synchronously. Copy straight into that allocation; a second
+            // independent snapshot would duplicate every shared-mapping read.
+            // The process view never escapes this disposable worker or call.
+            this.#writeKernelBytes(destination, processView);
             return 0;
           } catch {
             return -14;
@@ -3478,6 +3569,63 @@ export class WasmPosixKernel {
       range.pointer,
       range.end,
     );
+  }
+
+  /** Compare a Rust-lent initialized snapshot without copying either side.
+   * Exact 0/1 is equal/different; 2 requests a separately checked owned read.
+   * Invalid ranges return EFAULT. All native authority stays synchronous. */
+  #compareProcessSnapshot(
+    pid: number,
+    addr: bigint,
+    snapshotPointer: KernelPointer,
+    length: number,
+  ): number {
+    try {
+      const memory = this.#memory;
+      const generation = this.#memoryGeneration;
+      if (!memory) return -14;
+      // These arguments are the Rust slice's allocation span, not permission
+      // to inspect the rest of the kernel Memory. Prove it before callbacks.
+      const snapshot = checkedWasmImportMemoryRange(
+        memory, snapshotPointer, length, this.#kernelPtrWidth,
+        "host_proc_compare_bytes Rust snapshot",
+      );
+      const processMemory = this.callbacks.getProcessMemory?.(pid);
+      if (!processMemory) return -14;
+      const process = checkedWasmImportMemoryRange(
+        processMemory, addr, length, 8,
+        "host_proc_compare_bytes process source", true,
+      );
+      // A provider may grow or replace memory. Revalidate this same borrow
+      // after it returns, retaining the exact lent capacity and owner.
+      if (memory !== this.#memory || generation !== this.#memoryGeneration)
+        return -14;
+      const liveSnapshot = checkedMemoryRange(
+        memory, snapshot.pointer, snapshot.length, this.#kernelPtrWidth,
+        "host_proc_compare_bytes live Rust snapshot",
+      );
+      if (process.length === 0) return 0;
+      const module = getSnapshotComparatorModule(
+        lookupComparisonMemoryShape(memory),
+        lookupComparisonMemoryShape(processMemory),
+      );
+      // Unknown constructor metadata or unavailable native capability uses
+      // Rust's separately checked owned read, never a partial comparison.
+      if (!module) return 2;
+      // WHY: only fixed read-only code borrows these two existing memories.
+      // Keep the Instance and export synchronous and uncached: no JS reference
+      // escapes this Rust borrow. Native reclamation needs separate evidence.
+      const instance = new IntrinsicWasmInstance(module, {
+        env: { kernel: memory, process: processMemory },
+      });
+      const exports = intrinsicApply(intrinsicWasmInstanceExports, instance, []) as WebAssembly.Exports;
+      const result = intrinsicApply(exports.compare as Function, undefined, [
+        intrinsicBigInt(liveSnapshot.pointer), intrinsicBigInt(process.pointer), process.length,
+      ]);
+      return result === 0 || result === 1 ? result : -5;
+    } catch {
+      return -14;
+    }
   }
 
   /**

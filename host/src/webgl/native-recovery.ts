@@ -5,7 +5,6 @@ import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 /** Only native handles/scalars enter a persistent inverse, never guest data or
  * callbacks whose lexical environment could retain a whole binding. */
 export type NativeCall =
-  | ["clearVertexAttribute", NativeRetirement, number, number, number, boolean, number, number]
   | ["enable", number] | ["disable", number]
   | ["colorMask", boolean, boolean, boolean, boolean]
   | ["clearColor", number, number, number, number]
@@ -42,32 +41,44 @@ type Repair = {
 const repairs = new WeakMap<WebGL2RenderingContext, Repair>();
 
 export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): boolean {
-  if (call[0] === "clearVertexAttribute") {
-    const [,retirement,index,size,type,normalized,stride,offset] = call;
-    if (retirement.complete) { recordGlError(retirement.owner,0x502); return false; }
-    if (!retirement.calls[0][1]) {
-      if (!checkedGlCall(retirement.owner, () => {
-        retirement.calls[0][1] = gl.createBuffer();
-        if (retirement.calls[0][1]) retirement.pending = true;
-      })) return false;
-      if (!retirement.calls[0][1]) { recordGlError(retirement.owner,0x505); return false; }
-    }
-    return checkedGlCall(retirement.owner, () => gl.bindBuffer(0x8892,retirement.calls[0][1])) &&
-      checkedGlCall(retirement.owner, () => gl.bufferData(0x8892,0,0x88e4)) &&
-      checkedGlCall(retirement.owner, () => gl.vertexAttribPointer(index,size,type,normalized,stride,offset));
-  }
   const [method, ...args] = call;
   Reflect.apply(gl[method], gl, args);
   return true;
 }
 
 /** A selector must accept before dependent calls run; independent groups
- * (such as read/draw restoration) are attempted even after another fails. */
+ * (such as read/draw restoration) are attempted even after another fails.
+ * This native-only synchronous inverse has one error owner. A clean post-check
+ * is the next call's clean entry; failure revokes it before the next group.
+ * No clean-entry evidence survives this invocation. */
 function restoreInverse(inverse: NativeInverse): boolean {
   let accepted = true;
+  // Evidence belongs only to this synchronous inverse and error owner.
+  let cleanEntry = false;
   for (const group of inverse.groups) for (const call of group) {
-    const acceptedCall = call[0] === "clearVertexAttribute" ? invokeNativeCall(inverse.owner.gl!,call)
-      : checkedGlCall(inverse.owner, () => { invokeNativeCall(inverse.owner.gl!,call); });
+    let acceptedCall = false;
+    const gl = inverse.owner.gl;
+    let cleared = cleanEntry;
+    // A throw or rejected post-check cannot authorize the next group.
+    cleanEntry = false;
+    try {
+      if (gl) {
+        if (!cleared) for (let i = 0; i < 32; i++) {
+          const error = gl.getError();
+          if (error === 0) { cleared = true; break; }
+          recordGlError(inverse.owner, error);
+        }
+        if (cleared) {
+          invokeNativeCall(gl, call);
+          const error = gl.getError();
+          recordGlError(inverse.owner, error);
+          acceptedCall = error === 0;
+          cleanEntry = acceptedCall;
+        }
+      }
+    } catch {
+      recordGlError(inverse.owner, 0x502);
+    }
     if (acceptedCall) continue;
     accepted = false; break;
   }

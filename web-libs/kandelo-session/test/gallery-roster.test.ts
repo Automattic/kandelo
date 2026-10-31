@@ -138,7 +138,9 @@ describe("parseGalleryRoster", () => {
       "love",
       "cage",
       "sway",
+      "labwc",
       "omarchy",
+      "redis",
     ]);
     // The floating Wayland desktop left the gallery when Omarchy joined it;
     // it still boots by URL (?profile=wayland) for its compositor specs.

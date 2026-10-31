@@ -26,6 +26,104 @@ stacked on #1574. Neither increment is part of the landing runtime cut.
 Remaining baseline implementation and broad conformance belong to that
 follow-up; no missing API is reclassified as a platform boundary.
 
+## Latest desktop checkpoint, 2026-10-31
+
+The desktop work remains in draft
+[PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
+cage/sway landing. The current frozen normal preview is
+http://127.0.0.1:5679/pages/kandelo/ at `b6d57a94dfdc`. It includes the
+four-vector comparator, selected-context preservation for fixed KMS helpers,
+foreground PTY resize routing and retained epoll negative-readiness probe.
+Its own normal
+SDK32/64, kernel, programs/libraries, shell/rootfs and host producer finishes0
+with freshness, selected-kernel ABI and all93-owner/245-member identity
+checks. Kernel SHA256:
+`1a8ec0cf5db3c273429fe969c9b5265a2bb0d0551d3b53f24c9f09aeda5dc607`.
+Earlier previews remain frozen at their separately recorded revisions.
+
+The user's repeated stall when crossing terminal boundaries is reproduced
+on5679. In one headless Chromium session, equal96native-pixel moves have
+median cursor response brackets of70.5ms within a terminal versus136.7ms
+crossing at3terminals, and71.8ms versus135.4ms at5terminals (six observations
+per kind/count). These are25ms-polled, NONQUIET observations, not an isolated
+epoll benefit or a matched comparison against main. The focus stall remains
+open. The separate accepted operation trace records substantially more Sway
+queries, submissions, draws and shared-memory comparisons during crossing,
+while cursor readback counts stay nearly constant. Complete ordered operation
+capture and checked-query transport/state invalidation investigations are the
+next discriminators; no focus workaround or synchronization skip is justified.
+
+The earlier selected-context candidate remains available, without tracing, at
+http://127.0.0.1:5678/pages/kandelo/ . This experimental local source proxy
+retains normalc775 artifacts and comparator, applying only the committeda196
+kernel.ts/GL-registry selection delta. Its two actual HTTP module outputs
+match the reviewed production transformation; HTML200/COOP/COEP pass. It is
+not a fresh combined normal build and excludes the later Rust resize repair.
+Server job `responsiveness-experimental-preview-r1-1031-111602-7713` remains
+live. Receipt/HTTP-proof SHAs are
+`12c806e1f35afae0d5457e1a1bbfc68fdf99218440a5b9d638edbe42e9b5c65c` and
+`b6bcf193e72036ddc02c96871999148435e84ff7bbc736f9263b648981ea0741`.
+Availability is announced immediately for user responsiveness feedback;
+there is no frame recorder, CPU profiler or claimed responsiveness gain.
+
+The current preview includes the bounded client-draw/restoration changes,
+shared import-metadata reader optimization and four-vector comparison loop. Exact native-operation
+counts, parser result parity and isolated screens are recorded below;
+**single-terminal and multi-terminal responsiveness improvements remain
+unproven**. Do not turn those operation results into an application claim.
+
+A fresh headless Chromium cold Start observation passes functional menu,
+normal same-page replacement and source/artifact guards, joining38/38 tagged
+workers. Its click-issued→menu-observed bracket remains about11.6s, with
+about9.1s after receipt of the final new-worker entry-attempt record. Those
+are instrumented NONQUIET observer endpoints, not guest readiness or a
+matched performance comparison. Native-clock standalone controls distinguish
+busy and waiting threads; both first real-guest continuous native captures
+are incomplete from actual trace loss/output caps. A later boot-only native
+identity capture plus public macOS thread counters succeeds: the kernel
+worker uses7,689.511ms CPU and SFWBar main137.355ms during their separately
+bounded cold-menu snapshot intervals. Thirteen existing workers are joined;
+eight late workers have no baseline and remain censored. This directs the
+investigation toward platform work without establishing whole-process CPU,
+utilization, per-function attribution or an application improvement.
+A bounded cold-Start aggregate now passes, recording26,484 comparisons
+requesting133.5GB over its12.5s input/stop observation bracket;26,330 return
+equal. Their instrumented import scopes accumulate5.2s. Read contexts
+account for16,752 comparisons. These are operation/elapsed observations,
+not active CPU, actual bus traffic or permission to skip synchronization.
+A separate passing scalar trace proves8,312 dominant SFWBar reads each
+request and return1,024bytes, while triggering16,624 equal comparisons of
+4,190,208bytes. The dominant population is not one-byte reads or underfill.
+This identifies platform synchronization amplification; a safe write-tracking
+model remains unimplemented.
+
+Availability is separate from completed validation. Browser-memory, real
+three-engine desktop acceptance, destination-main benchmarks, conformance
+and the remaining graphics baseline stay open. Detailed evidence, original
+failures, artifact receipts and exact scope are retained in this ledger.
+
+### Historical desktop checkpoint, 2026-10-30
+
+The desktop work is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601),
+stacked on the cage/sway landing. Source `1c80c5d713` integrates shared
+GTK signal adapters and the native SFWBar workspace pager. The full normal
+GTK8 library build and SFWBar link pass in the current preview producer;
+fork instrumentation, image composition and final coherence checks are
+still running. No working SFWBar browser result is claimed yet.
+
+The actual-library callback-entry controls reproduce eight original
+connected-callback signature traps and pass all twelve repaired cases.
+Four class-dispatch controls remain working. These invalid-widget
+controls establish callback entry only. The separate GObject diagnostic
+passes62/62; fresh normal fixture publication and the six failing broader
+upstream targets remain open.
+
+Immediate order is working SFWBar/menu/workspace integration, then a
+quiet rendering/input performance investigation across Cage, Sway and
+Labwc. No measured performance improvement is claimed. ScummVM rendering,
+three-engine acceptance, browser-memory and the broader graphics baseline
+remain open; the graphics follow-up stays in PR #1594.
+
 ## Unpublished ABI policy
 
 Use one ABI above current main for the combined effort, as requested by
@@ -8316,6 +8414,37 @@ It is reattached without opening Finder. The selected Sortix checkout
 `7e8f0082ab0b58ad3383a8abbf47dc4b40dcf25d`; current-worktree SDK, kernel
 and overrides remain required for the later normal conformance run.
 
+### Labwc port and normal desktop consumer in progress (2026-10-30)
+
+Labwc 0.20.2 is being added as a separate native Wayland stacking desktop,
+using the same wlroots 0.20.2 as cage/sway. Its pinned source archive is
+`fae023b6fe022f7057556707a17cdb2d98e0138c5dffaedaa1dade975699f9e8`.
+The normal recipe builds labwc and labnag with PNG/SVG support and actual
+fork instrumentation. Optional Xwayland, window-icon lookup through libsfdo,
+systemd integration and translations are disabled explicitly. No target
+identity override, source patch or runtime stub is introduced.
+
+The normal shell composition declares the package dependency and lazy
+executables/configuration; its gallery profile starts `labwc -s foot` using
+the existing shared fonts, XKB and libinput data. The existing cage/sway
+landing is unchanged. Program ABI 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+Source-only gallery/lazy-address validation passes 25/25 cases, no skips;
+the evidence registry agrees on 632 files. The curated gallery assertion
+also retains the already-present Redis entry, which its prior expected list
+omitted. Playwright lists the new rendered case in all three engines.
+Node and browser tests cover floating-window input, menus, focus, clean
+exit and display reuse. Labwc is also added to all four existing memory
+switching cycles with actual rendered terminal-command output, without
+changing the budgets, timeouts, realm or failure assertions.
+
+Normal package installation is still running at this source checkpoint;
+no successful package publication, desktop session, memory result or
+performance claim is made yet. Final artifacts and real Node/three-engine
+browser validation remain required. Source logs are the positive checkout's
+`.context/labwc-source-check.log`, `.context/labwc-evidence-registry.log`,
+`.context/labwc-browser-inventory.log` and `.context/labwc-resolve.log`.
+
 ### Sway density policy and readable defaults (2026-10-30)
 
 Sway's generic automatic scale policy now rounds measured native connector
@@ -8345,6 +8474,29 @@ The existing browser spec replaces its fixed 16-pixel bar crop with the
 actual painted bar boundary and adds explicit 1x/2x small-pane cases.
 Normal artifact and combined runtime validation remain integration gates.
 Program 56 / host 3 / GL 17 / fork 21 remain fixed.
+
+### Desktop validation checkpoint (2026-10-30)
+
+The normal labwc shell/image and host build at `03ecd82c2e` completed:
+`labwc-products-1030-001314-959b` passed all 162 build nodes; the canonical
+rootfs build `labwc-canonical-rootfs-1030-003056-c4f5` also passed. The first
+actual headless Chromium desktop case, `labwc-rendered-chromium-1030-003540-ecc7`,
+failed its initial white-pixel threshold. Its retained screenshot shows a
+real decorated foot window and short shell prompt. That is evidence of
+initial paint, not completed menu, input, focus or teardown validation.
+The test now requires executed ANSI-coloured terminal output, and sends
+physical Shift transitions through the shared input helper. The same
+physical typing repair applies to raw evdev commands in the repeated
+memory switch case; its existing memory budgets and cycle counts remain.
+These revised desktop and memory cases still require execution.
+
+A separate headless normal Sway session at `0b0b69b196` reproduced the
+reported ScummVM graphics-mode failure. Actual captured guest stderr
+contains `Could not load any graphics mode`; ScummVM nevertheless exits
+zero, so exit status alone cannot establish a repaired launch. Evidence:
+`.context/gbm-fork-aliases/.context/scummvm-sway-reproduction.txt` and
+`.png`. The shared EGL native display/window lifetime repair is being
+validated separately; no ScummVM-specific bypass is used.
 
 ### Registered Wayland native ownership checkpoint (2026-10-30)
 
@@ -8440,9 +8592,10 @@ settlement control with the preserved nonzero offset.
 New standard requests are GETFB InOut28 and SETPLANE In48, with shared
 layout/number controls and xtask snapshot source coverage. Program 56 /
 host 3 / GL 17 / fork 21 remain fixed in this unpublished batch. Normal
-ABI/generated-output regeneration, kernel builds, actual upstream
-wlroots cursor assignment, Node/browser rendering and memory/conformance
-checks remain integration gates. Cursor latency has not been measured;
+ABI/generated-output regeneration completed at `265cb6e906`, as recorded
+below. Normal kernel/program/image products, actual upstream wlroots cursor
+assignment, Node/browser rendering and memory/conformance checks remain
+integration gates. Cursor latency has not been measured;
 this source/native evidence does not establish its cause or improvement.
 
 ### Sway native-density test setup (2026-10-30)
@@ -8472,6 +8625,182 @@ Playwright discovery of all nine Sway cases across three engines. Evidence:
 These checks do not establish repaired Sway rendering or input. Normal
 consumer execution remains an integration gate; application, host sizing,
 artifacts and ABI are unchanged by this test-only correction.
+
+
+### Combined cursor/Wayland validation checkpoint (2026-10-30)
+
+Landing `e570722d11` combines the Wayland display/window lifetime repair,
+allocation rollback, cursor discovery/GETFB/SETPLANE and regenerated ioctl
+outputs. Normal wasm32 and wasm64 musl preparation, ABI regeneration/check
+and standalone resolver build/tests passed before its product build. The
+program contract digest changed, so all program consumers must be rebuilt
+despite keeping the single unpublished program ABI 56 epoch. Evidence:
+`.context/gbm-file-aliases/.context/cursor-wayland-abi-prepared.log`.
+
+Full workspace Rust tests at exact clean landing source `e570722d11`
+passed: 3,384 tests, zero failed or ignored, across 98 result groups. Command:
+`cargo test --workspace --exclude xtask --target aarch64-apple-darwin`,
+through the declared development shell. Job
+`cursor-wayland-rust-1030-012425-b418` completed in 8m01s. This is native
+Rust evidence; it does not establish repaired compositor rendering.
+
+Primary Labwc source `f80ab6ec43`, incorporating the same landing runtime,
+passed 718 graphics source cases in 32 files, with no skips, and 84 entry,
+export and shared-memory inheritance source audit cases in four files.
+Both used the declared shell and one Vitest worker. Logs:
+`.context/cursor-wayland-source.log` and
+`.context/cursor-wayland-audit-source-only.log`. The separate memory-write
+audit is classified prepared-product and remains in the built acceptance
+selection; it is not included in the 84 source-only cases.
+
+The existing preview at port 5639 still uses normal production artifacts
+from `c2680bffa9`, with subsequent test-only fixes. Its Chromium Sway 1x and
+native 2x rendering/input/IPC/exit cases passed. The Labwc integration case
+failed while clicking Internals after a compositor canvas interaction;
+the original log, screenshot and trace are retained at
+`.context/gles-uniform-positive/.context/desktop-preview-current.log` and
+`desktop-preview-current-results/`. This is not a repaired cursor or
+ScummVM rendering result. A new normal combined product build and separate
+headless preview verification remain required before offering that fix.
+
+The normal combined build `cursor-wayland-combined-products-1030-012148-10dc`
+completed successfully at `e570722d11` after 2h01m. Its bounded headless
+Chromium smoke `cursor-wayland-preview-smoke-e570-1030-035518-4c73` then
+failed after 6m58s. Actual Sway and ScummVM-inside-Sway cases both stop at a
+black initial desktop before client paint; Sway stderr repeatedly reports
+`Page-flip failed on output Virtual-1`. Foot and swaybg do launch. This is
+an ordinary graphics defect, not a missing application or platform boundary.
+The imported cursor transport case passes, ABI/freshness checks pass and
+selected actual product identities remain identical before/after. Those
+passes do not establish cursor movement or ScummVM rendering. Exact logs,
+screenshots and traces are preserved in the file-alias checkout's
+`.context/compositor-preview-smoke-e570/`. Existing user previews remain
+unchanged. A GPU-backed cursor allocation/commit repair is being validated
+separately before another normal consumer build.
+
+### SFWBar desktop panel port in progress (2026-10-30)
+
+The requested SFWBar port pins upstream `v1.0_beta17` and reuses the existing
+GTK3 3.24.34, gtk-layer-shell 0.9.2, GLib 2.84.4, JSON-C 0.19 and Wayland
+packages. The recipe builds the core statically and the unchanged application
+menu as an actual GModule side module. Its real imports must resolve against
+the main program before and after fork instrumentation; a static archive is
+not substituted for the module that upstream opens with `g_module_open`.
+
+The normal shell product declares the program, module, panel configuration
+and actual XDG application entries. The selected entries launch Terminal,
+ScummVM and the existing native Wayland Paint client. Sway's bar replacement
+includes its current configuration, retaining larger fonts, shortcuts and
+native density behavior. Labwc starts the panel and foot through an explicit
+normal shell command. The optional service modules are disabled explicitly;
+the selected desktop contract is Start menu, task list/window actions and
+clock. Program 56 / host 3 / GL 17 / fork 21 remain unchanged.
+
+Source review found three GTK signal handlers missing parameters required
+by their actual signal signatures. The portable patch retains behavior and
+supplies the full popped-up, delete-event and swapped notify prototypes.
+Clean patch application and Wasm32 syntax/type controls pass for both full
+translation units; original sources fail all three exact type assertions.
+Evidence: `.context/sfwbar-callback-review/check.log` and `handoff.md`.
+Those checks used ABI 55 GTK/layer-shell headers and current GLib headers;
+they are syntax/API evidence, not a current target link or application run.
+
+The new recipe and demo configuration do not yet establish a working port.
+Normal package/image builds, Node and three headless browser consumers,
+menu launch/focus/close/exit behavior and repeated memory switching remain
+required. Existing previews and the separate frozen cursor build do not
+contain SFWBar. Payload size, memory cost and performance are unmeasured.
+
+The first normal target build at `c057ad36ac` completed GTK3 and
+gtk-layer-shell, then failed SFWBar's static link because the producers'
+pkg-config metadata omitted actual GBM dependencies. Job
+`sfwbar-products-c057-1030-021154-5e3f` exited 1 after 5m23s; its raw log is
+retained. This is a package dependency defect, not an unavailable runtime
+capability or an application rendering result.
+
+The shared repair makes both installed GDK pkg-config variants declare
+their direct private `gbm` dependency. Wayland-EGL declares its strong
+`wayland-client gbm` dependencies; its optional weak EGL retarget hook does
+not require adding an unconditional EGL library. Both producer revisions
+advance to 5. A causal declared-SDK link of `gdk_display_open`, using only
+target pkg-config flags and identical actual cached libraries, failed
+before with ten GBM undefined symbols and linked successfully after. The
+isolated controls contain metadata only; no target libraries were copied
+or restamped. Evidence: `.context/sfwbar-static-link/summary.json`,
+`before.log`, `after.log` and the recorded flag lists. Normal producer and
+SFWBar rebuilds and application validation remain required.
+
+Source review separately found that libepoxy publishes a headers-only
+`egl.pc` which can mask the canonical SDK EGL metadata. That broader
+producer/API metadata gap remains ordinary follow-up work; this static
+GBM dependency repair does not claim to close it.
+
+The metadata retry at `079ce7af0b` rebuilt the shared producers, linked
+SFWBar and instrumented both executable and application-menu module. Job
+`sfwbar-products-079-1030-023503-aeeb` failed after 22m29s at the recipe's
+final symbol check: it compared activation-owner fork imports only with
+main-program exports. The text decoder also printed structural errors;
+process substitutions could hide its failure. This is a recipe validation
+defect; neither runtime module activation nor rendered menus ran.
+
+The recipe now uses runtime structural decoding, fails on decoder errors
+and distinguishes actual application symbols, linker relocation objects
+and exact versioned activation imports. It checks export/import kinds and
+unknown private names fail. Each side module receives its own activation,
+including bindings unused by main; main imports are not that authority.
+Generated ABI names and their provider kinds govern the fork bindings.
+Fourteen declared-shell controls pass, including missing/wrong-kind and
+invented private symbols, malformed bytes, and a real SDK-linked executable
+plus side module after normal fork instrumentation. An initial control
+caught an overly strict main-import dependency; another caught digit-bearing
+ABI constant names. Final evidence is
+`.context/sfwbar-module-symbols-accepted.log`; intermediate diagnostic logs
+remain preserved. Normal SFWBar package/image and actual loader/browser
+checks remain required. This changes no ABI epoch or runtime binding.
+
+### Labwc fixture releases real pointer capture before dock selection
+
+The original three-case Chromium preview run remains preserved at
+`.context/desktop-preview-current.log` in the positive checkout: both Sway
+DPI cases pass, while Labwc times out after opening its second real foot
+window because the canvas intercepts the Internals dock click. Its
+original screenshot and trace are unchanged. This is a fixture interaction
+error, rather than an overlapping dock layout: the display deliberately
+requests browser pointer lock after trusted canvas clicks.
+
+A separate headless Chromium causal probe against the unchanged port-5639
+preview confirms the actual canvas owns pointer lock. The canvas ends at
+CSS y613 and Internals begins at y664. An ordinary dock trial click fails
+with the original interception; a real Escape releases capture, after
+which the ordinary Internals click succeeds. The fixture now follows that
+shipped Escape-to-release interaction and observes capture retirement
+before selecting an external control. It neither force-clicks nor invokes
+`exitPointerLock` through evaluation. Production source and normal guest
+artifacts are unchanged.
+
+Evidence is in the isolated `labwc-fixture-input` checkout's `.context/`:
+`original-failure-evidence.json` records hashes of the original log,
+screenshot and trace; `labwc-pointer-proof.json`, `labwc-pointer-before.png`
+and `labwc-pointer-after.png` record the causal probe. An Escape-only
+full-spec variant reaches Internals but fails the two-foot count after
+4m08s; its separate `labwc-fixed-results` trace remains preserved. The
+fixture therefore observes a newly painted foreground foot after the menu
+action before leaving the guest display. With that readiness assertion,
+the complete original Chromium scenario passes in 30.4s: drag, root menu,
+Terminal action, process counts, focus-specific shell variables and clean
+compositor exit. This records the input-ordering observation without
+attributing it to a particular kernel or browser delivery stage.
+
+The final source also attaches actual DPR, screenshot and canvas bounds,
+menu bounds and converted click coordinates as `labwc-menu-input` JSON.
+The final repeated full Chromium run passes in 42.7s, retaining its
+successful trace under `.context/labwc-final-results`; the exported
+attachment is `.context/labwc-menu-input.json`. Actual DPR is 1, the
+screenshot is 1090×613 and the canvas occupies 1089×613 CSS pixels. Other
+engines, broader browser-memory and graphics conformance are not rerun by
+this fixture batch. Production/artifacts stay at the preview's existing c268 source;
+this batch changes only the fixture and evidence ledger. This check makes
+no cursor-performance claim.
 
 ### Rendered GPU cursor backing (2026-10-30)
 
@@ -8567,6 +8896,29 @@ runtime defect. Exact commands, timings and profile attribution are in
 Current three-engine consumer checks, the complete browser-memory gate
 and relevant POSIX conformance remain required on the combined source
 and its normal products. These narrow passes do not discharge them.
+
+
+
+### SFWBar normal package publication (2026-10-30)
+
+At source b97ef30f69, job sfwbar-products-b97-1030-042637-b1f0
+completed the normal SFWBar bootstrap and published all nine declared
+artifacts, including the real instrumented application-menu module. The
+subsequent rootfs stage failed because the selected local tree did not
+yet contain programs/wasm32/yacc.wasm. The complete job therefore failed
+after 36m20s. The next normal shell/image build must provision its full
+program graph; the package pass does not establish image acceptance.
+
+The actual published main executable is 35,590,598 bytes, SHA256
+88ae739e7aac1ef1cb46caeb5d3fc3dadf9f980521109107ae522115aa6e4aff.
+The menu module is 28,437 bytes, SHA256
+bf403667d198890c8a04edcc148106f97940c29c89ca7c2ca68f2307c318f449.
+The normal runtime's checkSideModuleForkContract accepts these actual
+bytes. The main records assume-all-entries-fork-returning, including
+address-taken fork-returning functions. The exact check and decoded
+contract are in .context/sfwbar-b97-loader-contract.log. This is real
+loader admission evidence, not module initialization, menu rendering or
+application-launch evidence. Those consumer checks remain unrun.
 
 ### Sway status-bar repaint readiness (2026-10-30)
 
@@ -8676,6 +9028,18 @@ controls pass afterward. Source, exact commands and main comparison are in
 .context/rootfs-target-closure/.context/rootfs-target-handoff.md. Actual
 standalone rootfs execution with the repair remains integration validation.
 
+
+### Combined desktop source preparation (2026-10-30)
+
+The desktop integration retains SFWBar's bottom panel and Sway's separate
+focused-title measurement. Both use the first-repaint readiness wait from
+the landing fixture correction, preserving their own colours, edge and
+contiguous-band assertions. It also integrates the shared Wayland front
+ring and standalone rootfs dependency selection. These prepared source
+changes do not alter the still-running 664 normal image/consumer cohort;
+its source and identities remain fixed until completion. Combined normal
+artifacts and actual rendered validation are required after integration.
+
 ### Standalone rootfs normal-build proof (2026-10-30)
 
 Exact clean repair source f5a8438d47 passes normal job
@@ -8690,3 +9054,5221 @@ outputs. Exact statuses, initial/final projections and actual byte records
 are in .context/rootfs-target-closure/.context/rootfs-standalone-proof.
 This closes the standalone orchestration reproduction; it does not supply
 rendered desktop, browser-memory or POSIX acceptance for other changes.
+
+### Normal SFWBar startup checkpoint and launcher repair (2026-10-30)
+
+Exact source 6647846dda completes normal desktop products in job
+sfwbar-quick-664-1030-050503-c22b. Its later identity capture fails before
+consumers because the wasm64 graphics stamps are absent. The explicit
+normal wasm64 DRI/GLES builders supply those archives in follow-up job
+sfwbar-quick-664-provisioned-1030-054754-0e23. ABI/freshness, actual
+main/module import admission, SDK-linked GTK consumer and normal Node
+`sfwbar --help` pass. All 92 selected owners, 243 members and 27 actual
+library trees agree before/after the browser cohort. Both actual headless
+Chromium demo cases fail initial Start readiness: neither Sway nor Labwc
+paints the panel. Menu, launch, focus and close acceptance remain unproven.
+
+A separate 12.7s headless observation on the same frozen normal artifacts
+shows painted foot and live Sway, swaybg, foot and bash, with no SFWBar
+process or GTK/module error. Pinned upstream Sway 1.12 joins the configured
+bar command into one string and passes that string directly to `execvp`,
+appending `-b` and the real bar ID. The packaged command included `-f`
+arguments in that executable pathname. Its resulting failure is inferred
+from that source and the actual missing process, not a captured syscall.
+The package now installs an executable `kandelo-sfwbar` launcher selecting
+the fixed configuration and forwarding all arguments and the inherited
+Wayland socket; Sway names that executable only. No kernel or consumer
+bypass is introduced. Labwc's separate failure has not been attributed to
+this Sway-only cause. Normal combined rebuild and both GUI reruns are
+required, including the integrated shared Wayland front-lifetime repair.
+
+Evidence is retained under .context/sfwbar-quick-664-provisioned and
+.context/sfwbar-startup-observe; the latter includes exact upstream source
+identities, process/terminal captures and the startup handoff. No GUI or
+performance success is claimed from CLI admission or startup diagnosis.
+
+### SFWBar callback contract review (2026-10-30)
+
+The retained Labwc trace establishes that SFWBar actually starts, then
+traps with a function-signature mismatch. Its immutable main-program
+identity matches the normal before-owner record. The captured stack
+passes through Wayland closure dispatch and the shared libffi dispatcher;
+it does not establish a GTK signal callback as this trap's cause. Exact
+listener investigation remains open. The combined 32071f6afd rebuild is
+stopped deliberately after 2m with signal 15, preserving normal cache
+outputs before addressing the known unresolved failure. No consumer runs
+in that stopped attempt and no build success is claimed.
+
+A separate source registration review finds six additional definite
+callback type errors: two GdkDisplay monitor handlers omit closure data,
+FlowGrid's enter event omits its boolean propagation result, the swapped
+icon-theme handler uses a boolean one-argument helper instead of a void
+two-argument callback, the sensor timeout uses a void helper instead of
+a boolean source, and Wayfire's monitor handler omits closure data. The
+portable patch includes unused signal parameters, returns FALSE to allow
+event propagation, and uses adapters preserving the direct helpers and
+one-shot timeout removal. It does not change shared dispatch or relax
+WebAssembly types. All five complete source files pass Wasm32 syntax and
+six exact callback-type controls; each original registration fails its
+corresponding static assertion. Actual immutable normal dependency headers
+are used. Evidence: .context/sfwbar-callback-extended/check.log and check.py.
+These controls establish API type corrections, not resolution of the
+distinct captured Wayland listener trap or GUI acceptance.
+
+### SFWBar ignored Wayland listener repair (2026-10-30)
+
+Pinned SFWBar's monitor source casts one zero-argument empty handler to
+five different registered Wayland event callbacks: surface leave, layer
+closure, logical position, logical size and description. The package
+patch replaces these casts with exact generated-protocol signatures,
+preserving their intentional ignored-event behavior. Logical position
+and size share a compatible four-argument handler. Shared libffi, Wayland
+dispatch, protocol messages and capability declarations remain unchanged.
+
+All five original registrations trap with a signature mismatch when
+invoked through their actual generated listener fields in separate C11
+Wasm32 translation units; all five replacements return normally. Full
+monitor-source Wasm32 syntax passes before/after. C23 exact-field type
+assertions reject the five originals and accept the five replacements;
+C11 old-style empty parameter lists alone do not detect this difference,
+so the actual C11 Wasm invocation controls provide the runtime evidence.
+All three package patches apply together without fuzz. Evidence and exact
+commands: .context/sfwbar-wayland-callbacks/check-sdk.log, invoke-sdk.log
+and handoff.md. These controls prove the callback repair, while the
+original Labwc event identity and combined GUI acceptance still require
+the separate normal-image protocol capture and rebuild.
+
+### SFWBar original Wayland failure identified (2026-10-30)
+
+Normal isolated source 6647846dda completes desktop products, canonical
+rootfs, ABI and freshness in job
+sfwbar-diagnostic-products-664-1030-060502-3b6a (12m44s). The temporary
+5656 diagnostic server uses that frozen source and real resolver output.
+Its actual SFWBar main and appmenu module match the original failed 664
+cohort byte-for-byte. A 14.5s headless Chromium observation starts the
+unchanged program from normal Labwc foot with only WAYLAND_DEBUG logging
+and requires a new captured signature fault before reading its stderr.
+
+GDK's output description, logical position and size events succeed in
+that same invocation. SFWBar's own xdg-output object then receives its
+name successfully, followed by `zxdg_output_v1.description`; that last
+event immediately precedes the new signature fault. The listener source
+casts zero-argument monitor_noop to a three-argument description handler,
+matching the exact recorded void-three-i32 indirect-call signature. This
+identifies the package callback defect and confirms that patch 0003
+repairs the failing registration; generic Wayland/libffi dispatch is not
+the cause. Normal rebuilt GUI/menu acceptance remains required.
+
+Actual selected source, all owners, SDK and artifact identities agree
+before/after this diagnostic. One extra after capture omitted the prior
+resolver-policy environment; its raw record differs only in that context
+metadata and capture time. A new capture with the explicit identical
+policy matches. Both records are retained. The private diagnostic server
+is stopped after browser closure; the independent cursor preview remains.
+Evidence: .context/sfwbar-startup-observe/labwc/runtime-causality.md,
+protocol.txt, diagnostic-identities.json and trace; all-owner records in
+.context/kms-cursor-discovery/.context/sfwbar-diagnostic-664-*.json.
+
+### SFWBar popup ownership and remaining callback batch (2026-10-30)
+
+The package's window association destructor receives stored GList** data
+but originally treats it as a widget. Its unmap handlers also duplicate,
+retain dead receivers, miss destroyed/unmapped references and leave live
+list iteration exposed to synchronous removal. The portable source patch
+uses the correct destructor datum, object-bound unmap/destroy handlers,
+idempotent membership transitions and a separately retained traversal.
+It preserves ordinary widget operations and last-reference notification.
+
+The tracked packages/registry/sfwbar/test/run-window-lifecycle.sh accepts
+the exact manifest source archive, verifies its SHA-256, extracts only
+into scratch and applies actual package patches without fuzz. It compiles
+the complete upstream window.c against native GLib/GObject 2.86.3 with
+UBSan and a narrow Gtk surface fixture. Signals, weak receiver lifetime,
+data destruction and lists are real GLib/GObject operations. A test-only
+live-object boundary diagnoses bad callback data before unsafe access.
+All ten upstream controls fail with diagnosed assertions; a destructor-
+only intermediate still fails all ten; all ten complete repairs pass.
+Controls include self-reference, legacy registration normalization and
+reentrant sibling destruction. Wrong archives fail before extraction.
+The tracked runner also passes against the complete five-patch stack;
+per-case results are in .context/sfwbar-window-lifecycle-tracked-results.
+Private ASan controls stall before their first fixture marker for both
+variants and provide no source or runtime-defect evidence; logs remain.
+Evidence: .context/sfwbar-window-lifecycle/handoff.md and portable-final.log.
+
+The remaining collection/trigger review adds eight typed adapters at
+fourteen registration/removal sites while retaining direct helper APIs.
+These cover workspace commits, three mirror updates, stable base-widget
+trigger identity, tray construction and switcher triggers. Labwc's actual
+protocol capture advertises ext-workspace v1, so those workspace callbacks
+are part of startup even without a pager. No protocol or widget feature
+is disabled. All 35 full-source/type/audit controls pass; all eight
+original callback invocations trap in separate-translation-unit Wasm32
+controls, while all eight repaired calls forward and return correctly.
+The workspace control uses actual workspace state/focus/invalidation
+code; seven GUI adapter controls use explicitly scoped callee effect
+doubles and do not establish GTK rendering. Source and commands:
+.context/sfwbar-collection-callbacks/handoff.md.
+
+Normal job sfwbar-combined-ae502-1030-061746-6feb is deliberately stopped
+with signal 15 after 19m to batch these tested package repairs before
+SFWBar instrumentation. Completed normal dependency outputs are retained.
+The job does not complete products or run consumers. Final combined
+normal SDK/package/image, real desktop interactions, browser-memory and
+relevant conformance remain required; these native/source controls do not
+close them. No ABI number or compatibility advertisement changes.
+
+
+### SFWBar final callback registration audit (2026-10-30)
+
+The pinned callback inventory finds five additional incompatible
+registrations after patches 0001 through 0005. Two are enabled core paths:
+file-monitor weak notification must unref the retained GFile datum rather
+than the dead monitor, and tray-menu destruction must remove sources for
+the actual menu widget while discarding the helper's boolean result.
+Three are disabled optional-module paths: MPD channel destruction, ALSA
+idle subscription and notification pixbuf pixel destruction. Typed
+adapters preserve direct helper signatures, argument ownership, source
+return values and the existing disabled-module selection. No runtime
+bypass, ABI bump or capability advertisement changes.
+
+All five original registered types fail their exact contract assertions;
+all five repaired types pass. Actual separate-translation-unit Wasm32
+calls trap for all five originals and return correctly for all five
+repairs, checking once-only effects, argument routing and return values.
+The adapter controls use scoped helper effect doubles; they are not GTK
+or service execution. The 22 focused controls pass; all 74 core files
+pass the incompatible-function-pointer syntax gate; enabled appmenu
+source/type controls pass. All six patches apply together without fuzz
+and reproduce the verified repaired bytes. Full original/repaired
+actionlib, snimenu, MPD and notification files pass syntax. ALSA's
+disabled dependency is absent from the captured closure, so only its
+real GLib callback contract and extracted adapter are checked. No
+enabled ALSA artifact or optional service claim is made.
+
+The manual inventory covers core/module signal, source, thread, IO,
+weak/destroy/pixel, traversal, async/D-Bus, custom listener and Wayland
+registrations. No further incompatible invocation signature is found
+within that scope. Identity-only FlowGrid signal-handler casts remain
+unchanged. This audit does not prove every dynamic protocol/lifecycle
+path. Normal main/module builds, actual Sway/Labwc rendering and teardown,
+three-engine checks and browser-memory remain required.
+Evidence: .context/sfwbar-final-callback-audit/handoff.md, check-six.log,
+invoke.log, audit-syntax-results.json and apply-six-check.log in the
+primary workspace. Patch 0006 SHA-256 is
+556fc7f984d99edbf809a21512558708b6380608b5b9143d24f7fddd320771bb.
+
+
+The lifecycle runner also records a stricter source-origin classification
+for the original and datum-only collapse and reentrant-collapse controls.
+Their stale-list read can yield
+an alignment runtime-error diagnostic or a fully symbolicated UBSan SEGV.
+The latter is admitted only for those exact negative cases, exit status,
+completed READ diagnostic, matching top frame/summary, exact scratch
+source and actual iterator dereference after synchronous hide/unmap.
+Unknown signals, paths, statements, cases, incomplete reports and timeouts
+remain failures. Repaired cases still require exit zero and their own
+pass assertion. The initial six classifier controls pass, including the exact earlier
+SEGV log with only its deleted scratch prefix normalized to reconstructed
+verified source. The first five-patch run's 29/30 classification failure
+is retained; it is not a failed repaired ownership case or six-patch proof.
+The private six-patch native run passes all 30 expectations; full current
+tracked-source validation follows integration. Evidence:
+.context/sfwbar-collapse-diagnostic/handoff.md and classification.log.
+
+
+Tracked six-patch validation now passes all 30 lifecycle expectations:
+ten original diagnosed failures, ten datum-only diagnosed failures and
+ten repaired exits with their own pass assertions. All four observed
+UBSan SEGV forms (original/datum-only, collapse/reentrant-collapse) have
+source-bound classifier controls; all 24 classification tests pass,
+including arbitrary-signal, timeout, unrelated-source/statement/frame,
+missing-entry, truncated-report and repaired-failure rejection. Both
+fixture cases call the same verified live-list traversal. Earlier 29/30
+and 28/30 classification failures are retained with all ten repaired
+cases passing; no unchanged-code retry is used to hide them. Fixture,
+Gtk shim, production repair and timeouts remain unchanged. Exact final
+tracked evidence: .context/sfwbar-six-patch-native-v4.log and its
+*-results/results.json; .context/sfwbar-six-patch-classifier-all-collapse.log.
+Normal product and rendered browser acceptance remain pending.
+
+### SFWBar launcher inclusion in the normal shell image (2026-10-30)
+
+The complete e5ca69190a normal build succeeds, including shell/rootfs/host,
+SDK64, ABI and freshness checks. Before consumer execution, exact image
+inspection fails because `/usr/local/bin/kandelo-sfwbar` is absent. The
+SFWBar package declares and publishes the launcher, but the shell's explicit
+lazy-file inventory omits it. No graphical acceptance ran in that cohort.
+This is an image-composition defect, not an execution or browser boundary.
+
+The shell now installs that declared package artifact lazily at its real
+guest path with mode `0755`. The existing composed-image assertion includes
+it alongside the panel/module/configuration/desktop entries. Adding that
+expectation to the old composer fails; the source repair and normal image
+rebuild are validated separately. Shell revision 66 invalidates changed
+image bytes; SFWBar source and the ABI56 family remain unchanged.
+
+Private evidence: Kms `.context/desktop-candidate-e5ca69190a-v2/` and primary
+`.context/sfwbar-shell-launcher-before.log`. The complete normal build and
+ABI/freshness successes do not establish rendered SFWBar acceptance. A fresh
+normal image and current all-owner/actual-member identity checks must precede
+headless compositor and ScummVM consumers. Earlier ENOSPC and deliberately
+cancelled duplicate-producer cohorts remain failures, with raw evidence kept.
+
+All 18 existing shell composition/bridge checks pass after the launcher
+mapping repair, with zero skips (`sfwbar-shell-launcher-after.log`). The
+before run intentionally selects the affected composed-image case: one
+failure, 17 filtered cases. Normal artifact and browser validation of the
+repaired image still follows; the source check is not a rendered result.
+
+The preceding current narrow package run
+`sfwbar-package-smoke-e5ca-v2-1030-083815-d3a0` passes in 1m06s: normal
+rootfs/host, selected SFWBar/kernel, SDK64, ABI, actual main/menu-module
+admission and Node help exit0. Its selected source/dependency/SDK/package
+and actual host/rootfs bytes agree before/after. The first narrow attempt
+rejects an internal noncatalog image-module selector before consumers;
+the corrected script validates all public selectors from the catalog.
+
+Earlier c194 normal attempts encounter local ENOSPC. Scoped supported
+Cargo dev-profile cleanup of owned idle targets restores space while
+preserving release products, preview products and raw evidence. Shared
+cache collection remains unapplied. A later e5ca full graph publishes
+SFWBar's ten outputs, Sway and Qt, but fails when its duplicate same-key
+Clang producer is deliberately stopped. SourceOnly protects publication
+with no-replace semantics; it does not coalesce live producers. The
+original producer drains and publishes Clang, the build image and NetHack
+before the successful normal e5ca build is launched. Exact producer jobs,
+commands and disk-recovery logs remain in `.context`; no failed cohort
+is relabelled as current consumer acceptance.
+
+
+### SFWBar menu interface contract (2026-10-30)
+
+The exact normal desktop cohort at `be9dd62d1b` now builds successfully:
+shell/rootfs/host, both 64-bit DRI/GLES SDK archives, ABI and freshness,
+all ten SFWBar guest members (including the executable launcher), actual
+module admission, static GTK consumer link and Node help. Before/after
+source, SDK, library dependency and all product identities agree. The
+selected consumer inventory excludes the unrelated standalone program
+suite, which remains a full-baseline requirement. Scope evidence is
+`.context/sfwbar-port-consumer-scope.md`.
+
+The unchanged headless Chromium Sway and Labwc application cases both
+fail before painting a panel. Actual trace and binary-section mapping
+identify `g_wasm_iface_init_thunk` calling a valid binary initializer
+through a unary indirect call during `menu_item_get` construction.
+Kandelo's GLib adaptation incorrectly wrapped every
+`G_IMPLEMENT_INTERFACE` initializer as unary. SFWBar's generated
+`void(void *, void *)` initializer is correct and remains unchanged.
+
+The shared repair restores the public two-argument static/dynamic macros
+and supplies explicit unary adapters. The dependency patches migrate 360
+real unary registrations across GLib/GIO, GTK, ATK, Pango, GdkPixbuf and
+GLibmm (including upstream tests). Full binary and NULL registrations
+retain their public contract; a zero-argument upstream thread-test
+initializer gets the proper binary signature. Five installed-library
+revisions advance once; the GLibmm test-only patch is a declared recipe
+input without changing its installed-library revision. Program56,
+host3, GL17 and fork21 remain fixed.
+
+All six manifest-pinned sources pass fresh strict patch application with
+zero fuzz/offsets and a complete registration classification. Separate-unit
+Wasm32 controls reproduce both original binary-callback traps and pass
+ten repaired cases in C/C++ at both O0 and O2. Actual native GObject
+construction passes unary, binary, typed binary and NULL cases. Manifest
+parsing, script syntax and diff checks pass. These controls do not prove
+rebuilt guest or browser behavior; normal reverse-dependency rebuild and
+SFWBar menu/launch/focus/close/exit validation remain required.
+
+The same unchanged cohort's ScummVM Wayland rendering case also fails:
+its title maps, but launcher pixels do not appear. The optional ImGui
+loader warning is not a proven cause. Initial private diagnostic readers
+hit cached file previews, formatted size fields and the current protocol
+log's `#` object syntax; their failures are retained. A corrected
+headless observer captures actual protocol/process/syscall records and
+passes identity checks, without proving rendering. The EGL lifetime
+bridge sends attach/damage/commit directly, outside proxy debug logging,
+so absence of those log lines is not evidence of absent presentation.
+ScummVM rendering remains ordinary unfinished work.
+
+Exact evidence: job `sfwbar-ports-be9-v5-1030-095715-98f8` (exit 1;
+`.context/kms-cursor-discovery/.context/desktop-candidate-be9dd62d1b-v5`),
+`.context/sfwbar-map-current.py`, `.context/interface-contract-handoff.md`,
+`.context/interface-contract-control.log`,
+`.context/interface-contract-verify-lf.log`, and corrected observer
+`scumm-observe-be9-v4-1030-102921-6f8a` (exit 0, diagnostic only).
+No new working SFWBar preview, three-engine acceptance, browser-memory,
+POSIX completion or performance improvement is claimed.
+
+### Cursor storage sampling during vblank (2026-10-30)
+
+The real vblank worker consumed an accepted cursor record through
+`applyCursorRecord` and eagerly sampled its buffer in `setCursor`, then
+unconditionally sampled the same buffer again in the same kernel entry.
+The shared host now returns and reuses that owned snapshot once. Ticks
+without an accepted record still read live storage, including writes to an
+already mapped buffer and native context loss. Master-lease rejection and
+eager native readback failures retain their behavior. No storage epoch or
+cross-tick image cache is assumed. Node and browser use this same path.
+
+Two source controls failed before the repair: the actual registered
+vblank timer observed two CPU synchronizations, and the shared kernel
+registry observed two native GPU readbacks instead of one. After the
+repair, 41 tests pass across `dri-kms-stats-sab`, `webgl-kms-scanout` and
+`dri-kms-registry`, including stale leases, live writes, native failure,
+owned pixels and restoration. Evidence is the isolated cursor-motion
+checkout's `.context/cursor-before.log`, `cursor-after.log` and
+`HANDOFF.md`, prepared against `808a13235f`.
+
+This proves a reduced effect count for record-bearing ticks. Real-browser
+latency, combined browser-memory and guest conformance remain unrun. The
+full-frame scanout path is unchanged: a commit-counter-only shortcut
+would incorrectly hide writes through live mappings. The tiny theme-less
+fallback cursor and Cage's missing initial density policy are separate
+unfinished distribution fixes. No user-visible smoothness is claimed.
+
+### Cage density and shared cursor theme (2026-10-30)
+
+Cage lacked the initial density policy already used by Sway and Labwc.
+Its first modeset now chooses scale from the selected native mode and
+truthful connector millimetres, validates the combined state and loads
+the cursor theme after commit. Invalid or aspect-only physical sizes
+retain scale one; later explicit output-management requests remain
+authoritative. Cage revision advances from two to three.
+
+Both wlroots and libwayland's theme-less fallbacks copy a fixed 10 by 16
+pointer regardless of requested size. The distribution now supplies the
+unmodified Bibata Modern Ice 2.0.7 compiled theme through a normal data
+package and the shell's lazy archive at `/usr/share/`. Standard default
+inheritance reaches compositor and client cursor loaders. The upstream
+artist, exact GPLv3 text and pinned editable source are preserved. Shell
+revision advances from 66 to 67; program56/host3/GL17/fork21 stay fixed.
+
+The actual extracted Cage initialization/request handlers pass 54 mode
+cases, explicit later scales and three backend failure controls. Original
+source has 21 wrong-density results and 57 aggregate failed checks. Both
+unmodified pinned Xcursor file loaders select the real 24/48/64/72/96
+images and all 145 names/89 aliases; request 25 selects 24 and empty
+theme roots fail. Two independent packs are byte-identical: 4,510,631
+bytes, SHA256
+`db755f32db4f790df0cc81f07c0e598a14ac4d74c1e9cd2e690a4920c9127950`.
+The actual ZIP planner and Rust image writer preserve all 89 links,
+deferred target inode identity and archive digest across save/load.
+Normal isolated metadata generation confirms the canonical package path.
+Exact evidence is `.context/cage-cursor-hidpi/.context/HANDOFF.md`.
+
+These controls ran against the isolated 808a13235f source and unchanged
+relevant paths after integrating f092ab5607. Normal package/shell rebuild,
+full composition bridge, Node sessions, actual three-engine cursor alpha
+bounds and Cage/client scales, hotspot/click geometry, software fallback
+above the truthful 64-pixel hardware cursor limit and combined
+browser-memory remain required. The bounded headless plan is in
+`packages/registry/cage/tests/HEADLESS-ACCEPTANCE.md`. No working preview
+or improvement in cursor latency is claimed from these controls.
+
+### Generic SDL Wayland draw/presentation discriminator (2026-10-30)
+
+A diagnostic built through the frozen be9dd62d1b SDK and exact normal
+SDL2 dependency closure reproduces ScummVM's empty mapped client with
+ordinary opaque GLES2 quadrant clears. Real headless Chromium sees none
+of the four colors. Public `glReadPixels` returns all expected opaque
+RGBA values in 24 samples before/after three swaps, including resize;
+six observations report complete logical framebuffer zero, and SDL/GL
+report no swap errors. Source drawing is working; the downstream
+copy/export/import/composition path remains an ordinary defect whose
+exact owning stage is not yet established. No application bypass is
+added. Evidence is `.context/scumm-gles-readback-probe/result-summary.json`
+and its actual stdout, screenshot, build input hashes and browser log.
+The preceding frozen cohort identity check is unchanged; these are
+diagnostic results, not consumer rendering or graphics completion.
+
+The next diagnostic retains two exact front buffers after public swap,
+imports them through the normal EGLImage path, and samples each with the
+byte-exact pinned wlroots 0.20.2 RGBX shaders. All eight normalized opaque
+quadrant samples match at 640 by 480 and after resize to 716 by 782;
+raw framebuffer reads also match. Both shader/selector restoration
+checks pass and the original back buffers remain correct. The actual
+headless Chromium screen still contains none of the four colors, so its
+rendering assertion fails. Five thousand recorded SDK, owner-artifact,
+metadata, kernel, tool and dependency files remain unchanged. Evidence
+is `.context/sdl-front-sampling-probe/result-summary.json`, actual guest
+stdout, retained trace and `verify-result.log`.
+
+This establishes same-process C front import and shader sampling. It
+does not establish the compositor's cross-process import, texture target,
+draw or clipping behavior. Those remain the next causal separator; no
+production graphics fix or application bypass follows from this probe.
+
+### Rebuilt callback stack and shared-dispatch audit (2026-10-30)
+
+Normal cohort `808a13235f` completed the desktop graph, both SDK graphics
+archives, ABI/freshness, actual selected image paths, module admission,
+current static GTK link and Node SFWBar help. Source, SDK, dependency and
+artifact identities remained unchanged across the consumers. The full
+job `sfwbar-desktop-808-v6-1030-104432-dc37` nevertheless exits one:
+both actual Chromium SFWBar desktops fail before painting their panel,
+and ScummVM still maps an empty client. Evidence is
+`.context/desktop-candidate-808a13235f-v6/status.tsv` and its retained
+traces. These are rebuilt-consumer failures, not a test-pass gate that
+prevents experimental preview access.
+
+Mapping the actual rebuilt SFWBar binary now reaches GTK's base
+`GtkApplicationImpl` window-realize virtual method through signal
+marshalling. The original shared GLib interface-initializer repair gets
+past the earlier failure. Pinned GTK 3.24.34 installs zero-argument
+defaults into fourteen virtual slots with different argument and return
+types; its Wayland implementation calls the parent window-realize slot.
+Separate-unit controls reproduce all fourteen original signature traps
+and pass correctly typed replacements at O0/O2. GTK7's typed defaults
+are integrated in source but have not been normally rebuilt. This does
+not establish working SFWBar startup, menu behavior or teardown.
+
+The broader callback audit identified a source-closure ref callback cast
+with incompatible return type and wasm32 truncation in GLib's conversion
+of 64-bit libffi returns. A separate-unit matrix linked against the exact
+normal GLib5/libffi3 closure reproduces nineteen failures in fifty cases:
+eighteen wide-return assertions across six generic/vtable routes, and
+one actual GSource closure signature trap. All seven raw libffi return
+cases pass. Recompiling only the two complete affected GObject source
+units with typed reads and matching source ref/unref adapters passes all
+fifty cases, retaining all thirty-one prior passes. Published archives
+remain unchanged; this is diagnostic before/after evidence, not a normal
+rebuilt consumer result. These failures are not established causes of
+the SFWBar window-realize crash. Evidence is
+`.context/glib-callback-audit/{contract-before-build,contract-after-build}.json`
+and `results-before.jsonl`, `results-after.jsonl`, and retained worker logs.
+
+GLib6 integrates those two shared repairs. A normal
+`gobject-callback-tests` recipe and prepared-product host runner retain
+the fifty separate-unit cases plus ten pinned upstream GObject targets;
+missing artifacts fail and upstream assertions are unchanged. Its normal
+SourceOnly build produces all eleven outputs. The coherent actual Node
+run passes all fifty focused cases plus type, object, references and
+signal-handler. Six upstream targets fail: basic-signals, signals,
+closure, defaultiface, dynamictype and accumulator. The combined result
+is 54/60, zero skipped; it remains red. The libffi all-types missing
+dispatcher is reproduced again, alongside further signature traps.
+These are ordinary remaining baseline gaps. The existing strict GTK14 controls,
+package metadata/script syntax and integration whitespace checks pass.
+
+Exact normal evidence is job
+`glib-normal-contract-8a9c-v4-1030-124613-bc71`, source8a9c9cdb3e,
+`.context/glib-normal-contract-8a9c9cdb3e-v4/result-summary.json` and its
+unmodified verbose log. The preceding standalone normal resolve built
+all outputs but its 60 host cases were rejected before guest execution:
+the producer used SourceOnly keys and the runner used default-policy
+metadata. A subsequent launch omitted a required engine argument and
+performed no graph work. Both failed preparations are retained; neither
+is callback execution evidence. The corrected engine set publishes the
+fixture, kernel and complete declared library closure into one normal
+SourceOnly projection and runs the host gate under that same policy.
+
+The in-tree libffi generated signature families are incomplete. Actual
+upstream `generic-marshaller-1` and `all-types` controls get `FFI_OK` for
+nine- and twenty-argument signatures, then abort134 at missing dispatch
+keys 11534408 and 87964688318624. Original assertions are unchanged; a
+passthrough link observer only records actual preparation results.
+Evidence is `.context/glib-callback-audit/upstream-signals-*-result.json`.
+Source inspection also finds ignored ABI validation and unproven true
+variadic lowering.
+These ordinary gaps require support and correct failure behavior; they
+are not hard platform boundaries. Broad upstream GObject tests remain
+required, separately from the focused matrix. Header/library version
+mixing is not supported by the
+recorded cohort identities. GLib 2.84.4 and GTK 3.24.34 remain the pinned
+versions. The porting guide now requires checking registration and
+eventual invocation together, with typed adapters and argument/return
+coverage, instead of claiming all callback casts are repaired.
+
+Separately, the normal isolated b43d8a4ea2 Cage and Bibata package builds
+pass. The produced theme ZIP exactly matches the focused pack's size
+and SHA256 above. Normal job
+`b43-preview5660-normal-compose-v2-1030-115337-0c4e` also passes shell,
+rootfs and host builds, ABI/freshness and thirteen selected normal owner
+identities. Its immutable experimental preview is served on local port
+5660 before browser acceptance. Narrow Chromium DPR1/2 cursor geometry is
+recorded below; ownership, hotspot and responsiveness remain unvalidated.
+This cohort includes the
+cursor repairs and GTK6's known later SFWBar crash. Older previews remain
+unchanged.
+
+### Rebuilt desktop callback evidence (2026-10-30, source9a7865c86d)
+
+Normal job `sfwbar-desktop-9a7865-v7-1030-125010-0662` completes in
+41 minutes52 seconds with overall exit1. The complete desktop products,
+wasm64 DRI/GLES SDK archives, ABI/freshness, all-owner capture, module
+loader, static GTK link and actual Node SFWBar help checks pass. Both
+headless Chromium SFWBar cases fail before panel paint. After-consumer
+source, SDK, dependency and artifact identities remain unchanged.
+Exact stage results and logs are in
+`.context/desktop-candidate-9a7865c86d-v7/`.
+
+Both Sway and Labwc retain the same ordinary signal-dispatch trap:
+`g_cclosure_marshal_VOID__OBJECTv` through `_g_closure_invoke_va`,
+`g_signal_emit`, `_gtk_widget_propagate_hierarchy_changed` and
+`gtk_widget_set_parent`. The verified normal SFWBar binary is
+35,595,811 bytes, SHA256
+`7e62e590dd08adc2f1ba03a860d8562c5b92b30de2de1cd355b5ace179b5fb86`.
+The top indirect-call helper has three callback arguments plus a function
+table index; its four outer parameters do not prove a four-argument
+callback contract. Parsed errors and actual network request URLs are in
+`.context/sfwbar-9a7865-actual-errors-v2.json`; the original traces remain
+under the run's `sfwbar-chromium-results/` directory.
+
+Source inspection finds a reachable mismatch in pinned GTK's
+`gtkdragdest.c`: a normal `hierarchy-changed` connection receives widget,
+previous toplevel and userdata, but its helper declares only the first
+two. Its paired `realize` helper omits userdata too. SFWBar installs these
+shared GTK handlers through `gtk_drag_dest_set`. An inspector statistics
+handler has the same hierarchy signature defect. Exact adapters and
+related registration auditing are in progress; they are not yet normal
+rebuilt fixes. Shared GObject class-vfunc dispatch already uses the
+correct two-argument adapter and is not established as faulty here.
+
+The normal fifty-case fixture and this desktop resolve identical GLib,
+libffi, PCRE2 and zlib manifest/cache identities, recorded in
+`.context/callback-desktop-shared-cohort.json`. Those fifty cases do not
+cover this ordinary generated void/object callback path. A bounded
+headless diagnostic verifies the actual served binary's size and hash
+and unchanged before/after identities, but debugger scope reads fail and
+no runtime table target is captured. Its recording harness returns0;
+that is not target proof or application success. Evidence is
+`.context/sfwbar-callback-target-9a/result.json`, job
+`sfwbar-callback-target-9a-1030-133850-aa2e`. The GTK helper remains a
+source-confirmed reachable defect consistent with the stack, not the
+uniquely demonstrated runtime target. No browser/runtime defect is
+established by this result.
+
+The native workspace pager is in the rebuilt normal image, but panel
+paint, menu use, workspace clicks and cooperative lifecycle acceptance
+remain open. No new working SFWBar preview or performance improvement is
+claimed. The next normal candidate will be built in an immutable preview
+checkout so experimental access can precede broader acceptance.
+
+GTK8 now integrates a reviewed shared signal-contract repair. It retains
+direct helper signatures and adds exact connected adapters, including
+swapped argument order, boolean draw results and Cairo closure cleanup.
+Registration, function lookup and disconnect identities change together;
+saved handler-ID cleanup remains intact. The bounded scope includes52
+family adapters, the drag-destination hooks and Inspector hierarchy
+callback. All43 complete patched source units match strict zero-fuzz,
+zero-offset application, and all original comments remain unchanged.
+The52 family adapters compile against actual GTK headers in41 extracted
+type-control units. This is not a complete GTK library build or lifecycle
+result. Exact scope and exclusions are in
+`packages/registry/gtk3/tests/signal-contract-audit.md`.
+
+The GObject fixture revision2 adds twelve class/normal/swapped void-object
+and realize cases through emitv and emit-va, including non-NULL argument
+delivery and disconnect behavior. A separate-unit diagnostic passes62/62
+against the recorded normal GLib6/libffi3 libraries and complete SDK32
+inventory. Fresh normal fixture publication remains required. Existing
+upstream assertions are unchanged; the six broader failures remain open.
+The GTK real-library invalid-widget entry controls now finish. Four
+original class controls enter the actual helper; all eight original
+normal/swapped connected cases trap at the function signature check.
+All twelve repaired cases pass, each entering the helper and producing
+exactly two expected GTK invalid-widget preconditions, with no worker
+errors or traps. The original negative judge inspected guest stderr;
+its corrected predicate checks the authoritative worker diagnostics.
+Raw results and the explicit rejudgment are retained without reexecution.
+These controls use the recorded normal GTK7/GLib6 library closure with
+extracted original/repaired helpers. They establish entry compatibility,
+not valid widgets, display behavior, lifecycle, or a uniquely captured
+SFWBar runtime target. No repaired SFWBar startup, workspace or performance
+result is claimed yet.
+
+Evidence is under
+`.context/gtk-signal-contracts/.context/signal-contracts/`: final patch
+SHA256 `6792287cf8e2a1a83ddbf07c6157492e0e36e9b8f1888c169805647a4cb9323d`,
+`strict-final-proof.json`, `comment-preservation-proof.json`,
+`runtime-gobject-signals.json`, `gobject-provisioning-proof.json` and
+`handoff-source-manifest.json`. Independent review verifies the scoped
+argument/return/identity changes and preservation of all43 units' comments.
+GTK revision8 and fixture revision2 invalidate normal cache inputs; the
+single unpublished ABI family remains56/3/17/21.
+
+The after runtime proof is `runtime-gtk-after.json`, SHA256
+`765b20c0fed72a17049e3289bc9ef80b56aa2614198931014f620bd941d25666`.
+Its executed Wasm SHA256 is
+`d8e6d1d3aa7a24951c6d4409db48e6dc34fdce14bda051221ee70f7280cd6948`;
+`build-proof.json` binds the compiled caller and both extracted helpers
+to their normal dependency/SDK inputs. The corrected negative judgment is
+`before-negative-judgment.json`. All private control jobs are finished.
+
+Normal job `preview5661-1c80c5-build-1030-141253-e514` owns the clean,
+detached `1c80c5d713` checkout
+`.context/sfwbar-workspaces-preview`. Its reviewed private helper manifest
+and stage logs retain the exact source and commands. The normal GTK8
+library and SFWBar link complete; all normal stages finish in 29m33s.
+The coherence capture includes all 93 projected owners / 245 members and
+normal C SDK32/64 archives, with the already normal-built selected
+kernel's ABI snapshot check. The immutable experimental preview serves at
+`http://127.0.0.1:5661/`. This is not new wasm64 runtime coverage or a
+browser acceptance pass. Experimental serving is independent of later
+consumer acceptance.
+
+### Desktop feedback and immediate landing order (2026-10-30)
+
+User feedback on the b43 preview reports a missing numbered Sway workspace
+bar and slow cursor/rendering in all three desktops, especially Cage.
+The supplied 8.185-second recording shows Cage at 2818 by 1584, with the
+display's last-frame statistic around 370,000 microseconds. That counter
+measures the interval between accepted page-flip requests, not GPU render
+duration; it can stay stale during idle. Host presentation count also
+includes repeated direct GPU pump ticks, not just unique scene frames.
+The recording is a reported symptom, not a controlled performance
+comparison or proof that resolution alone causes the delay. After
+SFWBar integration, the next
+priority is profiling and repairing the rendering/input path in a quiet
+validation window. No broader libffi replacement is added to that immediate
+desktop landing prerequisite.
+
+The SFWBar Sway integration replaces the built-in bar, while its initial
+common layout omitted a workspace pager. The source now includes the
+native unpinned pager, using real Sway IPC workspace state and native
+activation. Labwc can use its actual ext-workspace names. SFWBar revision
+four invalidates the configuration output; no synthetic workspace state
+is added. The known GTK startup failure still prevents this panel from
+appearing in the immutable b43 preview. Rebuilt menu/workspace/input and
+lifecycle acceptance remain pending.
+
+A separate headless Chromium 153.0.8010.12 geometry observation at b43
+passes six cases across Cage/Sway/Labwc at DPR1/2: real cursor silhouettes
+measure 18 by 22 and 36 by 44 device pixels respectively, or 18 by 22 CSS
+pixels at both scales. All six normal compositor exits release master.
+Normal mode/resize observations are 1280 by 720 and 2560 by 1440. Later
+DPR1 captures show actual rendered shells and text beams; their partial
+refinement hits a private terminal selector error and is not a six-case
+pass. Protocol ownership, client buffer scale, DPR2 client refinement,
+hotspots, browser-memory and responsiveness remain unvalidated. Evidence
+is `.context/cursor-preview-acceptance/HANDOFF.md` and retained screenshots.
+
+### Painted panel and keyboard eligibility checkpoint (2026-10-30)
+
+The completed normal candidate at `1c80c5d713` contains GLib6, GTK8 and
+SFWBar4. Actual Node SFWBar help and real application-menu module
+admission pass. SFWBar is 35,598,987 bytes, SHA256
+`aa99b7e47da0521e2932e3ab4b215050d3d872ec46df25eff80b9288de1e2da6`.
+All 93 owner / 245 member, SDK32/64, kernel and source identities remain
+unchanged before and after the Chromium consumer job
+`preview5661-chromium-sfwbar-1030-144249-9d04`.
+
+Both actual headless Chromium panels now paint. Sway paints the native
+Start menu, but End/Right go to Foot and fail the submenu assertion.
+Labwc's first physical marker command repeats an r and fails readiness.
+A later isolated marker with the same physical command and 20ms delay
+succeeds with balanced DOM key pairs; its launch readiness differs from
+the full test, and it does not establish a repair. Menu, workspace click,
+launch, focus, close and cooperative exit remain unaccepted. The broad
+normal fixture2 run passes 62/62 focused callback cases and four of ten
+unchanged upstream targets: combined 66/72, zero skips, six failures.
+Evidence is `.context/preview5661-acceptance/`,
+`.context/labwc-input-delivery/` and
+`.context/glib-normal-contract-1c80c5d713-v5/`.
+
+The panel's light GTK theme images cover the configured dark background
+colors, leaving light task and workspace labels unreadable. SFWBar5
+clears these images for both real button types and defines readable
+normal, focused and hover colors. This follows upstream's theme reset;
+it does not synthesize workspace state. The new normal image and rendered
+contrast check remain pending.
+
+SFWBar5 also requests on-demand keyboard eligibility before mapping,
+instead of enabling it on pointer entry and disabling it on departure.
+On-demand eligibility allows compositor click focus without exclusive
+keyboard reservation. Source review traces Sway's focus decision to the
+committed layer state at button dispatch. The full 197,470-byte protocol
+capture shows an actual Start press preceding even SFWBar's on-demand
+request; it cannot have observed that request's later surface commit.
+Its SHA256 is
+`578e73668dcb7101e8eeaec263a5ba25209714234a219b1e4b567ea556e91db1`.
+
+That instrumented run did not await earlier terminal typing: the menu
+was not painted and End/Right had not reached the captured protocol at
+EOF. It proves the late-eligibility ordering only, not a unique cause of
+the original input failure or accepted popup focus. Cooperative cleanup
+also failed. Its complete raw pages and limits are in
+`.context/sfwbar-popup-protocol-native/README.md`. Seven patches apply to
+the verified pinned archive with zero fuzz; the new policy patch has no
+line offsets and receives the byte-identical previously audited bar
+source. The first private checker stopped on pre-existing offsets in an
+earlier patch; the corrected checker retains those logs rather than
+claiming all historical patches have no offsets. Normal compilation and
+actual menu, application refocus and exit validation remain required.
+
+The single unpublished ABI remains 56/3/17/21. The current preview stays
+immutable; it does not contain the new SFWBar5 contrast or policy changes.
+After the panel's functional integration, the immediate priority remains
+quiet rendering and input profiling across Cage, Sway and Labwc. No
+performance improvement or resolution-only cause is established.
+
+Independent pinned-source policy review finds a compositor difference:
+Labwc0.20.2 `layers.c` focuses eligible TOP/OVERLAY on-demand surfaces on
+map; Sway waits for click focus. Initial or explicit bar remap can
+therefore focus SFWBar under Labwc without keyboard exclusivity. The
+sensor autohide only swaps children and preserves the mapped window.
+The stable on-demand request does not promise unchanged initial focus;
+actual initial application typing after click, menu dismissal, refocus
+and exit remain necessary acceptance checks. The patch preserves all
+autohide/timer/reference bodies and the legacy boolean API branches.
+
+The acceptance source now excludes the separately measured real pager
+from task-label counting and adds a Sway IPC workspace round trip.
+It saves the actual focused workspace and Foot window ID/PID, switches
+with checked `swaymsg` replies, clicks the rendered retained workspace1
+cell, and requires the same focused Foot on return. It keeps the existing
+physical keyboard, native menu, two distinct shells, task focus/close and
+cooperative exit checks. Labwc uses its existing pager without synthetic
+workspaces. Canonical Playwright discovery collects all six cases;
+both generated guest commands pass Bash syntax checks. Focused strict
+TypeScript checking has no changed-test errors and the same existing
+`kernel-host.ts:2404` error as the exact baseline test. Actual rendered
+geometry and execution remain pending the normal SFWBar5 candidate.
+Source/static evidence is `.context/sfwbar-pager-acceptance/HANDOFF.md`.
+
+### Normal SFWBar5 preview and first consumers (2026-10-30)
+
+Normal job `preview5662-c87f9e-build-1030-151829-acd9` completes all stages
+in 27m25s at clean detached `c87f9e20d5805398afcd266e40db46e7a5c5b935`:
+full shell/rootfs/host composition, C SDK32/64, freshness, all 93 owners /
+245 members and selected-normal-kernel ABI snapshot checks. Source,
+SDK/kernel and consumed helpers remain unchanged. The immutable
+experimental preview is `http://127.0.0.1:5662/`; serving starts before
+GUI acceptance. It contains the SFWBar5 focus and theme-image changes.
+Owner-manifest SHA256 is
+`b54d294b2af395a1560511e0da08070a7295ffc875e59fd25046a6aae31ab58f`.
+SFWBar is 35,598,946 bytes, SHA256
+`4d0dd2ac977502d65afc701a93138197abe30569806bfb53caad134a416eae02`;
+appmenu remains 28,437 bytes, SHA256
+`bf403667d198890c8a04edcc148106f97940c29c89ca7c2ca68f2307c318f449`.
+
+Consumer job `preview5662-chromium-sfwbar-1030-154630-bf1e` finishes red
+in 3m54s with unchanged source, SDKs, kernel and all 93/245 artifact
+identities. Normal Node help and actual main/side-module admission pass.
+Both headless Chromium panels paint readable native workspace/task labels.
+Sway's real checked IPC captures workspace1 then workspace2 while the
+same Foot ID5/PID110 remains on workspace1. The retained1 glyph is
+identical, but the new test compares four outer button-border pixels as
+if they were text. Their brightness crosses its fixed threshold when
+focus changes; `gray` and `focusedNext` pass, `sameInk` fails. The
+workspace return click and native menu are not reached in this run.
+A bounded glyph-interior test repair remains required, without lowering
+text thresholds or replacing actual IPC/window/click assertions.
+
+Labwc changes the actual title to FIRST but does not satisfy its red
+marker assertion. The retained screenshot does not show the earlier
+`prrrrr...` failure. Input delivery versus output/rendering cause is not
+yet established for this cohort. No menu/focus/close/cooperative-exit
+acceptance or performance improvement is claimed. Complete evidence is
+`.context/preview5662-acceptance/`, including `result-summary.json` and
+both original failure traces. The earlier1c80 preview remains separate.
+
+The glyph-interior repair is implemented in the test source. A one-pixel
+outer ring is excluded from both glyph masks; full button geometry,
+background checks and all brightness/IPC/click/window assertions remain.
+Running the actual source callback on the two retained normal screenshots
+reproduces the original failure and passes the repaired comparison.
+Blank, the actual captured2 glyph and white-fill controls still fail.
+Six-case discovery and generated-command syntax pass; focused typing
+matches the same existing baseline error. This is offline test evidence,
+not a new browser pass. Evidence is
+`.context/sfwbar-pager-interior-proof/HANDOFF.md`.
+
+The Labwc trace retains 84 requested physical key calls matching the
+expected command, without duplicate API requests. This does not prove
+identical guest bytes. Its FIRST title proves partial output processing;
+57 subsequent paint results retain red0 while panel clock and accepted
+flips advance. The failing PTY/parser/raster/commit/content layer remains
+unknown. Console evidence is limited and does not establish complete
+worker diagnostics. `.context/labwc-c87-marker-review/review.md` retains
+that distinction and the actual trace/keyboard/paint observations.
+
+### Pager-return cleanup defect and shared notifier repair (2026-10-30)
+
+Headless Chromium job `preview5662-sway-interior-1030-155634-a8e4`
+finishes red in 2m30s against unchanged normal c87/5662 products and
+03ab test source. The repaired interior comparison passes the actual
+retained gray1 and focused2 cells. Clicking1 restores FIRST_READY pixels,
+then SFWBar crashes and its panel disappears. The real worker reports a
+function-signature mismatch; the subsequent task-count assertion fails.
+Normal Node help/module admission and before/after source, SDK, selected
+kernel and all93 owner/245 member identities pass. Menu/refocus/close/exit
+acceptance is not reached. This is a product fault, not another image
+classifier failure. Labwc's earlier missing terminal marker stays open.
+
+The actual immutable SFWBar module has SHA256
+`4d0dd2ac977502d65afc701a93138197abe30569806bfb53caad134a416eae02`.
+Its captured stack includes g_closure_unref, g_signal_handler_disconnect
+and the GBinding export neighborhood. Actual compiled constructor
+expressions and function-table entries corroborate a unary cleanup
+helper registered as a two-argument GClosureNotify. The runtime indirect
+index and exact destroyed binding/widget were not captured. Static
+correlation alone does not identify that dynamic callee uniquely.
+Full evidence is `.context/sfwbar-pager-return-crash-review/HANDOFF.md`.
+
+A genuine GObject property-binding fixture now reproduces the cleanup
+failure in all12 Wasm controls against the exact normal GLib6 generation
+shared by c87. Every case first proves property propagation, then traps
+in closure cleanup when explicitly unbound or when source/target dies:
+one-way, bidirectional, full-transform and closure-transform bindings
+across three teardown paths. All exits are132 and retain the expected
+teardown marker and actual signature-mismatch diagnostic. These are
+negative controls, not passing library support. The new callbacks have
+exact public types, real heap-data ownership and separate translation
+units; no replacement GObject implementation or invalid widget is used.
+The real native host GLib2.86.3 semantic control passes12/12, separately
+from pinned2.84.4 Wasm. Complete SDK and four immutable core dependency
+inventories are verified, with historical9a inputs explicitly matched
+to the current c87 dependency identities. Before evidence is
+`.context/gobject-binding-lifecycle/before-control/`; runtime result SHA
+`faaacbd21679961df9088eb7a6dd59db2bd91b6516e18f47df3225b55bc5bb15`.
+
+The shared source repair adds typed closure and weak-notify adapters at
+13 registrations across GLib/GIO and GTK. It preserves direct unary
+helpers, signal-handler identities, retained references and exactly-once
+cleanup. The public GTK radio-action API preserves original callback
+data and uses a separate holder for the caller's unary destroy function.
+GLib revision7 and GTK revision9 invalidate changed package products
+once each; ABI remains56/3/17/21. Normal runtime registrations were
+reviewed in a bounded100-row inventory; arbitrary aliases, external
+callbacks and upstream tests are not claimed fully audited. Excluded
+X11 GtkSocket still has a unary registration and remains an ordinary gap.
+
+All nine changed source units match the official pinned archives plus
+the current normal patch chain; strict new-patch application reproduces
+the reviewed after files. Nine actual-header adapter/public-radio API
+compile checks pass. GLib patch SHA256 is
+`4c457ccbf764a903ce0eca7240ad9751201d5b5ffa122f276df88d8367c40c63`;
+GTK patch SHA256 is
+`5c08ec8b182014a367fb78e518c800350ae7e968deaca07d0d8199bf56b42fcc`.
+Details and source-scope limits are in
+`.context/closure-notifier-audit/AUDIT.md`. Repaired normal-library
+lifecycle execution, normal desktop rebuild and actual headless
+pager/menu/focus/exit acceptance remain pending. The broader six red
+upstream targets are retained. Performance remains unmeasured; quiet
+Cage/Sway/Labwc profiling follows functional panel integration.
+
+The normal repaired-library gate now runs at clean86db in job
+`preview5663-86dbd4708b-build-1030-162558-fac8`. Revision3 publishes all12
+GObject outputs through the normal engine, alongside the selected kernel
+and image-loader module: three owners/14 members. The single actual Node
+execution finishes in121.45s: all74 focused cases pass, including all12
+binding lifecycle cases that trapped against GLib6. Four upstream targets
+pass and the same six fail: basic-signals, signals, closure, defaultiface,
+dynamictype and accumulator. Combined78/84, zero pending/todo; full exit1
+is retained. No target or assertion was removed and no filtered rerun was
+used to manufacture a green full suite. The strict parser checks actual
+assertion results before permitting the desktop build to proceed.
+
+Every selected fixture/image/kernel member is freshly rehashed unchanged
+after Node execution. Raw report SHA256 is
+`9663e4d044b29a4f550cd5653f914496279b0a52e794f0ccf86ef412c087a55e`;
+focused-gate SHA256 is
+`7126f0859c6f7189d2dd488d63f729b878d2c7c2eb7030c43c04df7e0be2bf6b`.
+Evidence lives in
+`.context/sfwbar-notifier-preview/.context/preview5663-stages/` and
+`.context/glib-notifier-normal-node-result.json`. The normal desktop
+reverse-dependency/image build is still running. Actual SFWBar browser
+acceptance and performance measurement remain pending; this CPU gate
+proves the property-binding repair, not compositor or speed claims.
+
+
+### Normal notifier preview and later input failure (2026-10-30)
+
+Normal producer `preview5663-86dbd4708b-build-1030-162558-fac8`
+finishes0 in41m00s at86db. The complete desktop/image/host graph,
+normal wasm32/wasm64 SDKs, freshness and selected-kernel ABI checks pass.
+All93 owners/245 members are captured through the normal collector;
+owner manifest SHA256 is
+`32a90a516cb923aaa3d3b4adf3e10c0aab613c830c66f7e1b531f0da7d4e9cc9`.
+The actual fixture and desktop closures share the same four core library
+dependency identities. Immutable preview5663 is available before full
+browser acceptance. It includes the notifier repair, not a newly measured
+performance improvement.
+
+Headless Chromium consumer
+`preview5663-chromium-sfwbar-1030-170739-e312` finishes1 in3m01s.
+Node help and actual application-menu module admission pass. Source,
+SDK, kernel and all93 owner/245 member identities remain unchanged.
+Sway passes the first marker, real workspace1-to2 IPC, retained pager
+comparison and click return to1. The panel and FIRST task survive the
+previous cleanup crash. The next shell query fails127: the trace shows
+`bash: fw_snap: command not found`, while the requested physical key
+sequence begins KeyS, KeyF, KeyW. The missing initial character explains
+that failed lookup; the input/focus/queue layer responsible remains
+unknown. There is no evidence that the shell helper disappeared or its
+inner IPC command failed. The original failure is retained without a
+helper redefinition or added delay.
+
+Labwc still fails its first terminal marker, with red0 despite the FIRST
+title and painted panel. Requested key calls do not establish guest
+bytes. Menu, application refocus, close and cooperative exit remain
+unaccepted. Sway trace SHA256 is
+`42d76a225f0c730f5a2a5b688927545ff6f6404a4304595e98d7964fda839b63`;
+Labwc trace SHA256 is
+`6db6567683961710f2304b32cb3241956336654b8dbd2e5ddf3cbb35a312749e`.
+Evidence is `.context/preview5663-acceptance/` and
+`.context/preview5663-sway-return-review/HANDOFF.md`.
+
+The user-facing build is available at `http://127.0.0.1:5663/`.
+Quiet headless unprofiled and separate worker-CPU diagnostic cohorts are
+prepared for Cage/Sway/Labwc with explicit native-mode and artifact
+identity checks. No actual performance result or fix is established yet.
+The full browser, memory, POSIX and graphics baseline gates remain open.
+
+
+### First quiet desktop baseline (2026-10-30)
+
+Headless Chromium153 job
+`preview5663-86dbd4708b-unprofiled-r3-1030-172336-e007` passes all three
+default-client cases in1m41s against unchanged normal86db/preview5663.
+Actual mode is1440x810 at DPR1 for Cage, Sway and Labwc, using the
+program-owned WebGL2 path. Each completes10s idle and10s pointer motion,
+40 actual move commands and40 trusted page pointer events. Selected
+compositor/client process identities survive unchanged; no page errors
+are recorded. Source, SDK, selected kernel and all93 owners/245 members
+remain unchanged after the consumer.
+
+The public counter changes below span the first through last coarse
+250ms samples, not the complete phase. Accepted flips count ioctl
+admissions; pump presentations are not unique scene frames. Neither is
+an input-to-pixel latency or frames-per-second measurement.
+
+| Desktop/default clients | Idle accepted flips / pump | Motion accepted flips / pump |
+| --- | --- | --- |
+| Cage/wlterm | 0 / 625 | 39 / 522 |
+| Sway/Foot and SFWBar | 2 / 625 | 42 / 610 |
+| Labwc/Foot and SFWBar | 1 / 609 | 42 / 610 |
+
+This is one native DPR1 cohort, not an isolated compositor comparison,
+high-rate cursor responsiveness proof, before/after improvement or the
+user's2818x1584 case. Actual Chromium metadata reports ANGLE Metal on
+Apple M5 Max; that browser-wide metadata does not establish the physical
+device of an individual KMS context. The canonical headless flags are
+retained. Browser.getBrowserCommandLine is specifically unavailable
+without enable-automation; the real SystemInfo response supplies its
+command-line string instead, with the original method failure retained.
+Other metadata errors remain fatal.
+
+The preceding r2 workload fails before timed phases: Cage's selected
+launcher terminal lacks WLTERM_READY, and the other two cases reject
+that unavailable metadata method. Its raw reports remain retained. The
+private driver repair removes the launcher-log prerequisite while
+retaining actual-canvas shell-content readiness, exact mode/owner and
+process checks. It does not explain the absent log or repair a product.
+Both drivers retain the exact original timed phase body.
+
+Separate worker-CPU job
+`preview5663-86dbd4708b-worker-cpu-r4-1030-172541-55e7` finishes1 in1m26s.
+Cage/Labwc retain raw idle/motion profiles, but observer cleanup fails;
+Sway reaches a historical-worker-count limit before phases. Actual
+artifact coherence still passes. This diagnostic is invalid, not a
+performance acceptance result. Profiler cleanup ordering and separate
+live/history attachment limits need correction before a fresh cohort.
+No product performance fix or established slowdown cause is claimed.
+
+Raw baselines are in
+`.context/desktop-performance-probe/cohorts/preview5663-86dbd4708b-unprofiled-r3/`;
+wrapper summaries, source/SDK/artifact captures and all retained failures
+are in `.context/preview5663-performance/runs/`. Full SFWBar GUI,
+ScummVM rendering, Firefox/WebKit, browser-memory, POSIX and the remaining
+graphics inventory gates remain open.
+
+
+### Valid worker diagnostic and shared-mapping candidate (2026-10-30)
+
+Fresh headless diagnostic
+`preview5663-86dbd4708b-worker-cpu-r5-1030-173149-ca49` passes all three
+cases in1m54s at1440x810/DPR1. Observer cleanup succeeds, with no recorded
+safety violations; all93 owners/245 members, SDKs and selected kernel
+remain unchanged. Live attachments are bounded separately from retained
+worker history, and explicit child-first detach requests, acknowledgements
+and events replace the broken observer cleanup. The original r4 failure
+remains retained. Observer cleanup does not prove guest exit or reaping.
+
+Whole raw kernel profiles repeatedly sample shared-mapping reconciliation,
+process-byte copying and changed-byte scans; native GL error queries also
+appear. Cage motion has3332 mergeChangedByteRuns samples among8704 total,
+including3475 idle samples. Sway/Labwc profiles have large function4045
+and host_proc_read_bytes/sliceUint8Array sample populations under shared
+mapping synchronization. The exact stripped kernel does not name4045;
+no Rust symbol is invented. These are whole-profile samples, including
+clock/marker guard bands, not CPU utilization, GPU time, input latency or
+exact phase attribution. Startup itself was not profiled. The user was
+also trying the preview; external host/GPU activity was not continuously
+controlled, so this is no quiet-host speed comparison.
+
+The user now prioritizes performance/startup over broader graphics work.
+A candidate reduces work within the existing coherence model: process
+reads copy straight into the authenticated Rust allocation synchronously,
+large wasm32 snapshot comparisons use safe eight-byte words, and aligned
+host changed-run scans skip equal words while preserving exact changed
+bytes. No synchronization boundary, mapped alias, final publication,
+memory-ownership check, syscall behavior, target SIMD feature or ABI is
+removed or changed. Native/short Rust comparisons retain their original
+path after standalone controls showed regressions from replacing them.
+
+Focused evidence so far:76 host allocation/address/memory-growth tests,
+110 native Rust memory/shared-mapping tests,903168 standalone Wasm
+comparison checks and38 pure DRI/changed-run tests pass. One canonical
+DRI attempt refuses changing program-index inputs before loading tests;
+its zero-test failure is retained. The pure DRI run does not build or boot
+a guest and is not normal-product evidence. Standalone page comparison
+measurements support trying the candidate but do not establish application
+speed. Exploratory host measurements show an unaligned fallback regression
+and overlap with validation; they remain unsuitable as quiet performance
+evidence and are a retention risk for the candidate.
+
+Normal candidate kernel/desktop builds, actual browser startup/menu/input
+before/after, HiDPI/high-rate cohorts, all Node/browser benchmark suites,
+browser-memory and relevant POSIX conformance are pending. The currently
+served5663 build still contains the original memory paths. A fresh preview
+will be announced as soon as it serves, before full validation completes.
+Raw evidence: `.context/preview5663-performance/runs/`,
+`.context/memory-byte-compare/`, `.context/shared-byte-runs-perf/` and
+`.context/process-read-copy-focused.log`.
+
+The subsequent four-file memory-authority check passes365/366 cases. Its
+repository audit rejects two unclassified standalone GLib/GTK source-test
+instances, rather than the process-read change. Exact private-memory
+classifications alone still fail because the classifier cannot bind an
+awaited destructured instantiate result. The repair supports only a single
+static `instance` binding, including renaming; computed, additional,
+defaulted, nested and non-awaited patterns remain rejected. Controls also
+prove kernel ownership still propagates to reject unreviewed writes and
+duplicate origins still require their own classification. The canonical
+two-file rerun passes108/108 with zero skips. No production source or
+package fixture is excluded from the audit. Both earlier failures remain
+in `.context/memory-performance-authority-checks.log` and
+`.context/memory-performance-authority-classification-rerun.log`; final
+evidence is `.context/memory-performance-authority-single-binding-rerun.log`.
+
+Further negative controls reproduce an audit-only computed-key fallback:
+`{ [key]: instance }` was incorrectly treated as the static `instance`
+property. Selecting the property node before inspecting its name closes
+that gap. Both computed-key controls fail before repair; the final
+canonical two-file rerun passes110/110 with zero skips, recorded in
+`.context/memory-performance-authority-computed-key-rerun.log`. This does
+not change the frozen737 performance runtime.
+
+### Experimental performance preview737 (2026-10-30)
+
+The normal desktop/kernel/image/host and C SDK32/64 stages pass at exact
+runtime737212cb4a. The original producer0192 is deliberately stopped143
+after38m32s during GTK3 regression-test instrumentation: the full test
+program batch is incomplete, not passed. That batch was unnecessarily
+blocking early preview access. Its original logs and all completed stage
+results remain retained.
+
+Same-checkout desktop completion job
+`preview5664-737212cb4a-desktop-finish-1030-182733-dfa5` passes in37s.
+It rechecks the original producer/source/stages, all84 actual GObject
+results with74 focused passes and six upstream failures, and all14
+fixture/image/kernel member hashes without overwriting evidence. Normal
+rootfs refresh, freshness, all93 owners/245 members, C SDK identities and
+selected-kernel ABI checks pass. The selected kernel SHA256 is
+`0cc747635b92b626b1a120788d6e7d77aed8b4c8ac874f4ab007e330b1af2554`;
+owner capture SHA256 is
+`ca4f851694a979b67721c45b7f749fb48371e4a3c3034ce8cd19a3bb6bbc7298`.
+The four tested GLib/libffi/core dependency tuples match the actual
+SFWBar owner exactly. No ABI version changes or borrowed products are
+introduced by this completion.
+
+Immutable server `preview5664-737212cb4a-serve-1030-182819-791d` serves
+`http://127.0.0.1:5664/pages/kandelo/`. Actual HTML200 and required
+COOP/COEP headers pass at22:28:49 UTC; the user is notified immediately,
+before browser acceptance. Port5663 remains the earlier86db runtime.
+Receipt and HTTP evidence are in the candidate's `.context/preview5664-*`
+files; cancellation and continuation inputs are recorded in
+`.context/preview5664-prep/`. Startup/Start-menu, matched desktop/HiDPI
+performance, full program fixtures, Node/browser benchmark suites,
+browser-memory and POSIX gates remain unrun or incomplete. No application
+speed or Start-menu repair is claimed from build/HTTP success.
+
+### Persistent desktop feedback and pointer transport (2026-10-30)
+
+One headless Chromium153 startup pair compares runtime737 on5664 with
+runtime86db on5663, new first. At native1440x810/DPR1, first painted
+Start appears at11.156s/9.131s for Sway/Labwc versus21.248s/21.040s.
+After a real click, three painted menu categories are first observed at
+1.814s/1.817s versus5.145s/5.166s. Screenshot/poll overhead is included;
+these are observation bounds, not exact menu latency. First Foot frames
+appear at7.529s/6.707s versus6.835s/6.769s; a frame does not prove shell
+readiness. Both jobs4668/8abd pass with stable process/artifact identities.
+One pair on an uncontrolled host does not establish general speed or
+waive the earlier terminal marker, focus, application-launch or exit
+failures. Raw reports: `.context/desktop-performance-followup/cohorts/`.
+A later pointer launch e61a fails before browser startup because an
+archived spec was inside the test directory. The archive is moved outside
+test discovery; its original zero-test failure remains retained.
+
+The user reports progressive bogging within one Brave desktop after
+15–30 seconds, then offers to retest because the impression is uncertain.
+A headless installed Brave156.0.8078.74 observation2780 loses its page
+after about32 seconds. A standalone blank-page Playwright control also
+loses its page at30.755s without Kandelo. Its cause remains unexplained;
+this is neither a demonstrated Brave defect nor a Kandelo platform
+boundary. Brave-specific sustained validation remains open. Raw evidence:
+`.context/desktop-persistent-probe/` and
+`.context/brave-headless-control/`.
+
+The normal headless Chromium153 persistent job
+`desktop-persistent-new-native2x-120hz-ch-1030-185631-2101` passes in6m44s.
+One Sway page/context/machine retains the same Sway101, SFWBar109 and
+Foot110 through six motion/idle cycles at independently checked native
+2880x1620/DPR2. All14400 pointer moves produce trusted page events; no
+page errors, event overflow or source/owner changes are recorded. Each
+2400-move motion requests20s but actually takes40.592–40.937s, about59
+moves/s. Late moves are retained. Coarse accepted-flip differences remain
+831–853 per motion period and19–20 per idle period. These admissions are
+not unique frames, FPS, input latency or proof of guest receipt. This
+diagnostic does not reproduce progressive degradation in those counters.
+Unrelated build/user load is not controlled; renderer RSS and cumulative
+CPU do not identify retained guest memory. A blank Chromium cadence
+control is needed before attributing the dispatch overrun to Kandelo.
+
+Source tracing finds unnecessary pointer transport work: the session
+adapter sends ABS_X, ABS_Y and SYN as separate worker messages despite
+an existing generic batch API on both hosts. The shared adapter now
+sends each complete position frame, then each changed-button frame,
+through that API. Releases remain before presses, repeated updates are
+retained, live modes are reread and single-event adapters keep the same
+fallback. Transport errors propagate without replay; button state advances
+only after its accepted frame. No event dropping, application branch,
+kernel ABI or protocol shape changes are introduced.
+
+Five new controls fail before repair. After repair, three existing files
+pass168/168 pure session/transport/worker controls with zero skips. Actual
+Node/browser proxy methods feed the real gated worker batch method using
+its test scratch authority:19 ordered records require seven complete
+batch messages, with wake-scheduling observations after each complete
+frame. Promoted source bytes match those tested in the isolated checkout.
+Evidence: `.context/pointer-frame-batch/.context/pointer-frame-controls/`.
+This is not a booted guest blocked-read, desktop performance or combined
+conformance result. The full benchmark, browser-memory, POSIX and graphics
+inventory gates remain open.
+
+The standalone blank-page Chromium153/DPR2 control then passes both
+motion/idle pairs, with4800/4800 trusted moves and no requests or page
+errors. Its2400-move motion periods take40.095s/40.261s, also roughly60
+moves/s. This establishes that requested120Hz is not achieved120Hz in
+the sequential driver; it does not assign the desktop's additional cost
+to a particular component. Concurrent builds/user load remain uncontrolled.
+Raw controls: `.context/chromium-pointer-cadence-control/`.
+
+### Pointer batching preview1c16 (2026-10-30)
+
+The new own-product preview is available at
+`http://127.0.0.1:5665/pages/kandelo/`, exact runtime1c16ee20ba. The
+original producer `preview5665-1c16ee20ba-build-1030-190443-7e40`
+finishes1 after16m35s: all seven normal xtask/desktop/SDK64/rootfs/
+freshness/identity/selected-kernel ABI stages pass, then comparison with
+the old SDK fails. Original helpers, logs and failure remain unchanged.
+The old SDK32 inventory has1099 additional package/fixture entries; all
+289 common SDK32 entries and all289 SDK64 entries match, but musl input
+stamps differ. Eight projected owner tuples also differ. These are
+recorded differences; previous GObject validation is not carried forward.
+
+Separate own-coherence completion
+`preview5665-own-coherence-1c16ee20ba-com-1030-192241-ce4b` passes in7s.
+It requires the exact original failure and seven earlier passing stages,
+then freshly verifies own normal products, all93 owners/245 members,
+C SDK32/64, source/kernel identities and selected-kernel ABI. It retains
+the full old/new tuple differences without requiring equality or claiming
+that every difference has one cause. The immutable kernel remains
+`0cc747635b92b626b1a120788d6e7d77aed8b4c8ac874f4ab007e330b1af2554`.
+Fresh owners SHA256 is
+`02ce84e9c5535e4a7608c4fd36ed0e523a7522e0f3d71d61012e38c86d1a7cb2`;
+new receipt SHA256 is
+`a411ac28dd72d1b4dbbd79d5f5225f9b3a9ac86019054a810e87bbc503e29066`.
+
+Server `preview5665-own-coherence-1c16ee20ba-ser-1030-192324-c310`
+rechecks that cohort and serves with strict port5665 and HMR disabled.
+Actual HTML200/COOP/COEP checks pass, and the user is notified immediately
+before browser acceptance. The new receipt explicitly records no prior
+GObject result carried forward or rerun. All own-coherence evidence is
+under the candidate's `.context/5665-coherence-*`; original build evidence
+stays under `.context/preview5665-*`. Port5664 remains frozen737.
+Actual candidate persistent rendering/input/performance and broader gates
+remain pending.
+
+Cache investigation reproduces checkout-dependent directory identities:
+Rust declared-input traversal includes the submodule's administrative
+`.git` file, whose gitdir path differs across otherwise identical clean
+worktrees. Changed identities propagate through Rust libraries/tools into
+Labwc and image dependencies. This explains demonstrated cache misses,
+not all SDK or output differences. A separately tested repair is being
+reviewed; it must retain actual dirty/untracked source and strict
+descriptor-relative safety while consolidating shared digest rules.
+It does not explain Brave closure or establish a desktop performance fix.
+
+The cache repair now uses one canonical payload encoder and one child
+selection rule for both filesystem access policies. Strict descriptor
+opens, no-follow and mutation/reopen checks remain; generic symlink-target
+identity remains. Actual Git worktree controls reproduce two failures
+before repair; fifteen focused controls pass afterward. Fixed legacy
+file/tree/symlink digests pass before and after consolidation. Explicit
+Git metadata inputs, dirty/hidden/untracked payloads and strict race/
+symlink checks remain covered. Declared-input executable-bit hashing is
+an existing separate gap, documented rather than changed here.
+
+The first complete xtask run passes810/820 unit cases and fails ten
+because its isolated checkout lacks submodules/stamped SDKs. That failed
+run is retained. After normal pinned submodule initialization and own
+C SDK32/64 builds, the full suite passes820 unit plus eight integration
+cases, zero ignored, under job
+`git-admin-provisioned-full-xtask-1030-192725-ee52` in3m39s including
+provisioning. Source bytes promoted to this branch match the tested
+isolated source. Evidence is in
+`.context/git-admin-cache-fix/.context/git-admin-evidence/`.
+Normal package reuse under the new portable keys has not yet been
+validated; the serving1c16 preview is unchanged by this tooling repair.
+
+### Sustained pointer-frame consumer1c16 (2026-10-30)
+
+Headless Chromium153 job
+`pointer-frame-persistent-new-native2x-12-1030-193245-26b6` passes in6m46s
+against the immutable5665 runtime. One page/context/Sway machine completes
+all six motion/idle cycles at native2880x1620/DPR2. All14400 commands
+produce trusted page moves, without overflow or page/console errors.
+The same Sway101/SFWBar109/Foot110 and KMS owner survive. Own source,
+receipt, SDK32/64, selected kernel and all93 owners/245 members remain
+unchanged before/after. Workload, after-collector and after-guard all exit0.
+
+Motion periods take40.522–40.940s for2400 requested moves; the blank
+control already establishes that this driver does not achieve120Hz.
+Coarse accepted-flip differences are754–832 during motion and19–20
+during idle, without a progressive decline across this run. These are
+admissions sampled through a4Hz UI, not unique frames, cursor latency,
+FPS, GPU durations or proof of guest receipt of every event. Davao's
+separate normal build6373 is active throughout; user/other native load
+is uncontrolled. This is a sustained functional observation, not a quiet
+speed/no-regression comparison or a resolution of the Brave report.
+
+An earlier candidate launch bfd0 fails in2s before browser startup: its
+receipt hash helper receives a string where it expects a Path. That
+sealed failure is retained. Fresh private r2 normalizes the path argument,
+validates the actual receipt/HTTP provenance read-only, and passes syntax
+and one-case collection before launch. The six-window spec and all
+render/process/source assertions remain unchanged. Reports, screenshots,
+raw input timing and coherence evidence are under
+`.context/pointer-frame-persistent-probe-r2/`; bfd0 remains under the
+original `.context/pointer-frame-persistent-probe/` inputs/job record.
+No test or validation result is replaced by the successful run. Browser
+test load is released after26b6; the other workspace's build remains
+active. Actual Brave feedback, full GUI/Start/focus/lifecycle acceptance,
+all-engine browser-memory, POSIX, benchmarks and the graphics inventory
+remain open.
+
+### Same-session terminal-count reproduction (2026-10-30)
+
+The user's Brave recording shows one Sway desktop growing from one Foot
+window to five and a Start menu appearing late. The recording lasts
+34.485s at2818x1580; sampled frames cannot establish the exact click time.
+The earlier six-minute fixed-one-client observations did not exercise
+this workload. Single-terminal responsiveness also remains a user report
+requiring repair, independently of scaling with client count.
+
+Headless Chromium diagnostic
+`terminal-count-new-native2x-terminals-te-1030-201938-7be5` completes in
+4m23s on unchanged normal1c16/5665, support2deb, at2880x1620/DPR2.
+One page/context/machine adds ordinary Foot clients with Ctrl+Return,
+then closes the extras with Ctrl+Shift+q. Actual process records and
+separate painted bodies/title ink establish counts1/2/3/4/5/1; they do
+not join rectangles to process IDs or prove every shell prompt ready.
+Sway101, SFWBar109 and original Foot110 survive. All1653 recorded DOM
+pointer events are trusted, with no overflow or recorded runtime errors.
+Both artifact collectors and guards pass: source, kernel, SDKs and all
+93 package owners/245 members remain unchanged.
+
+| Live Foot clients | Motion duration, seconds | Accepted-flip counter increase | Idle counter increase |
+| --- | --- | --- | --- |
+| 1 | 10.128 | 60 | 10 |
+| 2 | 10.165 | 31 | 11 |
+| 3 | 10.152 | 12 | 10 |
+| 4 | 10.151 | 20 | 10 |
+| 5 | 10.157 | 10 | 10 |
+| 1 after closing extras | 10.168 | 66 | 11 |
+
+Each motion phase offers200 ordinary pointer moves over10s. These are
+coarse accepted PAGE_FLIP observations, not frames per second or an
+input-to-pixel measurement. Recovery with the original client is evidence
+for investigating live workload cost; it does not disprove retention.
+The first menu is observed14.141s after mouse-down issuance; the later
+one-terminal click takes2.963s, and recovered-client observations take
+2.232/2.968s. Screenshot/poll/classifier overhead is included. Peer
+browser tests and user CPU/GPU activity make this explicitly nonquiet;
+there is no isolated performance or before/after improvement claim.
+
+Original attempts81a0/e53a remain failures. The first stops before a
+click because Start is not yet painted. The second rejects visible
+Start: its native height76 exceeds the copied DPR1 classifier's75
+limit. Fresh r3 scales only Start/menu geometric bounds with density,
+retaining native pixels and unchanged palette/glyph tests. Actual saved
+negative/positive screenshots pass calibration. A downsampling control
+fails glyph discrimination and is rejected. No product behavior changes.
+Raw evidence is under `.context/terminal-count-probe-r3/`, with original
+r1/r2 evidence preserved in their own directories.
+
+Separate CPU-only diagnostic
+`terminal-count-cpu-new-native2x-terminal-1030-202615-6608` completes in
+2m55s: workload, observer cleanup, after-collector and after-guard pass.
+It profiles actual1/3/5 clients with intermediate2/4 checks, using only
+owned target metadata, CPU profiling and scalar clock calibration.
+Selected workers require start/stop acknowledgements and successfully
+written/processed raw profiles. Eight workers arrive during the first
+Start phase, so selected-worker coverage does not establish whole-system
+coverage there. Worker-to-guest process attribution remains unavailable.
+Raw profile duration includes worker-count-dependent setup guard bands;
+whole-profile sample growth is not equal-workload CPU growth.
+Calibrated kernel stacks repeatedly include shared-mapping reconciliation
+and process-byte copying. This identifies a hot subsystem, not yet the
+cause of client-count scaling or an accepted performance repair.
+Raw profiles are in `.context/terminal-count-profile/`; read-only analysis
+is `.context/terminal-count-cpu-analysis.json` and its Markdown companion.
+
+CPU-image counter attempt b07f refuses before browser launch after an
+external workspace starts a new test. Fresh34e9 passes artifact checks
+but fails before installing a hook because worker resource entries omit
+the static module URL. Neither result establishes zero CPU-image usage.
+A subsequent diagnostic records external concurrent workload instead of
+requiring a static global job roster, while retaining exact source and
+artifact checks and refusing unknown jobs in the measured checkouts.
+Module discovery repair and actual counters remain unvalidated. No ABI,
+production implementation or package change is included in these probes.
+
+### Owned full-read staging candidate (2026-10-30)
+
+The first follow-up candidate removes eager zero initialization before an
+existing synchronous process-to-kernel copy. `SharedMappingIo` has an
+owned full-read operation with a safe initialized-slice default. The
+Wasm implementation lends allocated capacity directly to the existing
+host import and exposes the vector length only after exact return0.
+Negative errors and unexpected positive results discard the unpublished
+allocation. No new import/export, retained scratch buffer, ABI version,
+synchronization boundary, alias merge or snapshot comparison is added or
+removed. Seven existing full-read sites use the operation, including
+inheritance rollback staging; file short-read handling is unchanged.
+Both Node and browser use this same kernel and host byte-copy contract.
+
+Focused native shared-mapping Rust tests pass75/75, including four new
+controls for full/empty/error reads, anonymous/file snapshot restoration,
+and inherited anonymous/SysV state after a failed child snapshot read.
+These exercise the safe default and coherence model, not the Wasm
+uninitialized-allocation override. Host transfer-authority, file mapping
+and inheritance-entry controls pass137/137 across three files, with no
+skips/load failures; the real rebuilt Wasm override remains to be run.
+Normal artifacts, actual desktop comparison, browser-memory, relevant
+POSIX and broad Node/browser benchmark gates remain pending. Performance
+is unmeasured, and this candidate does not yet establish a repair for the
+reported single-client or multi-client slowdown.
+
+The revised request-metadata CPU-image probe9b10 also fails before hook
+installation: context request events do not provide the required module
+URL. Artifact coherence passes. No CPU-image absence proof or successful
+counter result is claimed; raw attempt9b10 is retained under
+`.context/terminal-count-counters-r3/`. Six pure wrapper controls pass,
+which establishes wrapper mechanics only. The successful CPU profiles
+instead support prioritizing process-copy/coherence work; sampled
+readPixels stacks belong to cursor readback, and CPU-image storage has
+only two definite-workload samples across all nine captured phases.
+
+### Owned staging build and actual consumers (2026-10-30)
+
+Runtime cdf51686bd has a new normal preview at
+http://127.0.0.1:5666/pages/kandelo/. Producer
+`preview5666-owned-snapshot-cdf51686bd-bu-1030-204038-f1bb` finishes0 in
+16m56s. All seven stages pass: own xtask, normal kernel/shell/rootfs/host
+products, SDK64, rootfs refresh, freshness, all-owner identity collection,
+and selected-kernel ABI verification. SDK32/64 and all93 owners/245
+members belong to this checkout; no earlier validation is carried forward.
+The selected kernel is1835146 bytes, SHA256
+`f65de9b91a3b9f0d6d460601927ae3af7e25a5b2ed1e3194ce042852b827465a`.
+The normal own-coherence receipt SHA256 is
+`39f7f6811b3ff2bca1bccf52fcdd2a4f4296596241127b0b53bb3a997327d1da`.
+Its separate immutable server0c55 rechecks those artifacts before serving;
+actual root and gallery HTTP200/COOP/COEP checks pass. The unpublished
+56/3/17/21 version family is unchanged.
+
+Normal root kernel preparation1e02 finishes0. Actual rebuilt-Wasm Node
+job `owned-snapshot-node-semantics-1030-205205-aca4` passes both canonical
+file-mapping and departed-SysV-peer cases, with no skips/load failures and
+the same selected kernel hash before/after. Headless Chromium153 job
+`owned-snapshot-new-browser-semantics-own-1030-210122-231c` passes both
+corresponding C programs through normal `runFetchedWasmProgram`, including
+all unchanged stdout markers, exit0, blank stderr and no runtime errors.
+Only the two exact fixture requests are supplied with the normal own-SDK
+compiled/stamped bytes; bounded regular-file reads and before/after
+hashes are recorded. No preview files or runtime behavior are replaced.
+Workload, after-collector and after-guard exit0. These cases exercise the
+actual Wasm full-read implementation, rather than only its native safe
+fallback. Unexpected-positive-import acknowledgements have source review,
+not an injected actual-Wasm negative test.
+
+Headless Chromium153 desktop job
+`owned-snapshot-new-native2x-terminals-ow-1030-210144-58f5` finishes0 in
+4m18s against5666. The unchanged workload uses one page/context/machine
+at native2880x1620/DPR2, actual Foot processes and separate painted
+bodies/title ink at counts1/2/3/4/5/1, ordinary open/close bindings, early
+and late Start clicks, and200 pointer moves over each10s motion phase.
+Sway101, SFWBar109 and original Foot110 survive;125/127/129/131 are added
+then removed. All1635 recorded DOM pointer events are trusted, without
+overflow, console/page errors or finalization errors. Source, kernel,
+SDKs and all93 owners/245 members remain unchanged before/after.
+Workload, after-collector and after-guard exit0.
+
+| Live Foot clients | Motion seconds | Accepted-flip increase | Idle increase | Early/late menu observed after down issue, ms |
+| --- | --- | --- | --- | --- |
+| 1 | 10.129 | 67 | 10 | 13395 / 2943 |
+| 2 | 10.134 | 39 | 10 | 3050 / 2961 |
+| 3 | 10.173 | 12 | 10 | 3602 / 3675 |
+| 4 | 10.145 | 22 | 10 | 3744 / 3640 |
+| 5 | 10.151 | 12 | 10 | 4366 / 2930 |
+| 1 after closing extras | 10.151 | 73 | 9 | 2935 / 2260 |
+
+The earlier1c16 run above and this run are separate nonquiet observations,
+not alternating quiet benchmarks. A peer workspace's browser suite is
+active and user CPU/GPU activity is uncontrolled. These counters are
+coarse accepted PAGE_FLIP admissions, not FPS or input-to-pixel latency;
+menu times include screenshot/poll overhead. The single-client delay and
+substantial client-count degradation remain. Removing eager zeroing does
+not establish a repair for either report. It does not justify skipping
+coherence boundaries or changing application behavior.
+
+Both cohorts have245 members. Eleven payloads differ: kernel, shell
+image, build image, SDK bundle, KandeloCC, image module, Termchat, Nethack
+and its bundle, Labwc and labnag. Sway, Foot and SFWBar payloads are
+identical. The portable source-key change caused normal rebuilds; no
+isolated kernel-effect or destination-main performance claim is made.
+Private evidence is under `.context/owned-snapshot-desktop-probe/`;
+raw desktop report SHA256 is
+`821e0862eee6369560b8cad7ca3e1cf5b992bb60191b2daa93e56a3ea02d8812`.
+Read-only derived observations and package differences are in
+`.context/owned-snapshot-desktop-comparison.json` and
+`.context/owned-snapshot-package-comparison.json`. Original probes,
+failures, profiles and producer receipts are preserved.
+
+Further investigation targets the larger shared-mapping copy and
+reconciliation cost. Completion-time reconciliation cannot be omitted
+merely because a calling thread is blocked: sibling threads, syscall
+output writes and peer publications still require an accurate model.
+All nine Node/browser benchmark suites with destination-baseline
+comparison, relevant POSIX conformance, browser-memory across all three
+engines, full desktop menu/focus/launch/lifecycle acceptance and the wider
+graphics inventory remain open. This candidate is not merge-validated.
+
+Offline disassembly of the exact served1c16 kernel further identifies
+profile frame4847 as file-mapping reconciliation. The binary has84
+function imports: exported `kernel_shared_mapping_sync_process` index605
+is disassembler definition521, whose force0 branch directly calls
+definition4763 (index4847). Its paired force1 flush and subsequent SysV
+call match the source export at1c16. Profile column1532448 exactly equals
+index4847's code-body offset; the first instruction is1532463. Wrapper
+index395 calls import0, `host_proc_read_bytes`. No symbol names from a
+different artifact are used. An independent source review agrees with
+this attribution. Private binary-section evidence and extracted bodies
+are in `.context/terminal-count-kernel1c-function-audit.json` and the
+corresponding `terminal-count-kernel1c-function*.wat` files.
+
+This identifies the enclosing operation, not the sampled instruction,
+copy count, byte volume, allocation cost or individual mapping. The next
+diagnostic should count actual full reads and requested/completed bytes
+separately at entry, completion and retry, with bounded scalar records.
+There is no existing complete no-writer epoch: even a same-entry kernel
+wait completion can wake a sibling before the host drains its completion
+record. Caller-blocked state and backing versions cannot authorize
+omitting local publication. No further production behavior is changed by
+this source/disassembly audit.
+
+### Unchanged BO publication baseline copies (2026-10-30)
+
+The next candidate removes the whole-prefix `snapshot.set(src)` from a
+DRI publication scan that finds no changed byte runs. The independent
+baseline already matches every observed byte in that scan. A changed
+publication still copies its baseline and marks pending readers. Every
+writer scan, readiness refresh, alias merge, byte limit and lifecycle
+publication remains in place on both Node and browser. No allocation,
+retained view, protocol or ABI change is added.
+
+Two aligned/misaligned copy controls initially reproduce the redundant
+copy. A third test initially fails because its helper is scoped in a
+different describe block; after correcting that fixture, all three
+controls fail for the actual redundant copies. Original output is
+retained in `.context/bo-publication-copy/before.log` and `before-r2.log`.
+The candidate also retains a limited-prefix publication control and an
+explicit retained-canonical-view refresh control. Full focused tests,
+including those five controls, now pass93/93 across DRI registry, KMS
+registry/stats, BO teardown and CPU-image storage, with no skips or load
+failures. The three original copy controls pass after the implementation
+change. Real Wasm consumers, normal artifacts and desktop measurements
+are pending; removing this copy is not yet an application performance
+improvement claim. The full focused log is
+`.context/bo-publication-copy/after.log`.
+
+A broader per-binding refresh flag optimization is not implemented.
+`pixelView()` exposes mutable canonical storage: a retained view can be
+written after flags were cleared without any tracked publication. Flag-
+only imports would then miss a write that the current readiness refresh
+delivers. An independent source review confirms this counterexample.
+Canonical write authority must be made explicit before such skipping is
+sound; a calling thread being blocked or no tracked publication is not
+proof that these bytes are unchanged.
+
+Actual Node job `bo-publication-node-semantics-1030-221126-c0bb` finishes
+with11/13 passing cases and two failures, without skips/load failures.
+Normal own kernel/rootfs/host preparation succeeds first; selected kernel
+SHA256 remains f65de9b91a3b9f0d6d460601927ae3af7e25a5b2ed1e3194ce042852b827465a
+before/after. Mapping inheritance passes on wasm32 and wasm64, all four
+allocator-retirement variants pass, DRM namespace/PRIME pass, and cursor
+ioctl/exec/spawn pass. Both failures are the inherited master/cursor
+fixture's parent expecting exactly one universal plane. The shared OFD
+correctly sees the child's universal-plane capability; the actual adapter
+now advertises primary and cursor planes, while the native mock without
+cursor support still correctly exposes one. The fixture expectation is
+updated to two; no runtime plane behavior is changed. The original c0bb
+failure remains evidence and the corrected real consumers require rerun.
+
+
+### BO copy candidate: normal artifacts and desktop observation (2026-10-30)
+
+The corrected actual Node run
+`bo-publication-node-semantics-r2-1030-221825-8b33` passes13/13 cases,
+without skips/load failures, after normal kernel/rootfs/host preparation.
+Its selected kernel retains the f65de9 hash above before/after. This
+includes mapping inheritance on both pointer widths, imported-storage
+retirement, and KMS cursor/exec/spawn consumers. The intentional trapped
+owner case emits its expected worker trap diagnostic; this is not a claim
+that every runtime log is empty. The original11/13 result is preserved.
+
+Runtime commit a53f739d8f120a11b8000ac9d1713f9d1a47e45e is built normally in
+an immutable detached checkout by
+`preview5667-bo-copy-a53f739d8f-build-1030-220959-d390`: all seven stages
+pass in13m28s, including own SDK/kernel/rootfs/host, wasm64 SDK, image
+refresh, freshness and complete identity. The inventory has93 owners and
+245 members. Actual root/gallery HTTP200 and COOP/COEP are verified for
+http://127.0.0.1:5667/pages/kandelo/. Program56/host3/GL17/fork21 and
+kernel f65de9 are unchanged. Compared with the preceding5666 inventory,
+only Nethack Wasm, its browser bundle and shell.vfs.zst differ; kernel,
+Sway, Foot, SFWBar and Labwc are byte-identical. Private producer and HTTP
+receipts stay with `.context/bo-publication-preview`; package differences
+are in `.context/bo-publication-package-comparison.json`.
+
+The initial desktop job5be9 refuses a wrong expected helper-manifest
+format before browser startup. The sealed producer is correct; a fresh
+r2 probe corrects that assertion to the actual own-coherence helper
+format and passes complete read-only preflight. No old probe, producer or
+acceptance is overwritten. Actual headless Chromium job
+`bo-publication-new-native2x-terminals-bo-1030-222927-e62e` then passes
+workload, after-collector and after-guard in4m31s at support commit e41df397497c.
+It uses one page/context/machine, native2880x1620/DPR2, ordinary terminal
+open/close shortcuts, independent painted terminal bodies/title ink and
+actual process snapshots. There are1653 trusted events,1351 pointermoves,
+no console/errors/finalization errors, and unchanged source/artifact
+identity. Each stage has10s idle and200 issued moves over about10s; the
+following flip deltas use only the first-to-last sampled counter window
+(about9.9s), not the whole phase or measured frame/input rate.
+
+| Terminal stage | Idle sampled flip delta | Motion sampled flip delta | Early / late Start observation (ms) |
+|---|---|---|---|
+| count-1 | 11 | 56 | 15377 / 2997 |
+| count-2 | 10 | 31 | 3765 / 2977 |
+| count-3 | 10 | 15 | 3692 / 2995 |
+| count-4 | 10 | 22 | 3739 / 4320 |
+| count-5 | 9 | 9 | 4462 / 4543 |
+| recovered-1 | 9 | 66 | 2946 / 2952 |
+
+Menu values include screenshot/poll observation overhead. This is a
+NONQUIET functional diagnostic: another workspace's test and uncontrolled
+user CPU/GPU activity prevent isolated speed/no-regression claims. It
+still reproduces poor first-menu response and declining presentation
+activity with more terminals, recovering after closing them. Removing
+one redundant BO baseline copy has not established acceptable desktop
+responsiveness. PID presence and independent painted bodies do not prove
+all prompts are ready or a PID-to-window association. Full menu/focus/
+application-launch acceptance remains open.
+
+Raw report:
+`.context/bo-publication-desktop-probe-r2/cohorts/new-native2x-terminals-bo-copy-r2/chromium/sway/report.json`,
+SHA256 `066973c3a6fa335475ac17dd2ead572c56e7b75f5f86bea52d936e2002853797`.
+Full Node/browser benchmarks against the destination, broader POSIX,
+three-engine browser-memory and graphics inventory remain unrun for this
+candidate. The next implementation targets the separately profiled
+file-mapping full-read/compare path while preserving both publication
+and authoritative backing-refresh phases.
+
+
+### File publication compares before allocating a full snapshot (2026-10-30)
+
+The next source candidate adds the required read-only
+`host_proc_compare_bytes` kernel-host import. For writable file mappings,
+comparison against the existing initialized Rust snapshot precedes an
+owned full read. Equal observations retain that baseline and avoid the
+new full-range allocation/copy; different observations use the existing
+independently validated owned read. The publication candidate list,
+publication order, descriptor reconciliation and complete backing-refresh
+phase are preserved. Equal never establishes a no-writer epoch. Anonymous,
+SysV, fork and teardown copy paths are unchanged.
+
+The host proves both complete ranges before an early difference result,
+rechecks exact kernel Memory/generation after process lookup, and keeps
+all views inside one synchronous private helper. Captured constructors
+and Memory-buffer intrinsics avoid forged getters or replacements. A
+word comparison handles matching alignment, with byte prefix/tail and a
+byte fallback otherwise. Narrow read-only authority classifications pass
+the repository audit; no broader exemption or owner downgrade is added.
+Independent source review finds no concrete defect and identifies the
+additional changed-mapping scan as a performance risk. A late difference
+can scan almost the whole range before the ordinary copy; application
+benefit is unmeasured until the new cohort runs.
+
+Native job a509 passes39 ordinary memory cases; it does not select the
+new shared-mapping controls. The explicit shared-mapping job
+`snapshot-compare-rust-mappings-1030-223835-b514` passes80/80, including
+five new controls for equal/different/length/fault handling, snapshot
+restoration after an earlier unchanged alias, stale peer refresh and a
+later store, same-process alias ordering, and descriptor writes. Host
+job `snapshot-compare-host-focused-1030-223800-90a2` passes93/93 across
+public scratch and the source authority audit, with no skips/load
+failures. Its eight new comparison cases include both kernel pointer
+widths, all alignment pairs, first/interior/last differences and tails,
+whole-range faults before early mismatch, missing/throwing providers,
+kernel/process growth, forged buffer getters and replaced constructors.
+
+ABI update f145 and subsequent check/resolver-bundle job f88e pass. The
+snapshot adds exactly the comparison import; generated C/TypeScript and
+resolver bytes are otherwise unchanged. The immediate predecessor and
+candidate program-contract digests match:
+`c4b9030d388d1f98dc81475b83f94e4e989d7aa4c1d795141e8e5588acb1a487`.
+The check's program-rebuild message compares the entire branch with
+main55, not this kernel-host-only increment. The already-reserved
+unpublished program56/host3/GL17/fork21 family is retained per the user's
+single-ABI policy; earlier development host3 kernel/host pairs must be
+rebuilt together. No stale-cohort compatibility is added.
+
+Actual rebuilt Node/browser consumers, normal desktop artifacts,
+headless desktop observations, full Node/browser benchmarks, browser-
+memory and required POSIX remain pending for this new candidate. The
+existing5667 preview still serves a53 and does not contain this change.
+Private source hashes and exact commands are under
+`.context/process-snapshot-compare-validation/`.
+
+
+The surrounding host run
+`snapshot-compare-host-boundaries-1030-224147-cbe6` also passes238/238
+without skips/load failures:177 transfer-boundary,55 file page-cache and
+six shared-mapping inheritance-entry cases. Its normal fixture setup
+rebuilds stale fixtures; no selected built kernel execution is claimed
+from these mocked boundary cases. Exact tested source bytes are unchanged
+through implementation commit6bf002e64deb124995e40683722b93b430236df7.
+
+
+Actual Node candidate job
+`snapshot-compare-node-semantics-r3-1030-225208-4329` passes15/15 across
+five files, without skips/load failures, after normal own kernel/rootfs/
+host preparation. It exercises kernel-owned file mappings across opens,
+fork and descriptor I/O, departed SysV peers, wasm32/64 DRI mapping
+inheritance, eight imported-storage retirement cases and three cursor
+ioctl/exec/spawn cases. The intentional trapped owner emits the expected
+worker diagnostic. Selected normal kernel is1835531 bytes, SHA256
+`5c011b2db9349812268f4814077e69f96eba9302380047789d0636e9586171a5`,
+unchanged before/after at support commit a7d05f63035a. This is actual Wasm
+execution on Node, not browser rendering or the full POSIX gate.
+
+The first attempt60d2 completes normal preparation but stops before tests
+because its guard expects the standalone ABI-check kernel's raw hash
+(a014...). The normal selected artifact has the new comparison import,
+passes selected-kernel `dump-abi --check` and `verify-fresh`, and carries
+the current program-contract digest. Offline section/string evidence also
+shows isolated package-build Cargo registry source paths and resolver
+stamps; raw and selected code sections are not asserted byte-identical.
+The initial exact-byte-prefix hypothesis fails and is not used as proof.
+A later auxiliary Python WAT comparison is cancelled after consuming CPU;
+its inputs and partial diagnostic history are retained. The accidental
+r2 launch bf60 exits127 before tests because its preparatory assertion
+prevented script creation. A fresh validated r3 script uses the reviewed
+normal artifact hash, repeats normal preparation and produces the15/15
+result above. Neither earlier attempt is represented as a test run.
+Original commands, hashes and evidence remain in
+`.context/process-snapshot-compare-validation/` and the fresh
+`process-snapshot-compare-validation-r3/` directory.
+
+
+The candidate's independent normal preview producer
+`preview5668-snapshot-compare-6bf002e64d-1030-224427-5b22` finishes0 in
+13m56s, all seven stages0: own xtask; normal kernel/desktop/rootfs/host;
+SDK64; rootfs refresh; freshness;93-owner245-member identity capture;
+and selected-kernel ABI check. The selected kernel is the same5c011b2d
+artifact exercised by Node. The immutable server job
+`preview5668-snapshot-compare-6bf002e64d-1030-225831-9203` independently
+rechecks freshness, SDK/artifact inventory and ABI, then serves
+http://127.0.0.1:5668/pages/kandelo/. Actual root/gallery HTTP200 with
+COOP same-origin and COEP require-corp are verified. Availability is
+announced immediately, before browser acceptance. The earlier5667
+preview is preserved.
+
+Compared with5667, all245 members remain present. Only the kernel,
+Nethack Wasm/browser bundle and shell.vfs.zst bytes differ; Sway, Foot,
+SFWBar, Cage and Labwc are unchanged. Private comparison is
+`.context/process-snapshot-compare-package-comparison.json`. The normal
+receipt SHA256 is `cbfcaff9de1e4366c1a5d17daf8b0737c33b8d216cace90a7c5dc39b8ad3164b`;
+owner inventory SHA256 is `7c30e7dbe3aa3216f530af785cf20b1a0d1884389f63721d5aa6cadcf2d08e6f`.
+Browser rendering, terminal-count performance and broader acceptance
+remain unrun for this preview at publication.
+
+
+### File comparison: actual Chromium consumers and desktop result (2026-10-30)
+
+Headless Chromium job
+`snapshot-compare-new-browser-semantics-s-1030-230056-1620` finishes0
+in10s: both normal C programs pass their unchanged success-marker,
+exit0, empty-stderr and runtime-error assertions. The cases cover file
+mappings across opens/fork/descriptor I/O and a sole SysV attachment
+seeing a departed child's stores. Exact bounded normally built/stamped
+fixture URLs are routed; the served test runner, kernel, SDK contract
+and lifecycle are unchanged. Before/after93-owner245-member, SDK, kernel
+and source guards pass. This is Chromium coverage only.
+
+The uninstrumented headless desktop job
+`snapshot-compare-new-native2x-terminals-1030-230144-24c8` finishes0 in
+5m51s, with workload, after-collector and after-guard0. All six stages
+(1/2/3/4/5/recovered1) have the expected actual Foot processes and
+independent painted bodies/title ink; early/late Start categories appear.
+There are1896 trusted input events, no runtime/finalization errors and
+stable identity. This proves the observed functional path, not prompt
+readiness, a PID-to-window association or full application/focus/lifecycle
+acceptance. It does not establish acceptable responsiveness.
+
+Both columns below are separate NONQUIET observations with the same
+native2880x1620/DPR2 workload, canonical headless Chromium defaults,
+200 requested moves over10s and first-to-last sampled flip deltas over
+about9.9s. Source/runtime artifacts are recorded independently. The
+preceding a53 observation is historical, not an alternating quiet control;
+uncontrolled user/external CPU/GPU activity prevents isolated causal or
+no-regression claims. Menu values include screenshot/poll overhead.
+
+| Terminal stage | Motion flip delta a53 / 6bf | Early Start ms a53 / 6bf | Late Start ms a53 / 6bf |
+|---|---|---|---|
+| count-1 | 56 / 27 | 15377 / 22868 | 2997 / 5046 |
+| count-2 | 31 / 9 | 3765 / 5427 | 2977 / 6448 |
+| count-3 | 15 / 6 | 3692 / 5878 | 2995 / 7793 |
+| count-4 | 22 / 5 | 3739 / 8051 | 4320 / 9097 |
+| count-5 | 9 / 3 | 4462 / 7332 | 4543 / 9897 |
+| recovered-1 | 66 / 28 | 2946 / 4995 | 2952 / 4366 |
+
+Every6bf row is poorer in this observation. No performance improvement
+is established, and the equal-case allocation/copy reduction alone is
+not an acceptable completion result. The next diagnostic profiles the
+actual new kernel worker to identify whether the bottleneck moved into
+the comparison or remains elsewhere. The preview remains experimental;
+full benchmarks against the destination, POSIX and three-engine memory/
+rendering gates remain open.
+
+Raw new report:
+`.context/process-snapshot-compare-desktop-probe-r2/cohorts/new-native2x-terminals-snapshot-compare-r2/chromium/sway/report.json`,
+SHA256 `6334cd049ea350c8a7545993b4a577d7bfdf9d430780ce8a82cc008dcecf700b`.
+The read-only derived comparison is
+`.context/process-snapshot-compare-desktop-comparison.json`.
+The first consumer preparation's mistyped full support HEAD never
+launched a test; it is preserved. The fresh r2 sealer derives HEAD from
+Git and requires equality before sealing, and both actual consumers use
+support55428d6607 with all original artifact guards intact.
+
+
+### File comparison: new kernel CPU profile (2026-10-30)
+
+CPU-only headless Chromium job
+`snapshot-compare-new-native2x-terminal-c-1030-230942-651d` finishes0
+in3m31s, including after-collection and artifact guards. It profiles the
+normal5668/6bf/5c011b2d cohort above in one NONQUIET session, with
+1/3/5 real terminal windows, Start, five-second idle and100 requested
+pointer moves over five seconds. All selected profiler start/stop/write
+acknowledgements complete; the observer is disposed and runtime and
+finalization error arrays are empty. The selected related dedicated
+worker graph is bounded; eight workers arrive late during first Start.
+No browser-main/GPU/audio/shared-worker or whole-system coverage follows.
+
+Read-only analysis verifies raw profile hashes and calibrates worker/
+profiler clocks against Node marker brackets. Only samples whose entire
+possible timestamp interval is inside the workload enter these counts;
+outside, uncertain and uncalibrated bins remain separate. The unique
+kernel is identified by its owned worker URL, not guest PID inference.
+
+| Motion stage | Definite kernel samples | JS comparison self | Comparison share |
+|---|---:|---:|---:|
+| one terminal |3992|2862|71.69%|
+| three terminals |3996|2850|71.32%|
+| five terminals |3414|2414|70.71%|
+
+The new JavaScript comparison is the dominant sampled path. Kernel-byte
+copying beneath mapping synchronization has zero definite samples in
+these motion phases; this is sampled attribution, not proof of zero
+calls or bytes. The earlier reduction in copying has moved substantial
+work into a slow scan. No performance improvement is established.
+Replacing that scan must preserve full-range proof, snapshot ownership,
+backing refresh and a correct owned-copy path when optimization is
+unavailable. Native helper construction and memory retention need
+measurement alongside actual desktop timings before accepting a repair.
+
+Raw report/profiles are under
+`.context/snapshot-compare-cpu-profile/cohorts/new-native2x-terminal-cpu-snapshot-compare-cpu-r1/chromium/sway/`.
+Derived analysis is `.context/snapshot-compare-cpu-analysis.json` and
+`.context/snapshot-compare-cpu-analysis.md`; exact source URLs, line/column
+identities, raw hashes and phase boundaries are retained. Instrumented
+elapsed times are not compared with uninstrumented desktop observations.
+No Wasm function identity is borrowed from the earlier kernel binary.
+
+
+### Native comparison replacement in progress (2026-10-30)
+
+The JavaScript scan is replaced in source with fixed read-only two-memory
+Wasm helpers: SIMD when available, scalar Wasm otherwise, then an explicit
+status2 requesting the ordinary checked owned read. Actual constructor
+sites record weak-keyed scalar descriptors; generic external factories
+retain fallback. Instances and exports are synchronous and uncached;
+this does not prove prompt native reclamation. Whole-span proof and
+backing refresh are preserved. The ABI numbers remain56/3/17/21 within
+the unpublished cohort; normal kernel/host artifacts must be regenerated
+and rebuilt together.
+
+First focused job `native-snapshot-host-focused-1030-233224-129c`
+finishes1 in5m19s:96 passing,2 failing,0 skipped/unloaded. All runtime
+comparison cases pass, including all native width/sharing/mode pairs.
+Failures are a WAT structural assertion counting a type signature as a
+function and the source audit reporting eight new exact authority sites.
+The assertion now counts actual function definitions; narrow reviewed
+read-only authority entries replace the removed JavaScript view entries.
+No audit scope is removed. Follow-up adds capability fallback, browser
+constructor-descriptor capture and unknown external-factory controls.
+The original failed log remains in the managed job registry. New source
+has not yet passed its complete focused rerun, real consumers, native
+churn/browser-memory, desktop timing or broad performance/POSIX gates.
+
+
+Expanded job `native-snapshot-host-r2-1030-233953-a33e` finishes1 in5m00s.
+Normal host build (including declaration output and deterministic32-variant
+check) passes. Runtime/generator/capability/constructor controls pass115;
+none skip or fail loading. The full authority audit exceeds its180s
+watchdog at205.2s under load22.7–30.1 on18 CPUs; the original timeout is
+retained. Its finite limit becomes300s without removing any source or
+assertion. The later Rust stage does not run because the script correctly
+stops on failure. A new real-kernel fallback case is added for the normal
+rebuild phase, and host build input hashing includes the generator/template
+so an outdated generated output cannot evade the build's check.
+
+
+### Native comparison: rebuilt kernel and focused acceptance (2026-10-30)
+
+Job `native-snapshot-normal-node-r3-1030-234730-5566` finishes0 in8m03s.
+ABI update/check pass with unchanged generated outputs and version family
+56/3/17/21. Normal own kernel/rootfs/host preparation and freshness pass.
+The selected normal kernel is1835532 bytes, SHA256
+`edb881f99ee69bc83bd441d98dc865de8ead15a30c52cf71d4b1f817de822e82`,
+identical in the independently captured before/after identities.
+
+All132 cases across11 files pass,0 skipped/unloaded: comparison vectors,
+all32 generated width/sharing/SIMD/scalar variants and structural checks,
+unknown/unsupported capability controls, full-span/growth/intrinsic checks,
+known browser-constructor descriptors and unknown async factories, plus
+15 real Node consumers for file/SysV coherence, wasm32/64 mapping inheritance,
+imported-storage retirement and cursor ioctl/exec/spawn. The full9-case
+scratch-contract file passes in245.2s with its300s finite watchdog, without
+removing any audited source or assertion. The normal host build also checks
+the generated bytes and emits TypeScript declarations.
+
+The new actual-kernel case supplies a genuine external Memory with unknown
+descriptor metadata, creates a memfd through normal channel dispatch,
+tracks its writable file mapping, and observes the real import returning2.
+Changed bytes are copied and published correctly; an equal observation also
+performs an owned read. Transparent test observation forwards original
+import results unchanged. This exercises Rust's real2-to-owned-copy path,
+not a mock implementation. All80 native Rust shared-mapping cases pass
+separately after the host suite,0 failures/ignored.
+
+Evidence is under `.context/native-snapshot-validation/`: original managed
+job logs, normal products/ABI/freshness logs, before/after kernel identities
+and `rust-mappings-r3.log`. The deliberately trapped imported-storage owner
+still emits its expected worker-unreachable diagnostic; the eight retirement
+cases pass. This is Node/host correctness evidence, not Chromium rendering,
+native instance reclamation or a desktop performance result. The independent
+normal5669 preview producer is still running; availability and browser
+acceptance must be reported separately after its own coherence checks.
+
+
+### Investigation loop: zero-build scan diagnostic (2026-10-31)
+
+At the user's request, future theories are screened with existing-build
+profiles, isolated hot-path diagnostics and a provisioned incremental
+checkout before a complete normal preview checkpoint. Published previews
+remain immutable, compatible artifacts retain their identities, and changed
+ABI/build inputs still require normal rebuilding. The current5669 producer
+continues; this policy does not rewrite its sealed recipe or evidence.
+
+A direct Node24.15.0 diagnostic runs without an SDK, kernel, program,
+package or image build/load. It imports the actual production native helper
+and compares it with the exact scan fragment from committed6bf kernel.ts.
+Both use the same two bounded shared memories. The native measurement
+includes descriptor/module lookup, a fresh Instance, exports access and
+invocation. Common provider/range proof, changed-case owned copying and
+backing refresh are outside both measurements. Eight warmups precede four
+alternating-order rounds per case in one process, with no forced GC.
+Every warm and timed result is checked for equal and last-byte-changed data,
+including differing alignments. This is a NONQUIET subsystem diagnostic
+while the preview and external work continue, not an application benchmark.
+
+| Equal input, aligned | Previous JS scan, median microseconds/call | Native lookup/instance/scan, median microseconds/call |
+|---|---:|---:|
+| 4 KiB | 1.11 | 2.41 |
+| 256 KiB | 35.07 | 9.15 |
+| 2 MiB | 283.34 | 65.99 |
+| 18.7 MB | 2719.74 | 593.95 |
+
+The isolated large scans favor the native path; the4KiB case exposes its
+per-call overhead. These are useful screening observations. They do not
+establish desktop improvement, a safe size threshold across engines,
+allocation/native reclamation, or Node/browser parity. Browser/desktop and
+full benchmark/memory acceptance remain open. All16 raw cases, rounds,
+clock/engine/load details and source hashes are retained in
+`.context/perf-lab/scan-diagnostic-1031-r1.json`; the source script and original
+log are adjacent. No product or harness classifier is changed by this run.
+
+
+### Native comparison: preview available (2026-10-31)
+
+Independent normal producer
+`preview5669-native-snapshot-e660a7be39-b-1030-235056-8fd3` finishes0
+in19m56s. All seven stages pass: own release xtask, normal desktop products,
+SDK64, rootfs refresh, freshness, all-owner capture and selected-kernel ABI.
+The own SDK32/64 and93-owner245-member cohort selects the same1835532-byte
+edb881f9 kernel as the passing Node consumers above. No prior acceptance
+is carried into this new preview.
+
+Immutable server
+`preview5669-native-snapshot-e660a7be39-s-1031-001257-48d6` independently
+rechecks normal artifacts, ABI and serving identities. Actual root/gallery
+HTTP200 with COOP same-origin/COEP require-corp pass. The URL is announced
+immediately at http://127.0.0.1:5669/pages/kandelo/, before browser or
+performance acceptance. Earlier previews remain intact.
+
+| Frozen evidence | SHA256 |
+|---|---|
+| Normal producer receipt | `b7f811fae59b5d68649a163b45012a9aceb31e2ec06fb6d9f8a04a0cbcc00b66` |
+| Own complete owner capture | `a85610b04d1d93e3b49c847b0f0b84ad57d9ed9e0fd0651740522a6bb3e1a5eb` |
+| Installed helper manifest | `4d90ccc19aca019319736059206d048e438f02ef9d8eae96e234a38d8e9a61fe` |
+| Actual HTTP proof | `b2a49996ea65309e5aef21e94b0e5a18b3c534ee70e08c2c86c96b771605dd8e` |
+
+All245 payloads remain present relative to5668. Only kernel, Nethack Wasm,
+Nethack browser bundle and shell.vfs.zst differ. Cage, Sway, Labwc, Foot
+and SFWBar payloads are unchanged. Read-only comparison is
+`.context/native-snapshot-package-comparison.json`. Private preparation
+for the matching headless workload preserves the same classifier, input,
+geometry and guards; preparation is not execution. Current native desktop
+speed, rendering, GObject, native churn and three-engine memory acceptance
+remain open at publication. Future theories use the incremental investigation
+loop above rather than a full preview build before initial measurement.
+
+
+### Native comparison: existing-build desktop and browser diagnostics (2026-10-31)
+
+Both focused Chromium shared-memory consumers pass in managed job
+`native-snapshot-new-browser-semantics-na-1031-001957-c124` (10s).
+The existing5669 preview then completes the unchanged one/two/three/four/five
+Foot windows and return-to-one workload, including early/late Start in each
+stage. Job `native-snapshot-new-native2x-terminals-n-1031-002015-28fe`
+finishes0 in3m29s; workload, after-collector and after-guard all pass.
+All1518 recorded events are trusted, including1306 pointer moves; errors
+and finalization errors are empty, identities remain stable, and all93
+owners/245 members retain their normal producer identities.
+
+| Same workload stage | Previous5668 JS motion flip delta | Native5669 motion flip delta | Previous early/late Start, ms | Native early/late Start, ms |
+|---|---:|---:|---|---|
+| 1 terminal | 27 | 140 | 22868 / 5046 | 8071 / 1565 |
+| 2 terminals | 9 | 116 | 5427 / 6448 | 1536 / 1570 |
+| 3 terminals | 6 | 86 | 5878 / 7793 | 1563 / 1576 |
+| 4 terminals | 5 | 98 | 8051 / 9097 | 1555 / 1568 |
+| 5 terminals | 3 | 66 | 7332 / 9897 | 1601 / 1573 |
+| Recovered1 | 28 | 145 | 4995 / 4366 | 1535 / 1577 |
+
+Motion deltas span approximately9.9s of public samples during200 requested
+moves over10s. They are accepted-flip observations, not achieved FPS or exact
+input-to-pixel latency. Start includes screenshot/classifier/poll overhead.
+These are separate historical NONQUIET runs with uncontrolled external/user
+load; the table does not establish an isolated causal gain or benefit over
+main. The single-terminal and multi-client cases still need further work.
+Raw native report SHA256
+`47174231f33adc76d39c134ff2f98b66c276ec48719835d388236d65ee1193cb`
+and read-only derived comparison are retained under
+`.context/native-snapshot-desktop-probe-r1/` and
+`.context/native-snapshot-desktop-comparison.json` respectively.
+
+The next private diagnostic loads only the actual served comparator and
+its generated module bytes in one disposable worker per headless engine.
+It performs no SDK, kernel, program, package or image build/load and no
+Kandelo machine boot. Chromium153.0.8010.12 and Firefox155.0 each complete
+all16 checked scan/invocation cases. WebKit fails at the new constructor
+metadata check: it cannot authenticate shared backing when the global
+SharedArrayBuffer constructor is absent. This is a Kandelo assumption to
+repair, not evidence of an outside runtime defect. Original failure and
+all source/response identities remain in
+`.context/perf-lab-browser-r1/results-r1/`. Aggregate exit1 also retains an
+ENOTEMPTY while removing the owned temporary Firefox home; browser close
+ACKs and process exits themselves are recorded as0.
+
+The repair uses the already captured native Memory getter to prove the
+backing's origin, then an ephemeral native Uint8Array and captured native
+typed-array length getter for shared backing. It creates no Memory,
+performs no byte copy and retains only scalar metadata. Descriptor width
+and maximum still come from actual constructor admission, not inference.
+A targeted hidden-global regression reproduces the original error before
+the repair. Candidate browser rerun and full normal acceptance are pending;
+other runtime buffer helpers have their own remaining coverage obligations.
+The immutable published5669 preview is not changed by this helper repair.
+
+The repaired comparator test file passes5/5 with0 skips in the declared
+shell (19.60s, including normal fixture/index preparation). It checks
+hidden globals, native equal/different results, forged/proxy receivers,
+misdeclared sharing/maximum, growth and poisoned public accessors, plus
+all prior32 variant assertions. The first expanded fixture attempted an
+own property on non-extensible native backing and failed before exercising
+the repair; its original log remains. The corrected fixture poisons the
+prototype length accessor instead and preserves the intended assertion.
+
+
+### Zero-build follow-up: repaired helper in three engines (2026-10-31)
+
+Committed helper `e63a86dd5d8a99d4b4fbbc7ebfe6dd6856855d04` is served by a
+short-lived minimal Vite source server on5670, separate from the immutable
+user preview. It has no application plugins or dependency crawl and loads
+no kernel, program, package or image. The same16 cases and per-invocation
+costs run serially in fresh headless Chromium153.0.8010.12, Firefox155.0
+and WebKit26.6. Each worker completes all16 checked cases with native
+comparison available. WebKit records the SharedArrayBuffer global as
+undefined while actual native shared memories and comparisons succeed.
+No guest buffers or views cross to the page; only bounded scalar reports do.
+The temporary server is stopped with exit0 before further source edits.
+
+| Equal aligned18.7MB scan/invocation, median ms/call | Previous exact JS fragment | Current native invocation |
+|---|---:|---:|
+| Chromium | 1.96 | 0.53 |
+| Firefox | 2.17 | 0.55 |
+| WebKit | 2.50 | 0.63 |
+
+These are NONQUIET operation observations, with all native per-call
+lookup/instance/export costs included. They exclude common range/provider
+proof, changed-case copying/backing refresh and native reclamation, and
+remain separate from application and destination comparisons. Clock probes
+observe minimum positive ticks of0.005ms in Chromium and0.020ms in Firefox;
+WebKit's4096 probes observe no positive tick, and its batched timings are
+coarse. No safe small-buffer crossover threshold is inferred from this run.
+
+Original reports remain under `.context/perf-lab-browser-r2/results-r1/`:
+Chromium `5940fbe727a4c0a6ad1984baf00a09e895bc8ed927a8abb1c288959d22c9e791`,
+Firefox `8b26985e8482c475576c065782d1a89482602cfaebdccf9e5ff3a3f0f0674a90`,
+WebKit `fe2cb25d668f4e8d11c5b3d7303c05337f5bd2bf5272fbcc356c3f4b15e60fd5`.
+Before/after source/input records match byte-for-byte at SHA256
+`a60f3b85f3b1262bf42e15e513357d164da1ab7ec115786bfbb51bc879f78271`.
+Raw canonical browser launch argv, observed transformed-module response
+identities and all round results remain adjacent. This command performs no
+SDK/kernel/program/image build; ordinary Vite TypeScript transformation is
+part of the diagnostic source server.
+
+The aggregate command still exits1 because removing the owned Firefox
+home fails with ENOTEMPTY, even after bounded filesystem retries. A later
+explicit cleanup attempt records EACCES on its Downloads directory; both
+owned residual directories and errors remain visible. All browser context
+and process close acknowledgements are successful, and no browser remains
+running. No green aggregate or browser-memory/lifecycle acceptance is
+claimed from these operation observations. The initial wrapper invocation
+also exits2 before launching anything because Nix does not propagate its
+private release environment variable; the corrected command supplies it
+through `scripts/dev-shell.sh env`, without changing browser flags or test
+cases. The original r1 WebKit failure remains preserved.
+
+Current helper correctness is supported by the complete5-case native test
+file and these48 browser scan cases. Broader normal-kernel, source-authority,
+three-engine memory, conformance and destination performance gates remain
+separate requirements. Other buffer authentication helpers still require
+normal WebKit runtime coverage; this result proves only this helper repair.
+
+Follow-up source/runtime validation completes in132.06s: all100 cases
+across the comparator, public scratch and static contract files pass,
+with0 skips and0 unloaded files. The full repository memory-authority
+walk itself takes111.926s. Its removed shared-buffer-getter allowance is
+replaced by two exact reviewed sites for the ephemeral read-only view and
+captured scalar length read; inventory, source scope and assertions remain
+unchanged. This runs from source against already prepared compatible
+fixtures and does not rebuild SDK/kernel/packages/images. Log:
+`.context/perf-lab-browser-r2/source-contract-and-focused.log`.
+No full normal acceptance or broader WebKit runtime claim is carried
+forward from this focused pass.
+
+
+### Native comparison: remaining desktop CPU costs (2026-10-31)
+
+Profiling the existing immutable5669 preview requires no rebuild. Managed
+job `native-snapshot-new-native2x-terminal-cp-1031-003557-ac09` completes0
+in2m37s: all nine CPU phases at1/3/5 real Foot windows, profile start/stop
+acknowledgements, calibration, worker coverage, observer disposal and
+normal93-owner245-member before/after checks pass. The runtime remains
+e660/edb881f9. Raw report SHA256
+`4db2b02d48d1ce6d2692fe5a7dbda69935e1b89db02ec03909ec6d7a4b95381e`
+is under `.context/native-snapshot-cpu-r1/`. The new private helper manifest
+is `111079812f2a4c6986014de4dd64658f025a165b0245623473aa6043323e6a00`;
+job manifest `daf59d9f69ceed1aab4e4b9ece74d94ffd08c57a64b1db8396477a56a8c3113f`.
+
+| Motion phase, definite calibrated kernel samples | Total | Comparison inclusive | Native comparison leaf under that call | Native getError self |
+|---|---:|---:|---:|---:|
+| 1 terminal | 3397 | 1757 | 1738 | 609 |
+| 3 terminals | 3385 | 1978 | 1947 | 879 |
+| 5 terminals | 3331 | 1674 | 1630 | 1111 |
+
+These are sampled stacks inside marker brackets, not call/byte counts,
+CPU utilization or uninstrumented input latency. Motion has no late or
+unprofiled qualified related workers; browser main, GPU, audio and whole
+system work remain outside this observer. Each Wasm frame retains its
+actual module URL/index; no old kernel index identity is borrowed. The
+native comparison leaf is selected by its actual comparison ancestor.
+Read-only calibrated analysis is in
+`.context/native-snapshot-cpu-analysis.json` and its adjacent script/report.
+
+Mapping comparison still accounts for roughly half of these sampled
+kernel stacks. Native error queries rise from18% to33% of motion self
+samples, with substantial drawGpuScanout/readGpuScanout ancestry. The next
+bounded candidate drains pending native errors once per private synchronous
+seven-operation KMS sequence, preserving the check immediately after every
+operation and stopping the dependent suffix on the first rejection. Its
+state capture, inverse groups, retry journal, entry/exit owner and loss
+checks remain unchanged. No clean assumption persists between sequences.
+The extra seven-callback array is an explicit allocation cost to measure.
+Direct actual-GL measurements, application effect and acceptance are pending.
+
+Cross-tick cursor caching remains invalid: cursor observer/position
+versions are not storage epochs, image revisions omit arbitrary rendering,
+and retained CPU/native aliases can update pixels without a new ioctl or
+commit. Existing live-pixel and context-loss controls remain required.
+
+Candidate source validation passes126/126 across six files,0 skips/unloaded,
+in38.01s. This includes thirteen error-sequence controls, all38 KMS tests
+with each of seven draw/read steps rejected by native error and by throw,
+failed-inverse retry, live cursor writes/loss, GL muxer ownership, GBM front
+copy, native GPU storage and retained surface-storage lifetime checks.
+The new source-only test is added to the CI evidence-class inventory.
+This uses existing fixtures through normal index/stamp preparation; no
+SDK, kernel, package or image rebuild runs. Actual native timing and normal
+combined application/memory/conformance acceptance remain pending.
+
+The evidence-class check initially fails on two prior native-comparison
+test files omitted from the registry. Their reviewed classes are now
+added: comparator source-only, real selected-kernel fallback prepared-product
+(it imports the binary resolver). The new GL sequence file is source-only.
+Original registry failure is retained alongside the rerun; no test is
+excluded or reclassified to hide a product dependency.
+
+The complete evidence-class rerun passes:636 files, registry and live Vitest
+inventory agree. No source-only/prepared-product mismatch is waived.
+
+
+### KMS candidate: no-build actual GPU screening (2026-10-31)
+
+Candidate24d36b98ddad89feeb256965cd687109ffd085a3 and immutable baseline
+e660 are loaded as ordinary source modules by a temporary minimal Vite
+server. Three serial canonical headless engines use one disposable worker
+and synthetic native WebGL2 context each. Eight warmups precede four
+alternating baseline/candidate rounds,16 cursor64x64 readbacks or8 primary
+2880x1620 draws per batch. Result bytes, opaque primary pixels and original
+framebuffer/pack/scissor/color state are checked. Query counts are measured
+separately, untimed, by forwarding every native getError result unchanged.
+
+| Engine | Cursor readback baseline/candidate, median ms/call | Primary draw baseline/candidate, median ms/call |
+|---|---|---|
+| Chromium153.0.8010.12 | 1.030 / 0.871 | 1.170 / 0.969 |
+| Firefox155.0 | 0.820 / 0.700 | 0.741 / 0.623 |
+| WebKit26.6 | 0.188 / 0.156 | 0.125 / 0.125 |
+
+All three complete both checked operation cases; actual native query counts
+are28-to22 per read and26-to20 per draw. The extra callback array and native
+calls are included in timing. These NONQUIET same-context operation
+observations support application testing, not a desktop speedup, native
+reclamation or destination benchmark claim. WebKit's batched clock is
+coarse (no positive tick in4096 immediate probes); its equal primary row
+is not evidence of no regression. Chromium/Firefox minimum observed ticks
+are0.005/0.020ms. Actual launch argv, raw rounds, module response hashes,
+context/version metadata and load remain with the reports.
+
+The original r1 fixture omitted its texture attachment, so all engines
+failed framebuffer completeness before measuring either helper. The r2
+fixture attaches its owned texture and keeps the same completeness, pixel
+and state assertions. Original failures remain; no production change is
+made to accommodate this diagnostic. Corrected source hashes are sealed
+at input manifest
+`c1be0cb412e321c964363ce94229ead24bf9dc5f8488ce764eaaf07d4e415b6b`.
+Raw r2 report hashes: Chromium
+`7b371f3aee905e3ff4ec081b1725e6e6507512b2f07cd203a56af025524cb8e2`,
+Firefox `199cb9f7e75d648495aa34246376169f7829952468b660ed251abaf35036a395`,
+WebKit `33e16876699247b5fa7debddcad0774ec1340cb4113bdb9b140ec4b21ed33540`.
+Evidence is under `.context/kms-native-probe-r2/results-r1/`. Before/after
+source and diagnostic inputs match byte-for-byte. All owned native handles
+are deleted before context-loss request and worker retirement; browser and
+context close acknowledgements pass. The aggregate command retains exit1
+for the previously observed owned Firefox-home ENOTEMPTY. No aggregate
+acceptance is inferred from the successful operation rows. The temporary
+source server is stopped with exit0 before subsequent edits.
+
+The primary checkout's incremental host build passes, including all32
+comparator generated-byte checks and declarations. Its existing selected
+kernel remains1835532-byte edb881f9 and verify-fresh passes. Read-only
+owner capture finds78 owners194 members, including cage/foot/rootfs but
+missing the shell/Sway/Labwc/SFWBar closure. That first capture overlaps
+host distribution generation outside its collected package/source inputs
+and is diagnostic only. It is not a desktop-ready cohort. The next normal
+shell-vfs/rootfs build will resolve the missing owners using the existing
+SDK/cache, followed by a fresh post-writer identity capture. No unconditional
+SDK reconstruction or copied artifact bridge is introduced.
+
+### Incremental desktop preview and bounded operation traces (2026-10-31)
+
+The normal shell-vfs/rootfs preparation subsequently finishes0 as
+`kms-sequence-incremental-desktop-1031-005150-24eb` in6m27s. Both SDK
+ensure checks reuse current cores. The normal graph rebuilds Nethack
+because its recipe declares the host runtime used by its guest build;
+that dependency is retained. Post-writer capture has all93 owners and245
+members. Normal `scripts/build-host.sh` refreshes the host distribution
+and input stamp after the producer releases. Kernel remains1835532-byte
+`edb881f99ee69bc83bd441d98dc865de8ead15a30c52cf71d4b1f817de822e82`,
+with freshness and selected-kernel ABI checks passing. This reuses the
+normal cache and compatible artifacts; it is not a cold full build.
+
+Temporary preview `http://127.0.0.1:5672/pages/kandelo/` serves primary
+source deece03e6327f6fa023e05cf5069df39ad66cdb8, runtime24d36 plus the
+shared-backing admission correction. Its server is
+`kms-sequence-temporary-preview5672-1031-010306-64c0`. Own incremental
+receipt SHA256 is
+`af8ceafe54849bf228b3b78b079773a247d9b688e6d54d3fef5bb4060c17e03e`;
+HTML200/COOP/COEP evidence is
+`.context/kms-incremental-consumer-r1/http-proof.json`. Availability was
+announced before desktop acceptance. The user explicitly clarified that
+they are unsure whether the single-terminal case is better. Neither that
+case nor degradation with additional terminals is established as fixed.
+The ordinary uninstrumented candidate comparison remains unrun.
+
+Operation tracing uses a fresh canonical headless Chromium153.0.8010.12
+context with native2880x1620 output, context DPR2 and force-DPR2. Its
+context-level request interception instruments ten exact platform source
+modules only in that test browser. Every original/overlaid response hash
+and seam is retained; the serving source, SDK, kernel, packages, host
+distribution and user preview are unchanged. No SDK, kernel, program or
+image rebuild is needed for this investigation. The trace lives in the
+disposable kernel worker and serializes scalar records only: no command
+payloads, shaders, pixels, guest pointers/views/memories or native handles.
+Synthetic weak object identities distinguish observed owners; no new GL
+query, flush, fence, scheduler policy or application bypass is introduced.
+
+The recorder has a32768-row,3MiB fixed buffer, a2s stop, explicit overflow
+and incomplete states, nested spans, and finally-based native wrapper
+restoration. Compact rows retain both endpoints and scalar results.
+Nine controls pass, covering exact receiver/argument/result/throw and query
+counts, nested order, caps, reset, failed copies, context replacement,
+DRM latch completion, framebuffer-generation matching and source seams.
+This is diagnostic transparency coverage, not full runtime acceptance.
+
+Frame boundaries follow the actual consumer. A GL submission is a command
+batch. EGL window swaps can complete immutable front copies without
+`host_gl_present`; this Sway session goes further and renders surfaceless
+buffers followed by DRM latches. Its measured intervals are between
+successful `host_kms_set_fb` calls for the selected process/CRTC, with
+framebuffer generation recorded. Capture stops after three latches and a
+subsequent accepted draw of that exact selected framebuffer. These are two
+complete display-commit cycles, not EGL producer cycles or physical display
+completion. Producer presentation/front-copy markers remain distinct.
+
+Job `run.sh-1031-012047-cc27` finishes0 in1m02s: one persistent Sway,
+separate actual Foot PID and painted-body/title observations through1/3/5
+terminals, complete bounded captures at each count, unchanged helper inputs,
+recorder uninstall, normal before/after93-owner245-member collection,
+source/SDK/kernel/artifact equality, receipt and freshness guards all pass.
+The captures contain26262/5220/13649 scalar records with no unclosed spans.
+No reload or forced GC occurs between counts. These capture windows have
+different activity and prelude lengths; they are not matched scaling or
+before/after performance benchmarks. External concurrent work is NONQUIET.
+
+| Terminals | Complete commit interval | Comparison requests | Requested comparison MiB | Native getError calls |
+|---|---|---:|---:|---:|
+| 1 | first | 262 | 1046.98 | 1788 |
+| 1 | second | 68 | 271.73 | 337 |
+| 3 | first | 74 | 295.71 | 327 |
+| 3 | second | 50 | 199.80 | 213 |
+| 5 | first | 208 | 831.19 | 789 |
+| 5 | second | 188 | 751.27 | 773 |
+
+Every comparison and native error result inside those intervals is0.
+Requested comparison bytes are not bytes copied or necessarily inspected
+before an early mismatch. The recurring4190208-byte comparisons belong to
+observed Sway/SFWBar PIDs; their backing identity remains to be established.
+Across the entire captures, including prelude,42/9/25 full muxer replays
+each issue145 direct native calls. Of these,41/8/25 select the same owner
+as that muxer's previous selection. The trace observes scanout and cursor
+`withGraphicsState` calling `prepareRetirement` and final invalidation on
+each device tick. That explains loss of the selector cache in these paths;
+it does not prove a cached owner can safely survive retirement or failure.
+Removing only the final invalidation would leave the earlier invalidation.
+
+The next investigation is authoritative ownership of these repeated
+comparisons and state transitions. Do not skip synchronization, native error
+checks, live cursor writes or loss checks on the strength of unchanged
+samples. JS method spans include observer overhead and host waits, not GPU
+execution time. Rust-internal copies/allocations and physical presentation
+remain outside these seams. Repeated device draws can reuse a prior latch.
+No application speedup, no-regression, exact latency, FPS, browser-memory,
+conformance or completed graphics-baseline claim follows from this trace.
+
+Evidence and read-only analyses are under `.context/frame-trace-r6/`.
+Report SHA256:
+`a39cdcf4afe71beb96141565beda9d1fb1c05079b8667ec3786a9e5897972321`.
+Trace SHA256 by1/3/5 terminals:
+`06c6b93579142cc1831c49f2c67c8f8ac0dc88884e4ed76514b9e584d27cd3ab`,
+`45e002ad2870cce72a79baa20fe1e2267805c0324c8ed68bc50c5ee6f887689f`,
+`e0f192d57234a348d952089d9d904f6a11b735fd101fa630bf6d294541dc48b7`.
+Recorder/overlay source SHA256:
+`97eb41ad5d6568f3763626e073a1f65b2418bd79fb27f7353c0fa69605b558fd`,
+`9d3ad78103b676066f5a906b8f7a6a867968c3d3e8581bee3176dc2747b44ec5`.
+Analysis SHA256:
+`7d2ac8a3d207f50c9ef58f39e632d13071b5779f1a4686b2bad6aae46706d730`.
+
+Original failures and partial captures are retained. r1/r2 refuse relative
+output/missing explicit xtask before launching a browser. r3 refuses
+positive coverage because page-level routing misses worker imports. r4
+uses context routing but overflows every capture; r5 compacts records but
+still selects unused producer boundaries and later times out on additional
+terminal readiness. r6 uses actual DRM latches and preserves that readiness
+assertion. None of these failures is an established engine/platform defect
+or erased by the successful diagnostic. Full ordinary desktop comparison,
+browser-memory, the three-engine gates and broader baseline remain open.
+
+### Mapping origin and checked-transaction traces (2026-10-31)
+
+The user explicitly withdrew the tentative single-terminal improvement
+observation. Single-terminal responsiveness and scaling to more terminals
+both remain open. No application performance improvement is established.
+The normal preview remains frozen at deece03e6327f6fa023e05cf5069df39ad66cdb8
+on port 5672; these investigations use disposable headless browser response
+overlays and do not change its source, SDK or artifacts. The source receipt
+remains af8ceafe54849bf228b3b78b079773a247d9b688e6d54d3fef5bb4060c17e03e.
+No full package/image rebuild was needed for either trace investigation.
+
+Mapping-origin capture `mapping-origin-r3/run.sh-1031-013932-81a6`
+finishes 0 in 34 s. Existing mmap preparation and accepted registration
+metadata are captured in a separate 512 × 12 scalar buffer, without reading
+file contents or retaining pointers/views. The pool grows through ten sizes
+from 4096 to 4190208 bytes in SFWBar pid 109 fd 7, and Sway pid 101 fd 53 maps
+the same observed sizes. The ordinary KernelHost VFS inspector lists the
+live SFWBar descriptor as `7→ memfd:wayland-cursor`. Both observed mappings
+are writable. This identifies cursor-theme storage, not terminal pixels.
+It does not establish immutable content or justify skipping reconciliation.
+Synthetic stat inodes alone are not stable mapping identity; the existing
+kernel table correctly pins a separate backing handle.
+
+The mapping metadata has 258 rows and no overflow. The run includes six
+complete latch intervals across persistent 1/3/5-terminal captures,
+unchanged helper inputs, normal before/after 93-owner 245-member collection,
+SDK/kernel/source/artifact equality and freshness/serving guards. Ten
+recorder/overlay controls pass in r2; those exact bytes are unchanged in
+r3. The earlier r2 aggregate remains failed 1 because its VFS fixture read
+before the asynchronous descriptor listing completed. r3 waits for the
+actual fd row; it does not change production VFS behavior or assertions.
+Evidence: `.context/mapping-origin-r3/verification.json`, report SHA256
+`8ef0484f5b47184f8d85b8a4d1037387f9c1ffab566551c74f97b8aa0aa183c7`.
+
+A second capture adds exact checked-call, checked-sequence, error-capture,
+buffer-lifetime, query-opcode and image-preparation seams: 17 served modules,
+10 passing controls. Native call wrappers also retain bounded scalar
+selector/draw/copy metadata, never payloads or native/guest objects.
+`gl-transaction-trace-r1-1031-015023-1f7b` finishes 0 in 34 s with workload,
+serving guard, artifact collector and freshness all 0. All six intervals
+complete, no span remains open, native error flags are0, helper inputs are
+unchanged, and own 93/245 source/SDK/kernel/artifact identities match before
+and after. Three captures use 3284/3587/29299 records within the 32768 cap.
+
+| Terminals | Complete interval | Guest drawArrays | Primary blits / cursor reads | Native getError calls | Adjacent error queries in one synchronous outer span |
+|---|---|---:|---:|---:|---:|
+| 1 | first | 1 | 3 / 3 | 229 | 92 |
+| 1 | second | 0 | 2 / 2 | 116 | 44 |
+| 3 | first | 0 | 2 / 2 | 116 | 44 |
+| 3 | second | 0 | 2 / 2 | 116 | 44 |
+| 5 | first | 3 | 6 / 6 | 558 | 222 |
+| 5 | second | 3 | 5 / 5 | 589 | 237 |
+
+These windows include ordinary pointer activity and different capture
+preludes; several complete intervals contain no guest draw. They are
+operation/lifecycle evidence, not matched rendering-load, scaling, FPS or
+input-latency benchmarks. External work remains NONQUIET. Adjacent queries
+return 0 on the same physical context without an intervening observed native
+operation; this alone does not prove that either query can safely be removed.
+Native timings include instrumentation and waits, not GPU execution time.
+
+The trace demonstrates a specific lifecycle expansion. An ordinary
+QOP_DELETE_BUFFER with a current vertex reference issues createBuffer,
+bindBuffer, bufferData, vertexAttribPointer, bindBuffer, deleteBuffer of
+the temporary and deleteBuffer of the retired original, with 14 error
+queries in the observed example. The temporary buffer clears native VAO
+references while logical storage can survive in other contexts/VAOs.
+This is a shared platform cost, not an application-specific patch target.
+A proposed final-reference path must prove actual surviving references,
+keep logical format metadata and fence ambiguous irreversible deletion
+outcomes; a false checked result after deletion cannot simply revive the
+old native handle. No such production path has been implemented here.
+
+No copySource/copyTexSubImage2D call appears in these captures;
+prepareImageDraw executes without an imported-image copy. That does not
+prove image copying is cheap or absent in other workloads. Earlier r6
+muxer replays issue 145 native calls but only one direct getError each;
+the total inclusive replay spans are 7.600/1.510/4.075 ms versus
+352.925/58.110/151.295 ms inside all getError spans in those same complete
+captures including prelude. Counts are not synchronous GPU completion, and
+asynchronous work can be charged to a later query. Replay count alone does
+not establish the principal stall. Replacing cursor readback with a shader
+also needs a complete checked-state budget; zero readPixels does not imply
+fewer error queries or a measured gain.
+
+A separate no-build native worker WebGL2 diagnostic exercises buffer
+lifetime in Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. All three
+observe current ARRAY/VAO detachment, retained native references in another
+unbound VAO, a red pixel drawn from those retained bytes, and
+INVALID_OPERATION for a draw using the detached enabled attribute. The
+aggregate is **2 passed, 1 failed**, preserved under
+`.context/native-buffer-deletion-r1/`: the fixture assumed native deleted
+attribute format metadata stayed size 2 / stride 8 in every engine. Firefox
+instead reports size 4 / stride 0; Chromium/WebKit retain 2/8. This is an observed
+native difference, not an established engine defect or accepted Kandelo
+behavior change. The host's logical attribute model must remain authoritative;
+no browser-specific workaround or assertion relaxation was introduced.
+
+Transaction evidence and read-only accounting:
+`.context/gl-transaction-trace-r1/{verification.json,analysis.json}`.
+Report SHA256:
+`9e19c6c8c13714fb7c10defaf172af60d238617d3d9ac74293e3be29c7356dd3`.
+Trace SHA256 by 1/3/5 terminals:
+`a8d65be54ded11ff3e45f0c670cc82c6e5c9f219dd8d4a6c902ae28b3631226f`,
+`3b8284c7f6d446b17a14928cb779ef032951ed1d6f2aae20322573c5711ea2f8`,
+`47a7db4cd069c92a648826871389c62de5b01f4ef8fe2444388c0e67c084722c`.
+Recorder/overlay SHA256:
+`c74851de07e5d12a988b969f0ffbdc31a85fe6b32d6746cad302d1aa2d6dd965`,
+`bcde00f12c7a2022dc68974f524a7cedd9a4d122afd81a5e83d3f70e6ec40728`.
+Analysis SHA256:
+`8179ca6f4cff550b52ca2bf59e4950551a8645cc8e0f43c1ff36139a1a4478d9`.
+The first read-only verifier attempt failed on a mismatched analysis field
+name; its failure log is retained and the corrected schema verifier passes.
+These are private diagnostics plus documentation. The normal uninstrumented
+candidate comparison, matched sustained rendering load, browser-memory,
+all-engine desktop gates, full benchmarks and broader compatibility effort
+remain unvalidated; no new runtime fix is included in this checkpoint.
+
+
+### Native null-attribute clearing candidate (2026-10-31)
+
+The checked-operation trace led to a shared host repair, developed in the
+isolated `null-attribute-candidate` checkout. The served deece preview on
+port 5672 remains unchanged. The earlier final-reference deletion proposal
+and reusable empty-buffer idea are superseded for this operation: WebGL
+explicitly permits clearing an attribute with a null ARRAY buffer when its
+native offset is zero. See the [WebGL no-client-array rule](https://registry.khronos.org/webgl/specs/latest/1.0/#NO_CLIENT_SIDE_ARRAYS).
+The older October 24 private-buffer rollback description records the prior
+implementation, not a continuing requirement for null representation.
+
+Buffer deletion and null pointer installation now bind null directly.
+Logical GLES format and nonzero offsets are preserved independently of the
+native zero offset. Normal inverse journals still check selector acceptance
+before dependent pointer changes, retain failed restoration and fence later
+work. Converted vertex storage still allocates when required. No temporary
+native buffer, zero-size bufferData or temporary deletion is needed solely
+to clear a reference. Physical buffer collection still follows logical
+commit and retains its existing retry ownership; sharing peers and unbound
+VAOs retain the original storage. No ABI or command-table change is made.
+Node and browser native backends use the same bridge; a Node host without a
+native renderer retains its existing capability failure.
+
+A native worker primitive diagnostic passes in Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6. It verifies null-offset-zero acceptance,
+nonzero-null-offset rejection without pointer mutation, surviving unbound
+VAO red pixels, disabled generic-value drawing and subsequent complete
+pointer replacement. Enabled-null draws reject with INVALID_OPERATION even
+for count zero. The first primitive run incorrectly expected zero-count
+success and fails all 3 engines; that original result is retained. The
+corrected expectation follows the WebGL no-client-array rule; no runtime
+behavior or upstream assertion was changed to manufacture a pass.
+
+The actual baseline and candidate registry/query/decoder helpers also pass
+in all 3 headless engines, on independent synthetic worker WebGL2 contexts.
+They exercise final and retained-storage deletion, public-name reuse,
+logical offset 4 / stride 8 queries, native null binding, enabled-null rejection,
+disabled generic red pixels, surviving unbound-VAO red pixels and later
+pointer installation. Counts cover the deletion query, not unrelated setup.
+
+| Native helper operation | Baseline error queries | Candidate error queries | Baseline / candidate temporary buffers |
+|---|---:|---:|---:|
+| Delete final referenced buffer | 14 | 8 | 1 / 0 |
+| Delete name while unbound VAO retains storage | 12 | 6 | 1 / 0 |
+
+All3 engines observe those same counts. This proves eliminated native work
+for these operations, not a desktop latency or throughput improvement.
+Private client-array uploads still realize and retire public buffer names,
+so their synchronous bind/delete boundaries and required shared-memory
+reconciliation remain. A private reusable byte-upload/draw model would
+require explicit chunk/cancellation/ownership across command-buffer flushes;
+that larger transport change is not claimed by this candidate.
+
+Focused source-only GL diagnostics pass 689 cases in 30 files with zero
+skips or load failures, including new no-allocation, nonzero logical offset,
+pre/post-effect rejection, pending inverse ordering and failed physical
+cleanup ownership cases. The initial 166 cases in 2 modified files also pass.
+These configurations deliberately load only pure GL/source tests, without
+global C/Wasm fixture provisioning; they are not the normal guest suite.
+The normal host bundle and declarations build passes. Two durable native
+cases added to webgl-state-contract.spec.ts pass in all three engines
+(6 cases), including the browser memory-boundary observer. A composed
+rollback regression preserves a deleted logical offset 4 / native 0 when a
+later replacement fails, keeps another ARRAY selected, fences while its
+inverse is blocked and accepts later complete replacement.
+
+Normal SDK provisioning `null-attribute-sdk-provision-1031-021459-0ee0`
+finishes 0 in 1m26s. It first copies independent installed SDK files from the
+frozen primary, then requires the ordinary --ensure input/output checks;
+those checks rebuild both own cores and DRI/EGL/GLES archives rather than
+admitting the copied state. No alias, forced cache identity or stale SDK
+acceptance is used. Normal desktop producer
+`null-attribute-normal-products-1031-021817-2b0f` finishes 0 in 11m31s at
+`71a283c2d29008b587b757f5c2f901ad5abdec6d`. Its own xtask, normal products,
+host stamp, freshness, identities and kernel ABI stages all finish 0.
+The own normal 93-owner / 245-member manifest SHA256 is
+`cc0087bd00fc679caa7389e56446e40a619f74936ab1dd28aaa6e0435d757a5d`.
+The preview server `null-attribute-preview5673-1031-023237-63de` repeats
+freshness, ownership and ABI checks before serving the frozen candidate.
+Both root and gallery return HTML 200 with COOP same-origin / COEP
+require-corp. HTTP proof SHA256 is
+`3859613dd20b9cf29a6d0c82832dfe78bc32821ae4d77d8edaf17bd6dbddf3ad`.
+This is artifact and availability evidence only. Real terminal comparison,
+browser-memory, main integration, benchmarks, conformance and the remaining
+graphics baseline are still open.
+
+Evidence: `.context/native-null-attribute-r{1,2}/`,
+`.context/native-null-helper-r1/` and the isolated candidate's
+`.context/{pure-gl-r2.log,pure-gl-broad-r3.log,host-build-r1.log}`.
+Two earlier private unit-launch configuration path failures are retained
+as r1 logs; no tests ran from those failed launches. Native helper worker
+SHA256:
+`413e881d3f682e4f2efef85f659c910e51e5890df960241be03f7f0108a1634a`.
+Source graph manifest SHA256:
+`85faba22c49633f86c802a8664e915e864902df1263d60bcfe4b996cb62d8989`.
+Native Chromium/Firefox/WebKit report SHA256:
+`d4e7e5ad9278e364796b9579d60df4296c86a16eedbe93a2e6b3901d5aa1fd76`,
+`3c0424d1cda166f387b02804d3e1acc5f71cf60b2ee0caec1f8a9bbd8c270bcc`,
+`115d3f246e5c6bfb97cd2559ba15b4b5ae537ada132c3cddeb3115a2cd10b905`.
+Single-terminal improvement remains unproven, as the user clarified.
+
+### Frozen normal desktop observations after null clearing (2026-10-31)
+
+`null-desktop-candidate-r1-1031-023334-208d` finishes 0 in 3m37s, followed
+by `null-desktop-baseline-r1-1031-023717-6b6c` finishing 0 in 3m39s.
+Both run headless Chromium 153.0.8010.12 at native 2880x1620 / DPR2.
+Each keeps one Sway/SFWBar session, its original Foot process and painted
+window, adds actual separate Foot processes/windows to five, then closes
+the extras and repeats at one. All six stages complete, including early
+and late Start category panels, ten-second idle and 200-requested-move
+phases. There are no page errors, input-record overflow, identity changes
+or finalization failures. Workload, before/after owner collectors and
+source/host/helper guards all finish 0 with own 93 owners / 245 members.
+
+Actual retained screenshots were reviewed: the candidate's one-terminal
+Start panel contains Games, Graphics and System Tools; two- and
+five-terminal images contain separate title/body/prompt regions, and the
+baseline three-terminal Start panel shows the same real categories.
+Process snapshots separately establish actual PIDs; rectangles are not
+asserted to identify a particular PID.
+
+| Terminal stage | Baseline early / late Start observation, ms | Candidate early / late Start observation, ms |
+|---|---:|---:|
+| 1 initial | 8237 / 1563 | 7527 / 1568 |
+| 2 | 1539 / 1561 | 1580 / 1593 |
+| 3 | 1569 / 1575 | 1531 / 1564 |
+| 4 | 1543 / 1560 | 1552 / 1564 |
+| 5 | 1534 / 1602 | 1565 / 1564 |
+| 1 recovered | 1557 / 1601 | 1541 / 1558 |
+
+These are click-issued-to-observed-panel times including screenshot,
+classifier and polling work. They are not exact input latency. This is
+one nonquiet candidate-first pair, not alternating quiet trials or a
+comparison against destination main. The idle/motion phases do not impose
+matched sustained terminal rendering; accepted flip counts are not FPS.
+Neither single-terminal improvement nor multi-terminal performance is
+established by these observations. Browser-memory and complete desktop /
+graphics acceptance remain open.
+
+Evidence: `.context/null-attribute-consumer-r1/`, including sealed helpers,
+config, per-side runs/cohorts, `pair-summary.json` and visual review.
+Candidate report SHA256:
+`d6499b7bb51cf365c0c2beeca13233784222edad205cac80b3ba9e9e3e96e20e`.
+Baseline report SHA256:
+`26b008d7e92a8f716c3835b15a7fd31c59942923b2f2965a6181c73758345901`.
+
+### Syscall-labelled candidate frame trace (2026-10-31)
+
+`gl-transaction-trace-r2-1031-024126-fe18` finishes 0 in 32s against the
+same frozen normal candidate at port 5673. No SDK, program or image rebuild
+is needed for this diagnostic. Test-context response overlays cover the
+same 17 served modules; the published source/server is unchanged. The
+recorder still caps each capture at 32768 twelve-scalar records / 3 MiB
+and two seconds. All three captures complete two selected DRM latch
+intervals and a subsequent accepted device draw: 3975 / 3749 / 7946
+records, no unclosed spans or native errors. Ten recorder/served-seam
+controls pass. Actual before/after freshness, normal 93/245 collectors
+and frozen source/host/helper guards finish 0. A separate explicit
+post-pair baseline freshness check also returns 0.
+
+New scalar events label incoming boundaries using the existing normalized
+syscall number, ioctl request and fd for read/write/ioctl only. No new
+guest-payload read, memory view, pointer capture or persistent owner is
+introduced. Request widths are normalized to u32 for analysis. A compare
+is attributed only through its exact enclosing incoming-handle span;
+deferred completions without that ancestor remain unknown. Table entries
+count equal comparisons requested for the registered 4,190,208-byte
+shared cursor pool across each whole diagnostic capture, including its
+prelude. They are not copied/inspected-byte measurements or a scaling
+curve; the captures have differing work.
+
+| Exact enclosing request category | 1 terminal | 3 terminals | 5 terminals |
+|---|---:|---:|---:|
+| ClockGettime | 26 | 28 | 42 |
+| EpollPwait / Ppoll | 19 | 17 | 17 |
+| Read | 18 | 18 | 18 |
+| GLIO_MAKE_CURRENT | 12 | 12 | 36 |
+| GLIO_SUBMIT | 12 | 12 | 40 |
+| GLIO_QUERY | 26 | 26 | 78 |
+| Other DRM ioctls | 30 | 30 | 30 |
+| Other message/write/terminal requests | 6 | 6 | 30 |
+| No incoming handle available | 1 | 1 | 1 |
+| **Total equal compare requests** | **150** | **150** | **292** |
+
+This establishes clock/event/input traffic as additional reconciliation
+causes, rather than guessing that all unclassified work is event dispatch.
+It does not justify skipping coherence for a syscall class: other threads,
+host output writes, aliases and peer publications remain real writers.
+No complete writer-epoch/quiescence proof is implemented.
+
+The real desktop deletion examples now contain exactly eight native error
+queries and no temporary createBuffer / bufferData / temporary deletion,
+matching the native helper's final-reference result. Captured owned-command
+descriptors show one staged attribute per observed client draw, with
+48-byte uploads / first0 / count6 at one and five terminals, and a
+96-byte upload / first0 / count12 at three. All use triangle draws.
+There are only 1 / 1 / 3 such draws in these captures; those observations
+do not establish a general workload distribution or sustained rendering
+throughput. These small records support screening a bounded inline private
+client-upload transport before changing the SDK. Exact logical state,
+checked native acceptance, once-only drawing, inverse repair and retirement
+remain requirements. No transport change or application gain is claimed.
+
+Evidence: `.context/gl-transaction-trace-r2/`, including raw captures,
+overlaid source hashes, scalar cause analysis and verification. Capture
+report SHA256:
+`858eb0184c1914ea810f869a602525e5181308e5db8afbccb0393a90655dac74`.
+Cause-analysis SHA256:
+`bac76bdf1d57279cd2f0198602fdf6ddb12004b4f5f98d5fb7d51fe3f78c0757`.
+Earlier retained-trace attribution/design review is in
+`.context/synchronization-cause-review-r1.md`. Neither single-terminal
+improvement nor overall desktop performance is established.
+
+### Bounded private client draw candidate (2026-10-31)
+
+The next candidate replaces public buffer-name staging for small positive
+nonindexed default-VAO client draws with one owned `OP_DRAW_CLIENT_ARRAYS`
+record. This is a shared C encoder / host platform change; no application
+name, compositor or cursor special case is involved. Source preflight
+precedes reads and reservation. The host validates the complete record,
+copies only referenced packed bytes and retains checked native inverses
+and retirement receipts. A failed restoration fences dependent work;
+cleanup never replays pixels. Mixed VBO attributes retain their normal
+preparation. Indexed, oversized, zero-count and named-VAO draws keep their
+existing path. General chunked private/indexed transport is not implemented.
+
+The new `gl_inline_client_draw` snapshot section is Program surface:
+already-built programs emit this wire format. Its changed digest requires
+normal libraries/programs/images to rebuild even though the reserved
+program 56 / host 3 / GL 17 / fork 21 numbers stay unchanged. Own kernel
+build and snapshot regeneration finish 0. This candidate is not yet in
+the available 5673 preview, which remains frozen at `71a283c2d290`.
+
+Source and native checks:
+
+- The explicit source-only GL selection passes 737 tests in 31 files,
+  including 48 new private-draw controls. Tests cover malformed whole
+  batches, original offsets/strides, FIXED, mixed VBOs, allocation/upload/
+  pointer/draw failures, failed inverses and retryable cleanup without
+  replay. These are source/mock checks, not normal guest acceptance.
+- Native C graphics controls pass 220/220 with UBSan. The old encoder
+  against the new controls gives 211 passes / 9 failures, retained as a
+  counterfactual. The first candidate run's old staging assumptions are
+  retained separately. Optional ASan validation did not complete: three
+  cases reached 30-second timeouts without a sanitizer memory diagnosis;
+  the cause remains uninvestigated. This is neither a pass nor an outside
+  runtime defect claim.
+- A separate native C export emits an actual 88-byte record, SHA256
+  `fb1681fd0b15d52a4a1ee975e88cc622281856695fe0a38bf7c411cdbe38782c`.
+  The ordinary host decoder consumes those exact bytes and renders red
+  pixels in headless Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6.
+  Each engine passes nine native controls, including mixed VBO colors,
+  first-index handling, actual post-effect drawing and failed-inverse
+  repair. The three-engine selection finishes 0 (3/3, 4.9 seconds).
+- Full Rust workspace tests excluding xtask finish 0. The first full
+  xtask run passes 817/820; three import-audit tests fail because this
+  candidate's SDK is unstamped. Preparing SDK32 leaves 819/820 passing,
+  with the remaining test requiring SDK64. Both normal SDK bootstraps
+  then finish 0, and the third full xtask run passes all 820 unit and
+  eight integration tests. The full ABI script finishes 0, including
+  native-layout checks, own kernel and snapshot/classification; it
+  explicitly reports that the changed program digest requires every
+  program to rebuild. These were provisioning failures, not a platform
+  boundary. The normal host
+  bundle/declarations, standalone resolver rebuild/test and 637-file
+  Vitest evidence registry check finish 0. An ad hoc raw `tsc6 --noEmit`
+  run has unresolved project-configuration/type diagnostics; it is not
+  the normal passing bundle/declaration build.
+
+The real C record / full JavaScript decoder diagnostic measures these
+native calls per draw in every engine:
+
+| Native operation | Previous staging | Private record |
+|---|---:|---:|
+| Error queries | 26 | 18 |
+| ARRAY binds | 6 | 3 |
+| Data allocations/uploads | 1 | 1 |
+| Subdata uploads | 1 | 0 |
+| Attribute pointers | 2 | 2 |
+| Buffer creations / deletions | 1 / 1 | 1 / 1 |
+| Draws | 1 | 1 |
+
+Four alternating-order rounds of 128 draws after 16 warmups give the
+following worker-wall medians in the same nonquiet diagnostic:
+
+| Engine | Previous ms/draw | Private-record ms/draw |
+|---|---:|---:|
+| Chromium | 0.87852 | 0.59375 |
+| Firefox | 0.62500 | 0.41016 |
+| WebKit | 0.17188 | 0.10938 |
+
+These tiny 16x16-canvas measurements include JavaScript packing, owned
+input copies, validation, native upload, checks, restoration and retirement.
+They exclude C encoder CPU, guest/kernel/shared-memory reconciliation and
+application timing; browser timer resolution and concurrent work limit
+interpretation. They do not establish GPU completion, desktop speedup or
+single-terminal improvement. Full normal products, actual guest desktop
+traces with matched active work, browser-memory, application acceptance,
+destination-main cross-host benchmarks and conformance remain open.
+
+Evidence: candidate `.context/pure-inline-broad-r1.log`,
+`.context/private-client-libc-final.log` (SHA256
+`3503281bcc73647515a0900f823ff442d27ee9d104799ec50c307cbdfd9b15c6`),
+counterfactual/first/ASan logs, `.context/inline-rust-workspace-r1.log`,
+`.context/inline-xtask-r{1,2,3}.log`, `.context/sdk{,64}-bootstrap-r1.log`,
+`.context/inline-abi-check-r1.log`, normal host/resolver/evidence logs;
+primary `.context/private-client-native-r3/` retains all engine reports,
+worker/spec/config and summary. Its source-manifest SHA256 is
+`c43e80914f928f5ef260290efb3cbf58775eb83e9b912a96006e9110ec4a4c6e`.
+
+### Client draw replay preserves both paths (2026-10-31)
+
+Runtime `dadea383b2fc` is committed and pushed to draft #1601. Its normal
+producer `inline-client-normal-products-1031-032816-ff66` is still running;
+the available 5673 preview remains on `71a283c2d290`. No desktop benefit,
+single-terminal improvement or new normal guest acceptance is established.
+
+The existing actual-C peer-deletion replay initially fails all 12 cases:
+its adapter recognizes only the previous BEGIN/END staging records, so
+it never injects peer deletion or samples pixels for OP0506. Updating the
+test adapter injects deletion/name reuse before the owned record, which
+has no public staging interval to interrupt, and samples its real draw.
+The original green/red pixels, retained-buffer identity, cleanup and
+memory-boundary assertions remain unchanged. A test-response-only overlay
+against frozen DAD source passes all 12 cases in the three headless engines
+through native worker imports and main forwarding (2.4 minutes).
+
+Two additional large C cases preserve actual legacy-staging coverage.
+Each draws 8192 vertices with a 65536-byte position payload and a full
+128 KiB red VBO. The index-first variant retains its original index-to-
+vertex storage transition. Both assert actual capture/restore pairs,
+zero inline draws and final allocation cleanup. Small cases separately
+assert two inline draws and zero captures. The native UBSan inventory
+passes **222/222**, including both paths.
+
+The expanded browser selection first records nine passes, two native
+legacy failures, one interrupted case and twelve unrun cases; the owned
+CLI is stopped with SIGINT (exit 130) after the failures are understood.
+The adapter had registered only 65536 command bytes: a legal maximum-u16
+payload plus its four-byte header exceeds that limit. The forwarded cases
+pass. The native replay now matches the actual C encoder's bounded 1 MiB
+command capacity and allocates exactly the required seventeen fixed
+private-memory pages, including its 4096-byte base. Production limits
+are unchanged. A fresh complete selection then passes **24/24** in
+headless Chromium, Firefox and WebKit, native and forwarded (4.3 minutes).
+All 299 recorded source inputs and the exact source patch remain stable.
+These are native C / synthetic-kernel source replays; frozen 5672 supplies
+only HTML and Vite transport. They are not SDK/Wasm guest or application
+acceptance. No normal product rebuild is needed for this test-only change.
+
+Evidence: `.context/inline-c-record-peer-r1/` retains the original 12
+failures, repaired overlay, per-case hashes and passing overlay result;
+`.context/inline-c-record-peer-r3/` retains the interrupted expanded run
+and source-stability record; `.context/inline-c-record-peer-r4/` retains
+the full passing durable-source selection and verification. R4 source
+manifest SHA256:
+`1058c0ed33a3baefea69344d9c87182ba27a471296157773a7402cb44196ba35`;
+workload SHA256:
+`b1ac0dc5d4f2d947a72eba87710d3f5f5785f7695685286f44c3dc147fe2abfb`.
+The 222-case native log in the documentation checkout is
+`.context/inline-legacy-libc-ubsan-r1.log`, SHA256
+`27411635587f11ef52d52ed808525939a5ddb50d7317a6e172f717402acf9b4f`.
+
+Independent read-only writer-epoch analysis is retained in
+`.context/shared-mapping-writer-epoch-review-r1.md`. Published backing
+versions cannot prove absence of unpublished guest stores. A general
+dirty-page model needs complete guest and host write tracking; a smaller
+entry-to-completion ticket would need proven quiescence of every aliasing
+writer and tracked intervening writes. Neither model is implemented.
+This is ordinary platform work, not a demonstrated engine boundary, and
+does not justify skipping synchronization by syscall or application name.
+
+
+### Existing trace phase and profile limits (2026-10-31)
+
+Single-terminal performance remains unproven, following the user's explicit
+correction. No whole-desktop benefit follows from the bounded native draw
+microbenchmark or the existing pointer/idle captures.
+
+Read-only phase accounting of the verified `gl-transaction-trace-r2`
+windows finds 73/73/144 candidate entry/completion comparison pairs at
+one/three/five terminals. Each candidate shares an incoming invocation,
+PID and 4,190,208-byte requested length. Every eligibility value remains
+false: those fields do not establish exact Memory/mapping generations,
+all-writer quiescence or absence of intersecting host writes. Three entry
+requests per window lack a completion within that capture; one completion
+per window lacks classified incoming ancestry. Different capture preludes
+make this neither a matched scaling curve nor measured elided work. No
+synchronization is skipped. Evidence under
+`.context/shared-mapping-phase-accounting-r1/` includes the read-only
+analyzer, raw-source verification and declared-dev-shell verification;
+accounting SHA256:
+`0ea9a13a1619a3704cbbaa44d44477485881118eaeb49bab6aa52ac09f90c507`.
+
+A separate offline review rechecks all 217 raw CPU profiles and 240 input
+hashes from historical runtime `e660a7be39d7` in
+`.context/native-snapshot-cpu-r1/`. The earlier snapshot-comparison and
+getError percentages describe the calibrated kernel profile only. All
+208 nonkernel profiles lack usable clock calibration; most observations
+land in low-index Wasm syscall/wrapper functions, which may include parked
+workers. Summing these observations cannot establish active CPU shares.
+Function-index/body-offset correspondence supports inferred executable
+families, not exact guest PIDs or instruction-level wait attribution.
+Raw nonkernel envelopes span about 8.7–10.5 seconds around roughly
+5.1-second motion markers, so exact phase trimming is unavailable. The
+cold Start recording also omits eight late-attached workers despite its
+initially selected-worker coverage flag. These are ordinary evidence
+limitations, not a demonstrated browser defect or platform boundary.
+
+Exact target URLs, call trees, offsets, artifact hashes, calibration bounds,
+late-worker identities and unchanged-input receipts are retained under
+`.context/native-snapshot-all-worker-analysis-r1/`. Analysis SHA256:
+`8ad4875311110162184bbefd92163f377fba9c9e47497a98e6e8dabf79d7f649`;
+review note SHA256:
+`8a9aedbdaea2704a0c6bb89203c4b4ee784564f97ae2a06e5dcfcb7901e52763`.
+No browser, build or runtime mutation was needed for either reanalysis.
+
+
+### Active trace and cursor-pool lifecycle evidence (2026-10-31)
+
+These fresh headless Chromium diagnostics use coherent baseline `71a283c2`
+on 5673, with native DPR 2 and 2880×1620 output. The normal DAD producer
+runs concurrently, so none is a quiet performance comparison. The next
+preview is not available from these diagnostics.
+
+The first active-output attempt enters shifted punctuation incorrectly
+through logical Playwright typing; its actual screenshot shows `$` as `4`
+and `%` as `5`. Its intended workload did not run. The second uses the
+existing physical-key helper and captures genuine output, but its upper
+crop misses new output in an already filled terminal. Actual screenshots
+also disprove the no-sleep-only settling inference. Both failures remain
+under `.context/active-baseline-trace-r{1,2}/` with workload 1, collector 0
+and guard 0; they provide no workload timing acceptance.
+
+Fresh R3 observes bounded top and bottom crops and requires an actual
+root-reviewed screenshot showing the natural prompt after output before
+advancing a stage. The first three reviews bind exact images and repeated
+real process observations. R3 retains four complete raw captures at
+one/three/five/recovered-one Foot windows, each with two consecutive
+selected-Sway DRM latch intervals containing returned native guest draws,
+followed by the matching device draw. All spans close, native error
+observations are zero, metadata caps hold and the normal own 93 owners /
+245 members, source, SDK, kernel, host and sealed helpers stay unchanged.
+However, the recovery screen detector cannot distinguish another pass
+of identical text, so **the overall workload still fails** (1/0/0), with
+no accepted four-stage timing comparison. Complete raw intervals remain
+usable for separately labeled operation accounting.
+
+| Stage | Guest draws per interval | Primary passes and 64×64 cursor readbacks per interval | Native getError calls per interval | Comparison requests per interval |
+|---|---|---|---|---|
+| 1 | 1 / 1 | 6 / 12 | 375 / 664 | 146 / 186 |
+| 3 | 1 / 1 | 5 / 15 | 325 / 984 | 140 / 232 |
+| 5 | 2 / 1 | 11 / 6 | 774 / 375 | 260 / 156 |
+| recovered 1 | 1 / 1 | 6 / 18 | 373 / 1561 | 146 / 272 |
+
+Each primary device pass contributes 23 error queries and each cursor
+readback 25 within these intervals. Other queries still belong to guest
+execution, queries, switching or cleanup. Comparisons request both
+4,190,208 and 16,760,832-byte ranges for Sway and SFWBar, with equal results
+in all eight intervals: about 1.4–2.7 GiB of requested comparison bytes
+per interval. Request bytes are not independent measured bus traffic or
+safe elisions. The instrumented 81–288 ms logical intervals include
+scheduling and driver waits; they are not CPU cost, physical frame rates
+or a matched scaling curve. Raw capture/analysis/verification live under
+`.context/active-baseline-trace-r3/` and
+`.context/active-frame-accounting-r1/`. Accounting SHA256:
+`658547b25decac697e82d3d4f26662c075cc67261ebe8ee83069df27f2987382`;
+native attribution SHA256:
+`1ae6c33a40e3e8319576a98e13b5d4353662a5af7232ddeeb062273f6ef0503c`;
+verification SHA256:
+`ca62771e5b46b6c2da39d6440fc6bb0c450ad74614d1688ea0c0e97338535bf4`.
+
+The independent menu lifecycle probe first records six metadata checkpoints
+successfully, but its descriptor attachment captures the parent directory
+before asynchronous navigation finishes. That attachment is not descriptor
+evidence. Fresh R2 explicitly waits for each observed mapping FD row and
+passes workload/collector/guard 0/0/0 in 66 seconds. Before first Start,
+preparation history contains the 4,190,208-byte cursor pool. At the painted
+cold menu, a second pool has grown to 16,760,832 bytes. The final VFS view, after dismissal, a 30-second wait and warm
+opening/dismissal, shows both FD symlinks open; normal VFS
+`/proc/109/fd` identifies both as `memfd:wayland-cursor`.
+No descriptor is opened and no file payload is read. Preparation history
+is not a current live-mapping inventory: later repeated comparisons of
+both sizes are the separate R3 evidence above. Neither open descriptors
+nor this growth alone proves a leak or immutable storage.
+
+Menu evidence is under `.context/pool-menu-lifecycle-r{1,2}/`; R2 report
+SHA256 `f2ff6ed171c83bc4d004240b557e50050fe2d734e60944863e14eca83867cbcc`,
+verification SHA256:
+`ab031014404967276140a27f7435331c2bddca73dcbd0e22aba1c749ebcd25f9`.
+No rebuild was needed for any diagnostic. Future matched observations
+will use ordinary numbered lines to make repeated scrolling visible,
+with new workload identities and the same physical typing/visual settling
+requirements; that revised workload remains unrun. There is no new
+single-terminal or multi-terminal improvement claim.
+
+
+A source-only authority review in `.context/gpu-content-epoch-design-r1.md`
+finds no existing authoritative GPU pixel-content generation. The native
+image revision, BO allocation identity and cursor version serve other
+contracts. Cursor readback reuse needs a physical-renderer write epoch
+covering aliases, attempted/after-effect writes, retained executions,
+unknown writers and loss/repair. Primary blit reuse additionally needs
+an exact canvas/default-buffer preservation and ownership generation.
+An observational screen should count prospective cases while executing
+every original operation before any such elision is implemented. Device
+paths account for 3,792 of 5,431 recorded getError calls in the eight
+intervals above (69.8%); that is a bounded call count, not CPU share or
+proof those presentations saw unchanged pixels. No cache or write epoch
+is implemented by this evidence update.
+
+### Normal inline-draw preview and first-input trace (2026-10-31)
+
+The single-terminal improvement remains **unproven**, as does improvement
+with multiple terminals. The user explicitly withdrew the tentative
+single-terminal impression. Preserve that distinction when interpreting
+all operation counts and isolated native measurements above.
+
+Normal producer `inline-client-normal-products-1031-032816-ff66` finishes
+successfully in 1h46m at frozen source
+`dadea383b2fc41c891fbdffe1dcb153ebc3db5fa`. All six stages return zero:
+its own xtask, normal products, normal host stamp, freshness, identities,
+and selected-kernel ABI check. Its own 93 owners/245 members, SDK, kernel,
+normal host and source identities match the serving collection. Server
+`inline-client-preview5674-1031-051508-18ba` serves
+`http://127.0.0.1:5674/pages/kandelo/`; bounded HTTP checks of `/` and the
+app return 200 with the required COOP/COEP headers. Availability was
+announced immediately after these checks. This is availability of the
+normal client-draw candidate, not completed desktop validation.
+
+Candidate normal owner-manifest SHA256:
+`232592e012569c4ff5df6864594218ebd1fcfafeb6b519c46bf3415a14294b49`;
+selected kernel SHA256:
+`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`;
+serving receipt SHA256:
+`a36c959be3899b86ccd7f0dd61538c7f8a37bc6c66a3a344d9e04061d2aa86e6`;
+HTTP proof SHA256:
+`3d721140d15a9e49d4a05fbfbea30b180f5d06db9d43cf40d7810684b27d04d5`.
+Evidence is in the candidate's `.context/normal-products-r1/` and
+`.context/preview-serving-r1/`. Published sources and artifacts stay frozen.
+
+The revised 886-byte numbered-output workload is attempted on the normal
+71a baseline, not yet accepted as a matched comparison. R4 loses the
+first `i` from `i=0`; the actual command starts `=0` and reports shell
+errors. Root rejects the visual review and the workload returns 1;
+collector and final guards return zero. Its scalar live-GPU allocation
+observations do not turn that error output into the intended workload.
+
+Fresh R5 adds bounded private response overlays for DOM capture, the
+existing input gate, source delivery, host batches and the actual kernel
+input export calls. All original operations remain in place. Sixteen
+pure/served-module controls pass through the declared shell. The first
+launch fails at preflight because the helper manifest is missing; no
+browser runs from that attempt. A corrected sealed launch,
+`active-input-trace-r5-retry-1031-051809-6bbc`, reproduces the missing first
+character and returns workload/collector/guard 1/0/0 in 62 seconds.
+
+R5 retains 1,290 main-realm and 882 kernel-realm scalar rows without
+overflow. The complete 441-record host-batch vector matches all 441
+kernel-before-export and all 441 kernel-after-export vectors in order.
+The keyboard source-delivery vector also matches the keyboard host
+vector. The initial `KeyI` DOM event has no modifier flags, passes the
+existing gate, and reaches the kernel export as code 23/value 1 after the
+Control+U releases. The actual before-Enter image still starts `=0`.
+This narrows the missing character to a later stage; a void kernel
+export returning does not prove OFD fanout, no overflow, guest read,
+Wayland focus or terminal receipt. Clocks are not calibrated between
+realms. This failed workload remains excluded from performance acceptance.
+
+All 17 distinct rendering modules and three input modules are observed;
+the KMS registry module is requested twice. Normal before/after source,
+SDK, kernel, host and all 93/245 artifact identities remain equal. Offline
+analysis first incorrectly assumes adjacent key records despite an
+intervening pointer SYN; its original failure is retained, then the
+correct per-device sequence check passes. A verification attempt also
+incorrectly expects 17 requests rather than 17 distinct modules; the
+corrected inventory preserves the duplicate request instead of hiding it.
+
+R5's rejected error-output capture also observes 29 original cursor
+readbacks of a live 64x64 allocation. Thirteen have a prior observation
+of the same exact allocation/context/dimensions and no intervening
+observed native call outside the reviewed device paths. Every
+`reuseEligible` result remains false: loss generation and complete
+raw/extension/native writer coverage are unknown. No readback is skipped,
+no cache is implemented, and these observations are not a valid ordinary
+output workload or desktop improvement.
+
+Raw evidence is under `.context/active-baseline-trace-r4/` and
+`.context/active-input-trace-r5/`; independent accounting and verification
+are under `.context/first-key-propagation-analysis-r1/`. Input-accounting
+SHA256 `d3425bd368ba8ac4d491072b3a1d8208cdad4a3eaa769f2ff9f03a75c3615a1c`;
+live-allocation screen SHA256:
+`21cb1fe67fe050c02df3f923f1efd66e2e21cde3082960e6f1019b2ff6bbb64f`.
+No rebuild is needed for these diagnostics. First-input focus/dispatch
+and safe content-authority tracking remain ordinary platform work.
+
+Fresh baseline R6 (`active-input-read-trace-r6-1031-052710-6c40`) completes
+all four stages at 1/3/5/recovered-one terminals in 5m09s with
+workload/collector/guard 0/0/0. Root reviews numbered output through 63
+and the natural prompt in each actual screenshot before stage advance.
+Seventeen pure/served-module controls pass. All original rendering and
+input operations execute. This is one instrumented NONQUIET functional
+run, not a timing comparison or single-terminal improvement.
+
+The additional private read seam projects at most 256 evdev records
+from original detached syscall output copies inside the disposable kernel
+worker. No extra guest-memory read, pointer, output bytes/view or guest
+Memory crosses realms. Normal VFS `/proc/101/fd` symlinks sample pointer
+FD 37 and keyboard FD 38 before capture. Every stage has 424 keyboard and
+17 pointer input records; the per-device read-output vector matches each
+injected vector exactly, with no decode-unknown or observed descriptor
+invalidation. The successful first stage returns pointer records before
+keyboard records. The failed R5 lacks these read observations, so no
+cross-device/focus cause is established.
+
+These are **prepared output observations**, not proof of successful
+publication or libinput receipt. A sampled FD path does not pin an OFD;
+the metadata-to-arm gap and incomplete host/descriptor mutation coverage
+leave continuity unproved. The probe conservatively stops decoding on
+observed selected-number close/replacement and process transitions, but
+that partial guard does not establish a complete lifetime proof. Pinned
+libinput/wlroots/Foot source review documents cross-device dispatch and
+held-key focus-entry behavior as a plausible explanation, not a proven
+epoll, compositor or terminal defect. See the private source audit
+`.context/first-key-downstream-source-review-r1.md`.
+
+R6's eight complete logical active intervals contain ten selected guest
+draws, 72 primary scanouts and 72 cursor readbacks, with 1,708 shared-memory
+comparison requests. Geometry and interleaving vary by stage; these
+counts are not a scaling curve, physical FPS, scanned bus traffic or safe
+skip authority. All normal source/SDK/kernel/host and 93/245 artifacts
+remain unchanged before/after. Raw evidence is under
+`.context/active-input-read-trace-r6/`; independent analysis is under
+`.context/active-input-read-analysis-r1/`. Baseline accounting SHA256:
+`043f0eaeedfc5803b40e375760612f1588c689f28a71c06c43dc43b68fb7ade0`;
+verification SHA256:
+`05cd1d72adee39c246e292ff29ab4bcdb2950c733daa87c1506ca7bf814e81c0`.
+
+The first normal candidate trace R7 renders the one- and three-terminal
+output, but Root misses the three-terminal manual review deadline while
+examining another path. Job
+`candidate-input-read-trace-r7-1031-053234-359f` returns 1/0/0 in 3m03s;
+its later stages are unrun. A late screenshot review does not retroactively
+pass that workload. Fresh R8 uses unchanged rendering/input code and the
+same deadline/admission criteria. It inherits R7's NONQUIET load-inventory
+sample, which is not proof of quiet execution.
+
+R8 (`candidate-input-read-trace-r8-1031-053613-305b`) completes all four
+stages and returns workload/collector/guard 0/0/0 in 5m09s. All 18 distinct
+rendering modules, including the private client-draw implementation, and
+three input modules are observed. Its eight complete logical active
+intervals contain ten selected guest draws, 75 primary scanouts, 75 cursor
+readbacks and 1,542 comparison requests. Seventeen private client-draw
+results across the complete captures are accepted/restored. This verifies
+use of the new path by normal guest programs; differing interleaving and
+pass counts prevent interpreting aggregate differences as an improvement.
+All four per-device input vectors match 424 keyboard/17 pointer records;
+normal source/SDK/kernel/host and 93/245 artifacts remain unchanged.
+
+R8 raw evidence is under `.context/candidate-input-read-trace-r8/`;
+accounting SHA256:
+`9c5150c4f73f295751563dcda407d4616f46af1914174ac308d5695923f4fbf6`.
+Both valid runs retain the input/OFD/publication limits above. Settling
+process snapshots use ordinary UI navigation that sends Escape to leave
+pointer lock; screenshots show `^[` during some still-running output,
+after the bounded active trace window. That is observer-generated input,
+not a platform defect or exact 886-byte stdout proof. It is another reason
+to separate this diagnostic from uninstrumented workload timing and to
+leave the earlier missing-character cause unresolved.
+
+Disjoint native-query attribution in
+`.context/active-input-read-analysis-r1/query-attribution.json` verifies
+23 getError calls per primary scanout and 25 per cursor readback on both
+sources. Baseline intervals contain 1,656 primary/1,800 cursor queries;
+candidate intervals contain 1,725/1,875. Restoration alone accounts for
+ten queries per primary and twelve per cursor operation. These are call
+counts, not active CPU shares. Synchronization remains mandatory without
+authoritative writer/dirty-state tracking.
+
+### Local inverse error-sequence candidate (2026-10-31)
+
+Native restoration now keeps clean-entry evidence local to one synchronous
+inverse and one physical error owner. A successful post-check supplies the
+next native call's clean entry. Every attempted operation still has its
+post-check; any rejection or throw revokes that evidence, stops dependent
+calls in its group and freshly drains before independent cleanup. No
+clean stamp survives the inverse, and repair, retirement and completion
+ownership remain unchanged. Empty groups still perform no GL queries.
+This does not introduce GPU pixel caching or skip shared-memory work.
+
+The private source screen first passes 51, then 53 controls using actual
+frozen modules, preserving both logs. Its first separate sealing helper
+has a Python-parenthesis error; that helper failure is retained and fixed,
+with no tested-source change. Source/control/patch receipt SHA256:
+`34cc8bd9f9e5b059174898b39c2eb34921b4d40b4642f8fdbf19ec11bf45d716`
+under `.context/native-inverse-sequence-candidate-r1/`.
+
+A no-rebuild native screen under `.context/native-inverse-native-r1/`
+loads the four actual source modules in fresh disposable worker contexts
+on headless Chromium, Firefox and WebKit. Only the candidate inverse body
+changes. Both variants preserve the tested primary/cursor pixels and
+selector, pack-layout, color and scissor state; normal native helper
+query counts are primary 20→16 and cursor 22→17 on all engines. Eight
+alternating bounded helper batches per operation are retained separately
+from untimed count wrappers. They exclude guest/syscall/coherence costs;
+WebKit samples are near timer resolution. They do not establish a desktop
+or single-terminal benefit. Context/browser close reports no errors;
+this ad hoc harness does not record the temporary Firefox-home path for
+scoped directory removal and makes no full resource-reclamation claim.
+
+Production source integration adds 37 public-API regression cases for
+pending flags, fresh owners/inverses, every inverse fault position before
+and after effects, getter/post-check throws, independent cleanup, drain
+limits, loss, empty groups and inverse-only repair without a repeated
+forward operation. The complete pure WebGL selection passes 774/774 tests
+in 32 files through the declared shell, with zero unloads/skips. Its
+explicit configuration omits unrelated C-fixture global setup because
+these tests use source/mocked native resources; it is not guest, browser
+memory, POSIX or combined distribution acceptance. Published preview
+5674 remains frozen at DAD and does not yet include this inverse change.
+
+Native screen verification SHA256:
+`4b1a22c4229975da3a6fe909480305667763607cee7557b6ac86acea3be01d21`.
+R8 accounting verification SHA256:
+`0d1ec6e5a5aca9084449c2d1d82f0d952463323ba7da13d338b4813e6f1ba38b`;
+valid-workload native-query attribution SHA256:
+`11ed43e84cb39db01543314c035e29a36eace582d8671920e21f817dc1fa8148`.
+
+The first normal host build in the mutable documentation checkout stops
+before host compilation because its musl submodule directory exists but
+is uninitialized (`libc/musl/Makefile` is absent). Preserve
+`.context/inverse-host-build-r1.log`; this is provisioning, not a platform
+boundary or a passing host build. Initialize the pinned submodule and
+continue through the normal own-SDK/artifact checkpoint. No ABI increment
+is required for this internal, synchronous error-check sequencing change.
+
+### Inverse normal checkpoint provisioning (2026-10-31)
+
+Runtime/test commit `32dc0d1a69` and evidence commit
+`e3031609dff91db5e241f5e3e38c306f638612dd` are pushed to draft PR #1601.
+The source checkout at e303 is frozen for its next normal checkpoint;
+preview 5674 remains unchanged at DAD during provisioning.
+
+Producer `inverse-sequence-normal-products-1031-055604-106e` returns 1
+in 5m03s: its own xtask succeeds, then normal products fail because
+`sdk/rust/libc-upstream` is uninitialized. The normal executor drains
+independent work and preserves cached/successful products; kandelo-cc,
+termchat and librsvg fail at the same missing pinned source, blocking
+other dependent outputs. This is not a new graphics regression or a
+passing aggregate build. Preserve `.context/normal-products-r1/` in the
+frozen source checkout.
+
+After that producer ends, initialize Rust libc at its pinned
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` commit. Musl is already at
+`0784374d561435f7c787a555aeab8ede699ed298`; both submodules match the
+parent gitlinks and the source checkout remains clean. Fresh producer
+`inverse-sequence-normal-products-r2-1031-060220-7e1f` writes separately
+to `.context/normal-products-r2/`. It must complete the same six stages
+and its own SDK/kernel/host/93-owner provenance checks before serving.
+No old successful receipt or cache key is restamped for the failed run.
+
+Producer `inverse-sequence-normal-products-r2-1031-060220-7e1f`
+finishes with exit 1 after 9m42s. Own xtask, normal products (including
+host), host stamping and freshness all return 0. The identity collector
+then honestly rejects absent 64-bit SDK graphics stamps; normal package
+preparation provisioned the core but not those final graphics libraries.
+This failed aggregate is retained in `.context/normal-products-r2/`,
+and no preview receipt is issued for it.
+
+Fresh producer `inverse-sequence-normal-products-r3-1031-061533-6f7e`
+first runs the normal `build-musl.sh --ensure --arch wasm64posix` path,
+then repeats products and provenance checks in a separate output directory.
+The complete-SDK stage returns 0; final aggregate/serving acceptance is
+pending. This is ordinary provisioning, not a hard platform boundary.
+The single-terminal application performance result remains unproven.
+
+The R3 producer completes all seven stages with exit 0 in 1m50s.
+Own complete SDK32/64, kernel, normal programs/images/host, freshness,
+93 owners / 245 members and kernel ABI are recorded without weakening
+the collector. Strict preview **http://127.0.0.1:5675/pages/kandelo/**
+now serves clean frozen e303, including inverse sequencing. Server
+`inverse-sequence-preview5675-1031-061728-e383` preserves earlier
+previews. Availability was announced immediately after successful
+HTTP/COOP/COEP proof; desktop performance remains unvalidated. An early
+HTTP proof attempt raced the still-running collector and failed before
+the receipt existed; the second attempt succeeds after it exists.
+
+Normal owners SHA256 `15ad123ad38f4766f975a1feb57583229efa56fa77519aa8e106ad9892e7c8f1`.
+Kernel SHA256 `10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+Serving receipt SHA256 `5cad5d36efb8be559e4ce8c3aa227be9f3305280787b5b0c79b8ff09cd4b913c`.
+HTTP proof SHA256 `50fc7bb90260b70e1d6d35fc1c3956ce3d6794d8faf09bd6e79ca432b121d65c`.
+
+Fresh `.context/candidate-inverse-trace-r9/` controls pass 17/17,
+including all actual served rendering/input module seams. The named
+`inverse-input-read-trace-r9-1031-061817-f3ad` run begins against
+these exact normal artifacts with four-stage prompt review and unchanged
+numbered output workload. Other workspace Node/browser jobs are running;
+this is explicitly NONQUIET scalar/count evidence, not a timing benchmark.
+No single-terminal improvement is established.
+
+R9 ends workload 1 / collector 0 / guard 0 after 28s, before the
+numbered workload: initial body-color calibration throws while the
+retained screenshot shows downloads still in progress and no Foot body.
+This exposes an observation bug: the callback throws before its existing
+90s readiness poll can wait. No desktop regression or count result is
+inferred. Preserve all R9 outputs.
+
+Fresh `.context/candidate-inverse-trace-r10/` returns explicit pending
+for absent initial body palette; the process/body/title requirements and
+90s deadline remain unchanged. A new control checks that blank canvas
+stays pending and a neutral body without prompt/title ink still fails
+readiness. Its first run fails 17/18 due to a wrong TypeScript dependency
+path in that new control; the corrected existing host dependency yields
+18/18 passing controls. Both logs remain. No production/artifact behavior
+changes. Fresh named R10 run is
+`inverse-input-read-trace-r10-1031-062005-1709`.
+
+R10 fails workload 1 / collector 0 / guard 0 after 3m20s. Its one-,
+three- and five-terminal stages are complete with actual root prompt
+reviews (samples 20, 14 and 14), but the first attempted close removes
+the original Foot, violating the retained lifetime assertion. The fixture
+clicks the rightmost body then immediately issues Close without observing
+compositor focus. This does not establish whether the cause is platform
+input ordering or missing fixture focus synchronization; recovery is
+unrun. No aggregate desktop pass is claimed.
+
+Fresh `.context/candidate-inverse-trace-r11/` observes the uniquely focused
+painted title before typing and closing. It calibrates the actual dominant
+blue title background from the initial lone Foot and requires the same
+color, at least 60% title-strip fill and exact target rectangle, with no
+second focused title. The original-Foot lifetime assertion remains. This
+adds no focus IPC, input reorder, fixed synchronization delay or runtime
+change. Controls pass 18/18, including wrong-target, ambiguous-title,
+missing-calibration and low-fill negatives. Job
+`inverse-input-read-trace-r11-1031-062541-fb5d` is a fresh NONQUIET
+headless diagnostic against unchanged normal preview e303.
+
+R11 ends workload 1 / collector 0 / guard 0 in 1m14s before typing.
+The new exact focus check rejects stale pre-menu body geometry: the
+initial observed body height is 1564, whereas completed panel reservation
+shrinks it to 1488. Root views the retained pre-menu screenshot, which
+still shows downloads/panel startup. This is not proof of a focus defect.
+Fresh R12 refreshes actual process/body readiness after menu setup and
+before active output, keeping the focus and original-Foot checks.
+Controls pass 18/18; job
+`inverse-input-read-trace-r12-1031-062801-4d36` starts against the same
+unchanged normal preview. These observation repairs need no rebuild.
+
+### Normal inverse desktop trace and remaining work (2026-10-31)
+
+R12 completes in 4m35s: workload / collector / guard all return 0.
+One persistent headless Chromium machine reaches one, three, five and
+recovered one actual Foot process/window, cold/warm painted Start menus,
+and all four numbered-output/natural-prompt reviews. Root inspects exact
+retained screenshots at samples 16, 16, 17 and 22; the original Foot
+survives every observed-focus-before-close transition. All normal source,
+SDK, kernel, host-dist and 93-owner/245-member identities remain equal
+before/after. This validates the bounded diagnostic, not application speed
+or the full merge acceptance surface.
+
+All four input captures retain 424 keyboard and 17 pointer records matching
+the complete injected vectors at the selected detached read outputs; no
+unclassified reads, descriptor invalidations or overflow are observed.
+Open-file-description continuity, downstream libinput/Wayland receipt,
+command exit/drain and observer-generated Escape limitations still apply.
+No platform input-ordering fix is claimed by these fixture repairs.
+
+Eight complete active intervals contain eight selected guest draws,
+98 primary presentations, 98 cursor readbacks and 1,508 comparison
+requests. Whole captures contain 16 accepted/restored private draws;
+these are separate scopes. Independent ancestry accounting confirms:
+
+| Native error-query calls per operation | Before inverse change (R6/R8) | Normal inverse candidate (R12) |
+|---|---:|---:|
+| Primary presentation, including enclosing checks | 23 | 19 |
+| Cursor readback, including enclosing checks | 25 | 20 |
+| Primary restoration alone | 10 | 6 |
+| Cursor restoration alone | 12 | 7 |
+
+These are exact operation counts on recorded normal artifacts, not matched
+application timings. Different schedules produce different numbers of
+presentations; aggregate call totals cannot establish an improvement.
+The single-terminal application result remains unproven.
+
+Same-worker synchronous elapsed diagnostics are also retained, separately
+from counts. In the eight instrumented NONQUIET intervals, the synchronous
+Sway shared-mapping export has 62–105 calls per interval, with summed
+observed duration 45.3–93.7 ms. Native `getError` sums are 15.8–83.2 ms
+per interval; native cursor `readPixels` sums are 0.61–2.77 ms. These
+include diagnostic overhead, scheduling and native synchronization; they
+are not CPU shares, GPU completion, calibrated fine-grained benchmarks
+or before/after measurements. Nested buckets must not be summed.
+
+Both Sway and SFWBar continue comparing 4,190,208-byte and
+16,760,832-byte writable regions with equal results throughout these
+captures. This supports further investigation of synchronization frequency
+and authoritative writer tracking. Equal results, repeated presentations
+and cursor allocation identity alone still do not authorize skipping
+comparisons or reusing GPU pixels. The next platform improvement must
+preserve all-writer, loss, aliasing and lifecycle correctness. No content
+cache or synchronization-elision optimization is implemented here.
+
+candidate-accounting.json SHA256 `99a345c2020b60bb64864a25f66d06d9adc33aa6faf2e8d720f77c17feb78708`.
+candidate-accounting-verification.json SHA256 `83c83424249c955828596a137f4993da6b230d41ce1a7549104963fe6453b3bc`.
+query-attribution.json SHA256 `ba89d8898a41d32091d21635c79b5bddc2bd8c8ed9d15b5bc7d183ac514072c2`.
+elapsed-diagnostics.json SHA256 `1d654e76847fc17339caada84cc129481262b03169d2a805993c533e92c0d848`.
+
+The three failed R9–R11 workloads and all provisioning/control failures
+remain retained. R12's private observers need no additional SDK, kernel
+or program rebuild. Latest available preview remains normal e303 at
+http://127.0.0.1:5675/pages/kandelo/; acceptance of the broader desktop,
+combined graphics, memory, conformance and performance inventory remains
+open.
+
+### Startup worker milestones: native control and initial captures
+
+Continue beyond frame counts into the cold Start path using the same
+frozen normal e303/5675 artifacts. `.context/worker-launch-native-url-r1/`
+passes a headless Chromium native Worker control through actual Vite
+URL modules and normal worker source imports. The production scalar URL
+tagger preserves existing query values (including repeated values) while
+adding one launch identity. Native Worker URL and worker-global location
+match the prepared URL. The control appends only its scalar response to
+the fetched worker entry; it sends no guest init message and boots no
+Kandelo kernel/machine. Worker/context/browser cleanup succeeds. The
+unused Firefox home created by canonical configuration is removed using
+its exact recorded path; no guessed test directories are removed. This
+is URL/source-loading evidence, not startup performance.
+
+Native control report SHA256 `94fcfddd979142bde88814ffe7d535abe1090b8d38d54e6fef5b70402a53ef54`.
+
+The R3 preparation controls pass 13/13. A fresh private cold-Start
+harness reuses the bounded scalar logger, exact three-module AST overlays,
+recursive CDP observer, and normal before/after 93-owner/245-member source,
+SDK, kernel and host guards. It observes an actual first Start click and
+painted category menu, then requests ordinary same-page gallery replacement
+with Bare shell. Unique worker URL tags and routing can affect caching;
+there are no calibrated cross-realm timings or active-CPU claims.
+
+Cold capture R1 (`worker-launch-cold-start-r1-1031-064139-f278`) ends
+workload 1 / collector 0 / guard 0 in 1m15s, before any Worker target.
+The observer treats Vite's worker&url wrapper (a URL export) as executable
+worker source and rejects the missing handler seam; host setup fails
+visibly. Normal gallery cleanup cannot run without host UI. The failure
+and original outputs remain; no platform regression is inferred.
+
+R2 forwards the URL wrapper unchanged and passes 14 pure controls plus
+all three actual served-source seam/syntax checks. Job
+`worker-launch-cold-start-r2-1031-064447-5fd2` ends 1 / 0 / 0 in 25s.
+It exposes an insufficient source-response cap of 32 during normal boot
+and an immediate process-readiness assertion before all clients launch.
+Observer shutdown also disables root autoattach before child sessions
+retire, producing a retained inconsistent-parent cleanup error. These
+are observer defects, not startup measurements or runtime fixes.
+
+R3 uses a hard pre-await admission cap of 128 source responses (the
+129th still fails), polls real compositor/panel/terminal readiness,
+freezes bounded scalar snapshots, and retires child observer sessions
+before disabling parent/root autoattach. New controls cover these
+contracts. Its first control run passes 16/17 because the new mock wrongly
+applies a disable-order assertion to a detach command; after correcting
+only the mock, controls pass 17/17, and all three actual served seams pass.
+The failed control log remains. Fresh capture job
+`worker-launch-cold-start-r3-1031-064828-ce97` is running; no old failed
+result or artifact receipt is restamped. No rebuild was needed.
+
+Cold capture R3 completes all workload/collector/guard stages with exit 0
+in 42s, paints the actual category menu and completes ordinary same-page
+Bare-shell replacement. Independent accounting verifies the unchanged
+normal source/SDK/kernel/host/93-owner identities. It records 40 targets
+(38 tagged process/thread targets plus the kernel and image composer),
+but only 32 parent/target/init/stage joins are complete: the parent
+logger's 128-event limit is reached. Six later parent launch joins remain
+missing; that original R3 trace stays partial. No duration is invented
+for a missing endpoint.
+
+Fresh R4 raises only the logger event allowance to its already supported
+256 bound; the explicit 257th overflow control passes. All 18 pure
+controls and all three actual served seam/syntax checks pass. Job
+`worker-launch-cold-start-r4-1031-065103-0750` completes 0 / 0 / 0 in
+49s. The actual menu screenshot is inspected: Games, Graphics and System
+Tools are visible above Start. Ordinary same-page replacement completes
+without a document reload, runtime failure or forced-release diagnostic.
+This remains distinct from the full repeated browser-memory gate.
+
+Independent R4 accounting in `.context/worker-launch-cold-analysis-r2/`
+verifies all 38 observed parent launches against their exact tagged
+target/init identities, with 38 complete joins, 494 scalar startup
+events, no unmatched observed parent launches, no overflow/rejected
+targets, and no observer/record/cleanup errors. Both ordinary Procs
+snapshots retain the same Sway, SFWBar and Foot identities. Eight newly
+observed tagged targets since the before-click snapshot belong to the
+actual SFWBar PID 109, TIDs 117–124. Console arrival and attachment are
+not a calibrated proof of exact creation time. No Profiler, Debugger,
+pause, worker Runtime.evaluate or guest-memory inspection is used.
+
+Every observed process/thread uses the precompiled-module selection
+branch; worker-side WebAssembly.compile is not invoked. This does not
+measure or exclude parent/kernel module preparation before construction.
+For the eight newly observed SFWBar threads, ordered same-realm endpoint
+deltas in this single instrumented NONQUIET capture are:
+
+| Observed interval | Range across eight threads, ms |
+|---|---:|
+| Reflection registration | 9.39–40.89 |
+| Reflection end to native instantiation begin | 59.30–115.04 |
+| Native instantiation invocation | 12.44–21.84 |
+| Instantiation end to selected entry attempt | 82.23–148.77 |
+
+These spans include scheduling, waiting and recorder overhead. They are
+not CPU shares, successful guest entry, first Wasm execution, native GPU
+time, an uninstrumented startup benchmark or a before/after improvement.
+Overlapping thread intervals must not be summed into a menu delay.
+
+The next bounded investigation is the actual shared worker setup inside
+these broad regions: template identity, imported state, activation/table
+registration and reconciliation, thread bootstrap/TLS and channel binding.
+Source inspection identifies these operations in the measured regions but
+does not establish which dominates. Preserve Node/browser parity and all
+ABI/lifetime/ownership checks when choosing an optimization.
+No startup optimization or new web build is claimed by this diagnostic.
+
+R4 raw report SHA256 `389bc980c09c997fd562a02c61a75fa84a2374af853f7146c5b1e26b99b09635`.
+R4 accounting SHA256 `16e0a18017129ccefb40bd56565b11c8b58678539edc2013d6517949faca52a4`.
+R4 analyzer SHA256 `bf7a40ff2439e6e620502ffdb86e288f6f59683959698d96fe127c0a07438a8c`.
+
+Preview e303 remains available at
+http://127.0.0.1:5675/pages/kandelo/. Single-terminal responsiveness and
+the complete graphics/desktop/conformance/performance goal remain open.
+
+### Finer cold Start setup and reconciliation accounting
+
+Keep single-terminal improvement explicitly **unproven**. R5 adds 15
+immediate pthread-setup statement pairs to the existing private observer,
+without changing the normal frozen e303/5675 runtime or rebuilding SDK,
+kernel, programs, images or host distribution. Nineteen controls pass,
+including the actual transformed async template declaration: pending
+hashing cannot emit a completion marker; original results and failures
+remain exact; the inactive branch does not invoke hashing. All three
+actual served-source seam/syntax checks pass. Job
+`worker-launch-cold-start-r5-1031-065749-911f` completes workload 0 /
+collector 0 / guard 0 in 51s, with all 38 parent/target/init/stage joins,
+no observer/record/cleanup errors, overflow or unmatched parent launches.
+The real menu paints three category rows and ordinary same-page Bare-shell
+replacement completes without a document reload. Sway, SFWBar and Foot
+retain their original process identities across the menu observation.
+
+Independent `.context/worker-launch-cold-analysis-r3/` accounting keeps
+guarded/absent statements distinct from missing endpoints. Across the eight
+newly observed SFWBar threads, observed template setup spans 29.94–76.34ms,
+import routing 32.11–48.50ms, activation registration 53.16–95.49ms and
+table reconciliation 29.97–100.05ms. TLS and channel setup have much smaller
+observed spans. These are instrumented NONQUIET elapsed scopes, not CPU
+costs, successful entry or a before/after comparison.
+
+R5 raw report SHA256 `307c06cfe5a1a3f2f7f8dc86ce3e3ea986e613813402189d826e611e20b06a7e`.
+R5 accounting SHA256 `3c31bc00248add93a56e25f605771051e37735fd2615f464851c8cc608336df5`.
+
+Fresh R6 follows those regions into their actual shared implementation.
+Nine exact source overlays separate owned copying/hashing, import-facts
+decoding/binding, resume-catalog decoding/resolution/registration, and
+archive acquisition/observer/replay. Detail events are enabled only after
+verified thread initialization and stop before the selected guest entry
+attempt. The helper returns exact expression results without retaining or
+logging them; failures leave no fabricated end event. Controls exercise the
+actual transformed hash and catalog functions, including owned-copy bytes,
+pending/rejected digest, table receiver, order and original function/error
+identity. No source bytes, catalog contents, addresses, guest memories or
+native handles are logged. All 22 controls and nine actual served-source
+checks pass. Hard bounds remain explicit: 256 events per realm, 512 source
+responses, 8,192 collector records, 64 live/256 retained targets. Controls
+reject each corresponding overflow; no bound is silently exceeded.
+
+Job `worker-launch-cold-start-r6-1031-071502-843e` completes 0 / 0 / 0
+in 51s. It retains 313 source responses, 1,644 scalar startup events,
+40 targets and all 38 complete parent/target/init/stage joins, with no
+unmatched launches, overflow, rejected targets or observer/record/cleanup
+errors. Normal source, SDK, kernel, host distribution and all 93 owners /
+245 members remain identical before/after. The menu screenshot is inspected:
+Games, Graphics and System Tools are visible. Normal same-page replacement
+again completes without runtime/console/finalization failures. Headless
+Chromium uses DPR2 and the actual 2880×1620 framebuffer. Peer Node and
+three-browser jobs were running; this is explicitly NONQUIET.
+
+Independent `.context/worker-launch-cold-analysis-r4/` accounting pairs every
+observed nested/repeated detail invocation, retaining missing endpoints as
+failures. Its separate summary assigns each invocation to its enclosing
+setup phase using that Worker's sequence, rather than mixing main-module
+registration with later small side-module replay. The eight newly observed
+targets are SFWBar PID109, TIDs117–124. Relevant same-realm endpoint deltas
+in this capture are:
+
+| Actual observed scope | Range, ms | Median, ms |
+|---|---:|---:|
+| Template owned byte copy | 3.81–19.41 | 7.07 |
+| Template digest and result construction | 16.64–33.17 | 22.89 |
+| Main-module function-import facts decoding | 22.34–72.36 | 43.80 |
+| Main-module import binding loop | 0.20–0.27 | 0.22 |
+| Main-module resume-catalog decoding | 1.79–2.34 | 2.19 |
+| Main-module resume-function resolution | 6.51–10.74 | 8.63 |
+| Main-module activation registry insertion | 23.91–38.23 | 29.59 |
+| Main-module resume-target insertion | 12.43–24.20 | 17.48 |
+| Archive acquisition loop | 0.05–67.83 | 9.20 |
+| First reconciliation, inside writer-acquire observer | 27.36–41.01 | 31.81 |
+| Explicit second reconciliation | 0.03–0.05 | 0.04 |
+
+The archive loop contains CAS, waits and scheduling, so its elapsed scope
+does not isolate contention. The first reconciliation includes side-module
+replay; the explicit second call is only the already-current generation
+check in these eight threads. Removing that second call would not remove
+the first replay. Parent-realm native Worker construction is 0.11–0.14ms
+and initial postMessage invocation 6.01–16.58ms; these use only the exact
+parent's ordered own-clock endpoints and do not isolate clone/copy time.
+Every observed worker still selects its precompiled module; parent/kernel
+preparation before construction remains unmeasured.
+
+These nested scopes must not be summed, nor should overlapping worker
+durations be added into menu latency. Recorder overhead, source routing,
+tagged worker URLs and scheduling are included. Small values are not
+calibrated fine-grained benchmarks. R4/R5/R6 have different instrumentation
+and load, and are **not** before/after performance comparisons. No startup,
+single-terminal, multi-terminal, CPU-share or GPU-completion improvement
+is established, and no new web build is claimed by these observers.
+
+R6 raw report SHA256 `071e3b3ff7c160aacdd8507325d17fd2e2de6c70286d300b91c231115998c061`.
+R6 accounting SHA256 `7bc9f0ff549c2b56cf69ee56b15db31540c97edd47fd7302a83728a76a2bab60`.
+R6 summary SHA256 `dab4d1e234dc4bafe090336e9f7dec49c31d0bbd70998d66cfd79344f566c6d7`.
+R6 analyzer SHA256 `c86cbaf0bda7517e7d5b3b75c6b363404d30e5d7c13ca9d379a523132742e88f`.
+
+A read-only reconciliation audit in
+`.context/reconcile-reader-review-r1/HANDOFF.md` rejects unconditional
+replacement of the archive writer with a reader. Ordinary copied replay
+can instantiate a permitted side module with its original native start;
+that start can request writer reentrancy. The current writer allows it,
+whereas a held reader would cause the writer request to throw. Generated
+table restore and JS funcref patches show no direct writer acquisition in
+the inspected paths, but no admission capability proves the entire replay /
+codec call graph reader-safe. Borrowed immutable-vfork reconciliation has
+different admitted behavior and must retain its existing no-lock path.
+
+The audit also identifies a source-level reader-admission race: a foreign
+staged loader lease can become live after the reader's initial lease check
+but before its successful reader CAS. Unlike the writer, the reader lacks
+the post-acquisition lease recheck. This is not a captured desktop failure;
+it needs a deterministic real-lock interleaving control and exact release /
+retry accounting before broadening reader use. It remains an ordinary
+correctness concern, not a platform boundary. No reader candidate, loader
+policy change or reader-race repair is implemented by this diagnostic.
+
+Audit SHA256 `1496ea2f31559a1cf9fc6a41749a6fb306cda9fed9629992d4b8be4f2a8bd302`.
+
+Next performance work should screen the measured metadata/catalog work
+while preserving exact artifact identity, signature/admission checks and
+per-instance function identity, and continue the active-frame shared-memory /
+presentation investigation. These startup findings do not explain away
+single-terminal or multi-client rendering slowdown. All earlier failed
+captures remain retained; broader graphics, desktop, memory, conformance
+and uninstrumented cross-host performance acceptance remain open.
+
+### Function-import metadata: discard unused export maps, retain validation
+
+Implement the first candidate from the finer startup trace in the shared
+host parser. `readWasmFunctionImports` previously constructed the complete
+fork-artifact export maps and immediately discarded them, although it only
+returns import signatures. Its private parser invocation now omits those
+export-map writes. It still traverses every section, decodes names, retains
+pending function exports and resolves every exported function signature in
+the original final pass. Unknown types, malformed later sections and their
+error order remain visible even when there are no function imports.
+Full-facts callers retain the default export collection for artifact policy,
+fork-contract validation and arity queries. Duplicate imports, import/function
+index spaces, concrete heap types, nullability and deeply frozen result
+records remain unchanged. There is no byte-buffer metadata cache, worker
+protocol change, skipped admission check, application-name branch or new ABI
+increment. The reserved program56 / host3 / GL17 / fork21 family is unchanged.
+
+The implementation is the exact private candidate SHA256
+`12a7452ca7ff66169cae0288e032064d096ce7d2ba5653b45bf0e17be0dda34a`,
+compared with frozen e303 baseline constants SHA256
+`3dc90b3a693c7a1937de42899a347fc540e4955bac11684021849635234d78c2`.
+Independent source review finds no semantic objection in this diff; it
+confirms validation precedes optional signature-map storage and all other
+parser callers retain full facts. Review SHA256
+`bd94466c98019e24c9c0d2c901e097ab9d385e8986f6a7f510e861824c0e3ff9`.
+
+Private `.context/import-facts-screen-r1/` controls pass 421/421, including
+241 synthetic cases and all 176 normal Wasm programs/libraries from the
+recorded e303 93-owner/245-member build. Every actual artifact's hash and size
+are checked; import parsing must return successfully, rather than merely
+throw the same error. Target results/errors and full-facts public callers
+match, and input bytes remain unchanged. Cases include recursive references,
+duplicate imports/exports, mixed import kinds, truncation, invalid exported
+function indices and a bad export followed by a later structural error.
+The synthetic counted-source probe removes 514 unused export-map writes
+for 257 exports while preserving the actual returned import records.
+
+Artifact parity SHA256 `aebbf9c9be6e57ec0afa3fab8921a1dcbb2609e1efcece3b16e1025e37830579`.
+
+The first standalone native screen,
+`import-facts-native-screen-r1-1031-073051-ca22`, completes all 72 worker
+cases with matching records on Node and headless Chromium/Firefox/WebKit,
+but exits 1 after 11s during exact temporary Firefox-home cleanup. Inspection
+finds standard `group:everyone deny delete` ACL entries on its own Library,
+Downloads and Library/Application Support folders. Only those three exact
+observed entries are removed, then the exact recorded home is deleted.
+The original failed job/report remains unchanged; a separate cleanup-recovery
+record retains that result. This is owned-test-directory cleanup, not a
+browser-engine defect or runtime workaround claim.
+
+Fresh R2 adds explicit cleanup for only those known entries. Three actual
+cleanup controls pass: standard owned folders are removed while the parent
+remains, a symlink is refused without touching its target, and an unknown ACL
+remains a visible refusal. Job
+`import-facts-native-screen-r2-1031-073632-74bd` completes exit0 in 13s.
+All 72 fresh workers / 288 parser invocations complete on Node and the three
+headless engines, with exact per-worker input/output hashes, frozen helper
+identities, no page/runtime errors, successful worker/context/browser/server
+cleanup and removal of the exact recorded Firefox home. Workers share a
+Node/browser parent; they are not independent parent-process launches.
+No Wasm instance, guest memory, kernel or actual desktop is launched by this
+standalone API screen. Module import and artifact I/O are kept outside the
+parser interval. Three alternating rounds retain first and repeated API
+invocations separately. Peer jobs remain running: this is NONQUIET.
+
+The independent source-level Map.set counter in
+`.context/import-facts-analysis-r1/` checks actual parser records against
+the native output hashes and independently decoded export descriptors:
+
+| Normal artifact | Exports | Map writes before | Map writes candidate | Removed per import-metadata read |
+|---|---:|---:|---:|---:|
+| SFWBar | 32,142 | 64,347 | 65 | 64,282 |
+| Foot | 78 | 205 | 49 | 156 |
+| Sway | 378 | 810 | 54 | 756 |
+
+These are exact counted map writes, not total allocations or memory saved.
+The small isolated first-invocation screen yields these SFWBar medians:
+
+| Host | Baseline parser, ms | Candidate parser, ms |
+|---|---:|---:|
+| Node | 40.06 | 22.30 |
+| Headless Chromium | 26.46 | 15.23 |
+| Headless Firefox | 29.34 | 15.12 |
+| Headless WebKit | 19.92 | 14.88 |
+
+Each median has only three fresh-worker samples per variant. Smaller Foot
+and Sway results are mixed, including higher candidate medians in some
+host/artifact pairs. These instrumented NONQUIET operation samples establish
+neither a general speedup nor no regression. They are not main-branch,
+startup, menu, single-terminal or multi-terminal responsiveness acceptance.
+The actual desktop benefit remains unmeasured; broader benchmarks and the
+shared-memory/presentation investigation remain required.
+
+R2 report SHA256 `31b6295276a11d1424a94607c250f54cce2864b15d09de1154b21708cb2e9bf0`.
+Independent accounting SHA256 `e8b49ce5dd07b3397a22da9510ba5dd92c5ae967866939ac41d397cb291ea85c`.
+Actual map counts SHA256 `5aae49d4aaefb9ac46898f9aee37e549fd9ad7a8d466cf8d0b09c9884aad46f3`.
+
+Eight committed public-API regression cases cover unused bad exports,
+zero-import modules, parse-before-signature failure ordering, pending section
+resolution, duplicate import/index spaces, recursive type details, changed
+input buffers and full-facts consumers. The focused six-file host selection
+passes 38/38 under the declared shell, using explicit source-only configuration
+without unrelated prepared-product global setup. The normal
+`scripts/build-host.sh` bundle and declaration build also exits0. Neither
+check executes guests or substitutes for combined runtime/conformance gates.
+Its 86-file distribution manifest is retained at
+`.context/inverse-evidence-documentation/.context/import-facts-normal-host-r1.json`,
+SHA256 `ab7e62b24827ebd541c6312631850d852b0b9f396e996c94cba4831b977babd5`.
+Normal `host/dist/index.cjs` SHA256 is
+`5748f04ea39454a155c3557949ff87ccb9e5a40d70ddcb01cc34cacc52db7a1d`;
+`host/dist/worker-main.cjs` SHA256 is
+`4ffef19717580071a0f1e531b0635627cd797447f39d6b28b77843302001a5af`.
+
+The first registry check rejects the new row's sort position. After moving it
+to byte order, the next check exposes an older missing classification for
+`webgl-inverse-sequence.test.ts`; add that existing pure-source test as
+source-only as well. The third check passes with all 639 live test files
+classified. Original failed check logs remain retained. `git diff --check`
+passes. There is no SDK/kernel/program/image rebuild for this isolated screen;
+normal candidate-preview provisioning remains next. Available preview5675
+continues serving frozen e303, without this new metadata change.
+
+### Shared comparator follow-up: native scan and per-export multiplicity
+
+Read-only `.context/shared-comparator-review-r2/` audits the current frozen
+e303 file-mapping path. Large kernel-file comparisons already use the
+generated native multi-memory Wasm helper, SIMD-first with scalar-Wasm
+fallback. The helper imports the existing kernel and process Memories and
+reads the exact Rust-owned snapshot against the process range. It defines
+no memory, start, data, stores or growth. The shared Kernel validates both
+ranges and rechecks its exact Memory/generation after the process provider
+callback. Unknown constructor metadata or unavailable variants return the
+existing unavailable status; Rust then performs its independently checked
+owned read and comparison. This particular path no longer has a JS full-byte
+loop. Host-owned anonymous/file mapping mirrors have separate JS comparison
+paths; do not conflate them with the observed kernel-owned cursor memfd.
+
+Compiled comparator Modules are cached, but each actual comparison creates
+a fresh Instance/import graph, obtains the export and invokes it within the
+synchronous Rust borrow. A persistent Memory/Instance cache would introduce
+an ownership policy and is not implemented. Even reuse bounded to one sync
+export would require exact generation, reentry, exception and scope-lifetime
+proofs, while retaining every individual pointer/range validation.
+
+Offline derivation from the same hash-verified raw evidence behind the earlier
+phase-accounting report finds exactly one 4,190,208-byte comparison in every
+observed sync export: 150/150/292 exports at one/three/five terminals, with
+zero unparented comparisons and zero extra comparisons within an export.
+The 73/73/144 potential entry/completion pairs belong to separate exports;
+they are not an opportunity for reuse within one export. These are earlier
+71a captures with different preludes, not a new e303 capture or comparable
+scaling curve. No all-writer cleanliness or scan-elision eligibility follows.
+
+Next isolate fresh setup versus the actual native load loop at the measured
+length, retaining early/middle/late changes, alignments, exact bounds/tails,
+all 32 shape variants and unavailable/scalar behavior. Bounded SIMD unrolling
+can be screened if loop work dominates; it must still read every required
+byte and preserve failure behavior. No comparator optimization, persistent
+instance reuse, writer epoch, synchronization skip or application speedup
+is implemented or established by this audit.
+
+Audit SHA256 `7afad8488086ac06d1cc2195b1fca3eeabcb59c340995037cdabb50c646299c6`.
+Per-sync count derivation SHA256 `e2ec912208f18785f74c31f9d490b5f67400dcd6b59c898e1f6b2bf3a6cb12eb`.
+
+
+### Import-metadata normal preview and generated resolver checkpoint
+
+Frozen candidate `04f60e90e38cf2fc3d519e9b5e3da96972998347` now serves
+`http://127.0.0.1:5676/pages/kandelo/`. Its own normal producer
+`import-metadata-normal-products-r1-1031-075228-6cbd` finishes0 in18m52s:
+own xtask, complete SDK64, normal kernel/program/shell/rootfs/host products,
+normal host stamp, freshness, all93-owner/245-member identities and actual
+selected-kernel ABI each return0. Serving repeats freshness, collection and
+ABI checks, preserves exact source/SDK/product identity equality, and proves
+real HTTP200 HTML with COOP/COEP on both routes. No prior application pass is
+carried forward. The preview includes the metadata parser optimization;
+single-terminal and multi-terminal responsiveness remain unproven.
+
+Producer receipt SHA256
+`5141a2e33d6fc60a32da4d113e39e53ecf2f45b2e95e9ec4a41c849acbbe3afc`;
+serving receipt
+`64cb0079dca3db938e53c127f38a0962507d696456ebb275c89572aca5618b1f`;
+HTTP proof
+`6d3b2d6b6916e20db25f629b38928d972b0daac04d8f3ad06ffc99bdf61d2faf`.
+These live below `.context/import-metadata-candidate/.context/`.
+Kernel SHA256 remains
+`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+
+The producer was correctly launched in the frozen checkout but with relative
+script arguments. The original serving guard expects absolute arguments.
+A new private r2 guard admits structurally equivalent argv only after exact
+cwd/source verification; five positive and20 negative controls pass. Original
+producer/helper seals and job metadata remain unchanged. This serving-only
+correction does not weaken artifact, freshness or ABI obligations.
+
+Canonical resolver generation also detects actual bundle drift from this
+parser refactor: fresh e303 generation matches the old committed bundle,
+SHA256 `4fdafe4beda049a7309cf5430a920a3770ef4bf7acd971a0136e0732c7729457`.
+Current parser generation yields
+`288b9c0d3879f1b5dcf1e51421208b0ecf20058207f521b4bd39deb0119cc09b`.
+Commit that regenerated standalone resolver with the declared-shell
+`scripts/test-resolve-binary-bundle.sh` returning0, including isolated
+execution without node_modules. The already published04f checkout remains
+frozen; this distinct CLI generated-output checkpoint does not restamp its
+preview artifacts or establish final combined acceptance. No ABI bump.
+
+### Native comparison setup/loop diagnostic
+
+Private `.context/shared-comparator-screen-r1/results-r1/` completes named
+job `shared-comparator-screen-r1-1031-081408-50b9` with exit0 in12s.
+Exact frozen e303 helper and generated bytes execute in disposable workers on
+Node and canonical headless Chromium, Firefox and WebKit. All32 fixed shape
+and SIMD/scalar variants pass native correctness/bounds/read-only controls
+on each host, with zero unavailable variants, errors or cleanup failures.
+Each host records51 synthetic cases, including aligned, unaligned and exact
+end bounds; equal/first/middle/last changes; and0/16/4096/4,190,208/16,760,832
+bytes. First observations and alternating repeated blocks remain separate.
+All synthetic Memories and native Instances remain worker-local.
+
+For the aligned equal4,190,208-byte case, median repeated whole-helper
+observations range0.148–0.176ms across these hosts. The browser setup-only
+blocks are too short for resolved timing under the independent rule that
+every block spans at least ten observed clock ticks; retain their raw values
+without interpreting sub-tick precision. Node setup-only median is0.0024ms.
+The16,760,832-byte equal whole-helper observations range0.523–0.731ms.
+Large whole-helper and retained-invocation fragments do not show fresh
+Instance setup dominating this isolated operation. It does not measure the
+real Rust borrow/provider path, merge/copy/refresh, application scheduling,
+CPU shares or desktop responsiveness. Timers have finite resolution and
+some short blocks report zero; the machine is NONQUIET with peer suites.
+Retained-instance invocation is a diagnostic control, not a proposed
+production cache. No noisy subtraction or general speedup claim follows.
+Report SHA256
+`f7c2405a99b0c83026f7311498ce854efa58f1d2fe78b4daebe297a870a0d89c`.
+
+
+### Fresh04f cold Start and worker CPU-clock controls
+
+Headless Chromium job
+`import-metadata-cold-start-trace-r1-1031-082024-8996` finishes in1m03s,
+with workload/after-collector/after-guard0/0/0. Fresh22 pure controls and all
+nine actual served-source AST seam/syntax controls pass. The genuine cold
+menu paints Games, Graphics and System Tools; root reviews its screenshot.
+The pager shows1 and the Foot prompt remains present. Ordinary same-page
+replacement reaches the Bare-shell prompt with unchanged page time origin.
+Own93/245, SDK/kernel/host/source and sealed helper checks remain equal;
+there are no runtime, observer, overflow, rejected-record or cleanup errors.
+This is one functional instrumented Chromium observation, not full desktop,
+other-engine, memory or responsiveness acceptance.
+
+Fresh accounting joins all38 tagged worker targets to their38 launches,
+init and entry-attempt marks, with40 total observed targets and1,644 startup
+events. Eight workers newly observed around first Start are actual SFWBar109
+threads117–124. The same-host click-issued→menu-observed marker bracket is
+11,585.35ms. Its last new-worker entry-attempt record arrives2,467.31ms
+after click issuance, leaving9,118.04ms until menu observation. Delivery can
+be delayed or replayed; this is an observer-arrival bracket, not calibrated
+cross-realm execution, successful guest entry or proof the menu was ready at
+that instant. It identifies a substantial portion outside the current
+bootstrap marks that needs request/rendering/active-thread attribution.
+Do not sum nested bootstrap spans into that remainder or claim the parser
+change improves single-terminal or multi-terminal responsiveness.
+
+Raw report below `.context/import-metadata-cold-start-trace-r1/` SHA256
+`cf864612b3b735d7229d5b6dd6021faa34e922e77efa052b102750394dc4a4e2`;
+separate `.context/import-metadata-cold-analysis-r1/accounting.json` SHA256
+`cc5087e907f324a277e5873dc87f5bc321d7003e45658ae9abdccdf402525104`.
+Older e303 traces remain separate NONQUIET cohorts, not matched before/after
+performance evidence.
+
+A fresh standalone headless Chromium153.0.8010.12 control in
+`.context/worker-cpu-clock-probe-r1/` contains no Kandelo guest code.
+The same dedicated worker runs a200.055ms busy loop and a200.465ms timed
+Atomics.wait. Raw CPU profiles retain140/136 total samples and133/134
+samples in their common message-handler frame respectively. These stack
+counts plainly do not distinguish the two paths as active CPU consumption;
+there is no independent running-time measurement in this first probe.
+Worker `Performance.enable({timeDomain: 'threadTicks'})` returns actual
+protocol-32601, method not found. This is capability evidence for this exact
+worker target, not an engine-defect claim or a hard platform boundary.
+Exact worker/session detach, context/browser and own server cleanup complete.
+Raw report SHA256
+`cc0a6593a51db6a85dc51503ca9bfa27294089a7d3a6243f708b8e8dc2aa6bb1`.
+The next standalone probe tests actual native trace thread timestamps before
+using that mechanism for guest attribution. No profiler sample count alone
+establishes guest utilization or the cause of the nine-second remainder.
+
+
+The subsequent standalone `.context/worker-cpu-trace-probe-r1/` also exits0
+and releases its exact worker/session/context/browser/server. Native Chromium
+trace output includes usable thread timestamps and an exact authenticated
+CDP worker-target→trace-thread join. The busy control has200,245us wall and
+191,740us thread time between its markers; timed Atomics.wait has212,541us
+wall and486us thread time. One enclosing completed RunTask reports
+202,667/192,489us wall/thread for busy and212,720/656us for wait. Nested
+slices are not added again. These are actual scoped thread-clock controls,
+not whole-system coverage or a performance fix.
+
+Actual advertised categories are queried first. The trace uses a12,800KiB
+buffer/output cap, no CPU sampling/system tracing/heap walk, streamed JSON,
+1,332,925 retained bytes and dataLossOccurred=false. Automatic scalar native
+trace counters remain part of the original output. Native fields and their
+units follow the [CDP tracing protocol](https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/Tracing.pdl)
+and [Perfetto JSON thread-time test](https://chromium.googlesource.com/external/github.com/google/perfetto/+/ef6cda3a98d37cef8025cd253dab88605c49099c/test/trace_processor/diff_tests/parser/json/tests.py).
+Applying this to real guests still needs exact target/thread joins and
+nonoverlapping completed-event accounting. Missing thread fields, open tasks,
+boundary-straddling tasks, data loss and unmatched workers must remain
+unknown or censored; do not prorate thread time by wall overlap or treat
+missing completion as zero CPU.
+
+Raw native trace SHA256
+`1b03f8564b422cfa8261d7a929b72e67ba4fc4e5faf1f2c35892965741316bfa`;
+analysis SHA256
+`6c8b3ae749c94e156bba626307a8ec232b04c0b414cf3ae8f40959044ac62889`.
+No Kandelo runtime source or SDK/kernel/program/image rebuild is needed for
+these two standalone diagnostic controls.
+
+
+The first real-guest native-clock capture is incomplete:
+`import-metadata-cold-cpu-trace-r1-1031-083539-527e` finishes1 in1m08s,
+with workload/collector/guard1/0/0. Its real menu and same-page normal
+replacement complete, and source/artifact checks remain stable with no
+runtime/observer errors. Native trace output reaches the hard64MiB cap;
+`tracingComplete.dataLossOccurred` is also true. The partial stream is
+retained, stream-close and native CDP detach acknowledge, and the original
+failure remains red. No guest CPU totals or completeness follow from this
+truncated/lost capture. Narrow categories/window guided by retained event
+volume before rerunning; increasing only the output cap cannot repair
+native buffer loss.
+
+Raw report SHA256
+`090a86d60e0522d652ad5050705f731b084fe5852b3fc7e975b40f8c26c74c40`;
+native capture report
+`b8410a834ff9de91af82c6afdba14f681391678ebe85aa16441acb63bba26a89`;
+64MiB partial trace
+`e80ae43b63a16e2897cd9c27ba906f554261302750f5d02589503dc93ac4621d`.
+All live under `.context/import-metadata-cold-cpu-trace-r1/`; this attempt
+requires no rebuild and changes no production source or published preview.
+
+
+### Cold Start request/comparison/presentation aggregate
+
+Actual named job
+`import-metadata-cold-aggregate-trace-r1-1031-084405-8bdd` finishes0 in1m01s,
+with workload/collector/guard0/0/0 on normal04f/5676. The genuine three-row
+menu, pager1 and Foot prompt are root-viewed. Normal same-page replacement
+completes; source/SDK/kernel/host/own93-owner245-member guards stay equal.
+All226 native methods are wrapped for this worker window, the four required
+methods are present and original descriptors restore. Unknown/internal/cap/
+open-scope counts are zero. Fresh38 pure controls, nine local startup seams,
+nine served startup seams and eight served aggregate seams pass before launch.
+
+Two preparation failures remain visible. A2M-character source cap rejects the
+actual2,952,625-byte Vite kernel-worker response before browser launch; the
+private source cap becomes4M after recording exact sizes/hashes. The first
+named attempt `...084135-e20b` refuses the unsealed configuration before any
+browser runs after a parent seal-script KeyError. The corrected independent
+seal and successful job do not rewrite that failure. Root adaptations and
+original logs remain within the new namespace.
+
+Kernel input-down→stop-after-main-menu-observation is12,527.890ms. Its upper
+endpoint includes stop-RPC delivery; it is not exact physical paint latency.
+Lifetime conservation is11,632new +5left-censored =11,624finished +13pending;
+1,950 handler retries do not create new requests. Pending waits are censored,
+not successful zero-duration calls. Logical finish differs from guest notify.
+
+After input-down:
+
+| Observed work | Count | Requested bytes | Accumulated worker elapsed ms |
+|---|---:|---:|---:|
+| Process comparison imports | 26,484 | 133,537,026,176 | 5,198.700 |
+| Comparisons in Read context | 16,752 | 70,848,036,864 | 2,750.835 |
+| Comparisons in Llseek context | 1,858 | 11,154,333,696 | 436.615 |
+| Comparisons in Readv context | 1,718 | 9,687,760,896 | 380.620 |
+| Native getError | 30,890 | — | 2,197.695 |
+| Native readPixels | 764 | — | 119.055 |
+| Native blitFramebuffer | 764 | — | 7.635 |
+
+Comparison results are26,330equal/154different/0unavailable/0other/0throws.
+The4,190,208-byte requested length appears24,411times, all equal, with
+4,018.665ms of import scopes. Length does not establish backing/file identity
+or immutability. Equal observations never authorize a later skip. Requested
+bytes are not actual scanned bytes or measured memory traffic. These are
+NONQUIET instrumented same-worker elapsed scopes, not CPU/GPU shares,
+matched application timings or predicted removable delay. Parent handler,
+sync, KSM and tick durations contain these calls and must not be added again;
+parked request lifetimes overlap across workers.
+
+Actor handler counts show SFWBar Read8,338, Llseek795 and Readv760. The ABI
+source confirms119 means Llseek, not ClockGettime. No returned byte counts or
+errno were captured, so these are not8,338 proven successful reads. Comparison
+keys contain target PID plus inherited syscall context; they omit the actor
+PID separately. Rust can publish other observers of a backing, so do not
+infer actor=target or exact request pairs from aggregated phase counts.
+A new bounded FD/request-size/actual-return histogram would distinguish
+small upstream requests from possible short-read behavior without copying
+payloads, reading iovecs privately or guessing file/OFD identity.
+
+There are764vblank attempts (max inter-attempt gap130.620ms),764primary
+blits and764cursor readbacks. Primary/cursor getError counts remain exactly
+19/20 per device operation; all flags are zero. This does not support complete
+timer starvation or prove physical60fps. Actual decoded guest command count
+is322, including18private client draws and95 synchronous queries. Repeated
+platform observation work is a concrete next optimization target; no cache,
+dirty ledger, syscall-name skip or application speedup is implemented here.
+
+Raw aggregate SHA256
+`392672330c2175b4c0cbf1c6816a75c225eb49a954775e77091c99214b813a6c`;
+functional report
+`0c4d7b28b284d3016e049be37d37d31d759652a02623fd4d225b292b341c8e61`.
+Independent offline accounting and source/hash/guard verification are under
+`.context/import-metadata-cold-aggregate-analysis-r1/`; it verifies the recorded
+normal collections rather than pretending to rehash245 files again.
+
+The second native full-desktop trace
+`import-metadata-cold-cpu-trace-r2-1031-083953-ea93` also ends1/0/0 in1m08s
+from actual native trace loss and the hard64MiB output cap. The requested two
+categories were applied. Its complete prefix already contains162,338RunTask,
+53,038FunctionCall and53,288UpdateCounters events, filling before retained
+click/menu stamps. No guest CPU totals are accepted. Partial SHA256
+`d4a9043e2169aebb068cc6c49c6fd10af7d6ad679a0e22158bf1b9a84b35b485`;
+report SHA256
+`92a332b1992b7877bf1b7b9f2e6f624b4f44d405989f6ede49c13ec161898800`.
+
+Standalone `.context/libproc-browser-thread-cpu-r1/` instead proves external
+macOS public thread-counter sampling on one exactly joined owned headless
+Chromium worker. A short loss-free88,322-byte identity trace ties the actual
+CDP target to native PID/thread; it stops before the workload. Existing process
+start/UID/thread identities remain equal across samples. A200ms busy control
+uses187.347ms thread CPU; a203.825ms timed Atomics.wait uses0.410ms. All own
+browser/session/server cleanup completes. This is a host-specific diagnostic
+capability, not a runtime workaround, guest performance result or whole-worker
+coverage. Raw report SHA256
+`349079e1705886fd3b5993e6cff17518b4c99f4466244ca580307c10355ecbb0`.
+An actual desktop existing-thread subset capture remains next; newly created,
+departed, inaccessible or unjoined workers must remain censored, not zero CPU.
+
+
+Aggregate accounting SHA256
+`416fbb79b74d4b477df04de9a0ef1d514729587c30a17db85cac78bc77106f51`.
+The first actual OS-counter attempt
+`import-metadata-cold-os-cpu-r1-1031-085638-9818` finishes1/0/0 in46s before
+click or any counter snapshot. The88,716-byte identity trace is complete and
+loss-free but joins only the kernel, so the required SFWBar-main identity
+check correctly refuses measurement. Other guest workers are explicitly
+unjoined. Normal replacement and all source/artifact/cleanup guards complete.
+No desktop CPU delta is reported. Raw functional report SHA256
+`4b4ad79bc9de320b40b04128635bfb06833494107116f2e5cd8ea3f9835542dd`;
+identity trace SHA256
+`4831e4e33c035168f0d1c1212cf5e0b181d2a0e828385611bba8551f22885de1`.
+A fresh proposal captures identities during boot before long-running guest
+entry, then stops tracing before external CPU snapshots/workload. It must
+prove immutable binding and live same-target/session identity instead of
+assuming a later rundown can execute in a blocked worker. That repair and
+actual desktop CPU attribution remain unvalidated here.
+
+### Existing-thread CPU and read-size attribution, 2026-10-31
+
+The fresh bounded capture
+`import-metadata-cold-os-cpu-r2-1031-090930-41c4` finishes0 in1m03s,
+with workload/collector/guard0/0/0. Unlike the failed continuous traces,
+this records native worker identities during boot and fully stops/reads/closes
+the trace before external CPU sampling and the actual click. Its loss-free
+99,098,395-byte trace contains581,100 events and34 native identity records.
+The stop request occurs18,519.977458ms into the30s boot budget. Independent
+review verifies13 exact surviving target/session/tag/URL bindings to unique
+OS threads, process-start/UID identity and all integer counter subtractions.
+Exact Chromium153 source records an immutable backing-thread ID for each
+surviving dedicated-worker target; a replacement target cannot substitute.
+
+| Existing owned thread | User CPU ms | System CPU ms | Total CPU ms |
+|---|---:|---:|---:|
+| Kernel worker | 7,297.694 | 391.817 | 7,689.511 |
+| SFWBar main worker, guest PID109 | 94.861 | 42.494 | 137.355 |
+
+Each row covers its own sequential counter-snapshot bounds, approximately
+9.44s; input-issued→observed-menu is separately9,348.898625ms. These clocks
+are not subtracted across realms. The values include any JS/Wasm/GC/native
+work charged to that OS thread. They are not pure Rust/guest CPU, a common
+exact input interval, utilization, whole-process CPU, or causal function
+attribution. Eight newly observed SFWBar threads117–124 lack a baseline and
+remain censored; nineteen earlier excluded/departed boot records are a
+different population. The raw `result.lateWorkersCensored` array is empty
+because postJoin retains originals only; the eight actual late targets are
+separately retained in `osCpu.lateObservedTargets`. No zero-CPU inference is
+made for them. Other browser/GPU/audio threads are outside this measurement.
+
+The genuine menu, pager and Foot prompt are root-viewed. Normal same-page
+Bare-shell replacement completes with unchanged timeOrigin, no reported
+runtime/observer/cleanup errors and stable source/SDK/kernel/host/own93/245
+guards. Independent analysis verifies39 sealed helpers and five sampler
+toolchain inputs. This directs investigation toward kernel-worker work;
+it does not establish an application improvement or replace acceptance gates.
+
+Raw report SHA256
+`76e93fa96a6d2787392e902b36e13fff00bda83f4d8032959da27f72b9f4e9f6`;
+native identity trace SHA256
+`26002efd78e4a7d01656591f680ce89af9e4434b49b0022c8afd6988e7fcf651`.
+Independent accounting, exact counters/bounds, source authority and verification
+are under `.context/import-metadata-os-cpu-analysis-r2/`. FailedR1 remains
+unchanged. No SDK/kernel/program/image rebuild is needed for this diagnostic.
+Accounting SHA256
+`7962f7e98b308609da94352f50b998f20d76b253397bffcb342f296612994848`.
+
+A separate fresh headless cold-menu job,
+`import-metadata-cold-read-histogram-r1-1031-091709-1e49`, finishes0 in59s,
+with workload/collector/guard0/0/0. Two scalar-only source overlays record
+normalized Read byte counts, Readv iov counts, Llseek status and completion
+results before logical request finish. Actor PID and compared target PID are
+separate. No payload, pointer, iovec-table inspection or native GL wrapper is
+added. Fresh42 pure controls, nine local startup seams, nine served startup
+seams and two served read seams pass before the actual browser launch.
+
+All9,909 selected new requests normalize, observe a completion attempt and
+logically finish; retries, pending, left-censored, unavailable results,
+unknown/internal/open-scope/cap counts are zero. The worker input-down→stop
+bracket is11,510.425ms, including stop-RPC delivery after observed menu.
+
+| Observed SFWBar request/result | Count | Requested bytes | Returned bytes |
+|---|---:|---:|---:|
+| Read, FD number15 | 8,312 | 8,511,488 | 8,511,488 |
+| Readv, FD numbers15/9 | 760 | Unknown | 788,168 |
+| Llseek, FD numbers15/9 | 795 | Not applicable | Status0, not bytes |
+| Read requested1/returned1, FD number5 | 19 | 19 | 19 |
+
+The dominant Read bucket has an upper bound1,024 and both totals equal
+8,312×1,024, proving every observed request and return there is exactly1,024.
+There are zero requested>1/returned1 observations. This rules out the proposed
+one-byte-read/underfill explanation for this dominant population; it does
+not prove every descriptor's semantics. Readv's iov count is not a requested
+byte count. Numeric FD15 can be reused across opens; neither one file nor
+an open-file-description identity or path is established. Error/EOF rows
+remain separate. The trace still executes every original comparison.
+
+The selected contexts record20,306 comparisons requesting91,220,828,160bytes
+with3,331.790ms of instrumented worker elapsed scopes. Another6,386 comparison
+calls are outside the selected contexts. These are a different capture from
+the CPU measurement and earlier full aggregate; do not add their elapsed
+values or treat requested bytes as actual bus traffic. Normal consumer and
+same-page replacement/source/artifact guards complete without reported errors.
+Both single- and multi-terminal responsiveness gains remain unproven.
+
+In this capture, all20,306 selected comparisons return equal and independently
+recorded actor PID equals target PID. The dominant8,312 Read requests on
+SFWBar FD number15 account for8,312entry plus8,312completion comparisons of
+4,190,208bytes:69,658,017,792 requested comparison bytes and2,555.365ms of
+instrumented scopes. This is8,184 requested comparison bytes per returned
+byte for that population, not measured memory traffic. No exact per-request
+pair IDs or common CPU clock are exported. Independent accounting verifies
+44 sealed helper files,35 harness identities and recorded normal93/245,
+SDK/kernel/guard/job evidence under
+`.context/import-metadata-read-analysis-r1/`.
+
+Raw read histogram SHA256
+`5eb32ca3f1540e4f468a45403b806866529268deb14fda69f4f8161ca1a4d20d`.
+Functional report SHA256
+`af83f16d7a861249c82122c4910515291861f32d5247ffd704a373f22c8a11e9`.
+Independent accounting SHA256
+`191f297621a724156de19b366612b09addd999523b48f856fd81d760e4f95c60`.
+Source review also confirms no existing channel/kernel/loader lock proves
+absence of all writers to a physical process memory. Reusing an entry-time
+equality result at completion could miss pthread/borrowed-address-space or
+host copyout writes, and canonical peer updates must still refresh. A correct
+dirty-page protocol requires complete writer coverage, private bounded
+metadata and race-safe publication/refresh. A dirty mark before and after a
+store alone is insufficient. No comparison skip, dirty protocol or new
+production optimization is implemented by these observations.
+
+A new public comparator regression exercises every mismatching byte around
+16/32/64/128/256/512-byte boundaries for all32 width/sharing/SIMD/scalar
+variants, including unaligned ranges, page crossings and exact memory ends.
+Adjacent bytes intentionally disagree, so an accepted equal comparison must
+depend only on the requested spans. The existing source-only comparator file
+passes6/6 tests through the declared shell with fixture-producing global setup
+explicitly omitted; these checks require no guest artifacts. This is a
+baseline correctness control for the proposed loop experiment, not evidence
+of a production optimization or application gain. Private log:
+`.context/inverse-evidence-documentation/.context/snapshot-comparator-source-tests-r1.log`.
+
+### Four-vector comparison candidate, 2026-10-31
+
+Rather than omit a coherence boundary, a no-rebuild screen compares the
+current16-byte SIMD loop with2/4/8/16-vector blocks. Each block checks its full
+remaining length before any load, ORs vector XOR differences, and then retains
+the existing16/8/1-byte tails. OR is essential: equal difference bits in two
+vectors must not cancel. All memories, instances and views stay in disposable
+workers; the production lifetime/borrow protocol is not changed by the screen.
+
+Named job `snapshot-comparator-unroll-screen-r1-1031-093721-1050` finishes0
+in14s on Node and canonical headless Chromium/Firefox/WebKit. It builds five
+small private WAT modules, not an SDK/kernel/program/image. Factor1 is exactly
+the current04f production binary. Across four hosts,1,020rows,12,240repeated
+blocks and3,060separate initial observations reconcile with the sealed matrix.
+Each host passes3,885equal spans,501,165single-byte mismatch controls,
+10,360outside-span sentinels,180equal out-of-bounds traps and five duplicate-bit
+controls. Each worker declares32MiB across two memories;76,415instances stay
+within the finite131,072cap. Runtime and owned cleanup errors are zero.
+
+For large equal spans (two sizes × three alignments × four alternating rounds),
+the four-vector candidate's paired whole-fresh-call observations are:
+
+| Host | Median candidate/baseline elapsed ratio | Lower candidate rounds |
+|---|---:|---:|
+| Node | 0.678 | 24/24 |
+| Chromium | 0.729 | 22/24 |
+| Firefox | 0.644 | 24/24 |
+| WebKit | 0.647 | 23/24 |
+
+All these blocks exceed ten observed positive timer ticks;93/96pairs are lower,
+not all of them. The aligned16,760,832-byte Chromium medians are0.717500ms
+baseline/0.678333ms candidate, a less decisive case that remains in the record.
+Eight/sixteen-vector blocks show mixed extra gains over four across hosts and
+alignments; four is a measured near-plateau candidate, not a proven optimum.
+Middle/last differences also favor it in most paired rounds. Browser small,
+first-difference and setup summaries are unresolved at the retained clock
+precision. Node first-difference ratios range0.636–2.146. No small-input or
+early-exit no-regression claim follows. Zeros, initial observations and every
+round remain recorded; setup is never subtracted to invent a loop time.
+
+The screen is NONQUIET, synthetic and narrower than the full Kernel provider/
+range/Rust publication path. Private factor dispatch adds measurement overhead.
+Its reused parent processes are not independent cold launches. Counts from
+the earlier read trace cannot be multiplied by these different-cohort timings
+to predict seconds saved. It establishes neither CPU time nor desktop benefit.
+Raw report SHA256
+`39b79e9b81e8a618a654fc41e090d07e667b6bf51b1a87c98dc3d18ba4cf0f49`;
+independent accounting SHA256
+`ef583f30221a1e82f08b167607a3288e692e6a70d210457ceb1afa5c3c252d3f`.
+Full source/hash/cleanup verification and raw first/repeated tables are under
+`.context/snapshot-comparator-unroll-analysis-r1/`. An initial offline assertion
+incorrectly required Chromium CDP metadata on Firefox/WebKit; its failed log
+is retained. The corrected audit preserves their actual CDP-unavailable status
+and engine/configuration facts. No raw runtime result was altered.
+
+The shared production generator now emits the selected64-byte block ahead of
+its original tails. All32modules regenerate and `--check` passes;16scalar
+variants stay byte-identical. Representative shared32/shared32 SIMD bytes are
+exactly the screened factor4 module,378bytes, SHA256
+`90a97d1e7444dcbcbcbc6d9652f42be8e31e4c89153dbfa3c70aa6c332ee9d9c`.
+No native-instance cache, mapping shortcut, selector/admission rule, memory
+ceiling or ABI family changes. Full requested ranges still validate before
+native entry. On an invalid range an early mismatch may precede a later fault
+in the old loop but not in an accumulated block; arbitrary invalid raw calls
+are not claimed equivalent. Such calls are outside Kernel admission.
+
+Declared-shell Node source validation passes101tests in three files: all fixed
+width/sharing/SIMD/scalar variants, exhaustive byte/tail/adjacent-span and
+duplicate-bit controls, public scratch borrow/provider failures and the static
+memory-authority audit. Fixture-producing global setup is explicitly omitted;
+no guest tests are inferred. Normal host bundling/declarations also pass.
+Logs and exact sources are retained in the mutable evidence checkout's
+`.context/comparator-four-vector-*` and `snapshot-comparator-source-tests-r2.log`.
+A fresh correctness-only named job,
+`comparator-four-vector-native-parity-r1-1031-095944-a0c1`, finishes0 in7s.
+All32variants and16actual production selectors execute on each of Node24.15.0,
+Chromium153.0.8010.12, Firefox155.0 and WebKit26.6:128/128variants and64/64selectors
+pass, with zero constructor/validation refusals or runtime/cleanup errors.
+Each host makes2,028,472native calls, constructs32memories with6MiB cumulative
+declared maxima and96instances, within the fixed caps. Exhaustive byte/tail,
+adjacent-span, seeded random, duplicate-bit, alias and input-immutability
+controls pass. Equal out-of-bounds calls trap. Intentionally invalid early-
+mismatch ranges retain the documented old-return/new-SIMD-trap qualification;
+full host range admission remains unchanged. Memory64 uses real i64 imports,
+but addresses above4GiB are outside the small fixture budget.
+
+Before/after source guards match exact candidatec77584 and baseline04f.
+Independent offline accounting verifies31sealed helpers, eight source files,
+three canonical driver inputs and all raw counts. The Node worker is explicitly
+terminated after its complete reply and returns termination code1, not a
+graceful exit0. Firefox/WebKit CDP metadata remains explicitly unavailable.
+This establishes bounded native correctness, not memory reclamation or speed.
+Raw report SHA256
+`bfe21f28c2ad04dd8d0dc1ee5674d5bdf3546544a07faae33135b222d2f4ebe5`;
+independent verification SHA256
+`7a5e900ac26148f7a5610bfb59074d29eac54d1fc04ebcb7d4f2b79e0b8ae00c`.
+Evidence: `.context/comparator-four-vector-native-parity-results-r1/` and
+`.context/comparator-four-vector-native-parity-analysis-r1/`.
+
+Normal candidate job `four-vector-normal-products-r1-1031-100112-1e8a` is now
+running in its own detachedc77584 checkout; no completion is inferred.
+Actual desktop effect, normal combined products, browser-memory and destination-
+main Node/browser benchmark acceptance remain open. Published04f preview5676
+remains unchanged. Neither single- nor multi-terminal improvement is established.
+
+The separate active1/3/5/recovered1 diagnostic
+`import-metadata-active-os-cpu-r1-1031-094024-4867` finishes1/0/0 in7m33s.
+Actual1/3/5terminal stages have root-viewed numbered output through63 and
+natural prompts, preserving original Foot. The parent misses the final
+recovery review deadline: its later viewed sample63 does show the real prompt,
+but no approval is written after failure and the run remains red. Earlier
+five-terminal sample7 and recovery sample4 lacked a prompt and were correctly
+unapproved. Four bounded frame/CPU captures precede these review gates; their
+analysis remains diagnostic only. Normal same-page Bare-shell replacement and
+source/SDK/kernel/host/own93/245 final guards complete without cleanup errors.
+No complete four-stage pass or responsiveness gain follows from this attempt.
+
+Offline accounting retains the failed qualification and separates each CPU
+window from its two much shorter logical DRM intervals:
+
+| Terminal stage | Kernel CPU ms | CPU observation window ms | Two DRM interval total ms | Equal comparisons | Requested comparison GB |
+|---|---:|---:|---:|---:|---:|
+| 1 | 3339.972 | 5537.497–5537.528 | 413.870 | 352 | 3.687383 |
+| 3 | 2865.868 | 4901.760–4901.777 | 293.710 | 362 | 3.792138 |
+| 5 | 3931.402 | 6349.271–6349.293 | 211.895 | 354 | 3.708334 |
+| recovered 1, failed review | 2910.187 | 5022.447–5022.634 | 536.245 | 518 | 5.426320 |
+
+The exact original kernel target/session/native PID/start UID/unique TID join
+survives all four snapshots; native identity trace loss is false and its stream
+is closed before active work. Foot, SFWBar, other worker, main and GPU CPU are
+not measured in this cohort. The window ends after first observed multirow
+paint plus four seconds, not at command completion. CPU/count changes are not
+monotonic with terminal count and do not establish scaling or causation.
+Only the selected target prints; extra windows are not concurrent rendering
+workloads. This also does not cover the user's15–30second accumulation report.
+
+Every selected readPixels call is64×64 RGBA8 cursor storage:23/18/13/33calls.
+There is no full-scene or CPU-image-purpose readback in these intervals.
+At1/3/5terminals the selected intervals contain the same16public GL queries
+and three guest native draws. Primary/cursor polling accounts for most native
+getError calls, but those counts do not assign the external CPU delta to a
+function. CPU-image prepare/begin/publish counts alone do not prove live
+mirrors or copied bytes; no CPU-image-purpose upload occurs. Native calls
+straddling interval boundaries stay separate, and nested elapsed spans are
+never summed as CPU. These results support investigating persistent comparison
+and polling work at every window count; they do not establish a cache leak.
+
+Independent exact accounting and per-interval ancestry are under
+`.context/import-metadata-active-os-cpu-analysis-r1/`; analysis SHA256
+`dfca9fbd50da6cb1c79ac1c1d92bb7077d64fd7b6ea2dab1cc019f1400fbcd7a`.
+All recorded source/SDK/kernel/host/93owner/245member guards match. This audit
+verifies recorded provenance, without relabeling the failed run as acceptance.
+
+### Preserving selection after checked device restoration, 2026-10-31
+
+Frame ancestry identifies11/14/6/16full muxer replays across the two selected
+intervals for1/3/5/recovered1. Every replay returns to the same previously
+observed owner; each binds64texture targets, accounting for704/896/384/1024
+native texture binds. These instrumented counts do not establish their CPU
+cost or explain terminal-count scaling. The source cause is unconditional
+selection invalidation before/after otherwise fully restored cursor/scanout
+operations. Source audit and raw ancestry are retained under
+`.context/cursor-poll-source-review-r1/`, handoff SHA256
+`1cdc523e287c81a7c5d40281693f4aaf98b1062b1e1b7ec10991c4a65537ac98`.
+
+A private fixed-caller wrapper now preserves the installed logical context
+only across successful GPU cursor readback or scanout with a complete checked
+inverse. Generic presenter callbacks continue invalidating. Outgoing guest
+errors are captured before any cleanup. A readonly registry predicate detects
+all execution records eligible for cleanup, so the canonical muxer invalidates
+before cleanup even if another guard registered that record. Pending native
+repair also invalidates before replay. Canvas resize invalidates before its
+first setter; preparation failures, native errors, rejected inverses and
+entry/mid-operation context loss invalidate. An early-loss review finding was
+corrected while retaining normal null/stand-down behavior.
+
+This is not a pixel-generation cache. Existing cursor versions and BO IDs
+cannot prove native contents unchanged; same-BO writes without another cursor
+record remain observable. No native post-check, polling interval, readback,
+shared-memory comparison or ABI epoch is removed. Both Node and browser use
+the same host source; Node renderer mocks establish shared logic, not native
+WebGL availability or application speed.
+
+Declared-shell source validation passes791tests in32source-only WebGL files,
+including94focused scanout/muxer/execution tests. New controls cover selected
+owner preservation, live pixels, distinct read/draw state, generic invalidation,
+actual cleanup using a different guard, pending repair, guest/private errors,
+failed initial error capture, resize and context loss. Normal host bundling
+and declarations pass. Explicit source-only configuration omits fixture-
+producing global setup. A first launch used an incorrect private config path
+and exited before tests; its log is retained separately. Browser-native and
+actual desktop effect, browser-memory/lifecycle and the complete performance
+acceptance remain unrun for this candidate. No single- or multiple-terminal
+gain or broad no-regression claim follows. Current logs:
+`.context/inverse-evidence-documentation/.context/device-state-*`.
+
+Separately, the four-vector-onlyc77584 normal producer
+`four-vector-normal-products-r1-1031-100112-1e8a` completes all seven stages0
+in13m06s. Own SDK32/64, selected kernel,93owners/245members, freshness, ABI
+and normal host input stamp validate through the normal graph. Kernel SHA256
+is`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+Server `four-vector-preview-r1-1031-101439-1f64` serves frozen source at
+`http://127.0.0.1:5677/pages/kandelo/`; actual HTML200/COOP/COEP proof passes.
+Producer/serving/HTTP receipt SHAs are
+`707e7174c228937f0791c1222ea6c95d49fb257a6a1c3fe0459bd407118d8528`,
+`9f5d1d9ade7ee66bf09b6cc8c06a527f045c7e079f563a309a6bbf9c1bc5e3fa`,
+`792e1459b962554bb92002f0e9b95855805a78f181490846dc1d9044baa46abc`.
+Availability is announced before completed desktop/performance acceptance.
+This preview excludes the newer selection-preservation candidate;5676 remains
+frozen04f and neither single- nor multi-terminal improvement is established.
+
+The prior active recorder's two-interval captures and single printing target
+cannot cover15–30second accumulation or several concurrently rendering apps.
+A longer bounded aggregate/each-latch ledger is being prepared, separating
+idle-window growth from concurrent progress; no longer-trace result is yet
+available. Full operation samples remain diagnostic rather than CPU time.
+
+### Desktop follow-up and launcher qualification, 2026-10-31
+
+Fresh unprofiled pair attemptR1 stops before its first stage: a transient
+black/download frame makes the body classifier throw outside its intended
+readiness retry. FreshR2 treats only that exact missing-body observation as
+negative within the unchanged90s bound; palette, native, DOM and transport
+errors remain fatal. Twenty-one source controls pass and all remaining phase
+bytes/thresholds stay identical. No runtime failure is erased.
+
+Baseline job `four-vector-desktop-baseline-r2-1031-102340-675a` finishes1/0/0
+in4m10s. One- and three-terminal numbered output/natural prompts pass actual
+command/output image review at sample12. At five terminals, output reaches63
+and a natural prompt, but the pre-Enter command image omits wrapped fragments
+after tiling shrink. Approval is withheld; recovery and the candidate side
+remain unrun. This is a failed visual qualification, not absent final output.
+Normal same-page replacement, stable page identity and all after-source/
+SDK/kernel/host/93owner/245member guards pass with no finalization errors.
+No paired responsiveness result follows. Source review identifies guest
+TIOCSWINSZ signaling its caller instead of the foreground group; causal Rust
+regressions reproduce wrong target/no-op signals, while actual connection to
+the Foot/Bash image still needs combined runtime validation.
+
+The normal cross-pair artifact audit finds both SDK inventories, selected
+kernel and89/93complete owner tuples identical. Active Sway/Foot/SFWBar and
+library bytes match. Four normal recipe keys differ; coreutils-docs and
+NetHack correctly declare host/src as a build-time execution input.
+Coreutils-docs bytes remain equal. NetHack's only executable difference is
+31payload bytes in the `kandelo.build.key` custom section; every other Wasm
+section, including code/data/types/ABI, is equal. Its seven-entry ZIP changes
+only bin/nethack. Shell image compressed bytes differ and its entire internal
+tree has not been independently diffed; no byte-identical boot-image or
+startup timing attribution is claimed. Raw tuple/section/ZIP comparisons are
+under `.context/four-vector-artifact-pair-analysis-r1/`.
+
+A launcher audit corrects the earlier standalone comparator screen and native
+parity descriptions: their Chromium launchers copied launchOptions but omitted
+project.use.channel. Actual retained SystemInfo.commandLine names
+`chromium_headless_shell-1243`, while effectiveConfiguration.channel recorded
+intended project metadata. These are real default-headless-shell Wasm results,
+not canonical Chromium-mode evidence. Their numbers, raw reports and successful
+bounded correctness controls remain unchanged; canonical Chromium repetition
+is still required. Firefox/WebKit are unaffected by this channel omission.
+Actual application traces and public paired tests use Playwright's configured
+project and its real Chromium channel. All runs are headless.
+
+The new native selected-context gate first fails before launching an engine
+because its driver guesses app/node_modules/playwright rather than normal
+package resolution. Own worktree-root dependencies already match app lock1.63.0;
+no installation or SDK rebuild is necessary. Fresh launcher preflight resolves
+from the declaring app package, checks installed metadata/locked versions,
+actual engine exports/executables and the explicit canonical Chromium channel.
+Thirteen pure controls pass. Original failed engines[] report remains retained.
+A seal/handoff race affects two preparation documents only; its unlaunched
+namespace is retained and final inputs move to a fresh namespace. Native
+rendering results remain unclaimed until that new gate actually runs.
+
+### Foreground terminal resize repair, 2026-10-31
+
+A shared-core reproduction fails both original assertions: an outside PTY
+master setter receives the resize signal while the two foreground members do
+not, and an identical resize signals unnecessarily. The repair publishes the
+complete size through `ProcessTable::ioctl`, ends the caller borrow before
+routing typed cross-process effects, and targets the terminal's authoritative
+foreground group and controlling session. Exact recipient task selection and
+ordinary retained PTY readiness notifications wake pending signal checks.
+The normal host resize export uses the same model; its established cell-only
+notification policy remains. Unknown controlling sessions never authorize
+signals. Broader existing TIOCSPGRP authorization/errno gaps remain open.
+
+Declared-shell validation passes all3,407workspace Rust tests, including six
+documentation tests, with zero failed/ignored (`--exclude xtask`, explicit
+native target). Log SHA256 is
+`3952247340ba20d608c9870ff1086b5f5608e91921224efa9d313835a12a9a92`.
+Ten focused resize controls,44process-table tests and40ioctl-selected tests
+also pass; these subsets overlap. The actual Wasm adapter compiles. A normal
+four-process C regression is added as source and passes native syntax checks;
+it has not yet been built with the SDK or executed. Combined normal kernel,
+Foot/Bash command reflow, Node/browser integration and required conformance
+remain pending. This repair is not yet a demonstrated cause or cure of the
+five-terminal screenshot failure, nor a performance result. No ABI number,
+wire layout, import/export or snapshot change is introduced within the same
+unpublished ABI56 family. Source/before/after receipts are retained under
+`.context/inverse-evidence-documentation/.context/terminal-resize-fix-r1/`.
+
+### Native selected-state and canonical comparator gates, 2026-10-31
+
+The finalized native selected-context gate now actually passes in canonical
+headless Chromium153.0.8010.12, Firefox155.0 and WebKit26.6. Job
+`restored-device-native-r3-1031-104137-a913` completes0in7seconds. Seven
+assertion groups per engine exercise the real WebGL2/KMS host path, pixels,
+shared BO writes, owner/context isolation, canvas resize, private errors and
+actual context loss. All21groups pass with zero errors. Twelve BO retirement
+acknowledgements, three observer restorations, six context/browser closures,
+three exact owned PID exits and exact Firefox-home cleanup complete. Sixty-two
+source hashes stay identical before/after. Report SHA256:
+`7b37e7a5439aa5e813902be7fb31e1524d97a192f03f37587327734329f3d1c8`.
+Independent offline verification is under
+`.context/restored-device-native-analysis-r3/`. This gate uses the existing
+synthetic scratch kernel with small real native WebGL contexts, not a normal
+compiled guest or compositor. Application effect and browser-memory acceptance
+remain unproved. The earlier unlaunched/failed namespaces remain retained.
+
+Both standalone comparator cohorts have now repeated with explicit canonical
+Chromium channel and verified actual executable/arguments for all engines.
+Node plus Chromium/Firefox/WebKit pass128/128native shape rows and64/64actual
+selector pairs, zero refusals/errors. The five-factor operation screen also
+completes with source/cleanup guards intact. Jobs are
+`comparator-four-vector-canonical-parity-1031-105659-53f9` (0,7seconds) and
+`snapshot-comparator-unroll-canonical-scr-1031-105719-7efd` (0,12seconds).
+Report SHAs are respectively
+`f441346c07f133ec9d73f59ee65f778e18bcab5eca72d888b1588219438055ad` and
+`bbb0bef1c30e02b63cddfea718706ff2aa26a2eccb6566adaf4c2192c34dee42`.
+These repeat bounded standalone claims only. They do not establish desktop
+responsiveness, small/early no-regression, CPU attribution, normal guest
+acceptance or memory reclamation. Original default-headless-shell reports
+remain explicitly qualified and unchanged.
+
+### Thirty-second desktop idle frame trace, 2026-10-31
+
+Job `desktop-long-idle-r2-1031-105115-36ce` completes all four30second
+stages with workload/collector/guard0/0/0, frozen normal04f artifacts and
+canonical headless Chromium. Public terminal counts are1/3/5/recovered1;
+Start observations are outside capture. All native wrappers restore, normal
+same-page replacement completes, source/artifact identities remain stable,
+and console/finalization errors are empty. Report SHA256:
+`7e658ad113653a494485142ca7ec2f3de6305f04bec70efd348f0043c917a876`.
+
+| Idle stage | Comparison starts / finishes | Requested comparison bytes | Native GL calls | Logical display latches |
+|---|---:|---:|---:|---:|
+| One terminal | 16,226 / 16,225 | 169,975,787,520 | 163,486 | 30 |
+| Three terminals | 15,954 / 15,954 | 167,126,446,080 | 167,116 | 32 |
+| Five terminals | 16,922 / 16,921 | 177,266,749,440 | 163,888 | 32 |
+| Recovered one | 16,688 / 16,688 | 174,815,477,760 | 163,190 | 30 |
+
+Every completed comparison returns equal; one span in each of the first and
+third stages crosses the exact cutoff and is censored. Requested bytes include
+those requests and are not physical bus traffic. Leading/trailing logical
+intervals are partial; these latches are not physical screen FPS. Native work
+remains sustained without monotonic amplification in this idle workload.
+Tracked DRI BO Map cardinality changes2→5→7→2; public GL bindings stay1.
+These limited gauges neither establish physical allocation reclamation nor
+exclude other retained resources. No CPU or application-speed inference is
+made from inclusive instrumented scopes or these NONQUIET observations.
+
+A distinct client-count effect is visible in request retries. Each idle Foot
+attempts epollpwait about2,470times per30seconds, generally without completing
+its logical wait. Total retries rise4,640→9,136→14,559→4,741 while logical
+finishes remain2,963→3,045→3,112→3,032. The current shared host always arms
+an at-most10ms epoll fallback, even with known readiness tokens. Source and
+counts identify a concrete scheduling investigation, not proof that every
+retry is a timer or may safely be omitted. Retry reason and notification
+ancestry need recording before changing wake behavior. Concurrently active
+clients, pointer activity and responsiveness comparisons remain untested by
+this idle cohort; single- and multiple-terminal gains are still unproved.
+
+The first long-idle launch had an incomplete helper manifest and failed its
+identity gate before guest navigation. Its failed namespace is retained. The
+fresh R2 enumerates/seals every actual helper and passes the exact identity
+capture/assertion preflight before launch. Runtime trace limits remain fixed;
+unknown/internal-error/overflow flags are zero. Raw records and offline audit
+live under `.context/desktop-long-idle-r2/` and
+`.context/desktop-long-idle-analysis-r2/`.
+
+### Selected-state source-overlay experiment, 2026-10-31
+
+A fresh headless Chromium diagnostic applies only the committed a196 kernel/
+GL-registry selection-preservation delta over normal frozen04f artifacts.
+The comparator remains04f, isolating the state change. Exact committed TS
+copies and whole-module normalized AST equivalence validate the production
+delta; actual19HTTP compositions pass, then two bounded module receipts in
+the actual owned kernel worker verify evaluation before/after all four stages.
+No SDK, kernel, program, image, server source or existing preview is rebuilt
+or modified for this experiment. It is an explicit source-overlay diagnostic,
+not a new normal combined product or the later Rust resize implementation.
+
+Job `desktop-long-state-candidate-r1-1031-110619-acc9` completes0/0/0in3m24s.
+All four30second stages complete with no unknown/overflow/recording errors,
+normal same-page replacement and unchanged source/artifact guards. Eight
+worker receipt sets match both candidate modules. Report SHA256:
+`2ffceeb30016e85b4f267421fe8d3efc56bedb800c26623469f0a6690a47f08e`.
+
+| Idle stage | Prior native GL starts | Selected-state native GL starts | Prior getError starts | Selected-state getError starts |
+|---|---:|---:|---:|---:|
+| One terminal | 163,486 | 155,975 | 75,367 | 71,405 |
+| Three terminals | 167,116 | 156,440 | 75,669 | 71,515 |
+| Five terminals | 163,888 | 156,480 | 75,527 | 71,548 |
+| Recovered one | 163,190 | 156,375 | 75,272 | 71,475 |
+
+These are separate NONQUIET instrumented sessions, with slightly different
+logical draw/latch counts. One final native error query at five terminals is
+cutoff-censored. The fixed restored-state helper actually starts3,750/3,750/
+3,749/3,750times. These observed operation counts do not establish elapsed
+speedup, CPU savings, input latency or neutrality. Most native polling and
+large mapping comparisons remain; neither single- nor multi-terminal benefit
+is established. Further tracing prioritizes exact retry scheduling reasons
+and independently verified output from all active clients. Raw evidence is
+under `.context/desktop-long-state-candidate-r1/`; independent analysis is
+under `.context/desktop-long-state-analysis-r1/`.
+
+### Direct interactive-response capture and user focus lead, 2026-10-31
+
+The user reports the5678preview feels improved but remains far too slow,
+with a repeatable pause whenever pointer crossing changes which terminal is
+highlighted. This is user feedback, not a measured single-terminal speedup.
+The next discriminator is matched within-window versus boundary-crossing
+motion with actual cursor/title pixels, followed by operation tracing of the
+same workload. Broad graphics completion remains deferred behind performance.
+
+Two fresh canonical headless Chromium sessions measure normal physical
+keyboard requests to actual public display pixels, without frame tracing or
+CPU profiling. Each requests eight uppercase M characters, then Ctrl+u erasure,
+three trials separated by15seconds at1/3/5/recovered1terminal. Small public
+crops (at most600×80) are requested every25ms with15second phase bounds.
+Node issue/ACK/observation timestamps share one clock. These upper brackets
+include input-train dispatch, polling, pixel reads and scheduling; they are
+not single-key/hardware latency, CPU savings or before/after improvement.
+Actual production module response hashes bind normalc775 plus thea196 source
+proxy. Source/SDK/93owner245member/kernel guards remain unchanged.
+
+R1 `desktop-responsiveness-r1-1031-112911-f647` fails1/0/0 after2m37s:
+one/three/five echo+erase captures complete, but recovery kills the original
+Foot when the driver sends a close shortcut without observing that its click
+has changed focus. R2 adds a real selected-title pixel check before dependent
+keyboard actions and captures all four stages. Observed focus-change brackets
+are119.8/164.3ms for stage3/5and120.4–320.4ms while closing extras; targets
+already selected are explicitly not zero-latency measurements.
+
+| R2 stage, three trials | Eight-character echo median / range ms | Erasure median / range ms |
+|---|---:|---:|
+| One terminal | 329.4 / 274.8–573.7 | 152.6 / 148.9–193.1 |
+| Three terminals | 327.6 / 258.4–451.7 | 158.5 / 149.5–231.1 |
+| Five terminals | 424.5 / 238.9–564.8 | 146.5 / 128.9–194.3 |
+| Recovered one | 506.1 / 300.7–636.0 | 164.1 / 159.2–213.3 |
+
+These are one ordered NONQUIET session with other clients idle and no cold
+Start click. They do not establish monotonic degradation, its absence in
+active workloads, or a candidate gain. Representative original one/three/five
+paint/erase PNGs are read by root; the classifier is not literal-text OCR.
+
+R2 `desktop-responsiveness-r2-1031-113733-7264` remains FAILED1/0/0in3m15s:
+a final separate three-iteration timed Bash read screen crashes the guest
+with `RuntimeError: function signature mismatch`, after pselect6/sigprocmask/
+terminal restoration. Exact visible command is retained; before1.25seconds
+the Foot window disappears. No timed-read or concurrent-output success is
+claimed, and the proposed900iteration workload is NOT admitted. This is an
+ordinary open platform failure, not a demonstrated runtime boundary. The
+response samples precede it; normal same-page replacement and all artifact
+checks pass, but the failed overall result is retained. R1/R2 report SHAs:
+`62605d7fb23112dc63d63b3345f61a668c3f88e79e38869f191326869e9583f5` and
+`551194a3f69c81eaa967b52d0c825912d21f1ef5e88eafdca9bfd9eb08fab8d8`.
+Evidence is under `.context/desktop-responsiveness-r1/` and`-r2/`.
+
+
+### Pointer crossing reproduces the focus stall, 2026-10-31
+
+A fresh canonical headless Chromium session compares equal96native-pixel
+moves inside the left terminal and across its boundary with its neighbour.
+At each of three and five independently painted Foot windows, four ABBA
+blocks contain three moves each, giving six observations per movement kind.
+The nominal cadence is3seconds within each block. Public cursor alpha and
+both selected-title pixel crops must independently reach the expected state;
+no subsequent move is issued after a missing response. Calibration proves
+one actual right-to-left focus transition, then validates the cursor shape
+and offset with a second96pixel move. Polling is25ms with a2.5second bound.
+No clicks, keyboard commands, frame recorder or CPU profiler run in these
+blocks. Whole-plane calibration and full PNGs occur outside measured blocks.
+
+| Foot windows | Within cursor median / range ms | Crossing cursor median / range ms | Crossing highlight median / range ms |
+|---|---:|---:|---:|
+| Three | 70.4 / 37.8–127.5 | 148.6 / 129.5–268.0 | 164.3 / 129.5–268.0 |
+| Five | 68.9 / 37.7–191.7 | 175.0 / 131.4–273.9 | 191.5 / 162.4–273.9 |
+
+All24moves are observed without censoring. These are request-to-observation
+upper brackets, including normal input dispatch,25ms sampling, public pixel
+reads and scheduling. Six samples per kind in one ordered NONQUIET session
+reproduce the reported distinction; they do not establish hardware latency,
+a before/after gain, a scaling law, Brave-specific timing or its cause.
+A selected title that remains selected is not a focus-latency observation.
+
+Job `desktop-boundary-response-r1-1031-114938-15d5` completes0/0/0in1m43s.
+Normal gallery replacement, original-Foot preservation, source/SDK/kernel/
+93owner245member/host guards and actual production module response identities
+pass. Root reviews the original five-window crossing PNG: the second title
+is highlighted and the cursor is inside its body. Runtime is the unchanged
+5678experimental proxy (normalc775 artifacts plus exacta196 production source
+changes), not a newly built combined kernel or the pending epoll candidate.
+The earlier timed Bash-read crash remains open and is not exercised here.
+
+Report SHA256:
+`5f9966860be1582e5eeb51dcf21f43d8dfdeb73479380cd85038fe03bd0dc7c2`.
+Helper manifest SHA256:
+`f37bfaa8ecb89fa473d175b9833d620208a1bdb94235251e0706d92460269c84`.
+Offline audit SHA256:
+`9484643f9d94a28e00c253192a37825bf5850c01f99b1ae003409cb21950919d`.
+Raw records live under `.context/desktop-boundary-response-r1/`; the audit
+is `.context/desktop-boundary-response-analysis-r1/audit.json`. The next
+capture applies bounded operation/retry tracing to these same motion blocks
+so extra focus work can be distinguished from recurring idle overhead.
+
+
+### Retained epoll fallback candidate, 2026-10-31
+
+A platform candidate avoids full synthetic syscall/coherence replay when an
+existing10ms epoll safety timer can prove that its exact retained wait is
+still blocked. It adds one optional scalar-only kernel export, bound to the
+live PID/TID, retained lease token and finite deadline generation. A strict
+non-delivering readiness evaluation propagates unknown providers and errors;
+only result1 permits rearming the same timer row. ET/ONESHOT candidates,
+cursors, signal masks and output buffers are not consumed. Actual readiness,
+notifications, cancellation, signals, deadline expiry and lifecycle changes
+retain the full retry/completion path. First entry and real publication keep
+their synchronization boundaries; no all-writer epoch is assumed.
+
+A causal control caught a lost wake in the initial candidate when a real
+notification and an already-fired timer waited behind a busy kernel gate.
+The stale proof now deduplicates by its exact timer row, leaving the ordinary
+channel retry independent. Both queue orders finish exactly once without
+reviving the old timer. Failed-before records remain retained. Root and a
+separate read-only source review identify no remaining concrete blocker in
+this candidate; neither review is executable validation.
+
+Focused native epoll/deadline tests pass75/75; shared export-policy tests
+pass3/3. Four source-only host files pass80/80, including both process pointer
+widths, targeted readiness/copyout and queued orderings. Two selected scalar/
+pointer source controls pass; eight unrelated cases are filtered. Raw host
+TypeScript remains red with41diagnostics; exact compiler-host substitution
+of the original file proves the identical41before/after, not a green check.
+These tests do not exercise normally compiled guest programs or rendering.
+
+After provisioning this checkout's own missing source submodules and both
+SDKs, canonical job `epoll-probe-canonical-r1-1031-120530-7444` completes all
+six stages0in39seconds: actual changed-kernel ABI regeneration, ABI check,
+additive comparison against prior7508, resolver regeneration/check and normal
+host bundle/declarations. The generated export signature is
+`(i32,i32,i64,i64) -> (i32)`. Only its optional metadata and export signature
+are added; the unpublished family stays program56/host3/GL17/fork21.
+The program digest equals prior7508 on both sides:
+`c0878412780c9f36cb56527f49ade53bdd0ac3fd5d47d75e3a32a15e1984fc2d`.
+Earlier regeneration/provisioning attempts stopped on missing local SDKs or
+source submodules before completing; these setup failures are retained.
+
+Focused handoff SHA256:
+`7028c8b14551c021046081aa9076b8bc78ba220b43255b27b28274123425a799`.
+Focused source/evidence manifest SHA256:
+`29d14e960b3d44069878bd54a0f9d3188313ded35ef48c004664824c0d14c8fe`.
+Canonical status SHA256:
+`49a649620deb8079649637c8fc58ed357ae25a6e5560dee29cd883400ec2b189`.
+Evidence is in the candidate checkout's `.context/epoll-retry-probe/`.
+
+This candidate is not in5678 and has no demonstrated desktop performance or
+focus-stall benefit. Consolidated normal program/image artifacts, compiled
+kernel/guest readiness/signal/lifecycle controls, Node/browser/memory/POSIX
+and all benchmark gates remain open. The source-only ownership selections
+do not waive the full combined ownership audit. The matched focus-crossing
+trace remains the primary next responsiveness investigation.
+
+
+### First focus-operation trace rejected, 2026-10-31
+
+Job `desktop-boundary-trace-r1-1031-120959-f70d` fails workload1/collector0/
+guard0after44seconds. All19actual HTTP source compositions pass beforehand,
+applying the exacta196 production selection delta once to normalc775, then
+private frame/retry observers. The user5678server is not changed. Sixty-seven
+sealed helpers bind the inputs. This is a new instrumented cohort, separate
+from the completed unprofiled cursor-response evidence.
+
+The first within-terminal block completes all three moves and a logical
+9,000ms capture, with0.97ms actual stop lateness and restored native methods.
+No page/console error, recorder overflow, unknown-frame or internal error is
+recorded. The retry observer nevertheless flags103request mismatches, so the
+block is rejected and no crossing block runs. Normal same-page replacement
+and all unchanged source/SDK/kernel/93owner245member/host guards complete.
+This failed trace establishes no within/cross operation comparison or causal
+retry conclusion. Raw30second-complete=false is retained for the9second
+logical window; shorter coverage is not relabelled as30seconds.
+
+Source diagnosis finds a missing observer path: retained blocking snapshots
+can replay without entering the ordinary syscall handler, and completion can
+remove the active request before materialization. Treating every completion
+as a handler join can misbind legitimate lifecycle stages; the103dynamic
+causes are not individually reconstructed from sampled spans. A fresh
+observer revision must distinguish actual replay entry, exact known finish
+and completion, while retaining hard known-request mismatch detection and
+explicit unbound/unknown causes. No original runtime work may be suppressed
+to make the recorder pass. All failed inputs and raw captures remain frozen.
+
+Report SHA256:
+`9422fb7656410219d494408026ac948b1d96d15d286969234117095398a5a2c0`.
+Raw first-block SHA256:
+`3ba7ccc9447092fe64c50bd87a8807db8f9504ae7029f5a9cdb2763cdb155271`.
+Served-composition SHA256:
+`005e5ba3e9343e389613e6cf6e5a5a1b450f9cc729cc3cba9d32e5d2ce5d448d`.
+Helper manifest SHA256:
+`0c08f98e54f38f9a32dbd4f991b7f187edbe52d8c0c11d166e68ac6ff5c7ad01`.
+Raw evidence and rejection audit live under `.context/desktop-boundary-trace-r1/`
+and `.context/desktop-boundary-trace-analysis-r1/` respectively.
+
+A separate pinned-source audit narrows the focus lead. Sway hover focus with
+unchanged native content dimensions does not increment its client-configure
+waiting count; its200ms transaction timeout is not an explanation merely
+because response times look similar. A focus transaction can queue behind an
+earlier resize transaction, whose readiness requires a matching surface
+commit. Each SFWBar focus event also requests Sway's whole window tree and
+invalidates old/new panel items; a100ms panel source services invalidation.
+These are source facts and trace targets, not measured contributions. Normal
+panel icons/previews are disabled, so icon reloading must not be assumed.
+No focus disabling, application bypass or timeout adjustment is proposed.
+The source audit is `.context/desktop-focus-render-source-r1/focus-transaction-audit.md`,
+SHA256: `d2a3665c52e4bb0715bbd4a5ad3140e826d530ef488cb0fc50f497b864c6fb3b`.
+
+
+### Focus-crossing operation accounting, 2026-10-31
+
+Fresh R2 `desktop-boundary-trace-r2-1031-122453-6ad7` completes workload/
+collector/guard0in2m05s. The corrected observer distinguishes stored-snapshot
+replays, exact logical finishes and completion materialization. Thirteen
+actual-source/pure controls include the old false-mismatch counterexample and
+preserve genuine known-request mismatch failures. An independent offline audit
+passes590checks across69sealed inputs,19actual HTTP module compositions,
+24observed cursor/title responses and8complete9second diagnostic windows.
+Normal replacement and source/SDK/kernel/93owner245member guards pass. The
+concurrent normal producer is explicitly recorded: this NONQUIET instrumented
+capture supports operation accounting, not timing, CPU share or speedup.
+
+Each cell below sums two equal9second blocks and six96pixel moves. Runtime
+is normalc775 plus the exacta196 selection overlay, excluding the newer epoll
+probe and resize kernel. The public5678preview itself is never instrumented.
+
+| Foot windows | Motion | Guest GL queries | GL submissions | Returned guest draws | Comparison starts | Native error queries outside device | Cursor readbacks |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Three | Within | 201 | 93 | 37 | 6,288 | 2,259 | 1,125 |
+| Three | Cross | 639 | 378 | 424 | 10,694 | 16,779 | 1,122 |
+| Five | Within | 199 | 88 | 46 | 6,147 | 2,551 | 1,124 |
+| Five | Cross | 618 | 369 | 421 | 10,266 | 16,614 | 1,123 |
+
+All observed queries, submissions and returned draws are attributed to Sway101
+Ioctl entry. Device polling/readback counts stay nearly constant; extra native
+error queries occur outside device scopes. Main checked-query increases are
+Q34image bind (117→408at3,110→396at5), Q42framebuffer bind (56→122,59→116)
+and Q49flush (28→61,30→58). These checked paths preserve native acceptance
+before publishing logical bindings. They do not call generic withGraphicsState;
+R2 has no execution group for that generic wrapper. Extending its inverse-based
+preservation is therefore not a demonstrated repair for this measured work.
+
+Completed comparisons all report equal and request4,190,208bytes each, for
+Sway101 or SFWBar109; size does not identify a file or buffer. Requested ranges
+sum26.35→44.81GB at3 and25.76→43.02GB at5. These are not physical bus traffic.
+One five-window crossing comparison is cutoff-censored. Sway Ioctl entry and
+completion account for2,151of4,406additional starts at3 and2,040of4,119at5;
+clock/IPC/read/poll activity also grows. No syscall exclusion is justified by
+this association. Direct BO import/publish scopes also grow; these scopes
+still include all-writer scans, so their durations do not isolate copy cost.
+
+Every accepted block has zero retry mismatch, unbound completion/replay,
+overflow and live scope depth. Epoll fallback normal-handler counts actually
+fall for crossing versus within at each window count, while their baseline
+rises with more clients. Thus fallback count amplification is separate from
+the focus-specific increment. Unknown-reason attempts remain explicitly joined
+to snapshot replay, not invented notification identities; reason masks are
+nonexclusive and cannot be summed as unique wakeups.
+
+Twenty-five synchronous spans remain censored.178logical DRM latches delimit
+170complete internal intervals with partial leading/trailing intervals. Raw
+30second-complete=false remains visible for every9second window. First-second
+exemplar quotas omit later ordered spans; this is not a complete ordered log
+of all rendering commands or physical frames. Root reviews the original
+five-window crossing PNG with the second terminal highlighted and cursor in
+its body. All raw captures and limits remain available for deeper tracing.
+
+Source also shows that a nonempty libc GL command flush uses GLIO_SUBMIT,
+and each checked query first flushes then separately invokes GLIO_QUERY.
+A compound transport preserving command ordering, native errors, rollback
+and accepted C shadow state is a potential platform investigation. Current
+aggregates do not pair individual queries with nonempty preceding submissions;
+no compound implementation or safety-check removal is claimed here. Cursor
+source review separately finds a server-shape deduplication path, so matching
+cursor pixels or repeated cursor ioctls do not prove cursor BO replacement.
+
+Report SHA256:
+`6cc8e12a52a2c09ddd02b0c0c493af21f5e4db68a638057c5a4039cf6049b0f5`.
+Helper manifest SHA256:
+`31d9544e0a61bd221d1b764501bbb59d0049e06c25f8829caffdff30efbcf7f7`.
+Served-composition SHA256:
+`d7eb25fc9e78b5b4bbabad505796ccc02082898a1a7766cee0eba588f5e9c56d`.
+Independent accounting SHA256:
+`87976f984ba3ccdc4db6c197a9c9094d28b86d87451cc0246ce811f7efd0d70f`.
+Evidence is under `.context/desktop-boundary-trace-r2/` and
+`.context/desktop-boundary-trace-analysis-r2/`. No candidate responsiveness
+improvement or complete graphics acceptance follows from these counts.
+
+
+### New normal retained-wait preview available, 2026-10-31
+
+Normal frozen candidate `b6d57a94dfdc225020e333ed5fef7b71bf32642b` completes
+its own seven-stage producer `retained-epoll-normal-products-r1-1031-121159-c394`
+in26m29s. Stages include own xtask,64bit SDK completion, normal kernel/shell/
+rootfs/host products, host stamp, freshness, all-owner identity collection and
+selected-kernel ABI. Both SDK inventories and93owners245members are bound.
+The source family remains program56/host3/GL17/fork21. This is a new normal
+combined checkpoint containing the retained epoll probe, foreground resize
+repair and prior source/graphics candidates; no previous validation is carried.
+
+Preview: http://127.0.0.1:5679/pages/kandelo/
+
+Server `retained-epoll-preview-r2-1031-124156-fd44` separately rechecks exact
+producer FINISHED0, coherent owner fields, freshness and ABI before serving.
+Root and app HTTP200/COOP/COEP checks pass. Availability is announced immediately
+for user testing, before interactive validation; this does not establish a
+boundary-stall fix or responsiveness improvement. Older5678/5677/5676 previews
+remain frozen. The fresh normal headless motion cohort is separately admitted
+and must record its own result rather than inherit old response measurements.
+
+The first server attempt `retained-epoll-preview-r1-1031-123948-ab6c` exits1
+before HTTP because this checkout lacks the pinned @vitejs/plugin-react app
+dependency. The corresponding HTTP guard correctly refuses the exited job.
+Normal `npm ci` installs the app's66locked dependencies; the failed serving
+records are moved intact to `.context/preview-serving-r1-failed-server1/` with
+five original file hashes and a relocation record. The original sealed helper
+scripts, producer receipt and built artifacts are not changed. The new server
+uses a fresh receipt in the ordinary serving location; no failed result is
+relabelled as success.
+
+Actual selected kernel:1,839,060bytes, SHA256:
+`1a8ec0cf5db3c273429fe969c9b5265a2bb0d0551d3b53f24c9f09aeda5dc607`.
+Normal producer receipt SHA256:
+`8f0d9fc09f0ad8cbc6a6654b10ad76e5138ffd5d900f395f1142cbc7af0c6c2d`.
+Owners SHA256:
+`3e2a82e53529cd3a3a7e202f81052d43ce32a6bf74dde4245b559f6de70c4223`.
+Serving receipt SHA256:
+`258978fe9c626d92188fd2734c7ce1d5a26b3bc44ff9141532618795054a4c30`.
+HTTP proof SHA256:
+`9ba59983a0d46b1dce95cdafe812552461c0ac90c6a03ed716e9260755961b57`.
+Evidence lives in the normal candidate's `.context/normal-products-r1/` and
+`.context/preview-serving-r1/`. Actual compiled-guest, cross-host readiness,
+browser-memory, relevant POSIX and all benchmark acceptance remain open.
+
+
+### First normal retained-wait motion check, 2026-10-31
+
+`retained-epoll-boundary-response-r1-1031-124310-a0fe` completes workload/
+collector/guard0in1m26s on the normal5679b6 build. Ten proven motion/readiness/
+geometry helpers remain byte-identical; no source overlay, profiler or frame
+recorder is used. Both3/5window stages, all24cursor/title responses, original
+Foot recovery, normal same-page replacement and exact source/SDK/kernel/
+93owner245member/host guards complete. No page/console errors are recorded.
+Root reviews the original five-window crossing screenshot. The preview is
+available independently of these completed narrow checks.
+
+| Foot windows, six observations per kind | Within cursor median / range ms | Crossing cursor median / range ms | Crossing highlight median / range ms |
+|---|---:|---:|---:|
+| Three | 70.5 / 35.5–128.5 | 136.7 / 103.2–194.6 | 153.5 / 103.2–194.6 |
+| Five | 71.8 / 67.8–98.7 | 135.4 / 130.4–165.4 | 135.4 / 130.4–195.8 |
+
+These are current-candidate public-pixel upper brackets including dispatch,
+25ms polling and scheduling in one NONQUIET ordered session. The focus crossing
+stall remains. Historical5678measurements are not a fresh alternating matched
+before/after benchmark, and no probe-only improvement is established. This
+normal build also includes the prior resize repair; successful motion does
+not validate the C resize fixture, timed Bash-read failure, keyboard latency,
+single-terminal behavior, cross-host readiness or full performance acceptance.
+
+Report SHA256:
+`24739323f980fbf893d6703f55b1ee247b66adb7614766a7dee48425d47099e5`.
+Helper manifest SHA256:
+`a52f170ca98e336b3dbc4874dbe0e9f0d1bf4f0e836151f06a17084e7c09ee94`.
+Offline audit SHA256:
+`2d86b5be08901d3d01fe23826564b540ef7ac2701aa34b0f979e069ea901602f`.
+Raw evidence and audit live under `.context/retained-epoll-boundary-response-r1/`
+and `.context/retained-epoll-boundary-response-analysis-r1/` respectively.
+
+
+The separate normalc775↔b6artifact audit freshly rehashes all490members across
+both93owner245member manifests.84complete owner tuples match; six payloads
+differ. Sway, Foot and Bash are byte-identical. SFWBar differs only in its
+binary build-key custom section (31of32key bytes); all other Wasm sections,
+including code, data, imports, ABI and fork metadata, match exactly. Its menu,
+configuration and runtime files also match. The SFWBar recipe declares generated
+ABI TypeScript as an input, so the new optional export correctly changes its
+normal build key; no metadata is stripped to manufacture acceptance.
+
+Kernel and image-writer Wasm contain real code/data/type changes. NetHack's
+only executable difference is its build key, and its ZIP otherwise has the
+same extracted entries. Compressed shell-image bytes differ and its internal
+tree is not decoded by this audit. Each SDK's289payload entries match, but
+musl input stamps differ. All2,829enumerated SDK source files and musl HEAD
+match; historical tool/plugin inputs are not reconstructed, so stamp equality
+is not claimed. Active dependency closure identities match across37library
+names;50artifacts in36retained exact-key shared roots are freshly rehashed.
+The ncurses archive root is unavailable; actual Bash bytes still match. No
+artifact is rebuilt, borrowed, restamped or substituted for this comparison.
+
+Evidence is `.context/retained-epoll-artifact-pair-analysis-r1/`, README SHA256
+`c277436828ba472dc1726ab967bf381fab81dc471aacdb0922c0026f58077b5d`, comparison SHA256
+`6c1d391af78e75c8dca7c34d676d85f739b3eaee263f4afd619b7b7f75db8397`. These normal source changes include prior graphics selection
+preservation, foreground resize routing and the epoll candidate. Historical
+5678uses its separately pinned selection overlay; neither comparison isolates
+the new probe nor replaces a fresh alternating responsiveness benchmark.
+
+### Bounded ordered focus capture and separate front-export repair, 2026-10-31
+
+`desktop-boundary-ordered-r1-1031-130901-4251` finishes **FAILED**, workload1 /
+collector0 / guard0, after47s. Frozen normalc775 plus exacta196 selection source
+and19 private observer modules remain the inputs; no published preview is
+instrumented. Eight source controls and the actual19-module HTTP composition
+pass before launch. One96nativepx within-window move and one crossing each have
+an explicit1s kernel-clock capture at3Foot, native2880x1620/DPR2 in headless
+Chromium. Both visible responses and normal same-page replacement occur;
+source/SDK/kernel/93-owner/245-member guards pass. The within capture retains
+26,288 ordered rows, no drops/errors/unknowns and one complete internal DRM-latch
+interval. The crossing reaches its65,536-row limit and drops9,321 rows; its
+ordered-completeness assertion correctly fails. Eight internal latch intervals
+are observed there, but missing rows prohibit complete ordered-crossing claims.
+Edges and actual stop lateness remain explicit. Physical GPU completion is
+unobserved. The failed capture is immutable; a fresh bounded rerun is required.
+
+The retained callsite aggregates name make-current as the executed invalidation
+site (3 within,24 crossing); neither front-copy nor update-surface executes in
+these windows. This redirects the focus investigation toward physical versus
+logical context selection across release/rebind. Mutable logical shadow or a
+matching PID alone cannot authorize physical-state reuse. A proposed compound
+submit/query transport remains source/design work: adjacent requests do not
+prove their libc call origin or an application benefit.
+
+A separately implemented shared front-export repair is **not a demonstrated
+focus-stall fix**. Successful checked GPU copies/CPU readbacks preserve the
+selected native owner after their full inverses; native errors, pending repair,
+context loss, exceptions and publication refusal invalidate. CPU front bytes
+are published after the final guard, closing the reproduced late-context-loss
+success/publication gap. Shared retirement preparation now revokes selection
+before another guard's cleanup or native repair and refuses unread outgoing
+errors before cleanup. Existing helper errno ordering uses shared pure
+preflights; no native acceptance check, pixel sample or memory boundary is
+removed. The code is shared by Node/browser and changes no ABI version or
+layout. It is not present in normal preview5679.
+
+Source controls pass215/215 across9 graphics files with0skips in the declared
+shell, using a private config without product-building global setup. The initial
+controls reproduce two unnecessary-replay and two late-context-loss failures;
+two additional initial assertions were overstrong about replay during retained
+repair and are recorded as fixture corrections. A direct typecheck invocation
+first fails on a wrong tool path; the corrected full typecheck also fails on
+module/other-file diagnostics. Neither is a passing typecheck or established
+baseline-equivalence claim. `git diff --check` passes. Distribution builds,
+real browser/Node rendering, browser-memory, conformance, full benchmarks and
+responsiveness benefit remain unrun for this repair.
+
+Evidence: `.context/desktop-boundary-ordered-r1/`,
+`.context/focus-frontcopy-candidate-r1/`, and
+`.context/compound-gl-transport-source-r1/`. The unpublished family remains
+program56 / host3 / GL17 / fork21. No new preview or focus-performance gain is
+claimed from this checkpoint.
+
+### Drawable-selector transition candidate, 2026-10-31
+
+The new shared muxer model retains an exact selected-owner witness with a
+bounded framebuffer-selectors-dirty bit. Reviewed native-free logical drawable
+release/rebind marks that bit before changing defaults. Before the same owner
+executes again, both desired DRAW/READ selectors are checked in one synchronous
+sequence, retaining every post-check. A failed selector write, throw, context
+loss or repair refuses dependent GLES work and invalidates the full witness.
+First-current viewport/scissor initialization, owner-dead surface collection,
+new surfaceless allocation, pending cleanup/repair and client-array restoration
+remain full-invalidating. A matching PID or mutable shadow is not evidence of
+unchanged physical selectors. Peer/full switches clear the partial witness;
+fixed KMS exact inverses preserve the dirty bit. Full replay now revokes the
+old selected identity before any native prefix, so a thrown peer replay cannot
+authorize the old owner's same-identity shortcut.
+
+Direct and forwarded paths share transition eligibility. The forwarded mark
+occurs only after its actual mailbox acknowledgment accepts the logical commit;
+late/rejected acknowledgment publishes neither shadow nor a dirty mark. A
+required pre-collection error capture can now return EIO before releasing the
+logical binding, retaining unread peer flags for retry. No ABI layout/version,
+SDK or package change is made. Candidate source is not in preview5679.
+
+Focused source controls pass263/263 across10 graphics files with0skips in the
+declared shell. Before controls reproduce unnecessary full replay on repeated
+current binding and release/rebind. Negative controls cover each checked
+selector error/throw, lost renderer, distinct draw/read defaults, user FBOs,
+first-current and surfaceless fallback, peer/generic invalidation, dirty state
+through a fixed KMS inverse, pending repair, owner-dead collection, same numeric
+identity replacement, forwarded late/ACK race and thrown full peer replay.
+Standalone full typecheck remains failing with byte-identical diagnostics to
+the preceding failed check; this is baseline comparison of that command, not a
+green project typecheck. Source review finds no new blocker. An inherited
+full-invalidation gap remains: constant-attribute clearing indices are not
+retained across loss of the prior owner; FBO/VAO refusal controls do not prove
+complete constant-attribute recovery. This ordinary gap remains open.
+
+Application operation counts, responsiveness, normal combined distribution,
+Node/browser rendering, browser-memory, conformance and destination-main
+benchmarks remain unrun for this candidate. Its checked selector restoration
+adds work of its own; reduced full-state replay is not an application gain.
+Evidence is `.context/focus-drawable-transition-candidate-r1/` and
+`.context/focus-make-current-source-r1/`.
+
+The second ordered trace `desktop-boundary-ordered-r2-1031-132007-dfa6` also
+finishes **FAILED**, workload1/collector0/guard0 in43s. Its first capture has
+29,948rows, no overflow/unknowns, but22 observer-internal errors; crossing does
+not run. The observer used Map.prototype.get on the actual WeakMap of muxers,
+and its source control incorrectly substituted Map. This is an observer defect,
+not a rendering defect. The next fresh observer uses the actual WeakMap and a
+source declaration assertion, while keeping the failed capture immutable.
+No complete ordered focus claim follows from R2. Preview5679 stays unchanged.
+
+### Complete observed focus ordering and unchanged-selector refinement, 2026-10-31
+
+`desktop-boundary-ordered-r3-1031-132701-3bc8` completes workload/collector/guard
+0/0/0 in48s. Twelve source controls, actual19-module HTTP composition and69
+sealed inputs precede the run. The corrected observer uses the actual WeakMap
+and records bounded helper-error codes; the original R1/R2 failures remain.
+Normalc775 plus exacta196 production selection source is still the frozen
+runtime, with private observations only in this headless Chromium page.
+Both96nativepx responses, original client identity, normal replacement and
+normal93-owner/245-member/dual-SDK/kernel/host guards pass. These are instrumented
+1s operation observations, not CPU time, physical frames or an improvement.
+
+| Observed3-Foot move | Ordered rows | Dropped/internal errors | Complete internal latch intervals | Make-current calls |
+|---|---:|---:|---:|---:|
+|Within one terminal|27,429|0 / 0|2|7|
+|Across the boundary|75,008|0 / 0|8|44|
+
+All51 observed make-current calls return0 with complete before/after records:
+PID101/session2/context3, the same exact weak binding/native-context identities,
+and zero draw/read surface arguments. Each call preserves its shadow FBO pair
+and viewport values/identity. Crossing includes4binds with a different FBO pair
+established by other GL work **between** calls; per-call equality must not erase
+previously outstanding selector dirtiness. Both traces retain edge censors,
+actual stop lateness and raw30s-complete=false separately from accepted1s
+ordered completeness. The scope is the selected19 boundaries/native calls,
+not an exhaustive guest execution log or physical GPU completion.
+
+The next refinement compares only two local pre-commit FBO references around
+an eligible, reviewed native-free synchronous logical transition. Successful
+commit adds selector dirtiness only when those references changed. It never
+clears an existing dirty bit. Exceptions invalidate, conservative fences still
+precede native preparation/collection, and forwarded marking follows accepted
+ACK plus successful commit. No previous-native-handle cache, generation,
+persistent receipt or additional allocation is introduced. In source controls,
+unchanged surfaceless repeated binding and release/rebind add no FBO/error/texture
+replay; previously dirty unchanged transitions still require checked restoration.
+This corrects avoidable checks introduced by the first selector candidate.
+
+Focused source validation passes267/267 across10files with0skips. Before controls
+against59 reproduce unnecessary error reads in the two clean surfaceless cases;
+changed-selector failure controls explicitly create real dirtiness and retain
+all rejection assertions. Full typecheck still fails with byte-identical
+existing diagnostics. Independent source review finds no new blocker.
+Application responsiveness, combined normal build, browser-memory, conformance
+and broad benchmarks remain unproven. No change is made to preview5679 or ABI.
+
+Evidence: `.context/desktop-boundary-ordered-r3/`,
+`.context/desktop-boundary-ordered-analysis-r3/` (independent audit in progress),
+and `.context/focus-drawable-noop-candidate-r1/`.

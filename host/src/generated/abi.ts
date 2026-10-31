@@ -921,6 +921,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_epoll_wait_retry_state",
   "kernel_reserve_host_region",
   "kernel_reserve_host_region_at",
   "kernel_set_max_addr",

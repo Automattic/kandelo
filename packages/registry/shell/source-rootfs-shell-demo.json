@@ -244,10 +244,42 @@
         "internalsAccess": "drawer"
       }
     },
+    "labwc": {
+      "identity": {
+        "title": "labwc stacking desktop",
+        "summary": "A lightweight Wayland stacking desktop with decorated foot windows and an SFWBar panel: Start opens applications, the task list switches windows, and the clock keeps the time. Right-click the desktop for its native menu; Super or Ctrl+Return opens a readable terminal, Alt+Tab switches windows, Alt+F4 closes a window, and Ctrl+Shift+E exits the session.",
+        "accent": "#497a6c",
+        "glyph": "Lw",
+        "packages": [
+          "bash@local",
+          "coreutils@local"
+        ]
+      },
+      "runtime": {
+        "features": [
+          "kms",
+          "kms-gl-scanout",
+          "evdev-input"
+        ]
+      },
+      "init": {
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/labwc -s '/bin/sh -c \"sfwbar -f /etc/xdg/sfwbar/sfwbar.config & exec foot --config=/etc/xdg/labwc/foot.ini\"'"
+      },
+      "presentation": {
+        "bootPrimary": "syslog",
+        "runningPrimary": [
+          "kms",
+          "terminal",
+          "syslog"
+        ],
+        "terminalAccess": "drawer",
+        "internalsAccess": "drawer"
+      }
+    },
     "sway": {
       "identity": {
         "title": "sway tiling desktop",
-        "summary": "Upstream sway, the i3-compatible wlroots tiling compositor, on /dev/dri/card0: wlroots' GLES2 renderer draws through the host's WebGL2 bridge, swaybar shows the date from a status_command, and the session opens with foot. Super or Ctrl+Return opens another terminal beside it; Super or Ctrl+Shift+E asks swaynag to exit.",
+        "summary": "Upstream Sway's tiling Wayland desktop with an SFWBar Start menu, window task list and clock. Foot terminals use readable fonts; Super or Ctrl+Return opens another terminal beside the current one, and Super or Ctrl+Shift+E asks swaynag to exit.",
         "accent": "#4a6fa5",
         "glyph": "S",
         "packages": [
@@ -263,7 +295,7 @@
         ]
       },
       "init": {
-        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway"
+        "shellCommand": "LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config"
       },
       "presentation": {
         "bootPrimary": "syslog",

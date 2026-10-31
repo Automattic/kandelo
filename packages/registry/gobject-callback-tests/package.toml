@@ -1,0 +1,89 @@
+kind = "program"
+name = "gobject-callback-tests"
+version = "2.84.4"
+kernel_abi = 56
+arches = ["wasm32"]
+depends_on = ["glib@2.84.4", "libffi@0.1.0", "pcre2@10.44", "zlib@1.3.1"]
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "provided by flake.nix; enter scripts/dev-shell.sh", linux = "provided by flake.nix; or apt install python3" }
+
+[[host_tools]]
+name = "patch"
+version_constraint = ">=2.7"
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[source]
+url = "https://download.gnome.org/sources/glib/2.84/glib-2.84.4.tar.xz"
+sha256 = "8a9ea10943c36fc117e253f80c91e477b673525ae45762942858aef57631bb90"
+provider = "archive"
+
+[license]
+spdx = "LGPL-2.1-or-later AND Apache-2.0"
+url = "https://gitlab.gnome.org/GNOME/glib/-/blob/2.84.4/COPYING"
+
+[build]
+script_path = "packages/registry/gobject-callback-tests/build-gobject-callback-tests.sh"
+
+[[outputs]]
+name = "gobject-contract"
+wasm = "gobject-contract.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-binding-lifecycle"
+wasm = "gobject-binding-lifecycle.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-type"
+wasm = "gobject-type.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-basic-signals"
+wasm = "gobject-basic-signals.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-signals"
+wasm = "gobject-signals.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-closure"
+wasm = "gobject-closure.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-defaultiface"
+wasm = "gobject-defaultiface.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-dynamictype"
+wasm = "gobject-dynamictype.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-accumulator"
+wasm = "gobject-accumulator.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-object"
+wasm = "gobject-object.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-references"
+wasm = "gobject-references.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
+name = "gobject-signal-handler"
+wasm = "gobject-signal-handler.wasm"
+fork_instrumentation = "auto"

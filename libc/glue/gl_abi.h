@@ -14,6 +14,10 @@
 #include <stdint.h>
 
 #define WPK_GL_OP_VERSION 17u
+#define WPK_GL_INLINE_DRAW_HEADER_BYTES 16u
+#define WPK_GL_INLINE_DRAW_ATTRIBUTE_BYTES 20u
+#define WPK_GL_INLINE_DRAW_MAX_BYTES 65535u
+#define WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES 16u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -91,6 +95,7 @@
 #define OP_DISABLE_VERTEX_ATTRIB_ARRAY 0x0501u
 #define OP_VERTEX_ATTRIB_POINTER       0x0502u
 #define OP_DRAW_ARRAYS                 0x0503u
+#define OP_DRAW_CLIENT_ARRAYS          0x0506u
 #define OP_DRAW_ELEMENTS               0x0504u
 #define OP_VERTEX_ATTRIB_4FV           0x0505u
 

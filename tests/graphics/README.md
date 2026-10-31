@@ -266,12 +266,14 @@ The retained-ARRAY cases exercise balanced private staging capture on
 success, allocation failure and zero-count draws. Actual C vertex-first
 and index-first streams are replayed in all three browser engines through
 native worker imports and main forwarding. The fixture injects an explicit
-renderer peer deletion/reuse after the temporary bind, then checks that
+renderer peer deletion/reuse after the temporary bind on the older staging
+path, or before admission of the bounded owned client-draw record. The
+record has no public staging interval to interrupt. Both paths check that
 capturing an attribute from the restored ARRAY draws the original red
 buffer rather than its blue replacement. It checks final native buffer,
 VAO, texture, FBO and renderbuffer retirement. Program setup and peer
 operations are fixture-provided; this proves the host's saved identity
-with actual C staging bytes, not public C sharing or Rust marshalling.
+with actual C draw bytes, not public C sharing or Rust marshalling.
 Host tests separately cover failed native restore/retry, retained capture
 cleanup and malformed/nested BEGIN/END. Complete context-loss recovery
 and interrupted private-name cleanup remain open.

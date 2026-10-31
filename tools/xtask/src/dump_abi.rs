@@ -4360,6 +4360,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "io_multiplexing", io_multiplexing());
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
+    s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
 
     s.add(Program, "channel_header", channel_header());
     s.add(Program, "channel_request_flags", channel_request_flags());
@@ -4400,6 +4401,28 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
+}
+
+fn gl_inline_client_draw() -> Value {
+    use shared::gl::{OP_DRAW_CLIENT_ARRAYS, OP_VERSION, inline_client_draw as wire};
+    // The payload is read by the host, but emitted by already-built programs.
+    // An unchanged unpublished epoch must not admit a different record digest.
+    json!({
+        "op_version": OP_VERSION,
+        "opcode": OP_DRAW_CLIENT_ARRAYS,
+        "byte_order": "little-endian",
+        "header_bytes": wire::HEADER_BYTES,
+        "header_fields": {"mode_u32": 0, "first_i32": 4, "count_i32": 8, "attribute_count_u32": 12},
+        "attribute_bytes": wire::ATTRIBUTE_BYTES,
+        "attribute_fields": {"index_u32": 0, "components_u32": 4, "type_u32": 8, "normalized_u32": 12, "packed_bytes_u32": 16},
+        "max_payload_bytes": wire::MAX_BYTES,
+        "max_attributes": wire::MAX_ATTRIBUTES,
+        "minimum_count": 1,
+        "attribute_order": "strictly-increasing-index",
+        "data_layout": "count-packed-elements-at-original-vertex-indices",
+        "component_types": [0x1400, 0x1401, 0x1402, 0x1403, 0x1406, 0x140c],
+        "public_buffer_names": false,
+    })
 }
 
 fn platform_limits() -> Value {

@@ -116,17 +116,17 @@ async function meanColor(page: Page, png: Buffer): Promise<Rgb> {
 /** The middle of the output, where the tiled windows are. */
 const middle = (out: Output) => outputShot(out, out.width / 4, out.height / 4, out.width / 2, out.height / 2);
 
-/** The right half of swaybar, where the status line is: upstream's config
- *  puts the bar at the top. */
-async function barHeight(out: Output): Promise<number> {
+/** The painted bands belong to different normal clients: SFWBar's GTK panel
+ * is at the bottom; Sway's focused 12pt title remains at the top. */
+async function paintedBandHeight(out: Output, edge: "top" | "bottom", color: Rgb): Promise<number> {
   const height = Math.min(128, out.height);
-  let boundary = 0;
-  let capturedRows = 0;
-  // A claimed CRTC can precede swaybar's first repaint. Keep sampling
-  // until the real bar exists before measuring its status-line changes.
+  let measured = 0;
+  // The renderer can claim its CRTC before a lazy panel/title client paints.
+  // Measure the same actual edge band only after its first repaint.
   await expect(async () => {
-    const png = await outputShot(out, out.width / 2, 0, out.width / 2, height);
-    const rows = await out.canvas.page().evaluate(async base64 => {
+    const png = await outputShot(out, out.width / 2, edge === "top" ? 0 : out.height - height,
+      out.width / 2, height);
+    const rows = await out.canvas.page().evaluate(async ([base64, color]) => {
       const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
       const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
       const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
@@ -137,22 +137,70 @@ async function barHeight(out: Output): Promise<number> {
         let background = 0;
         for (let x = 0; x < image.width; x++) {
           const p = (y * image.width + x) * 4;
-          if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - 50) <= 3)) background++;
+          if ([0, 1, 2].every(channel => Math.abs(image.data[p + channel] - color[channel]) <= 3)) background++;
         }
         return background / image.width;
       });
-    }, png.toString("base64"));
-    // Read the actual painted bar boundary, not a fixed font-dependent height.
-    // The shipped /etc/sway/config sets background #323232. Text occupies
-    // less than half a row; the foot client and its blue title differ.
-    boundary = rows.findIndex(background => background < 0.5);
-    expect(boundary, "swaybar has painted a nonempty top band").toBeGreaterThan(0);
-    capturedRows = rows.length;
+    }, [png.toString("base64"), color] as const);
+    if (edge === "bottom") rows.reverse();
+    // Permit a thin toolkit/window border, but require a contiguous painted
+    // band adjoining the actual output edge. Text occupies under half a row.
+    const first = rows.findIndex(background => background >= 0.5);
+    expect(first, `${edge} band reaches the output edge`).toBeGreaterThanOrEqual(0);
+    expect(first * height / rows.length).toBeLessThanOrEqual(4);
+    const boundary = rows.findIndex((background, row) => row > first && background < 0.5);
+    expect(boundary, `${edge} band has a measured nonempty boundary`).toBeGreaterThan(first);
+    measured = boundary * height / rows.length;
   }).toPass({ timeout: 120_000, intervals: [100, 500, 1_000] });
-  return boundary * height / capturedRows;
+  return measured;
 }
+
+const barHeight = (out: Output) => paintedBandHeight(out, "bottom", [50, 50, 50]);
+// Sway 1.12 config.c: focused.background = 0x285577FF; the shipped config
+// preserves that title color while choosing the readable 12pt font.
+const titleHeight = (out: Output) => paintedBandHeight(out, "top", [40, 85, 119]);
+
 async function statusLine(out: Output) {
-  return outputShot(out, out.width / 2, 0, out.width / 2, await barHeight(out));
+  const height = await barHeight(out), width = Math.min(out.width / 2, height * 5);
+  // The rightmost clock contains no task labels or terminal cursor. Its
+  // normal HH:MM:SS value must change without keyboard/pointer activity.
+  return outputShot(out, out.width - width, out.height - height, width, height);
+}
+
+async function clockInk(page: Page, png: Buffer, before?: Buffer) {
+  return page.evaluate(async ([current, previous]) => {
+    const decode = async (base64: string) => {
+      const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      context.drawImage(bitmap, 0, 0);
+      const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      return image;
+    };
+    const image = await decode(current), old = previous ? await decode(previous) : undefined;
+    if (old && (old.width !== image.width || old.height !== image.height))
+      throw new Error("clock region resized during tick check");
+    const bright = (data: Uint8ClampedArray<ArrayBufferLike>, at: number) =>
+      data[at] > 180 && data[at + 1] > 180 && data[at + 2] > 180;
+    let pixels = 0, changed = 0;
+    for (let at = 0; at < image.data.length; at += 4) {
+      const now = bright(image.data, at);
+      if (now) pixels++;
+      if (old && now !== bright(old.data, at)) changed++;
+    }
+    return { pixels, changed };
+  }, [png.toString("base64"), before?.toString("base64")] as const);
+}
+
+async function expectClockTicks(page: Page, out: Output) {
+  await expect.poll(async () => (await clockInk(page, await statusLine(out))).pixels,
+    { timeout: 120_000, intervals: [1_000] }).toBeGreaterThan(20);
+  await expect.poll(async () => {
+    const before = await statusLine(out);
+    await page.waitForTimeout(1_500);
+    return (await clockInk(page, await statusLine(out), before)).changed;
+  }, { timeout: 120_000, intervals: [1_000] }).toBeGreaterThan(5);
 }
 
 /** The columns at the middle of the output, where two tiles meet. */
@@ -182,8 +230,8 @@ async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
  * Gates:
  *   1. The machine runs sway, and sway's GL context owns the canvas: the
  *      Modeset chip reports the `webgl2-gl` renderer.
- *   2. swaybar redraws its status line: the upstream status_command prints
- *      the time every second, so it changes with no input.
+ *   2. The normal SFWBar GTK panel paints its clock glyphs and redraws
+ *      HH:MM:SS every second, without input.
  *   3. The config's `exec $term` starts foot, whose window fills the
  *      output. Once its prompt holds still, a keystroke reaches it: the
  *      shell's echo changes it.
@@ -195,9 +243,9 @@ async function clickOutput({ canvas, ...size }: Output, x: number, y: number) {
  *      `swaymsg exit`: sway exits with status 0 to the machine's shell.
  *   7. A sway started next on the pixman renderer reaches the canvas that
  *      the GLES2 session gave up: the vblank pump presents its CPU frames,
- *      so swaybar's clock moves again.
+ *      so the same normal SFWBar clock moves again.
  */
-test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 renderer", async ({ page }) => {
+test("Kandelo sway tiles foot terminals above SFWBar with wlroots' GLES2 renderer", async ({ page }) => {
   test.setTimeout(420_000);
 
   await gotoMachine(page, "sway");
@@ -220,16 +268,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
   let out = await output(page);
 
   // Gate 2.
-  await expect
-    .poll(
-      async () => {
-        const before = await statusLine(out);
-        await page.waitForTimeout(1_500);
-        return (await statusLine(out)).equals(before);
-      },
-      { timeout: 120_000, intervals: [1_000] },
-    )
-    .toBe(false);
+  await expectClockTicks(page, out);
 
   // Gate 3. foot is lazy and large, so its first frame can take a while.
   await expect
@@ -249,7 +288,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
       return still;
     }, { timeout: 60_000, intervals: [0] })
     .toBe(true);
-  await page.keyboard.type("echo sway-gles2-ok\n", { delay: 40 });
+  await typePhysicalText(page, "echo sway-gles2-ok\n", { delay: 40 });
   await expect
     .poll(async () => (await prompt()).equals(idle), { timeout: 60_000, intervals: [500, 1_000] })
     .toBe(false);
@@ -294,13 +333,14 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
     .getByRole("button", { name: "Terminal", exact: true }))
     .toHaveAttribute("aria-current", "true", { timeout: 60_000 });
   await page.locator(".xterm").first().click();
-  await page.keyboard.type("echo sway-exit=$?\n", { delay: 40 });
+  await typePhysicalText(page, "echo sway-exit=$?\n", { delay: 40 });
   await expect.poll(() => terminalText(page), { timeout: 30_000 }).toMatch(/sway-exit=0/);
 
   // Gate 7.
-  await page.keyboard.type(
+  await typePhysicalText(page,
     "WLR_RENDERER=pixman LIBSEAT_BACKEND=noop XDG_RUNTIME_DIR=/tmp XDG_CONFIG_HOME=/usr/share/kandelo"
-      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway\n",
+      + " FONTCONFIG_FILE=/usr/share/kandelo/fonts/fonts.conf /usr/local/bin/sway -c /etc/xdg/sfwbar/sway.config\n",
+    { delay: 20 },
   );
   await openSurface(page, "Demo");
   // A startup repaint can change the screenshot before the dock drains its
@@ -313,16 +353,7 @@ test("Kandelo sway tiles foot terminals under swaybar with wlroots' GLES2 render
   await expect
     .poll(async () => isFoot(await meanColor(page, await middle(out))), { timeout: 180_000, intervals: [2_000] })
     .toBe(true);
-  await expect
-    .poll(
-      async () => {
-        const before = await statusLine(out);
-        await page.waitForTimeout(1_500);
-        return (await statusLine(out)).equals(before);
-      },
-      { timeout: 180_000, intervals: [1_000] },
-    )
-    .toBe(false);
+  await expectClockTicks(page, out);
 });
 
 
@@ -432,8 +463,11 @@ for (const deviceScaleFactor of [1, 2]) {
       expect(Math.abs(out.width - box.width * deviceScaleFactor)).toBeLessThanOrEqual(2);
       if (deviceScaleFactor === 2) expect(out.height).toBeLessThan(1200);
       const cssBarHeight = await barHeight(out) * box.height / out.height;
-      expect(cssBarHeight, "12pt Sway UI remains readable in CSS pixels").toBeGreaterThanOrEqual(18);
-      expect(cssBarHeight).toBeLessThan(32);
+      expect(cssBarHeight, "14px SFWBar plus padding remains readable in CSS pixels").toBeGreaterThanOrEqual(30);
+      expect(cssBarHeight).toBeLessThan(50);
+      const cssTitleHeight = await titleHeight(out) * box.height / out.height;
+      expect(cssTitleHeight, "12pt Sway title remains readable in CSS pixels").toBeGreaterThanOrEqual(18);
+      expect(cssTitleHeight).toBeLessThan(32);
 
       // Click an actual rendered client using CSS→mode coordinates. Query
       // Sway's real IPC state through its shell; preserve it across exit so

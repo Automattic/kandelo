@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Paint
+Comment=Draw in a native Wayland window
+Exec=/usr/local/bin/wlpaint
+Terminal=false
+Categories=Graphics;

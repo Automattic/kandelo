@@ -71,6 +71,10 @@
     },
     {
       "product": "browser-main-shell",
+      "profile": "labwc"
+    },
+    {
+      "product": "browser-main-shell",
       "profile": "omarchy"
     },
     {

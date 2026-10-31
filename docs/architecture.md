@@ -128,6 +128,7 @@ kernel_set_mmap_base(pid, addr) → 0
 kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 kernel_epoll_wake_indices(pid, epfd, kind, out_ptr, out_capacity) → count | -errno
+kernel_epoll_wait_retry_state(pid, tid, token, deadline_handle) → 1 still blocked | 0 replay | -errno (optional)
 kernel_set_wait_queue_enabled(enabled) → previous | -errno
 kernel_wait_deadline_open(pid, tid, kind, timeout_ms) → wait_handle | -errno
 kernel_wait_deadline_remaining_ns(wait_handle) → nanoseconds | NO_DEADLINE | -errno
@@ -560,6 +561,48 @@ pointer and capacity valid for that synchronous import, so
 `checkedWasmImportMemoryRange` normalizes the raw wasm32/wasm64 import value
 and `WasmPosixKernel.writeKernelBytes` checks that range and the producer's
 intrinsic byte span without claiming it came from the scratch allocator.
+A process-to-kernel read copies directly into this authenticated allocation
+within the synchronous import. It retains neither an intermediate full-range
+JavaScript snapshot nor a process-memory view after that call. The destination
+still rechecks allocation capacity, memory identity and generation before its
+one-use publication, including after memory growth during process lookup.
+Full process snapshots for shared-mapping reconciliation use a Rust-owned
+allocation whose length remains zero until that import reports exact full-copy
+success. Only then does Rust expose its initialized bytes. Errors discard the
+unpublished allocation, including any partially written prefix; unexpected
+positive import results are errors. This avoids initializing a buffer before
+the trusted host fills it, while retaining the same boundary synchronization,
+alias ordering and snapshot comparisons. Other mapping backends retain the
+safe initialized-slice implementation.
+
+For file mappings, the Wasm backend first compares the live process range
+against the existing initialized Rust snapshot through the synchronous
+`host_proc_compare_bytes` import. The host validates both complete ranges,
+rechecks the exact kernel Memory and generation after process lookup, and
+keeps all read-only native authority inside that call. Equal bytes retain the old
+snapshot without allocating or copying a new full range. Different bytes
+use the ordinary separately validated owned-copy path. Exactly zero means
+equal, one means different, and two requests that same owned-copy path when
+the optional native comparator is unavailable. Errors never publish partial
+bytes. The fixed read-only Wasm helper imports the two existing memories,
+allocates no linear memory, writes nothing, and never retains an Instance
+or exported function beyond the synchronous borrow. Only compiled modules
+and frozen scalar constructor descriptors are cached. Trusted constructor
+sites record actual address width, sharing and maximum; unknown externally
+supplied memory descriptors retain the owned-copy path. SIMD is preferred
+when supported, with a scalar Wasm variant and finally owned-copy fallback.
+Native instance churn, browser-memory and application performance validation
+are required before accepting this experimental implementation. The normal
+host build checks all32 fixed generated variants against their WAT template
+and generator using the declared WABT tools. Regenerate with
+`scripts/dev-shell.sh npm --prefix host run generate:snapshot-comparator`;
+`check:snapshot-comparator` verifies without updating the checked-in bytes.
+This comparison is one observation, not a persistent no-writer epoch:
+every mapping still participates in the authoritative backing-refresh
+phase, including stale readers, descriptor writes and earlier aliases of
+a later publisher. A later guest store remains detectable against the
+retained baseline. Changed mappings pay an additional comparison; desktop
+and benchmark validation of this tradeoff is still pending.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
@@ -1176,6 +1219,27 @@ signal queue generations, and the independent PCM consumer clock retain
 activity that happens between attempts. See the [epoll matrix](epoll.md) for
 interfaces, event bits, ownership details and explicit compatibility limits.
 
+The epoll safety timer can ask `kernel_epoll_wait_retry_state(pid, tid, token,
+deadline_handle)` whether that exact retained invocation is still blocked.
+Only the value `1` permits rearming the unchanged timer without replaying the
+syscall. The query checks the live task, pending signals, exact lease and finite
+deadline, and evaluates supported local readiness without consuming events,
+edge candidates, one-shot state, the batch cursor or the temporary signal mask.
+Unknown sources, readiness errors, expired deadlines and stale identities force
+the normal retry. The host also requires the original process registration,
+request and mailbox scalars, and refuses this shortcut for pending cancellation
+or stopped/resuming tasks. A missing optional probe export uses normal replay.
+Targeted and broad notifications retain their existing full retry path.
+
+This is an internal observation of an already-blocked call, not another guest
+syscall boundary or a result publication. The initial call and every actual
+completion retain full shared-mapping and imported-buffer synchronization.
+Sibling tasks and other processes still publish at their own real boundaries;
+the probe assumes neither writer quiescence nor a dirty-store epoch. The host
+still owns the park and its 10 ms safety timer. Moving epoll into the kernel-owned
+wait queue requires complete source, lifecycle and copyout integration; this
+probe does not claim that migration or an application performance gain.
+
 ## Multi-Process Model
 
 ### Task identity allocation
@@ -1503,6 +1567,17 @@ as the entry scope is revoked, even if an unrelated signal-masked wait is
 parked. Signal-mask wait deferral and finite deadlines remain owned by the
 normal retry implementation. Host PTY
 input schedules its reader wake independently of output callback attachment.
+
+Terminal resize storage and signal routing belong to the shared process table.
+`TIOCSWINSZ` compares all four window-size fields and signals live members of
+that terminal's foreground process group in its controlling session only when
+the value changes. The master setter need not belong to that group. An
+unclaimed terminal stores the size without inventing a controlling session.
+Host rows/columns resize uses the same routing, retaining its cell-change-only
+notification policy. Delivery selects each recipient's actual task and wakes
+parked terminal/readiness retries to observe pending signals without adding
+input bytes. Source regressions cover routing, masks, no-ops and kernel parks;
+normal compiled guest and real Foot/Bash validation remain pending.
 
 ### exec()
 
@@ -2073,8 +2148,13 @@ way, backed by the memfd's kernel pages. File mappings on any backend that
 cannot provide stable identity return `ENOTSUP`; `MAP_PRIVATE` is unaffected.
 File bytes past the current EOF are zero-filled or discarded on refresh/writeback rather than
 raising Linux's `SIGBUS`, and writes made outside Kandelo's file syscall paths
-are not detected. The boundary scans are on the syscall hot path; no performance
-claim is made without before/after Node and browser benchmarks.
+are not detected. Large wasm32 snapshot comparisons use safe eight-byte chunks and an exact
+byte tail; native and smaller comparisons retain slice equality. Host changed-run
+merging can skip equal aligned words, but still publishes only individually
+changed bytes. These comparisons do not add dirty-store tracking or omit any
+publication boundary, alias or final writer. The boundary scans are on the
+syscall hot path; no application performance claim is made without before/after
+Node and browser benchmarks.
 
 Every spawn or exec computes a fresh layout from the target binary's memory
 import and `__heap_base`; the brk, mmap, control-channel, allocator, and kernel
@@ -2956,6 +3036,12 @@ ID so another finger or a hovering mouse cannot clear its button state.
 Full snapshots release old buttons before
 introducing new presses, and both KMS pointer feeds place motion before the
 button edge. Node's translated-event input API and the kernel ABI are unchanged.
+The session KMS pointer adapter sends each complete evdev frame through the
+existing Node/browser batch transport: position records and their `SYN_REPORT`
+first, then changed buttons and their own `SYN_REPORT`. The worker preserves
+record order and schedules blocked-reader wake work after each complete frame.
+Repeated updates are retained; there is no motion coalescing or frame dropping.
+Adapters without the optional batch method send the same records individually.
 
 SDL2's direct evdev backend merges pending keyboard and pointer records by
 kernel timestamp, retaining a 32-record read batch per device. Reading all
@@ -3427,6 +3513,11 @@ mapping, readiness, texture submission, and cursor/scanout presentation
 boundaries; unchanged readers do not overwrite newer bytes. Refreshing a
 reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
+Publication scans retain the independent baseline without copying it when
+no changed runs are found. A changed publication still updates its baseline
+and marks readers pending. Readiness refresh remains unconditional for the
+selected BO's mapped readers: mutable canonical pixel views do not provide
+an authoritative version that would permit skipping those refreshes.
 This remains boundary synchronization,
 not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired
@@ -3498,6 +3589,16 @@ GL siblings have independent lifetimes. The implementation and evidence
 ledger is [graphics compatibility v1](graphics/compatibility-v1.md);
 these interfaces do not establish complete EGL1.5 or GLES2 conformance.
 
+GLES vertex-array buffer identity and format are tracked independently of
+native WebGL state. Clearing an attribute uses a native null ARRAY binding
+and `vertexAttribPointer` with offset zero, as WebGL permits. The logical
+size, type, stride and original offset remain available to GLES queries;
+no temporary native buffer is allocated merely to represent null. Native
+changes and their inverses are checked before logical publication. Failed
+restoration fences the physical context until its owned repair completes.
+Deleted buffer names and backing-storage retirement remain separate, so
+another context or an unbound vertex array can retain the old storage.
+
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
@@ -3537,8 +3638,33 @@ Native device blits/readback retain retryable selector, scissor and packing
 inverses through the shared recovery journal. They retain native handles and
 scalars rather than guest memories or bindings. CPU WebGL scanout also resets
 its complete draw/upload dependencies on each accepted frame. Every utility
-captures the outgoing logical owner's errors and invalidates the muxer so
-later GLES work restores that context's state. Package-private immutable
+captures the outgoing logical owner's errors before native work. Generic
+presenter callbacks invalidate the muxer so later GLES work restores that
+context's state. A reviewed already-current drawable release/rebind may instead
+retain the exact selected owner with only its read/draw framebuffer selectors
+marked unknown only if the pure synchronous logical commit changes those
+references. Comparing its two local pre-commit references can add dirtiness,
+never clear an earlier dirty bit. Before that owner executes again, a private checked sequence
+rebinds both selectors from desired logical state; a failed prefix invalidates
+and refuses dependent work. This does not treat a mutated shadow as proof of
+physical selector values. First-current viewport/scissor initialization,
+new surfaceless allocation, owner-dead surface collection, pending repair or
+execution cleanup and client-array restoration retain full invalidation.
+A forwarded drawable mark follows only its acknowledged successful pure logical
+commit. Peer selection and full invalidation discard the partial witness;
+a thrown full-replay prefix also revokes the previous owner's identity. The fixed GPU cursor readback, scanout and GBM front-copy/readback
+helpers may preserve its selected owner after their complete checked selector
+inverse succeeds. Front export retains its own errno and private errors; CPU
+front bytes are published only after the final error, context-loss and pending
+repair checks succeed. Failed native export or publication revokes selection
+reuse. Shared query, submit, import and front-copy preparation invalidates
+before retrying execution cleanup or native repair, including cleanup registered
+through another guard. Resize invalidates before the first drawing-buffer
+dimension write. Failure
+or context loss also invalidates, and private device errors remain separate
+from the guest's pending flags. This is selector validity, not content
+immutability: cursor pixels are still sampled on every observation, including
+same-BO writes without another cursor request. Package-private immutable
 graphics access exposes these native operations separately from raw kernel
 memory authority. Context loss stands GPU scanout down; complete restoration
 of lost resources remains an ordinary implementation gap.
@@ -4713,8 +4839,9 @@ last reference; BO-owned textures retain their separate canonical owner.
 Deleted buffer names likewise retain native objects referenced by other
 contexts or unbound VAOs. Array bindings stay context-local; element bindings
 and attribute definitions belong to each VAO. Caller deletion clears only its
-active VAO references, using a private empty native buffer to clear attribute
-references without deleting shared storage. Retirement scans every group
+active VAO references, using the legal native null-buffer attribute definition
+to clear references without allocating scratch storage or deleting shared
+storage. Logical offsets and strides remain intact. Retirement scans every group
 member and container. The C encoder mirrors VAO ownership, reserves buffer
 names and distinguishes reused-name generations; failed client staging drops
 temporary names and suppresses the draw. Logical buffer stores track size,
@@ -4729,7 +4856,22 @@ Raw source updates invalidate them; conversion uses bounded independent
 source/output chunks and preserves native copy bindings. Logical VAOs retain
 GLES formats, strides and offsets while native pointers use packed data.
 Disabled/unbound attributes retain views; replacement and container teardown
-release unused views. Client staging likewise packs only referenced elements,
+release unused views. Small positive nonindexed client-array draws on the
+default VAO use one owned `OP_DRAW_CLIENT_ARRAYS` record (0x0506). Its
+16-byte header and sorted 20-byte attribute descriptors carry only packed
+referenced elements, with a total payload at most 65535 bytes and at most
+16 attributes. The encoder validates every source layout and overflow before
+reservation or source reads. No public buffer names or logical ARRAY bindings
+change. The host validates the whole record before effects, copies bounded
+independent upload bytes, converts FIXED values and reserves retirement
+receipts before acquiring private native buffers. Checked pointer inverses
+restore the exact prior null definitions and ARRAY selector. Failed inverses
+fence subsequent work and retain backing until repair; cleanup retries never
+replay a submitted draw. Mixed public VBO attributes retain their normal
+storage preparation. Indexed, larger, zero-count and named-VAO draws retain
+the existing path. Normal guest/desktop acceptance of this new record is
+pending; isolated C and native-browser evidence is in the compatibility ledger.
+Client staging likewise packs only referenced elements,
 avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
 scratch/masks and signed size checks. Indexed draws widen byte/short values into private native index buffers,
 using bounded chunks and one draw to preserve complete primitive topology.

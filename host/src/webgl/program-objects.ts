@@ -28,6 +28,36 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
   }
 }
 
+/** One private synchronous sequence on one physical context/error owner.
+ * Every callback must be a single native GL operation: no host callouts,
+ * nested execution, await, owner switches or unchecked work between steps.
+ * Drain pending flags once, then check EVERY operation before its dependent
+ * successor. A successful post-check is already the next step's clean entry.
+ * The sequence and its callbacks never enter a cache or a repair record. */
+export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void)[]): boolean {
+  const gl = b.gl;
+  if (!gl) return false;
+  try {
+    let cleared = false;
+    for (let i = 0; i < 32; i++) {
+      const error = gl.getError();
+      if (error === 0) { cleared = true; break; }
+      recordGlError(b, error);
+    }
+    if (!cleared) return false;
+    for (let i = 0; i < calls.length; i++) {
+      calls[i]();
+      const error = gl.getError();
+      recordGlError(b, error);
+      if (error !== 0) return false;
+    }
+    return true;
+  } catch {
+    recordGlError(b, 0x502); // INVALID_OPERATION
+    return false;
+  }
+}
+
 export function finalizeShader(b: GlBinding, name: number): void {
   if (!b.shaderDeletePending.has(name)) return;
   for (const attached of b.programShaders.values()) if (attached.has(name)) return;
