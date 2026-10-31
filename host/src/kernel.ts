@@ -73,7 +73,7 @@ import {
 } from "./generated/abi";
 import { copyGbmFront, readGbmFront, packGbmFront } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { repairNativeState } from "./webgl/native-recovery";
+import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
@@ -1051,14 +1051,46 @@ export class WasmPosixKernel {
     } finally { muxer.invalidateCurrent(); }
   }
 
+  /** Only the fixed scanout helpers below may borrow selected device state:
+   * success proves their complete checked inverse, unlike a generic presenter. */
+  private withRestoredGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
+    const muxer = this.glMuxerFor(gl);
+    try {
+      muxer.captureCurrentErrors();
+      // WHY: cleanup/repair may change selectors independently of this owner.
+      // Invalidate before either can mutate, including cleanup registered with
+      // another guard for this same physical context. The idle path has no
+      // such mutation and need not replay the guest's entire texture state.
+      if (this.gl.hasExecutionRetirements(gl) && !muxer.prepareRetirement())
+        throw new Error("Native graphics retirement is not ready for device presentation");
+      if (!this.gl.retryExecutionRetirements(gl))
+        throw new Error("Native graphics retirement remains pending");
+      if (hasNativeRepair(gl)) muxer.invalidateCurrent();
+      if (!repairNativeState(gl)) throw new Error("Native graphics restoration remains pending");
+      const result = work();
+      const errors: number[] = [];
+      captureNativeGlErrors(gl, { errors });
+      if (errors.length) throw new Error(`Device graphics operation failed: ${errors.join(",")}`);
+      if (gl.isContextLost() || hasNativeRepair(gl))
+        throw new Error("Device graphics state was not restored");
+      return result;
+    } catch (error) {
+      muxer.invalidateCurrent();
+      throw error;
+    }
+  }
+
   private gpuCursor(bo: number, width: number, height: number): Uint8Array<ArrayBuffer> | null | undefined {
     const storage = this.gl.gpuBo(bo);
     if (!storage) return undefined;
-    if (storage.gl.isContextLost()) return null;
+    if (storage.gl.isContextLost()) {
+      this.glMuxerFor(storage.gl).invalidateCurrent();
+      return null;
+    }
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
         || width > 64 || height > 64 || width > storage.w || height > storage.h)
       throw new Error("Invalid GPU cursor storage dimensions");
-    return this.withGraphicsState(storage.gl, () => {
+    return this.withRestoredGraphicsState(storage.gl, () => {
       const pixels = readGpuScanout(storage, width, height);
       if (!pixels) throw new Error("GPU cursor readback failed");
       return pixels;
@@ -1071,13 +1103,18 @@ export class WasmPosixKernel {
     if (!storage) return null;
     // Context loss already reaches the guest through its EGL/GL failure
     // channel. A device tick must stand down rather than kill the machine.
-    if (storage.gl.isContextLost()) return null;
+    if (storage.gl.isContextLost()) {
+      this.glMuxerFor(storage.gl).invalidateCurrent();
+      return null;
+    }
     if (fb.width > storage.w || fb.height > storage.h)
       throw new Error("Invalid GPU scanout storage dimensions");
-    return this.withGraphicsState(storage.gl, () => {
+    return this.withRestoredGraphicsState(storage.gl, () => {
       const target = allowDirect ? canvas.getContext("webgl2") : null;
       if (target === storage.gl) {
         if (canvas.width !== fb.width || canvas.height !== fb.height) {
+          // A drawing-buffer resize is outside the helper's selector inverse.
+          this.glMuxerFor(storage.gl).invalidateCurrent();
           canvas.width = fb.width; canvas.height = fb.height;
         }
         if (!drawGpuScanout(storage, fb.width, fb.height)) throw new Error("GPU scanout blit failed");

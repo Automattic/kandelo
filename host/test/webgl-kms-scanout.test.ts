@@ -1,6 +1,8 @@
 import { expect, it } from "vitest";
 import { drawGpuScanout, readGpuScanout } from "../src/webgl/kms-scanout";
-import { createWasmPosixKernelTestHarness } from "../src/kernel";
+import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess } from "../src/kernel";
+import { defaultShadow } from "../src/webgl/shadow";
+import type { GlMuxer } from "../src/webgl/muxer";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery";
 
@@ -14,9 +16,16 @@ function renderer() {
   ]);
   const initial = new Map(state), calls: unknown[][] = [];
   let error = 0, rejectRead = false, rejectRestore = false, lost = false;
-  let content = [255, 0, 0, 255];
+  let content = [255, 0, 0, 255], afterRead = () => {};
   const gl = {
     isContextLost: () => lost,
+    createVertexArray: () => ({}),
+    bindVertexArray() { calls.push(["select vertex array"]); },
+    viewport() {}, scissor() {}, clearDepth() {}, clearStencil() {}, lineWidth() {},
+    depthRange() {}, polygonOffset() {}, sampleCoverage() {}, depthMask() {}, depthFunc() {},
+    stencilFuncSeparate() {}, stencilMaskSeparate() {}, stencilOpSeparate() {},
+    blendColor() {}, blendFuncSeparate() {}, blendEquationSeparate() {},
+    cullFace() {}, frontFace() {}, useProgram() {}, vertexAttrib4f() {},
     activeTexture: (value: number) => state.set(0x84e0, value),
     createTexture: () => ({}), createFramebuffer: () => fbo, createRenderbuffer: () => ({}),
     deleteTexture() {}, deleteFramebuffer() {}, deleteRenderbuffer() {},
@@ -33,7 +42,9 @@ function renderer() {
       if (target === 0x8d40) state.set(0x8caa, value);
       state.set(target === 0x8ca8 ? 0x8caa : 0x8ca6, value);
     },
-    bindBuffer: (_target: number, value: unknown) => state.set(0x88ed, value),
+    bindBuffer: (target: number, value: unknown) => {
+      if (target === 0x88eb) state.set(0x88ed, value);
+    },
     pixelStorei: (name: number, value: number) => state.set(name, value),
     colorMask: (...value: boolean[]) => state.set(0x0c23, value),
     clearColor: (...value: number[]) => state.set(0x0c22, value),
@@ -58,11 +69,14 @@ function renderer() {
         .toEqual([1, 0, 0, 0]);
       if (rejectRead) { error = 0x502; return; }
       pixels.set(content);
+      afterRead();
       calls.push(["readPixels", pixels]);
     },
   } as unknown as WebGL2RenderingContext;
   return { gl, state, initial, calls, storage: { gl, fbo, w: 2, h: 2 },
     setPixels: (pixels: number[]) => { content = pixels; },
+    setError: (value: number) => { error = value; },
+    onRead: (work: () => void) => { afterRead = work; },
     loseContext: () => { lost = true; },
     failRead: () => { rejectRead = true; },
     allowRead: () => { rejectRead = false; },
@@ -196,6 +210,160 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
   expect(retired.pixels).toBeNull();
   expect(reads()).toBe(3);
   expect(r.state).toEqual(r.initial);
+});
+
+// Select a real kernel-owned muxer, then use public KMS/scanout consumers.
+// No new production authority or access to guest/kernel memory is exposed.
+function selectedKernel() {
+  const r = renderer(), memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  const kernel = createWasmPosixKernelTestHarness({ io: {} as any, callbacks: {}, memory,
+    pointerWidth: 4, instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096) });
+  kernel.gl.createGpuBo(42, r.gl, 2, 2);
+  const muxer = Reflect.get(kernel, "glMuxerFor").call(kernel, r.gl) as GlMuxer;
+  const owner = { shadow: defaultShadow(), errors: [] as number[] };
+  owner.shadow.fbo = r.initial.get(0x8ca6) as WebGLFramebuffer;
+  owner.shadow.readFbo = r.initial.get(0x8caa) as WebGLFramebuffer;
+  muxer.switchTo(owner);
+  const selected = new Map(r.state);
+  const selections = () => r.calls.filter(call => call[0] === "select vertex array").length;
+  return { ...r, kernel, muxer, owner, selected, selections };
+}
+
+it("preserves the selected GL owner across successful live GPU cursor samples", () => {
+  const r = selectedKernel();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.setError(0x500);
+  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  expect(r.owner.errors).toEqual([0x500]);
+  for (const rgba of [[0, 255, 0, 255], [0, 0, 255, 255]]) {
+    r.setPixels(rgba);
+    expect([...r.kernel.kms.cursorSnapshot().pixels!.slice(0, 4)]).toEqual(rgba);
+    expect(r.state).toEqual(r.selected);
+    r.muxer.switchTo(r.owner);
+    expect(r.selections()).toBe(1);
+  }
+});
+
+it.each([false, true])("preserves the GL selection after restored scanout (direct: %s)", direct => {
+  const r = selectedKernel(), canvas = { width: 2, height: 2, getContext: () => r.gl };
+  const frame = getKernelGraphicsAccess(r.kernel).gpuScanout(
+    { bo_id: 42, width: 2, height: 2 } as any, canvas as any, direct);
+  expect(frame?.direct).toBe(direct);
+  expect(r.state).toEqual(r.selected);
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(1);
+});
+
+it("invalidates the selected GL state before a scanout drawing-buffer resize", () => {
+  const r = selectedKernel(), canvas = { width: 1, height: 1, getContext: () => r.gl };
+  expect(getKernelGraphicsAccess(r.kernel).gpuScanout(
+    { bo_id: 42, width: 2, height: 2 } as any, canvas as any, true)?.direct).toBe(true);
+  expect([canvas.width, canvas.height]).toEqual([2, 2]);
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+});
+
+it("invalidates selection on rejected cursor work and retains failed inverse repair", () => {
+  const r = selectedKernel();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.failRead(); r.failRestore();
+  expect(() => r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0))
+    .toThrow("GPU cursor readback failed");
+  expect(hasNativeRepair(r.gl)).toBe(true);
+  expect(r.owner.errors).toEqual([]);
+  expect(() => r.muxer.switchTo(r.owner)).toThrow("restoration remains pending");
+  r.allowRead(); r.allowRestore();
+  r.muxer.switchTo(r.owner);
+  expect(hasNativeRepair(r.gl)).toBe(false);
+  expect(r.selections()).toBe(2);
+  expect(r.state).toEqual(r.selected);
+});
+
+it.each(["cursor", "scanout"] as const)("stands down and invalidates an already-lost %s context", kind => {
+  const r = selectedKernel();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  if (kind === "cursor") r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  r.loseContext();
+  if (kind === "cursor") expect(r.kernel.kms.cursorSnapshot().pixels).toBeNull();
+  else expect(getKernelGraphicsAccess(r.kernel).gpuScanout(
+    { bo_id: 42, width: 2, height: 2 } as any,
+    { width: 2, height: 2, getContext: () => r.gl } as any, true)).toBeNull();
+  // Even though this fake renderer accepts calls while lost, old selection
+  // must no longer authorize the muxer's same-owner fast path.
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+});
+
+it("invalidates its canonical muxer before cleanup registered with another guard", () => {
+  const r = selectedKernel();
+  r.kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
+  const old = r.kernel.gl.get(7, 11)!;
+  old.gl = r.gl; old.contextId = 1;
+  let refuse = true;
+  const guard = { context: r.gl, prepareRetirement() {
+    if (refuse) return false;
+    // This guard knows this renderer, but does not know its canonical muxer.
+    r.gl.bindFramebuffer(0x8d40, null);
+    return true;
+  } };
+  const lease = r.kernel.gl.retainContextExecution(7, 11, guard)!;
+  r.kernel.gl.destroyContext(7, 11);
+  expect(lease.release()).toBe(false);
+  expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(true);
+  refuse = false;
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+  expect(r.state).toEqual(r.selected);
+  expect(lease.release()).toBe(true);
+});
+
+it("invalidates before a pending native inverse successfully repairs", () => {
+  const r = selectedKernel();
+  r.failRead(); r.failRestore();
+  expect(readGpuScanout(r.storage, 2, 2)).toBeNull();
+  expect(hasNativeRepair(r.gl)).toBe(true);
+  r.allowRead(); r.allowRestore();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  expect(hasNativeRepair(r.gl)).toBe(false);
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+  expect(r.state).toEqual(r.selected);
+});
+
+it("retains guest error ownership after an initial capture failure", () => {
+  const r = selectedKernel(), getError = r.gl.getError;
+  r.gl.getError = () => { throw new Error("error capture refused"); };
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  expect(() => r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0))
+    .toThrow("error capture refused");
+  r.gl.getError = getError; r.setError(0x501);
+  r.muxer.switchTo(r.owner);
+  expect(r.owner.errors).toEqual([0x501]);
+  expect(r.selections()).toBe(2);
+});
+
+it("invalidates if native context loss occurs during an otherwise restored read", () => {
+  const r = selectedKernel();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.onRead(r.loseContext);
+  expect(() => r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0))
+    .toThrow("Device graphics state was not restored");
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+});
+
+it("still invalidates generic device callbacks that do not promise a checked inverse", () => {
+  const r = selectedKernel();
+  getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl, () => {
+    r.gl.pixelStorei(0x0d05, 1);
+  });
+  r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(2);
+  expect(r.state).toEqual(r.selected);
 });
 
 const drawSteps = ["disable", "bindFramebuffer:36008", "bindFramebuffer:36009", "blitFramebuffer", "colorMask", "clearColor", "clear"];

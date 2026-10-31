@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
+import { repairNativeState } from "../src/webgl/native-recovery.js";
 
 function fixture() {
   let serial=0;
@@ -170,4 +171,111 @@ it("preserves a public surface across replacement and retires it separately",()=
   f.reg.destroyContext(7,11);expect(f.reg.getSurface(7,71)).toBe(surface);
   expect(lease.release()).toBe(true);expect(surface.ownerAlive).toBe(true);
   f.reg.destroySurface(7,11);expect(surface.ownerAlive).toBe(false);f.reg.unbind(7);
+});
+
+it("does not advertise native cleanup for admitted live execution",()=>{
+  const f=fixture();
+  expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+  const lease=f.reg.retainContextExecution(7,11,f.muxer)!;
+  expect(lease).not.toBeNull();
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement"),read=vi.spyOn(f.gl,"getError");
+  try {
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    expect(f.deleted).toEqual([]);expect(f.reg.getContext(7,1)).toBe(f.binding);
+    expect(lease.release()).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    // Ending an execution admission does not retire the public context.
+    expect(f.live.has(f.texture)).toBe(true);
+  } finally {prepare.mockRestore();read.mockRestore();f.reg.unbind(7);}
+  expect(f.live.size).toBe(0);
+});
+
+it("does not treat retained retired execution as runnable cleanup",()=>{
+  const f=fixture(),first=f.reg.retainContextExecution(7,11,f.muxer)!,second=first.clone()!;
+  f.reg.destroyContext(7,11);
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement"),read=vi.spyOn(f.gl,"getError");
+  try {
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(first.release()).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(f.reg.retryExecutionRetirements(f.gl)).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    expect(f.live.has(f.texture)).toBe(true);expect(second.binding).toBe(f.binding);
+    expect(second.release()).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);
+  } finally {prepare.mockRestore();read.mockRestore();f.reg.unbind(7);}
+  expect(f.live.size).toBe(0);
+});
+
+it("observes failed final execution release without retrying or consuming its owner",()=>{
+  const f=fixture(),lease=f.reg.retainContextExecution(7,11,f.muxer)!;
+  f.reg.destroyContext(7,11);f.errors.push(0x500);
+  const read=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("selected error capture failed");});
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement");
+  try {
+    expect(lease.release()).toBe(false);
+    read.mockClear();prepare.mockClear();
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(read).not.toHaveBeenCalled();expect(prepare).not.toHaveBeenCalled();
+    expect(f.errors).toEqual([0x500]);expect(f.deleted).toEqual([]);
+    expect(lease.context).toBe(f.gl);expect(lease.clone()).toBeNull();
+  } finally {read.mockRestore();prepare.mockRestore();}
+  expect(lease.release()).toBe(true);
+  expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+  expect(f.deleted.filter(value=>value===f.texture)).toHaveLength(1);
+  f.reg.unbind(7);expect(f.live.size).toBe(0);
+});
+
+it("reports execution cleanup only for its exact registry and physical renderer",()=>{
+  const f=fixture(),g=fixture();
+  const first=f.reg.retainContextExecution(7,11,f.muxer)!,second=g.reg.retainContextExecution(7,11,g.muxer)!;
+  f.reg.destroyContext(7,11);g.reg.destroyContext(7,11);
+  const readF=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("first renderer unavailable");});
+  const readG=vi.spyOn(g.gl,"getError").mockImplementation(()=>{throw new Error("second renderer unavailable");});
+  try {
+    expect(first.release()).toBe(false);expect(second.release()).toBe(false);
+    readF.mockClear();readG.mockClear();
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(f.reg.hasExecutionRetirements(g.gl)).toBe(false);
+    expect(g.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(g.reg.hasExecutionRetirements(g.gl)).toBe(true);
+    expect(f.reg.retryExecutionRetirements(g.gl)).toBe(true);
+    expect(g.reg.retryExecutionRetirements(f.gl)).toBe(true);
+    expect(readF).not.toHaveBeenCalled();expect(readG).not.toHaveBeenCalled();
+    expect(f.deleted).toEqual([]);expect(g.deleted).toEqual([]);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(g.reg.hasExecutionRetirements(g.gl)).toBe(true);
+  } finally {readF.mockRestore();readG.mockRestore();}
+  expect(first.release()).toBe(true);expect(second.release()).toBe(true);
+  expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+  expect(g.reg.hasExecutionRetirements(g.gl)).toBe(false);
+  f.reg.unbind(7);g.reg.unbind(7);expect(f.live.size+g.live.size).toBe(0);
+});
+
+it("keeps completed native cleanup visible until its execution record is removed",()=>{
+  const f=fixture(),vao=f.gl.createVertexArray()!;f.binding.vaos.set(9,vao);
+  const lease=f.reg.retainContextExecution(7,11,f.muxer)!;f.reg.destroyContext(7,11);
+  const destroy=f.gl.deleteVertexArray.bind(f.gl);let reject=true;
+  f.gl.deleteVertexArray=value=>{if(value===vao&&reject)throw new Error("final VAO deletion rejected");destroy(value);};
+  expect(lease.release()).toBe(false);
+  expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);expect(f.live.has(vao)).toBe(true);
+  reject=false;
+  // Native retirement can finish independently of the registry retry token.
+  expect(repairNativeState(f.gl)).toBe(true);expect(f.live.has(vao)).toBe(false);
+  const prepare=vi.spyOn(f.muxer,"prepareRetirement"),read=vi.spyOn(f.gl,"getError");
+  try {
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    expect(f.reg.retryExecutionRetirements(f.gl)).toBe(true);
+    expect(f.reg.hasExecutionRetirements(f.gl)).toBe(false);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+    expect(lease.release()).toBe(true);
+    expect(prepare).not.toHaveBeenCalled();expect(read).not.toHaveBeenCalled();
+  } finally {prepare.mockRestore();read.mockRestore();f.reg.unbind(7);}
+  expect(f.deleted.filter(value=>value===vao)).toHaveLength(1);expect(f.live.size).toBe(0);
 });

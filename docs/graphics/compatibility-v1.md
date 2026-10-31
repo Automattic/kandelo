@@ -13425,3 +13425,67 @@ Independent exact accounting and per-interval ancestry are under
 `dfca9fbd50da6cb1c79ac1c1d92bb7077d64fd7b6ea2dab1cc019f1400fbcd7a`.
 All recorded source/SDK/kernel/host/93owner/245member guards match. This audit
 verifies recorded provenance, without relabeling the failed run as acceptance.
+
+### Preserving selection after checked device restoration, 2026-10-31
+
+Frame ancestry identifies11/14/6/16full muxer replays across the two selected
+intervals for1/3/5/recovered1. Every replay returns to the same previously
+observed owner; each binds64texture targets, accounting for704/896/384/1024
+native texture binds. These instrumented counts do not establish their CPU
+cost or explain terminal-count scaling. The source cause is unconditional
+selection invalidation before/after otherwise fully restored cursor/scanout
+operations. Source audit and raw ancestry are retained under
+`.context/cursor-poll-source-review-r1/`, handoff SHA256
+`1cdc523e287c81a7c5d40281693f4aaf98b1062b1e1b7ec10991c4a65537ac98`.
+
+A private fixed-caller wrapper now preserves the installed logical context
+only across successful GPU cursor readback or scanout with a complete checked
+inverse. Generic presenter callbacks continue invalidating. Outgoing guest
+errors are captured before any cleanup. A readonly registry predicate detects
+all execution records eligible for cleanup, so the canonical muxer invalidates
+before cleanup even if another guard registered that record. Pending native
+repair also invalidates before replay. Canvas resize invalidates before its
+first setter; preparation failures, native errors, rejected inverses and
+entry/mid-operation context loss invalidate. An early-loss review finding was
+corrected while retaining normal null/stand-down behavior.
+
+This is not a pixel-generation cache. Existing cursor versions and BO IDs
+cannot prove native contents unchanged; same-BO writes without another cursor
+record remain observable. No native post-check, polling interval, readback,
+shared-memory comparison or ABI epoch is removed. Both Node and browser use
+the same host source; Node renderer mocks establish shared logic, not native
+WebGL availability or application speed.
+
+Declared-shell source validation passes791tests in32source-only WebGL files,
+including94focused scanout/muxer/execution tests. New controls cover selected
+owner preservation, live pixels, distinct read/draw state, generic invalidation,
+actual cleanup using a different guard, pending repair, guest/private errors,
+failed initial error capture, resize and context loss. Normal host bundling
+and declarations pass. Explicit source-only configuration omits fixture-
+producing global setup. A first launch used an incorrect private config path
+and exited before tests; its log is retained separately. Browser-native and
+actual desktop effect, browser-memory/lifecycle and the complete performance
+acceptance remain unrun for this candidate. No single- or multiple-terminal
+gain or broad no-regression claim follows. Current logs:
+`.context/inverse-evidence-documentation/.context/device-state-*`.
+
+Separately, the four-vector-onlyc77584 normal producer
+`four-vector-normal-products-r1-1031-100112-1e8a` completes all seven stages0
+in13m06s. Own SDK32/64, selected kernel,93owners/245members, freshness, ABI
+and normal host input stamp validate through the normal graph. Kernel SHA256
+is`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+Server `four-vector-preview-r1-1031-101439-1f64` serves frozen source at
+`http://127.0.0.1:5677/pages/kandelo/`; actual HTML200/COOP/COEP proof passes.
+Producer/serving/HTTP receipt SHAs are
+`707e7174c228937f0791c1222ea6c95d49fb257a6a1c3fe0459bd407118d8528`,
+`9f5d1d9ade7ee66bf09b6cc8c06a527f045c7e079f563a309a6bbf9c1bc5e3fa`,
+`792e1459b962554bb92002f0e9b95855805a78f181490846dc1d9044baa46abc`.
+Availability is announced before completed desktop/performance acceptance.
+This preview excludes the newer selection-preservation candidate;5676 remains
+frozen04f and neither single- nor multi-terminal improvement is established.
+
+The prior active recorder's two-interval captures and single printing target
+cannot cover15–30second accumulation or several concurrently rendering apps.
+A longer bounded aggregate/each-latch ledger is being prepared, separating
+idle-window growth from concurrent progress; no longer-trace result is yet
+available. Full operation samples remain diagnostic rather than CPU time.

@@ -3605,8 +3605,16 @@ Native device blits/readback retain retryable selector, scissor and packing
 inverses through the shared recovery journal. They retain native handles and
 scalars rather than guest memories or bindings. CPU WebGL scanout also resets
 its complete draw/upload dependencies on each accepted frame. Every utility
-captures the outgoing logical owner's errors and invalidates the muxer so
-later GLES work restores that context's state. Package-private immutable
+captures the outgoing logical owner's errors before native work. Generic
+presenter callbacks invalidate the muxer so later GLES work restores that
+context's state. The fixed GPU cursor readback and scanout helpers may preserve
+its selected owner after their complete checked selector inverse succeeds.
+Pending execution cleanup and native repair invalidate before mutation;
+resize invalidates before the first drawing-buffer dimension write. Failure
+or context loss also invalidates, and private device errors remain separate
+from the guest's pending flags. This is selector validity, not content
+immutability: cursor pixels are still sampled on every observation, including
+same-BO writes without another cursor request. Package-private immutable
 graphics access exposes these native operations separately from raw kernel
 memory authority. Context loss stands GPU scanout down; complete restoration
 of lost resources remains an ordinary implementation gap.
