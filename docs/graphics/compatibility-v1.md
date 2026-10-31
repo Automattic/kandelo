@@ -10955,3 +10955,38 @@ full benchmark/memory acceptance remain open. All16 raw cases, rounds,
 clock/engine/load details and source hashes are retained in
 `.context/perf-lab/scan-diagnostic-1031-r1.json`; the source script and original
 log are adjacent. No product or harness classifier is changed by this run.
+
+
+### Native comparison: preview available (2026-10-31)
+
+Independent normal producer
+`preview5669-native-snapshot-e660a7be39-b-1030-235056-8fd3` finishes0
+in19m56s. All seven stages pass: own release xtask, normal desktop products,
+SDK64, rootfs refresh, freshness, all-owner capture and selected-kernel ABI.
+The own SDK32/64 and93-owner245-member cohort selects the same1835532-byte
+edb881f9 kernel as the passing Node consumers above. No prior acceptance
+is carried into this new preview.
+
+Immutable server
+`preview5669-native-snapshot-e660a7be39-s-1031-001257-48d6` independently
+rechecks normal artifacts, ABI and serving identities. Actual root/gallery
+HTTP200 with COOP same-origin/COEP require-corp pass. The URL is announced
+immediately at http://127.0.0.1:5669/pages/kandelo/, before browser or
+performance acceptance. Earlier previews remain intact.
+
+| Frozen evidence | SHA256 |
+|---|---|
+| Normal producer receipt | `b7f811fae59b5d68649a163b45012a9aceb31e2ec06fb6d9f8a04a0cbcc00b66` |
+| Own complete owner capture | `a85610b04d1d93e3b49c847b0f0b84ad57d9ed9e0fd0651740522a6bb3e1a5eb` |
+| Installed helper manifest | `4d90ccc19aca019319736059206d048e438f02ef9d8eae96e234a38d8e9a61fe` |
+| Actual HTTP proof | `b2a49996ea65309e5aef21e94b0e5a18b3c534ee70e08c2c86c96b771605dd8e` |
+
+All245 payloads remain present relative to5668. Only kernel, Nethack Wasm,
+Nethack browser bundle and shell.vfs.zst differ. Cage, Sway, Labwc, Foot
+and SFWBar payloads are unchanged. Read-only comparison is
+`.context/native-snapshot-package-comparison.json`. Private preparation
+for the matching headless workload preserves the same classifier, input,
+geometry and guards; preparation is not execution. Current native desktop
+speed, rendering, GObject, native churn and three-engine memory acceptance
+remain open at publication. Future theories use the incremental investigation
+loop above rather than a full preview build before initial measurement.
