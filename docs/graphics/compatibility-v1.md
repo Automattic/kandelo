@@ -12666,3 +12666,125 @@ presentation investigation. These startup findings do not explain away
 single-terminal or multi-client rendering slowdown. All earlier failed
 captures remain retained; broader graphics, desktop, memory, conformance
 and uninstrumented cross-host performance acceptance remain open.
+
+### Function-import metadata: discard unused export maps, retain validation
+
+Implement the first candidate from the finer startup trace in the shared
+host parser. `readWasmFunctionImports` previously constructed the complete
+fork-artifact export maps and immediately discarded them, although it only
+returns import signatures. Its private parser invocation now omits those
+export-map writes. It still traverses every section, decodes names, retains
+pending function exports and resolves every exported function signature in
+the original final pass. Unknown types, malformed later sections and their
+error order remain visible even when there are no function imports.
+Full-facts callers retain the default export collection for artifact policy,
+fork-contract validation and arity queries. Duplicate imports, import/function
+index spaces, concrete heap types, nullability and deeply frozen result
+records remain unchanged. There is no byte-buffer metadata cache, worker
+protocol change, skipped admission check, application-name branch or new ABI
+increment. The reserved program56 / host3 / GL17 / fork21 family is unchanged.
+
+The implementation is the exact private candidate SHA256
+`12a7452ca7ff66169cae0288e032064d096ce7d2ba5653b45bf0e17be0dda34a`,
+compared with frozen e303 baseline constants SHA256
+`3dc90b3a693c7a1937de42899a347fc540e4955bac11684021849635234d78c2`.
+Independent source review finds no semantic objection in this diff; it
+confirms validation precedes optional signature-map storage and all other
+parser callers retain full facts. Review SHA256
+`bd94466c98019e24c9c0d2c901e097ab9d385e8986f6a7f510e861824c0e3ff9`.
+
+Private `.context/import-facts-screen-r1/` controls pass 421/421, including
+241 synthetic cases and all 176 normal Wasm programs/libraries from the
+recorded e303 93-owner/245-member build. Every actual artifact's hash and size
+are checked; import parsing must return successfully, rather than merely
+throw the same error. Target results/errors and full-facts public callers
+match, and input bytes remain unchanged. Cases include recursive references,
+duplicate imports/exports, mixed import kinds, truncation, invalid exported
+function indices and a bad export followed by a later structural error.
+The synthetic counted-source probe removes 514 unused export-map writes
+for 257 exports while preserving the actual returned import records.
+
+Artifact parity SHA256 `aebbf9c9be6e57ec0afa3fab8921a1dcbb2609e1efcece3b16e1025e37830579`.
+
+The first standalone native screen,
+`import-facts-native-screen-r1-1031-073051-ca22`, completes all 72 worker
+cases with matching records on Node and headless Chromium/Firefox/WebKit,
+but exits 1 after 11s during exact temporary Firefox-home cleanup. Inspection
+finds standard `group:everyone deny delete` ACL entries on its own Library,
+Downloads and Library/Application Support folders. Only those three exact
+observed entries are removed, then the exact recorded home is deleted.
+The original failed job/report remains unchanged; a separate cleanup-recovery
+record retains that result. This is owned-test-directory cleanup, not a
+browser-engine defect or runtime workaround claim.
+
+Fresh R2 adds explicit cleanup for only those known entries. Three actual
+cleanup controls pass: standard owned folders are removed while the parent
+remains, a symlink is refused without touching its target, and an unknown ACL
+remains a visible refusal. Job
+`import-facts-native-screen-r2-1031-073632-74bd` completes exit0 in 13s.
+All 72 fresh workers / 288 parser invocations complete on Node and the three
+headless engines, with exact per-worker input/output hashes, frozen helper
+identities, no page/runtime errors, successful worker/context/browser/server
+cleanup and removal of the exact recorded Firefox home. Workers share a
+Node/browser parent; they are not independent parent-process launches.
+No Wasm instance, guest memory, kernel or actual desktop is launched by this
+standalone API screen. Module import and artifact I/O are kept outside the
+parser interval. Three alternating rounds retain first and repeated API
+invocations separately. Peer jobs remain running: this is NONQUIET.
+
+The independent source-level Map.set counter in
+`.context/import-facts-analysis-r1/` checks actual parser records against
+the native output hashes and independently decoded export descriptors:
+
+| Normal artifact | Exports | Map writes before | Map writes candidate | Removed per import-metadata read |
+|---|---:|---:|---:|---:|
+| SFWBar | 32,142 | 64,347 | 65 | 64,282 |
+| Foot | 78 | 205 | 49 | 156 |
+| Sway | 378 | 810 | 54 | 756 |
+
+These are exact counted map writes, not total allocations or memory saved.
+The small isolated first-invocation screen yields these SFWBar medians:
+
+| Host | Baseline parser, ms | Candidate parser, ms |
+|---|---:|---:|
+| Node | 40.06 | 22.30 |
+| Headless Chromium | 26.46 | 15.23 |
+| Headless Firefox | 29.34 | 15.12 |
+| Headless WebKit | 19.92 | 14.88 |
+
+Each median has only three fresh-worker samples per variant. Smaller Foot
+and Sway results are mixed, including higher candidate medians in some
+host/artifact pairs. These instrumented NONQUIET operation samples establish
+neither a general speedup nor no regression. They are not main-branch,
+startup, menu, single-terminal or multi-terminal responsiveness acceptance.
+The actual desktop benefit remains unmeasured; broader benchmarks and the
+shared-memory/presentation investigation remain required.
+
+R2 report SHA256 `31b6295276a11d1424a94607c250f54cce2864b15d09de1154b21708cb2e9bf0`.
+Independent accounting SHA256 `e8b49ce5dd07b3397a22da9510ba5dd92c5ae967866939ac41d397cb291ea85c`.
+Actual map counts SHA256 `5aae49d4aaefb9ac46898f9aee37e549fd9ad7a8d466cf8d0b09c9884aad46f3`.
+
+Eight committed public-API regression cases cover unused bad exports,
+zero-import modules, parse-before-signature failure ordering, pending section
+resolution, duplicate import/index spaces, recursive type details, changed
+input buffers and full-facts consumers. The focused six-file host selection
+passes 38/38 under the declared shell, using explicit source-only configuration
+without unrelated prepared-product global setup. The normal
+`scripts/build-host.sh` bundle and declaration build also exits0. Neither
+check executes guests or substitutes for combined runtime/conformance gates.
+Its 86-file distribution manifest is retained at
+`.context/inverse-evidence-documentation/.context/import-facts-normal-host-r1.json`,
+SHA256 `ab7e62b24827ebd541c6312631850d852b0b9f396e996c94cba4831b977babd5`.
+Normal `host/dist/index.cjs` SHA256 is
+`5748f04ea39454a155c3557949ff87ccb9e5a40d70ddcb01cc34cacc52db7a1d`;
+`host/dist/worker-main.cjs` SHA256 is
+`4ffef19717580071a0f1e531b0635627cd797447f39d6b28b77843302001a5af`.
+
+The first registry check rejects the new row's sort position. After moving it
+to byte order, the next check exposes an older missing classification for
+`webgl-inverse-sequence.test.ts`; add that existing pure-source test as
+source-only as well. The third check passes with all 639 live test files
+classified. Original failed check logs remain retained. `git diff --check`
+passes. There is no SDK/kernel/program/image rebuild for this isolated screen;
+normal candidate-preview provisioning remains next. Available preview5675
+continues serving frozen e303, without this new metadata change.
