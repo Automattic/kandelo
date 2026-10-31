@@ -13654,3 +13654,39 @@ capture/assertion preflight before launch. Runtime trace limits remain fixed;
 unknown/internal-error/overflow flags are zero. Raw records and offline audit
 live under `.context/desktop-long-idle-r2/` and
 `.context/desktop-long-idle-analysis-r2/`.
+
+### Selected-state source-overlay experiment, 2026-10-31
+
+A fresh headless Chromium diagnostic applies only the committed a196 kernel/
+GL-registry selection-preservation delta over normal frozen04f artifacts.
+The comparator remains04f, isolating the state change. Exact committed TS
+copies and whole-module normalized AST equivalence validate the production
+delta; actual19HTTP compositions pass, then two bounded module receipts in
+the actual owned kernel worker verify evaluation before/after all four stages.
+No SDK, kernel, program, image, server source or existing preview is rebuilt
+or modified for this experiment. It is an explicit source-overlay diagnostic,
+not a new normal combined product or the later Rust resize implementation.
+
+Job `desktop-long-state-candidate-r1-1031-110619-acc9` completes0/0/0in3m24s.
+All four30second stages complete with no unknown/overflow/recording errors,
+normal same-page replacement and unchanged source/artifact guards. Eight
+worker receipt sets match both candidate modules. Report SHA256:
+`2ffceeb30016e85b4f267421fe8d3efc56bedb800c26623469f0a6690a47f08e`.
+
+| Idle stage | Prior native GL starts | Selected-state native GL starts | Prior getError starts | Selected-state getError starts |
+|---|---:|---:|---:|---:|
+| One terminal | 163,486 | 155,975 | 75,367 | 71,405 |
+| Three terminals | 167,116 | 156,440 | 75,669 | 71,515 |
+| Five terminals | 163,888 | 156,480 | 75,527 | 71,548 |
+| Recovered one | 163,190 | 156,375 | 75,272 | 71,475 |
+
+These are separate NONQUIET instrumented sessions, with slightly different
+logical draw/latch counts. One final native error query at five terminals is
+cutoff-censored. The fixed restored-state helper actually starts3,750/3,750/
+3,749/3,750times. These observed operation counts do not establish elapsed
+speedup, CPU savings, input latency or neutrality. Most native polling and
+large mapping comparisons remain; neither single- nor multi-terminal benefit
+is established. Further tracing prioritizes exact retry scheduling reasons
+and independently verified output from all active clients. Raw evidence is
+under `.context/desktop-long-state-candidate-r1/`; independent analysis is
+under `.context/desktop-long-state-analysis-r1/`.
