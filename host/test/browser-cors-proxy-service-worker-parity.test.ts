@@ -308,6 +308,18 @@ describe("service worker proxy dispatch", () => {
     expect(sent).toHaveLength(1);
   });
 
+  it("sends the normalized target the gate checked, not the caller's raw suffix", async () => {
+    // WHATWG URL reads this target's host as chatgpt.com; PHP's parse_url,
+    // used by the Playground proxy, reads evil.com. The gate checked the
+    // normalized form, so that is the form that leaves.
+    const { dispatch, sent } = serviceWorkerDispatch(() => new Response("ok"));
+    const raw = "https://proxy.example/?https://chatgpt.com\\@evil.com/x";
+    const checked = new URL("https://chatgpt.com\\@evil.com/x").href;
+    expect(checked).toBe("https://chatgpt.com/@evil.com/x");
+    await dispatch(new Request(raw), raw, checked);
+    expect(sent.map(request => request.url)).toEqual([`https://proxy.example/?${checked}`]);
+  });
+
   it("relays a granted Codex turn's zstd body byte-for-byte with its Content-Encoding", async () => {
     // The production profile, and Codex's observed fields with synthetic
     // values. The service worker re-projects the kernel worker's request and

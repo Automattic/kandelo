@@ -655,6 +655,34 @@ it("refuses a granted process's credentials to an origin it was not granted", as
   expect(response).toContain("unsupported request headers: authorization, chatgpt-account-id");
 });
 
+// WHATWG URL reads `chatgpt.com\\@evil.com` as host chatgpt.com, where PHP's
+// parse_url (the Playground proxy) reads host evil.com. A Host that is not
+// `host[:port]` is malformed HTTP, so it is refused before any check.
+it("refuses a request whose Host is not a plain host and port", async () => {
+  const { response, fetchMock } = await credentialedRequest(
+    "chatgpt.com",
+    [codexRequest("chatgpt.com\\@evil.com")],
+    () => GRANTED_PID,
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(response).toContain("HTTP/1.1 400");
+  expect(response).toContain("Malformed Host header");
+});
+
+it("sends the normalized URL its grant was checked against", async () => {
+  const { response, fetchMock } = await credentialedRequest(
+    "chatgpt.com",
+    [codexRequest("ChatGPT.com:443").replace(
+      "/backend-api/codex/responses",
+      "/backend-api/x/../codex/responses",
+    )],
+    () => GRANTED_PID,
+  );
+  expect(response).toContain("HTTP/1.1 200");
+  const [url] = fetchMock.mock.calls[0] as unknown as [string];
+  expect(url).toBe("https://proxy.example/?https://chatgpt.com/backend-api/codex/responses");
+});
+
 it("refuses credentials from a process that holds no grant", async () => {
   const { response, fetchMock } = await credentialedRequest(
     "chatgpt.com",

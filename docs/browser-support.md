@@ -1755,6 +1755,15 @@ opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` (only when
 `X-Kandelo-Credential-Grant: <token>`, the grant's unguessable token. A
 granted request that carries neither credential gets neither header.
 
+The URL checked against the grant is the URL sent: the backend and the
+service worker both send the normalized form WHATWG `URL` produced, never
+the guest's raw text, because parsers disagree on a malformed URL's host
+(WHATWG `URL` reads `https://chatgpt.com\@evil.com/` as `chatgpt.com`,
+PHP's `parse_url`, which the Playground proxy uses, as `evil.com`). A
+decrypted request whose `Host` is not a plain host and optional port, or
+whose request target does not start with `/`, is malformed HTTP and gets
+`400 Bad Request`.
+
 Every other credentialed request fails before dispatch; credentials are
 never stripped and sent anyway. Through the proxy (no grant, a grant for
 other origins, a grant that changed since the write, bytes written by

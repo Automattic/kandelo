@@ -552,7 +552,14 @@ if (typeof window !== "undefined") {
     // The development relay's destinations go to the relay instead, projected
     // exactly as for the proxy (mirrors BrowserCorsProxy.fetch).
     var relay = credentialRelayFor(targetUrl);
-    if (relay) outgoingUrl = credentialRelayFetchUrl(relay, targetUrl);
+    if (relay) {
+      outgoingUrl = credentialRelayFetchUrl(relay, targetUrl);
+    } else if (isCorsProxyFetchUrl(outgoingUrl)) {
+      // Send the normalized target that was gated, never the caller's raw
+      // suffix: parsers disagree on a raw string's host (WHATWG URL reads
+      // `chatgpt.com\@evil.com` as chatgpt.com, PHP's parse_url as evil.com).
+      outgoingUrl = corsProxyFetchUrl(targetUrl);
+    }
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
       ? request.headers.get("if-range")
       : null;

@@ -461,6 +461,27 @@ function requestKeepsConnectionAlive(
   return true;
 }
 
+// `uri-host [":" port]` (RFC 9110 section 7.2), limited to the forms a
+// client names a TLS server by: a DNS name, IPv4 address or bracketed IPv6.
+const REQUEST_HOST = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::[0-9]{1,5})?$/;
+
+/**
+ * The HTTPS URL a decrypted request names, in the normalized form that is
+ * both checked against a credential grant and sent. Sending the raw string
+ * instead would let URL parsers disagree on its host: WHATWG URL reads
+ * `chatgpt.com\@evil.com` as chatgpt.com, PHP's parse_url as evil.com.
+ * Returns null for a Host that is not a plain host and port, or a request
+ * target that is not origin-form; both are malformed HTTP.
+ */
+function httpsRequestTargetUrl(host: string, path: string): string | null {
+  if (!REQUEST_HOST.test(host) || !path.startsWith("/")) return null;
+  try {
+    return new URL(`https://${host}${path}`).href;
+  } catch {
+    return null;
+  }
+}
+
 function lastHeaderValue(
   headers: readonly HttpHeaderOccurrence[],
   name: string,
@@ -972,8 +993,15 @@ export class TlsNetworkBackend implements NetworkIO {
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
     const writer = takePlaintextWriter(conn, totalRequestLen);
 
-    const host = lastHeaderValue(headers, "host") || conn.hostname;
-    const upstreamUrl = `https://${host}${path}`;
+    const parsedUpstreamUrl = httpsRequestTargetUrl(
+      lastHeaderValue(headers, "host") || conn.hostname,
+      path,
+    );
+    if (parsedUpstreamUrl === null) {
+      this.refuseMalformedRequest(conn, "Malformed Host header or request target");
+      return;
+    }
+    const upstreamUrl = parsedUpstreamUrl;
     const browserHeaders = browserRepresentableHeaders(headers);
 
     const fetchBody: Uint8Array<ArrayBuffer> | undefined =
@@ -1082,6 +1110,24 @@ export class TlsNetworkBackend implements NetworkIO {
       // upstream reader only calls this on newly arriving bytes.
       if (keepAlive && !conn.closed) {
         this.tryProcessHttpRequest(conn);
+      }
+    })();
+  }
+
+  /** Answer 400 and close: the request cannot be parsed into a target. */
+  private refuseMalformedRequest(conn: TlsConnectionState, reason: string): void {
+    const response = formatHttpResponse(
+      400,
+      "Bad Request",
+      new Headers({ "Content-Type": "text/plain" }),
+      new TextEncoder().encode(reason).buffer as ArrayBuffer,
+    );
+    void (async () => {
+      try {
+        await conn.serverDownstreamWriter.write(response);
+        await conn.serverDownstreamWriter.close();
+      } catch {
+        // Ignore write errors
       }
     })();
   }
