@@ -80,5 +80,8 @@ export const nodeModuleEntryCommand = 'set -eu\nmkdir -p /tmp/node-entrypoints\n
 node /tmp/node-entrypoints/esm-main.mjs
 if node /tmp/node-entrypoints/unsettled.mjs; then exit 1; else test "$?" -eq 13; fi
 if node /tmp/node-entrypoints/failure.mjs; then exit 1; else test "$?" -eq 1; fi
+cp /usr/bin/node /tmp/js
+chmod +x /tmp/js
+/tmp/js -e 'if(typeof print!=="function"||typeof load!=="function")throw Error("shell globals");print("node-standalone-shell-ok")'
 printf 'node-module-entry-status-ok\\n'
 `;
