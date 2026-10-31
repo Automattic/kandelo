@@ -8,6 +8,7 @@ inputs = [
   "packages/registry/node-compat/target.json",
   "scripts/generate-node-bootstrap.py",
   "third_party/node-web-platform/node-web-platform.js",
+  "third_party/node-core/node-core.js",
   "scripts/package-build-roots.sh",
   "scripts/install-local-binary.sh",
   "scripts/run-wasm-fork-instrument.sh",
@@ -15,4 +16,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 23
+revision    = 24

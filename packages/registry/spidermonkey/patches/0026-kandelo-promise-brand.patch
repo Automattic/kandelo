@@ -1,0 +1,24 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -167,2 +167,3 @@
+ #include "js/Printer.h"  // QuoteString
+ #include "js/Printf.h"
++#include "js/Promise.h"  // JS::IsPromiseObject
+@@ -2521,1 +2522,13 @@
++// Brand checks must not call then(), inspect user properties, or create jobs.
++// Only engine wrappers are unwrapped; an ECMAScript Proxy is not a Promise.
++static bool KandeloNativeIsPromise(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setBoolean(false);
++  if (args.length() && args[0].isObject()) {
++    RootedObject obj(cx, js::CheckedUnwrapStatic(&args[0].toObject()));
++    args.rval().setBoolean(obj && JS::IsPromiseObject(obj));
++  }
++  return true;
++}
++
+ static bool DefineKandeloNodeNative(JSContext* cx) {
+@@ -2527,2 +2540,3 @@
+       JS_FN("evalScriptAsFunction", KandeloNativeEvalScriptAsFunction, 2, 0),
++      JS_FN("isPromise", KandeloNativeIsPromise, 1, 0),
+       JS_FN("__kandeloRequireModule", KandeloNativeRequireModule, 1, 0),

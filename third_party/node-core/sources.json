@@ -1,0 +1,18 @@
+{
+  "version": "26.13.0",
+  "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "modules": {
+    "assert": {
+      "path": "upstream/assert.js",
+      "sha256": "e87a46a29cc96a9bc6025475220ca0c54e083a7d9aa53708919d0971506e87e2"
+    },
+    "internal/util/comparisons": {
+      "path": "upstream/comparisons.js",
+      "sha256": "2b20b2392cf4699d583350e09f7bebc82ea70339ef855952e1eddcbe82f0ce24"
+    },
+    "internal/assert/utils": {
+      "path": "upstream/assert-utils.js",
+      "sha256": "ba5e3fb23642dbd2973efac622a9bef88afeba93e25f15d6927fb111251c16d7"
+    }
+  }
+}
