@@ -15334,3 +15334,31 @@ No normal SDK/guest/browser, browser-memory or POSIX acceptance follows.
 Root verifies exact source and evidence hashes at
 `.context/channel-completion-wait-foundation-r1/source-identities.json` before
 commit. The normal frozen 8b build and published previews exclude this step.
+
+
+### Allocator-owned admission metadata, activation disabled, 2026-10-31
+
+The existing physical-memory allocation record now owns one opaque admission
+metadata handle shared by exact alias leases. Per-lease reservations advance
+admission state before exposing Memory, consume once and cancel only before
+exposure. Retained tokens use weak references to their exact leases; the owner
+handle retains only independent scalar metadata. Bare getter access and injected
+creator callbacks latch unknown, forced termination poisons all aliases, and
+retirement invalidates pending tokens. Exposures are cumulative observations,
+not a live-writer census. No caller activation, clean/held certificate, C import,
+ABI change or scan omission is introduced. Production paths remain unknown.
+
+All 55 focused source tests pass across allocator, async allocation and exact
+generation detach, including 13 new admission/failure/alias controls. Strict
+allocator-source/test types pass. The larger detach-import strict closure keeps
+three unresolved WebGL typed-array diagnostics at unchanged source sites;
+baseline was not rerun, so this is not a broad-host typecheck pass or proven
+preexisting result. The initial ES2022 missing waitAsync declarations were a
+check-configuration failure, corrected to ES2024 for the retained final result.
+Actual allocator leases replace the detach fixture's fake lease implementation.
+
+Root reviews code and verifies the four released source hashes before commit.
+Evidence: `.context/process-memory-admission-foundation-r1/HANDOFF.md` and
+`source-manifest.json`. Normal Node/browser guest, browser-memory, POSIX and
+performance acceptance remain open. This foundation supplies no speed claim;
+the frozen normal 8b build and published previews exclude it.

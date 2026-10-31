@@ -2181,6 +2181,21 @@ later process: shared Wasm memory cannot shrink, engines retain native backing
 stores differently, and `Worker.terminate()` is not a portable ownership
 fence.
 
+Each allocator record also owns one opaque execution-admission metadata handle,
+shared by its explicit alias leases. An exact lease can reserve at most one
+writer admission at a time; reservation and exposure advance its admission
+epoch before Memory escapes. Cancellation is allowed only before exposure, and
+consuming a lease invalidates its outstanding reservation. Tokens retain only
+a weak reference to that exact lease, while retained owner handles contain no
+Memory, view, lease or allocator-record reference. Fresh allocations have
+distinct owners even when a PID survives exec. Bare `lease.memory` access and
+injected construction callbacks conservatively mark the owner unknown; forced
+termination poisons all aliases. These flags are sticky. Exposure counts are
+cumulative diagnostic admissions, not live-writer counts. This metadata does
+not prove writer coverage, quiescence or a clean mapping, and does not enable
+scan elision. Production worker/host-writer admission and trusted completion
+waits still need a source-bound ownership protocol before any such activation.
+
 Normal exit and exec wait for an exact `memory_quiescent` message from every
 process Worker and pthread Worker before dropping host aliases. Forced
 termination drops the kernel realm's aliases but never makes the backing
