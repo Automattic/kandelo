@@ -128,6 +128,7 @@ kernel_set_mmap_base(pid, addr) → 0
 kernel_set_process_pointer_width(pid, width) → 0 | -errno
 kernel_is_fd_nonblock(pid, fd) → 1 | 0 | -1
 kernel_epoll_wake_indices(pid, epfd, kind, out_ptr, out_capacity) → count | -errno
+kernel_epoll_wait_retry_state(pid, tid, token, deadline_handle) → 1 still blocked | 0 replay | -errno (optional)
 kernel_set_wait_queue_enabled(enabled) → previous | -errno
 kernel_wait_deadline_open(pid, tid, kind, timeout_ms) → wait_handle | -errno
 kernel_wait_deadline_remaining_ns(wait_handle) → nanoseconds | NO_DEADLINE | -errno
@@ -1217,6 +1218,27 @@ sources and concurrent registration. Host network notification counters,
 signal queue generations, and the independent PCM consumer clock retain
 activity that happens between attempts. See the [epoll matrix](epoll.md) for
 interfaces, event bits, ownership details and explicit compatibility limits.
+
+The epoll safety timer can ask `kernel_epoll_wait_retry_state(pid, tid, token,
+deadline_handle)` whether that exact retained invocation is still blocked.
+Only the value `1` permits rearming the unchanged timer without replaying the
+syscall. The query checks the live task, pending signals, exact lease and finite
+deadline, and evaluates supported local readiness without consuming events,
+edge candidates, one-shot state, the batch cursor or the temporary signal mask.
+Unknown sources, readiness errors, expired deadlines and stale identities force
+the normal retry. The host also requires the original process registration,
+request and mailbox scalars, and refuses this shortcut for pending cancellation
+or stopped/resuming tasks. A missing optional probe export uses normal replay.
+Targeted and broad notifications retain their existing full retry path.
+
+This is an internal observation of an already-blocked call, not another guest
+syscall boundary or a result publication. The initial call and every actual
+completion retain full shared-mapping and imported-buffer synchronization.
+Sibling tasks and other processes still publish at their own real boundaries;
+the probe assumes neither writer quiescence nor a dirty-store epoch. The host
+still owns the park and its 10 ms safety timer. Moving epoll into the kernel-owned
+wait queue requires complete source, lifecycle and copyout integration; this
+probe does not claim that migration or an application performance gain.
 
 ## Multi-Process Model
 

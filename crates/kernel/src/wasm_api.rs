@@ -3624,6 +3624,47 @@ pub extern "C" fn kernel_epoll_wait_token(pid: u32, tid: u32) -> u64 {
         .unwrap_or(0)
 }
 
+/// A private non-delivering check of one retained epoll wait. Only 1 certifies
+/// StillBlocked; 0/negative means the host must run its ordinary retry. This
+/// is not a guest syscall/coherence boundary and never publishes a result.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_epoll_wait_retry_state(
+    pid: u32,
+    tid: u32,
+    token: u64,
+    deadline_handle: u64,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if let Err(error) = table.bind_current_tid(pid, tid) {
+        return -(error as i32);
+    }
+    let result = (|| {
+        let mut host = WasmHostIO;
+        if deadline_handle != 0 {
+            let now = crate::wait_park::now_ns(&mut host)?;
+            if !crate::wait_queue::global::epoll_deadline_pending(
+                crate::wait_queue::ChannelGeneration(deadline_handle),
+                pid,
+                tid,
+                now,
+            ) {
+                return Ok(false);
+            }
+        }
+        let (proc, mut peers, _) = table
+            .current_process_peers_and_locks()
+            .ok_or(Errno::ESRCH)?;
+        syscalls::epoll_wait_still_blocked(proc, &mut host, tid, token, &mut peers)
+    })();
+    table.clear_current_tid_binding();
+    match result {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Retire only this execution's wait. An old worker's asynchronous retirement
 /// after exec must never cancel the replacement image's wait on the same TID.
 #[unsafe(no_mangle)]

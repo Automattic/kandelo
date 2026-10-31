@@ -659,6 +659,10 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::queryToken(channel.pid, this.guestTidForChannel(channel))",
   ),
+  // Exact task/lease/deadline authority only; no process or kernel pointer.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::probe(channel.pid, this.guestTidForChannel(channel), waitToken, deadlineHandle ?? 0n)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
   ),
@@ -1800,6 +1804,17 @@ describe("kernel scratch static contract", () => {
         assertKernelScratchPointerRoleContract(kernelWasmApiSource, exportName),
       ).not.toThrow();
     }
+  });
+
+  it("keeps the retained epoll retry probe scalar-only", () => {
+    expect(rustKernelExportParameters(
+      kernelWasmApiSource, "kernel_epoll_wait_retry_state",
+    )).toEqual([
+      { name: "pid", type: "u32" },
+      { name: "tid", type: "u32" },
+      { name: "token", type: "u64" },
+      { name: "deadline_handle", type: "u64" },
+    ]);
   });
 
   it("keeps the reviewed process-exit publication scalar-only", () => {

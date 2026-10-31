@@ -17773,7 +17773,7 @@ fn poll_check_depth(
             FileType::Epoll => {
                 if pollfd.events & POLLIN != 0 && depth < POLL_CHECK_MAX_DEPTH {
                     let idx = (-(ofd.host_handle + 1)) as usize;
-                                if epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                                if epoll_evaluate(proc, host, idx, 1, false, false, depth + 1, peers)
                         .is_ok_and(|out| !out.is_empty())
                     {
                                 revents |= POLLIN;
@@ -20883,6 +20883,7 @@ fn epoll_interest_readiness(
     interest: &crate::process::EpollInterest,
     depth: u32,
     peers: &mut [&mut Process],
+    strict_probe: bool,
 ) -> Result<u32, Errno> {
     use wasm_posix_shared::epoll::*;
     let mut owner_index = None;
@@ -20897,6 +20898,12 @@ fn epoll_interest_readiness(
         })
     };
     let Some(fd) = fd else {
+        // A retained backing without a live descriptor owner has a narrower
+        // evaluator. It cannot certify all source/error states for a skipped
+        // host retry; leave that case on the ordinary delivery path.
+        if strict_probe {
+            return Err(Errno::EOPNOTSUPP);
+        }
         return epoll_backing_readiness(proc, host, interest);
     };
     let owner: &Process = if let Some(idx) = owner_index {
@@ -20910,13 +20917,31 @@ fn epoll_interest_readiness(
         .ok()
         .and_then(|e| owner.ofd_table.get(e.ofd_ref.0))
     else {
-        return Ok(0);
+        return if strict_probe {
+            Err(Errno::EBADF)
+        } else {
+            Ok(0)
+        };
     };
+    if strict_probe && ofd.is_path_only() {
+        return Err(Errno::EBADF);
+    }
     if ofd.file_type == FileType::Epoll {
         let idx = (-(ofd.host_handle + 1)) as usize;
+        if strict_probe {
+            if depth >= POLL_CHECK_MAX_DEPTH {
+                return Err(Errno::ELOOP);
+            }
+            let child = epoll_evaluate(proc, host, idx, 1, false, true, depth + 1, peers)?;
+            return Ok(if child.is_empty() {
+                0
+            } else {
+                EPOLLIN & interest.events
+            });
+        }
         return Ok(
             if depth < POLL_CHECK_MAX_DEPTH
-                && epoll_evaluate(proc, host, idx, 1, false, depth + 1, peers)
+                && epoll_evaluate(proc, host, idx, 1, false, false, depth + 1, peers)
                     .is_ok_and(|v| !v.is_empty())
             {
                 EPOLLIN & interest.events
@@ -20924,6 +20949,79 @@ fn epoll_interest_readiness(
                 0
             },
         );
+    }
+    if strict_probe {
+        // Only observations with complete local authority can prove a retry
+        // remains blocked. In particular poll's historical error-to-zero
+        // fallback and host network callbacks must never become such proof.
+        match ofd.file_type {
+            FileType::TimerFd => {
+                let idx = (-(ofd.host_handle + 1)) as usize;
+                if crate::descriptor_backing::with_timerfds(|t| t.get(idx).is_none()) {
+                    return Err(Errno::EBADF);
+                }
+                timerfd_refresh(host, idx)?;
+                let ready = crate::descriptor_backing::with_timerfds(|t| {
+                    t.get(idx).map(|tfd| tfd.expirations != 0)
+                })
+                .ok_or(Errno::EBADF)?;
+                return Ok(if ready { EPOLLIN & interest.events } else { 0 });
+            }
+            FileType::EventFd => {
+                if crate::descriptor_backing::with_eventfds(|t| {
+                    t.get((-(ofd.host_handle + 1)) as usize).is_none()
+                }) {
+                    return Err(Errno::EBADF);
+                }
+            }
+            FileType::SignalFd => {
+                if crate::descriptor_backing::with_signalfds(|t| {
+                    t.get((-(ofd.host_handle + 1)) as usize).is_none()
+                }) {
+                    return Err(Errno::EBADF);
+                }
+            }
+            FileType::Pipe => {
+                if ofd.host_handle >= 0
+                    || unsafe {
+                        crate::pipe::global_pipe_table().get((-(ofd.host_handle + 1)) as usize)
+                    }
+                    .is_none()
+                {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+            }
+            FileType::PtyMaster | FileType::PtySlave => {
+                if crate::pty::get_pty(ofd.host_handle as usize).is_none() {
+                    return Err(Errno::EBADF);
+                }
+            }
+            FileType::Socket => {
+                let socket = owner
+                    .sockets
+                    .get((-(ofd.host_handle + 1)) as usize)
+                    .ok_or(Errno::EBADF)?;
+                if socket.host_net_handle.is_some() {
+                    return Err(Errno::EOPNOTSUPP);
+                }
+                for pipe in [socket.recv_buf_idx, socket.send_buf_idx]
+                    .into_iter()
+                    .flatten()
+                {
+                    if unsafe { crate::pipe::global_pipe_table().get(pipe) }.is_none() {
+                        return Err(Errno::EBADF);
+                    }
+                }
+            }
+            FileType::CharDevice => match VirtualDevice::from_host_handle(ofd.host_handle) {
+                Some(VirtualDevice::Mice | VirtualDevice::Clipboard) => {}
+                Some(VirtualDevice::DriCard0 | VirtualDevice::DriRenderD128)
+                    if ofd.kms().is_some() => {}
+                Some(VirtualDevice::InputEvent { .. }) if ofd.input().is_some() => {}
+                _ => return Err(Errno::EOPNOTSUPP),
+            },
+            _ => return Err(Errno::EOPNOTSUPP),
+        }
     }
     // A signalfd observes the waiting task's signal queue, even if its open
     // description is retained only by a sibling process.
@@ -20950,8 +21048,7 @@ fn epoll_interest_readiness(
             },
         );
     }
-    let socket_idx = (ofd.file_type == FileType::Socket)
-        .then(|| (-(ofd.host_handle + 1)) as usize);
+    let socket_idx = (ofd.file_type == FileType::Socket).then(|| (-(ofd.host_handle + 1)) as usize);
     let mut pollfd = [WasmPollFd {
         fd,
         events: interest.events as i16,
@@ -20962,7 +21059,12 @@ fn epoll_interest_readiness(
     } else {
         proc
     };
-    if let Ok(sources) = epoll_sources(owner, fd) {
+    let sources = epoll_sources(owner, fd);
+    if strict_probe {
+        // A provider/source resolution failure is not an empty ready set.
+        sources.as_ref().map_err(|error| *error)?;
+    }
+    if let Ok(sources) = sources {
         for source in &sources {
             if let crate::epoll::Source::Network(handle) = source {
                 let generations = [
@@ -21007,6 +21109,7 @@ fn epoll_evaluate(
     idx: usize,
     maxevents: usize,
     consume: bool,
+    strict_probe: bool,
     depth: u32,
     peers: &mut [&mut Process],
 ) -> Result<Vec<(u32, u64)>, Errno> {
@@ -21026,7 +21129,7 @@ fn epoll_evaluate(
         }
         // Always refresh backing readiness, including lazy timers. Only a
         // notification (or ADD/MOD) can enqueue another edge-triggered event.
-        let ready = epoll_interest_readiness(proc, host, interest, depth, peers)?;
+        let ready = epoll_interest_readiness(proc, host, interest, depth, peers, strict_probe)?;
         let pending = crate::descriptor_backing::with_epolls(|table| {
             table
                 .get(idx)
@@ -21035,6 +21138,9 @@ fn epoll_evaluate(
         });
         let gated = interest.events & (EPOLLET | EPOLLEXCLUSIVE) != 0;
         if ready == 0 {
+            if strict_probe {
+                continue;
+            }
             crate::descriptor_backing::with_epolls(|table| {
                 if let Some(i) = table.get_mut(idx).and_then(|ep| ep.interests.get_mut(pos)) {
                     i.pending = false;
@@ -21062,6 +21168,36 @@ fn epoll_evaluate(
         }
     }
     Ok(out)
+}
+
+/// Non-delivering continuation check for an exact already-blocked call.
+/// It may refresh lazy readiness, but never dequeues an event, advances the
+/// cursor, clears a queued edge, disables ONESHOT, finishes the lease or mask,
+/// or reads/copies any guest output. Unknown providers/errors require replay.
+pub fn epoll_wait_still_blocked(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    tid: u32,
+    token: u64,
+    peers: &mut [&mut Process],
+) -> Result<bool, Errno> {
+    if proc.state != crate::process::ProcessState::Running
+        || !proc.is_live_explicit_tid(tid)
+        || current_tid_for_process(proc) != tid
+        || proc.deliverable_for(tid) != 0
+    {
+        return Ok(false);
+    }
+    let Some((_, lease)) = proc
+        .epoll_waits
+        .iter()
+        .find(|(owner, lease)| *owner == tid && token != 0 && lease.token == token)
+    else {
+        return Ok(false);
+    };
+    let index = lease.index;
+    let events = epoll_evaluate(proc, host, index, 1, false, true, 0, peers)?;
+    Ok(events.is_empty())
 }
 
 pub fn sys_epoll_pwait(
@@ -21105,7 +21241,7 @@ pub fn sys_epoll_pwait_with_peers(
             epoll_index(proc, epfd)?
         };
         let result =
-            epoll_evaluate(proc, host, idx, maxevents as usize, true, 0, peers).and_then(|out| {
+            epoll_evaluate(proc, host, idx, maxevents as usize, true, false, 0, peers).and_then(|out| {
                 if !out.is_empty() || timeout_ms == 0 {
                     Ok((out.len() as i32, out))
                 } else if proc.deliverable_for(tid) != 0 {

@@ -2328,6 +2328,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
         HostAdapterKernelExport::required("kernel_exchange_add_entry"),

@@ -13803,3 +13803,60 @@ Raw records live under `.context/desktop-boundary-response-r1/`; the audit
 is `.context/desktop-boundary-response-analysis-r1/audit.json`. The next
 capture applies bounded operation/retry tracing to these same motion blocks
 so extra focus work can be distinguished from recurring idle overhead.
+
+
+### Retained epoll fallback candidate, 2026-10-31
+
+A platform candidate avoids full synthetic syscall/coherence replay when an
+existing10ms epoll safety timer can prove that its exact retained wait is
+still blocked. It adds one optional scalar-only kernel export, bound to the
+live PID/TID, retained lease token and finite deadline generation. A strict
+non-delivering readiness evaluation propagates unknown providers and errors;
+only result1 permits rearming the same timer row. ET/ONESHOT candidates,
+cursors, signal masks and output buffers are not consumed. Actual readiness,
+notifications, cancellation, signals, deadline expiry and lifecycle changes
+retain the full retry/completion path. First entry and real publication keep
+their synchronization boundaries; no all-writer epoch is assumed.
+
+A causal control caught a lost wake in the initial candidate when a real
+notification and an already-fired timer waited behind a busy kernel gate.
+The stale proof now deduplicates by its exact timer row, leaving the ordinary
+channel retry independent. Both queue orders finish exactly once without
+reviving the old timer. Failed-before records remain retained. Root and a
+separate read-only source review identify no remaining concrete blocker in
+this candidate; neither review is executable validation.
+
+Focused native epoll/deadline tests pass75/75; shared export-policy tests
+pass3/3. Four source-only host files pass80/80, including both process pointer
+widths, targeted readiness/copyout and queued orderings. Two selected scalar/
+pointer source controls pass; eight unrelated cases are filtered. Raw host
+TypeScript remains red with41diagnostics; exact compiler-host substitution
+of the original file proves the identical41before/after, not a green check.
+These tests do not exercise normally compiled guest programs or rendering.
+
+After provisioning this checkout's own missing source submodules and both
+SDKs, canonical job `epoll-probe-canonical-r1-1031-120530-7444` completes all
+six stages0in39seconds: actual changed-kernel ABI regeneration, ABI check,
+additive comparison against prior7508, resolver regeneration/check and normal
+host bundle/declarations. The generated export signature is
+`(i32,i32,i64,i64) -> (i32)`. Only its optional metadata and export signature
+are added; the unpublished family stays program56/host3/GL17/fork21.
+The program digest equals prior7508 on both sides:
+`c0878412780c9f36cb56527f49ade53bdd0ac3fd5d47d75e3a32a15e1984fc2d`.
+Earlier regeneration/provisioning attempts stopped on missing local SDKs or
+source submodules before completing; these setup failures are retained.
+
+Focused handoff SHA256:
+`7028c8b14551c021046081aa9076b8bc78ba220b43255b27b28274123425a799`.
+Focused source/evidence manifest SHA256:
+`29d14e960b3d44069878bd54a0f9d3188313ded35ef48c004664824c0d14c8fe`.
+Canonical status SHA256:
+`49a649620deb8079649637c8fc58ed357ae25a6e5560dee29cd883400ec2b189`.
+Evidence is in the candidate checkout's `.context/epoll-retry-probe/`.
+
+This candidate is not in5678 and has no demonstrated desktop performance or
+focus-stall benefit. Consolidated normal program/image artifacts, compiled
+kernel/guest readiness/signal/lifecycle controls, Node/browser/memory/POSIX
+and all benchmark gates remain open. The source-only ownership selections
+do not waive the full combined ownership audit. The matched focus-crossing
+trace remains the primary next responsiveness investigation.
