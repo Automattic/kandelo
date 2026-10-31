@@ -1,6 +1,15 @@
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -3899,6 +3899,12 @@
+@@ -3882,6 +3882,8 @@
+ // wheel had no caller, so any setTimeout(fn, ms>0) never fired. Returns the
+ // number of timers that fired this pass; *nextDelayMs is the ms until the next
+ // pending timer (-1 when none pending).
++static bool IsKandeloNodeMode();
++
+ static int KandeloRunDueTimers(JSContext* cx, int64_t* nextDelayMs) {
+   *nextDelayMs = -1;
+   RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+@@ -3899,6 +3901,12 @@
        if (rval.isNumber()) {
          fired = int(rval.toNumber());
        }
@@ -13,7 +22,7 @@
      } else {
        JS_ClearPendingException(cx);
      }
-@@ -3916,12 +3922,17 @@
+@@ -3916,12 +3924,17 @@
            *nextDelayMs = int64_t(d);
          }
        }
@@ -31,7 +40,7 @@
  
  static void RunShellJobs(JSContext* cx) {
    ShellContext* sc = GetShellContext(cx);
-@@ -3935,6 +3946,13 @@
+@@ -3935,6 +3948,13 @@
      if (sc->quitting) {
        return;
      }
@@ -45,7 +54,7 @@
  
      // Run tasks (only finalization registry clean tasks are possible).
      bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
-@@ -3945,7 +3963,7 @@
+@@ -3945,7 +3965,7 @@
      int64_t nextTimerDelay = -1;
      int ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
      bool timersPending = nextTimerDelay >= 0;
@@ -54,7 +63,7 @@
        return;
      }
  
-@@ -14722,7 +14740,11 @@
+@@ -14722,7 +14742,11 @@
       * tasks before the main thread JSRuntime is torn down. Drain after
       * uncaught exceptions have been reported since draining runs callbacks.
       */

@@ -17,6 +17,13 @@ const definitions = [
     }, 5);
   `],
   ['assigned-code', '.cjs', 7, `setTimeout(() => { finished = true; clearInterval(pending); }, 5);`],
+  ['child-io', '.cjs', 1, `
+    const child = require('child_process').spawn(process.execPath,
+      ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    child.stdout.resume();
+    require('fs').writeFileSync(process.env.NODE_FATAL_PID_FILE, String(child.pid));
+    throw Error('fatal with child/read watches');
+  `],
 ] as const;
 
 export const nodeFatalExitCases = definitions.map(([name, extension, status, body]) => ({
@@ -35,13 +42,16 @@ ${body}
 }));
 
 function quote(text: string) { return `'${text.replace(/'/g, `'"'"'`)}'`; }
-export const nodeFatalExitCommand = 'set -eu\nmkdir -p /tmp/node-fatal-exit\n' +
+export const nodeFatalExitCommand = `set -eu
+mkdir -p /tmp/node-fatal-exit
+trap 'if test -s /tmp/node-fatal-exit-child.pid; then kill -TERM "$(cat /tmp/node-fatal-exit-child.pid)"; rm -f /tmp/node-fatal-exit-child.pid; fi' EXIT
+` +
   nodeFatalExitCases.map(c => {
     const file = `/tmp/node-fatal-exit/${c.name}${c.extension}`;
     const prepare = c.extension === 'eval' ? '' : `cat > ${quote(file)} <<'JS'\n${c.source}\nJS\n`;
     const args = c.extension === 'eval' ? '-e ' + quote(c.source) : quote(file);
     return prepare + `
-if node ${args} > /tmp/node-fatal.out 2>/tmp/node-fatal.err; then status=0; else status=$?; fi
+if NODE_FATAL_PID_FILE=/tmp/node-fatal-exit-child.pid node ${args} > /tmp/node-fatal.out 2>/tmp/node-fatal.err; then status=0; else status=$?; fi
 if test "$status" -ne ${c.status}; then cat /tmp/node-fatal.out; cat /tmp/node-fatal.err >&2; exit 1; fi
 test "$(cat /tmp/node-fatal.out)" = ${quote(c.marker)}
 printf '%s\\n' ${quote(c.marker)}
