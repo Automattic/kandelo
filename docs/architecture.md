@@ -3451,6 +3451,11 @@ mapping, readiness, texture submission, and cursor/scanout presentation
 boundaries; unchanged readers do not overwrite newer bytes. Refreshing a
 reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
+Publication scans retain the independent baseline without copying it when
+no changed runs are found. A changed publication still updates its baseline
+and marks readers pending. Readiness refresh remains unconditional for the
+selected BO's mapped readers: mutable canonical pixel views do not provide
+an authoritative version that would permit skipping those refreshes.
 This remains boundary synchronization,
 not live aliasing between Wasm memories. A snapshot is bounded by the
 mapping length and BO size and retired with its mapping; backing is retired

@@ -391,8 +391,10 @@ export class GbmBoRegistry {
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
       for (const reader of this.bindings(e)) if (reader !== binding) e.pendingReaders.add(reader.pid);
+      snapshot.set(src);
     }
-    snapshot.set(src);
+    // An unchanged scan already agrees with this independent baseline. Do
+    // not copy the whole mapping again or capture later, unpublished stores.
   }
 
   get(pid: number, bo_id: number): GbmBoEntry | undefined {

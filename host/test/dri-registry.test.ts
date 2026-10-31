@@ -9,12 +9,96 @@
  * / findBindingByAddr / resolver wiring) rather than "the byte-verify
  * failed somewhere in a fork."
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
+
+describe("BO publication copies", () => {
+  it.each([0, 1])("does not copy an unchanged mapping at address %i", (addr) => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    registry.bind(100, 1, addr, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, addr);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      registry.syncToSab(1);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+  });
+
+  it("keeps an unchanged stale reader's baseline until it imports a publication", () => {
+    const memA = newMemory(), memB = newMemory();
+    const reg = new GbmBoRegistry({ getProcessMemory: pid => pid === 100 ? memA : memB });
+    reg.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(100, 1, memA);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    reg.primeBindFromSab(200, 1, memB);
+    new Uint8Array(memA.buffer)[17] = 91;
+    reg.syncToSab(1);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      reg.syncToSab(1);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+    expect(new Uint8Array(memB.buffer)[17]).toBe(0);
+    expect(reg.pixelView(1)![17]).toBe(91);
+    reg.syncImportsForPid(200, memB);
+    expect(new Uint8Array(memB.buffer)[17]).toBe(91);
+    new Uint8Array(memB.buffer)[18] = 73;
+    reg.syncImportsForPid(100, memA);
+    expect([...new Uint8Array(memA.buffer).slice(17, 19)]).toEqual([91, 73]);
+  });
+
+  it("leaves stores beyond a limited publication pending for the next full scan", () => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: 32, w: 4, h: 2, stride: 16 });
+    registry.bind(100, 1, 1024, 16, 8);
+    registry.primeBindFromSab(100, 1, memory, 1024);
+    const source = new Uint8Array(memory.buffer, 1024, 16);
+    source[2] = 91;
+    source[10] = 73;
+    registry.syncToSab(1, 16);
+    expect(registry.pixelView(1)![10]).toBe(91);
+    expect(registry.pixelView(1)![18]).toBe(0);
+    const copy = vi.spyOn(Uint8Array.prototype, "set");
+    try {
+      registry.syncToSab(1, 16);
+      expect(copy).not.toHaveBeenCalled();
+    } finally {
+      copy.mockRestore();
+    }
+    registry.syncToSab(1);
+    expect(registry.pixelView(1)![10]).toBe(91);
+    expect(registry.pixelView(1)![18]).toBe(73);
+  });
+
+  it("still refreshes a reader after writes through a retained canonical view", () => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    const canonical = registry.pixelView(1)!;
+    registry.bind(100, 1, 0, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, 0);
+    registry.bind(100, 1, BO_SIZE, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, BO_SIZE);
+    canonical[17] = 91;
+    registry.syncImportsForPid(100, memory);
+    expect(new Uint8Array(memory.buffer)[17]).toBe(91);
+    expect(new Uint8Array(memory.buffer)[BO_SIZE + 17]).toBe(91);
+    registry.syncToSab(1);
+    expect(canonical[17]).toBe(91);
+  });
+});
 
 function newMemory(): WebAssembly.Memory {
   return new WebAssembly.Memory({ initial: 1, maximum: 4, shared: true });

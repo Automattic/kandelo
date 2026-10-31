@@ -10504,3 +10504,37 @@ wait completion can wake a sibling before the host drains its completion
 record. Caller-blocked state and backing versions cannot authorize
 omitting local publication. No further production behavior is changed by
 this source/disassembly audit.
+
+### Unchanged BO publication baseline copies (2026-10-30)
+
+The next candidate removes the whole-prefix `snapshot.set(src)` from a
+DRI publication scan that finds no changed byte runs. The independent
+baseline already matches every observed byte in that scan. A changed
+publication still copies its baseline and marks pending readers. Every
+writer scan, readiness refresh, alias merge, byte limit and lifecycle
+publication remains in place on both Node and browser. No allocation,
+retained view, protocol or ABI change is added.
+
+Two aligned/misaligned copy controls initially reproduce the redundant
+copy. A third test initially fails because its helper is scoped in a
+different describe block; after correcting that fixture, all three
+controls fail for the actual redundant copies. Original output is
+retained in `.context/bo-publication-copy/before.log` and `before-r2.log`.
+The candidate also retains a limited-prefix publication control and an
+explicit retained-canonical-view refresh control. Full focused tests,
+including those five controls, now pass93/93 across DRI registry, KMS
+registry/stats, BO teardown and CPU-image storage, with no skips or load
+failures. The three original copy controls pass after the implementation
+change. Real Wasm consumers, normal artifacts and desktop measurements
+are pending; removing this copy is not yet an application performance
+improvement claim. The full focused log is
+`.context/bo-publication-copy/after.log`.
+
+A broader per-binding refresh flag optimization is not implemented.
+`pixelView()` exposes mutable canonical storage: a retained view can be
+written after flags were cleared without any tracked publication. Flag-
+only imports would then miss a write that the current readiness refresh
+delivers. An independent source review confirms this counterexample.
+Canonical write authority must be made explicit before such skipping is
+sound; a calling thread being blocked or no tracked publication is not
+proof that these bytes are unchanged.
