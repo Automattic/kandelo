@@ -10538,3 +10538,17 @@ delivers. An independent source review confirms this counterexample.
 Canonical write authority must be made explicit before such skipping is
 sound; a calling thread being blocked or no tracked publication is not
 proof that these bytes are unchanged.
+
+Actual Node job `bo-publication-node-semantics-1030-221126-c0bb` finishes
+with11/13 passing cases and two failures, without skips/load failures.
+Normal own kernel/rootfs/host preparation succeeds first; selected kernel
+SHA256 remains f65de9b91a3b9f0d6d460601927ae3af7e25a5b2ed1e3194ce042852b827465a
+before/after. Mapping inheritance passes on wasm32 and wasm64, all four
+allocator-retirement variants pass, DRM namespace/PRIME pass, and cursor
+ioctl/exec/spawn pass. Both failures are the inherited master/cursor
+fixture's parent expecting exactly one universal plane. The shared OFD
+correctly sees the child's universal-plane capability; the actual adapter
+now advertises primary and cursor planes, while the native mock without
+cursor support still correctly exposes one. The fixture expectation is
+updated to two; no runtime plane behavior is changed. The original c0bb
+failure remains evidence and the corrected real consumers require rerun.
