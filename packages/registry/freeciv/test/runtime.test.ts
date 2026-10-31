@@ -35,11 +35,12 @@ async function boot() {
   const host = new NodeKernelHost({
     rootfsImage: await fs.saveImage(),
     // The archive records its package-mirror path, which the lazy-asset
-    // directory resolves to `<directory>assets/programs/wasm32/freeciv.zip`.
+    // directory resolves to
+    // `<directory>assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip`.
     rootfsLazyUrlBase: "https://freeciv.test/",
     rootfsLazyAssetDirectory: "https://freeciv.test/",
     rootfsLazyAssets: [{
-      url: "https://freeciv.test/assets/programs/wasm32/freeciv.zip",
+      url: "https://freeciv.test/assets/programs/wasm32/freeciv-browser-bundle/freeciv.zip",
       bytes: archive.bytes,
       sha256: archive.integrity.sha256,
       size: archive.bytes.byteLength,

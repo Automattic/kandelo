@@ -192,6 +192,30 @@ existing Linux-VT guests working and preserve Node/browser parity.
 (`encodeLinuxMediumRawKeyCode`), `crates/shared/src/ioctl_contract.rs`,
 `docs/posix-status.md`
 
+### Fix the three UDP routing defects behind both hosts' expected failures
+
+PR #1600 made the Node and browser conformance runners boot the same machine (eth0 at 10.0.2.15/24 behind the egress gateway), and three UDP defects then showed up identically on both. They stay listed in `UDP_EXPECTED_FAIL` (`scripts/sortix-expectations.sh`), each with its exact output, and are described in `docs/posix-status.md`:
+
+- **A loopback source routed off the machine.** A UDP socket bound to `127.0.0.1` (for example by an earlier `connect(127.0.0.1)`) can `connect()` to an off-machine address and keeps its loopback source. Linux refuses that route with EINVAL once a route exists (`udp/connect-loopback-reconnect-wan-getsockname`, which prints `127.0.0.1:same port`).
+- **No local delivery to the machine's own address.** A datagram sent to the machine's own eth0 address is handed to the egress gateway, which answers EHOSTUNREACH, instead of being delivered on the machine (`udp/cross-netif-loopback-send-lan-recv`). Linux keeps its own addresses in the local routing table.
+- **The link's broadcast address cannot be bound.** `EgressLink.bindUdp` refuses `10.0.2.255` with EADDRNOTAVAIL; Linux allows binding a local broadcast address (`udp/bind-lan-subnet-broadcast`).
+
+Each fix changes what an existing call returns, so they need an ABI version bump and a regenerated `abi/snapshot.json` (`docs/abi-versioning.md`). Remove the three entries from `UDP_EXPECTED_FAIL` in the same change and update `docs/posix-status.md`. The two remaining entries (`connect-wan-send-reconnect-loopback-send`, `shutdown-r-send`) are the real boundary: no UDP datagram leaves the machine.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` — `sys_connect_impl`, `udp_send_datagram`, `cross_process_loopback_udp_route`; `host/src/networking/egress-link.ts` — `bindUdp`; `scripts/sortix-expectations.sh`
+
+### Close the POSIX gaps both hosts list as expected Sortix failures
+
+Since PR #1600 the Node and browser Sortix runners share their expected failures, so these gaps are listed once, with recorded reasons:
+
+- **`pathconf(_PC_FILESIZEBITS)` is indeterminate.** `filesystem_pathconf_value` returns -1 for it on every filesystem (`basic/unistd/pathconf`, `fpathconf`). Each filesystem should report the bit width it can actually address. Check that file offsets beyond that width fail with EFBIG rather than wrapping; a 64-bit offset narrowed to `usize` in the 32-bit kernel is a suspected case, not yet verified.
+- **Thread CPU-time clocks are not recognized.** musl encodes a thread's CPU clock from `pthread_getcpuclockid()` as `(-tid-1)*8+6`; `host_clock_id` only recognizes the process encoding, so `clock_gettime` returns EINVAL (`basic/pthread/pthread_getcpuclockid`). More broadly, the CPU-time clocks report elapsed monotonic time rather than CPU usage (`docs/posix-status.md`).
+- **There is no `/dev/log` receiver.** `openlog`/`syslog` find nothing to connect to (`basic/syslog/closelog`, `syslog`). A kernel-owned datagram receiver with a bounded, readable log would close it.
+
+Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a pass on an expected failure fails the run on both hosts.
+
+**Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
+
 ## Browser
 
 ### Investigate the WebKit fbDOOM WAD-drop failure
@@ -332,6 +356,12 @@ certificates in the browser.
 ### PTY terminal integration with xterm.js
 The kernel has full PTY support (PR #181), and browser UI surfaces should use xterm.js-backed PTYs rather than plain `<div>` output with `appendStdinData`. Connecting PTY pairs to xterm.js gives proper terminal rendering (ANSI escapes, cursor, scrollback) and real terminal behavior (isatty=true, proper termios).
 
+### Make the Internals Syscalls tab show live syscalls, with an end-to-end test
+
+Reported on 2026-10-30: the Syscalls tab of the Internals panel shows nothing on a running machine. Not yet investigated. Trace it through the normal path before changing the UI: `SyscallsTab` subscribes with `host.subscribeSyscalls`, which depends on the kernel worker publishing syscall trace events. Add a Playwright spec that boots a machine, opens Internals → Syscalls, and requires live records to appear, so the tab cannot silently go blank again.
+
+**Files:** `apps/browser-demos/pages/kandelo/panes/Inspector.tsx` — `SyscallsTab`; `web-libs/kandelo-session/src/kernel-host.ts`; `host/src/kernel-worker.ts` (syscall trace events)
+
 ## Package artifacts
 
 ### Restore external software gallery support
@@ -461,6 +491,12 @@ mutable host defaults and fail only when a deferred file is first opened.
 
 **Files:** `host/src/vfs/`, `images/vfs/`, package image builders and metadata
 
+### PHP builds differ between checkouts
+
+On 2026-10-30 a full setup in a second checkout of main (`e4bca8639e`) failed with `php@8.5.12: concurrent cache winner differs from staged build`: the shared cache already held a php/wasm32 artifact under the same key, built in another checkout, with different bytes. The build preserved the winner and recorded receipts, and a rerun took php from the cache. An earlier instance of this class was an absolute checkout path embedded in an artifact (`kandelo.calltypes`, fixed in `scripts/build-musl.sh`). Compare the two builds' receipts and bytes to find what php embeds from its checkout, and remove it so builds under one key are identical wherever they run.
+
+**Files:** `packages/registry/php/`, the local-build cache-winner receipts
+
 ## Performance
 
 ### Revisit an optional wasm32 kernel build for IPC-heavy workloads
@@ -552,6 +588,12 @@ dominate, refill within the kernel entry that drained the pipe so the reader
 never observes it empty, and wake only this pipe's readers and pollers. A larger host-stdin pipe would also cut refills,
 at a kernel-memory cost per spawned process. Copies are the less likely cause;
 the bridge module above addresses them.
+
+### Building small fork-instrumented SDL test programs takes minutes
+
+The DRI resize and SDL2 evdev tests each build a small SDL2 program through the SDK, link it against the resolved SDL2, Wayland, xkbcommon and libffi packages, fork-instrument it and stamp it. On 2026-10-30 that took about 153 and 155 s, while the programs themselves ran in about 1 s. PR #1600 moved those builds out of the tests' time limits but did not make them faster. The split between compiling, linking and instrumentation was not measured; measure it first, then decide whether the instrumenter (for example its baseline when compiler facts are unavailable) or the link is the cost.
+
+**Files:** `host/test/support/compile-sdk-fixture.ts`, `scripts/run-wasm-fork-instrument.sh`, `crates/fork-instrument/`
 
 ## Kernel — regressions
 
@@ -803,3 +845,15 @@ runtime because the callback's call chain was not instrumented.
 
 **Files:** `crates/fork-instrument/src/call_graph.rs` plus a possible
 `instrument::analyze_callback_registrations` pass.
+
+### Commit baseline test results keyed on what each suite reads
+
+Batch PRs classify every failure against main by rebuilding main in a second checkout and rerunning the full suites there, which takes hours and was thrown away each time. Main's known Vitest and Playwright failures lived only in run logs. Commit a small per-suite record of every result other than a plain pass (failure, expected failure, timeout, error, skip, intermittent, each with a one-line reason), plus totals and provenance. Key it not on the commit but on a digest of what the suite actually consumes: the built artifacts it used, the source paths it was measured to read, and the browser and Node versions. A README change then leaves every baseline current, and a reviewer sees a PR's change in results as a diff. A baseline records reality: it never turns a failing run green, and a stale one is never used for classification.
+
+**Files:** new `tests/baselines/`, an xtask command to record, check and classify, `docs/agent-guidance/validation.md`
+
+### Read the Omarchy boot spec's markers from scrollback
+
+`kandelo-omarchy.spec.ts` "boots a themed tiling desktop…" matches each gate's marker only in the terminal rows on screen. During a busy run a burst of compositor output (repeated `TILE` lines) can scroll a marker away before the spec reads it. It failed that way on Chromium and WebKit in PR #1600's full run and passed when run alone (3 of 3). Read markers through scrollback or a cumulative log, as `expectTerminalHistory` does for theme reloads, so the gates do not depend on timing.
+
+**Files:** `apps/browser-demos/test/kandelo-omarchy.spec.ts`

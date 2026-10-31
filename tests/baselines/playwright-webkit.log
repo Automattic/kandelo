@@ -1,0 +1,57 @@
+  -   7 [webkit] › test/kandelo-network-session.spec.ts:84:1 › package activity invitations join before starting termchat in a fresh terminal
+  -   8 [webkit] › test/kandelo-network-session.spec.ts:125:1 › an already-running termchat can be offered without restarting it
+  -   9 [webkit] › test/kandelo-network-session.spec.ts:200:1 › Doom's package offer acquires a WAD from bare shell and sends it to the player over WebRTC
+  -  10 [webkit] › test/kandelo-network-session.spec.ts:259:1 › termchat discovers and chats between session joiners through the normal shell
+  -  11 [webkit] › test/kandelo-network-session.spec.ts:301:1 › computers join one hosted session from its link and talk over guest TCP
+  -  13 [webkit] › test/kandelo-network-session.spec.ts:365:1 › a joiner can pick a different computer before joining
+  -  15 [webkit] › test/kandelo-network-session.spec.ts:400:1 › the Doom machine's LAN menu starts a two-player game across the session
+  -  16 [webkit] › test/kandelo-network-session.spec.ts:427:1 › a Doom host starts a LAN game before every player has joined
+  -  17 [webkit] › test/kandelo-network-session.spec.ts:456:1 › Quake's own multiplayer menu hosts a game another computer finds and joins
+  -  19 [webkit] › test/kandelo-network-session.spec.ts:530:3 › Doom invitations support known hint data with matching-file verification
+  -  20 [webkit] › test/kandelo-network-session.spec.ts:530:3 › Doom invitations support uploaded hint data with matching-file verification
+  -  21 [webkit] › test/kandelo-network-session.spec.ts:530:3 › Doom invitations support uploaded peer data with matching-file verification
+  -  27 [webkit] › test/kandelo-omarchy.spec.ts:704:1 › Kandelo omarchy pastes text from the host clipboard into foot
+  -  28 [webkit] › test/kandelo-omarchy.spec.ts:774:1 › Kandelo omarchy copies foot's selection to the host clipboard
+  -  34 [webkit] › test/network-session-dialogs.spec.ts:135:1 › invitation metadata is visible while the recipient's real computer is still booting
+  1) [webkit] › test/dri-egl-resize.spec.ts:12:1 › SDL preserves first-frame geometry and alpha blending after window and context replacement
+    Test timeout of 120000ms exceeded.
+  2) [webkit] › test/kandelo-ffmpeg.spec.ts:224:1 › in the Omarchy desktop › ffplay runs as a Wayland client in the Omarchy desktop
+    Error: expect(received).toMatch(expected)
+  3) [webkit] › test/kandelo-kms-context-loss.spec.ts:45:1 › the webgl2 scanout presenter survives a GPU process crash
+    Error: page.evaluate: TypeError: undefined is not an object (evaluating 'window.chrome.gpuBenchmarking')
+  4) [webkit] › test/kandelo-network-session.spec.ts:62:1 › package activity invitations reject incompatible procedures and do not launch after a failed join
+    Error: expect(locator).toContainText(expected) failed
+  5) [webkit] › test/kandelo-omarchy.spec.ts:403:1 › Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS fd loss
+    Error: expect(received).toMatch(expected)
+  6) [webkit] › test/kandelo-omarchy.spec.ts:461:1 › Kandelo omarchy runs ScummVM as a GL window that takes its tile's size
+    Error: expect(received).toMatch(expected)
+  7) [webkit] › test/kandelo-omarchy.spec.ts:506:1 › Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow
+    Error: expect(received).toMatch(expected)
+  8) [webkit] › test/kandelo-omarchy.spec.ts:642:1 › Kandelo omarchy copies and pastes between foot windows through the Wayland clipboard
+    Error: expect(received).toMatch(expected)
+  9) [webkit] › test/kandelo-wayland.spec.ts:239:1 › Kandelo wayland desktop composites three clients, routes typing and window drags
+    Error: expect(received).toMatch(expected)
+  10) [webkit] › test/terminal-autofocus.spec.ts:7:1 › late PTY attachment cannot steal the demo editor
+    Test timeout of 120000ms exceeded.
+  11) [webkit] › test/terminal-links.spec.ts:182:3 › terminal links › open a third-party URL in a new tab without a referrer
+    Error: page.evaluate: Error: PTY never attached
+  12) [webkit] › test/terminal-links.spec.ts:198:3 › terminal links › route a loopback URL on the bridged port to the machine, with a referrer
+    Error: page.evaluate: Error: PTY never attached
+  13) [webkit] › test/terminal-links.spec.ts:222:3 › terminal links › leave a loopback URL the bridge does not forward unlinked
+    Error: page.evaluate: Error: PTY never attached
+  14) [webkit] › test/terminal-links.spec.ts:243:3 › terminal links › follow an OSC 8 hyperlink only after confirming, and without a referrer
+    Error: page.evaluate: Error: PTY never attached
+  15) [webkit] › test/terminal-repaint.spec.ts:3:1 › full-screen terminal state survives tab changes and hidden output
+    Error: expect(received).toBe(expected) // Object.is equality
+  16) [webkit] › test/theme-contrast.spec.ts:88:5 › wordpress light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  17) [webkit] › test/theme-contrast.spec.ts:88:5 › wordpress dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal
+  18) [webkit] › test/theme-contrast.spec.ts:88:5 › kandelo light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  19) [webkit] › test/theme-contrast.spec.ts:88:5 › kandelo dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal
+  20) [webkit] › test/theme-contrast.spec.ts:88:5 › ubuntu light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  21) [webkit] › test/theme-contrast.spec.ts:88:5 › ubuntu dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal

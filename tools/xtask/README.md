@@ -2,6 +2,9 @@
 
 Repo-local build/release utilities. Subcommands:
 
+- `test-failures <conformance|vitest|playwright> <report> <context.json>`
+  — import failures and anomalies as JSON. See [failure evidence](../../tests/baselines/README.md).
+
 - `dump-abi` — regenerate `abi/snapshot.json` from authoritative sources.
 - `check-package-imports [--require-startup] <wasm>...` — audit process
   imports against shared host declarations and the current SDK's typed

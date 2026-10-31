@@ -35,13 +35,16 @@ export const registryPackagesWithoutBuildToml = new Set([
   // publish compiled artifacts of their own.
   "bytepath-source",
   "libyaml-source",
+  "ncurses-source",
   "netsurf-buildsystem-source",
   "pcaudiolib-source",
   "pcre2-source",
+  "phpcacheadmin-source",
   "sqlite-amalgamation-source",
   "sqlite-cli",
   "sqlite3-ruby-source",
   "snkrx-source",
+  "stb-source",
   "wordpress-sqlite-integration-source",
 ]);
 

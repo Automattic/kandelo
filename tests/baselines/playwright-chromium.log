@@ -1,0 +1,54 @@
+  1) [chromium] › test/dri-egl-resize.spec.ts:12:1 › SDL preserves first-frame geometry and alpha blending after window and context replacement
+    Test timeout of 120000ms exceeded.
+  2) [chromium] › test/kandelo-ffmpeg.spec.ts:224:1 › in the Omarchy desktop › ffplay runs as a Wayland client in the Omarchy desktop
+    Error: expect(received).toMatch(expected)
+  3) [chromium] › test/kandelo-network-session.spec.ts:62:1 › package activity invitations reject incompatible procedures and do not launch after a failed join
+    Error: expect(locator).toContainText(expected) failed
+  4) [chromium] › test/kandelo-network-session.spec.ts:125:1 › an already-running termchat can be offered without restarting it
+    Test timeout of 480000ms exceeded.
+  5) [chromium] › test/kandelo-network-session.spec.ts:400:1 › the Doom machine's LAN menu starts a two-player game across the session
+    Error: expect(received).toBe(expected) // Object.is equality
+  6) [chromium] › test/kandelo-network-session.spec.ts:427:1 › a Doom host starts a LAN game before every player has joined
+    Error: expect(received).toContain(expected) // indexOf
+  7) [chromium] › test/kandelo-network-session.spec.ts:456:1 › Quake's own multiplayer menu hosts a game another computer finds and joins
+    Error: expect(received).toMatch(expected)
+  8) [chromium] › test/kandelo-omarchy.spec.ts:403:1 › Kandelo omarchy survives a rapid 8-window launch storm without SCM_RIGHTS fd loss
+    Error: expect(received).toMatch(expected)
+  9) [chromium] › test/kandelo-omarchy.spec.ts:461:1 › Kandelo omarchy runs ScummVM as a GL window that takes its tile's size
+    Error: expect(received).toMatch(expected)
+  10) [chromium] › test/kandelo-omarchy.spec.ts:506:1 › Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow
+    Error: expect(received).toMatch(expected)
+  11) [chromium] › test/kandelo-omarchy.spec.ts:642:1 › Kandelo omarchy copies and pastes between foot windows through the Wayland clipboard
+    Error: expect(received).toMatch(expected)
+  12) [chromium] › test/kandelo-omarchy.spec.ts:704:1 › Kandelo omarchy pastes text from the host clipboard into foot
+    Error: expect(received).toMatch(expected)
+  13) [chromium] › test/kandelo-omarchy.spec.ts:774:1 › Kandelo omarchy copies foot's selection to the host clipboard
+    Error: expect(received).toMatch(expected)
+  14) [chromium] › test/kandelo-wayland.spec.ts:239:1 › Kandelo wayland desktop composites three clients, routes typing and window drags
+    Error: expect(received).toMatch(expected)
+  15) [chromium] › test/kandelo-wordpress.spec.ts:251:1 › @slow Kandelo WordPress site editor loads assets through the bridge (no blob-iframe 404s)
+    Error: escaped/404 asset requests:
+  16) [chromium] › test/terminal-autofocus.spec.ts:7:1 › late PTY attachment cannot steal the demo editor
+    Test timeout of 120000ms exceeded.
+  17) [chromium] › test/terminal-links.spec.ts:182:3 › terminal links › open a third-party URL in a new tab without a referrer
+    Error: page.evaluate: Error: PTY never attached
+  18) [chromium] › test/terminal-links.spec.ts:198:3 › terminal links › route a loopback URL on the bridged port to the machine, with a referrer
+    Error: page.evaluate: Error: PTY never attached
+  19) [chromium] › test/terminal-links.spec.ts:222:3 › terminal links › leave a loopback URL the bridge does not forward unlinked
+    Error: page.evaluate: Error: PTY never attached
+  20) [chromium] › test/terminal-links.spec.ts:243:3 › terminal links › follow an OSC 8 hyperlink only after confirming, and without a referrer
+    Error: page.evaluate: Error: PTY never attached
+  21) [chromium] › test/terminal-repaint.spec.ts:3:1 › full-screen terminal state survives tab changes and hidden output
+    Error: expect(received).toBe(expected) // Object.is equality
+  22) [chromium] › test/theme-contrast.spec.ts:88:5 › wordpress light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  23) [chromium] › test/theme-contrast.spec.ts:88:5 › wordpress dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal
+  24) [chromium] › test/theme-contrast.spec.ts:88:5 › kandelo light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  25) [chromium] › test/theme-contrast.spec.ts:88:5 › kandelo dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal
+  26) [chromium] › test/theme-contrast.spec.ts:88:5 › ubuntu light: shared UI text contrasts with its surface
+    Error: drop prompt over black, normal
+  27) [chromium] › test/theme-contrast.spec.ts:88:5 › ubuntu dark: shared UI text contrasts with its surface
+    Error: drop prompt over white, normal
