@@ -12537,3 +12537,132 @@ R4 analyzer SHA256 `bf7a40ff2439e6e620502ffdb86e288f6f59683959698d96fe127c0a0743
 Preview e303 remains available at
 http://127.0.0.1:5675/pages/kandelo/. Single-terminal responsiveness and
 the complete graphics/desktop/conformance/performance goal remain open.
+
+### Finer cold Start setup and reconciliation accounting
+
+Keep single-terminal improvement explicitly **unproven**. R5 adds 15
+immediate pthread-setup statement pairs to the existing private observer,
+without changing the normal frozen e303/5675 runtime or rebuilding SDK,
+kernel, programs, images or host distribution. Nineteen controls pass,
+including the actual transformed async template declaration: pending
+hashing cannot emit a completion marker; original results and failures
+remain exact; the inactive branch does not invoke hashing. All three
+actual served-source seam/syntax checks pass. Job
+`worker-launch-cold-start-r5-1031-065749-911f` completes workload 0 /
+collector 0 / guard 0 in 51s, with all 38 parent/target/init/stage joins,
+no observer/record/cleanup errors, overflow or unmatched parent launches.
+The real menu paints three category rows and ordinary same-page Bare-shell
+replacement completes without a document reload. Sway, SFWBar and Foot
+retain their original process identities across the menu observation.
+
+Independent `.context/worker-launch-cold-analysis-r3/` accounting keeps
+guarded/absent statements distinct from missing endpoints. Across the eight
+newly observed SFWBar threads, observed template setup spans 29.94–76.34ms,
+import routing 32.11–48.50ms, activation registration 53.16–95.49ms and
+table reconciliation 29.97–100.05ms. TLS and channel setup have much smaller
+observed spans. These are instrumented NONQUIET elapsed scopes, not CPU
+costs, successful entry or a before/after comparison.
+
+R5 raw report SHA256 `307c06cfe5a1a3f2f7f8dc86ce3e3ea986e613813402189d826e611e20b06a7e`.
+R5 accounting SHA256 `3c31bc00248add93a56e25f605771051e37735fd2615f464851c8cc608336df5`.
+
+Fresh R6 follows those regions into their actual shared implementation.
+Nine exact source overlays separate owned copying/hashing, import-facts
+decoding/binding, resume-catalog decoding/resolution/registration, and
+archive acquisition/observer/replay. Detail events are enabled only after
+verified thread initialization and stop before the selected guest entry
+attempt. The helper returns exact expression results without retaining or
+logging them; failures leave no fabricated end event. Controls exercise the
+actual transformed hash and catalog functions, including owned-copy bytes,
+pending/rejected digest, table receiver, order and original function/error
+identity. No source bytes, catalog contents, addresses, guest memories or
+native handles are logged. All 22 controls and nine actual served-source
+checks pass. Hard bounds remain explicit: 256 events per realm, 512 source
+responses, 8,192 collector records, 64 live/256 retained targets. Controls
+reject each corresponding overflow; no bound is silently exceeded.
+
+Job `worker-launch-cold-start-r6-1031-071502-843e` completes 0 / 0 / 0
+in 51s. It retains 313 source responses, 1,644 scalar startup events,
+40 targets and all 38 complete parent/target/init/stage joins, with no
+unmatched launches, overflow, rejected targets or observer/record/cleanup
+errors. Normal source, SDK, kernel, host distribution and all 93 owners /
+245 members remain identical before/after. The menu screenshot is inspected:
+Games, Graphics and System Tools are visible. Normal same-page replacement
+again completes without runtime/console/finalization failures. Headless
+Chromium uses DPR2 and the actual 2880×1620 framebuffer. Peer Node and
+three-browser jobs were running; this is explicitly NONQUIET.
+
+Independent `.context/worker-launch-cold-analysis-r4/` accounting pairs every
+observed nested/repeated detail invocation, retaining missing endpoints as
+failures. Its separate summary assigns each invocation to its enclosing
+setup phase using that Worker's sequence, rather than mixing main-module
+registration with later small side-module replay. The eight newly observed
+targets are SFWBar PID109, TIDs117–124. Relevant same-realm endpoint deltas
+in this capture are:
+
+| Actual observed scope | Range, ms | Median, ms |
+|---|---:|---:|
+| Template owned byte copy | 3.81–19.41 | 7.07 |
+| Template digest and result construction | 16.64–33.17 | 22.89 |
+| Main-module function-import facts decoding | 22.34–72.36 | 43.80 |
+| Main-module import binding loop | 0.20–0.27 | 0.22 |
+| Main-module resume-catalog decoding | 1.79–2.34 | 2.19 |
+| Main-module resume-function resolution | 6.51–10.74 | 8.63 |
+| Main-module activation registry insertion | 23.91–38.23 | 29.59 |
+| Main-module resume-target insertion | 12.43–24.20 | 17.48 |
+| Archive acquisition loop | 0.05–67.83 | 9.20 |
+| First reconciliation, inside writer-acquire observer | 27.36–41.01 | 31.81 |
+| Explicit second reconciliation | 0.03–0.05 | 0.04 |
+
+The archive loop contains CAS, waits and scheduling, so its elapsed scope
+does not isolate contention. The first reconciliation includes side-module
+replay; the explicit second call is only the already-current generation
+check in these eight threads. Removing that second call would not remove
+the first replay. Parent-realm native Worker construction is 0.11–0.14ms
+and initial postMessage invocation 6.01–16.58ms; these use only the exact
+parent's ordered own-clock endpoints and do not isolate clone/copy time.
+Every observed worker still selects its precompiled module; parent/kernel
+preparation before construction remains unmeasured.
+
+These nested scopes must not be summed, nor should overlapping worker
+durations be added into menu latency. Recorder overhead, source routing,
+tagged worker URLs and scheduling are included. Small values are not
+calibrated fine-grained benchmarks. R4/R5/R6 have different instrumentation
+and load, and are **not** before/after performance comparisons. No startup,
+single-terminal, multi-terminal, CPU-share or GPU-completion improvement
+is established, and no new web build is claimed by these observers.
+
+R6 raw report SHA256 `071e3b3ff7c160aacdd8507325d17fd2e2de6c70286d300b91c231115998c061`.
+R6 accounting SHA256 `7bc9f0ff549c2b56cf69ee56b15db31540c97edd47fd7302a83728a76a2bab60`.
+R6 summary SHA256 `dab4d1e234dc4bafe090336e9f7dec49c31d0bbd70998d66cfd79344f566c6d7`.
+R6 analyzer SHA256 `c86cbaf0bda7517e7d5b3b75c6b363404d30e5d7c13ca9d379a523132742e88f`.
+
+A read-only reconciliation audit in
+`.context/reconcile-reader-review-r1/HANDOFF.md` rejects unconditional
+replacement of the archive writer with a reader. Ordinary copied replay
+can instantiate a permitted side module with its original native start;
+that start can request writer reentrancy. The current writer allows it,
+whereas a held reader would cause the writer request to throw. Generated
+table restore and JS funcref patches show no direct writer acquisition in
+the inspected paths, but no admission capability proves the entire replay /
+codec call graph reader-safe. Borrowed immutable-vfork reconciliation has
+different admitted behavior and must retain its existing no-lock path.
+
+The audit also identifies a source-level reader-admission race: a foreign
+staged loader lease can become live after the reader's initial lease check
+but before its successful reader CAS. Unlike the writer, the reader lacks
+the post-acquisition lease recheck. This is not a captured desktop failure;
+it needs a deterministic real-lock interleaving control and exact release /
+retry accounting before broadening reader use. It remains an ordinary
+correctness concern, not a platform boundary. No reader candidate, loader
+policy change or reader-race repair is implemented by this diagnostic.
+
+Audit SHA256 `1496ea2f31559a1cf9fc6a41749a6fb306cda9fed9629992d4b8be4f2a8bd302`.
+
+Next performance work should screen the measured metadata/catalog work
+while preserving exact artifact identity, signature/admission checks and
+per-instance function identity, and continue the active-frame shared-memory /
+presentation investigation. These startup findings do not explain away
+single-terminal or multi-client rendering slowdown. All earlier failed
+captures remain retained; broader graphics, desktop, memory, conformance
+and uninstrumented cross-host performance acceptance remain open.
