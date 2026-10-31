@@ -58,6 +58,9 @@ export function mountLinkShell(
     // kernel backs this fixture, so give it an exchange attached to none (no
     // consumer) rather than omitting the method.
     getExchange: () => exchange,
+    // The Shell pane also reads boot progress; this machine has none.
+    getMachineProgress: () => null,
+    subscribeMachineProgress: () => () => {},
   } as unknown as KernelHost;
 
   const root = ReactDOM.createRoot(container);

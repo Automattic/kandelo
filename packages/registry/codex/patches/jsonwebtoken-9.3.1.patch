@@ -1,0 +1,58 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -85,28 +85,28 @@
+     "simple_asn1",
+ ]
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))'.dev-dependencies.criterion]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo"))))'.dev-dependencies.criterion]
+ version = "0.4"
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))'.dev-dependencies.time]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo"))))'.dev-dependencies.time]
+ version = "0.3"
+ features = ["wasm-bindgen"]
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi")))))'.dev-dependencies.criterion]
++[target.'cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")))))'.dev-dependencies.criterion]
+ version = "0.4"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi")))))'.dev-dependencies.time]
++[target.'cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")))))'.dev-dependencies.time]
+ version = "0.3"
+ 
+-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.ring]
++[target.'cfg(any(not(target_arch = "wasm32"), target_os = "kandelo"))'.dependencies.ring]
+ version = "0.17.4"
+ features = ["std"]
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.js-sys]
+ version = "0.3"
+ 
+-[target.'cfg(target_arch = "wasm32")'.dependencies.ring]
++[target.'cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))'.dependencies.ring]
+ version = "0.17.4"
+ features = [
+     "std",
+--- a/src/validation.rs
++++ b/src/validation.rs
+@@ -168,7 +168,7 @@
+ }
+ 
+ /// Gets the current timestamp in the format expected by JWTs.
+-#[cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi")))))]
++#[cfg(not(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")))))]
+ #[must_use]
+ pub fn get_current_timestamp() -> u64 {
+     let start = std::time::SystemTime::now();
+@@ -176,7 +176,7 @@
+ }
+ 
+ /// Gets the current timestamp in the format expected by JWTs.
+-#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))]
++#[cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo"))))]
+ #[must_use]
+ pub fn get_current_timestamp() -> u64 {
+     js_sys::Date::new_0().get_time() as u64 / 1000

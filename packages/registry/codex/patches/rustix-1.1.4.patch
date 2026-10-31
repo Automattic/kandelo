@@ -1,0 +1,204 @@
+--- a/src/backend/libc/conv.rs
++++ b/src/backend/libc/conv.rs
+@@ -78,7 +78,7 @@
+ 
+ #[cfg(any(
+     linux_kernel,
+-    all(target_os = "illumos", feature = "event"),
++    all(any(target_os = "illumos", target_os = "kandelo"), feature = "event"),
+     all(target_os = "redox", feature = "event")
+ ))]
+ #[inline]
+--- a/src/backend/libc/event/mod.rs
++++ b/src/backend/libc/event/mod.rs
+@@ -5,5 +5,5 @@
+ #[cfg_attr(windows, path = "windows_syscalls.rs")]
+ pub(crate) mod syscalls;
+ 
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub mod epoll;
+--- a/src/backend/libc/event/syscalls.rs
++++ b/src/backend/libc/event/syscalls.rs
+@@ -1,10 +1,10 @@
+ //! libc syscalls supporting `rustix::event`.
+ 
+ use crate::backend::c;
+-#[cfg(any(linux_kernel, solarish, target_os = "redox"))]
++#[cfg(any(linux_kernel, solarish, target_os = "redox", target_os = "kandelo"))]
+ use crate::backend::conv::ret;
+ use crate::backend::conv::ret_c_int;
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ use crate::backend::conv::ret_u32;
+ #[cfg(bsd)]
+ use crate::event::kqueue::Event;
+@@ -13,7 +13,7 @@
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ use crate::event::EventfdFlags;
+@@ -21,7 +21,7 @@
+ use crate::event::FdSetElement;
+ use crate::event::{PollFd, Timespec};
+ use crate::io;
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ use crate::utils::as_ptr;
+ #[cfg(solarish)]
+ use core::mem::MaybeUninit;
+@@ -35,16 +35,16 @@
+     target_os = "wasi"
+ ))]
+ use core::ptr::null;
+-#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox", target_os = "wasi"))]
++#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox", target_os = "wasi", target_os = "kandelo"))]
+ use core::ptr::null_mut;
+-#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox"))]
++#[cfg(any(bsd, linux_kernel, solarish, target_os = "redox", target_os = "kandelo"))]
+ use {crate::backend::conv::borrowed_fd, crate::fd::BorrowedFd};
+ #[cfg(any(
+     bsd,
+     linux_kernel,
+     solarish,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf",
+     target_os = "redox"
+ ))]
+@@ -53,7 +53,7 @@
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ pub(crate) fn eventfd(initval: u32, flags: EventfdFlags) -> io::Result<OwnedFd> {
+@@ -80,7 +80,7 @@
+         ret_owned_fd(eventfd(initval, bitflags_bits!(flags)))
+     }
+ 
+-    #[cfg(any(target_os = "illumos", target_os = "espidf"))]
++    #[cfg(any(any(target_os = "illumos", target_os = "kandelo"), target_os = "espidf"))]
+     unsafe {
+         ret_owned_fd(c::eventfd(initval, bitflags_bits!(flags)))
+     }
+@@ -494,13 +494,13 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub(crate) fn epoll_create(flags: super::epoll::CreateFlags) -> io::Result<OwnedFd> {
+     unsafe { ret_owned_fd(c::epoll_create1(bitflags_bits!(flags))) }
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub(crate) fn epoll_add(
+     epoll: BorrowedFd<'_>,
+     source: BorrowedFd<'_>,
+@@ -521,7 +521,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub(crate) fn epoll_mod(
+     epoll: BorrowedFd<'_>,
+     source: BorrowedFd<'_>,
+@@ -539,7 +539,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub(crate) fn epoll_del(epoll: BorrowedFd<'_>, source: BorrowedFd<'_>) -> io::Result<()> {
+     unsafe {
+         ret(c::epoll_ctl(
+@@ -552,7 +552,7 @@
+ }
+ 
+ #[inline]
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub(crate) unsafe fn epoll_wait(
+     epoll: BorrowedFd<'_>,
+     events: (*mut crate::event::epoll::Event, usize),
+--- a/src/backend/libc/event/types.rs
++++ b/src/backend/libc/event/types.rs
+@@ -1,9 +1,9 @@
+-#[cfg(any(linux_kernel, target_os = "freebsd", target_os = "illumos"))]
++#[cfg(any(linux_kernel, target_os = "freebsd", any(target_os = "illumos", target_os = "kandelo")))]
+ use crate::backend::c;
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ use bitflags::bitflags;
+@@ -11,7 +11,7 @@
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ bitflags! {
+--- a/src/backend/libc/fs/types.rs
++++ b/src/backend/libc/fs/types.rs
+@@ -810,6 +810,7 @@
+             target_os = "linux",
+             target_os = "wasi",
+         )))]
++        #[cfg(not(target_os = "kandelo"))]
+         const NO_HIDE_STALE = bitcast!(c::FALLOC_FL_NO_HIDE_STALE);
+         /// `FALLOC_FL_COLLAPSE_RANGE`
+         #[cfg(not(any(
+--- a/src/event/mod.rs
++++ b/src/event/mod.rs
+@@ -1,11 +1,11 @@
+ //! Event operations.
+ 
+-#[cfg(any(linux_kernel, target_os = "illumos", target_os = "redox"))]
++#[cfg(any(linux_kernel, any(target_os = "illumos", target_os = "kandelo"), target_os = "redox"))]
+ pub mod epoll;
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ mod eventfd;
+@@ -23,7 +23,7 @@
+ #[cfg(any(
+     linux_kernel,
+     target_os = "freebsd",
+-    target_os = "illumos",
++    any(target_os = "illumos", target_os = "kandelo"),
+     target_os = "espidf"
+ ))]
+ pub use eventfd::{eventfd, EventfdFlags};
+--- a/src/ioctl/mod.rs
++++ b/src/ioctl/mod.rs
+@@ -287,6 +287,9 @@
+ 
+ /// The type used by the `ioctl` to signify the command.
+ pub type Opcode = _Opcode;
++
++#[cfg(target_os = "kandelo")]
++type _Opcode = c::c_int;
+ 
+ // Under raw Linux, this is an `unsigned int`.
+ #[cfg(linux_raw)]

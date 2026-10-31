@@ -10,6 +10,13 @@ import { ExchangeSession, type ExchangeLike } from "./exchange-session";
 import { advanceLazyDownloadSummary } from "./lazy-download";
 import type { RemoteSegmentPeer } from "../../../host/src/networking/remote-segment-port";
 import type { RemoteSessionSnapshot } from "../../../host/src/networking/remote-segment-runtime";
+import type {
+  CredentialRequest,
+  CredentialRequestHandler,
+  CredentialTransport,
+} from "../../../host/src/credential-grants";
+
+export type { CredentialRequest, CredentialRequestHandler, CredentialTransport };
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -731,15 +738,29 @@ export interface WebPreviewTarget {
 }
 export interface WebPreviewState {
   label: string;
+  /**
+   * Absolute URL of the machine's root on the deployment's preview origin
+   * (`<preview origin><scope>computer/<name>/`), never Kandelo's own origin:
+   * guest pages run on an origin of their own so their scripts cannot reach
+   * the Kandelo page. Error states that never mount a frame may carry
+   * `about:blank`.
+   */
   url: string;
+  /**
+   * Kandelo's own address for this machine
+   * (`<app origin><scope>computer/<name>/`): the viewer shell that embeds
+   * `url` through the owning tab. The address users share and terminal
+   * links open.
+   */
+  viewerUrl?: string;
   initialPath?: string;
   destination?: { hostname: string; port: number };
   status: WebPreviewStatus;
   message?: string;
   pendingRequests?: number;
   /**
-   * The in-machine TCP port that `url` forwards to through the service-worker
-   * HTTP bridge. Consumers that have to decide whether a loopback URL the
+   * The in-machine TCP port that `url` forwards to through the preview
+   * bridge. Consumers that have to decide whether a loopback URL the
    * machine printed is reachable from the page need this: the bridge forwards
    * exactly this one port, so `http://localhost:<port>/` is reachable only
    * when `<port>` matches.
@@ -1050,6 +1071,29 @@ export interface KernelHost {
    * exists. Rejects when the attached kernel cannot signal.
    */
   signalProcess(pid: number, signum: number): Promise<boolean>;
+
+  // credential prompt
+  /**
+   * Install the embedder's prompt for programs that ask for sign-in
+   * credentials, or `null` to remove it. The attached kernel calls it when a
+   * process starts an image its package declared in
+   * `/etc/kandelo/credential-requests.d`; resolve `true` only for the user's
+   * explicit "Allow for this process". With no handler installed when a
+   * question arrives, the answer is deny, so an embedder that never installs
+   * one never grants. Replacing the handler, or setting `null`, withdraws
+   * every question the previous handler has not answered. Questions are
+   * also withdrawn when the kernel is detached (machine teardown or switch)
+   * or destroyed. A withdrawn question's `signal` aborts and its answer is
+   * deny, whatever the handler later resolves.
+   */
+  setCredentialRequestHandler(handler: CredentialRequestHandler | null): void;
+  /**
+   * The user's "stop asking for this machine": deny every open question and
+   * every later one without asking, until the kernel is detached or another
+   * is attached (machine teardown, switch or reboot) or the page reloads.
+   * Held in memory only, never persisted, and never an allow.
+   */
+  stopCredentialRequests(): void;
 
   // network sessions
   /** Start hosting a session; resolves this machine's session address. */
@@ -1432,6 +1476,97 @@ export class LiveKernelHost implements KernelHost {
   }
   closeNetworkWebPreview(): void { this.webPreviewHandler?.closeNetwork(); }
 
+  private credentialRequestHandler: CredentialRequestHandler | null = null;
+  /** Questions routed to a handler and not yet answered, with that handler. */
+  private openCredentialRequests = new Map<AbortController, CredentialRequestHandler>();
+  /** The user chose "stop asking" for the attached kernel's machine. */
+  private credentialRequestsStopped = false;
+
+  stopCredentialRequests(): void {
+    this.credentialRequestsStopped = true;
+    this.withdrawCredentialRequests();
+  }
+
+  setCredentialRequestHandler(handler: CredentialRequestHandler | null): void {
+    if (handler === this.credentialRequestHandler) return;
+    this.credentialRequestHandler = handler;
+    // The previous handler's prompt is going away: an answer from it would
+    // reach no one who can see the question.
+    for (const [controller, owner] of [...this.openCredentialRequests]) {
+      if (owner !== handler) {
+        this.openCredentialRequests.delete(controller);
+        controller.abort();
+      }
+    }
+  }
+
+  /**
+   * The owner's bridge from the kernel's `onCredentialRequest` option to the
+   * installed handler. The host's option is fixed when the kernel is
+   * constructed, but the app installs its prompt later (after boot, when its
+   * UI mounts), so the owner passes this method and the handler is looked up
+   * per question. Resolves false at once when no handler is installed or
+   * the user chose to stop asking for this machine, and false when the
+   * question is withdrawn: by the kernel (`options.signal`:
+   * the process exited or ran another program), by this host detaching the
+   * kernel, or by the handler being replaced. A handler that throws or
+   * rejects rejects here, which the kernel host reports and treats as deny.
+   */
+  askCredentialRequest(
+    request: CredentialRequest,
+    options: { signal: AbortSignal },
+  ): Promise<boolean> {
+    const handler = this.credentialRequestHandler;
+    if (handler === null || this.credentialRequestsStopped || options.signal.aborted) {
+      return Promise.resolve(false);
+    }
+    const withdrawn = new AbortController();
+    const withdraw = () => withdrawn.abort();
+    options.signal.addEventListener("abort", withdraw, { once: true });
+    this.openCredentialRequests.set(withdrawn, handler);
+    const settle = () => {
+      options.signal.removeEventListener("abort", withdraw);
+      this.openCredentialRequests.delete(withdrawn);
+    };
+    return new Promise<boolean>((resolve, reject) => {
+      withdrawn.signal.addEventListener("abort", () => {
+        settle();
+        resolve(false);
+      }, { once: true });
+      let pending: Promise<boolean>;
+      try {
+        pending = Promise.resolve(handler(request, { signal: withdrawn.signal }));
+      } catch (error) {
+        settle();
+        reject(error);
+        return;
+      }
+      pending.then(
+        (allow) => {
+          settle();
+          resolve(!withdrawn.signal.aborted && allow === true);
+        },
+        (error: unknown) => {
+          settle();
+          reject(error);
+        },
+      );
+    });
+  }
+
+  /**
+   * The kernel is detached (machine teardown or switch): its open questions
+   * are answered deny and their dialogs close. Only `detachKernel` does
+   * this. `attachKernel` does not, because a kernel's own init can ask
+   * before its owner attaches it; a kernel replaced without a detach still
+   * withdraws its questions itself when its owner destroys it.
+   */
+  private withdrawCredentialRequests(): void {
+    const open = [...this.openCredentialRequests.keys()];
+    this.openCredentialRequests.clear();
+    for (const controller of open) controller.abort();
+  }
+
   private demoGuide: DemoGuideConfig | null = null;
   private demoExchange: DemoExchangeConfig | null = null;
   private demoDockActions: DemoDockActionConfig[] = [];
@@ -1526,6 +1661,8 @@ export class LiveKernelHost implements KernelHost {
   /** Replace the wrapped KernelLike. Used after `boot` resolves. */
   attachKernel(kernel: KernelLike): void {
     const previousKernel = this.kernel;
+    // "Stop asking" was for the previous machine only.
+    if (kernel !== previousKernel) this.credentialRequestsStopped = false;
     this.webPreviewHandler?.dispose();
     this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel replaced");
@@ -1571,6 +1708,9 @@ export class LiveKernelHost implements KernelHost {
   /** Clear the wrapped kernel after a failed boot without changing status. */
   detachKernel(): void {
     const detachedKernel = this.kernel;
+    this.withdrawCredentialRequests();
+    // "Stop asking" was for that machine only.
+    this.credentialRequestsStopped = false;
     this.webPreviewHandler?.dispose();
     this.webPreviewHandler = undefined;
     this.cancelLazyDownloads("kernel detached");
@@ -1940,16 +2080,18 @@ export class LiveKernelHost implements KernelHost {
   }
 
   private refreshWebAvailability(): void {
-    // A running preview is available; "offline" and "reconnecting" also keep
-    // the web surface available so the pane stays mounted to show that state
-    // rather than the view silently falling back to syslog/terminal when a
-    // machine's bridge goes away.
+    // A running preview is available; "offline", "reconnecting" and "error"
+    // also keep the web surface available so the pane stays mounted to show
+    // that state rather than the view silently falling back to
+    // syslog/terminal when a machine's bridge goes away or never starts (a
+    // browser that blocks the preview origin's storage, for one).
     const status = this.webPreview?.status;
     this.setSurfaceAvailability({
       web:
         status === "running" ||
         status === "offline" ||
-        status === "reconnecting",
+        status === "reconnecting" ||
+        status === "error",
     });
   }
 

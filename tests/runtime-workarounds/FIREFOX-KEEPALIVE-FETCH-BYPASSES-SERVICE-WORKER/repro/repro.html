@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>keepalive fetch and the controlling service worker</title>
+<p>A document controlled by a service worker fetches the same URL twice:
+once normally and once with <code>keepalive: true</code>. The Fetch and
+Service Workers standards send both to the controlling service worker
+(keepalive does not change a request's service-workers mode). The page
+reports "reproduced" when the keepalive request reaches the network
+instead. It also records, without judging them, whether a keepalive
+<code>Request</code> object and <code>navigator.sendBeacon()</code> reach
+the worker.</p>
+<pre id="out">running</pre>
+<script>
+(async () => {
+  const report = (verdict, details) => {
+    document.getElementById("out").textContent = verdict + "\n" + JSON.stringify(details, null, 2);
+    window.__reproVerdict = { verdict, details: JSON.stringify(details) };
+  };
+  try {
+    await navigator.serviceWorker.register("sw.js", { scope: "./" });
+    await navigator.serviceWorker.ready;
+    if (!navigator.serviceWorker.controller) {
+      await new Promise((resolve) =>
+        navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
+    }
+    const read = async (init) => {
+      const response = await fetch("probe.txt?" + Math.random(), { cache: "no-store", ...init });
+      return response.text();
+    };
+    const readRequest = async (init) => {
+      const request = new Request("probe.txt?" + Math.random(), { method: "POST", body: "x", keepalive: true });
+      const response = await (init ? fetch(request, init) : fetch(request));
+      return response.text();
+    };
+    const beaconId = String(Math.random()).slice(2);
+    navigator.sendBeacon("beacon.txt?id=" + beaconId, "x");
+    let beacon = "from-network";
+    for (let i = 0; i < 20 && beacon !== "from-service-worker"; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const seen = await (await fetch("beacon-seen.txt?id=" + beaconId, { cache: "no-store" })).text();
+      if (seen === "seen") beacon = "from-service-worker";
+    }
+    const details = {
+      plainGet: await read({}),
+      plainPost: await read({ method: "POST", body: "x" }),
+      keepaliveGet: await read({ keepalive: true }),
+      keepalivePost: await read({ method: "POST", body: "x", keepalive: true }),
+      // Recorded, not judged: forms the defect does not cover in Firefox 155.
+      keepaliveRequestObject: await readRequest(null),
+      keepaliveRequestObjectWithInit: await readRequest({ headers: { "x-probe": "1" } }),
+      sendBeacon: beacon,
+    };
+    // Sanity: without keepalive the worker must answer, or this page
+    // measures nothing.
+    if (details.plainGet !== "from-service-worker" || details.plainPost !== "from-service-worker") {
+      report("inconclusive", details);
+      return;
+    }
+    const bypassed = details.keepaliveGet === "from-network" || details.keepalivePost === "from-network";
+    report(bypassed ? "reproduced" : "not-reproduced", details);
+  } catch (error) {
+    report("inconclusive", { error: String(error) });
+  }
+})();
+</script>

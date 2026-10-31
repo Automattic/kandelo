@@ -1,0 +1,110 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -160,15 +160,15 @@
+ [dev-dependencies.windows-bindgen]
+ version = "0.66"
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies.js-sys]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies.js-sys]
+ version = "0.3"
+ optional = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies.wasm-bindgen]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies.wasm-bindgen]
+ version = "0.2"
+ optional = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "emscripten", target_os = "wasi"))))'.dev-dependencies.wasm-bindgen-test]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), not(any(target_os = "emscripten", target_os = "wasi"))))'.dev-dependencies.wasm-bindgen-test]
+ version = "0.3"
+ 
+ [target."cfg(unix)".dependencies.iana-time-zone]
+--- a/src/datetime/mod.rs
++++ b/src/datetime/mod.rs
+@@ -1939,7 +1939,7 @@
+ }
+ 
+ #[cfg(all(
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+     feature = "wasmbind",
+     not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+ ))]
+@@ -1950,7 +1950,7 @@
+ }
+ 
+ #[cfg(all(
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+     feature = "wasmbind",
+     not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+ ))]
+@@ -1961,7 +1961,7 @@
+ }
+ 
+ #[cfg(all(
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+     feature = "wasmbind",
+     not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+ ))]
+--- a/src/datetime/tests.rs
++++ b/src/datetime/tests.rs
+@@ -1387,7 +1387,7 @@
+ // `i32` (year 2035 problem), or an `u64` (no values before `UNIX-EPOCH`).
+ // See https://github.com/rust-lang/rust/issues/44394.
+ #[test]
+-#[cfg(all(feature = "std", not(all(target_arch = "wasm32", target_os = "wasi"))))]
++#[cfg(all(feature = "std", not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), target_os = "wasi"))))]
+ fn test_from_system_time() {
+     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+ 
+--- a/src/offset/local/mod.rs
++++ b/src/offset/local/mod.rs
+@@ -35,7 +35,7 @@
+     not(unix),
+     not(windows),
+     not(all(
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+         feature = "wasmbind",
+         not(any(target_os = "emscripten", target_os = "wasi"))
+     ))
+@@ -57,7 +57,7 @@
+ }
+ 
+ #[cfg(all(
+-    target_arch = "wasm32",
++    all(target_arch = "wasm32", not(target_os = "kandelo")),
+     feature = "wasmbind",
+     not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+ ))]
+--- a/src/offset/utc.rs
++++ b/src/offset/utc.rs
+@@ -7,7 +7,7 @@
+ #[cfg(all(
+     feature = "now",
+     not(all(
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+         feature = "wasmbind",
+         not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+     ))
+@@ -87,7 +87,7 @@
+     /// let now_with_offset = Utc::now().with_timezone(&offset);
+     /// ```
+     #[cfg(not(all(
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+         feature = "wasmbind",
+         not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+     )))]
+@@ -100,7 +100,7 @@
+ 
+     /// Returns a `DateTime` which corresponds to the current date and time.
+     #[cfg(all(
+-        target_arch = "wasm32",
++        all(target_arch = "wasm32", not(target_os = "kandelo")),
+         feature = "wasmbind",
+         not(any(target_os = "emscripten", target_os = "wasi", target_os = "linux"))
+     ))]

@@ -4,6 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
+import { CREDENTIAL_REQUESTS_DIR } from "../../../host/src/credential-requests";
 import { KandeloImageFs } from "../lib/kandelo-image-fs";
 import { extractZipEntry, parseZipCentralDirectory } from "../../../host/src/vfs/zip";
 import {
@@ -1253,6 +1254,8 @@ function requireCompleteProductShellContract(fs: KandeloImageFs): void {
   for (const path of [
     "/etc/gitconfig",
     "/etc/profile",
+    "/etc/codex/config.toml",
+    `${CREDENTIAL_REQUESTS_DIR}/codex.json`,
     `${NETHACK_PLAYGROUND}/perm`,
     `${NETHACK_PLAYGROUND}/record`,
   ]) {

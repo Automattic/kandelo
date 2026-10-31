@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Native miniperl generates build files under a deterministic portable locale.
+# A mixed host locale can produce composite names it cannot restore on macOS.
+# This affects build tools only; target locale features remain configured below.
+export LC_ALL=C
+
 # Build Perl 5.40.3 for wasm32-posix-kernel.
 #
 # Uses perl-cross (https://github.com/arsv/perl-cross) for cross-compilation.
@@ -679,7 +684,7 @@ echo "==> Building Perl (this takes a while)..."
 # `all` (not just `perl`) so the non-XS extension trees are assembled and their
 # generated modules (XSLoader.pm etc.) exist for the stdlib install below; the
 # `perl` target alone links the interpreter but leaves those ungenerated.
-if ! make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" all > "$BUILD_LOG" 2>&1; then
+if ! make -j"${WASM_POSIX_LOCAL_BUILD_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || nproc)}" all > "$BUILD_LOG" 2>&1; then
     echo "==> 'make all' FAILED; last 160 lines:"
     tail -160 "$BUILD_LOG"
     exit 1

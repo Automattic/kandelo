@@ -16,13 +16,14 @@ capabilities directly from the tool catalog.
 Kandelo exposes 17 tools on its application document when the browser implements
 `document.modelContext.registerTool`. The tools use the same computer, terminal
 tabs and preview shown in the UI. Browsers without this API retain the normal UI.
-The app registers tools in its own document. Guest web previews share the
-app's browser origin, so their scripts can discover and invoke those tools
-too. Registering in the parent document does not isolate a same-origin frame.
-Treat preview scripts as part of the app's browser trust boundary. The
-`maker` account constrains guest commands and writes; it does not constrain
-browser JavaScript. Tools expose privileged host filesystem inspection, as
-the app's inspector does. Browser-origin isolation is a separate capability.
+The app registers tools in its own document. Guest web previews run on a
+separate preview origin (see [browser
+support](browser-support.md#guest-web-previews-run-on-their-own-origin)), so
+their scripts cannot discover or invoke the app's tools. Any script that does
+run on the app's origin can, so that origin remains the browser trust
+boundary. The `maker` account constrains guest commands and writes; it does
+not constrain browser JavaScript. Tools expose privileged host filesystem
+inspection, as the app's inspector does.
 
 The live browser backend supports structured jobs, cancellation, directory listing,
 file reads and writes, and atomic exclusive file creation. Status reports actual

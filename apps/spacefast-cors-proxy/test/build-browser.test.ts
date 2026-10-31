@@ -15,9 +15,11 @@ const command = run.slice(run.indexOf("cmd_build_browser() {"), run.indexOf("\nc
 const piplet = await readFile(new URL("apps/signalling/piplet.php", repository));
 
 async function build(t: { after: (fn: () => Promise<unknown>) => void },
-  variables: Record<string, string> = {}, args: string[] = []) {
+  variables: Record<string, string> = {}, args: string[] = [],
+  prepare: (root: string) => Promise<void> = async () => {}) {
   const root = await mkdtemp(join(tmpdir(), "kandelo-browser-build-"));
   t.after(() => rm(root, { recursive: true, force: true }));
+  await prepare(root);
   for (const directory of ["bin", "scripts", "apps/signalling", "apps/browser-demos/node_modules"]) {
     await mkdir(join(root, directory), { recursive: true });
   }
@@ -33,11 +35,27 @@ const path = require('node:path');
 const args = process.argv.slice(2);
 const out = args[args.indexOf('--outDir') + 1];
 fs.mkdirSync(path.join(out, 'vfs-groups'), { recursive: true });
-for (const name of ['index.html', 'service-worker.js']) fs.writeFileSync(path.join(out, name), 'built');
+fs.mkdirSync(path.join(out, 'pages/kandelo'), { recursive: true });
+for (const name of ['index.html', 'service-worker.js', 'pages/kandelo/viewer.html']) fs.writeFileSync(path.join(out, name), 'built');
+if (process.env.KANDELO_PREVIEW_ORIGIN && !process.env.SKIP_PREVIEW_BUNDLE) {
+  const preview = process.env.KANDELO_PREVIEW_OUT_DIR;
+  fs.mkdirSync(path.join(preview, '__kandelo_preview'), { recursive: true });
+  const names = process.env.KANDELO_PREVIEW_HOST === 'php'
+    ? ['preview-service-worker.php', '__kandelo_preview/relay.php', 'index.php']
+    : ['preview-service-worker.js', '__kandelo_preview/relay.html', '__kandelo_preview/relay.js'];
+  for (const name of names) fs.writeFileSync(path.join(preview, name), 'built');
+}
 fs.writeFileSync(path.join(out, 'deployment.json'), JSON.stringify({
   proxy: process.env.VITE_CORS_PROXY_URL ?? null,
   signalling: process.env.VITE_KANDELO_SIGNALLING_URL ?? null,
   base: process.env.VITE_BASE,
+  ...(process.env.KANDELO_PREVIEW_ORIGIN ? {
+    previewOrigin: process.env.KANDELO_PREVIEW_ORIGIN,
+    appOrigin: process.env.KANDELO_APP_ORIGIN,
+    previewOut: process.env.KANDELO_PREVIEW_OUT_DIR,
+    previewHost: process.env.KANDELO_PREVIEW_HOST,
+    stalePreviewFile: fs.existsSync(path.join(process.env.KANDELO_PREVIEW_OUT_DIR, 'stale.txt')),
+  } : {}),
 }));
 `, { mode: 0o755 });
   const env = { ...process.env, ...variables, PATH: `${join(root, "bin")}:${process.env.PATH}` };
@@ -49,6 +67,7 @@ REPO_ROOT="$1"; shift
 cmd_prepare_browser() { :; }
 step() { :; }
 info() { :; }
+warn() { :; }
 err() { echo "$*" >&2; }
 ${command}
 cmd_build_browser --base /candidate/ --out "$REPO_ROOT/output" "$@"
@@ -92,4 +111,44 @@ test("empty deployment flags fail instead of selecting a different service", asy
   for (const args of [["--cors-proxy="], ["--cors-proxy"], ["--signalling-url="], ["--signalling-url"]]) {
     await assert.rejects(build(t, {}, args), /requires a URL/);
   }
+});
+
+test("a preview origin and its app origin build the preview bundle beside the app", async t => {
+  const built = await build(t, {}, [
+    "--preview-origin", "https://preview.example", "--app-origin=https://app.example",
+  ]);
+  assert.equal(built.previewOrigin, "https://preview.example");
+  assert.equal(built.appOrigin, "https://app.example");
+  assert.match(built.previewOut, /\/output-preview$/);
+  assert.equal(built.previewHost, "static");
+});
+
+test("a PHP preview host builds the PHP bundle and clears the previous one", async t => {
+  const built = await build(t, {}, [
+    "--preview-origin", "https://kandelo.site", "--app-origin", "https://kandelo.dev", "--preview-host", "php",
+  ], async root => {
+    await mkdir(join(root, "output-preview"), { recursive: true });
+    await writeFile(join(root, "output-preview/stale.txt"), "from an earlier build");
+  });
+  assert.equal(built.previewHost, "php");
+  assert.equal(built.stalePreviewFile, false);
+  assert.equal(built.appOrigin, "https://kandelo.dev");
+});
+
+test("a preview host needs a preview origin and a known host kind", async t => {
+  await assert.rejects(build(t, {}, ["--preview-host", "php"]), /--preview-host needs --preview-origin/);
+  await assert.rejects(build(t, {}, [
+    "--preview-origin", "https://kandelo.site", "--app-origin", "https://kandelo.dev", "--preview-host=nginx",
+  ]), /--preview-host must be static or php/);
+  await assert.rejects(build(t, { SKIP_PREVIEW_BUNDLE: "1" }, [
+    "--preview-origin", "https://kandelo.site", "--app-origin", "https://kandelo.dev", "--preview-host", "php",
+  ]), /output-preview\/preview-service-worker.php is missing/);
+});
+
+test("a preview origin without its app origin, or a missing preview bundle, fails", async t => {
+  await assert.rejects(build(t, {}, ["--preview-origin", "https://preview.example"]), /must be given together/);
+  await assert.rejects(build(t, {}, ["--app-origin", "https://app.example"]), /must be given together/);
+  await assert.rejects(build(t, { SKIP_PREVIEW_BUNDLE: "1" }, [
+    "--preview-origin", "https://preview.example", "--app-origin", "https://app.example",
+  ]), /output-preview\/preview-service-worker.js is missing/);
 });

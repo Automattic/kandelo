@@ -371,17 +371,25 @@ function browserHtmlEntryModules(repoRoot, browserRoot, entry) {
     const source = htmlAttribute(attributes, "src");
     if (source === null) continue;
     const pathPart = source.split(/[?#]/, 1)[0];
+    // One leading "/" names a module from the app root: Vite resolves it
+    // against its root (this app) and prefixes the deployment base. A page
+    // served at other URLs than its own (the viewer shell answers every
+    // `computer/<name>/` address) must name its module that way.
+    const rootRelative = /^\/[^/]/.test(pathPart);
     if (
       pathPart.length === 0
-      || isAbsolute(pathPart)
+      || (!rootRelative && isAbsolute(pathPart))
       || /^[a-z][a-z0-9+.-]*:/i.test(pathPart)
       || pathPart.startsWith("//")
+      || pathPart === "/"
     ) {
       throw new Error(
         `required browser HTML module source is not app-relative: ${source}`,
       );
     }
-    const unresolved = resolve(dirname(real), pathPart);
+    const unresolved = rootRelative
+      ? resolve(browserRoot, `.${pathPart}`)
+      : resolve(dirname(real), pathPart);
     if (!pathIsWithin(browserRoot, unresolved)) {
       throw new Error(`required browser HTML module escapes the app: ${source}`);
     }

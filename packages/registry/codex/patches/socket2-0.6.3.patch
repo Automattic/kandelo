@@ -1,0 +1,38 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -522,6 +522,7 @@
+         target_os = "ios",
+         target_os = "visionos",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "macos",
+         target_os = "netbsd",
+         target_os = "tvos",
+@@ -552,6 +553,7 @@
+             target_os = "ios",
+             target_os = "visionos",
+             target_os = "linux",
++        target_os = "kandelo",
+             target_os = "macos",
+             target_os = "netbsd",
+             target_os = "tvos",
+--- a/src/sys/unix.rs
++++ b/src/sys/unix.rs
+@@ -409,6 +409,9 @@
+ ))]
+ type IovLen = c_int;
+ 
++#[cfg(target_os = "kandelo")]
++type IovLen = c_int;
++
+ /// Unix only API.
+ impl Domain {
+     /// Domain for low-level packet interface, corresponding to `AF_PACKET`.
+@@ -1257,6 +1260,7 @@
+         target_os = "ios",
+         target_os = "visionos",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "macos",
+         target_os = "netbsd",
+         target_os = "tvos",

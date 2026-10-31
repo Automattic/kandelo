@@ -1,0 +1,93 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -116,7 +116,7 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(target_family = "wasm")'.dependencies.web-sys]
++[target.'cfg(all(target_family = "wasm", not(target_os = "kandelo")))'.dependencies.web-sys]
+ version = "0.3"
+ features = ["Window"]
+ 
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -45,7 +45,7 @@
+ )]
+ #[cfg_attr(target_os = "macos", path = "macos.rs")]
+ #[cfg_attr(target_os = "android", path = "android.rs")]
+-#[cfg_attr(target_family = "wasm", path = "wasm.rs")]
++#[cfg_attr(all(target_family = "wasm", not(target_os = "kandelo")), path = "wasm.rs")]
+ #[cfg_attr(windows, path = "windows.rs")]
+ #[cfg_attr(
+     all(
+@@ -56,7 +56,7 @@
+             target_os = "visionos",
+             target_os = "macos",
+             target_os = "android",
+-            target_family = "wasm",
++            all(target_family = "wasm", not(target_os = "kandelo")),
+             windows,
+         )),
+     ),
+@@ -74,7 +74,7 @@
+             target_os = "visionos",
+             target_os = "macos",
+             target_os = "android",
+-            target_family = "wasm",
++            all(target_family = "wasm", not(target_os = "kandelo")),
+         )),
+     ),
+ ))]
+@@ -330,7 +330,7 @@
+         target_os = "visionos",
+         target_os = "macos",
+         target_os = "android",
+-        target_family = "wasm",
++        all(target_family = "wasm", not(target_os = "kandelo")),
+         windows,
+         unix,
+     )) {
+@@ -352,7 +352,7 @@
+         target_os = "ios",
+         target_os = "tvos",
+         target_os = "visionos",
+-        target_family = "wasm"
++        all(target_family = "wasm", not(target_os = "kandelo"))
+     ))]
+     fn is_http(&self) -> bool {
+         matches!(self.0.scheme(), "http" | "https")
+@@ -365,7 +365,7 @@
+         target_os = "ios",
+         target_os = "tvos",
+         target_os = "visionos",
+-        target_family = "wasm"
++        all(target_family = "wasm", not(target_os = "kandelo"))
+     ))]
+     fn get_http_url(&self) -> Result<&str> {
+         if self.is_http() {
+@@ -375,7 +375,7 @@
+         }
+     }
+ 
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))]
+     fn from_file_path(value: &str) -> Result<Self> {
+         let pb = std::path::PathBuf::from(value);
+         let url = url::Url::from_file_path(if pb.is_relative() {
+@@ -406,14 +406,14 @@
+ impl std::convert::TryFrom<&str> for TargetType {
+     type Error = Error;
+ 
+-    #[cfg(target_family = "wasm")]
++    #[cfg(all(target_family = "wasm", not(target_os = "kandelo")))]
+     fn try_from(value: &str) -> Result<Self> {
+         url::Url::parse(value)
+             .map(|u| Ok(Self(u)))
+             .map_err(|_| Error::new(ErrorKind::InvalidInput, "invalid url for wasm"))?
+     }
+ 
+-    #[cfg(not(target_family = "wasm"))]
++    #[cfg(not(all(target_family = "wasm", not(target_os = "kandelo"))))]
+     fn try_from(value: &str) -> Result<Self> {
+         match url::Url::parse(value) {
+             Ok(u) => {

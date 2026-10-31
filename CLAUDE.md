@@ -289,6 +289,17 @@ VFS images are product artifacts and system state. Demo presentation metadata
 belongs in `/etc/kandelo/demo.json` via the VFS image builder, not in
 package-specific app-loader fallbacks.
 
+Guest web previews run on a separate preview origin, never the app's
+origin, not even as a fallback. Credential request fields
+(`Authorization`, `ChatGPT-Account-ID`) leave a browser machine through
+Kandelo's proxy and relay path only for a process holding a
+kernel-recorded credential grant. The grant governs those header fields,
+not data: a token in a guest file or a request body is ordinary data any
+process of the same user can send. Proxies forward `Authorization` only
+with the opt-in a grant produces; do not add another way for credential
+fields through a proxy or allow-list, and never allow-list
+`X-Kandelo-Credential-Grant` in any proxy.
+
 See `docs/agent-guidance/browser-and-user.md` before changing browser demo
 behavior, `KernelHost`, boot descriptors, sharing, persistence, service-worker
 bridges, VFS image metadata, or user-visible browser failures.

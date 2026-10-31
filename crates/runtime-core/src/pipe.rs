@@ -351,7 +351,7 @@ pub fn deferred_in_flight_release_state() -> (usize, usize, usize) {
 }
 
 fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), Errno> {
-    if crate::descriptor_backing::add_ref_for_ofd(release.file_type, release.host_handle)? {
+    if crate::descriptor_backing::add_ref_for_ofd(release.file_type, release.host_handle, release.ofd_id)? {
         return Ok(());
     }
 
@@ -414,7 +414,7 @@ pub fn release_deferred_in_flight_resource(
 
     if crate::descriptor_backing::manages_ofd(release.file_type, release.host_handle) {
         final_ofd_reference =
-            crate::descriptor_backing::release_for_ofd(release.file_type, release.host_handle);
+            crate::descriptor_backing::release_description(release.file_type, release.host_handle, release.ofd_id);
     } else {
         match release.file_type {
             FileType::Regular | FileType::Directory | FileType::CharDevice

@@ -112,9 +112,18 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 
 The URL selects the transport endpoint; it does not define a second capability
 profile. Kandelo currently relays only `Accept`, `Content-Type`,
-`git-protocol`, `Range`, `wp_blog`, and `wp_install` at configured proxy
-boundaries, and repeats `Range` as `X-Cors-Proxy-Range`, because WP Cloud,
-which hosts the default proxy, strips `Range` before it reaches the proxy.
+`git-protocol`, `Range`, `wp_blog`, `wp_install`, and the non-credential
+fields signed-in Codex sends (`Content-Encoding`,
+`originator`, `session-id`, `version`, and the other `OpenAI-`, `OAI-`,
+`x-openai-` and `x-codex-` fields listed under troubleshooting) at
+configured proxy boundaries, and repeats `Range` as
+`X-Cors-Proxy-Range`, because WP Cloud, which hosts the default proxy,
+strips `Range` before it reaches the proxy.
 Anonymous bodyless GETs may omit other fields with a diagnostic. Requests that
 would lose credentials, a body, or state-changing semantics fail before proxy
-dispatch. Direct browser requests and Node.js-host networking are unchanged.
+dispatch. `Authorization` and `ChatGPT-Account-ID` are relayed only for a
+process the user allowed in Kandelo's credential prompt (a per-process
+credential grant), and only to the origins its package declared. A
+credentialed HTTPS request with no CORS proxy configured is refused rather
+than sent directly. Node.js-host networking is unchanged: programs there open
+real sockets, and nothing gates their credentials.

@@ -10,6 +10,12 @@ const source = options.source ? resolve(options.source)
   : fileURLToPath(new URL("../browser-demos/dist/", import.meta.url));
 for (const name of ["index.html", "service-worker.js", "vfs-groups"]) await stat(join(source, name));
 const isolationPaths = new Set(["/"]);
+// Paths a browser must revalidate on every load: the service worker script
+// and every HTML entry (and its clean URL aliases). The first reload after a
+// deploy reaches the new deployment only if neither comes from a stale copy;
+// content-hashed assets keep the host's caching. See docs/browser-support.md,
+// "Deployment updates".
+const revalidatedPaths = new Set(["/", "/service-worker.js"]);
 async function checkDirectory(directory, prefix = "") {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     if (entry.isSymbolicLink() || entry.name.startsWith(".env") ||
@@ -24,10 +30,14 @@ async function checkDirectory(directory, prefix = "") {
       if (entry.name.endsWith(".html")) {
         // Header matching uses the requested URL, including clean URL aliases.
         const clean = path.replace(/\.html$/, "");
-        isolationPaths.add(clean);
+        const aliases = [path, clean];
         if (entry.name === "index.html") {
-          isolationPaths.add(`${prefix}/`);
-          if (prefix) isolationPaths.add(prefix);
+          aliases.push(`${prefix}/`);
+          if (prefix) aliases.push(prefix);
+        }
+        for (const alias of aliases) {
+          isolationPaths.add(alias);
+          revalidatedPaths.add(alias);
         }
       }
     }
@@ -75,9 +85,22 @@ await writeFile(join(output, "sf.jsonc"), JSON.stringify({
 }, null, 2) + "\n");
 // Pages and workers need isolation, but binary assets do not. A blanket rule
 // forces assets above Spacefast's 100 MiB PHP-lane limit into an unservable path.
+// Only Kandelo may frame Kandelo: a guest page on the preview origin must not
+// frame the app (for example to clickjack a credential prompt).
 await writeFile(join(output, "_headers"), [...isolationPaths].sort().map(path => `${path}
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
-`).join("\n"));
+  Content-Security-Policy: frame-ancestors 'self'
+  Origin-Agent-Cluster: ?1
+${revalidatedPaths.has(path) ? "  Cache-Control: no-cache\n" : ""}`).join("\n"));
+// `computer/<name>/…` is the address users share. Kandelo's service worker
+// serves the viewer shell for it; this covers a first visit it does not yet
+// control. Guest pages themselves come only from the preview Space.
+try {
+  await stat(join(source, "pages/kandelo/viewer.html"));
+  await writeFile(join(output, "_redirects"), "/computer/*  /pages/kandelo/viewer.html  200\n");
+} catch (error) {
+  if (error.code !== "ENOENT") throw error;
+}
 console.log(output);

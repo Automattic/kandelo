@@ -5,6 +5,13 @@ import type {
   ExchangeRequestMessage,
 } from "./exchange-host";
 import type { RemoteSegmentInit } from "./networking/remote-segment-port";
+import type {
+  CredentialAnswerMessage,
+  CredentialRequestCancelMessage,
+  CredentialRequestMessage,
+  GetCredentialGrantMessage,
+  RevokeCredentialGrantMessage,
+} from "./kernel-protocol-shared";
 import type { VfsChangeEvent } from "./vfs/types";
 // Shared verbatim with the peer host protocol. See kernel-protocol-shared.ts
 // for which types are NOT shared and why.
@@ -198,6 +205,12 @@ export interface InitMessage {
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
   closedLazyAssets?: ClosedLazyAsset[];
   workerEntryUrl: string;
+  /**
+   * Where this machine's VFS image came from, shown to the user when a
+   * declared program asks for credentials. Embedder-supplied text, never
+   * derived from the image itself; absent reads "unknown".
+   */
+  credentialImageSource?: string;
   bridgePort?: MessagePort;
   config: {
     maxWorkers: number;
@@ -425,6 +438,9 @@ export interface ClipboardGuestWaitMessage {
 
 export type MainToKernelMessage =
   | InitMessage
+  | CredentialAnswerMessage
+  | GetCredentialGrantMessage
+  | RevokeCredentialGrantMessage
   | ExchangeRequestMessage
   | ExchangeRangeMessage
   | AttachRemotePeerMessage
@@ -606,6 +622,8 @@ export interface VfsChangeMessage {
 
 export type KernelToMainMessage =
   | ReadyMessage
+  | CredentialRequestMessage
+  | CredentialRequestCancelMessage
   | ExchangeRangeRequestMessage
   | ExchangeNotificationsMessage
   | { type: "audio_activity" }

@@ -5,14 +5,17 @@ upstream Rust, isolated for review and as the basis for upstreaming the
 target (rust-lang/libc + rust-lang/rust) as tier-3.
 
 - **libc:** `../libc-kandelo.patch` (the build-time overlay itself,
-  applied to the `sdk/rust/libc-upstream` submodule). ~9 files: the
+  applied to the `sdk/rust/libc-upstream` submodule). It contains the
   `kandelo` dispatch arms plus the wasm32 arch leaf reconciled to
   Kandelo's `wasm32posix` ABI (the bulk is the 279-entry syscall-number
-  table). This is both the build input and the upstream submission.
+  table), plus ILP32 signal, pthread, and semaphore layouts matching the
+  installed musl headers. This is both the build input and the upstream
+  submission.
 - `std-overlay.patch` — diff of `sdk/rust/std-overlay/` against the
-  pinned toolchain's `library/`. ~10 files, ~55 changed lines: `kandelo`
-  `cfg` arms in `std`'s unix pal. Small because we reuse the existing
-  unix backend rather than authoring one.
+  pinned toolchain's `library/`: `kandelo` selectors in std's Unix backend,
+  descriptor duplication through `fcntl`, file locking through `flock`,
+  and the documented unsupported
+  stack-backtrace backend. These reuse existing implementations.
 
 Regenerate the libc patch: `git -C sdk/rust/libc-upstream diff` after
 editing the submodule tree, or diff a working copy against the pinned

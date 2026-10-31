@@ -170,8 +170,13 @@ const ShellTerminalHost: React.FC<{
       const preview = host.getWebPreview();
       // Loopback URLs the machine prints are reachable from the page only
       // through a running HTTP bridge, and only on the one port it forwards.
-      const machine = preview && preview.status === "running" && typeof preview.port === "number"
-        ? { url: preview.url, port: preview.port }
+      // They open Kandelo's viewer shell for the machine, the address users
+      // share, never the preview origin directly: a top-level preview-origin
+      // tab may not reach the owner's bridge (WebKit partitions by top-level
+      // origin).
+      const machine = preview && preview.status === "running" &&
+          typeof preview.port === "number" && preview.viewerUrl
+        ? { url: preview.viewerUrl, port: preview.port }
         : null;
       return { pageUrl: window.location.href, machine };
     });

@@ -46,6 +46,14 @@ const out=mkdtempSync(join(process.cwd(),'.context/spacefast-kandelo-build-'));
 writeFileSync(join(out,'sf.jsonc'),JSON.stringify({runtime:{kind:'functions'}}));
 console.log('build shell startup notice');console.log(out);
 `);
+  await writeFile(join(root, "apps/spacefast-cors-proxy/build-preview-site.mjs"), `
+import {appendFileSync,mkdtempSync} from 'node:fs';
+import {join} from 'node:path';
+const args=process.argv.slice(2);
+appendFileSync('trace.jsonl',JSON.stringify({tool:'package-preview',args})+'\\n');
+const out=mkdtempSync(join(process.cwd(),'.context/spacefast-kandelo-preview-'));
+console.log(out);
+`);
   await writeFile(join(root, "bin/sf"), `#!${process.execPath}
 const fs=require('node:fs');
 const args=process.argv.slice(2);
@@ -140,4 +148,47 @@ test("build, package and publish failures stop the workflow without a fallback d
     await assert.rejects(f.run(["--space", "https://app.example", "--publish"], { [variable]: "1" }), /deployment stopped/);
     assert.deepEqual((await f.trace()).map(step => step.tool), expected);
   }
+});
+
+test("a preview Space is built for this app, packaged, and published before the app", async t => {
+  const f = await fixture(t);
+  await f.run(["--space", "https://app.example", "--preview-space", "https://preview.example", "--dry-run"]);
+  const trace = await f.trace();
+  assert.deepEqual(trace.map(step => step.tool), ["sf", "build", "package", "package-preview", "sf", "sf"]);
+  const site = trace[1].args[trace[1].args.indexOf("--out") + 1];
+  assert.deepEqual(trace[1].args.slice(-4), ["--preview-origin", "https://preview.example",
+    "--app-origin", "https://app.example"]);
+  // The preview Space is never approved for the CORS proxy.
+  assert.ok(!trace[2].args.includes("https://preview.example"));
+  assert.deepEqual(trace[3].args, [`${site}-preview`, "--app-origin", "https://app.example"]);
+  assert.ok(trace[4].args[1].startsWith(join(f.root, ".context/spacefast-kandelo-preview-")));
+  assert.deepEqual(trace[4].args.slice(2), ["--prebuilt", "--space", "https://preview.example", "--wait", "--dry-run"]);
+  assert.deepEqual(trace[5].args.slice(2), ["--prebuilt", "--space", "https://app.example", "--wait", "--dry-run"]);
+});
+
+test("a preview Space must be a separate HTTPS Space that the proxy does not approve", async t => {
+  const f = await fixture(t);
+  for (const args of [
+    ["--space", "https://app.example", "--preview-space", "https://app.example"],
+    ["--space", "https://app.example", "--preview-space", "http://preview.example"],
+    ["--space", "https://app.example", "--preview-space", "https://preview.example",
+      "--allow-referer", "https://preview.example"],
+    ["--space", "https://app.example", "--preview-space", "https://a.example", "--preview-space", "https://b.example"],
+  ]) {
+    await assert.rejects(f.run(args));
+  }
+  // Guest pages must never spend the proxy's quota as Kandelo, whichever
+  // order the flags come in.
+  for (const args of [
+    ["--space", "https://app.example", "--preview-space", "https://preview.example",
+      "--allow-referer", "https://preview.example"],
+    ["--space", "https://app.example", "--allow-referer=https://preview.example",
+      "--preview-space=https://preview.example"],
+  ]) {
+    await assert.rejects(f.run(args), error => {
+      assert.match(error.stderr, /--preview-space must not be approved for the CORS proxy/);
+      return true;
+    });
+  }
+  assert.deepEqual(await f.trace(), []);
 });

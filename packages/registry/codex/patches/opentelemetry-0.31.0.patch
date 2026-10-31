@@ -1,0 +1,30 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -145,7 +145,7 @@
+ version = "1.0"
+ features = ["full"]
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))'.dependencies.js-sys]
+ version = "0.3.63"
+ 
+ [lints.clippy.all]
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -287,14 +287,14 @@
+     #[doc(hidden)]
+     #[cfg(any(
+         not(target_arch = "wasm32"),
+-        all(target_arch = "wasm32", target_os = "wasi")
++        all(target_arch = "wasm32", any(target_os = "wasi", target_os = "kandelo"))
+     ))]
+     pub fn now() -> SystemTime {
+         SystemTime::now()
+     }
+ 
+     #[doc(hidden)]
+-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
++    #[cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))]
+     pub fn now() -> SystemTime {
+         SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(js_sys::Date::now() as u64)
+     }

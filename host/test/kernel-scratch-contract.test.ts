@@ -612,6 +612,14 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#drainAndProcessWakeupEventsWithinKernelEntry::kernel-export-direct-use::takePtyReadiness?.()",
   ),
+  // A process's credential grant id: a pid and a u32 grant id in, a scalar
+  // status or id out. No pointer, no kernel-memory borrow.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.setCredentialGrant::kernel-export-direct-use::set(pid, grant | 0)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.getCredentialGrant::kernel-export-direct-use::get(pid)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIncomingVirtualTcpConnection::kernel-export-direct-use::( this.#kernelInstanceForEntry(entry).exports.kernel_tcp_connection_id as ( recv: number, send: number, ) => number )(recvPipeIdx, recvPipeIdx + 1)",
   ),

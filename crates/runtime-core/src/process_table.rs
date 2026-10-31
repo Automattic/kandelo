@@ -316,7 +316,7 @@ pub fn bump_inherited_resource_refcounts(
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
     let inherited_ofd_count = child.ofd_table.iter().count();
-    let mut shared_backings_bumped: Vec<(FileType, i64)> = Vec::new();
+    let mut shared_backings_bumped: Vec<(FileType, i64, crate::lock::OfdId)> = Vec::new();
     shared_backings_bumped
         .try_reserve_exact(inherited_ofd_count)
         .map_err(|_| Errno::ENOMEM)?;
@@ -325,12 +325,12 @@ pub fn bump_inherited_resource_refcounts(
         .try_reserve_exact(owned_socket_indices.len())
         .map_err(|_| Errno::ENOMEM)?;
     for (_idx, ofd) in child.ofd_table.iter() {
-        match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle) {
-            Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle)),
+        match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle, ofd.ofd_id) {
+            Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle, ofd.ofd_id)),
             Ok(false) => {}
             Err(err) => {
-                for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
-                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                for (file_type, host_handle, ofd_id) in shared_backings_bumped.into_iter().rev() {
+                    crate::descriptor_backing::release_description(file_type, host_handle, ofd_id);
                 }
                 return Err(err);
             }
@@ -360,8 +360,8 @@ pub fn bump_inherited_resource_refcounts(
                 for added_sock_idx in unix_registry_owners_added.into_iter().rev() {
                     registry.remove_owner_exact(child.pid, added_sock_idx);
                 }
-                for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
-                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                for (file_type, host_handle, ofd_id) in shared_backings_bumped.into_iter().rev() {
+                    crate::descriptor_backing::release_description(file_type, host_handle, ofd_id);
                 }
                 return Err(err);
             }
@@ -826,7 +826,7 @@ impl ProcessTable {
         // Normal exit closes
         // fds first; this also covers crash removal and spawn rollback.
         for (_ofd_idx, ofd) in proc.ofd_table.iter() {
-            crate::descriptor_backing::release_for_ofd(ofd.file_type, ofd.host_handle);
+            crate::descriptor_backing::release_description(ofd.file_type, ofd.host_handle, ofd.ofd_id);
         }
 
         // Drop host-backed file and directory handles that a process still

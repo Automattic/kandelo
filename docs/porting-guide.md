@@ -655,57 +655,38 @@ Symlinks, ownership and directory trees belong in the image: build them with
 
 ### HTTP bridge demos (nginx, WordPress)
 
-For demos that serve HTTP (nginx, PHP-FPM, WordPress), a service worker intercepts browser requests and routes them to the kernel:
+A demo whose image runs a web server (nginx, PHP-FPM, WordPress) declares it
+in its `/etc/kandelo/demo.json` web configuration; the browser app does the
+rest. It boots the image, waits for the server's port and services, and shows
+the server's pages in the web preview pane. Guest pages are served from the
+deployment's separate preview origin, never from Kandelo's own, so a ported
+app's scripts cannot reach the Kandelo page. Each request travels from the
+preview origin's service worker to the tab that owns the machine, which
+forwards it with `BrowserKernel.fetchInKernel` as a TCP connection to the
+server's listening socket. See
+[Guest web previews run on their own origin](browser-support.md#guest-web-previews-run-on-their-own-origin).
 
-```typescript
-import { HttpBridgeHost } from "../../lib/http-bridge";
+What a ported web app should expect:
 
-const DEPLOYMENT_PREFIX = import.meta.env.BASE_URL;
-const APP_PREFIX = DEPLOYMENT_PREFIX + "app/";
-const SW_URL = DEPLOYMENT_PREFIX + "service-worker.js";
-const bridge = new HttpBridgeHost();
+- It is served under `<scope>computer/<name>/`. The bridge sends `Host`,
+  `X-Forwarded-Host`, `X-Forwarded-Prefix` (`<scope>computer/<name>`),
+  `X-Forwarded-Proto` and `X-Forwarded-URI`. Build absolute links from them,
+  as WordPress does through `WP_HOME`; same-host absolute URLs and redirects
+  are rewritten under the prefix as a fallback.
+- Cookies are kept per machine by the owning tab and never reach the browser.
+- An app that allows only same-origin framing (`X-Frame-Options: SAMEORIGIN`,
+  `frame-ancestors 'self'`) keeps working: the bridge also admits the Kandelo
+  page that hosts the preview. `DENY` and `frame-ancestors 'none'` stay as
+  the app wrote them and block the preview, as they would anywhere.
+- The frame is sandboxed without top navigation, popups may escape it, and
+  WebSockets are not bridged (service workers never see them).
 
-// Register service worker and init bridge
-const registered = await navigator.serviceWorker.register(SW_URL, {
-  scope: DEPLOYMENT_PREFIX,
-  updateViaCache: "none",
-});
-const reg = await navigator.serviceWorker.ready;
-const expectedScope = new URL(DEPLOYMENT_PREFIX, location.href).href;
-if (registered.scope !== expectedScope || reg.scope !== expectedScope) {
-  throw new Error("service worker scope differs from deployment prefix");
-}
-const reply = new MessageChannel();
-await new Promise<void>((resolve) => {
-  reply.port1.onmessage = () => resolve();
-  reg.active!.postMessage(
-    { type: "init-bridge", appPrefix: APP_PREFIX },
-    [bridge.getSwPort(), reply.port2],
-  );
-});
-
-// Connect bridge to kernel
-kernel.sendBridgePort(bridge.detachHostPort(), 8080);
-
-// When nginx starts listening, load iframe
-kernel.options.onListenTcp = (pid, fd, port) => {
-  document.getElementById("frame").src = APP_PREFIX;
-};
-```
-
-The service worker (`public/service-worker.js`) handles:
-- Adding COOP/COEP headers for cross-origin isolation
-- Routing requests matching `appPrefix` to the kernel via MessagePort
-- Cookie jar for session persistence (WordPress)
-
-Put the worker script at the root of the deployment prefix and use its exact
-script-directory scope. Do not use `Service-Worker-Allowed` to broaden a
-worker to `/` or a sibling deployment. Bridge authority, cookies,
-cross-origin-isolation retry state, and the lazy VFS cache belong to that one
-scope. The origin-wide Kandelo theme preference is separate UI state and is
-not part of the bridge or machine. See
-[Directory-scoped production hosting](browser-support.md#directory-scoped-production-hosting)
-for the complete hosting and troubleshooting contract.
+Directory-scoped production hosting keeps each deployment's app and preview
+bundle at the same prefix on their two origins. Each origin's worker script
+sits at the root of that prefix and uses its exact script-directory scope. Do
+not use `Service-Worker-Allowed` to broaden either worker to `/` or a sibling
+deployment. See
+[Directory-scoped production hosting](browser-support.md#directory-scoped-production-hosting).
 
 ### Thread support in browser UI and labs
 

@@ -297,7 +297,26 @@ To build the deployable static site, run:
 It runs the local build, produces the authenticated VFS asset group, runs the
 production Vite build, and checks the result. Upload the contents of the
 output directory (default `apps/browser-demos/dist/`) so it is served at
-exactly the chosen base.
+exactly the chosen base. Serve `service-worker.js` and the HTML pages with
+`Cache-Control: no-cache`, and keep any edge cache from answering them from
+an old copy; otherwise visitors' first reload after an update can stay on
+the previous deployment (see
+[deployment updates](docs/browser-support.md#deployment-updates)). The
+Spacefast packager sets this; on WP Cloud, configure it for the site.
+
+Guest web previews (WordPress, nginx, any server inside a machine) run on
+a second origin so their scripts cannot reach the Kandelo page. Add
+`--preview-origin ORIGIN --app-origin ORIGIN` to also write the preview
+origin's bundle to `<out>-preview`, and serve it at the same base on that
+origin. `--preview-host php` builds that bundle as PHP scripts that send
+their own headers, for a PHP host such as WP Cloud. A build without them
+refuses to open web previews; it never serves guests from the app's
+origin. The preview origin may be a subdomain on the app's site
+(`preview.kandelo.dev`) or a separate domain (`kandelo.site`); see
+[guest web previews](docs/browser-support.md#guest-web-previews-run-on-their-own-origin)
+for what the preview origin must send and
+[choosing a preview origin](docs/browser-support.md#choosing-a-preview-origin)
+for the trade-off.
 
 WP Cloud can keep serving this static build with the portable PHP signalling
 endpoint (`--signalling-url /signalling/piplet.php`) and its chosen CORS proxy.
@@ -354,8 +373,12 @@ already active, reload the page; clearing site data may be needed if the browser
 keeps an older service worker around.
 
 The application owns one complete proxy profile. The current profile relays
-only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`, and
-`wp_install`, by case-insensitive field name, at every configured proxy
+only `Accept`, `Content-Type`, `git-protocol`, `Range`, `wp_blog`,
+`wp_install`, and the non-credential fields signed-in Codex sends
+(`Content-Encoding`, `originator`, `session-id`,
+`version`, and the other `OpenAI-`, `OAI-`, `x-openai-` and `x-codex-`
+fields listed in `docs/browser-support.md`), by
+case-insensitive field name, at every configured proxy
 dispatch, and also sends `Range` as `X-Cors-Proxy-Range` (a workaround the
 default proxy needs because WP Cloud, which hosts it, strips `Range` before
 the request reaches its PHP). Unsupported

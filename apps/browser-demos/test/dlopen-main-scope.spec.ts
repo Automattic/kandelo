@@ -52,5 +52,7 @@ test("dlopen(NULL) resolves the main program in BrowserKernel", async ({ page })
     stderr: "",
     combined: "self=42 default=8 data=35\n",
     hostDiagnostics: [],
+    // An undeclared program raises no credential question.
+    credentialRequests: [],
   });
 });

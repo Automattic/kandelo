@@ -97,7 +97,11 @@ test("produces every registered image and the 80-body closure from all legacy re
         private: basename(private_path),
       })),
       PRODUCTS.map(([id, load, _sourceName, output]) => ({
-        group: "vfs-groups/release-1/manifest.json",
+        // The group's address names its manifest's digest, so a rebuilt
+        // group never reuses an address that served other bytes.
+        group: `vfs-groups/sha256-${sha256(
+          readFileSync(join(fixture.outputDirectory, "manifest.json")),
+        )}/manifest.json`,
         id,
         load,
         private: output,
@@ -333,6 +337,51 @@ test("resolves product image URL imports to the image the grouped build ships", 
     assert.ok(
       existsSync(join(fixture.outputDirectory, "images/shell.vfs.zst")),
       "the resolved URL names a file the group ships",
+    );
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test("rejects a private map whose asset group address does not name its manifest digest", async () => {
+  // A fixed group address (the former vfs-groups/release-1/) serves
+  // different bytes after a deploy. A service worker or edge cache that still
+  // holds the old bytes then answers the new page with them.
+  const fixture = await createFixture();
+  try {
+    await withSourceOnlyRoot(fixture.sourceOnlyRoot, () =>
+      buildLocalVfsAssetGroup({
+        assetGroupDirectory: fixture.outputDirectory,
+        productMapPath: fixture.productMapPath,
+        sourceRoot,
+      }),
+    );
+    const original = readFileSync(fixture.productMapPath, "utf8");
+    const digest = JSON.parse(original).products[0].asset_group.sha256 as string;
+    for (const path of [
+      "vfs-groups/release-1/manifest.json",
+      `vfs-groups/sha256-${"0".repeat(64)}/manifest.json`,
+      `vfs-groups/${digest}/manifest.json`,
+    ]) {
+      const map = JSON.parse(original);
+      for (const product of map.products) product.asset_group.path = path;
+      writeFileSync(fixture.productMapPath, canonicalJson(map));
+      assert.throws(
+        () => loadVfsProductDeploymentMap({ mapPath: fixture.productMapPath, sourceRoot }),
+        /asset group .*content address/,
+        path,
+      );
+    }
+    // A deployment may still place the content-addressed group deeper.
+    const map = JSON.parse(original);
+    for (const product of map.products) {
+      product.asset_group.path = `nested/sha256-${digest}/manifest.json`;
+    }
+    writeFileSync(fixture.productMapPath, canonicalJson(map));
+    assert.equal(
+      loadVfsProductDeploymentMap({ mapPath: fixture.productMapPath, sourceRoot })
+        .products[0]!.asset_group!.path,
+      `nested/sha256-${digest}/manifest.json`,
     );
   } finally {
     fixture.dispose();
@@ -1072,4 +1121,20 @@ function generatedSnapshot(fixture: Fixture): unknown {
     map: sha256(map),
     vim: sha256(vim),
   };
+}
+
+/** The private map's encoding: sorted keys, one trailing newline. */
+function canonicalJson(value: unknown): string {
+  const normalize = (candidate: unknown): unknown => {
+    if (Array.isArray(candidate)) return candidate.map(normalize);
+    if (candidate !== null && typeof candidate === "object") {
+      return Object.fromEntries(
+        Object.entries(candidate)
+          .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+          .map(([key, child]) => [key, normalize(child)]),
+      );
+    }
+    return candidate;
+  };
+  return `${JSON.stringify(normalize(value))}\n`;
 }

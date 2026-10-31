@@ -1,0 +1,34 @@
+--- a/src/thread_parker/mod.rs
++++ b/src/thread_parker/mod.rs
+@@ -68,12 +68,12 @@
+         mod imp;
+     } else if #[cfg(all(
+         feature = "nightly",
+-        target_family = "wasm",
++        all(target_family = "wasm", not(target_os = "kandelo")),
+         target_feature = "atomics"
+     ))] {
+         #[path = "wasm_atomic.rs"]
+         mod imp;
+-    } else if #[cfg(target_family = "wasm")] {
++    } else if #[cfg(all(target_family = "wasm", not(target_os = "kandelo")))] {
+         #[path = "wasm.rs"]
+         mod imp;
+     } else {
+--- a/src/thread_parker/unix.rs
++++ b/src/thread_parker/unix.rs
+@@ -230,9 +230,11 @@
+         sec = sec.and_then(|sec| sec.checked_add(1));
+     }
+ 
+-    sec.map(|sec| libc::timespec {
+-        tv_nsec: nsec,
+-        tv_sec: sec,
++    sec.map(|sec| {
++        let mut ts: libc::timespec = unsafe { core::mem::zeroed() };
++        ts.tv_sec = sec;
++        ts.tv_nsec = nsec;
++        ts
+     })
+ }
+ 

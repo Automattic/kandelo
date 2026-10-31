@@ -58,6 +58,8 @@ import {
 import type { MountSpec } from "./vfs/default-mounts";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import type { CredentialRequestHandler } from "./credential-grants";
+import { CredentialRequestRelay } from "./credential-request-relay";
 import { FILE_MODES } from "./generated/abi";
 import {
   encodeClipboardText,
@@ -215,6 +217,18 @@ export interface NodeKernelHostOptions {
    * resolves.
    */
   sessionSeedTrees?: readonly NodeSessionSeedTree[];
+  /**
+   * Ask the user before a declared program may send credentials. Called when
+   * a process starts an image its package declared in
+   * `/etc/kandelo/credential-requests.d`; resolve `true` only for "Allow for
+   * this process". Absent, or a throw/rejection, denies. A program declared
+   * `launch = "wait"` does not run its first instruction until this settles.
+   * Node programs use real sockets, so on Node a grant gates nothing yet; the
+   * prompt and grant exist for parity with the browser host.
+   */
+  onCredentialRequest?: CredentialRequestHandler;
+  /** Where this machine's VFS image came from, shown in the prompt. Default "unknown". */
+  credentialImageSource?: string;
 }
 
 export interface SpawnOptions {
@@ -277,9 +291,15 @@ export class NodeKernelHost {
   private lazyDownloadListeners = new Set<(event: LazyDownloadEvent) => void>();
   private destroyProgress = createDestroyProgressFanout();
   private vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
+  private credentialRequests: CredentialRequestRelay;
 
   constructor(options?: NodeKernelHostOptions) {
     this.options = options ?? {};
+    this.credentialRequests = new CredentialRequestRelay(
+      this.options.onCredentialRequest,
+      (message) => this.sendToWorker(message),
+      (error) => console.error("[NodeKernelHost] onCredentialRequest failed; denied:", error),
+    );
   }
 
   /** Initialize the kernel by spawning a dedicated worker_thread */
@@ -475,6 +495,7 @@ export class NodeKernelHost {
           sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
           offlineEgressLink: this.options.offlineEgressLink,
+          credentialImageSource: this.options.credentialImageSource,
         };
         const transfer: Transferable[] = [
           ...(this.options.remoteNetwork?.role === "joiner"
@@ -851,6 +872,34 @@ export class NodeKernelHost {
       pid,
     });
     return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /**
+   * The credential grant id the kernel records for `pid`: 0 when it holds
+   * none, null when the process is absent or has exited. Mirrors
+   * `BrowserKernel.getCredentialGrant`.
+   */
+  async getCredentialGrant(pid: number): Promise<number | null> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_credential_grant",
+      requestId,
+      pid,
+    }) as number | null;
+  }
+
+  /**
+   * End `pid`'s credential grant now, in the kernel and the host. Resolves
+   * with the kernel's grant id afterwards (0, or null for a gone process).
+   * Mirrors `BrowserKernel.revokeCredentialGrant`.
+   */
+  async revokeCredentialGrant(pid: number): Promise<number | null> {
+    const requestId = this._nextRequestId++;
+    return await this.request(requestId, {
+      type: "revoke_credential_grant",
+      requestId,
+      pid,
+    }) as number | null;
   }
 
   /**
@@ -1277,6 +1326,7 @@ export class NodeKernelHost {
         "kernel-worker realm termination failed: " +
         (error instanceof Error ? error.message : String(error));
     }
+    this.credentialRequests.close();
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
@@ -1337,6 +1387,7 @@ export class NodeKernelHost {
   private failKernelHost(error: Error): void {
     if (this.kernelFatalError !== null) return;
     this.kernelFatalError = error;
+    this.credentialRequests.close();
     for (const { reject } of this.pendingRequests.values()) reject(error);
     this.pendingRequests.clear();
     for (const { reject } of this.exitResolvers.values()) reject(error);
@@ -1364,6 +1415,12 @@ export class NodeKernelHost {
     switch (msg.type) {
       case "exchange_range_request":
         this.exchange.handleRangeRequest(msg.source, msg.offset, msg.length);
+        break;
+      case "credential_request":
+        this.credentialRequests.request(msg);
+        break;
+      case "credential_request_cancel":
+        this.credentialRequests.cancel(msg.requestId);
         break;
       case "exchange_notifications":
         this.exchange.handleNotifications(msg.notifications);

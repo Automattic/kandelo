@@ -1,0 +1,171 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -56,7 +56,7 @@
+ name = "whoami"
+ path = "src/lib.rs"
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi"), not(daku)))'.dependencies.web-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo")), not(daku)))'.dependencies.web-sys]
+ version = "0.3"
+ features = [
+     "Navigator",
+--- a/src/conversions.rs
++++ b/src/conversions.rs
+@@ -9,6 +9,7 @@
+     #[cfg(any(
+         all(not(target_os = "windows"), not(target_arch = "wasm32")),
+         all(target_arch = "wasm32", target_os = "wasi"),
++        target_os = "kandelo",
+     ))]
+     {
+         #[cfg(not(target_os = "wasi"))]
+@@ -22,7 +23,7 @@
+ 
+     #[cfg(any(
+         target_os = "windows",
+-        all(target_arch = "wasm32", not(target_os = "wasi")),
++        all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))),
+     ))]
+     {
+         string.into_string().map_err(|_| {
+--- a/src/os/unix.rs
++++ b/src/os/unix.rs
+@@ -1,7 +1,7 @@
+ #[cfg(target_os = "illumos")]
+ use std::convert::TryInto;
+ #[cfg(any(
+-    target_os = "linux",
++    target_os = "kandelo", target_os = "linux",
+     target_os = "dragonfly",
+     target_os = "freebsd",
+     target_os = "netbsd",
+@@ -35,7 +35,7 @@
+     Arch, DesktopEnv, Platform, Result,
+ };
+ 
+-#[cfg(any(target_os = "linux", target_os = "hurd"))]
++#[cfg(any(target_os = "kandelo", target_os = "linux", target_os = "hurd"))]
+ #[repr(C)]
+ struct PassWd {
+     pw_name: *const c_void,
+@@ -94,7 +94,7 @@
+ }
+ 
+ #[cfg(any(
+-    target_os = "linux",
++    target_os = "kandelo", target_os = "linux",
+     target_os = "macos",
+     target_os = "dragonfly",
+     target_os = "freebsd",
+@@ -248,7 +248,7 @@
+     // Get PassWd `struct`.
+     let passwd = unsafe {
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "macos",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+@@ -397,7 +397,7 @@
+     machine: [c_char; 32],
+ }
+ 
+-#[cfg(any(target_os = "linux", target_os = "android",))]
++#[cfg(any(target_os = "kandelo", target_os = "linux", target_os = "android",))]
+ #[repr(C)]
+ struct UtsName {
+     sysname: [c_char; 65],
+@@ -429,7 +429,7 @@
+ unsafe fn uname(buf: *mut UtsName) -> c_int {
+     extern "C" {
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "macos",
+             target_os = "dragonfly",
+             target_os = "netbsd",
+@@ -497,7 +497,7 @@
+         }
+ 
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+             target_os = "netbsd",
+@@ -592,7 +592,7 @@
+         }
+ 
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+             target_os = "netbsd",
+@@ -639,7 +639,7 @@
+ 
+         // FIXME: WhoAmI 2.0: use `let else`
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+             target_os = "netbsd",
+@@ -649,7 +649,7 @@
+         ))]
+         let env = env::var_os("DESKTOP_SESSION");
+         #[cfg(any(
+-            target_os = "linux",
++            target_os = "kandelo", target_os = "linux",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+             target_os = "netbsd",
+@@ -684,6 +684,11 @@
+ 
+     #[inline(always)]
+     fn platform(self) -> Platform {
++        #[cfg(target_os = "kandelo")]
++        {
++            Platform::Unknown("Kandelo".to_string())
++        }
++
+         #[cfg(target_os = "linux")]
+         {
+             Platform::Linux
+@@ -749,6 +754,8 @@
+             "sparc" => Arch::Sparc,
+             "sparc64" => Arch::Sparc64,
+             "x86_64" | "amd64" => Arch::X64,
++            "wasm32" => Arch::Wasm32,
++            "wasm64" => Arch::Wasm64,
+             _ => Arch::Unknown(arch_str.into_owned()),
+         })
+     }
+--- a/src/os.rs
++++ b/src/os.rs
+@@ -12,6 +12,7 @@
+     all(
+         any(
+             target_os = "linux",
++            target_os = "kandelo",
+             target_os = "macos",
+             target_os = "dragonfly",
+             target_os = "freebsd",
+@@ -20,7 +21,7 @@
+             target_os = "illumos",
+             target_os = "hurd",
+         ),
+-        not(target_arch = "wasm32")
++        any(not(target_arch = "wasm32"), target_os = "kandelo")
+     ),
+     path = "os/unix.rs"
+ )]
+@@ -33,7 +34,7 @@
+ #[cfg_attr(
+     all(
+         target_arch = "wasm32",
+-        not(target_os = "wasi"),
++        not(any(target_os = "wasi", target_os = "kandelo")),
+         not(daku),
+         feature = "web",
+     ),

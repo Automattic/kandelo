@@ -239,7 +239,7 @@ pipe pair.
   and `curl` against those virtual sockets. Its current browser verification is
   deferred by the multi-kernel scheduling limitation documented below; the
   equivalent packaged-netcat virtual-network path remains covered on Node.js.
-- Service worker cookie jar for session persistence (WordPress)
+- Guest web previews on a separate preview origin, with a per-machine cookie jar in the owning tab (WordPress sessions); see [Guest web previews run on their own origin](#guest-web-previews-run-on-their-own-origin)
 - nginx serves static files and proxies to PHP-FPM via loopback TCP
 
 ### Filesystem
@@ -311,15 +311,18 @@ wired to xterm.js by `apps/browser-demos/lib/terminal-links.ts`:
 - **Third-party destinations** open with `rel="noopener noreferrer"`. A Kandelo
   page URL can carry machine state — a `#k1=` boot descriptor, a share link —
   so the `Referer` header is withheld from anything that is not this machine.
-- **Same-origin destinations**, including the machine's own web surface, open
-  with `rel="noopener"` and do send a referrer.
+- **Same-origin destinations**, including the machine's own viewer address,
+  open with `rel="noopener"` and do send a referrer.
 - **Loopback URLs an in-machine program printed** (`localhost`, `127.0.0.0/8`,
   `0.0.0.0`, `[::1]`, `[::]`) name a port in the *machine's* network namespace,
-  not on the user's computer. The service-worker HTTP bridge forwards exactly
-  one machine port to the app prefix, so such a URL is rewritten onto that
-  prefix — `http://localhost:8080/wp-admin/` becomes
-  `<origin>/computer/<name>/wp-admin/` —
-  and only when its port matches the bridged one.
+  not on the user's computer. The preview bridge forwards exactly one machine
+  port, so such a URL is rewritten onto the machine's Kandelo viewer address
+  — `http://localhost:8080/wp-admin/` becomes
+  `<app origin>/computer/<name>/wp-admin/` —
+  and only when its port matches the bridged one. It never opens the preview
+  origin directly: a top-level preview-origin tab may not reach the owning
+  tab's bridge (see
+  [Guest web previews run on their own origin](#guest-web-previews-run-on-their-own-origin)).
 - **Loopback URLs on any other port, or with no bridge running, are not
   linkified at all.** Nothing forwards them, and a click that silently landed
   on the user's own machine would be worse than plain text.
@@ -1444,28 +1447,538 @@ Direct same-origin artifact requests keep their caller's credential policy.
 The Node.js host is unaffected and continues to fetch its lazy URLs directly.
 
 The current profile allows `Accept`, `Content-Type`, `git-protocol`,
-`Range`, `wp_blog`, and `wp_install`, and copies `Range` into
-`X-Cors-Proxy-Range` (see "Byte-range reads through the proxy" below). Every
-actual proxy boundary projects by case-insensitive field name only and
-preserves browser-representable values and occurrences as far as Fetch
-permits. Request fields the browser sets or
-forbids on every `fetch()` — the Fetch forbidden request-header names plus
+`Range`, `wp_blog`, and `wp_install`, plus the ordinary (non-credential)
+fields signed-in Codex 0.163.0 sends: `Content-Encoding`,
+`OAI-Product-Sku`, `OpenAI-Beta`, `originator`, `session-id`,
+`thread-id`, `version`, `x-client-request-id`, `x-codex-beta-features`,
+`x-codex-parent-thread-id`, `x-codex-routing-hint`,
+`x-codex-turn-metadata`, `x-codex-turn-state`, `x-codex-window-id`,
+`x-openai-product-sku`, and `x-openai-subagent`, and the two it sends
+only for US-residency and FedRAMP accounts,
+`x-openai-account-routing-override` and `x-openai-fedramp`, and
+`x-openai-internal-codex-responses-lite`, which it sends with every
+model its catalog marks `use_responses_lite` (every model a ChatGPT
+account can use in 0.163.0; a live signed-in turn was refused for
+lacking it). These are the fields observed from Codex 0.163.0 against
+local mock servers and live, plus those read from its source for
+account classes and sub-agents the probe could not reach. Codex's
+telemetry (`statsig-api-key`), its attestation and desktop-only fields,
+and `x-openai-memgen-request` (sent only by its
+`memories` feature, which is off by default) are not relayed; a request
+that carries one fails before dispatch, naming it. It copies `Range`
+into `X-Cors-Proxy-Range` (see "Byte-range reads through the proxy"
+below). The Codex fields are relayed for any request, granted or not. A
+proxy whose preflight does not allow one fails a request that carries it
+at the browser's CORS check rather than dropping the field; today that
+includes the default Playground proxy, whose allow-list has not been
+extended yet. The Spacefast proxy in `apps/spacefast-cors-proxy` allows
+all of them (and `Cache-Control`). `Cache-Control` is deliberately not
+relayed: Codex sends it only on its user-settings call
+(`GET .../wham/settings/user`), which a model turn does not need and
+which is refused before dispatch, naming the field. If the profile
+relayed it, an anonymous GET that carries it (pip, for one, sends
+`Cache-Control: max-age=0` when it revalidates a package index) would
+fail the Playground proxy's preflight instead of going out without the
+field. Every actual proxy boundary projects by case-insensitive field
+name only and preserves browser-representable values and occurrences as
+far as Fetch permits. Request fields the browser sets or forbids on
+every `fetch()` — the Fetch forbidden request-header names plus
 browser-owned identity/client-hint fields such as `content-length`,
-`accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted for
-**any** method, because a guest value for them can never reach the origin
-regardless of the allow-list; their omission is the browser's constraint,
-not a proxy-imposed loss. This is what lets a body-bearing smart-HTTP
-`git-upload-pack` POST traverse the proxy: a browser `git clone https://…`
-succeeds because only the application-owned fields, all of which are
-allow-listed (`Accept`, `Content-Type`, `git-protocol`), are forwarded. An
-anonymous bodyless GET may additionally omit an
-application-owned unsupported field and emits a deduplicated diagnostic.
-Credential fields (`Authorization`, `Cookie`, `Cookie2`, `Proxy-Authorization`)
-are never silently dropped; a request carrying an unsupported one fails before
-dispatch. Any other application-owned unsupported field still fails a
-credentialed, body-bearing, or non-GET request before dispatch. Direct Fetch
-attempts remain unprojected. The development same-origin relay enforces the same
-profile as production.
+`accept-encoding`, `transfer-encoding`, and `user-agent` — are omitted
+for **any** method, because a guest value for them can never reach the
+origin regardless of the allow-list; their omission is the browser's
+constraint, not a proxy-imposed loss. This is what lets a body-bearing
+smart-HTTP `git-upload-pack` POST traverse the proxy: a browser
+`git clone https://…` succeeds because only the application-owned
+fields, all of which are allow-listed (`Accept`, `Content-Type`,
+`git-protocol`), are forwarded. An anonymous bodyless GET may
+additionally omit an application-owned unsupported field and emits a
+deduplicated diagnostic. Credential fields (`Authorization`,
+`ChatGPT-Account-ID`, `Cookie`, `Cookie2`, `Proxy-Authorization`) are
+never silently dropped; a request carrying one the proxy will not relay
+fails before dispatch. Only a [per-process credential
+grant](#per-process-credential-grants) relays `Authorization` or
+`ChatGPT-Account-ID`. Fields that instruct the proxy or the service
+worker (`X-Kandelo-Credential-Grant` and every `X-Cors-Proxy-*` field)
+are written only by projection: a guest request that carries one is
+refused before dispatch, granted or not, even as an anonymous GET, and a
+profile may not allow one. Any other application-owned unsupported field
+still fails a credentialed, body-bearing, or non-GET request before
+dispatch. Direct Fetch attempts remain unprojected. The development
+same-origin relay enforces the same profile as production.
+
+**Compressed request bodies.** Kandelo relays a request body and its
+`Content-Encoding` as the guest wrote them: it never decodes or
+re-encodes a `zstd` body. Signed-in Codex compresses every model turn
+(`POST .../responses`) with zstd, and those bytes reach the proxy
+byte-for-byte, with a `Content-Length` the browser derives from them;
+the proxy must relay them the same way (browsers have no zstd decoder,
+and a decoded body would be two to four times larger), as the Spacefast
+proxy does. One exception remains at the default proxy's boundary: a
+`gzip` or `deflate` body that reaches the TLS bridge is decoded and sent
+without `Content-Encoding`, because git compresses its `git-upload-pack`
+request with gzip and the Playground proxy's preflight does not allow
+`Content-Encoding` yet. That decoding goes away once the Playground
+proxy allows the field.
+
+**WebSocket handshakes.** The bridge carries HTTP requests, and
+`fetch()` cannot send `Upgrade`. A request asking to upgrade its
+connection to WebSocket therefore fails before dispatch (the guest
+receives `502 Bad Gateway` naming the reason) instead of reaching the
+destination as a plain GET. Codex tries a WebSocket first in every
+session and falls back to HTTPS with server-sent events after its
+retries; see the Codex package README. Upgrades a server may ignore,
+such as `h2c`, are still dropped as browser-controlled fields.
+
+#### Development credential relay
+
+Loopback development servers (`./run.sh browser`, `vite` on `localhost`,
+`127.0.0.1` or `[::1]`) also run a credential relay at
+`<base>/__kandelo_credential_relay`. It carries requests to
+`https://auth.openai.com`, `https://chatgpt.com`, and
+`https://api.openai.com` in the CORS proxy's place, so a signed-in
+program such as Codex can reach its service from a developer's own
+machine. Other destinations keep the ordinary proxy. Production builds
+and `vite preview` do not run it, and the public proxies are unchanged.
+
+There is no approval page and no site-wide permission. A [per-process
+credential grant](#per-process-credential-grants) is the relay's only
+permission, exactly as for the proxy:
+
+- The kernel worker projects a request to these origins as it does for
+  the proxy and sends it to
+  `<base>/__kandelo_credential_relay?url=<target>` instead, with the
+  guest's fields as request fields. A credential without a grant for the
+  target origin fails there, before anything reaches the relay. A
+  granted request carries `Authorization`, `ChatGPT-Account-ID`, the
+  opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` and the
+  grant's tag.
+- The service worker gates a request to the relay exactly as one to the
+  proxy (see the service-worker gate below): credentials or the opt-in
+  without a tag it has verified with the kernel worker get `403`, and so
+  does a tag from anything but the kernel worker's script. It removes
+  the tag and writes the opt-in itself, then sends the request on with
+  no browser cookies (`credentials: "omit"`). Cross-origin requests for
+  these origins, and requests for them to a cross-origin configured
+  proxy (`VITE_CORS_PROXY_URL`), are rerouted to the relay after the
+  same gate.
+- The relay carries a credential only on a request that carries the
+  opt-in. `Authorization` passes only when the opt-in names it, and the
+  opt-in may name nothing else. A request with `Authorization` or
+  `ChatGPT-Account-ID` and no opt-in gets `403` with a short reason; the
+  credential is never stripped and sent on. A request that still carries
+  `X-Kandelo-Credential-Grant` gets `403`: the gate removes the tag, so
+  a tagged request never passed it. Requests without credentials are
+  relayed without any opt-in. Because the opt-in is written only when
+  `Authorization` is present, a granted request that carries
+  `ChatGPT-Account-ID` alone is refused here.
+
+What it sends and answers:
+
+- It forwards to the exact HTTPS origins above and nowhere else, without
+  following redirects, and only the fields the development CORS proxy
+  allows (the default proxy profile), plus the granted credentials. It
+  never forwards the browser's `Cookie`, `Origin`, `Sec-*` fields, the
+  opt-in, or the tag.
+- It answers only its own loopback origin: a request whose `Origin` is
+  another origin, or whose `Sec-Fetch-Site` is present and not
+  `same-origin`, gets `403`, as does a `Sec-Fetch-Dest` that is present
+  and not `empty`. The service worker also refuses any load of the relay
+  that is not `fetch()`.
+- Every answer, errors included, carries
+  `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff`, and only selected inert response
+  fields (content type and Codex's protocol fields) are copied back.
+- Request bodies are limited to 8 MiB, responses to 64 MiB and ten
+  minutes, and response bodies stream. It is HTTP(S) transport, not
+  WebSocket or arbitrary TCP forwarding.
+- `GET <base>/__kandelo_credential_relay` without a target, and the
+  former `/status` and `/consent` paths, answer `404`.
+
+The boundary. The relay cannot tell a request the service worker
+produced from one any other script on the app's origin writes with the
+opt-in itself, for example in a page loaded with a forced reload, which
+the service worker does not control. A shared secret would not help: the
+service worker's source is readable by every same-origin script. The
+app's origin is therefore the trusted boundary here, as it is for the
+service-worker gate. Within it, the kernel worker still refuses every
+ungranted credential, and a granted request from a kernel worker the
+service worker does not control reaches the relay with its tag and is
+refused, visibly. Sign in inside the guest; the app does not import host
+credential files.
+
+#### Per-process credential grants
+
+`BrowserKernel` asks its `onCredentialRequest` option before a program
+whose package declared credential destinations starts (see [credential
+grants](architecture.md#credential-grants)); the Node host asks
+identically. A grant is recorded in the kernel and lasts for the
+process's life: until it exits or runs another program (any exec ends
+it). A child it starts never inherits it.
+
+**The prompt.** In the browser app the question is asked in Kandelo's
+own interface, never in the terminal the program controls. Embedders
+reach it through
+`KernelHost.setCredentialRequestHandler(handler | null)`
+(`web-libs/kandelo-session`). The app's live setup passes every question
+from its `BrowserKernel` to whichever handler is installed when the
+question arrives. The app installs its dialog
+(`apps/browser-demos/pages/kandelo/app/CredentialRequestDialog.tsx`)
+when it mounts, queueing questions in `CredentialRequestQueue`. The
+dialog shows:
+
+- the title `<title> wants to use your sign-in credentials`, where the
+  title comes from the program's declaration;
+- every destination origin the grant would cover;
+- right under them, in the main body rather than the details, the
+  intermediary each credentialed request passes through, and that whoever
+  operates it can read the credentials. A user may trust the destination
+  (OpenAI, say) and not a Kandelo CORS proxy, so the prompt names it, for
+  example: "Your credentials pass through
+  https://kandelo-codex-test.space.fast/cors-proxy, the CORS proxy this
+  site uses, which forwards them to these destinations. Whoever operates
+  that proxy can read them." The kernel worker computes this
+  (`CredentialRequest.transport`, `host/src/credential-transport.ts`) from
+  the same validated proxy configuration its network backends send
+  through, so it names the endpoint the request would actually reach, by
+  origin and path (a proxy at the root of its origin by its origin). Each
+  entry names its kind and the destinations it covers:
+  `"proxy"` for the deployment's CORS proxy; `"relay"` for the destinations
+  the [development credential relay](#development-credential-relay)
+  carries on a loopback development server, named as the relay of the
+  development server running on this computer, with the proxy named for
+  any other destination; `"none"` when the browser kernel has no CORS
+  proxy, where the prompt says credentials cannot be sent from this
+  deployment, because every credentialed request is then refused before
+  dispatch, granted or not; and `"direct"` on Node, where the program
+  connects to the destination itself with nothing in between;
+- the program's path, its process id, and where the machine's image came
+  from (`credentialImageSource`): whether this site ships that image,
+  then the URL the image bytes were fetched from. The label comes first
+  so that a long URL is what gets clipped; the full value is in the
+  details. A declared program is known only by its path inside the
+  image, so these are shown outright, not only in the details;
+- when the program's file is not the one the machine booted with, a
+  warning first: "This file has changed since the machine started". At
+  boot, when the kernel worker reads the declarations, it records the
+  identity of the file at each declared path (device, inode, size,
+  modification and change times, through the kernel's own stat). Each
+  question compares it with the file the image was actually executed
+  from (`programChangedSinceBoot`): the kernel keeps an open description
+  of every image's executable (the file `/proc/<pid>/exe` opens) and
+  reports that file's metadata (`kernel_get_exe_stat`), not what the
+  declared path names when the question is asked. Moving the declared
+  file aside, executing another file under its name and moving the
+  original back therefore still counts as changed; the in-kernel
+  filesystem keeps a renamed file's inode and change time, so a check of
+  the path would have seen the original. A
+  changed file, or one missing at boot, did not come from the image, so
+  the image row then says so ("Not from the image: this file changed
+  after the machine started") instead of crediting it to the image, and
+  the details keep the image's provenance under "Machine image" only.
+  Fetching a lazy program's bytes on first use is not a change;
+- one sentence saying what Allow means: only this running process, until
+  it exits or runs another program, and programs it starts never inherit
+  it;
+- a "Details" disclosure with the program path, the command line, the
+  parent processes up to init, the destinations, and the image source.
+
+The choices are **Allow for this process** and **Don't allow**, and, in
+the row that counts waiting questions, **Deny all waiting** (when more
+are queued: it denies the shown question and every queued one) and
+**Don't allow, and stop asking for this machine** (it denies every open
+question and every later one without asking, until the machine is torn
+down, switched or rebooted, or the page reloads; it is held in memory by
+`KernelHost.stopCredentialRequests`, never persisted, and never allows
+anything). Focus starts on "Don't allow", which is the last control, so
+Tab from it wraps to the top of the dialog. "Allow for this process" is
+disabled for 750 ms after each question appears, including each queued
+question that replaces the one just answered, the same input delay
+browsers put on their own permission prompts. Without it, keys typed
+into the terminal as the dialog opens (Tab for completion, then Enter),
+or the second click of a double-click landing on the next queued
+dialog's identical button, could answer a question the user never read.
+The delay starts again whenever the page becomes visible or its window
+regains focus, and Allow stays disabled while the page is hidden or
+unfocused, so input meant for another window cannot land on it. The two
+choices that answer for more than one question wait the same way: they
+only deny, but a stray Enter should not decide for the whole machine.
+"Don't allow" works at once. Escape answers "Don't allow", and a click
+outside the dialog answers nothing. Nothing that allows is remembered
+and there is no persistent grant state: every process, and every new
+image a process runs, asks again. Questions are queued and asked one at
+a time; the dialog says how many more are waiting. A machine has at most
+eight questions open at once (`MAX_OPEN_CREDENTIAL_QUESTIONS` in
+`host/src/credential-grants.ts`): a guest that starts declared programs
+in a loop gets the rest denied without a question, so the queue stays
+bounded. Denials are reported on the kernel worker's console, at most one
+line per machine every five seconds: the first denial at once, then one
+line counting the ones held back (`OverCapReport`). "Deny all waiting"
+clears the questions open now, which ends a finite burst, but against an
+endless loop (`while :; do codex & done`) the queue refills at once; only
+"Don't allow, and stop asking for this machine" stops the questions
+until the machine is torn down, switched or rebooted. The loop itself
+keeps running; stopping it is up to the user, as for any runaway
+process.
+
+A question closes as deny when its process exits or runs another program
+before it is answered, when the handler that holds it is replaced or
+removed, and when the machine is torn down or switched
+(`LiveKernelHost.detachKernel` withdraws open questions, and the kernel
+host's destroy denies them on the worker side). A declined program still
+runs, without a grant; Codex, declared `launch = "wait"`, runs no
+instruction until the user answers.
+
+With no handler installed, every question is denied at once. That is the
+default for any embedder that never installs one, and it also covers a
+declared program the machine starts before the app's interface mounts
+(for example from init). The dialog is app UI on the app's origin, so it
+is only as trustworthy as that origin. Guest web previews run on a
+separate preview origin and cannot script it (see [Guest web previews
+run on their own origin](#guest-web-previews-run-on-their-own-origin)).
+
+The guest's HTTPS requests consult the grant. Each request belongs to
+the process whose system call wrote its bytes, and to the grant that
+process held when it wrote them; not the process that opened the
+connection, and not a grant the same pid receives later, after an exec
+(see [which process a request belongs
+to](architecture.md#credential-grants)). Attribution follows the
+guest's TLS 1.2 record framing, so it holds only on a connection whose
+TLS engine negotiated TLS 1.2: the backend reads the version from the
+engine's ServerHello, and on any other or unreadable version no request
+on that connection is granted. When exactly one process wrote
+the request over TLS and the grant it held is still live and names the
+request's exact origin, `BrowserCorsProxy` relays the request's
+`Authorization` and `ChatGPT-Account-ID`, adds the proxy protocol's
+opt-in `X-Cors-Proxy-Allowed-Request-Headers: Authorization` (only when
+`Authorization` is present), and adds
+`X-Kandelo-Credential-Grant: <token>`, the grant's unguessable token. A
+granted request that carries neither credential gets neither header.
+
+Every other credentialed request fails before dispatch; credentials are
+never stripped and sent anyway. Through the proxy (no grant, a grant for
+other origins, a grant that changed since the write, bytes written by
+more than one process, or a credential other than those two) it fails
+with the same `BrowserCorsProxyRequestError` as before. A request the
+guest sent in cleartext, even to an HTTPS alias, and an HTTPS request
+when no CORS proxy is configured fail with
+`CredentialRequestRefusedError`: there is no grant that could cover the
+first, and nothing to carry the opt-in and tag for the second, so
+neither is sent directly with credentials. An HTTPS guest sees each
+refusal as a `502 Bad Gateway` naming the refused fields. A guest cannot
+forge the tag or the opt-in: a request that already carries either is
+refused, and a proxy profile may list neither a reserved field nor a
+credential field.
+
+**The service-worker gate.** The browser app's service worker is a
+second gate, independent of the kernel worker, at the browser's network
+edge. What it guarantees: only Kandelo's kernel-worker script can
+present a grant tag and vouch for it, so a page script, a guest web
+preview, or a worker started from any other script cannot send
+credentials through the proxy. What it does not guarantee: any script
+the app's origin runs can still start a genuine kernel worker of its own
+and answer that kernel's credential prompt itself. The app's origin is
+therefore the trusted boundary, and it runs only Kandelo's own code:
+guest web previews run on a separate preview origin (see [Guest web
+previews run on their own
+origin](#guest-web-previews-run-on-their-own-origin), including what
+that does not isolate). The gate applies to every request it handles
+that targets the configured CORS proxy, whichever origin the proxy is
+on: the kernel worker's own proxy requests, a page or worker script's,
+and the cross-origin `GET`/`HEAD` requests it wraps in the proxy itself.
+
+- A request that carries a credential field or the opt-in
+  `X-Cors-Proxy-Allowed-Request-Headers` without
+  `X-Kandelo-Credential-Grant` gets `403 Forbidden` with a short
+  plain-text reason. The body never contains a tag.
+- A tag is accepted only on an HTTPS target through the configured
+  proxy or, on a development server, the credential relay, and only
+  from a dedicated worker on the app's origin whose
+  script is exactly the kernel worker's entry: same origin and path,
+  which the build injects into the service worker
+  (`<base>@fs/…/browser-kernel-worker-entry.ts` on a development server,
+  `<base>assets/browser-kernel-worker-entry-<hash>.js` in a production
+  build or `vite preview`). Windows (pages, frames, guest previews) and
+  workers started from any other script, including `blob:` and `data:`
+  URLs, are refused without being asked anything. A tag on any other
+  request gets `403`.
+- Before it accepts a tag it has not yet verified for that client and
+  origin, the service worker asks the kernel workers over the
+  same-origin `BroadcastChannel` `kandelo-credential-grants`: `{ type:
+  "credential-grant-verify", id, tokenHash, origin, replyUrl }`.
+  `tokenHash` is the SHA-256 of the token, base64url without padding, so
+  a listener learns nothing it could use as a tag. The kernel worker
+  that holds the token answers (any same-origin listener can hear the
+  question, but only the requesting client's answer counts, and that
+  client is the kernel worker's script). It POSTs
+  `{ type: "credential-grant-verified", id, valid }` to `replyUrl`
+  (`<scope>__kandelo_credential_grant_reply`), where `valid` is
+  `CredentialGrants.verify(token, origin)`: the kernel still records
+  that grant for its process, and the grant's destinations include the
+  origin. The service worker accepts the answer only when the browser
+  stamps its fetch with the client id of the client that sent the tagged
+  request. No answer within 5 seconds, or `valid: false`, means `403`.
+- The answer is cached in the service worker's memory only, never in
+  Cache Storage or IndexedDB, as token → client id and verified origins.
+  A cached tag is accepted only from the same client and for an origin
+  verified for it. The same tag from any other client is refused without
+  asking. The cache holds at most 256 tags and evicts the oldest. An
+  entry is dropped when the kernel worker announces
+  `{ type: "credential-grant-ended", tokenHash }` (revocation, exec,
+  exit, machine teardown, or finding that the kernel ended the grant),
+  when any later verification finds the entry's client gone, when it is
+  evicted, and whenever the service worker's state resets, after an
+  update or an idle restart. The next request then asks again. Any
+  same-origin context can post `credential-grant-ended` for a hash it
+  heard on the channel; that only forces the service worker to ask
+  again. There is no expiry. The cache cannot extend a grant, because
+  the kernel worker attaches a tag only after the kernel confirms the
+  grant for that very request.
+- A verified request is projected like any other, except that
+  `Authorization` and `ChatGPT-Account-ID` pass and the service worker
+  writes `X-Cors-Proxy-Allowed-Request-Headers: Authorization` itself,
+  only when `Authorization` is present. It removes
+  `X-Kandelo-Credential-Grant`, so the proxy and the destination see
+  only the opt-in and the credentials. `Cookie`, `Cookie2` and
+  `Proxy-Authorization` are refused even with a grant. The proxy session
+  token (`X-Kandelo-Proxy-Session`) is not a guest credential: it is the
+  app's own quota token, which the session transport attaches, and a
+  caller's value is dropped as before.
+- A proxy answers with a third party's bytes, so the service worker
+  serves a request to the configured proxy, to the development CORS
+  relay's path (`__kandelo_cors_proxy`), or to the [development
+  credential relay](#development-credential-relay), only to `fetch()`
+  (`request.destination` empty). A load as a document, frame, script,
+  worker, style or anything else gets `403`. From a same-origin proxy
+  such a load would run a third party's code with the app's authority,
+  for example as a worker posing as Kandelo code. Both development
+  relays themselves refuse a request whose `Sec-Fetch-Dest` is present
+  and not `empty`, and mark every answer
+  `Content-Security-Policy: sandbox` and
+  `X-Content-Type-Options: nosniff`, for loads the service worker does
+  not see. A fetch the service worker passes on reaches a relay as
+  `empty`, so in a controlled page the service worker's check is the one
+  that holds.
+
+Why a broadcast question and a fetch answer: measured on 2026-10-29 with
+Playwright's Chromium, Firefox and WebKit, a module dedicated worker's
+fetches reach the service worker as a `worker` client in all three
+engines. Chromium, however, delivers no `Client.postMessage()` to a
+dedicated worker, because it has no `navigator.serviceWorker` in
+workers; WebKit and Firefox do deliver it. A `BroadcastChannel` message
+reaches workers in all three, the answering fetch carries its sender's
+client id in all three, and a service worker registered anew claims the
+running kernel worker in all three.
+
+The gate's boundaries. It sees only requests from clients the service
+worker controls. A page loaded with a forced reload (which bypasses the
+service worker), an embedder that runs `BrowserKernel` without this
+service worker, and, observed only with Playwright's bundled Firefox so
+far, the fetches a dedicated worker makes in its first moments all reach
+the network unintercepted. There the kernel worker's own refusal is the
+only gate. A granted request sent that way names
+`X-Kandelo-Credential-Grant` in its CORS preflight, and neither the
+Playground nor the Spacefast proxy allows that field, so it fails the
+preflight visibly; only the field's name, never the token, leaves the
+browser. A CORS proxy must never allow `X-Kandelo-Credential-Grant`.
+Guest web previews run on the preview origin and never reach this gate
+as Kandelo windows; their cross-origin reads come back through the
+owning tab as credentialless page fetches, which the gate treats like
+any window's. The Node host has no service worker (see below).
+
+With a handler that allows, a granted guest request now reaches the
+configured proxy with its credentials and the opt-in and without the
+tag, in Chromium, Firefox and WebKit, against a local proxy
+(`apps/browser-demos/test/credential-gate.spec.ts`), and the same holds
+in the browser app after "Allow for this process"
+(`apps/browser-demos/test/credential-request-dialog.spec.ts`, a declared
+test program against a local proxy). Codex itself does not reach its
+service through the default Playground proxy yet: its preflight does not
+allow Codex's fields. The Spacefast proxy allows them and exposes the
+response fields Codex reads, but a Codex turn through a deployed
+Spacefast proxy has not been verified. On a loopback development server,
+requests to OpenAI's origins take the same path to the [development
+credential relay](#development-credential-relay) instead, which carries
+credentials only for a granted process.
+
+Both public proxies have hosting boundaries that cut long streamed
+responses, such as a Codex model turn's server-sent events. They belong
+to the hosting platforms, not to the proxy code, and the proxies cannot
+raise them:
+
+- **Spacefast Functions** stop a request 30 seconds after dispatching
+  it, and the limit bounds the whole response, streamed body included,
+  not just the time to the first byte. A model turn that streams longer
+  is cut, and Codex's retry meets the same limit. This was read from
+  Spacefast's runtime source, not measured live (see the [proxy's
+  README](../apps/spacefast-cors-proxy/README.md#spacefasts-30-second-functions-limit)).
+- **The Playground proxy on WP Cloud** buffered responses in Kandelo's
+  2026-10-27 probe: a streamed response arrived only when it completed,
+  and a 150-second response got `504 Gateway Timeout` at 120 seconds.
+- **`chatgpt.com` refuses the Spacefast proxy's outgoing connections.**
+  Spacefast Functions connect out from a Cloudflare address
+  (`2a06:98c0:3600::103` on 2026-10-31), and `chatgpt.com` answers even
+  an anonymous request from it with `403` and an "Unable to load site"
+  page, where the Playground proxy and a home network get OpenAI's
+  `401`. Codex's sign-in at `auth.openai.com` succeeds through the
+  Spacefast proxy, and its first `chatgpt.com` request then fails with
+  "workspace routing discovery failed". See the [proxy's
+  README](../apps/spacefast-cors-proxy/README.md#chatgptcom-refuses-this-proxys-outgoing-connections).
+
+On Node, programs open real sockets, so credentials flow as on any Unix
+machine and no grant is consulted: there is no proxy and no
+service-worker gate on that host (a documented host boundary). A Node
+embedder's `onCredentialRequest` answer still changes the kernel's grant
+record, but nothing on Node enforces it, and every Node question says
+so: `CredentialRequest.enforcement` is `"none"` there and
+`"proxy-gate"` in the browser. An embedder that shows Node's questions
+must not present them as a permission. Node questions name no
+intermediary either: their `CredentialRequest.transport` says every
+destination is reached directly (`"direct"`).
+
+**What a credential grant does not protect.** A grant decides which
+process may send the credential request fields (`Authorization`,
+`ChatGPT-Account-ID`) through Kandelo's CORS proxy and credential relay.
+It governs header fields, not data, and nothing more:
+
+- A token stored in a guest file is ordinary data. Codex keeps its
+  tokens in `~/.codex/auth.json`; any process of the same guest user
+  can read that file and send the token in a request body, a query or
+  an ordinary header field to any HTTPS origin, granted or not.
+- Credentials carried in request bodies need no grant. Codex's
+  device-code sign-in, code exchange and token refresh send the code or
+  refresh token in their bodies, so a program can sign in, obtain tokens
+  and send them out without ever being asked.
+- A grant does not vouch for the program. A declared program is
+  identified by its path; the prompt warns when that file changed after
+  boot, but a malicious image, or a file placed at a declared path
+  before boot, is asked about under the declaration's title like the
+  real program.
+- It does not separate processes of the same user from each other.
+- It does not cover a guest web preview's own requests. A preview is an
+  ordinary page on the preview origin, and no grant covers what it
+  sends. Requests for its own machine go to the machine's web server,
+  headers included. A cross-origin `GET` or `HEAD` it makes is re-issued
+  by the owning tab (`proxy-fetch`) without credentials and with only
+  `Accept`, `Accept-Language`, `Content-Language`, `If-Modified-Since`,
+  `If-None-Match`, `If-Range` and `Range` kept, so an `Authorization`
+  field it set is dropped there. Every other request leaves the user's
+  browser directly from the preview origin, with whatever header fields
+  the page set, under the browser's CORS rules: a cross-origin request
+  with any other method (the preview worker does not intercept it), and
+  a `GET` or `HEAD` the worker cannot hand to the owning tab (the
+  machine is offline, the owner's read failed, or the worker cannot tell
+  which machine's page sent it). Refusing those in the preview worker
+  would protect nothing: a page does not need the worker to send them.
+
+**Undeclared programs cannot send credential fields in a browser
+machine.** Declarations are read from the image once, at boot, and
+frozen. A program without one, such as `git` pushing with a token in an
+`Authorization` field or `curl -u`, is refused before dispatch every
+time, with no prompt to answer, in any browser machine. This is a
+documented gap, not a decision about those programs: the way to send
+credentials from a browser machine today is a package declaration in the
+image.
 
 #### Byte-range reads through the proxy
 
@@ -1486,7 +1999,10 @@ proxy dispatch (`BrowserCorsProxy.project()` for guest traffic, and the
 service worker for page and worker fetches) copies an outgoing `Range` into
 it. Both fields carry the same value, which the proxy documents as safe once
 `Range` gets through. The alias workaround can be removed as soon as WP Cloud
-relays `Range` headers to PHP. A caller's own `X-Cors-Proxy-Range` is never relayed.
+relays `Range` headers to PHP. A guest request that carries its own
+`X-Cors-Proxy-Range` is refused before dispatch; the service worker, which
+also receives Kandelo's own already-projected requests, re-derives the
+alias from `Range` instead.
 
 **The HTTP cache must stay out of aliased requests.** The browser's HTTP
 cache may rewrite `Range` on the wire to fetch only the bytes it has not
@@ -1594,132 +2110,677 @@ proxy, and a resume whose `If-Range` no longer matches sees the same `200`
 with the whole current file. The browser path may spend an extra request to
 get there.
 
-Bridge initialization now rejects typed CacheStorage and transition failures.
-A worker disappearance or lost acknowledgement after `postMessage` remains a
-known boundary: the worker may already have committed irreversible
-CacheStorage authority, so a client-only timeout could reject while leaving a
-discarded bridge authoritative. Closing this gap requires a coordinated
-transaction, cancellation acknowledgement, and restart reconciliation.
+### Guest web previews run on their own origin
 
-### Multiple machines under one service worker scope
+A guest web page is any page a server inside a Kandelo machine serves:
+WordPress, nginx, Adminer, a guest's own app. Kandelo shows it in the web
+preview pane. Guest pages never run on Kandelo's own origin. They are
+served from a separate **preview origin** by that origin's own service
+worker, and shown in a sandboxed iframe. A guest page's scripts therefore
+cannot read or drive the Kandelo page, its storage (the CORS proxy quota
+token, IndexedDB, Cache Storage), its WebMCP tools, or the credential
+prompt, and cannot start a kernel worker of Kandelo's. In Chromium,
+Firefox and WebKit a guest script reading `parent.document` or
+`top.location.href` gets `SecurityError`
+(`apps/browser-demos/test/preview-isolation.spec.ts`, real nginx image).
 
-A single service-worker scope can host several live Kandelo machines at
-once, one per booted browser tab. On `init-bridge` the worker mints a
-three-word, human-readable name (`adjective-color-noun`, e.g.
-`brisk-amber-otter`, drawn from three embedded word lists of 128+ entries
-each) and gives that machine its own stable, shareable URL space at
-`/<scope>/app/<name>/`. The worker keeps one in-memory `InstanceRecord` per
-name in a registry (name -> record), so two tabs under the same scope route
-independently and never clobber each other's bridge, cookies, or lifecycle
-state.
+**How a request travels.**
 
-A request is attributed to a machine one of two ways. A path that already
-contains `/app/<name>/` resolves directly to that machine's record; an
-unknown or malformed name never falls back to another machine, it is a real
-"not found" (see the 503 page below). A root-relative subresource request
-with no name in its path — the common case for a page's own same-origin
-asset requests — is attributed by the requesting client's id: the first time
-the worker resolves a named request for a given client, it remembers that
-client is "viewing" that machine, and later nameless requests from the same
-tab or iframe keep routing to it. That same client-id bookkeeping is what
-makes cross-tab viewing work: opening a machine's `/<scope>/app/<name>/` link
-in a second tab reaches the same running machine and relays through the
-bridge on the tab that owns it, rather than starting a second machine, because
-the name in the URL always takes priority over any per-client attribution.
+```
+Kandelo tab (app origin)                    preview origin
+BrowserKernel.fetchInKernel(port)           __kandelo_preview/relay.html
+PreviewBridgeHost: cookie jar, forwarded    (hidden, sandboxed frame:
+  headers, URL rewriting                     registers the preview worker,
+Display: <iframe sandbox src=PREVIEW>        moves ports to it)
+          ▲                                  preview-service-worker.js
+          └──────── MessagePort ────────────  computer/<name>/… only
+```
 
-Nameless GET and HEAD requests redirect into the viewing machine's URL
-space. Other methods dispatch once through that machine's bridge with the
-original unread request body. WebKit loses body bytes when replaying a
-synthetic service-worker 307, so body-bearing methods avoid that redirect
-on every engine. Their browser response URL remains the original request
-URL; the guest receives the canonical app path and forwarded prefix and
-URI. Owner reconciliation, bridge restoration, and the machine's cookie
-and session checks are the same as for explicitly named requests.
+1. The tab that boots a machine mints its name and a secret the name
+   commits to (`apps/browser-demos/lib/preview/machine-names.ts`; see
+   "Owning a machine's name" below) and creates a `PreviewBridgeHost`
+   (`lib/preview/preview-bridge.ts`). It hands the bridge's `MessagePort`,
+   with the secret, to the preview service worker through the tab's one
+   hidden relay frame (`lib/preview/preview-relay.ts`, kept across machine
+   switches). The worker binds the port only if the secret matches the
+   name.
+2. The preview frame loads `<preview origin><scope>computer/<name>/<path>`.
+   The preview worker (`apps/browser-demos/preview-origin/preview-service-worker.js`)
+   sends each request over that machine's port as an `http-request`.
+3. The owning tab answers with `fetchInKernel`, and shapes the answer:
+   it sends `Host`, `X-Forwarded-Host` (the preview host),
+   `X-Forwarded-Prefix` (`<scope>computer/<name>`), `X-Forwarded-Proto` and
+   `X-Forwarded-URI`; moves same-host redirects, `Link` headers and
+   same-host absolute URLs in text bodies under the prefix; and injects
+   the blob-iframe interceptor (below). The worker adds
+   `Cross-Origin-Embedder-Policy: require-corp` and
+   `Cross-Origin-Resource-Policy: cross-origin`, which the
+   cross-origin-isolated Kandelo page needs to embed the frame.
+4. A guest's cross-origin `GET`/`HEAD` (a web font, a CDN script) is sent
+   to the owning tab as `proxy-fetch`. The tab repeats it credentialless
+   and without a referrer through its ordinary `fetch()`, so Kandelo's
+   service worker routes it through the CORS proxy and its credential gate
+   refuses credentials as for any window. The tab refuses targets on
+   Kandelo's own origin, the preview origin, and the origins of the
+   configured CORS proxy and credential relay: their endpoints (a proxy
+   quota session, for one) answer Kandelo, not a guest. If the proxy read
+   fails, the guest's own request goes to the network and the browser
+   decides it under COEP and CORS.
 
-After idle termination or restart, the worker recovers a nameless request's
-machine from the requesting window client's actual same-origin app URL.
-It waits for the durable registry and uses the ordinary bridge restoration
-handshake. Host documents remain outside machine routing even if their
-request supplies an app-shaped referrer; unknown machines fail explicitly.
-Recovery enumerates controlled window clients and matches the request's
-client id. It does not look up worker clients: Firefox can wait for a
-loading worker's imports inside that lookup while the imports wait for
-the service-worker response. Worker imports retain ordinary network
-fetching without acquiring a machine's viewer authority.
+Every message carries a protocol version (`v: 3`; version 3 is the
+first whose worker broadcasts name a machine by a hash of its name). The
+app and the preview bundle must be deployed together; a mismatch fails
+loudly ("deploy both bundles together"). The relay accepts messages only from its
+parent, and only when the parent is a Kandelo origin this deployment
+names (on Spacefast, also that Space's `<label>--v<n>` version hosts).
 
-Each machine has its own cookie jar, keyed by its SW-minted name, so session
-cookies for one machine (WordPress admin cookies, for example) are never
-visible to another machine's requests even though both live under the same
-scope's origin.
+**Cookies.** Each machine has one cookie jar in the owning tab's memory
+(`lib/preview/cookie-jar.ts`), keyed by name and path as RFC 6265 requires
+(WordPress sets the same auth cookie for `/wp-admin` and
+`/wp-content/plugins`). `Set-Cookie` is consumed there and never returned
+to the browser. The jar is never persisted and dies with the machine; a
+guest never sees an `HttpOnly` cookie or another machine's jar. A guest's
+own `document.cookie` writes stay ordinary browser cookies on the preview
+origin, partitioned under the app's site.
 
-Each machine's bridge authority (its live `MessagePort`, session id, and
-cookie jar) is also persisted to IndexedDB under a per-name key as it is
-established, independent of the in-memory registry. If the browser
-terminates and restarts the service worker while a machine's host tab is
-still open, the worker has lost every live `MessagePort` but still has each
-machine's durable authority record. On the next request for that machine it
-broadcasts `need-bridge` to window clients and accepts only a
-`bridge-restored` reply whose name, app prefix, and session id match that
-exact record, re-establishing the bridge and replaying the persisted cookie
-jar. This restart is transient: while the worker waits for the owning tab to
-respond, the machine is "reconnecting", not offline, and it recovers without
-losing session state once the tab answers.
+**Guest framing policies.** A guest that allows only same-origin framing
+(`X-Frame-Options: SAMEORIGIN` on WordPress's login and admin pages,
+`frame-ancestors 'self'` in Adminer) means "only my own site may frame
+me". When guests shared Kandelo's origin, the Kandelo page was that
+same-origin embedder. The bridge keeps that meaning: it adds the Kandelo
+origin that hosts the preview beside `'self'`, and turns
+`X-Frame-Options: SAMEORIGIN` into the equivalent `frame-ancestors 'self'
+<Kandelo origin>`. `DENY`, `'none'` and every other source stay as the
+guest wrote them. The guest's own policy, before this translation, still
+decides whether the blob-iframe interceptor may be injected.
 
-A machine goes terminally offline only when its owning tab actually closes
-(a `pagehide`-driven `instance-closing` message, or — for a crashed tab that
-never sends one — the worker noticing on a later request that the owning
-window client is gone). There is no migration of a machine to a different
-host tab: once its host tab is gone, that machine is done, and its durable
-authority and cookie jar are dropped. Starting the demo again mints a new
-machine under a new name.
+**The sandbox.** The preview frame has `sandbox="allow-scripts
+allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox
+allow-modals allow-downloads"` and no `allow-top-navigation*`, so a guest
+cannot navigate the Kandelo tab away, even with the user's click.
+`allow-same-origin` is safe only because the frame's origin is the
+preview origin. Cross-origin frames lose the `'self'` default of
+`fullscreen`, `clipboard-write` and `autoplay`; the frame's `allow`
+attribute grants them back. The relay frame is sandboxed to
+`allow-scripts allow-same-origin`. Kandelo documents send
+`Content-Security-Policy: frame-ancestors 'self'` so a guest page cannot
+frame Kandelo (for example to clickjack the credential prompt), and both
+origins send `Origin-Agent-Cluster: ?1`.
 
-When a machine goes offline or starts reconnecting, the worker pushes a
-`machine-offline` or `machine-reconnecting` message to every tab currently
-viewing it (any client whose viewing map points at that machine, not just the
-host tab). Demo pages that render a web preview of the machine map that push
-to the preview's `offline` or `reconnecting` status via
-`webPreviewForMachineChromeMessage()`
-(`web-libs/kandelo-session/src/machine-chrome-message.ts`); the pane keeps
-its existing label and URL and only its status and message change, so a
-viewer sees the same preview pane report itself unavailable or reconnecting
-rather than disappearing. A request that reaches the worker for a machine
-that is offline, or whose name was never minted, gets one 503 HTML page
-naming the machine — 503 rather than 404, because the name is a valid route,
-the machine behind it is just not running here. This is the raw-request
-fallback for any request that has no demo chrome to render a status in, such
-as loading `/<scope>/app/<name>/` directly with no page-side listener
-attached.
+Because the frame is cross-origin, the preview pane learns its path and
+status from the document navigations the bridge serves, not from the
+frame. `web.wordpressLogin` (a demo action) loads the login page so the
+jar holds WordPress's test cookie, then posts the login fields into the
+frame by name, as a browser form would, and waits for the bridge to serve
+the admin path. A navigation request names the machine, not a frame, so a
+nested guest frame or a viewer tab of the same machine can briefly show in
+the owner's address bar; the pane adopts the first non-redirect
+navigation served since its frame last loaded.
+
+**Shared addresses and other tabs.** The address users share, and the
+one terminal links open for a machine's loopback URLs, is Kandelo's own
+`<app origin><scope>computer/<name>/<path>`. On Kandelo's origin that is
+only ever the **viewer shell** (`pages/kandelo/viewer.html`), a Kandelo
+page that owns no machine: it embeds the relay and a sandboxed preview
+frame for that path. Because its top-level origin is Kandelo's, its frames
+land in the owner tab's storage partition and reach the owner's bridge in
+every engine. Kandelo's service worker serves the viewer shell for those
+navigations and refuses every other `computer/` request on its origin; it
+holds no guest routing, cookies or bridge state. A guest page reaching the
+preview origin as a top-level page (a `target=_blank` link, a pasted
+preview URL) is redirected to the viewer shell: by the preview worker when
+it controls the tab, otherwise by the preview origin's static fallback.
+WebKit partitions service workers by top-level origin, so there only the
+fallback can answer. A form submitted that way cannot be replayed and says
+so. The viewer shell does not mirror the frame's later navigations into
+its own address bar: a cross-origin frame does not expose them, and the
+bridge's navigations belong to the owner tab.
+
+**Restarts and offline machines.** The browser may stop the preview
+worker at any time; it then has no ports. On the next request for a
+machine it asks every relay for one (`preview-need-bridge`), and only the
+owning tab answers with a fresh port. Every relay hears that request, and
+any guest page can listen through a relay it scripts, so the worker names
+the machine only by a hash (`nameHash`, lowercase hex SHA-256 of the
+name); the same holds for `preview-machine-status`. A tab recognizes the
+names it owns or views, and a listener learns no name it did not already
+know: a name ends in a 100-bit commitment it cannot guess. Nothing else is lost: the jar lives
+in the tab. If no tab answers within five seconds, or the owning tab
+closed the machine (`preview-machine-closing` on `pagehide` or dispose,
+accepted only with the machine's secret), or the owning tab is
+gone (the worker checks the owner's relay client while a request waits),
+the request gets a `503` page naming the machine and the worker tells
+every relay `preview-machine-status: offline`. The viewer shell then
+takes its preview frame down and says the machine is no longer running.
+The owning tab never takes its own machine offline on that message,
+which any guest page could forge: it checks that the worker still answers
+on its port (`bridge-ping`) and binds a fresh one if not. A request the
+owning tab holds but never answers gets a `504` page after 120 seconds;
+if a rebind had already replaced the port it waited on, the worker then
+closes that port. A malformed name under `computer/` is a `404`.
+
+**Owning a machine's name.** Every guest page shares the preview origin,
+so any of them can message the preview worker, directly or through a
+relay window it scripts; who sent a message proves nothing. Ownership is
+proved by a secret instead. A machine's name is
+`<adjective>-<color>-<noun>-<t>`, for example
+`able-amber-acorn-lfd5pqz5pa7zjm5uyguw`. The owning tab mints a secret
+`s` (128 random bits, written as 32 lowercase hex digits) with the name,
+and `t` is the first 100 bits of SHA-256 of `s`, written as 20 characters
+of lowercase base32 (`a-z`, `2-7`), so the name stays URL-safe and about
+40 characters long. `s` lives only in the owning tab's memory (a private
+field of its `PreviewBridgeHost`). A bind (`preview-bridge`) and a close
+(`preview-machine-closing`) carry `s`; the worker binds a port to the
+name, replacing any port it held for it, or drops the name, only when
+`s` hashes to the name's own `t`, and refuses anything else
+(`preview-bridge-refused: not-owner`). The check keeps no state, so it
+holds across worker restarts and new worker versions: when the worker has
+lost the owner's port, a page that knows only the name (it is in every
+shared link) still cannot bind it, because finding an `s` for a given
+`t` takes on the order of 2^100 hash evaluations. A fresh name's `t` is
+unique, so there is no "name in use" case; an owner simply binds again
+whenever the worker may have lost its port: when the worker restarted and
+asks for one (`preview-need-bridge`), when its relay reports a new active
+worker (`preview-worker-changed`), or when the worker does not answer on
+the owner's port (`bridge-ping`, after an `offline` report). A late or
+forged notice costs one rebind and nothing else. Requests the worker had
+already sent on the replaced port are answered there; the owner closes a
+replaced port once it is idle, 30 seconds after the rebind at the
+earliest. A rebind the worker never confirms shows as an error in the
+pane ("The preview origin did not confirm this computer's web preview")
+until a later rebind succeeds.
+
+An owner never has two binds of one name in flight: a notice that arrives
+during a bind, the machine's first included, waits for it and then binds
+once more. Every bind and close also carries a sequence number the owner
+increases each time (`seq`), and the worker's answer echoes it. The relay
+retries delivering a message while it waits for the worker, so a bind
+the owner already gave up on (its confirmation timed out, and the owner
+closed that port) can reach the worker after the bind that replaced it.
+Among messages that prove `s`, the worker ignores a bind or close whose
+`seq` is no larger than the newest it accepted for the name
+(`preview-bridge-refused: superseded`), so a late bind never replaces a
+live port with a closed one, nor brings back a machine its owner closed.
+The worker remembers these numbers only in memory, like the ports they
+order: a late bind that reaches a worker restarted since the newer one
+would still be installed, and would show as `504`s until the owner's next
+rebind. A page that has read `s` (see the same-tab residual below) can
+also send the largest number and keep the owner's binds refused until the
+worker restarts; that is part of what reading `s` already allows.
+
+**New worker versions and unregistration.** The relay never holds on to a
+registration: for every message it looks up this deployment's
+registration again (registering the preview worker if it is gone) and
+sends the message to its current active worker, and only once that worker
+is this deployment's exact script. It repeats the lookup every two
+seconds. When the active worker changes (a deploy with new worker bytes,
+the browser's update check, or a guest page that unregistered the
+registration and registered it again), the relay tells its tab
+(`preview-worker-changed`) and every owner binds its machines to the new
+worker at once. A registration a guest removed comes back within about
+two seconds. A preview frame that loaded while no worker was registered
+is not controlled and shows the preview origin's static fallback until it
+is reloaded: a visible failure, never another page's answers. The worker
+installs only as `<scope>preview-service-worker.js`, with no query or
+fragment, registered for its own directory: a guest that registers
+`preview-service-worker.js?x` (the static host ignores the query) or the
+same script for a narrower scope gets a worker that refuses to install.
+
+**Where the secret goes, and what a guest page can reach.** `s` crosses
+exactly two hops: a `postMessage` from the owning Kandelo page to that
+tab's own relay frame, and the relay's `postMessage` to the preview
+worker. The relay keeps no copy and the worker only compares it: neither
+stores it (no storage, Cache Storage, cookie or variable), broadcasts it
+(no `BroadcastChannel`; worker broadcasts carry only name hashes and statuses),
+echoes it (bind replies carry only the name and `seq`), or puts it in a URL. A
+guest page on the shared preview origin can reach:
+
+- frames in its own tab: `parent.frames` and `top.frames` are readable
+  across origins, so it can script that tab's relay frame (same origin)
+  and every other preview frame in the tab;
+- the preview origin's storage, cookies and `BroadcastChannel` in its
+  partition, shared with every other guest page there, which never hold
+  `s`;
+- the preview worker, which it can message and hear broadcasts from,
+  which never carry `s`;
+- windows in other tabs only through a window reference: an opener chain
+  (`top.opener` is readable across origins), a window it opened, or a
+  named-window lookup. Kandelo never gives one Kandelo tab a handle to
+  another: terminal links, shared-link buttons and other links open new
+  tabs with `noopener`; Kandelo documents send
+  `Cross-Origin-Opener-Policy: same-origin`, which severs the opener of a
+  Kandelo tab opened from any other origin (a guest popup included); and
+  a named lookup finds a frame only for a page that shares an origin with
+  one of that frame's ancestors, which a preview-origin page never does
+  with a frame under a Kandelo-origin tab.
+
+So a guest page in another tab never sees `s`. **Same-tab residual:** a
+guest page shown in a tab (the preview pane's frame, any frame it nests,
+and a popup it opens, which keeps an opener back to it) can script that
+tab's relay frame and read `s` as it passes on the tab's next bind or
+close, then bind or close that tab's machines itself. Kandelo shows a
+tab's own machines' guests in it, so this lets one guest take over the
+preview of the other machines its own tab runs, not anyone else's. Only
+per-machine origins (below) would close it.
+
+**A machine's pages reach only that machine.** Every guest page shares
+the preview origin, so the worker cannot isolate machines from each
+other, but it does not route by URL alone. It records the machine each
+guest document and worker was loaded from (by the `resultingClientId` of
+the request that loaded it), and refuses a request it attributes to one
+machine's page for another machine's address, before asking any owner,
+so the answer says nothing about whether that machine runs. The refusal
+is a `403` page ("This address belongs to another Kandelo computer")
+sent with `Content-Security-Policy: sandbox`: an opaque origin with no
+scripts and no service worker, so a guest that navigated a frame there
+cannot script that document to try again in its name. This covers a
+guest's `fetch`, `XMLHttpRequest`, subresources, and form posts and
+link navigations of its own frames and of frames it created.
+
+No engine says who started a navigation (measured 2026-10-30, Chromium
+153, Firefox 155, WebKit 26.6): a new frame's navigation names no client
+anywhere; navigating an existing frame names that frame's current
+document in Chromium and nothing in Firefox and WebKit. So a navigation
+is attributed to the frame's current document when the engine names it,
+and otherwise to its referrer. A navigation whose referrer is a Kandelo
+page is Kandelo's own (the preview pane opening another destination in
+its frame, the viewer shell, the WordPress login form the app posts into
+the frame), so the pane and viewer frames set `referrerpolicy="origin"`.
+A client the worker never served (an `about:blank` or `about:srcdoc`
+frame) is attributed to its referrer, else to the machine of its first
+request. What attribution cannot see is listed under "Residual risks and
+boundaries" below.
+
+**Old links.** Names Kandelo minted before names carried a commitment
+were three words (`able-amber-acorn`). Such a name no longer names any
+machine: on Kandelo's origin the viewer shell opens and says "This link
+uses an older Kandelo computer address, which no longer works"; on the
+preview origin a request for it gets a `404` with the same explanation
+(a top-level visit is sent to the viewer shell). It never resolves to a
+current machine.
+
+**Origins per deployment.** Every deployment needs a second origin, or
+it has no web previews: with no preview origin configured the app refuses
+to open one ("This deployment has no isolated preview origin, so web
+previews are unavailable."). It never falls back to serving guests on its
+own origin.
+
+| Environment | App origin | Preview origin |
+|---|---|---|
+| `vite` / `vite preview` (including `./run.sh browser`) | `http://<host>:<port>` | the same host at `<port>+1`, served by the Vite plugin in `apps/browser-demos/vite/preview-origin.ts`; override with `KANDELO_PREVIEW_ORIGIN`; `KANDELO_PREVIEW_HOST=php` serves the PHP bundle under `php -S` instead |
+| Playwright | `http://127.0.0.1:5401` (`KANDELO_PLAYWRIGHT_PORT`) | `http://127.0.0.1:5402` (that port + 1) |
+| Production build | as deployed | `./run.sh build-browser --preview-origin ORIGIN --app-origin ORIGIN [--preview-host static\|php]` writes the preview bundle to `<out>-preview`; serve it at the same scope on the preview origin |
+| Spacefast | `https://<label>.space.fast` | a second, public Space: `node scripts/deploy-spacefast.mjs --space ... --preview-space ...` (see `apps/spacefast-cors-proxy/README.md`) |
+| WP Cloud (`kandelo.dev`, deployed by hand) | `https://kandelo.dev` | not deployed yet: either `https://preview.kandelo.dev` (same site) or `https://kandelo.site` (another site), a separate WP Cloud site serving the PHP bundle (`--preview-host php`); see "Production pair" and "Choosing a preview origin" below |
+
+The preview origin serves only the preview service worker, the relay page
+each Kandelo tab frames (built with the app origin injected), and a
+redirect from `<scope>computer/*` to the viewer shell. Every response
+carries COEP `require-corp`, CORP `cross-origin`,
+`Origin-Agent-Cluster: ?1`, `X-Content-Type-Options: nosniff` and
+`Cache-Control: no-store`, and nothing that forbids framing
+(`X-Frame-Options`, `frame-ancestors`): the relay and guest pages are
+framed by Kandelo. The server itself must send these: Kandelo's page is
+cross-origin isolated, so the browser refuses a cross-origin frame whose
+response lacks COEP and CORP, and the relay's first load comes before any
+preview service worker exists to add them.
+
+Letting any site frame the preview origin is safe only because browsers
+partition service workers and storage by top-level site. A preview-origin
+frame under another site's page gets that partition's own registration,
+which holds no owner's port, so it reaches no machine; only frames under a
+Kandelo page share the owner tab's partition. Current Chrome, Firefox and
+Safari partition this way by default. Chromium can be told not to (the
+`ThirdPartyStoragePartitioningBlockedForOrigins` enterprise policy, for
+one), and Playwright's own Chromium defaults turn partitioning off (see
+"Residual risks and boundaries" below). In such a browser,
+another site that knows a running machine's name (it is in every shared
+link) could frame that machine's pages under the user's live preview
+worker, and post forms into that frame, answered with the machine's
+cookies: the worker treats a navigation from an unknown site like a new
+frame Kandelo opened. Kandelo does not detect an unpartitioned browser.
+
+`no-store` lets a deploy reach open tabs at once; the relay and worker
+carry the protocol version and the app origin, which must match the
+app's. A private Spacefast Space's access
+page forbids framing, so a preview Space must be public. The preview
+origin must not be approved for the CORS proxy. The development and
+test defaults use a same-site preview origin (the app's host at port + 1);
+a deployment chooses either layout, as "Choosing a preview origin" below
+describes.
+
+**Preview hosts.** `--preview-host` picks how the bundle gets those
+headers; the app is built for the same host, because it decides the relay
+page's URL:
+
+| `--preview-host` | Files in `<out>-preview` | The host must |
+|---|---|---|
+| `static` (default) | `preview-service-worker.js`, `__kandelo_preview/relay.html`, `__kandelo_preview/relay.js` | add the headers above to every response and redirect `<scope>computer/*` (Spacefast: the `_headers` and `_redirects` its packager writes) |
+| `php` | `preview-service-worker.php`, `__kandelo_preview/relay.php` (the relay page with its script inline), `index.php` | run PHP. Each script sends the headers itself, so the host needs no header configuration. `index.php` sends `computer/*` visits to the viewer shell, but only where the host routes requests for missing paths to it, as WordPress-style hosting and `php -S` do; elsewhere those visits get the host's own 404 |
+
+The `php` scripts hold their file's bytes after `__halt_compiler()` and
+send them unchanged; they need no other file, no rewrite rule and no PHP
+extension. They answer `GET` and `HEAD` and refuse other methods with
+`405`.
+
+The `computer/*` redirect is a convenience, not a dependency: a top-level
+visit to the preview origin happens only when a guest link opens a new
+tab or a preview-origin URL is pasted, and the shareable address is the
+app origin's viewer shell anyway. Without it such a visit gets a `404`
+instead of a redirect.
+
+**Production pair.** `kandelo.dev` (the app, deployed by hand) will
+pair with a preview origin on a separate WP Cloud site. Either layout
+works: `https://preview.kandelo.dev`, a subdomain on the same site, or
+`https://kandelo.site`, a different registrable domain. "Choosing a
+preview origin" below gives the trade-off; the steps are the same for
+both. No preview site is deployed yet. Until a deployment's preview origin
+exists and the app is built for it with `--preview-origin`, web previews
+in that deployment show the explicit "This deployment has no isolated
+preview origin" error; they are never served from the app's origin
+instead.
+
+The PHP bundle has run only under PHP's built-in server (`php -S`), not on
+WP Cloud itself: whether WP Cloud passes PHP's response headers through
+unchanged, adds its own (an `X-Frame-Options` would break the frame), or
+routes missing paths to `index.php` is unverified. Check each with `curl`
+before relying on the pair. To deploy it:
+
+1. Choose the preview origin, then build both bundles from one checkout,
+   in the dev shell:
+
+   ```bash
+   PREVIEW_ORIGIN=https://preview.kandelo.dev   # or https://kandelo.site
+   ./run.sh build-browser --out "$PWD/dist-kandelo-dev" \
+     --signalling-url /signalling/piplet.php \
+     --preview-origin "$PREVIEW_ORIGIN" --app-origin https://kandelo.dev \
+     --preview-host php
+   ```
+
+   This writes the app to `dist-kandelo-dev/` and the preview bundle to
+   `dist-kandelo-dev-preview/`. Both carry preview protocol version 3;
+   deploy them together, or previews fail with a version mismatch.
+2. Upload the contents of `dist-kandelo-dev-preview/` to the document
+   root of the preview origin's WP Cloud site, so that
+   `$PREVIEW_ORIGIN/__kandelo_preview/relay.php` is that file. Nothing
+   else is needed on that site; it must not run WordPress or anything
+   else on the same origin, since every page there shares the guests'
+   origin.
+3. Check the preview site before the app points at it:
+
+   ```bash
+   curl -sI "$PREVIEW_ORIGIN/__kandelo_preview/relay.php"
+   curl -sI "$PREVIEW_ORIGIN/preview-service-worker.php"
+   curl -sI "$PREVIEW_ORIGIN/computer/test/"
+   ```
+
+   The first two must answer `200` with `Content-Type: text/html;
+   charset=utf-8` and `Content-Type: text/javascript; charset=utf-8`
+   respectively, and both must carry
+   `Cross-Origin-Embedder-Policy: require-corp`,
+   `Cross-Origin-Resource-Policy: cross-origin`,
+   `Origin-Agent-Cluster: ?1`, `X-Content-Type-Options: nosniff` and
+   `Cache-Control: no-store`, with no `X-Frame-Options` and no
+   `Content-Security-Policy` naming `frame-ancestors`. A `Cache-Control`
+   from a cache in front of PHP that overrides `no-store` delays deploys
+   from reaching open tabs. The third should answer `302` with
+   `Location: https://kandelo.dev/computer/test/`; a `404` means WP Cloud
+   does not route missing paths to `index.php`, and previews still work
+   (see above).
+4. Upload the contents of `dist-kandelo-dev/` to `kandelo.dev` as before.
+   The app gets cross-origin isolation from its own service worker, not
+   from server headers, as it does today.
+5. Open a machine with a web server (the nginx image) on
+   `https://kandelo.dev` and load its preview in Chromium, Firefox and
+   WebKit. A failure to reach the preview origin shows "The preview origin
+   <preview origin> did not answer" in the preview pane, and a browser
+   that denies the preview origin storage shows "This browser blocks
+   storage for the preview origin <preview origin>".
+
+Locally, the same pair runs cross-site, with the Vite plugin serving the
+PHP bundle under `php -S` (PHP found as for the development signalling
+server: `KANDELO_SIGNALLING_PHP`, `php` on `PATH`, then
+`apps/signalling/tools.nix`):
+
+```bash
+cd apps/browser-demos
+KANDELO_PREVIEW_ORIGIN=http://localhost:5462 KANDELO_PREVIEW_HOST=php \
+  npx vite --host 127.0.0.1 --port 5461
+```
+
+`127.0.0.1` and `localhost` are different sites, as `kandelo.dev` and
+`kandelo.site` are; drop `KANDELO_PREVIEW_ORIGIN` for the same-site
+layout, as `kandelo.dev` and `preview.kandelo.dev` are.
+`test/preview-isolation.spec.ts` run against such a server
+(`KANDELO_PLAYWRIGHT_PORT=5461` with the same two variables) loads a
+guest page with CSS and JavaScript from a booted nginx machine through
+the PHP bundle in Chromium and WebKit; in Firefox the guest page
+renders, but Playwright's Firefox driver cannot automate a cross-site
+frame, so that spec cannot finish there.
+
+**Residual risks and boundaries.**
+
+- One preview origin serves every machine in the browser profile. This
+  isolates guests from Kandelo, not from each other. The worker refuses
+  the requests it can attribute to another machine's page (above), but a
+  guest page that sets out to reach another machine still can, because
+  everything on the origin is same-origin to it:
+  - it can create a frame of another machine's address with no
+    referrer (`referrerpolicy="no-referrer"`): a new frame's navigation
+    names no client in any engine, so the worker cannot attribute it, and
+    the guest can then script that frame and send requests from it as
+    that machine, which that machine's owner answers with its cookies;
+  - in Firefox and WebKit, it can navigate its own frames to another
+    machine's address with no referrer (or a `history.pushState`
+    referrer under that machine), for the same reason;
+  - it can make requests from an `about:blank` or `about:srcdoc` frame it
+    creates (Firefox and WebKit control `about:blank`), whose first
+    request decides its machine unless its referrer, which the guest
+    controls, names one;
+  - after the worker restarts, it recovers a document's machine from
+    the document's current URL, which `history.pushState` can change, and
+    it cannot place workers at all until they make a request;
+  - it can script another machine's preview frames it can reach (above),
+    script the relay frame of the tab it runs in (forging relay messages
+    to that tab, and reading the secrets of that tab's machines: the
+    same-tab residual above), unregister the preview worker (which the
+    relays undo within about two seconds), and fill the preview worker's
+    blob-document limits, which all machines share, evicting other
+    machines' blob documents (see "Blob-URL iframes" below).
+
+  It cannot bind or close a machine of another tab, and it learns no
+  machine's name from worker broadcasts. The Kandelo page treats every
+  message from the preview origin as untrusted, and nothing it answers
+  reaches more than a guest could through that machine's preview URL.
+  Per-machine origins (`<name>.preview…`) would close the cross-machine
+  reads and writes and the same-tab residual; they need wildcard DNS and
+  TLS, which Spacefast plans gate today.
+- Same-site cross-origin frames may share a renderer process in Chromium
+  (site isolation is per site), and the guest frame is
+  `crossOriginIsolated` in Firefox and WebKit, which do not gate it with
+  the `cross-origin-isolated` permissions policy. Spectre-class reads of
+  the Kandelo process are not excluded; a preview origin on a different
+  registrable domain is the mitigation where a deployment can afford it
+  (see "Choosing a preview origin").
+- **Changed capability (Chromium):** a guest page is no longer
+  `crossOriginIsolated` in Chromium, which gates that on the
+  `cross-origin-isolated` permissions policy that the cross-origin preview
+  frame is not granted. Guest scripts there have no `SharedArrayBuffer`,
+  so no WebAssembly threads or shared memory, and only coarse
+  `performance.now()`. When guests ran on Kandelo's origin they had all
+  of that. The frame's `allow` attribute does not grant
+  `cross-origin-isolated`: that would hand guests the high-resolution
+  timers and shared memory that make the Spectre-class risk above worse,
+  and no guest needs it yet. Firefox and WebKit still isolate the frame.
+- Playwright's own Chromium defaults pass
+  `--disable-features=...,ThirdPartyStoragePartitioning,...`. The
+  repository's `chromium` project passes its own `--disable-features`,
+  and Chromium keeps only the last copy of that switch, so that project
+  runs partitioned (measured 2026-10-30: a top-level preview-origin tab
+  did not see storage a framed guest wrote). A Chromium launched with
+  Playwright's defaults alone runs unpartitioned, so its results do not
+  prove shipped Chrome's partitioning behavior; the viewer shell is the
+  path that does not depend on it.
+- Bodies are fully buffered, as before. Service workers never see
+  WebSockets, so a guest's WebSocket is not bridged. EventSource gets
+  buffered responses.
+
+#### Choosing a preview origin
+
+Kandelo supports two layouts for the preview origin, and each deployment
+chooses one. A *site* is a scheme plus a registrable domain: the part of
+the host a browser treats as one owner, by the
+[Public Suffix List](https://publicsuffix.org/). `preview.kandelo.dev` is
+on the same site as `kandelo.dev`; `kandelo.site` is on another site.
+Both are a different *origin* from the app, so in both layouts the
+same-origin policy, the frame sandbox and everything above keep guest
+scripts out of the Kandelo page. What differs is how browsers treat the
+preview frames: frames on another site are *third-party*, which privacy
+settings restrict, and same-site frames share the site's cookies.
+
+| | Same-site subdomain (`preview.kandelo.dev`) | Cross-site domain (`kandelo.site`) |
+|---|---|---|
+| Browsers that restrict third-party storage | Preview frames are not third-party. Every setting measured (below) leaves previews working, Firefox's "All cross-site cookies" included. | Preview frames are third-party. Every default and privacy preset measured still works: those engines partition the preview worker and storage under Kandelo's site instead of denying them. Firefox's opt-in Custom setting "All cross-site cookies" denies them storage; previews cannot start and the pane says why (below). |
+| Cookie scope and `SameSite` | A guest page can set cookies with `Domain=kandelo.dev`, which `kandelo.dev` then receives ("cookie tossing"), and can read any such cookie `kandelo.dev` sets without `HttpOnly`. Its requests to `kandelo.dev` count as same-site, so `SameSite=Lax` or `Strict` does not tell them from Kandelo's own. | Guests cannot set or read cookies for Kandelo's domain, and their requests to Kandelo are cross-site, so `SameSite` cookies are not sent with them. |
+| Process isolation | Chromium isolates processes by site, so guest frames may share the Kandelo page's renderer process; Spectre-class reads of it are not excluded (see "Residual risks and boundaries"). | Browsers that isolate sites in separate processes (Chromium, Firefox) can keep guest frames out of the Kandelo page's process. Not measured here. |
+
+**Measured** (2026-10-30, macOS): a real nginx machine, a probe page with
+external CSS and JavaScript loaded in the owner's preview frame and in the
+viewer shell, under each browser setting below. Same-site was
+`http://127.0.0.1:<port>` with `http://127.0.0.1:<port+1>`; cross-site was
+`http://127.0.0.1:<port>` with `http://localhost:<port+1>`, which
+browsers treat as different sites. Both layouts passed every setting
+except one, which failed only cross-site:
+
+- Chromium 153 (Playwright), with storage partitioning on and off, with
+  "Block third-party cookies", and with `--test-third-party-cookie-phaseout`.
+- Google Chrome 156: a fresh default profile, Playwright's off-the-record
+  context, "Block third-party cookies", and the phase-out switch.
+- Brave 1.98 (Chromium 156), fresh profile, default Shields, headless.
+- Firefox 155 (Playwright) and stock Firefox 159: Total Cookie Protection
+  (Firefox's default) and Enhanced Tracking Protection "Strict".
+- WebKit 26.6 (Playwright), defaults (third-party cookies blocked).
+- **Failed cross-site only:** Firefox 155 and 159 with Custom "All
+  cross-site cookies" (`network.cookie.cookieBehavior=1`). Registering
+  the preview worker fails with `SecurityError` ("The operation is
+  insecure.").
+
+Not measured: native Safari on macOS or iOS (only Playwright's WebKit
+build), including Safari's "Block all cookies"; Brave with Shields
+"Aggressive" or "Block all cookies", or in a headed profile; real Chrome
+Incognito windows; Firefox Private Browsing and any browser's "Block all
+cookies", which also block the app's own origin; real registrable domains
+over HTTPS (`kandelo.dev` with either preview origin) and the WP Cloud
+PHP host (the matrix used the static bundle); top-level visits to the
+preview origin; and whether a per-site exception that allows the preview
+origin's cookies brings previews back under "All cross-site cookies".
+
+**When the browser denies the preview origin storage**, the relay
+reports the `SecurityError` from registering the preview worker, and the
+preview pane shows: "This browser blocks storage for the preview origin
+`<origin>`, so web previews can't start. Allow cookies and site data for
+`<origin>`, or use a Kandelo deployment whose preview origin is on the
+same site as Kandelo." followed by the browser's own message. Kandelo
+reads the failure from the registration, never from the user agent.
+Every other relay failure keeps its own message ("The preview origin
+could not start: ..."). `test/preview-storage-blocked.spec.ts` runs
+Firefox with "All cross-site cookies" against a server of either layout:
+cross-site it expects that message, same-site the rendered preview.
+
+**For deployers.** `kandelo.dev` may use `preview.kandelo.dev` or
+`kandelo.site`; the build, the files and the checks under "Production
+pair" are the same. Choose same-site when previews should work under
+every browser setting measured. Its cost is cookie scope, which stays
+small only while `kandelo.dev` keeps two rules: it sets no cookie with a
+`Domain=` attribute (host-only cookies are not visible to the
+subdomain), and nothing it serves relies on `SameSite` to tell its own
+requests from a guest's. Choose cross-site when those rules cannot hold,
+or when keeping guests off the site matters more than users who block all
+cross-site cookies; those users see the message above and can change the
+setting. On Spacefast the default pair,
+`https://<label>.space.fast` with `https://<label>-preview.space.fast`,
+is same-site: `space.fast` is not on the Public Suffix List, so every
+Space on it shares the one site `space.fast`, other people's Spaces
+included. A cross-site pair there needs the preview Space on another
+domain, such as a custom domain.
 
 ### Blob-URL iframes (service-worker boundary)
 
-The service worker can only bridge requests from documents it **controls**. A
-`blob:` document is not service-worker-controlled (and has no base URL), so its
-subresource requests bypass the bridge and hit the static origin instead of the
-in-kernel server. This is a real browser boundary, not a Kandelo bug.
+The preview service worker can only bridge requests from documents it
+**controls**. A `blob:` document is not reliably controlled (and its base
+URL is the blob URL), so its subresource requests can bypass the bridge
+and reach the preview origin's network, which serves no guest bytes.
 
-It surfaces in the WordPress block/site editor, whose canvas iframe is mounted
-from `URL.createObjectURL(new Blob([html]))`: the canvas's
-`load-scripts.php`/`load-styles.php` and block-asset requests would 404 against
-the origin even though nginx serves them correctly over the bridge.
+It surfaces in the WordPress block and site editor, whose canvas iframe is
+mounted from `URL.createObjectURL(new Blob([html], { type: "text/html" }))`:
+the canvas's `load-scripts.php`/`load-styles.php` and block-asset requests
+would fail even though nginx serves them correctly over the bridge.
 
-`public/blob-iframe-interceptor.js` is a reusable, framework-free DOM patch that
-neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
-`HTMLIFrameElement` `src` setter/`setAttribute` so that any iframe pointed at a
-`text/html` blob URL is instead rendered from `srcdoc` (an `about:srcdoc`
-document, which the service worker *does* control). It is idempotent and a no-op
-unless a text/html blob URL is used as an iframe src. The service worker inlines
-it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents whose
-Content Security Policy, if any, allows it, so it applies to app demos, not
-just WordPress.
-Documents carrying a
-`Content-Security-Policy` response header that governs scripts (a
-`script-src-elem`, `script-src` or `default-src` directive) retain their
-declared script policy: the bridge does not inject the inline helper or change
-that header. A policy that does not govern scripts, such as WordPress admin's
-`frame-ancestors 'self'`, still gets the helper. The
-blob-iframe adapter is therefore unavailable in those documents; ordinary
-HTML, assets, requests and same-origin iframes still use the bridge.
+`public/blob-iframe-interceptor.js` is a framework-free helper that the
+owning tab's `PreviewBridgeHost` inserts first in the `<head>` of guest
+HTML documents (its source is injected into the app at build time as
+`__KANDELO_BLOB_IFRAME_INTERCEPTOR__`), so it applies to every guest
+app. It hooks `Blob`, `URL.createObjectURL` and the `HTMLIFrameElement`
+`src` setter and `setAttribute`. When an iframe's `src` is set to a blob
+URL whose content is a `text/html` string, the helper posts that HTML to
+the preview service worker (`preview-blob-document`, with an unguessable
+128-bit id) and points the iframe at
+`<scope>computer/<name>/__kandelo_blob/<id>` instead. The posted HTML
+has the helper itself injected first in its `<head>`, as in every guest
+page, so a blob iframe or keepalive fetch inside the canvas is handled
+too. The worker serves the document to requests under the same machine's
+path, with the creator's base URL when the document names none (as an
+`about:srcdoc` document would have resolved), for as long as the blob
+URL lives: until the app revokes the URL (the helper passes
+`preview-blob-revoked` on), the creating document goes away, or it sits
+unread for an hour. A reload or a history visit to the canvas shows it
+again, as it would for a live blob URL. Each document may be at most 16
+MiB of UTF-8, all of them together at most 64 MiB and 64 documents (the
+oldest go first), and at most 32 ids may wait for a document that has
+not arrived yet (beyond that an unknown id is a `404` at once). These
+limits are shared by every machine on the preview origin, not kept per
+machine, so one machine's guest can evict another machine's documents or
+use up the waiting ids; that is part of guests not being isolated from
+each other (see "Residual risks and boundaries" above). The documents
+live in the worker's memory, so a worker restart loses them, and a
+reload after that shows a `404`. The canvas is then an ordinary
+navigation the worker controls in every engine; nothing depends on how
+an engine treats `blob:` or `about:srcdoc` documents inside a sandboxed
+cross-origin frame. Reading `iframe.src` still returns the blob URL the
+app assigned. The path `__kandelo_blob/` under a machine therefore never
+reaches the guest's server. The helper used to render such iframes from
+`srcdoc`; inside the sandboxed preview frame Firefox did not give that
+`about:srcdoc` document a service-worker controller, and Chromium does
+not control the `blob:` canvas in a cross-origin frame (both measured
+2026-10-29).
+
+A document whose own `Content-Security-Policy` governs scripts
+(`script-src`, `script-src-elem` or `default-src`) retains its declared
+script policy: the bridge does not inject the inline helper or change that
+policy, so the blob-iframe adapter is unavailable in those documents;
+ordinary HTML, assets, requests and same-origin iframes still use the
+bridge. A policy about something else (WordPress's admin pages send only
+`frame-ancestors 'self'`) says nothing about inline scripts, and those
+documents get the helper.
+
+**Keepalive requests in Firefox.** Firefox 155 (Playwright build) sends
+a `fetch()` whose init dictionary sets `keepalive: true` straight to the
+network instead of to the controlling service worker (confirmed with a
+standalone reproduction on that build only; no released Firefox has been
+checked:
+`tests/runtime-workarounds/FIREFOX-KEEPALIVE-FETCH-BYPASSES-SERVICE-WORKER/`).
+A keepalive `Request` object passed to `fetch()` (with or without an init
+dictionary) and `navigator.sendBeacon()` do reach the worker in Firefox
+(measured with the same reproduction). On the preview origin such a
+request never reaches the guest's server; WordPress's editors save
+preferences that way. The same helper probes once per document whether a
+keepalive request reaches the preview worker
+(`<machine>/__kandelo_keepalive_probe`, which only the worker answers)
+and, until it does, sends same-origin fetches whose init sets
+`keepalive: true` without keepalive. In Firefox those requests then reach
+the guest but can be cancelled if the page unloads first. Documents that
+do not get the helper (a CSP that governs scripts) still lose such
+requests in Firefox.
 
 ## VFS Images
 
@@ -2656,7 +3717,10 @@ The app's build command can select this proxy explicitly, and its packager
 can colocate the app and `/cors-proxy` in one Space. A live Chromium check on 2026-10-15 verified a guest `curl`
 request through the same-origin proxy with HTTP 200 and exit status 0. The live
 serving path requires the range alias, omits HEAD Content-Length, and did not
-preserve the worker's CORS origin grant in private-Space probes. See that app's
+preserve the worker's CORS origin grant in private-Space probes. Spacefast's
+runtime also ends every Functions request 30 seconds after dispatch, streamed
+body included, so a longer response (such as a long model turn's
+server-sent events) is cut. See that app's
 README for commands and the precise scope of validation.
 The packager applies isolation headers to document URLs and worker scripts,
 including clean document aliases. It leaves large binary downloads on
@@ -2719,10 +3783,16 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, every registered image, and every lazy
-asset those images reference. The private map is not published. Changing the public group path
-requires regenerating the complete manifest/images/assets handoff, updating
-the private map to its new manifest path, and rebuilding the distribution.
+`vfs-groups/sha256-<manifest digest>/`: manifest, every registered image, and
+every lazy asset those images reference. The address names the manifest's
+SHA-256, and the manifest names every image and asset by digest, so one URL
+never serves two sets of bytes; a rebuilt group gets a new address (see
+[Deployment updates](#deployment-updates)). The private map is not published,
+and the build refuses a map whose group directory is not named
+`sha256-<its manifest digest>`. A deployment may nest that directory deeper;
+changing the public group path requires regenerating the complete
+manifest/images/assets handoff, updating the private map to its new manifest
+path, and rebuilding the distribution.
 Never move a group within an already completed build. Its complete group must
 remain beneath the owning prefix; moving only an image or asset also breaks
 the authenticated inventory.
@@ -2739,16 +3809,24 @@ Each output places `service-worker.js` at its prefix root. The bootstrap
 registers that exact script with its own script-directory scope (`/a/` or
 `/candidate-b/`). Servers must not grant a broader scope with
 `Service-Worker-Allowed`: one worker must never control `/` or a sibling
-deployment. Bridge authority, cookie jar, cross-origin-isolation retry marker,
-and lazy VFS cache are separately namespaced by registration scope. Restarting
-one worker restores only that prefix's durable state. The Kandelo theme is the
+deployment. The cross-origin-isolation retry marker and lazy VFS cache are
+separately namespaced by registration scope. Restarting one worker restores
+only that prefix's durable state. The Kandelo theme is the
 intentional origin-wide exception because it is ordinary `localStorage` UI
-preference state, not machine, bridge, cookie, retry, or VFS state.
-Within one scope, that bridge authority and cookie jar are further split per
-machine by its SW-minted name — see [Multiple machines under one service
-worker scope](#multiple-machines-under-one-service-worker-scope) — so
-restarting one worker restores every machine that scope was hosting, each
-from its own persisted record.
+preference state, not machine, retry, or VFS state. Guest web previews hold
+no state on the app origin at all: each deployment's preview bundle is
+served at the same scope on its preview origin, its worker is scoped to
+that prefix, and machine cookies live in the owning tab (see [Guest web
+previews run on their own origin](#guest-web-previews-run-on-their-own-origin)).
+Activation deletes the scope's retired `bridge-v2` cookie-jar cache.
+
+The worker answers a `vfs-groups/` request with the server's own response
+while it is still arriving, so a lazy download's progress counts bytes as
+they come, and stores a copy in the prefix's lazy cache only once the whole
+body has arrived. A download the network drops or the page aborts leaves no
+entry, and a failed or `206` response is never stored. The entry therefore
+appears just after the page reads the last byte, not before the page sees
+the first.
 
 The production coexistence scenario has been measured in Chromium with `/a/`
 and `/candidate-b/`: both shells booted, Vim materialized from each prefix's
@@ -2826,6 +3904,75 @@ Other pathname resolver APIs validate the named file and artifact policy
 against one stable descriptor read, but the returned path remains a
 point-in-time result; callers that retain a path across producer runs must
 resolve it again.
+
+### Deployment updates
+
+Replacing a deployment with a new build must not break the first reload of a
+tab that was running the old one. That reload is answered by the old
+deployment's service worker: the browser fetches the new `service-worker.js`
+while the navigation runs, and the new worker takes control of the page only
+after it installs and activates. Three rules keep the new page correct in
+that window, on every host.
+
+- **Content-addressed VFS groups.** A group lives at
+  `vfs-groups/sha256-<manifest digest>/` (above). Whichever worker answers a
+  group request, from its cache or the network, the bytes are the ones the
+  URL names. Under the former fixed `vfs-groups/release-1/`, the old worker
+  answered the new page's manifest request from its own cache (a worker's
+  cache ignores the page's `cache: "no-store"`), and the boot failed its
+  integrity check with "content-length differs".
+- **The page waits for its own build's worker.** Every HTML entry carries
+  `<meta name="kandelo-build-id">`, and `service-worker.js` carries the same
+  id, a digest of the build's output (`apps/browser-demos/vite/build-id.ts`).
+  Before boot starts any worker, the page asks its controller for its id by
+  fetching `<scope>__kandelo_build_id`, which only the controlling worker
+  answers. If the ids differ it asks the browser to update (unless the
+  browser's own navigation check already brought a new worker) and waits up
+  to 15 s for a worker with its id to take control. A page therefore never starts its kernel or composer workers
+  under another deployment's worker, whose kernel-worker script paths (the
+  credential gate's) and caches belong to a different build. If no matching
+  worker arrives, the page reloads once; a second mismatch for the same pair
+  of builds shows an error naming both. Only one reload is ever attempted per
+  pair, recorded in the scope's `sessionStorage`, so a cache that keeps
+  serving the two builds apart cannot cause a reload loop. A worker deployed
+  before build ids reports none; the error says so.
+- **One update request per navigation.** The browser already checks for a
+  new `service-worker.js` on every navigation, so the bootstrap script no
+  longer calls `registration.update()` as well. In Chromium, that second
+  request racing the navigation's own left the new worker "installed" and
+  never activating for as long as the page stayed open (the outgoing worker
+  was restarted and kept busy), so the first reload after a deploy never
+  booted. That engine behaviour is suspected, not reduced to a standalone
+  reproduction.
+- **Boot workers have a start deadline.** The image composer must post its
+  `started` message within 30 s of creation, or the boot fails with "The
+  image composer worker did not start". In Chromium, a composer created while
+  a new service worker took control of the page was observed never to run,
+  leaving the boot at "Loading" with no error. That engine behaviour is
+  suspected, not reduced to a standalone reproduction; with the build-id wait
+  the page no longer creates workers during a takeover. The kernel worker has
+  no start deadline yet: its initialization has no separate start signal.
+
+Hosts must let browsers revalidate `service-worker.js` and every HTML entry
+point: serve them with `Cache-Control: no-cache` (or `no-store`), and do not
+let an edge cache answer them from an old copy. Content-hashed files under
+`assets/` and the content-addressed `vfs-groups/` may be cached for as long as
+the host likes. The Spacefast packager writes these rules into `_headers`.
+Other hosts, including WP Cloud, must be configured to send them; an edge
+that keeps an old `service-worker.js` holds every visitor on the old
+deployment's worker for that copy's lifetime, which the build-id check turns
+into the visible mismatch error after one reload. Measured on 2026-10-30,
+`kandelo.dev` served `service-worker.js` with
+`cache-control: max-age=31536000`, and its edge answered from cache even for
+requests sent with `Cache-Control: no-cache`; that host does not yet meet
+this rule.
+
+A deployment that replaces the whole site removes the previous group. A tab
+that kept the old page open is taken over by the new worker, and its next
+lazy download asks for the old group's address and fails with a visible
+`404`. To let such tabs finish, publish the new build beside the previous
+`vfs-groups/sha256-*` directory and remove that directory after a grace
+period.
 
 ## Known Limitations
 

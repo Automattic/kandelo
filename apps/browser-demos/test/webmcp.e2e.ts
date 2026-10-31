@@ -263,16 +263,25 @@ test("nginx serves a guest file through the preview and rejects external or trav
   for (const path of ["https://example.com/", "//example.com/", "/%2e%2e/etc/passwd", "/foo\\bar", "/%252e%252e/"]) {
     expect((await call(page, "navigate_preview", { path })).error.code).toBe("INVALID_ARGUMENT");
   }
-  const exposed = await page.locator('iframe.kweb-frame').evaluate((element: HTMLIFrameElement) => {
-    return (element.contentDocument as any)?.modelContext?.getTools().then((tools: any[]) => tools.filter(tool => tool.name.startsWith("kandelo_") && tool.window === element.contentWindow).length);
+  // The guest runs on the preview origin, in a cross-origin frame that is
+  // not granted the "tools" permissions-policy feature: it cannot list
+  // Kandelo's tools at all (Chromium throws NotAllowedError).
+  const exposed = await page.frameLocator('iframe.kweb-frame').locator(":root").evaluate(async () => {
+    const context = (document as any).modelContext ?? (navigator as any).modelContext;
+    if (!context?.getTools) return "no model context";
+    try {
+      const tools: any[] = await context.getTools();
+      return `${tools.filter(tool => tool.name.startsWith("kandelo_")).length} Kandelo tools`;
+    } catch (error) {
+      return (error as Error).name;
+    }
   });
-  // Same-origin discovery may include parent tools, but the guest registers none.
-  expect(exposed === undefined || exposed === 0).toBe(true);
+  expect(exposed).toBe("NotAllowedError");
   expect((await call(page, "write_file", {
     path: "/var/www/html/webmcp-away.html", content: "<!doctype html><script>location.replace('about:blank')</script>", overwrite: true,
   })).ok).toBe(true);
   await call(page, "navigate_preview", { path: "/webmcp-away.html" });
-  await expect.poll(() => page.locator('iframe.kweb-frame').evaluate((element: HTMLIFrameElement) => element.contentWindow?.location.href)).toBe("about:blank");
+  await expect.poll(() => page.frameLocator('iframe.kweb-frame').locator(":root").evaluate(() => location.href)).toBe("about:blank");
   await expect(page.getByText("Loading...", { exact: true })).not.toBeVisible();
 });
 
