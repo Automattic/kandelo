@@ -40,6 +40,19 @@ checks. Kernel SHA256:
 `10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
 Earlier previews remain frozen at their separately recorded revisions.
 
+The latest performance candidates are also available, without tracing, at
+http://127.0.0.1:5678/pages/kandelo/ . This experimental local source proxy
+retains normalc775 artifacts and comparator, applying only the committeda196
+kernel.ts/GL-registry selection delta. Its two actual HTTP module outputs
+match the reviewed production transformation; HTML200/COOP/COEP pass. It is
+not a fresh combined normal build and excludes the later Rust resize repair.
+Server job `responsiveness-experimental-preview-r1-1031-111602-7713` remains
+live. Receipt/HTTP-proof SHAs are
+`12c806e1f35afae0d5457e1a1bbfc68fdf99218440a5b9d638edbe42e9b5c65c` and
+`b6bcf193e72036ddc02c96871999148435e84ff7bbc736f9263b648981ea0741`.
+Availability is announced immediately for user responsiveness feedback;
+there is no frame recorder, CPU profiler or claimed responsiveness gain.
+
 The current preview includes the bounded client-draw/restoration changes,
 shared import-metadata reader optimization and four-vector comparison loop. Exact native-operation
 counts, parser result parity and isolated screens are recorded below;
