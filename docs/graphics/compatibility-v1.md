@@ -15362,3 +15362,57 @@ Evidence: `.context/process-memory-admission-foundation-r1/HANDOFF.md` and
 `source-manifest.json`. Normal Node/browser guest, browser-memory, POSIX and
 performance acceptance remain open. This foundation supplies no speed claim;
 the frozen normal 8b build and published previews exclude it.
+
+### Small-read amplification screen, 2026-10-31
+
+A private normal C fixture reads an 8 MiB seeded regular file in four-byte
+records while two independent 4,190,208-byte writable MAP_SHARED aliases of
+one memfd remain live. The frozen b6 SDK compiles one fixture; its own release
+xtask stamps the normal ABI contract, and its unchanged dedicated Node kernel
+runs three fresh processes without a default image. No SDK, package or normal
+program rebuild is needed. Standard setvbuf receives explicitly allocated
+buffers; musl reserves eight bytes, so supplied sizes differ from effective
+sizes. The default fopen branch remains untouched.
+
+| Effective buffer bytes | Actual Read requests | Actual Readv requests | Total requests | Instrumented body ms |
+| ---: | ---: | ---: | ---: | ---: |
+| 1,024 | 8,191 | 2 | 8,193 | 3,362.877 |
+| 8,184 | 1,025 | 2 | 1,027 | 492.025 |
+| 65,528 | 128 | 2 | 130 | 102.792 |
+
+Each complete normal syscall log returns exactly 8,388,608 bytes with one
+final EOF. Each guest checks every byte, 2,097,152 records and checksum
+1,069,547,520, both complete aliases before/after, all cleanup returns and
+normal host destruction with the exact worker termination acknowledged.
+Guest stderr and host diagnostics are empty. The first run's count parser
+incorrectly rejected the final readv EOF; preserve that failure. The corrected
+composition reuses its successful default guest evidence without rerunning it
+and adds only the two remaining cases.
+
+These single sequential observations are instrumented and NONQUIET under
+concurrent compilation. They establish standard buffering's request reduction
+for this fixture, not desktop benefit, quiet timing, browser parity or a global
+BUFSIZ policy. Source establishes canonical backing ref_count 2 and ordinary
+scan eligibility; actual comparison calls/bytes remain UNMEASURED. No SFWBar
+patch, production buffering change or scan omission is introduced. Program
+SHA256 `05989f7ca1dada6d2668a81e7da494510a1781bca44d10f0ec913f09ca553e76`;
+kernel `1a8ec0cf5db3c273429fe969c9b5265a2bb0d0551d3b53f24c9f09aeda5dc607`;
+report `.context/stdio-buffer-amplification-r2/results-r1/report.json`, SHA256
+`02621201aec505903442c5b161953abbbe8def73b942016224528051724c9a51`.
+
+The separate one-sample headless caller capture fails before sampling:
+the observer rejects the actual Vite worker-entry query response, causing
+repeated login launch failures and eventual PTY errno 28. Demo readiness
+times out at 360 seconds; no stack, menu or normal replacement completes.
+This is a diagnostic composition failure, not evidence of a platform or
+browser defect. The named job ends 1, with workload 1, artifact collector 0
+and after-guard 0. Preserve `.context/stdio-read-caller-capture-r1` and
+`.context/stdio-read-caller-root-result-r1.json`; a fresh correction must
+admit actual worker query variants and fail early on observer errors.
+
+Cache GC's actual 7.5 GiB recovery remains separate from subsequent ordinary
+Cargo cleanup of unused native development outputs. Release tools, SDKs,
+target Wasm, normal artifacts and published preview inputs remain retained;
+Cargo file-length reports are not additional physical-reclamation totals.
+The corrected frozen 8b normal producer is still running; no port 5682
+availability or combined acceptance is claimed by these diagnostics.
