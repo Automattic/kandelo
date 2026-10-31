@@ -1915,6 +1915,15 @@ raise them:
 - **The Playground proxy on WP Cloud** buffered responses in Kandelo's
   2026-10-27 probe: a streamed response arrived only when it completed,
   and a 150-second response got `504 Gateway Timeout` at 120 seconds.
+- **`chatgpt.com` refuses the Spacefast proxy's outgoing connections.**
+  Spacefast Functions connect out from a Cloudflare address
+  (`2a06:98c0:3600::103` on 2026-10-31), and `chatgpt.com` answers even
+  an anonymous request from it with `403` and an "Unable to load site"
+  page, where the Playground proxy and a home network get OpenAI's
+  `401`. Codex's sign-in at `auth.openai.com` succeeds through the
+  Spacefast proxy, and its first `chatgpt.com` request then fails with
+  "workspace routing discovery failed". See the [proxy's
+  README](../apps/spacefast-cors-proxy/README.md#chatgptcom-refuses-this-proxys-outgoing-connections).
 
 On Node, programs open real sockets, so credentials flow as on any Unix
 machine and no grant is consulted: there is no proxy and no
