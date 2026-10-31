@@ -261,7 +261,9 @@ host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/nethack-special-levels.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
+host/test/node-buffer-encoding.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
+host/test/node-core-compat.test.ts	prepared-product
 host/test/node-guest-build.test.ts	source-only
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
@@ -278,6 +280,7 @@ host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
+host/test/node-url-exit-contracts.test.ts	source-only
 host/test/node-worker-adapter.test.ts	prepared-product
 host/test/non-pty-stdio.test.ts	prepared-product
 host/test/nosuid-exec.test.ts	source-only

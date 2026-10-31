@@ -1,0 +1,28 @@
+--- a/js/src/shell/OSObject.cpp
++++ b/js/src/shell/OSObject.cpp
+@@ -761,2 +761,18 @@
++static bool osfile_fsync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() != 1 || !JS::ToInt32(cx, args[0], &fd)) {
++    JS_ReportErrorASCII(cx, "fsync requires a file descriptor");
++    return false;
++  }
++#ifdef XP_WIN
++  args.rval().setInt32(-ENOSYS);
++#else
++  int rc = fsync(fd);
++  args.rval().setInt32(rc == 0 ? 0 : -errno);
++#endif
++  return true;
++}
++
+ static bool osfile_chmod(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -1179,2 +1195,6 @@
++    JS_FN_HELP("fsync", osfile_fsync, 1, 0,
++"fsync(fd)",
++"  Synchronize a POSIX file descriptor. Returns 0 or -errno."),
++
+     JS_FN_HELP("chmod", osfile_chmod, 2, 0,
+ "chmod(path, mode)",

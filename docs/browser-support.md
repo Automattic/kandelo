@@ -3436,3 +3436,32 @@ The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
 Registry metadata and tarballs traverse the ordinary browser TLS and configured
 proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
 tarball locations and has no npm- or package-specific proxy routing.
+
+#### Node core compatibility
+
+The shared Node compatibility runtime implements `buffer.isUtf8` and
+`buffer.isAscii` for typed arrays and ordinary/shared ArrayBuffers, with byte
+view bounds and invalid-input errors. Descriptor synchronization reaches the
+existing kernel `fsync` operation through `fs.fsyncSync`, `fs.fdatasyncSync`,
+the callback forms, and `FileHandle.sync()`/`datasync()`. The kernel's existing
+filesystem durability boundaries still apply; these methods do not make tmpfs
+persistent.
+Descriptor reads, writes, and closes also report operating-system errors
+through thrown exceptions, callbacks, and rejected FileHandle promises.
+Zero-length reads and writes transfer no data; whole-file writes continue
+after a partial write and fail if the remaining data cannot be written.
+
+The same runtime preserves an unset `process.exitCode` until an application
+assigns it; an unset code still produces numeric status zero at exit. Stdin
+reads deliver real bytes and pipe EOF. Pausing cancels the pending native
+read without closing fd 0; `ref()` and `unref()` control whether that read
+keeps the runtime alive.
+
+`URL` and `URLSearchParams` use the pinned, vendored `whatwg-url`
+implementation. Web Streams use `web-streams-polyfill`, shared by
+`stream/web`, globals, and fetch response bodies. Pull-based wrappers,
+query mutation, and serialization therefore use their underlying state.
+The separate legacy `url.parse`, `url.format`, and `url.resolve` helpers
+remain partial compatibility implementations. The vendored source bundle
+records its licenses, integrity-locked dependencies, and regeneration steps
+under `third_party/node-web-platform/`.
