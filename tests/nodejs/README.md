@@ -82,6 +82,19 @@ members after a normal parent exit. Guest cases use fresh kernels and
 normal VFS launches; teardown is awaited. Browser runs own loopback input
 and Vite servers and do not attach to a user's demo.
 
+## Source checks without product rebuilds
+
+```sh
+scripts/dev-shell.sh bash -c \
+  'cd host && npx vitest run --config vitest.node-core.config.ts'
+```
+
+The config contains only source-classified tests and omits the prepared
+product/C-fixture global setup. To use the exact LTS oracle, prepare it
+first and replace `npx vitest` with its absolute `bin/node` path followed by
+`node_modules/vitest/vitest.mjs` from `host/`. The runner's host/build Node
+version and the pinned reference are separate identities.
+
 ## Current evidence and limits
 
 - Fifteen source/harness tests pass under the exact native Node 26.13.0
