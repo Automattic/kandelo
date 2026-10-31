@@ -3539,34 +3539,49 @@ int main(int argc, char **argv) {
     }
 #ifdef OP_BEGIN_CLIENT_ARRAY
     if (!strcmp(argv[1], "encoder-array-render") ||
-        !strcmp(argv[1], "encoder-array-index-render")) {
+        !strcmp(argv[1], "encoder-array-index-render") ||
+        !strcmp(argv[1], "encoder-array-legacy-render") ||
+        !strcmp(argv[1], "encoder-array-index-legacy-render")) {
+        const int legacy = strstr(argv[1], "legacy") != NULL;
+        const GLsizei count = legacy ? 8192 : 1;
         const EGLint dimensions[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, NULL, dimensions);
         assert(surface && eglMakeCurrent(dpy, surface, surface, ctx));
         glViewport(0, 0, 1, 1);
-        const GLfloat position[2] = {0, 0}, red[4] = {1, 0, 0, 1};
+        GLfloat *position = calloc((size_t)count, 2*sizeof(GLfloat));
+        GLfloat *red = calloc((size_t)count, 4*sizeof(GLfloat));
+        assert(position && red);
+        for (GLsizei i=0; i<count; i++) { red[i*4] = 1; red[i*4+3] = 1; }
+        const GLsizeiptr color_bytes = (GLsizeiptr)count*4*sizeof(GLfloat);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, position);
         glEnableVertexAttribArray(1);
         glVertexAttrib4f(0, 0, 1, 0, 1);
-        if (!strcmp(argv[1], "encoder-array-index-render")) {
+        if (strstr(argv[1], "index")) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 17);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 17);
-        glBufferData(GL_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glBufferData(GL_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
         glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
         glEnableVertexAttribArray(0);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
-        assert(inline_draws == 2 && array_captures == 0 && array_restores == 0 &&
-               device_slots[0].array_binding == 17 && draw_commands == 2);
+        if (legacy) {
+            // The position payload alone exceeds u16, so both draws exercise
+            // genuine public staging/savepoints, including the mixed VBO draw.
+            assert(inline_draws == 0 && array_captures == 2 && array_restores == 2);
+        } else {
+            assert(inline_draws == 2 && array_captures == 0 && array_restores == 0);
+        }
+        assert(device_slots[0].array_binding == 17 && draw_commands == 2);
         assert(eglSwapBuffers(dpy, surface));
         GLuint buffer = 17;
         glDeleteBuffers(1, &buffer);
         assert(eglDestroySurface(dpy, surface) && eglDestroyContext(dpy, ctx));
+        free(position); free(red);
         assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
         return 0;

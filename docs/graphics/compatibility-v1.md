@@ -11817,3 +11817,65 @@ counterfactual/first/ASan logs, `.context/inline-rust-workspace-r1.log`,
 primary `.context/private-client-native-r3/` retains all engine reports,
 worker/spec/config and summary. Its source-manifest SHA256 is
 `c43e80914f928f5ef260290efb3cbf58775eb83e9b912a96006e9110ec4a4c6e`.
+
+### Client draw replay preserves both paths (2026-10-31)
+
+Runtime `dadea383b2fc` is committed and pushed to draft #1601. Its normal
+producer `inline-client-normal-products-1031-032816-ff66` is still running;
+the available 5673 preview remains on `71a283c2d290`. No desktop benefit,
+single-terminal improvement or new normal guest acceptance is established.
+
+The existing actual-C peer-deletion replay initially fails all 12 cases:
+its adapter recognizes only the previous BEGIN/END staging records, so
+it never injects peer deletion or samples pixels for OP0506. Updating the
+test adapter injects deletion/name reuse before the owned record, which
+has no public staging interval to interrupt, and samples its real draw.
+The original green/red pixels, retained-buffer identity, cleanup and
+memory-boundary assertions remain unchanged. A test-response-only overlay
+against frozen DAD source passes all 12 cases in the three headless engines
+through native worker imports and main forwarding (2.4 minutes).
+
+Two additional large C cases preserve actual legacy-staging coverage.
+Each draws 8192 vertices with a 65536-byte position payload and a full
+128 KiB red VBO. The index-first variant retains its original index-to-
+vertex storage transition. Both assert actual capture/restore pairs,
+zero inline draws and final allocation cleanup. Small cases separately
+assert two inline draws and zero captures. The native UBSan inventory
+passes **222/222**, including both paths.
+
+The expanded browser selection first records nine passes, two native
+legacy failures, one interrupted case and twelve unrun cases; the owned
+CLI is stopped with SIGINT (exit 130) after the failures are understood.
+The adapter had registered only 65536 command bytes: a legal maximum-u16
+payload plus its four-byte header exceeds that limit. The forwarded cases
+pass. The native replay now matches the actual C encoder's bounded 1 MiB
+command capacity and allocates exactly the required seventeen fixed
+private-memory pages, including its 4096-byte base. Production limits
+are unchanged. A fresh complete selection then passes **24/24** in
+headless Chromium, Firefox and WebKit, native and forwarded (4.3 minutes).
+All 299 recorded source inputs and the exact source patch remain stable.
+These are native C / synthetic-kernel source replays; frozen 5672 supplies
+only HTML and Vite transport. They are not SDK/Wasm guest or application
+acceptance. No normal product rebuild is needed for this test-only change.
+
+Evidence: `.context/inline-c-record-peer-r1/` retains the original 12
+failures, repaired overlay, per-case hashes and passing overlay result;
+`.context/inline-c-record-peer-r3/` retains the interrupted expanded run
+and source-stability record; `.context/inline-c-record-peer-r4/` retains
+the full passing durable-source selection and verification. R4 source
+manifest SHA256:
+`1058c0ed33a3baefea69344d9c87182ba27a471296157773a7402cb44196ba35`;
+workload SHA256:
+`b1ac0dc5d4f2d947a72eba87710d3f5f5785f7695685286f44c3dc147fe2abfb`.
+The 222-case native log in the documentation checkout is
+`.context/inline-legacy-libc-ubsan-r1.log`, SHA256
+`27411635587f11ef52d52ed808525939a5ddb50d7317a6e172f717402acf9b4f`.
+
+Independent read-only writer-epoch analysis is retained in
+`.context/shared-mapping-writer-epoch-review-r1.md`. Published backing
+versions cannot prove absence of unpublished guest stores. A general
+dirty-page model needs complete guest and host write tracking; a smaller
+entry-to-completion ticket would need proven quiescence of every aliasing
+writer and tracked intervening writes. Neither model is implemented.
+This is ordinary platform work, not a demonstrated engine boundary, and
+does not justify skipping synchronization by syscall or application name.
