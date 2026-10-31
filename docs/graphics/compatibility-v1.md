@@ -15524,3 +15524,58 @@ SFWBar sends Sway IPC exec, a shell supervisor starts the engine and waits.
 The bar, supervisor and engine require separate exit evidence. Reproduction
 plan: `.context/scummvm-start-repro-plan-r1/HANDOFF.md`; no reproduction executed
 yet. Do not reinterpret a passing compositor integration as ScummVM support.
+
+
+### 2026-10-31: compatibility-first goal, menu crash and build retirement
+
+The user's active goal now prioritizes platform compatibility, beginning
+with normal Start-menu ScummVM launch and SFWBar failures. Standalone
+performance experiments are deferred. Their traces, prototypes and earlier
+results remain preserved; no responsiveness acceptance is implied.
+
+One headless Chromium reproduction uses the exact normal 8b5242ea0e
+products and the normal Sway/SFWBar configuration on preview 5682. Start
+categories render. Home/Right navigation then traps SFWBar PID 109 with
+`function signature mismatch`, producing exit status 132 before the
+ScummVM submenu item can be activated. ScummVM is not spawned in this run.
+This proves a bar/menu failure independently of the engine's blank window
+and optional OpenGL-loader warning; it does not establish their causes.
+The scalar lifecycle observer's four controls, five syntax controls and
+exact served-module admission pass. Workload exits 1, collector and final
+artifact/source guards exit 0. Normal same-page machine replacement
+completes, with no cleanup errors. No additional case is substituted.
+
+Evidence: `.context/scummvm-start-repro-r1/`; report SHA256
+`794149a4cb74f4dbb14706d8544025d836ba8d83ba1378896a48cfca7b25321e`.
+The exact failing SFWBar binary is independently preserved as diagnostic
+evidence, 35,599,237 bytes, SHA256
+`998d0507a68b81dd0ea9c30f9ee9a7ef6b31b1cfe617bb099bd4fdd9a2641d35`.
+Offline export mapping identifies the signal path through
+`g_cclosure_marshal_VOID__ENUM`, `g_closure_invoke`, `g_signal_emitv` and
+`gtk_bindings_activate_event`. Missing class-handler closure admission is
+a candidate shared GLib contract gap, pending focused repair and normal
+rebuilt reproduction; the exact indirect target is not yet observed.
+
+After collecting that finite case, the user authorizes retiring prior
+testing builds. All 25 owned preview servers are intentionally stopped,
+including 5682: the earlier availability records are historical and there
+is currently no live preview. Old generated targets, SDK copies, program
+projections, host outputs and installed test dependencies are removed from
+owned checkouts. Source files, commits, reports, screenshots and traces
+remain. HEAD and source status match before/after for all 56 own checkouts.
+One SDK/sysroot/compiler/fork tool and one xtask are retained for ongoing
+compatibility work. No other workspace's products are directly deleted.
+
+The supported collector runs dry-run then apply with
+`cache-gc --below-abi 55 --above-abi 56 --max-age-days 1 --apply`.
+It removes 813 unreferenced generations, 1,634 sidecars and 29 retired
+projection roots, reporting 31.3 GiB. All 37 remaining live roots retain
+protection, including 55.0 GiB below ABI 55; no lock or root protection is
+overridden. The ordinary binary cache removes 0 B. Full cleanup evidence:
+`.context/build-retirement-r1/report.json` and `cache-gc-apply.log` (SHA256
+`d71bd5c108eb83dc0c653d91d9a6e117f88207f63a0a188571c1640b3c3edb66`).
+The captured cleanup-window filesystem readings increase free space from
+36.0 to 219.0 GiB, an observed increase of 182.9 GiB. These filesystem
+readings are not summed with cache or directory size reports. Numeric ABI
+remains 56/3/17/21. Retired binaries require normal rematerialization or
+rebuilding before any new integration acceptance.
