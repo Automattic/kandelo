@@ -35,7 +35,13 @@ Export presence is not implementation coverage. In particular:
   rebuilt guest integration is still deferred. Other legacy TextDecoder
   charsets and custom inspection remain gaps. Buffer's non-UTF8 encoding
   APIs are still partial.
-- Streams, Fetch body behavior and process lifecycle need broader upstream
+- Response bodies now use actual stream disturbance/lock state, reject
+  repeated consumption, clone streams with independent bytes and forward
+  cancellation/errors. Blob byte storage, slices and byte/text streams
+  are implemented. Source differential/FileAPI tests pass; rebuilt guest
+  checks remain pending. Complete MIME parsing, formData, Request bodies,
+  Headers guards and Web-object cloning/transfer remain gaps.
+- Streams, Fetch networking and process lifecycle need broader upstream
   coverage. Shared natural exit now has a shell teardown hook for eval,
   including queued work and fatal status; compilation and rebuilt guest
   integration are deferred. beforeExit, uncaughtException and complete

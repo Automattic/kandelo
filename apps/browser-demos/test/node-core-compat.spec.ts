@@ -6,6 +6,7 @@ import { nodeSpawnPathCommand, nodeSpawnPathExpected } from "../../../host/test/
 import { nodeStdinDecodingCommand } from "../../../host/test/fixtures/node-stdin-decoding";
 import { nodeAssertionCommand } from "../../../host/test/fixtures/node-assertion-semantics";
 import { nodePositionedCommand } from "../../../host/test/fixtures/node-positioned-io";
+import { nodeResponseBodyCommand } from "../../../host/test/fixtures/node-response-body";
 import { nodeStdinCommand } from "../../../host/test/fixtures/node-stdin";
 import { nodeUrlCommand } from "../../../host/test/fixtures/node-url";
 import { nodeWebStreamsCommand } from "../../../host/test/fixtures/node-web-streams";
@@ -26,6 +27,7 @@ test("base shell implements Node filesystem, process, URL, streams and encoding 
     [nodeStdinDecodingCommand, ["node-stdin-decoding-ok"]],
     [nodeAssertionCommand, ["node-assertion-semantics-ok"]],
     [nodePositionedCommand, ["node-positioned-io-ok"]],
+    [nodeResponseBodyCommand, ["node-response-body-ok"]],
     [nodeUrlCommand, ["node-url-ok"]],
     [nodeWebStreamsCommand, ["node-web-streams-ok"]],
   ];

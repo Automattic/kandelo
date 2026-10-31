@@ -16,6 +16,8 @@
     const encoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
     const decoder = typeof TextDecoder === 'function' ? new TextDecoder() : null;
     const nativeJsonParse = JSON.parse.bind(JSON);
+    const serializeValue = globalThis.serialize;
+    const deserializeValue = globalThis.deserialize;
     let nextTimerId = 1;
     const pendingTimers = new Map();
 
@@ -366,6 +368,12 @@
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
+        cloneValue(value) {
+            // Keep the engine's structured-clone graph, cycles and byte views;
+            // the unrelated global JSON fallback cannot clone stream chunks.
+            const policy = { scope: 'SameProcess', SharedArrayBuffer: 'allow' };
+            return deserializeValue(serializeValue(value, undefined, policy), policy);
+        },
         isPromise: value => native.isPromise(value),
         isNativeError: Error.isError,
         isProxy: globalThis.isProxy,
