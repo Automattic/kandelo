@@ -18,6 +18,7 @@ export default {
       'test/node-module-entrypoints.test.ts',
       'test/node-call-sites.test.ts',
       'test/node-fatal-exit.test.ts',
+      'test/node-tcp-server.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,
