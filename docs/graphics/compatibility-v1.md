@@ -31,15 +31,17 @@ follow-up; no missing API is reclassified as a platform boundary.
 The desktop work remains in draft
 [PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
 cage/sway landing. The current frozen normal preview is
-http://127.0.0.1:5676/pages/kandelo/ at `04f60e90e38c`. Its own normal
+http://127.0.0.1:5677/pages/kandelo/ at `c77584dea985`;5676 remains04f.
+The new preview includes the four-vector comparator and excludes the newer
+selected-context preservation candidate. Its own normal
 SDK32/64, kernel, programs/libraries, shell/rootfs and host producer finishes0
 with freshness, selected-kernel ABI and all93-owner/245-member identity
 checks. Kernel SHA256:
 `10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
 Earlier previews remain frozen at their separately recorded revisions.
 
-The current runtime includes the bounded client-draw/restoration changes
-and the shared import-metadata reader optimization. Exact native-operation
+The current preview includes the bounded client-draw/restoration changes,
+shared import-metadata reader optimization and four-vector comparison loop. Exact native-operation
 counts, parser result parity and isolated screens are recorded below;
 **single-terminal and multi-terminal responsiveness improvements remain
 unproven**. Do not turn those operation results into an application claim.
@@ -13489,3 +13491,166 @@ cannot cover15–30second accumulation or several concurrently rendering apps.
 A longer bounded aggregate/each-latch ledger is being prepared, separating
 idle-window growth from concurrent progress; no longer-trace result is yet
 available. Full operation samples remain diagnostic rather than CPU time.
+
+### Desktop follow-up and launcher qualification, 2026-10-31
+
+Fresh unprofiled pair attemptR1 stops before its first stage: a transient
+black/download frame makes the body classifier throw outside its intended
+readiness retry. FreshR2 treats only that exact missing-body observation as
+negative within the unchanged90s bound; palette, native, DOM and transport
+errors remain fatal. Twenty-one source controls pass and all remaining phase
+bytes/thresholds stay identical. No runtime failure is erased.
+
+Baseline job `four-vector-desktop-baseline-r2-1031-102340-675a` finishes1/0/0
+in4m10s. One- and three-terminal numbered output/natural prompts pass actual
+command/output image review at sample12. At five terminals, output reaches63
+and a natural prompt, but the pre-Enter command image omits wrapped fragments
+after tiling shrink. Approval is withheld; recovery and the candidate side
+remain unrun. This is a failed visual qualification, not absent final output.
+Normal same-page replacement, stable page identity and all after-source/
+SDK/kernel/host/93owner/245member guards pass with no finalization errors.
+No paired responsiveness result follows. Source review identifies guest
+TIOCSWINSZ signaling its caller instead of the foreground group; causal Rust
+regressions reproduce wrong target/no-op signals, while actual connection to
+the Foot/Bash image still needs combined runtime validation.
+
+The normal cross-pair artifact audit finds both SDK inventories, selected
+kernel and89/93complete owner tuples identical. Active Sway/Foot/SFWBar and
+library bytes match. Four normal recipe keys differ; coreutils-docs and
+NetHack correctly declare host/src as a build-time execution input.
+Coreutils-docs bytes remain equal. NetHack's only executable difference is
+31payload bytes in the `kandelo.build.key` custom section; every other Wasm
+section, including code/data/types/ABI, is equal. Its seven-entry ZIP changes
+only bin/nethack. Shell image compressed bytes differ and its entire internal
+tree has not been independently diffed; no byte-identical boot-image or
+startup timing attribution is claimed. Raw tuple/section/ZIP comparisons are
+under `.context/four-vector-artifact-pair-analysis-r1/`.
+
+A launcher audit corrects the earlier standalone comparator screen and native
+parity descriptions: their Chromium launchers copied launchOptions but omitted
+project.use.channel. Actual retained SystemInfo.commandLine names
+`chromium_headless_shell-1243`, while effectiveConfiguration.channel recorded
+intended project metadata. These are real default-headless-shell Wasm results,
+not canonical Chromium-mode evidence. Their numbers, raw reports and successful
+bounded correctness controls remain unchanged; canonical Chromium repetition
+is still required. Firefox/WebKit are unaffected by this channel omission.
+Actual application traces and public paired tests use Playwright's configured
+project and its real Chromium channel. All runs are headless.
+
+The new native selected-context gate first fails before launching an engine
+because its driver guesses app/node_modules/playwright rather than normal
+package resolution. Own worktree-root dependencies already match app lock1.63.0;
+no installation or SDK rebuild is necessary. Fresh launcher preflight resolves
+from the declaring app package, checks installed metadata/locked versions,
+actual engine exports/executables and the explicit canonical Chromium channel.
+Thirteen pure controls pass. Original failed engines[] report remains retained.
+A seal/handoff race affects two preparation documents only; its unlaunched
+namespace is retained and final inputs move to a fresh namespace. Native
+rendering results remain unclaimed until that new gate actually runs.
+
+### Foreground terminal resize repair, 2026-10-31
+
+A shared-core reproduction fails both original assertions: an outside PTY
+master setter receives the resize signal while the two foreground members do
+not, and an identical resize signals unnecessarily. The repair publishes the
+complete size through `ProcessTable::ioctl`, ends the caller borrow before
+routing typed cross-process effects, and targets the terminal's authoritative
+foreground group and controlling session. Exact recipient task selection and
+ordinary retained PTY readiness notifications wake pending signal checks.
+The normal host resize export uses the same model; its established cell-only
+notification policy remains. Unknown controlling sessions never authorize
+signals. Broader existing TIOCSPGRP authorization/errno gaps remain open.
+
+Declared-shell validation passes all3,407workspace Rust tests, including six
+documentation tests, with zero failed/ignored (`--exclude xtask`, explicit
+native target). Log SHA256 is
+`3952247340ba20d608c9870ff1086b5f5608e91921224efa9d313835a12a9a92`.
+Ten focused resize controls,44process-table tests and40ioctl-selected tests
+also pass; these subsets overlap. The actual Wasm adapter compiles. A normal
+four-process C regression is added as source and passes native syntax checks;
+it has not yet been built with the SDK or executed. Combined normal kernel,
+Foot/Bash command reflow, Node/browser integration and required conformance
+remain pending. This repair is not yet a demonstrated cause or cure of the
+five-terminal screenshot failure, nor a performance result. No ABI number,
+wire layout, import/export or snapshot change is introduced within the same
+unpublished ABI56 family. Source/before/after receipts are retained under
+`.context/inverse-evidence-documentation/.context/terminal-resize-fix-r1/`.
+
+### Native selected-state and canonical comparator gates, 2026-10-31
+
+The finalized native selected-context gate now actually passes in canonical
+headless Chromium153.0.8010.12, Firefox155.0 and WebKit26.6. Job
+`restored-device-native-r3-1031-104137-a913` completes0in7seconds. Seven
+assertion groups per engine exercise the real WebGL2/KMS host path, pixels,
+shared BO writes, owner/context isolation, canvas resize, private errors and
+actual context loss. All21groups pass with zero errors. Twelve BO retirement
+acknowledgements, three observer restorations, six context/browser closures,
+three exact owned PID exits and exact Firefox-home cleanup complete. Sixty-two
+source hashes stay identical before/after. Report SHA256:
+`7b37e7a5439aa5e813902be7fb31e1524d97a192f03f37587327734329f3d1c8`.
+Independent offline verification is under
+`.context/restored-device-native-analysis-r3/`. This gate uses the existing
+synthetic scratch kernel with small real native WebGL contexts, not a normal
+compiled guest or compositor. Application effect and browser-memory acceptance
+remain unproved. The earlier unlaunched/failed namespaces remain retained.
+
+Both standalone comparator cohorts have now repeated with explicit canonical
+Chromium channel and verified actual executable/arguments for all engines.
+Node plus Chromium/Firefox/WebKit pass128/128native shape rows and64/64actual
+selector pairs, zero refusals/errors. The five-factor operation screen also
+completes with source/cleanup guards intact. Jobs are
+`comparator-four-vector-canonical-parity-1031-105659-53f9` (0,7seconds) and
+`snapshot-comparator-unroll-canonical-scr-1031-105719-7efd` (0,12seconds).
+Report SHAs are respectively
+`f441346c07f133ec9d73f59ee65f778e18bcab5eca72d888b1588219438055ad` and
+`bbb0bef1c30e02b63cddfea718706ff2aa26a2eccb6566adaf4c2192c34dee42`.
+These repeat bounded standalone claims only. They do not establish desktop
+responsiveness, small/early no-regression, CPU attribution, normal guest
+acceptance or memory reclamation. Original default-headless-shell reports
+remain explicitly qualified and unchanged.
+
+### Thirty-second desktop idle frame trace, 2026-10-31
+
+Job `desktop-long-idle-r2-1031-105115-36ce` completes all four30second
+stages with workload/collector/guard0/0/0, frozen normal04f artifacts and
+canonical headless Chromium. Public terminal counts are1/3/5/recovered1;
+Start observations are outside capture. All native wrappers restore, normal
+same-page replacement completes, source/artifact identities remain stable,
+and console/finalization errors are empty. Report SHA256:
+`7e658ad113653a494485142ca7ec2f3de6305f04bec70efd348f0043c917a876`.
+
+| Idle stage | Comparison starts / finishes | Requested comparison bytes | Native GL calls | Logical display latches |
+|---|---:|---:|---:|---:|
+| One terminal | 16,226 / 16,225 | 169,975,787,520 | 163,486 | 30 |
+| Three terminals | 15,954 / 15,954 | 167,126,446,080 | 167,116 | 32 |
+| Five terminals | 16,922 / 16,921 | 177,266,749,440 | 163,888 | 32 |
+| Recovered one | 16,688 / 16,688 | 174,815,477,760 | 163,190 | 30 |
+
+Every completed comparison returns equal; one span in each of the first and
+third stages crosses the exact cutoff and is censored. Requested bytes include
+those requests and are not physical bus traffic. Leading/trailing logical
+intervals are partial; these latches are not physical screen FPS. Native work
+remains sustained without monotonic amplification in this idle workload.
+Tracked DRI BO Map cardinality changes2→5→7→2; public GL bindings stay1.
+These limited gauges neither establish physical allocation reclamation nor
+exclude other retained resources. No CPU or application-speed inference is
+made from inclusive instrumented scopes or these NONQUIET observations.
+
+A distinct client-count effect is visible in request retries. Each idle Foot
+attempts epollpwait about2,470times per30seconds, generally without completing
+its logical wait. Total retries rise4,640→9,136→14,559→4,741 while logical
+finishes remain2,963→3,045→3,112→3,032. The current shared host always arms
+an at-most10ms epoll fallback, even with known readiness tokens. Source and
+counts identify a concrete scheduling investigation, not proof that every
+retry is a timer or may safely be omitted. Retry reason and notification
+ancestry need recording before changing wake behavior. Concurrently active
+clients, pointer activity and responsiveness comparisons remain untested by
+this idle cohort; single- and multiple-terminal gains are still unproved.
+
+The first long-idle launch had an incomplete helper manifest and failed its
+identity gate before guest navigation. Its failed namespace is retained. The
+fresh R2 enumerates/seals every actual helper and passes the exact identity
+capture/assertion preflight before launch. Runtime trace limits remain fixed;
+unknown/internal-error/overflow flags are zero. Raw records and offline audit
+live under `.context/desktop-long-idle-r2/` and
+`.context/desktop-long-idle-analysis-r2/`.
