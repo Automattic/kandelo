@@ -24,7 +24,9 @@ is a lazy program: the first execution fetches it. `--help`,
 `--version`, and the interactive terminal interface started with
 `codex --no-daemon` run in Chromium, Firefox, and WebKit; the interface
 reaches upstream's sign-in screen and accepts keyboard input.
-Authenticated account use remains unverified. The shared runtime
+A ChatGPT account signed in with device-code login and completed turns
+that ran shell tools through the local development server on
+2026-10-30. The shared runtime
 prepares compact pthread artifact metadata once per process image,
 avoiding another full executable copy and hash in every thread.
 
@@ -41,7 +43,7 @@ which is upstream's system configuration layer. A user's
 `~/.codex/config.toml`, profiles, and command-line options override it.
 It sets two defaults, both because this build has no
 `codex-code-mode-host`, a JavaScript host built on Rust bindings to
-native V8, which do not target Kandelo:
+native V8, which does not target WebAssembly:
 
 - `features.daemon_auto_start = false`. Upstream's shared background
   server installs a complete managed Codex package
@@ -50,14 +52,18 @@ native V8, which do not target Kandelo:
   default, plain `codex` reports upstream's error, "this CLI has no
   complete local package", and advises `--no-daemon`. The setting
   selects the same in-process server.
-- `model = "gpt-5.5"`. In Codex 0.163.0's model catalog, the gpt-5.6 and
-  gpt-6 models are `code_mode_only`: every tool call, including shell
-  commands, runs as JavaScript in the code-mode host, and fails closed
-  without it (`failed to spawn code-mode host`). gpt-5.5 uses Codex's
-  direct tools, which run on Kandelo. The catalog labels it a legacy
-  model and offers an upgrade to gpt-6-sol; accepting that upgrade, or
-  selecting another model with `/model` or `-m`, makes tool calls fail
-  with that error.
+- `features.code_mode.direct_only_tool_namespaces = ["functions"]`.
+  With a ChatGPT account, the server's model catalog replaces the one
+  bundled with Codex and rejects gpt-5.5 ("not supported when using
+  Codex with a ChatGPT account"). Every model it accepts is
+  `code_mode_only`: by default every tool call, including shell
+  commands, runs as JavaScript in the code-mode host and fails closed
+  without it (`failed to spawn code-mode host`). This upstream setting
+  keeps the built-in tool namespace (shell commands, `exec`,
+  `apply_patch`) direct for those models, so they run on Kandelo. A
+  signed-in ChatGPT turn with gpt-6.1-sol ran shell tools this way on
+  2026-10-30. Code that a model routes through other namespaces still
+  needs the code-mode host and reports its absence.
 
 The package does not supply a substitute code-mode host, fake the
 managed package files, or patch Codex's selection logic.
@@ -211,8 +217,9 @@ instead of the public proxy. It has no approval page of its own: the
 per-process grant is its only permission. The relay carries a credential
 only for a request that passed the service worker's grant check, and
 forwards only to the three OpenAI HTTPS origins. A process that was not
-granted is refused before its request reaches the relay. Guest Codex
-integration and actual subscription use remain unverified.
+granted is refused before its request reaches the relay. A real ChatGPT
+subscription has signed in and run turns this way (2026-10-30); the
+same flow through a deployed CORS proxy has not been verified yet.
 
 What Codex 0.163.0 sends, and how the browser bridge answers, was
 measured against local mock servers in ChatGPT sign-in mode (no real
