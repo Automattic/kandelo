@@ -10990,3 +10990,69 @@ geometry and guards; preparation is not execution. Current native desktop
 speed, rendering, GObject, native churn and three-engine memory acceptance
 remain open at publication. Future theories use the incremental investigation
 loop above rather than a full preview build before initial measurement.
+
+
+### Native comparison: existing-build desktop and browser diagnostics (2026-10-31)
+
+Both focused Chromium shared-memory consumers pass in managed job
+`native-snapshot-new-browser-semantics-na-1031-001957-c124` (10s).
+The existing5669 preview then completes the unchanged one/two/three/four/five
+Foot windows and return-to-one workload, including early/late Start in each
+stage. Job `native-snapshot-new-native2x-terminals-n-1031-002015-28fe`
+finishes0 in3m29s; workload, after-collector and after-guard all pass.
+All1518 recorded events are trusted, including1306 pointer moves; errors
+and finalization errors are empty, identities remain stable, and all93
+owners/245 members retain their normal producer identities.
+
+| Same workload stage | Previous5668 JS motion flip delta | Native5669 motion flip delta | Previous early/late Start, ms | Native early/late Start, ms |
+|---|---:|---:|---|---|
+| 1 terminal | 27 | 140 | 22868 / 5046 | 8071 / 1565 |
+| 2 terminals | 9 | 116 | 5427 / 6448 | 1536 / 1570 |
+| 3 terminals | 6 | 86 | 5878 / 7793 | 1563 / 1576 |
+| 4 terminals | 5 | 98 | 8051 / 9097 | 1555 / 1568 |
+| 5 terminals | 3 | 66 | 7332 / 9897 | 1601 / 1573 |
+| Recovered1 | 28 | 145 | 4995 / 4366 | 1535 / 1577 |
+
+Motion deltas span approximately9.9s of public samples during200 requested
+moves over10s. They are accepted-flip observations, not achieved FPS or exact
+input-to-pixel latency. Start includes screenshot/classifier/poll overhead.
+These are separate historical NONQUIET runs with uncontrolled external/user
+load; the table does not establish an isolated causal gain or benefit over
+main. The single-terminal and multi-client cases still need further work.
+Raw native report SHA256
+`47174231f33adc76d39c134ff2f98b66c276ec48719835d388236d65ee1193cb`
+and read-only derived comparison are retained under
+`.context/native-snapshot-desktop-probe-r1/` and
+`.context/native-snapshot-desktop-comparison.json` respectively.
+
+The next private diagnostic loads only the actual served comparator and
+its generated module bytes in one disposable worker per headless engine.
+It performs no SDK, kernel, program, package or image build/load and no
+Kandelo machine boot. Chromium153.0.8010.12 and Firefox155.0 each complete
+all16 checked scan/invocation cases. WebKit fails at the new constructor
+metadata check: it cannot authenticate shared backing when the global
+SharedArrayBuffer constructor is absent. This is a Kandelo assumption to
+repair, not evidence of an outside runtime defect. Original failure and
+all source/response identities remain in
+`.context/perf-lab-browser-r1/results-r1/`. Aggregate exit1 also retains an
+ENOTEMPTY while removing the owned temporary Firefox home; browser close
+ACKs and process exits themselves are recorded as0.
+
+The repair uses the already captured native Memory getter to prove the
+backing's origin, then an ephemeral native Uint8Array and captured native
+typed-array length getter for shared backing. It creates no Memory,
+performs no byte copy and retains only scalar metadata. Descriptor width
+and maximum still come from actual constructor admission, not inference.
+A targeted hidden-global regression reproduces the original error before
+the repair. Candidate browser rerun and full normal acceptance are pending;
+other runtime buffer helpers have their own remaining coverage obligations.
+The immutable published5669 preview is not changed by this helper repair.
+
+The repaired comparator test file passes5/5 with0 skips in the declared
+shell (19.60s, including normal fixture/index preparation). It checks
+hidden globals, native equal/different results, forged/proxy receivers,
+misdeclared sharing/maximum, growth and poisoned public accessors, plus
+all prior32 variant assertions. The first expanded fixture attempted an
+own property on non-extensible native backing and failed before exercising
+the repair; its original log remains. The corrected fixture poisons the
+prototype length accessor instead and preserves the intended assertion.

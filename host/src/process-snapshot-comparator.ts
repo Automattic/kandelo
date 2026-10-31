@@ -26,9 +26,9 @@ const intrinsicMemoryBuffer = Object.getOwnPropertyDescriptor(
 const intrinsicArrayBufferByteLength = Object.getOwnPropertyDescriptor(
   ArrayBuffer.prototype, "byteLength",
 )!.get!;
-const intrinsicSharedBufferByteLength = typeof SharedArrayBuffer === "undefined"
-  ? null
-  : Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, "byteLength")!.get!;
+const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
+  Object.getPrototypeOf(Uint8Array.prototype), "byteLength",
+)!.get!;
 
 export interface ComparisonMemoryShape {
   readonly addressWidth: 4 | 8;
@@ -50,9 +50,12 @@ function currentBufferShape(memory: WebAssembly.Memory): { shared: boolean; byte
     const byteLength = intrinsicApply(intrinsicArrayBufferByteLength, buffer, []) as number;
     return { shared: false, byteLength };
   } catch {
-    if (intrinsicSharedBufferByteLength === null)
-      throw new IntrinsicTypeError("Comparison Memory has no authenticated buffer shape");
-    const byteLength = intrinsicApply(intrinsicSharedBufferByteLength, buffer, []) as number;
+    // The native Memory getter above only returns an ArrayBuffer or shared
+    // backing. Shared Wasm backing does not require a global SharedArrayBuffer
+    // constructor. Read its internal span without trusting public properties
+    // or discovering getters through a mutable backing-buffer prototype.
+    const view = new IntrinsicUint8Array(buffer);
+    const byteLength = intrinsicApply(intrinsicTypedArrayByteLength, view, []) as number;
     return { shared: true, byteLength };
   }
 }

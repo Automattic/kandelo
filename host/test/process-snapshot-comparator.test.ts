@@ -17,6 +17,41 @@ function memory(width: 4 | 8, shared: boolean) {
 }
 
 describe("fixed read-only process snapshot comparator", () => {
+  it("authenticates native shared backing when the global SharedArrayBuffer constructor is absent", async () => {
+    const shared = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    const privateMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    const nativeBacking = shared.buffer;
+    const backingLength = vi.spyOn(Object.getPrototypeOf(nativeBacking), "byteLength", "get");
+    vi.resetModules();
+    vi.stubGlobal("SharedArrayBuffer", undefined);
+    try {
+      const helper = await import("../src/process-snapshot-comparator");
+      // Public properties are not authority for the native Memory or backing.
+      Object.defineProperty(shared, "buffer", { get() { throw Error("public buffer getter"); } });
+      backingLength.mockImplementation(() => { throw Error("public backing length getter"); });
+      helper.recordComparisonMemoryShape(shared, 4, true, 2);
+      helper.recordComparisonMemoryShape(privateMemory, 4, false, 2);
+      expect(helper.lookupComparisonMemoryShape(shared)).toEqual({ addressWidth: 4, shared: true, maximumPages: 2 });
+      expect(() => helper.recordComparisonMemoryShape({ buffer: privateMemory.buffer } as any, 4, false, 2)).toThrow();
+      expect(() => helper.recordComparisonMemoryShape(new Proxy(shared, {}), 4, true, 2)).toThrow();
+      const wrongSharing = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+      expect(() => helper.recordComparisonMemoryShape(wrongSharing, 4, false, 2)).toThrow();
+      expect(() => helper.recordComparisonMemoryShape(wrongSharing, 4, true, 0)).toThrow();
+      shared.grow(1);
+      helper.recordComparisonMemoryShape(shared, 4, true, 2);
+      const selected = helper.getSnapshotComparatorModule(helper.lookupComparisonMemoryShape(privateMemory), helper.lookupComparisonMemoryShape(shared));
+      expect(selected).toBeInstanceOf(WebAssembly.Module);
+      const compare = new WebAssembly.Instance(selected!, { env: { kernel: privateMemory, process: shared } }).exports.compare as Function;
+      expect(compare(0n, 0n, 17)).toBe(0);
+      new Uint8Array(nativeBacking)[16] = 1;
+      expect(compare(0n, 0n, 17)).toBe(1);
+    } finally {
+      backingLength.mockRestore();
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
   it("matches its generator and has only two memory imports and one read-only function", () => {
     const hash = (url: URL) => createHash("sha256").update(readFileSync(url)).digest("hex");
     expect(hash(new URL("../scripts/generate-snapshot-comparator.mjs", import.meta.url))).toBe(SNAPSHOT_COMPARATOR_GENERATOR_SHA256);
