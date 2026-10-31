@@ -589,3 +589,24 @@ it.each(["late","completion race"] as const)("does not dirty an already-selected
   expect(selections).toBe(before);expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
   dispose();
 });
+
+it("uses the same checked constant publication for forwarded invalid and indeterminate setters",()=>{
+  const worker=new FakeWorker(),stub=new RecordingGl(),values=new Map<number,number[]>();let writes=0,reject=false;
+  Object.assign(stub,{getParameter:()=>8,vertexAttrib4f(index:number,...value:number[]){
+    writes++;if(index>=8){stub.error=0x501;return;}values.set(index,value);
+    if(reject){reject=false;throw Error("forwarded constant accepted then threw");}
+  }});
+  const {canvas}=fakeCanvas(stub),dispose=setupMainForward(worker,canvas,7);
+  const channel=createMainForwardChannel({postMessage:message=>worker.fire(message)},7);
+  expect(channel.onCreateContext()).toBe(0);
+  const submit=(index:number,value:number[])=>{
+    const bytes=new Uint8Array(24),v=new DataView(bytes.buffer);v.setUint16(0,O.OP_VERTEX_ATTRIB_4FV,true);v.setUint16(2,20,true);
+    v.setUint32(4,index,true);value.forEach((part,i)=>v.setFloat32(8+i*4,part,true));channel.onSubmit(bytes);
+  };
+  submit(0xffff_ffff,[5,6,7,8]);expect(writes).toBe(0);
+  const error=channel.onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4);expect(error.rc).toBe(4);expect(new Uint32Array(error.bytes.buffer)[0]).toBe(0x501);
+  submit(2,[1,2,3,4]);reject=true;submit(2,[5,6,7,8]);expect(values.get(2)).toEqual([1,2,3,4]);
+  const query=channel.onQuery!(O.QOP_GET_VERTEX_ATTRIBFV,new Uint8Array(new Uint32Array([2,0x8626]).buffer),24);
+  expect(query.rc).toBe(24);expect([...new Float32Array(query.bytes.buffer,4,4)]).toEqual([1,2,3,4]);
+  dispose();
+});

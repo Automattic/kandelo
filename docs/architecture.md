@@ -4575,8 +4575,13 @@ restoration covers the entire accepted native range, including indices absent
 all guest shadows. No guest bindings, attribute values or sparse key sets are
 retained by that clearing range. Full replay still has its existing unchecked
 native-error behavior; this change closes lost reset coverage, not acceptance
-checking for every state replay. Invalid-index constant shadow publication
-also remains a separate validation gap. Synchronous native-state queries
+checking for every state replay. Queued constant-attribute setters validate the
+index against the accepted native limit before any write or shadow growth.
+Their old scalar value enters the native repair journal before effects, and
+new shadow values publish only after checked acceptance. A refused inverse
+fences later work even after its logical owner retires. Existing private tuples
+update without a Map clone; new indices reserve only valid native slots before
+publication, rather than copying historical invalid entries. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
 
 The host now has a retained native-fence owner as a prerequisite for EGL

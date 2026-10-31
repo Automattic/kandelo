@@ -17,7 +17,8 @@ export type NativeCall =
   | ["bindBuffer", number, WebGLBuffer | null]
   | ["framebufferTexture2D", number, number, number, WebGLTexture | null, number]
   | ["framebufferRenderbuffer", number, number, number, WebGLRenderbuffer | null]
-  | ["vertexAttribPointer", number, number, number, boolean, number, number];
+  | ["vertexAttribPointer", number, number, number, boolean, number, number]
+  | ["vertexAttrib4f", number, number, number, number, number];
 export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRenderbuffer", WebGLRenderbuffer | null]
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]

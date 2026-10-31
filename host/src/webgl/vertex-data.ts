@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
 import { vertexAttribute } from "./buffer-references.js";
 import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
@@ -17,6 +17,44 @@ function componentBytes(type: number): number {
   }
 }
 function layoutKey(a: GlVertexAttribute): string { return `${a.type}:${a.size}:${a.stride}:${a.offset}`; }
+
+/** Reserve scalar inverse and shadow publication before driver effects. A
+ * failed setter may have changed physical state even when its reply throws;
+ * shared repair keeps that uncertainty fenced after the logical owner retires. */
+export function installVertexConstant(b: GlBinding, index: number,
+  x: number, y: number, z: number, w: number): void {
+  const gl = b.gl!, limit = maxVertexAttributes(b);
+  if (limit === null) return;
+  if (!limit) { recordGlError(b,0x502); return; }
+  if (!Number.isInteger(index) || index < 0 || index >= limit) { recordGlError(b,0x501); return; }
+  let previous: [number,number,number,number] | undefined;
+  let replacement: typeof b.shadow.vertexAttribValues | undefined;
+  let changes: NativeChange[];
+  let options: {shared: true};
+  try {
+    previous = b.shadow.vertexAttribValues.get(index);
+    if (!previous) {
+      replacement = new Map();
+      // Lookup only valid native slots, never clone a historically poisoned
+      // unbounded index map. The fresh map is unpublished until acceptance.
+      for (let slot=0;slot<limit;slot++) {
+        const value = b.shadow.vertexAttribValues.get(slot);
+        if (value) replacement.set(slot,value);
+      }
+      replacement.set(index,[x,y,z,w]);
+    }
+    const old = previous ?? [0,0,0,1];
+    const write = () => gl.vertexAttrib4f(index,x,y,z,w);
+    changes = [{apply: () => checkedGlCall(b,write),
+      restore: nativeInverse(b,[["vertexAttrib4f",index,old[0],old[1],old[2],old[3]]])}];
+    options = {shared:true};
+  } catch { recordGlError(b,0x505); return; }
+  if (!applyNativeChanges(b,changes,options)) return;
+  // Existing tuples are private fixed-size arrays: replacing their scalar
+  // slots publishes without a fallible Map.set/clone after native acceptance.
+  if (previous) { previous[0]=x; previous[1]=y; previous[2]=z; previous[3]=w; }
+  else b.shadow.vertexAttribValues = replacement!;
+}
 
 /** Install every core format transactionally. Metadata capacity precedes native
  * pointer changes, including independent packed views for converted layouts. */

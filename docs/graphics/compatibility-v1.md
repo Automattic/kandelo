@@ -14442,3 +14442,29 @@ Evidence: `.context/drawable-boundary-ordered-r1/` and
 `e1a83c69f696ea8966c22867d719c51e2e7f36d56972a042b22f4b9148975a9c`.
 No fresh distribution/browser-memory/Node/three-engine/conformance or broad
 benchmark acceptance follows from this trace.
+
+
+### Checked constant-attribute publication, 2026-10-31
+
+A follow-up source candidate closes new OP_VERTEX_ATTRIB_4FV invalid-index
+shadow publication. Direct and main-forward dispatch use the same checked
+native-limit/index validation and scalar inverse transaction. Invalid indices
+record GL_INVALID_VALUE without native writes or shadow growth; a later valid
+command still executes. Existing private tuples update only after acceptance,
+without Map cloning; new slots reserve only valid native entries before
+publication. Native error/throw publishes no new value, and a refused inverse
+fences later work through logical-owner retirement until retry succeeds.
+Seven before-controls fail on1e05; all33 source WebGL files pass860/860 with
+0skips. Evidence registry checker agrees on640files with the new test marked
+source-only. Final raw full typecheck fails with byte-identical prior output,
+including unchanged bridge742/752 errors. Exact evidence is
+.context/vertex-constant-publication-candidate-r1/. No ABI/build/browser or
+responsiveness measurement is performed. Existing-key updates do not eagerly
+trim previously poisoned historical Maps; new index publication is bounded.
+Full muxer replay native-error acceptance remains an ordinary open gap.
+
+Independent source review finds no new blocker and pins the seven changed files
+plus unchanged checked-limit/muxer dependencies. Evidence is
+`.context/vertex-constant-publication-review-r1/`. The frozen5679 and5680
+previews do not include this repair; distribution, Node/browser rendering,
+browser-memory and graphics conformance acceptance remain open.

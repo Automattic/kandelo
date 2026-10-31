@@ -27,7 +27,7 @@ import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bi
 import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
-import { installVertexAttribute } from "./vertex-data.js";
+import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, currentProgramName, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
@@ -1175,17 +1175,8 @@ function dispatch(
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:
-      b.shadow.vertexAttribValues.set(v.getUint32(p, true), [
-        v.getFloat32(p + 4, true), v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true), v.getFloat32(p + 16, true),
-      ]);
-      gl.vertexAttrib4f(
-        v.getUint32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
-        v.getFloat32(p + 16, true),
-      );
+      installVertexConstant(b,v.getUint32(p,true),v.getFloat32(p+4,true),v.getFloat32(p+8,true),
+        v.getFloat32(p+12,true),v.getFloat32(p+16,true));
       return;
 
     // ----- VAOs -----------------------------------------------------------
