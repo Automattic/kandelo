@@ -275,6 +275,7 @@ host/test/node-kernel-init-refused-image.test.ts	prepared-product
 host/test/node-kernel-pipe-proxy.test.ts	prepared-product
 host/test/node-lazy-archive-runtime.test.ts	prepared-product
 host/test/node-lazy-asset-resolver.test.ts	prepared-product
+host/test/node-network-attempts.test.ts	source-only
 host/test/node-owned-jobs.test.ts	prepared-product
 host/test/node-pcm-driver.test.ts	source-only
 host/test/node-platform-io-uid-gid.test.ts	source-only

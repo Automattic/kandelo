@@ -12004,10 +12004,10 @@ fn cross_process_loopback_connect6(
     client.peer_addr6 = ip;
     client.peer_port = port;
     client.global_pipes = true;
-    if client.bind_port == 0 {
-        client.bind_addr6 = loopback;
-        client.bind_port = client_port;
-    }
+    // A bound wildcard still selects a concrete source at connect time.
+    // Preserve the requested port without leaving getsockname() at ::.
+    client.bind_addr6 = client_addr6;
+    client.bind_port = client_port;
 
     let listener_proc = table.get_mut(listener_pid).ok_or(Errno::ESRCH)?;
     let listener_sock = listener_proc

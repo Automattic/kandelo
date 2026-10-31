@@ -69,9 +69,28 @@ particular:
   require its adversarial assertion readiness check before recording
   guest baseline counts.
 
+- TCP client dialing validates and snapshots the family-selection defaults
+  (enabled, 500 ms; setters clamp positive values below 10 ms). It resolves
+  actual addresses, alternates deduplicated families, applies deadlines to
+  intermediate attempts, and cancels the native connect by operation
+  identity. Failed and cancelled attempts close their descriptors; late
+  successes are closed. TLS uses this same TCP dialing policy. Endpoint
+  properties come from getsockname/getpeername, including local binding.
+  Socket timeout/keepalive controls, complete stream semantics, listening
+  servers, BlockList and TLS handshake cancellation remain incomplete.
+
+- `dns.lookup` and its promise form use libc getaddrinfo, with literal IP,
+  family/all/order options and asynchronous delivery. The current libc
+  hostname resolver supplies one IPv4 answer, does not provide full
+  hosts-file or IPv6 hostname resolution, and performs a blocking lookup.
+  These are fixable resolver gaps, separate from the transport's current
+  IPv6 loopback-only boundary. Custom lookup records are supported without
+  supplying invented DNS answers in the harness. Other DNS record APIs
+  remain incomplete or placeholders.
+
 - Several DNS, crypto/TLS, worker, performance and browser globals
   remain partial or placeholders. They must not be treated as supported
-  solely because the names export. The historical DNS loopback response,
+  solely because the names export. The DNS record-resolution placeholders,
   crypto stubs and JSON-only structuredClone are compatibility gaps to
   replace.
 

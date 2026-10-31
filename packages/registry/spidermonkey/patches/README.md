@@ -39,3 +39,9 @@ Kandelo wasm32 integration points needed by the standalone SpiderMonkey shell.
 Revisit this set when bumping ESR versions. Most patches are
 Kandelo-specific integration glue, but any general wasm32 or POSIX portability
 fixes should be considered for upstreaming.
+
+- `0029-kandelo-node-network-attempts.patch`: exposes real libc address lookup,
+  IPv4/IPv6 nonblocking connects, local binding and actual socket endpoints.
+  Pending connects are cancelled by promise identity, and failure/cancellation
+  closes the owned descriptor. Shared JavaScript owns family alternation and
+  per-attempt deadlines; kernel and host networking remain authoritative.

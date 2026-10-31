@@ -14,6 +14,7 @@ export default {
       'test/node-assertion-semantics.test.ts',
       'test/node-positioned-io.test.ts',
       'test/node-response-body.test.ts',
+      'test/node-network-attempts.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

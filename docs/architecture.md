@@ -2669,6 +2669,22 @@ physical host sockets. Other Node listeners retain the native bridge.
 
 User-visible networking is POSIX-first. Guest programs call normal AF_UNIX, AF_INET, and partial AF_INET6 socket syscalls (`socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `poll`, and `select`). The Rust kernel owns the socket file descriptors, datagram queues, stream listener state, loopback routing, and errno behavior. Host transports plug in below that layer through `NetworkIO`; they are backends, not the userspace-visible abstraction.
 
+The shared Node compatibility layer applies TCP client family selection above
+these same sockets. It obtains real resolver records, alternates address
+families, cancels intermediate attempts at their deadline, and closes failed
+or late descriptors. TLS shares the dialing policy. It reads socket endpoints
+from the kernel rather than deriving them from requested options. An IPv6
+wildcard-bound client selects its concrete loopback source when connected,
+including when it already reserved a nonzero local port, in both same-process
+and cross-process routes. That correction changes socket state, not the
+syscall layouts or ABI 55.
+
+`dns.lookup` uses libc getaddrinfo; current hostname resolution still supplies
+one IPv4 answer and lacks full hosts-file/IPv6 hostname support. These are
+implementation gaps, separate from the transport's IPv6 loopback-only limit.
+Node listening-server and several socket controls remain incomplete. See
+[the core compatibility audit](../packages/registry/node-compat/README.md).
+
 ### Readiness is a kernel decision; backends report facts
 
 A `NetworkIO` backend never decides whether a socket is readable or

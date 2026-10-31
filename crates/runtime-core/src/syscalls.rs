@@ -15289,10 +15289,10 @@ fn sys_connect_impl(
                 client.peer_port = port;
                 client.peer_idx = Some(accepted_idx);
                 client.global_pipes = true;
-                if client.bind_port == 0 {
-                    client.bind_port = client_port;
-                    client.bind_addr6 = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
-                }
+                // Source selection applies to wildcard binds even when the
+                // caller already reserved a nonzero local port.
+                client.bind_addr6 = client_addr6;
+                client.bind_port = client_port;
 
                 let accepted = proc.sockets.get_mut(accepted_idx).ok_or(Errno::EBADF)?;
                 accepted.peer_idx = Some(sock_idx);
@@ -43968,6 +43968,45 @@ impl HostIO for NetMock {
 
         for open_fd in [accepted, any_client, client_fd, fd] {
             sys_close(&mut proc, &mut host, open_fd).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_inet6_connect_selects_source_without_losing_bound_port() {
+        use wasm_posix_shared::socket::*;
+        for (port, bound_loopback) in [(0u16, false), (27001, false), (27002, true)] {
+            let mut proc = Process::new(1);
+            let mut host = MockHostIO::new();
+            let mut server_addr = [0u8; 28];
+            server_addr[0] = AF_INET6 as u8;
+            server_addr[2..4].copy_from_slice(&23107u16.to_be_bytes());
+            server_addr[23] = 1;
+            let server = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+            sys_bind(&mut proc, &mut host, server, &server_addr).unwrap();
+            sys_listen(&mut proc, &mut host, server, 1).unwrap();
+            let client = sys_socket(&mut proc, &mut host, AF_INET6, SOCK_STREAM, 0).unwrap();
+            let mut bound = [0u8; 28];
+            bound[0] = AF_INET6 as u8;
+            bound[2..4].copy_from_slice(&port.to_be_bytes());
+            bound[23] = u8::from(bound_loopback);
+            sys_bind(&mut proc, &mut host, client, &bound).unwrap();
+            let mut before = [0u8; 28];
+            sys_getsockname(&proc, client, &mut before).unwrap();
+            assert_eq!(&before[8..24], &bound[8..24]);
+            let reserved_port = [before[2], before[3]];
+            sys_connect(&mut proc, &mut host, client, &server_addr).unwrap();
+            let mut after = [0u8; 28];
+            sys_getsockname(&proc, client, &mut after).unwrap();
+            assert_eq!(&after[8..24], &server_addr[8..24]);
+            assert_eq!(&after[2..4], &reserved_port);
+            assert_ne!(reserved_port, [0, 0]);
+            let accepted = sys_accept(&mut proc, &mut host, server).unwrap();
+            let mut peer = [0u8; 28];
+            sys_getpeername(&proc, accepted, &mut peer).unwrap();
+            assert_eq!(peer, after);
+            for fd in [accepted, client, server] {
+                sys_close(&mut proc, &mut host, fd).unwrap();
+            }
         }
     }
 

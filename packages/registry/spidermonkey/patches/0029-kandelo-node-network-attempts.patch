@@ -1,0 +1,291 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -759,19 +759,6 @@
+   return KandeloZlibOneShot(cx, args, false, 31, 0);
+ }
+ 
+-static int KandeloResolveHost(const char* host, struct in_addr* out) {
+-  if (inet_aton(host, out)) return 0;
+-  struct addrinfo hints = {};
+-  hints.ai_family = AF_INET;
+-  hints.ai_socktype = SOCK_STREAM;
+-  struct addrinfo* res = nullptr;
+-  int rc = getaddrinfo(host, nullptr, &hints, &res);
+-  if (rc != 0 || !res) return -1;
+-  *out = reinterpret_cast<struct sockaddr_in*>(res->ai_addr)->sin_addr;
+-  freeaddrinfo(res);
+-  return 0;
+-}
+-
+ enum class KandeloSocketWatchKind {
+   Connect,
+   Read,
+@@ -838,6 +825,83 @@
+   }
+   return false;
+ }
++
++static bool KandeloDefineSocketString(JSContext* cx, HandleObject object,
++                                      const char* name, const char* text) {
++  RootedString string(cx, JS_NewStringCopyZ(cx, text));
++  if (!string) return false;
++  RootedValue value(cx, StringValue(string));
++  return JS_DefineProperty(cx, object, name, value, JSPROP_ENUMERATE);
++}
++
++static bool KandeloDefineSocketInt(JSContext* cx, HandleObject object,
++                                   const char* name, int32_t number) {
++  RootedValue value(cx, Int32Value(number));
++  return JS_DefineProperty(cx, object, name, value, JSPROP_ENUMERATE);
++}
++
++// Socket errors cross the private engine boundary as data. The shared Node
++// module constructs public Error objects without inspecting errno text.
++static bool KandeloRejectSocketOperation(JSContext* cx, HandleObject promise,
++                                         int error, const char* syscallName,
++                                         const char* code = nullptr) {
++  RootedObject reason(cx, JS_NewPlainObject(cx));
++  if (!reason || !KandeloDefineSocketInt(cx, reason, "errno", -error) ||
++      !KandeloDefineSocketString(cx, reason, "syscall", syscallName) ||
++      (code && !KandeloDefineSocketString(cx, reason, "code", code))) return false;
++  RootedValue value(cx, ObjectValue(*reason));
++  return JS::RejectPromise(cx, promise, value);
++}
++
++static bool KandeloNativeSocketLookup(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  UniqueChars host;
++  int32_t family = 0, flags = 0;
++  if (args.length() < 1 || !KandeloGetString(cx, args[0], &host) ||
++      (args.length() >= 2 && !JS::ToInt32(cx, args[1], &family)) ||
++      (args.length() >= 3 && !JS::ToInt32(cx, args[2], &flags))) return false;
++  RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
++  if (!promise) return false;
++  args.rval().setObject(*promise);
++  addrinfo hints = {};
++  hints.ai_family = family == 6 ? AF_INET6 : family == 4 ? AF_INET : AF_UNSPEC;
++  hints.ai_socktype = SOCK_STREAM;
++  hints.ai_flags = flags;
++  addrinfo* result = nullptr;
++  const int status = getaddrinfo(host.get(), nullptr, &hints, &result);
++  if (status != 0) {
++    const char* code = status == EAI_NONAME ? "ENOTFOUND"
++        : status == EAI_AGAIN ? "EAI_AGAIN"
++        : status == EAI_FAMILY ? "EAI_FAMILY"
++        : status == EAI_MEMORY ? "EAI_MEMORY" : "EAI_FAIL";
++    const int nodeError = status == EAI_NONAME ? 3008 : status == EAI_AGAIN ? 3001
++        : status == EAI_FAMILY ? 3005 : status == EAI_MEMORY ? 3006 : 3004;
++    return KandeloRejectSocketOperation(cx, promise, nodeError, "getaddrinfo", code);
++  }
++  auto cleanup = mozilla::MakeScopeExit([&] { freeaddrinfo(result); });
++  RootedObject records(cx, JS::NewArrayObject(cx, 0));
++  if (!records) return false;
++  uint32_t count = 0;
++  for (addrinfo* item = result; item; item = item->ai_next) {
++    char text[INET6_ADDRSTRLEN];
++    const void* address;
++    const int recordFamily = item->ai_family == AF_INET6 ? 6 : 4;
++    if (item->ai_family == AF_INET) {
++      address = &reinterpret_cast<sockaddr_in*>(item->ai_addr)->sin_addr;
++    } else if (item->ai_family == AF_INET6) {
++      address = &reinterpret_cast<sockaddr_in6*>(item->ai_addr)->sin6_addr;
++    } else continue;
++    if (!inet_ntop(item->ai_family, address, text, sizeof(text))) continue;
++    RootedObject record(cx, JS_NewPlainObject(cx));
++    if (!record || !KandeloDefineSocketString(cx, record, "address", text) ||
++        !KandeloDefineSocketInt(cx, record, "family", recordFamily)) return false;
++    RootedValue value(cx, ObjectValue(*record));
++    if (!JS_SetElement(cx, records, count++, value)) return false;
++  }
++  RootedValue value(cx, ObjectValue(*records));
++  return JS::ResolvePromise(cx, promise, value);
++}
++
+ 
+ static bool KandeloResolvePromiseWithErrno(JSContext* cx, HandleObject promise,
+                                            int err, const char* fallback) {
+@@ -1000,12 +1064,12 @@
+     if (watch->kind == KandeloSocketWatchKind::Connect) {
+       int err = 0;
+       socklen_t len = sizeof(err);
+-      if (getsockopt(watch->fd, SOL_SOCKET, SO_ERROR, &err, &len) == 0 &&
+-          err == 0) {
+-        KandeloResolvePromiseWithInt(cx, watch->promise, watch->fd);
++      if (getsockopt(watch->fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) err = errno;
++      if (err == 0) {
++        if (!KandeloResolvePromiseWithInt(cx, watch->promise, watch->fd)) close(watch->fd);
+       } else {
+-        KandeloResolvePromiseWithErrno(cx, watch->promise,
+-                                       err ? err : ECONNREFUSED, nullptr);
++        KandeloRejectSocketOperation(cx, watch->promise, err, "connect");
++        close(watch->fd);
+       }
+       done = true;
+     } else if (watch->kind == KandeloSocketWatchKind::TlsConnect ||
+@@ -1053,49 +1117,115 @@
+ static bool KandeloNativeSocketConnect(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   UniqueChars host;
+-  if (args.length() < 2 || !KandeloGetString(cx, args[0], &host)) {
+-    return false;
+-  }
+-  int32_t port;
+-  if (!JS::ToInt32(cx, args[1], &port)) {
+-    return false;
+-  }
++  int32_t port, family = 0, localPort = 0;
++  if (args.length() < 2 || !KandeloGetString(cx, args[0], &host) ||
++      !JS::ToInt32(cx, args[1], &port) ||
++      (args.length() >= 3 && !args[2].isUndefined() &&
++       !JS::ToInt32(cx, args[2], &family)) ||
++      (args.length() >= 5 && !args[4].isUndefined() &&
++       !JS::ToInt32(cx, args[4], &localPort))) return false;
+   RootedObject promise(cx, JS::NewPromiseObject(cx, nullptr));
+   if (!promise) return false;
+   args.rval().setObject(*promise);
+-
+-  struct in_addr addr;
+-  if (port < 0 || port > 65535 || KandeloResolveHost(host.get(), &addr) != 0) {
+-    return KandeloResolvePromiseWithErrno(cx, promise, 0, "ENOTFOUND");
+-  }
+-  int fd = socket(AF_INET, SOCK_STREAM, 0);
+-  if (fd < 0) {
+-    return KandeloResolvePromiseWithErrno(cx, promise, errno, nullptr);
+-  }
+-  KandeloSetNonblocking(fd);
+-  struct sockaddr_in sa = {};
+-  sa.sin_family = AF_INET;
+-  sa.sin_port = htons(uint16_t(port));
+-  sa.sin_addr = addr;
+-  int rc = connect(fd, reinterpret_cast<struct sockaddr*>(&sa), sizeof(sa));
+-  if (rc == 0) {
+-    return KandeloResolvePromiseWithInt(cx, promise, fd);
+-  }
+-  if (errno != EINPROGRESS && errno != EAGAIN && errno != EALREADY) {
+-    int err = errno;
+-    close(fd);
+-    return KandeloResolvePromiseWithErrno(cx, promise, err, nullptr);
+-  }
+-
+-  auto* watch =
+-      js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Connect,
+-                                 promise);
+-  if (!watch) {
+-    close(fd);
+-    JS_ReportOutOfMemory(cx);
+-    return false;
+-  }
++  if (port < 0 || port > 65535 || localPort < 0 || localPort > 65535) {
++    return KandeloRejectSocketOperation(cx, promise, EINVAL, "connect");
++  }
++  addrinfo hints = {};
++  hints.ai_family = family == 6 ? AF_INET6 : family == 4 ? AF_INET : AF_UNSPEC;
++  hints.ai_socktype = SOCK_STREAM;
++  // The shared policy already resolved and validated this concrete address.
++  hints.ai_flags = AI_NUMERICHOST;
++  addrinfo* result = nullptr;
++  const int lookup = getaddrinfo(host.get(), nullptr, &hints, &result);
++  if (lookup != 0 || !result) {
++    if (result) freeaddrinfo(result);
++    return KandeloRejectSocketOperation(cx, promise, EINVAL, "connect");
++  }
++  auto cleanup = mozilla::MakeScopeExit([&] { freeaddrinfo(result); });
++  sockaddr_storage target = {};
++  if (result->ai_addrlen > sizeof(target)) return KandeloRejectSocketOperation(cx, promise, EINVAL, "connect");
++  memcpy(&target, result->ai_addr, result->ai_addrlen);
++  if (result->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(&target)->sin6_port = htons(uint16_t(port));
++  else reinterpret_cast<sockaddr_in*>(&target)->sin_port = htons(uint16_t(port));
++  const int fd = socket(result->ai_family, SOCK_STREAM, 0);
++  if (fd < 0) return KandeloRejectSocketOperation(cx, promise, errno, "socket");
++  bool retained = false;
++  auto closeOnError = mozilla::MakeScopeExit([&] { if (!retained) close(fd); });
++  if (KandeloSetNonblocking(fd) < 0) return KandeloRejectSocketOperation(cx, promise, errno, "fcntl");
++  const bool hasLocalAddress = args.length() >= 4 && !args[3].isNullOrUndefined();
++  if (hasLocalAddress || localPort != 0) {
++    UniqueChars local;
++    const char* name = result->ai_family == AF_INET6 ? "::" : "0.0.0.0";
++    if (hasLocalAddress) { if (!KandeloGetString(cx, args[3], &local)) return false; name = local.get(); }
++    addrinfo localHints = hints;
++    localHints.ai_family = result->ai_family;
++    addrinfo* localResult = nullptr;
++    if (getaddrinfo(name, nullptr, &localHints, &localResult) != 0 || !localResult) {
++      if (localResult) freeaddrinfo(localResult);
++      return KandeloRejectSocketOperation(cx, promise, EINVAL, "bind");
++    }
++    auto freeLocal = mozilla::MakeScopeExit([&] { freeaddrinfo(localResult); });
++    if (localResult->ai_family == AF_INET6) reinterpret_cast<sockaddr_in6*>(localResult->ai_addr)->sin6_port = htons(uint16_t(localPort));
++    else reinterpret_cast<sockaddr_in*>(localResult->ai_addr)->sin_port = htons(uint16_t(localPort));
++    if (bind(fd, localResult->ai_addr, localResult->ai_addrlen) < 0) return KandeloRejectSocketOperation(cx, promise, errno, "bind");
++  }
++  if (connect(fd, reinterpret_cast<sockaddr*>(&target), result->ai_addrlen) == 0) {
++    if (!KandeloResolvePromiseWithInt(cx, promise, fd)) return false;
++    retained = true;
++    return true;
++  }
++  if (errno != EINPROGRESS && errno != EAGAIN && errno != EALREADY) return KandeloRejectSocketOperation(cx, promise, errno, "connect");
++  auto* watch = js_new<KandeloSocketWatch>(cx, fd, KandeloSocketWatchKind::Connect, promise);
++  if (!watch) { JS_ReportOutOfMemory(cx); return false; }
+   KandeloSocketWatchLink(watch);
++  retained = true;
++  return true;
++}
++
++// A promise identifies the pending operation, never a possibly reused fd.
++static bool KandeloNativeSocketCancelConnect(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  args.rval().setBoolean(false);
++  if (args.length() < 1 || !args[0].isObject()) return true;
++  JSObject* token = &args[0].toObject();
++  KandeloSocketWatch** current = &gKandeloSocketWatches;
++  while (*current) {
++    KandeloSocketWatch* watch = *current;
++    if (watch->kind == KandeloSocketWatchKind::Connect && watch->promise.get() == token) {
++      *current = watch->next;
++      const bool ok = KandeloRejectSocketOperation(cx, watch->promise, ECANCELED, "connect");
++      close(watch->fd);
++      js_delete(watch);
++      args.rval().setBoolean(true);
++      return ok;
++    }
++    current = &watch->next;
++  }
++  return true;
++}
++
++static bool KandeloNativeSocketAddress(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  sockaddr_storage address = {};
++  socklen_t length = sizeof(address);
++  const bool peer = args.length() >= 2 && JS::ToBoolean(args[1]);
++  const int result = peer ? getpeername(fd, reinterpret_cast<sockaddr*>(&address), &length)
++                          : getsockname(fd, reinterpret_cast<sockaddr*>(&address), &length);
++  if (result < 0) { JS_ReportErrorASCII(cx, "socket address failed: %s", strerror(errno)); return false; }
++  char text[INET6_ADDRSTRLEN];
++  const void* bytes = address.ss_family == AF_INET6
++      ? static_cast<const void*>(&reinterpret_cast<sockaddr_in6*>(&address)->sin6_addr)
++      : static_cast<const void*>(&reinterpret_cast<sockaddr_in*>(&address)->sin_addr);
++  if (!inet_ntop(address.ss_family, bytes, text, sizeof(text))) { JS_ReportErrorASCII(cx, "socket address family is not implemented"); return false; }
++  const int port = ntohs(address.ss_family == AF_INET6 ? reinterpret_cast<sockaddr_in6*>(&address)->sin6_port
++                                                    : reinterpret_cast<sockaddr_in*>(&address)->sin_port);
++  RootedObject record(cx, JS_NewPlainObject(cx));
++  if (!record || !KandeloDefineSocketString(cx, record, "address", text) ||
++      !KandeloDefineSocketString(cx, record, "family", address.ss_family == AF_INET6 ? "IPv6" : "IPv4") ||
++      !KandeloDefineSocketInt(cx, record, "port", port)) return false;
++  args.rval().setObject(*record);
+   return true;
+ }
+ 
+@@ -2555,7 +2685,10 @@
+       JS_FN("inflateSync", KandeloNativeInflateSync, 1, 0),
+       JS_FN("gzipSync", KandeloNativeGzipSync, 2, 0),
+       JS_FN("gunzipSync", KandeloNativeGunzipSync, 1, 0),
+-      JS_FN("socketConnect", KandeloNativeSocketConnect, 2, 0),
++      JS_FN("socketLookup", KandeloNativeSocketLookup, 3, 0),
++      JS_FN("socketConnect", KandeloNativeSocketConnect, 5, 0),
++      JS_FN("socketCancelConnect", KandeloNativeSocketCancelConnect, 1, 0),
++      JS_FN("socketAddress", KandeloNativeSocketAddress, 2, 0),
+       JS_FN("socketRead", KandeloNativeSocketRead, 2, 0),
+       JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
+       JS_FN("socketClose", KandeloNativeSocketClose, 1, 0),
