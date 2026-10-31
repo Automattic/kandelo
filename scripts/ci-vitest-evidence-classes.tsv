@@ -261,6 +261,7 @@ host/test/nethack-shared-playground.test.ts	prepared-product
 host/test/nethack-special-levels.test.ts	prepared-product
 host/test/network-hostname.test.ts	source-only
 host/test/network-readiness-generation.test.ts	source-only
+host/test/node-assertion-semantics.test.ts	source-only
 host/test/node-buffer-encoding.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
 host/test/node-core-compat.test.ts	prepared-product

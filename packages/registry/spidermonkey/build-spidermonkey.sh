@@ -227,10 +227,11 @@ fi
 NODE_ADAPTER_JS="$SCRIPT_DIR/node-compat/adapter.js"
 NODE_SHARED_BOOTSTRAP_JS="$REPO_ROOT/packages/registry/node-compat/bootstrap.js"
 NODE_WEB_PLATFORM_JS="$REPO_ROOT/third_party/node-web-platform/node-web-platform.js"
+NODE_CORE_JS="$REPO_ROOT/third_party/node-core/node-core.js"
 NODE_SUFFIX_JS="$SCRIPT_DIR/node-compat/suffix.js"
 NODE_BOOTSTRAP_JS="$OBJ_DIR/kandelo-node-bootstrap.generated.js"
 NODE_BOOTSTRAP_INC="$SRC_DIR/js/src/shell/kandelo-node-bootstrap.h"
-for bootstrap_part in "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" "$NODE_WEB_PLATFORM_JS"; do
+for bootstrap_part in "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" "$NODE_WEB_PLATFORM_JS" "$NODE_CORE_JS"; do
     [ -f "$bootstrap_part" ] || {
         echo "ERROR: SpiderMonkey Node bootstrap input missing at $bootstrap_part" >&2
         exit 1
@@ -241,7 +242,7 @@ echo "==> Generating SpiderMonkey Node bootstrap include..."
 python3 "$REPO_ROOT/scripts/generate-node-bootstrap.py" \
     "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" \
     "$NODE_BOOTSTRAP_JS" "$NODE_BOOTSTRAP_INC" "$NODE_WEB_PLATFORM_JS" \
-    "$REPO_ROOT/packages/registry/node-compat/target.json"
+    "$REPO_ROOT/packages/registry/node-compat/target.json" "$NODE_CORE_JS"
 
 WASM_RUST_TARGET_FEATURES='-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals'
 GETRANDOM_BACKEND_RUSTFLAG='--cfg=getrandom_backend=\"custom\"'

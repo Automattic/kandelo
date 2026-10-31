@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { bufferValidationSource } from "./fixtures/node-buffer-validation";
+import { nodeAssertionCommand } from "./fixtures/node-assertion-semantics";
 import { nodeFileSyncCommand } from "./fixtures/node-file-sync";
 import { nodeProcessExitCommand, nodeProcessExitExpected } from "./fixtures/node-process-exit";
 import { nodeSpawnPathCommand, nodeSpawnPathExpected } from "./fixtures/node-spawn-path";
@@ -41,6 +42,7 @@ async function runShell(command: string) {
 }
 
 const cases: Array<[string, string, readonly string[]]> = [
+  ["assertion matchers and deep comparisons", nodeAssertionCommand, ["node-assertion-semantics-ok"]],
   ["buffer byte validation", `set -eu\ncat > /tmp/buffer-core.cjs <<'JS'\nconst {isUtf8,isAscii}=require('buffer');\n${bufferValidationSource}\nJS\nnode /tmp/buffer-core.cjs`, ["buffer-validation-ok"]],
   ["descriptor synchronization and filesystem failures", nodeFileSyncCommand, ["node-file-sync-ok", "node-file-io-errors-ok"]],
   ["exit-code absence and exit listeners", nodeProcessExitCommand, nodeProcessExitExpected],

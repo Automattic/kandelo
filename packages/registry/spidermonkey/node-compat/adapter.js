@@ -364,6 +364,9 @@
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
+        isPromise: value => native.isPromise(value),
+        isNativeError: Error.isError,
+        isProxy: globalThis.isProxy,
         evalScriptAsFunction(source, filename) {
             if (typeof native.evalScriptAsFunction === 'function') {
                 return native.evalScriptAsFunction(source, filename);

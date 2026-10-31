@@ -2438,19 +2438,8 @@ const util = (() => {
         };
     }
 
-    function isDeepStrictEqual(a, b) {
-        if (a === b) return true;
-        if (typeof a !== typeof b) return false;
-        if (a === null || b === null) return false;
-        if (typeof a !== 'object') return false;
-        if (Array.isArray(a) !== Array.isArray(b)) return false;
-        const keysA = Object.keys(a);
-        const keysB = Object.keys(b);
-        if (keysA.length !== keysB.length) return false;
-        for (const key of keysA) {
-            if (!isDeepStrictEqual(a[key], b[key])) return false;
-        }
-        return true;
+    function isDeepStrictEqual(...args) {
+        return _nodeCore.comparisons.isDeepStrictEqual(...args);
     }
 
     const types = {
@@ -2536,86 +2525,23 @@ util.getSystemErrorName = function (err) {
     } catch (_) { /* fall through to generic name */ }
     return 'Unknown system error ' + err;
 };
-util.types.isProxy = function () { return false; };
 
 // ============================================================
 // assert module
 // ============================================================
 
-const assert = (() => {
-    class AssertionError extends Error {
-        constructor(options) {
-            super(options.message || `${options.actual} ${options.operator} ${options.expected}`);
-            this.name = 'AssertionError';
-            this.actual = options.actual;
-            this.expected = options.expected;
-            this.operator = options.operator;
-            this.generatedMessage = !options.message;
-            this.code = 'ERR_ASSERTION';
-        }
-    }
-
-    function _assert(value, message) {
-        if (!value) {
-            throw new AssertionError({ actual: value, expected: true, operator: '==', message });
-        }
-    }
-
-    _assert.ok = _assert;
-
-    _assert.equal = function(actual, expected, message) {
-        if (actual != expected) {
-            throw new AssertionError({ actual, expected, operator: '==', message });
-        }
-    };
-
-    _assert.notEqual = function(actual, expected, message) {
-        if (actual == expected) {
-            throw new AssertionError({ actual, expected, operator: '!=', message });
-        }
-    };
-
-    _assert.strictEqual = function(actual, expected, message) {
-        if (actual !== expected) {
-            throw new AssertionError({ actual, expected, operator: '===', message });
-        }
-    };
-
-    _assert.notStrictEqual = function(actual, expected, message) {
-        if (actual === expected) {
-            throw new AssertionError({ actual, expected, operator: '!==', message });
-        }
-    };
-
-    _assert.deepEqual = _assert.deepStrictEqual = function(actual, expected, message) {
-        if (!util.isDeepStrictEqual(actual, expected)) {
-            throw new AssertionError({ actual, expected, operator: 'deepStrictEqual', message });
-        }
-    };
-
-    _assert.throws = function(fn, expected, message) {
-        let threw = false;
-        try { fn(); } catch (e) { threw = true; }
-        if (!threw) {
-            throw new AssertionError({ actual: 'no error', expected: 'error', operator: 'throws', message });
-        }
-    };
-
-    _assert.doesNotThrow = function(fn, message) {
-        try { fn(); } catch (e) {
-            throw new AssertionError({ actual: e, expected: 'no error', operator: 'doesNotThrow', message });
-        }
-    };
-
-    _assert.fail = function(message) {
-        throw new AssertionError({ message: message || 'Failed', operator: 'fail' });
-    };
-
-    _assert.AssertionError = AssertionError;
-    _assert.strict = _assert;
-
-    return _assert;
-})();
+// Core comparison brands must use the same URL constructor as the public
+// module. Initialize the shared Web platform before either consumer loads.
+const _nodeWebPlatform = _createNodeWebPlatform();
+const _nodeCore = _createNodeCore({
+    Buffer, inspect: util.inspect, format: util.format,
+    URL: _nodeWebPlatform.URL,
+    isPromise: _nodeNative.isPromise,
+    isNativeError: _nodeNative.isNativeError,
+    isProxy: _nodeNative.isProxy,
+});
+Object.assign(util.types, _nodeCore.types);
+const assert = _nodeCore.assert;
 
 // ============================================================
 // stream module (minimal)
@@ -2816,8 +2742,6 @@ const stream = (() => {
 // ============================================================
 // url module
 // ============================================================
-
-const _nodeWebPlatform = _createNodeWebPlatform();
 
 const url = (() => {
     function parse(urlStr, parseQueryString) {
@@ -4781,7 +4705,7 @@ const _builtinModules = {
     'util': util,
     'util/types': util.types,
     'assert': assert,
-    'assert/strict': assert,
+    'assert/strict': assert.strict,
     'stream': stream,
     'url': url,
     'querystring': querystring,

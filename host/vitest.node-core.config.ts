@@ -11,6 +11,7 @@ export default {
       'test/node-buffer-encoding.test.ts',
       'test/node-url-exit-contracts.test.ts',
       'test/node-text-decoder.test.ts',
+      'test/node-assertion-semantics.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

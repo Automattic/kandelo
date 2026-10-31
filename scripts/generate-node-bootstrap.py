@@ -16,10 +16,11 @@ shared_lines = [
 ]
 web_platform_source = Path(sys.argv[6]).read_text(encoding="utf-8")
 target = json.loads(Path(sys.argv[7]).read_text(encoding="utf-8"))
+core_source = Path(sys.argv[8]).read_text(encoding="utf-8")
 if target["schema"] != 1:
     raise ValueError("unknown Node compatibility target schema")
 prelude = "const _nodeCompatibilityTarget = " + json.dumps(target, ensure_ascii=True) + ";\n"
-source_text = adapter.rstrip() + "\n" + prelude + web_platform_source + "\n" + "\n".join(shared_lines) + "\n" + suffix.rstrip() + "\n"
+source_text = adapter.rstrip() + "\n" + prelude + web_platform_source + "\n" + core_source + "\n" + "\n".join(shared_lines) + "\n" + suffix.rstrip() + "\n"
 generated.write_text(source_text, encoding="utf-8")
 source = source_text.encode("utf-8")
 dest.parent.mkdir(parents=True, exist_ok=True)

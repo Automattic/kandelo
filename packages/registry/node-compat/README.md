@@ -31,9 +31,13 @@ Export presence is not implementation coverage. In particular:
   APIs are still partial.
 - Streams, Fetch body behavior and process lifecycle need broader upstream
   coverage. Eval shutdown differs from file entry points.
-- `assert`/`assert/strict` and `util.isDeepStrictEqual` have known false
-  positives; the upstream harness refuses baseline counts until its
-  adversarial assertion readiness check succeeds.
+- Assertion and deep-comparison source uses the pinned Node algorithms,
+  including error matchers, strict aliases, Maps/Sets and cycle detection.
+  Source differential tests pass; rebuilt guest integration is deferred.
+  Assertion diagnostics remain partial (diffs, stacks, inspection and
+  source expressions). See `third_party/node-core/README.md`. The upstream
+  harness continues to require its adversarial assertion readiness check
+  before recording guest baseline counts.
 - Several DNS, crypto/TLS, worker, performance and browser globals remain
   partial or placeholders. They must not be treated as supported solely
   because the names export. The historical DNS loopback response, crypto

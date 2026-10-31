@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { runInNewContext } from 'node:vm';
 import { afterAll, describe, expect, it } from 'vitest';
 import { collectNodejsLibraryTests, parseNodejsTestMetadata, nodejsTarget, repoRoot, ensureSourceModuleBoundary, sourceFiles, sourceTreeHash, preparePinnedArchive, fileHash } from '../../scripts/nodejs-source-helper';
 import { classifyNodejsResult } from '../../scripts/nodejs-test-results';
@@ -99,14 +100,27 @@ describe('pinned Node upstream harness', () => {
   }, 20_000);
 
   it('generates matching JavaScript and C target metadata without compiling packages', () => {
+    execFileSync('python3', [join(repoRoot, 'third_party/node-core/build.py'), '--check']);
+    const coreSources = JSON.parse(readFileSync(join(repoRoot, 'third_party/node-core/sources.json'), 'utf8'));
+    expect(coreSources.version).toBe(nodejsTarget.version);
+    expect(coreSources.commit).toBe(nodejsTarget.source.commit);
     const output = join(directory, 'bootstrap.js'), header = join(directory, 'bootstrap.h');
     execFileSync('python3', [join(repoRoot, 'scripts/generate-node-bootstrap.py'),
       join(repoRoot, 'packages/registry/spidermonkey/node-compat/adapter.js'),
       join(repoRoot, 'packages/registry/node-compat/bootstrap.js'),
       join(repoRoot, 'packages/registry/spidermonkey/node-compat/suffix.js'), output, header,
       join(repoRoot, 'third_party/node-web-platform/node-web-platform.js'),
-      join(repoRoot, 'packages/registry/node-compat/target.json')]);
+      join(repoRoot, 'packages/registry/node-compat/target.json'),
+      join(repoRoot, 'third_party/node-core/node-core.js')]);
     execFileSync(process.execPath, ['--check', output]);
+    // Execute the assembled sources too: isolated module tests cannot catch
+    // an eager dependency reading another module's uninitialized binding.
+    // No shell OS is provided; this checks initialization, not guest I/O.
+    const realm = runInNewContext(readFileSync(output, 'utf8') + '\nglobalThis;', {}, { timeout: 5000 });
+    expect(realm.__nodeBootstrapReady).toBe(true);
+    expect(realm.process.version).toBe(`v${nodejsTarget.version}`);
+    expect(realm.require('url').URL).toBe(realm.URL);
+    expect(realm.require('stream/web').ReadableStream).toBe(realm.ReadableStream);
     expect(readFileSync(header, 'utf8')).toContain(`#define KANDELO_NODE_COMPAT_VERSION "v${nodejsTarget.version}"`);
     expect(readFileSync(output, 'utf8')).toContain(`"version": "${nodejsTarget.version}"`);
     expect(readFileSync(join(repoRoot, 'packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch'), 'utf8'))
