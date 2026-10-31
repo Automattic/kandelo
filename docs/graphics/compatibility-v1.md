@@ -53,10 +53,13 @@ reported blank client or prove a working Start-menu launch. Normal rebuilt
 application acceptance, browser-memory, full CTS and the remaining inventory
 remain open.
 
-Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` has been fetched.
-Integration is prepared but not yet performed. The paragraphs below and
-subsequent dated entries preserve historical checkpoints, artifact identities
-and their originally observed availability; none reinstates a retired URL.
+Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated by
+merge `bc182981fb`. The combined resolver bundle regenerates and passes its
+standalone check; all ten SDL recipe source checks pass. Normal combined
+artifacts and integration acceptance remain pending. The paragraphs below
+and subsequent dated entries preserve historical checkpoints, artifact
+identities and their originally observed availability; none reinstates a
+retired URL.
 
 ### Historical performance checkpoint, 2026-10-31
 
