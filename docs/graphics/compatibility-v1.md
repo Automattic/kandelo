@@ -15694,3 +15694,42 @@ or combined consumer/conformance acceptance. The next normal producer is
 prepared in `.context/compatibility-normal-r1/`, with a six-package real
 GObject cohort and its new guest assertion before the larger desktop build.
 No new preview or normal guest/menu/rendering pass is yet claimed.
+
+
+### Normal installed GLib class-handler and callback evidence, 2026-10-31
+
+Producer `compatibility-normal-r1-1031-191858-948c` at exact source
+`540b2fd5e2423589f6cd94c4e4d5e4b1ac66e829` completes its first seven gates:
+provision, own release xtask, complete SDK32/64, canonical ABI/layout,
+normal GObject cohort and real guest class-handler acceptance. The larger
+normal desktop build remains running; there is no new preview yet.
+Program digest changes under the same numeric 56/3/17/21 family, so the
+canonical checker correctly requires all programs to rebuild.
+
+The normal six-package GObject cohort publishes seven architecture nodes,
+including GLib 8, its real test package 4, libffi and the exact current kernel.
+The new guest assertion passes through the centralized Node runtime in
+514 ms, with normal 2.84.4 library output, all C assertions and cleanup,
+exit 0 and no host diagnostics. This is one selected case; its other 84
+file cases are not included in that early build gate.
+
+A necessary bounded regression selection then passes all 75 actual-library
+callback/binding/class-handler cases, with zero failures and the ten upstream
+targets not selected. It covers the existing raw libffi/generic/varargs/swapped
+callbacks, class vtables, source closure cleanup, ordinary signal callbacks,
+property bindings and the new direct class-handler test. The 19.1-second
+suite runs while the normal product build is active: it is correctness
+coverage, not a latency or responsiveness comparison. Raw JSON, console and
+exact projection/member proof are in primary
+`.context/compatibility-gobject-regression-r1/`.
+
+Exact new guest binary: 799,181 bytes, SHA256
+`31e628ae06c0460047f3a9e416abdc1d6dd202f9e4e8d453ce4a600780340f47`.
+Selected cohort kernel: 1,839,996 bytes, SHA256
+`f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
+The separate upstream selection is started as
+`compatibility-gobject-upstream-r1-1031-192713-1eed`; its result is pending
+and is not folded into the 75-case pass. Browser menu, ScummVM rendering,
+three-engine/lifecycle/memory acceptance and the broader graphics baseline
+remain open. Custom-marshaller representation/body/hint semantics remain
+an ordinary compatibility gap despite the passing standard routes.
