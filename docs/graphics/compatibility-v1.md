@@ -12887,10 +12887,13 @@ bytes. First observations and alternating repeated blocks remain separate.
 All synthetic Memories and native Instances remain worker-local.
 
 For the aligned equal4,190,208-byte case, median repeated whole-helper
-observations range0.148–0.176ms across these hosts; setup-only fragments
-range0.0022–0.0045ms. The16,760,832-byte equal whole-helper observations
-range0.523–0.731ms. This points away from fresh Instance setup as the major
-cost within this isolated large-range operation. It does not measure the
+observations range0.148–0.176ms across these hosts. The browser setup-only
+blocks are too short for resolved timing under the independent rule that
+every block spans at least ten observed clock ticks; retain their raw values
+without interpreting sub-tick precision. Node setup-only median is0.0024ms.
+The16,760,832-byte equal whole-helper observations range0.523–0.731ms.
+Large whole-helper and retained-invocation fragments do not show fresh
+Instance setup dominating this isolated operation. It does not measure the
 real Rust borrow/provider path, merge/copy/refresh, application scheduling,
 CPU shares or desktop responsiveness. Timers have finite resolution and
 some short blocks report zero; the machine is NONQUIET with peer suites.
@@ -12898,3 +12901,55 @@ Retained-instance invocation is a diagnostic control, not a proposed
 production cache. No noisy subtraction or general speedup claim follows.
 Report SHA256
 `f7c2405a99b0c83026f7311498ce854efa58f1d2fe78b4daebe297a870a0d89c`.
+
+
+### Fresh04f cold Start and worker CPU-clock controls
+
+Headless Chromium job
+`import-metadata-cold-start-trace-r1-1031-082024-8996` finishes in1m03s,
+with workload/after-collector/after-guard0/0/0. Fresh22 pure controls and all
+nine actual served-source AST seam/syntax controls pass. The genuine cold
+menu paints Games, Graphics and System Tools; root reviews its screenshot.
+The pager shows1 and the Foot prompt remains present. Ordinary same-page
+replacement reaches the Bare-shell prompt with unchanged page time origin.
+Own93/245, SDK/kernel/host/source and sealed helper checks remain equal;
+there are no runtime, observer, overflow, rejected-record or cleanup errors.
+This is one functional instrumented Chromium observation, not full desktop,
+other-engine, memory or responsiveness acceptance.
+
+Fresh accounting joins all38 tagged worker targets to their38 launches,
+init and entry-attempt marks, with40 total observed targets and1,644 startup
+events. Eight workers newly observed around first Start are actual SFWBar109
+threads117–124. The same-host click-issued→menu-observed marker bracket is
+11,585.35ms. Its last new-worker entry-attempt record arrives2,467.31ms
+after click issuance, leaving9,118.04ms until menu observation. Delivery can
+be delayed or replayed; this is an observer-arrival bracket, not calibrated
+cross-realm execution, successful guest entry or proof the menu was ready at
+that instant. It identifies a substantial portion outside the current
+bootstrap marks that needs request/rendering/active-thread attribution.
+Do not sum nested bootstrap spans into that remainder or claim the parser
+change improves single-terminal or multi-terminal responsiveness.
+
+Raw report below `.context/import-metadata-cold-start-trace-r1/` SHA256
+`cf864612b3b735d7229d5b6dd6021faa34e922e77efa052b102750394dc4a4e2`;
+separate `.context/import-metadata-cold-analysis-r1/accounting.json` SHA256
+`cc5087e907f324a277e5873dc87f5bc321d7003e45658ae9abdccdf402525104`.
+Older e303 traces remain separate NONQUIET cohorts, not matched before/after
+performance evidence.
+
+A fresh standalone headless Chromium153.0.8010.12 control in
+`.context/worker-cpu-clock-probe-r1/` contains no Kandelo guest code.
+The same dedicated worker runs a200.055ms busy loop and a200.465ms timed
+Atomics.wait. Raw CPU profiles retain140/136 total samples and133/134
+samples in their common message-handler frame respectively. These stack
+counts plainly do not distinguish the two paths as active CPU consumption;
+there is no independent running-time measurement in this first probe.
+Worker `Performance.enable({timeDomain: 'threadTicks'})` returns actual
+protocol-32601, method not found. This is capability evidence for this exact
+worker target, not an engine-defect claim or a hard platform boundary.
+Exact worker/session detach, context/browser and own server cleanup complete.
+Raw report SHA256
+`cc0a6593a51db6a85dc51503ca9bfa27294089a7d3a6243f708b8e8dc2aa6bb1`.
+The next standalone probe tests actual native trace thread timestamps before
+using that mechanism for guest attribution. No profiler sample count alone
+establishes guest utilization or the cause of the nine-second remainder.
