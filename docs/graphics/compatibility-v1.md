@@ -14040,3 +14040,37 @@ HTTP proof SHA256:
 Evidence lives in the normal candidate's `.context/normal-products-r1/` and
 `.context/preview-serving-r1/`. Actual compiled-guest, cross-host readiness,
 browser-memory, relevant POSIX and all benchmark acceptance remain open.
+
+
+### First normal retained-wait motion check, 2026-10-31
+
+`retained-epoll-boundary-response-r1-1031-124310-a0fe` completes workload/
+collector/guard0in1m26s on the normal5679b6 build. Ten proven motion/readiness/
+geometry helpers remain byte-identical; no source overlay, profiler or frame
+recorder is used. Both3/5window stages, all24cursor/title responses, original
+Foot recovery, normal same-page replacement and exact source/SDK/kernel/
+93owner245member/host guards complete. No page/console errors are recorded.
+Root reviews the original five-window crossing screenshot. The preview is
+available independently of these completed narrow checks.
+
+| Foot windows, six observations per kind | Within cursor median / range ms | Crossing cursor median / range ms | Crossing highlight median / range ms |
+|---|---:|---:|---:|
+| Three | 70.5 / 35.5–128.5 | 136.7 / 103.2–194.6 | 153.5 / 103.2–194.6 |
+| Five | 71.8 / 67.8–98.7 | 135.4 / 130.4–165.4 | 135.4 / 130.4–195.8 |
+
+These are current-candidate public-pixel upper brackets including dispatch,
+25ms polling and scheduling in one NONQUIET ordered session. The focus crossing
+stall remains. Historical5678measurements are not a fresh alternating matched
+before/after benchmark, and no probe-only improvement is established. This
+normal build also includes the prior resize repair; successful motion does
+not validate the C resize fixture, timed Bash-read failure, keyboard latency,
+single-terminal behavior, cross-host readiness or full performance acceptance.
+
+Report SHA256:
+`24739323f980fbf893d6703f55b1ee247b66adb7614766a7dee48425d47099e5`.
+Helper manifest SHA256:
+`a52f170ca98e336b3dbc4874dbe0e9f0d1bf4f0e836151f06a17084e7c09ee94`.
+Offline audit SHA256:
+`2d86b5be08901d3d01fe23826564b540ef7ac2701aa34b0f979e069ea901602f`.
+Raw evidence and audit live under `.context/retained-epoll-boundary-response-r1/`
+and `.context/retained-epoll-boundary-response-analysis-r1/` respectively.
