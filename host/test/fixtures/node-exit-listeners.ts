@@ -42,8 +42,9 @@ mkdir -p /tmp/node-exit-listeners
 if node ${quote(file)} >/tmp/node-exit-listener.out 2>/tmp/node-exit-listener.err; then status=0; else status=$?; fi
 if test "$status" -ne ${c.status}; then cat /tmp/node-exit-listener.out; cat /tmp/node-exit-listener.err >&2; exit 1; fi
 test "$(cat /tmp/node-exit-listener.out)" = ${quote(c.marker)}
-${c.secondary ? '' : '! '}grep -q ${quote(c.secondaryNeedle)} /tmp/node-exit-listener.err
-${c.secondary ? '' : "grep -q 'main-primary' /tmp/node-exit-listener.err"}
+case "$(cat /tmp/node-exit-listener.err)" in *${quote(c.secondaryNeedle)}*) secondary=1 ;; *) secondary=0 ;; esac
+test "$secondary" -eq ${c.secondary ? 1 : 0}
+${c.secondary ? '' : 'case "$(cat /tmp/node-exit-listener.err)" in *main-primary*) : ;; *) exit 1 ;; esac'}
 printf '%s\\n' ${quote(c.marker)}
 `;
 }).join('');

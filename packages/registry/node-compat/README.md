@@ -69,7 +69,11 @@ particular:
   now stop live timer/I/O work, unhandled rejections are checked after the
   microtask checkpoint, and timer/ESM failures retain their thrown values.
   Ten-program rebuilt regressions pass on all four hosts, including live
-  child I/O and nonfatal controls. beforeExit, custom uncaughtException
+  child I/O and nonfatal controls. Throwing exit listeners now preserve
+  the actual validated status, including zero and explicit exits, and
+  already-fatal exits retain the original diagnostic. Seventeen additional
+  programs pass on all four hosts against exact native controls.
+  beforeExit, custom uncaughtException
   and unhandledRejection policy, and complete timer ordering remain gaps.
 
 - CommonJS entries publish their module identity before children execute.
