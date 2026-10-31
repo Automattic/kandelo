@@ -114,6 +114,42 @@ describe("fixed read-only process snapshot comparator", () => {
       }
   });
 
+  it("detects every mismatching byte across vector-block tails without observing adjacent bytes", () => {
+    // WHY: first/middle/last probes can miss a dropped vector or partial tail
+    // when the native comparison loop is unrolled. Exercise every byte, page
+    // crossings and exact memory ends independently of the loop's structure.
+    const lengths = [0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65,
+      127, 128, 129, 255, 256, 257, 511, 512, 513];
+    for (const kw of [4, 8] as const) for (const ks of [false, true])
+      for (const pw of [4, 8] as const) for (const ps of [false, true]) {
+        const kernel = memory(kw, ks), process = memory(pw, ps);
+        const left = new Uint8Array(kernel.buffer), right = new Uint8Array(process.buffer);
+        for (const mode of ["simd", "scalar"]) {
+          const key = `k${kw * 8}${ks ? "s" : "u"}-p${pw * 8}${ps ? "s" : "u"}-${mode}`;
+          const module = new WebAssembly.Module(Uint8Array.from(SNAPSHOT_COMPARATOR_BYTES[key]));
+          const compare = new WebAssembly.Instance(module, { env: { kernel, process } }).exports.compare as
+            (a: bigint, b: bigint, n: number) => number;
+          for (const n of lengths) for (const [a, b] of [
+            [1, 3], [65519, 65517], [left.length - n, right.length - n],
+          ]) {
+            left.fill(0x39); right.fill(0xc7);
+            right.fill(0x39, b, b + n);
+            // Bytes before/after the lent ranges intentionally differ. An
+            // equality observation must depend only on the requested spans.
+            expect(compare(BigInt(a), BigInt(b), n), `${key} len=${n} a=${a} b=${b}`).toBe(0);
+            for (let at = 0; at < n; at++) {
+              right[b + at] = 0x93;
+              if (compare(BigInt(a), BigInt(b), n) !== 1)
+                throw Error(`Missed comparison byte: ${key} len=${n} a=${a} b=${b} offset=${at}`);
+              right[b + at] = 0x39;
+            }
+            expect(left.subarray(a, a + n).every(value => value === 0x39), `${key} modified snapshot`).toBe(true);
+            expect(right.subarray(b, b + n).every(value => value === 0x39), `${key} modified source`).toBe(true);
+          }
+        }
+      }
+  });
+
   it("uses scalar Wasm when SIMD is unavailable and reports complete unavailability", async () => {
     const nativeValidate = WebAssembly.validate;
     for (const scalarAvailable of [true, false]) {

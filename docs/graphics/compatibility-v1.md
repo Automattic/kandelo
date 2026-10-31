@@ -13261,3 +13261,14 @@ dirty-page protocol requires complete writer coverage, private bounded
 metadata and race-safe publication/refresh. A dirty mark before and after a
 store alone is insufficient. No comparison skip, dirty protocol or new
 production optimization is implemented by these observations.
+
+A new public comparator regression exercises every mismatching byte around
+16/32/64/128/256/512-byte boundaries for all32 width/sharing/SIMD/scalar
+variants, including unaligned ranges, page crossings and exact memory ends.
+Adjacent bytes intentionally disagree, so an accepted equal comparison must
+depend only on the requested spans. The existing source-only comparator file
+passes6/6 tests through the declared shell with fixture-producing global setup
+explicitly omitted; these checks require no guest artifacts. This is a
+baseline correctness control for the proposed loop experiment, not evidence
+of a production optimization or application gain. Private log:
+`.context/inverse-evidence-documentation/.context/snapshot-comparator-source-tests-r1.log`.
