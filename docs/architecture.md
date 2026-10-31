@@ -3556,6 +3556,16 @@ GL siblings have independent lifetimes. The implementation and evidence
 ledger is [graphics compatibility v1](graphics/compatibility-v1.md);
 these interfaces do not establish complete EGL1.5 or GLES2 conformance.
 
+GLES vertex-array buffer identity and format are tracked independently of
+native WebGL state. Clearing an attribute uses a native null ARRAY binding
+and `vertexAttribPointer` with offset zero, as WebGL permits. The logical
+size, type, stride and original offset remain available to GLES queries;
+no temporary native buffer is allocated merely to represent null. Native
+changes and their inverses are checked before logical publication. Failed
+restoration fences the physical context until its owned repair completes.
+Deleted buffer names and backing-storage retirement remain separate, so
+another context or an unbound vertex array can retain the old storage.
+
 
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 

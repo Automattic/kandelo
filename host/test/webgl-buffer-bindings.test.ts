@@ -32,7 +32,7 @@ class BufferGl {
     const widths = new Map([[0x1400,1],[0x1401,1],[0x1402,2],[0x1403,2],[0x1404,4],[0x1405,4],[0x1406,4],[0x140b,2]]);
     const width = widths.get(type); if (!width) {this.errors.push(0x500);return;}
     const buffer = this.bindings.get(ARRAY);
-    if (!buffer || !this.alive.has(buffer) || stride % width || offset % width) {this.errors.push(0x502);return;}
+    if ((buffer ? !this.alive.has(buffer) : offset !== 0) || stride % width || offset % width) {this.errors.push(0x502);return;}
     this.attributes.set(index,{buffer:this.bindings.get(ARRAY) ?? null,size,type,normalized,stride,offset});
   }
   getParameter(target: number) { return target === 0x8869 ? 16 : this.bindings.get(target) ?? null; }
@@ -167,10 +167,10 @@ function deletionSetup(converted = false) {
   return {...fixture,send,remove,preserved,old,store};
 }
 for (const converted of [false,true]) {
-  for (const fault of ["create","pointer:1",`bind:${ELEMENT}`,"delete"]) {
+  for (const fault of [`bind:${ARRAY}`,"pointer:0","pointer:1",`bind:${ELEMENT}`]) {
     it(`restores deletion attributes and both selectors after ${fault} rejection (converted: ${converted})`, () => {
       const {gl,b,remove,preserved} = deletionSetup(converted);
-      if (fault === "create") gl.failCreate = true; else gl.fault = fault;
+      gl.fault = fault;
       expect(remove()).toEqual([1,0]); preserved();
       gl.failCreate = false; expect(remove()).toEqual([0,1]);
       expect(b.buffers.has(17)).toBe(false); expect(b.retiredBuffers.size).toBe(0); expect(gl.alive.size).toBe(0);
@@ -188,7 +188,69 @@ it("restores an attribute even if the failing pointer wrapper already changed it
   };
   expect(remove()).toEqual([1,0]); preserved(); expect(rejected).toBe(true); expect(remove()).toEqual([0,1]);
 });
-it("prepares all deletion metadata before native allocation or attribute changes", () => {
+for (const converted of [false,true]) it(`clears deleted attributes without allocating, initializing or deleting a temporary (converted: ${converted})`, () => {
+  const {b,gl,remove,old,store} = deletionSetup(converted);
+  let creates = 0, data = 0;
+  const deleted: object[] = [], destroy = gl.deleteBuffer.bind(gl);
+  gl.createBuffer = () => {creates++; throw new Error("null clearing must not allocate");};
+  gl.bufferData = () => {data++; throw new Error("null clearing must not initialize storage");};
+  gl.deleteBuffer = object => {deleted.push(object);destroy(object);};
+  const expected = new Set([old,...[...store.views.values()].map(view => view.native)]);
+  for (const view of store.converted.values()) expected.add(view.native);
+  expect(remove()).toEqual([0,1]);
+  expect(creates).toBe(0); expect(data).toBe(0);
+  expect(new Set(deleted)).toEqual(expected); expect(deleted.length).toBe(expected.size);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toMatchObject({buffer:null,size:2,stride:8,offset:4});
+  expect(gl.attributes.get(0)).toMatchObject({buffer:null,size:2,stride:8,offset:0});
+  expect(b.vertexArrays.get(0)!.attributes.get(1)).toMatchObject({buffer:null,type:converted?0x140c:0x1406,stride:16,offset:8});
+  expect(gl.alive.size).toBe(0);
+});
+
+for (const fault of ["error","throw"] as const) it(`restores deletion after an ARRAY null bind changes state then reports ${fault}`, () => {
+  const {b,gl,remove,preserved} = deletionSetup();
+  const bind = gl.bindBuffer.bind(gl); let rejected = false;
+  gl.bindBuffer = (target,object) => {
+    bind(target,object);
+    if (!rejected && target === ARRAY && object === null) {
+      rejected = true;
+      if (fault === "throw") throw new Error("bind changed state before throwing");
+      gl.errors.push(0x502);
+    }
+  };
+  expect(remove()).toEqual([1,0]); preserved();
+  expect(b.errors).toContain(0x502);
+  expect(remove()).toEqual([0,1]); expect(gl.alive.size).toBe(0);
+});
+
+for (const converted of [false,true]) it(`commits logical deletion while failed physical cleanup stays owned and fences later work (converted: ${converted})`, () => {
+  const {b,gl,remove,old,store} = deletionSetup(converted);
+  const destroy = gl.deleteBuffer.bind(gl), deleted: object[] = [];
+  let block = true;
+  gl.deleteBuffer = object => {
+    if (block) {gl.errors.push(0x505);return;}
+    deleted.push(object);destroy(object);
+  };
+  const count = gl.alive.size;
+  expect(remove()).toEqual([0,1]);
+  expect(b.buffers.has(17)).toBe(false); expect(b.retiredBuffers.get(old)).toBe(17);
+  expect(b.bufferStores.get(old)).toBe(store);
+  expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === null && !a.view)).toBe(true);
+  expect([...gl.attributes.values()].every(a => a.buffer === null)).toBe(true);
+  expect(gl.bindings.get(ARRAY)).toBeNull(); expect(gl.bindings.get(ELEMENT)).toBeNull();
+  expect(gl.alive.size).toBe(count);
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  // Physical receipts retry independently of the already committed name change.
+  // A later admitted delete query collects the completed logical tombstone.
+  expect(remove()).toEqual([0,1]);
+  expect(gl.alive.size).toBe(0); expect(b.retiredBuffers.size).toBe(0);
+  expect(new Set(deleted).size).toBe(count); expect(deleted.length).toBe(count);
+});
+
+it("prepares all deletion metadata before native attribute changes", () => {
   for (const mapName of ["buffers","retiredBuffers","attributes"] as const) {
     const {b,remove,preserved} = deletionSetup();
     const selected = mapName === "attributes" ? b.vertexArrays.get(0)!.attributes : b[mapName];
@@ -238,9 +300,9 @@ for (const converted of [false,true]) it(`retains failed attribute restoration a
   expect(remove()).toEqual([1,0]);
   expect(b.buffers.get(17)).toBe(old);
   expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === old)).toBe(true);
-  const pending = gl.attributes.get(0)!.buffer!;
-  expect(pending).not.toBe(b.vertexArrays.get(0)!.attributes.get(0)!.view ?? old);
-  expect(gl.alive.has(pending)).toBe(true);
+  // The first pointer was cleared before the second failed; it stays native
+  // null while the journal fences work, rather than retaining a scratch BO.
+  expect(gl.attributes.get(0)!.buffer).toBeNull();
   const out = new Uint8Array(4).fill(0xa5);
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
   expect([...out]).toEqual([165,165,165,165]);
@@ -378,21 +440,127 @@ for (const converted of [false,true]) it(`restores a partially applied pointer a
   expect(b.vertexArrays.get(0)!.attributes.get(0)!.size).toBe(3);
 });
 
-it("restores an initially unbound attribute with an owned private buffer and deferred cleanup", () => {
-  const {b,gl,submit} = pointerSetup();
-  const pointer = gl.vertexAttribPointer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
-  let rejected = false, blockCleanup = true;
-  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => { pointer(...args); if (!rejected) {rejected = true; gl.errors.push(0x502);} };
-  gl.deleteBuffer = object => { if (blockCleanup && object !== b.buffers.get(17)) {gl.errors.push(0x505);return;} destroy(object); };
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(-5);
+it("restores an initially null attribute without allocating scratch storage", () => {
+  const {b,gl,submit,object} = pointerSetup();
+  const pointer = gl.vertexAttribPointer.bind(gl);
+  let rejected = false, blockRestore = true;
+  gl.failCreate = true;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    if (rejected && blockRestore && args[1] === 4) { gl.errors.push(0x502); return; }
+    pointer(...args);
+    if (!rejected) { rejected = true; gl.errors.push(0x502); }
+  };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(-5);
   expect(b.vertexArrays.get(0)!.attributes.has(0)).toBe(false);
-  expect(gl.attributes.get(0)).toMatchObject({size:4,type:0x1406,stride:0,offset:0});
-  expect(gl.attributes.get(0)!.buffer).not.toBeNull();
+  expect(gl.attributes.get(0)).toMatchObject({buffer:object,size:2});
+  expect(gl.alive.size).toBe(1);
   const out = new Uint8Array(4).fill(0xa5);
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  blockCleanup = false;
+  expect([...out]).toEqual([165,165,165,165]);
+  blockRestore = false;
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(gl.attributes.get(0)!.buffer).toBeNull(); expect(gl.alive.size).toBe(1);
+  expect(gl.attributes.get(0)).toEqual({buffer:null,size:4,type:0x1406,normalized:false,stride:0,offset:0});
+  expect(gl.bindings.get(ARRAY)).toBe(object);
+  expect(gl.alive.size).toBe(1);
+});
+
+it("does not restore a null pointer until its inverse ARRAY null bind accepts", () => {
+  const {b,gl,submit,object} = pointerSetup();
+  const pointer = gl.vertexAttribPointer.bind(gl), bind = gl.bindBuffer.bind(gl);
+  let rejected = false, block = true, pointerCalls = 0;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    pointerCalls++; pointer(...args);
+    if (!rejected) {rejected = true; gl.errors.push(0x502);}
+  };
+  gl.bindBuffer = (target,value) => {
+    if (rejected && block && target === ARRAY && value === null) {gl.errors.push(0x502);return;}
+    bind(target,value);
+  };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(-5);
+  expect(pointerCalls).toBe(1);
+  expect(b.vertexArrays.get(0)!.attributes.has(0)).toBe(false);
+  expect(gl.attributes.get(0)).toMatchObject({buffer:object,size:2});
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect(pointerCalls).toBe(1); expect([...out]).toEqual([165,165,165,165]);
+  block = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(pointerCalls).toBe(2); expect(gl.attributes.get(0)!.buffer).toBeNull();
+  expect(gl.bindings.get(ARRAY)).toBe(object); expect(gl.alive.size).toBe(1);
+});
+
+it("restores a deleted logical-null offset after a failed replacement while preserving another ARRAY binding", () => {
+  const {b,gl,query,submit} = pointerSetup();
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]]])).toBe(0);
+  const deleted = new Uint8Array(12);
+  expect(runGlQuery(b,O.QOP_DELETE_BUFFER,new Uint8Array(new Uint32Array([17]).buffer),deleted)).toBe(12);
+  expect([...new Uint32Array(deleted.buffer)]).toEqual([0,1,0x47514c33]);
+  const logicalNull = b.vertexArrays.get(0)!.attributes.get(0)!;
+  expect(logicalNull).toMatchObject({buffer:null,size:2,stride:8,offset:4});
+  expect(gl.attributes.get(0)).toMatchObject({buffer:null,size:2,stride:8,offset:0});
+  expect(query(ARRAY,18)).toEqual([0,1]);
+  const replacement = b.buffers.get(18)!;
+  const pointer = gl.vertexAttribPointer.bind(gl);
+  let rejected = false, blockRestore = true;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    if (rejected && blockRestore && gl.bindings.get(ARRAY) === null) {gl.errors.push(0x502);return;}
+    pointer(...args);
+    if (!rejected) {rejected = true;gl.errors.push(0x502);}
+  };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,0,12,0]]])).toBe(-5);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(logicalNull);
+  expect(gl.attributes.get(0)).toMatchObject({buffer:replacement,size:3});
+  const out = new Uint8Array(4).fill(0xa5);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
+  expect([...out]).toEqual([165,165,165,165]);
+  blockRestore = false;
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  expect(new DataView(out.buffer).getUint32(0,true)).toBe(0x502);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(logicalNull);
+  expect(logicalNull).toMatchObject({buffer:null,size:2,stride:8,offset:4});
+  expect(gl.attributes.get(0)).toMatchObject({buffer:null,size:2,stride:8,offset:0});
+  expect(b.shadow.arrayBuffer).toBe(replacement); expect(gl.bindings.get(ARRAY)).toBe(replacement);
+  expect(gl.alive.size).toBe(1);
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]]])).toBe(0);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toMatchObject({buffer:replacement,offset:4});
+  expect(gl.attributes.get(0)).toMatchObject({buffer:replacement,offset:4});
+});
+
+for (const type of [0x1406,0x140c]) it(`installs a logical null attribute without any native buffer allocation (type ${type})`, () => {
+  const {b,gl,query,submit} = pointerSetup();
+  expect(query(ARRAY,0)).toEqual([0,1]);
+  const count = gl.alive.size;
+  let allocations = 0, initializations = 0, deletions = 0;
+  gl.createBuffer = () => {allocations++; throw new Error("unexpected null attribute allocation");};
+  gl.bufferData = () => {initializations++; throw new Error("unexpected null attribute storage");};
+  gl.deleteBuffer = () => {deletions++; throw new Error("unexpected null attribute cleanup");};
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,type,1,8,0]]])).toBe(0);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toEqual({buffer:null,enabled:false,size:2,type,normalized:true,stride:8,offset:0});
+  expect(gl.attributes.get(0)).toEqual({buffer:null,size:2,type:0x1406,normalized:type===0x140c?false:true,stride:type===0x140c?0:8,offset:0});
+  expect(gl.bindings.get(ARRAY)).toBeNull(); expect(gl.alive.size).toBe(count);
+  expect([allocations,initializations,deletions]).toEqual([0,0,0]);
+});
+
+for (const fault of ["error","throw"] as const) it(`restores a bound attribute when null pointer clearing changes state then reports ${fault}`, () => {
+  const {b,gl,query,submit,object} = pointerSetup();
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]]])).toBe(0);
+  const accepted = b.vertexArrays.get(0)!.attributes.get(0), before = {...gl.attributes.get(0)!};
+  expect(query(ARRAY,0)).toEqual([0,1]);
+  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false;
+  gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
+    pointer(...args);
+    if (!rejected && gl.bindings.get(ARRAY) === null) {
+      rejected = true;
+      if (fault === "throw") throw new Error("pointer cleared before throwing");
+      gl.errors.push(0x502);
+    }
+  };
+  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,0,12,0]]])).toBe(0);
+  expect(rejected).toBe(true);
+  expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(accepted);
+  expect(gl.attributes.get(0)).toEqual(before); expect(before.buffer).toBe(object);
+  expect(gl.bindings.get(ARRAY)).toBeNull();
+  expect(b.errors).toContain(0x502); expect(gl.alive.size).toBe(1);
 });
 
 it("reserves attribute and converted-view metadata before native pointer effects", () => {

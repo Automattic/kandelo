@@ -2539,3 +2539,111 @@ for (const partial of [false,true]) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+
+for (const retained of [false,true]) {
+  test(`native null attribute clearing preserves logical offsets${retained ? " and an unbound VAO" : " through final buffer retirement"}`, async ({page}) => {
+    await installBrowserMemoryBoundaryProbe(page);
+    await page.goto("/trap-signal-test.html");
+    const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
+    const result = await page.evaluate(async ({sourceRoot,retained}) => {
+      const base = `/@fs/${sourceRoot}host/src/webgl/`;
+      const {GlContextRegistry} = await import(base+"registry.ts");
+      const {runGlQuery} = await import(base+"query.ts");
+      const {decodeAndDispatch} = await import(base+"bridge.ts");
+      const O = await import(base+"ops.ts");
+      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 16;
+      document.body.replaceChildren(canvas);
+      const gl = canvas.getContext("webgl2",{alpha:false,antialias:false,preserveDrawingBuffer:true});
+      if (!gl) throw new Error("WebGL2 required");
+      const registry = new GlContextRegistry();
+      const shaders: WebGLShader[] = [];
+      let program: WebGLProgram | null = null;
+      const check = (phase: string) => {const error=gl.getError();if(error)throw new Error(`${phase}: ${error}`);};
+      try {
+        const shader = (type: number, text: string) => {
+          const object=gl.createShader(type); if(!object)throw new Error("shader allocation failed");
+          shaders.push(object);gl.shaderSource(object,text);gl.compileShader(object);
+          if(!gl.getShaderParameter(object,gl.COMPILE_STATUS))throw new Error(gl.getShaderInfoLog(object) ?? "shader compile failed");
+          return object;
+        };
+        const vertex=shader(gl.VERTEX_SHADER,"#version 300 es\nlayout(location=0) in vec2 xy;void main(){gl_Position=vec4(xy,0.,1.);gl_PointSize=8.;}");
+        const fragment=shader(gl.FRAGMENT_SHADER,"#version 300 es\nprecision mediump float;out vec4 color;void main(){color=vec4(1.,0.,0.,1.);}");
+        program=gl.createProgram();if(!program)throw new Error("program allocation failed");
+        gl.attachShader(program,vertex);gl.attachShader(program,fragment);gl.linkProgram(program);
+        if(!gl.getProgramParameter(program,gl.LINK_STATUS))throw new Error(gl.getProgramInfoLog(program) ?? "link failed");
+        gl.useProgram(program);check("program");
+        registry.bind({pid:94,cmdbufAddr:0,cmdbufLen:1024});
+        const b=registry.get(94)!;b.gl=gl;b.contextId=1;b.cmdbufView=new Uint8Array(1024);
+        b.shadow.defaultVao=gl.createVertexArray();if(!b.shadow.defaultVao)throw new Error("VAO allocation failed");
+        gl.bindVertexArray(b.shadow.defaultVao);
+        const send=(op: number,words: number[])=>{
+          const view=new DataView(b.cmdbufView!.buffer);view.setUint16(0,op,true);view.setUint16(2,words.length*4,true);
+          words.forEach((word,i)=>view.setUint32(4+i*4,word,true));
+          if(decodeAndDispatch(b,0,4+words.length*4)!==0)throw new Error(`command failed: ${op}`);
+        };
+        const query=(op: number,words: number[])=>{
+          const out=new Uint8Array(12);
+          if(runGlQuery(b,op,new Uint8Array(new Uint32Array(words).buffer),out)!==12)throw new Error(`query transport failed: ${op}`);
+          const reply=new Uint32Array(out.buffer);
+          if(reply[0]!==0||reply[2]!==0x47514c33)throw new Error(`query rejected: ${op}/${[...reply]}`);
+          return reply[1];
+        };
+        query(O.QOP_BIND_BUFFER,[gl.ARRAY_BUFFER,17]);const original=b.buffers.get(17)!;
+        const bytes=[...new Uint32Array(new Float32Array([99,0,0]).buffer)];
+        send(O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,12,...bytes,gl.STATIC_DRAW]);
+        send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+        if(retained){
+          send(O.OP_GEN_VERTEX_ARRAYS,[1,3]);send(O.OP_BIND_VERTEX_ARRAY,[3]);
+          send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+          send(O.OP_BIND_VERTEX_ARRAY,[0]);
+        }
+        // Count the real helper transaction, restoring the native methods even
+        // when the helper rejects. No mock renderer or substitute deletion.
+        const counts={createBuffer:0,bufferData:0,deleteBuffer:0};
+        const restores: Array<()=>void>=[];
+        let deleted=0,onlyOriginalDeleted=true;
+        try {
+          for(const name of ["createBuffer","bufferData","deleteBuffer"] as const){
+            const own=Object.getOwnPropertyDescriptor(gl,name),method=gl[name];
+            Object.defineProperty(gl,name,{configurable:true,writable:true,value:function(this: WebGL2RenderingContext,...args: unknown[]){
+              counts[name]++;if(name==="deleteBuffer"&&args[0]!==original)onlyOriginalDeleted=false;
+              return Reflect.apply(method,this,args);
+            }});
+            restores.push(()=>{if(own)Object.defineProperty(gl,name,own);else Reflect.deleteProperty(gl,name);});
+          }
+          deleted=query(O.QOP_DELETE_BUFFER,[17]);
+        } finally {for(const restore of restores)restore();}
+        const attr=b.vertexArrays.get(0)!.attributes.get(0)!;
+        const state={nameAbsent:!b.buffers.has(17),logicalNull:attr.buffer===null,logicalOffset:attr.offset,
+          nativeNull:gl.getVertexAttrib(0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING)===null,
+          nativeOffset:gl.getVertexAttribOffset(0,gl.VERTEX_ATTRIB_ARRAY_POINTER),arrayNull:gl.getParameter(gl.ARRAY_BUFFER_BINDING)===null,
+          logicalBinding:query(O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.VERTEX_ATTRIB_ARRAY_BUFFER_BINDING]),
+          logicalStride:query(O.QOP_GET_VERTEX_ATTRIBIV,[0,gl.VERTEX_ATTRIB_ARRAY_STRIDE])};
+        gl.drawArrays(gl.POINTS,0,1);const enabledNullError=gl.getError();
+        gl.drawArrays(gl.POINTS,0,0);const zeroCountNullError=gl.getError();
+        send(O.OP_DISABLE_VERTEX_ATTRIB_ARRAY,[0]);send(O.OP_VERTEX_ATTRIB_4FV,[0,0,0,0,0x3f800000]);
+        gl.clearColor(0,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("disabled generic draw");
+        const pixel=()=>{const out=new Uint8Array(4);gl.readPixels(8,8,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);check("pixel read");return [...out];};
+        const genericPixel=pixel();let retainedPixel: number[] | null=null;
+        if(retained){send(O.OP_BIND_VERTEX_ARRAY,[3]);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("retained VAO draw");retainedPixel=pixel();}
+        query(O.QOP_BIND_BUFFER,[gl.ARRAY_BUFFER,17]);const replacement=b.buffers.get(17)!;
+        send(O.OP_BUFFER_DATA,[gl.ARRAY_BUFFER,12,...bytes,gl.STATIC_DRAW]);
+        send(O.OP_BIND_VERTEX_ARRAY,[0]);send(O.OP_VERTEX_ATTRIB_POINTER,[0,2,gl.FLOAT,0,8,4]);
+        send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawArrays(gl.POINTS,0,1);check("replacement draw");
+        const replacementPixel=pixel();
+        return {deleted,counts,onlyOriginalDeleted,state,enabledNullError,zeroCountNullError,genericPixel,retainedPixel,replacementPixel,
+          replacementDistinct:replacement!==original,errors:[...b.errors]};
+      } finally {
+        registry.unbind(94);gl.useProgram(null);if(program)gl.deleteProgram(program);
+        for(const shader of shaders)gl.deleteShader(shader);
+        check("owned native cleanup");
+      }
+    },{sourceRoot:root,retained});
+    expect(result).toEqual({deleted:1,counts:{createBuffer:0,bufferData:0,deleteBuffer:retained?0:1},onlyOriginalDeleted:true,
+      state:{nameAbsent:true,logicalNull:true,logicalOffset:4,nativeNull:true,nativeOffset:0,arrayNull:true,logicalBinding:0,logicalStride:8},
+      enabledNullError:0x502,zeroCountNullError:0x502,genericPixel:[255,0,0,255],retainedPixel:retained?[255,0,0,255]:null,
+      replacementPixel:[255,0,0,255],replacementDistinct:true,errors:[]});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}

@@ -36,8 +36,6 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   const key = packed ? layoutKey(a) : "";
   const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
   if (!candidate) return false;
-  const rollback = reserveNativeRetirement(b,[["deleteBuffer",null]]);
-  if (!rollback) { retireNativeRetirement(candidate); return false; }
   let created = false, installed = false;
   let view = packed && store ? store.converted.get(key) : undefined;
   if (view && b.bufferRetirements.get(view.native)?.complete) {
@@ -45,7 +43,8 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   }
   try {
     let native = array;
-    if (!a.buffer || (packed && !view)) {
+    if (!a.buffer) native = null;
+    else if (packed && !view) {
       native = allocateNativeBuffer(b,candidate); if (!native) return false;
       if (a.buffer) { view = {native,valid:false}; created = true; }
     } else if (view) native = view.native;
@@ -56,14 +55,15 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
     const oldNative = old.view ?? (old.buffer && (b.bufferStores.get(old.buffer)?.views.get(ARRAY)?.native ?? old.buffer));
     const type = old.type === FIXED ? FLOAT : old.type, normalized = old.type === FIXED ? false : old.normalized;
     const stride = oldPacked ? 0 : old.stride, offset = oldPacked ? 0 : old.offset;
-    const inverse: NativeCall[] = oldNative ? [["bindBuffer",ARRAY,oldNative],["vertexAttribPointer",index,old.size,type,normalized,stride,offset]]
-      : [["clearVertexAttribute",rollback,index,old.size,type,normalized,stride,offset]];
+    // Native null pointers require offset zero; the logical format and offset
+    // remain authoritative and a failed replacement restores that same null.
+    const inverse: NativeCall[] = [["bindBuffer",ARRAY,oldNative],
+      ["vertexAttribPointer",index,old.size,type,normalized,stride,oldNative ? offset : 0]];
     // The caller owns an unpublished attribute candidate. Reserve its view
     // field too: adding it after pointer installation could still allocate.
     if (packed && view) a.view = view.native;
     const accepted = applyNativeChanges(b,[{apply: () => {
       if (!checkedGlCall(b, () => gl.bindBuffer(ARRAY,native))) return false;
-      if (!a.buffer && !checkedGlCall(b, () => gl.bufferData(ARRAY,0,0x88e4))) return false;
       return checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,a.type === FIXED ? FLOAT : a.type,
         a.type === FIXED ? false : a.normalized,packed ? 0 : a.stride,packed ? 0 : a.offset));
     },restore:nativeInverse(b,inverse)}],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
@@ -74,7 +74,6 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   finally {
     if (!installed && created && view) { store!.converted.delete(key); b.bufferViewOwners.delete(view.native); }
     if (!installed || !a.buffer) retireNativeRetirement(candidate);
-    retireNativeRetirement(rollback);
   }
 }
 

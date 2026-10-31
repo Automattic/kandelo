@@ -11485,3 +11485,94 @@ These are private diagnostics plus documentation. The normal uninstrumented
 candidate comparison, matched sustained rendering load, browser-memory,
 all-engine desktop gates, full benchmarks and broader compatibility effort
 remain unvalidated; no new runtime fix is included in this checkpoint.
+
+
+### Native null-attribute clearing candidate (2026-10-31)
+
+The checked-operation trace led to a shared host repair, developed in the
+isolated `null-attribute-candidate` checkout. The served deece preview on
+port 5672 remains unchanged. The earlier final-reference deletion proposal
+and reusable empty-buffer idea are superseded for this operation: WebGL
+explicitly permits clearing an attribute with a null ARRAY buffer when its
+native offset is zero. See the [WebGL no-client-array rule](https://registry.khronos.org/webgl/specs/latest/1.0/#NO_CLIENT_SIDE_ARRAYS).
+The older October 24 private-buffer rollback description records the prior
+implementation, not a continuing requirement for null representation.
+
+Buffer deletion and null pointer installation now bind null directly.
+Logical GLES format and nonzero offsets are preserved independently of the
+native zero offset. Normal inverse journals still check selector acceptance
+before dependent pointer changes, retain failed restoration and fence later
+work. Converted vertex storage still allocates when required. No temporary
+native buffer, zero-size bufferData or temporary deletion is needed solely
+to clear a reference. Physical buffer collection still follows logical
+commit and retains its existing retry ownership; sharing peers and unbound
+VAOs retain the original storage. No ABI or command-table change is made.
+Node and browser native backends use the same bridge; a Node host without a
+native renderer retains its existing capability failure.
+
+A native worker primitive diagnostic passes in Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6. It verifies null-offset-zero acceptance,
+nonzero-null-offset rejection without pointer mutation, surviving unbound
+VAO red pixels, disabled generic-value drawing and subsequent complete
+pointer replacement. Enabled-null draws reject with INVALID_OPERATION even
+for count zero. The first primitive run incorrectly expected zero-count
+success and fails all 3 engines; that original result is retained. The
+corrected expectation follows the WebGL no-client-array rule; no runtime
+behavior or upstream assertion was changed to manufacture a pass.
+
+The actual baseline and candidate registry/query/decoder helpers also pass
+in all 3 headless engines, on independent synthetic worker WebGL2 contexts.
+They exercise final and retained-storage deletion, public-name reuse,
+logical offset 4 / stride 8 queries, native null binding, enabled-null rejection,
+disabled generic red pixels, surviving unbound-VAO red pixels and later
+pointer installation. Counts cover the deletion query, not unrelated setup.
+
+| Native helper operation | Baseline error queries | Candidate error queries | Baseline / candidate temporary buffers |
+|---|---:|---:|---:|
+| Delete final referenced buffer | 14 | 8 | 1 / 0 |
+| Delete name while unbound VAO retains storage | 12 | 6 | 1 / 0 |
+
+All3 engines observe those same counts. This proves eliminated native work
+for these operations, not a desktop latency or throughput improvement.
+Private client-array uploads still realize and retire public buffer names,
+so their synchronous bind/delete boundaries and required shared-memory
+reconciliation remain. A private reusable byte-upload/draw model would
+require explicit chunk/cancellation/ownership across command-buffer flushes;
+that larger transport change is not claimed by this candidate.
+
+Focused source-only GL diagnostics pass 689 cases in 30 files with zero
+skips or load failures, including new no-allocation, nonzero logical offset,
+pre/post-effect rejection, pending inverse ordering and failed physical
+cleanup ownership cases. The initial 166 cases in 2 modified files also pass.
+These configurations deliberately load only pure GL/source tests, without
+global C/Wasm fixture provisioning; they are not the normal guest suite.
+The normal host bundle and declarations build passes. Two durable native
+cases added to webgl-state-contract.spec.ts pass in all three engines
+(6 cases), including the browser memory-boundary observer. A composed
+rollback regression preserves a deleted logical offset 4 / native 0 when a
+later replacement fails, keeps another ARRAY selected, fences while its
+inverse is blocked and accepts later complete replacement.
+
+Normal SDK provisioning `null-attribute-sdk-provision-1031-021459-0ee0`
+finishes 0 in 1m26s. It first copies independent installed SDK files from the
+frozen primary, then requires the ordinary --ensure input/output checks;
+those checks rebuild both own cores and DRI/EGL/GLES archives rather than
+admitting the copied state. No alias, forced cache identity or stale SDK
+acceptance is used. Full normal desktop
+products, real 1/3/5-terminal comparison, browser-memory, main integration,
+benchmarks, conformance and the remaining graphics baseline are still open.
+
+Evidence: `.context/native-null-attribute-r{1,2}/`,
+`.context/native-null-helper-r1/` and the isolated candidate's
+`.context/{pure-gl-r2.log,pure-gl-broad-r3.log,host-build-r1.log}`.
+Two earlier private unit-launch configuration path failures are retained
+as r1 logs; no tests ran from those failed launches. Native helper worker
+SHA256:
+`413e881d3f682e4f2efef85f659c910e51e5890df960241be03f7f0108a1634a`.
+Source graph manifest SHA256:
+`85faba22c49633f86c802a8664e915e864902df1263d60bcfe4b996cb62d8989`.
+Native Chromium/Firefox/WebKit report SHA256:
+`d4e7e5ad9278e364796b9579d60df4296c86a16eedbe93a2e6b3901d5aa1fd76`,
+`3c0424d1cda166f387b02804d3e1acc5f71cf60b2ee0caec1f8a9bbd8c270bcc`,
+`115d3f246e5c6bfb97cd2559ba15b4b5ae537ada132c3cddeb3115a2cd10b905`.
+Single-terminal improvement remains unproven, as the user clarified.

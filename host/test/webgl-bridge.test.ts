@@ -859,7 +859,7 @@ describe("shared buffer deletion", () => {
     expect(b.vertexArrays.get(0)!.element).toBe(old);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([]);
     expect(gl.log.filter(([name]) => name === "vertexAttribPointer")).toEqual([
-      ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,4]]]);
+      ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,0]]]);
     send(b,O.OP_BIND_BUFFER,[0x8893,0]);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([["deleteBuffer",[old]]]);
   });
@@ -878,15 +878,16 @@ describe("shared buffer deletion", () => {
     expect(a.errors).toContain(0x501);
   });
 
-  it("keeps names and references intact when buffer-zero clearing cannot allocate", () => {
+  it("clears buffer-zero references even when new native allocation is unavailable", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_GEN_BUFFERS,[1,71]);
     send(a,O.OP_BIND_BUFFER,[0x8892,71]); const old = a.buffers.get(71)!; send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]);
     gl.createBuffer = () => null as any;
     send(a,O.OP_DELETE_BUFFERS,[1,71]);
-    expect(a.buffers.get(71)).toBe(old); expect(a.shadow.arrayBuffer).toBe(old);
-    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBe(old);
-    expect(a.errors).toContain(0x505);
+    expect(a.buffers.has(71)).toBe(false); expect(a.shadow.arrayBuffer).toBeNull();
+    expect(a.vertexArrays.get(0)!.attributes.get(0)!.buffer).toBeNull();
+    expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toHaveLength(1);
+    expect(a.errors).toEqual([]);
   });
 
   it("returns to the private default VAO and retains its element binding", () => {
