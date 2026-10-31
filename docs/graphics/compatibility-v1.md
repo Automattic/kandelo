@@ -10917,3 +10917,41 @@ cases pass. This is Node/host correctness evidence, not Chromium rendering,
 native instance reclamation or a desktop performance result. The independent
 normal5669 preview producer is still running; availability and browser
 acceptance must be reported separately after its own coherence checks.
+
+
+### Investigation loop: zero-build scan diagnostic (2026-10-31)
+
+At the user's request, future theories are screened with existing-build
+profiles, isolated hot-path diagnostics and a provisioned incremental
+checkout before a complete normal preview checkpoint. Published previews
+remain immutable, compatible artifacts retain their identities, and changed
+ABI/build inputs still require normal rebuilding. The current5669 producer
+continues; this policy does not rewrite its sealed recipe or evidence.
+
+A direct Node24.15.0 diagnostic runs without an SDK, kernel, program,
+package or image build/load. It imports the actual production native helper
+and compares it with the exact scan fragment from committed6bf kernel.ts.
+Both use the same two bounded shared memories. The native measurement
+includes descriptor/module lookup, a fresh Instance, exports access and
+invocation. Common provider/range proof, changed-case owned copying and
+backing refresh are outside both measurements. Eight warmups precede four
+alternating-order rounds per case in one process, with no forced GC.
+Every warm and timed result is checked for equal and last-byte-changed data,
+including differing alignments. This is a NONQUIET subsystem diagnostic
+while the preview and external work continue, not an application benchmark.
+
+| Equal input, aligned | Previous JS scan, median microseconds/call | Native lookup/instance/scan, median microseconds/call |
+|---|---:|---:|
+| 4 KiB | 1.11 | 2.41 |
+| 256 KiB | 35.07 | 9.15 |
+| 2 MiB | 283.34 | 65.99 |
+| 18.7 MB | 2719.74 | 593.95 |
+
+The isolated large scans favor the native path; the4KiB case exposes its
+per-call overhead. These are useful screening observations. They do not
+establish desktop improvement, a safe size threshold across engines,
+allocation/native reclamation, or Node/browser parity. Browser/desktop and
+full benchmark/memory acceptance remain open. All16 raw cases, rounds,
+clock/engine/load details and source hashes are retained in
+`.context/perf-lab/scan-diagnostic-1031-r1.json`; the source script and original
+log are adjacent. No product or harness classifier is changed by this run.
