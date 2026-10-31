@@ -14384,3 +14384,61 @@ gaps; source control success is not normal distribution/conformance acceptance.
 Independent source review finds no new blocker; reviewed seven-file identities
 match the tested source. Evidence: `.context/focus-constant-attrib-review-r1/`.
 This repair is not present in either frozen5679/b6 or5680/ce7 preview.
+
+
+### Candidate ordered focus capture: replay removed, residual work remains, 2026-10-31
+
+`drawable-boundary-ordered-r1-1031-135538-e8e5` completes workload/collector/guard
+0/0/0 in46s against frozen experimental5680/ce7 over normalb6. All19 actual
+observer compositions, all five production source/HTTP admissions, four actual
+worker-path consumptions and all normal93/245/dual-SDK/kernel/host guards pass.
+The independent offline audit passes72,950 checks on its first attempt, including
+86 sealed helpers,87 report closure entries and22 committed source snapshots.
+No capture overflow, unknown/internal/helper errors, native throws or span
+censors occur. Seven pending request lifetimes at each cutoff remain explicit.
+
+All24within and162crossing muxer selections use the same owner and execute
+**zero native replay calls**. All56 observed make-current calls return0 and
+retain owner, FBO references, viewport and false selector-dirty state within
+that call. Only preserved context-loss checks execute inside make-current.
+This establishes that the intended production behavior executes in the observed
+zero-surface/release family; it does not cover every drawable/failure path or
+establish a response gain. The separate small unprofiled pair remains mixed.
+
+| One-second observed quantity | Within terminal | Crossing boundary |
+|---|---:|---:|
+|Ordered rows|23,558|65,362|
+|Complete internal logical latch intervals|2|9|
+|Primary blits / cursor readbacks|62 / 62|62 / 62|
+|Total native calls|5,080|8,865|
+|Native calls in fixed device paths|4,774|4,774|
+|Native calls outside fixed device paths|306|4,091|
+|Guest drawArrays / staging createBuffer / bufferData / deleteBuffer|3 each|65 each|
+|Q34 image binds / Q42 framebuffer binds|8 / 6|64 / 20|
+|Full shared-file comparisons, all equal|336|1,370|
+|Requested comparison bytes|1,407,909,888|5,740,584,960|
+
+Counts cover exactly1,000 kernel-clockms per observation. Stop lateness, edge
+logical intervals and the raw30s-complete=false flag remain separate from the
+accepted1s ordered scope. Logical latch intervals are not physical frames/FPS.
+The native getError calls all return0 (2,474within/4,838crossing); this is not
+permission to omit acceptance/error checks. Immediate same-channel submit→query
+joins number7within/58crossing; adjacency does not prove a libc call origin or
+safe fusion. The old c775/a196 trace and this b6/ce7 trace have different runtimes
+and workloads within the capture, so their counts are not a causal speed ratio.
+
+The remaining leads are recurring presentation/readback work, focus-triggered
+staging/query amplification, coherent query transport, and whole-mapping
+synchronization. Reliable tracking of every writer would be required before
+unchanged-page scan elision; ordinary dirty bits, a matching generation or entry
+snapshot equality do not prove a safe concurrent refresh. These are continuing
+investigations, not implemented optimizations or demonstrated platform limits.
+The user reports better cross-terminal movement on the preview while still
+finding overall performance unacceptable; that subjective report remains
+separate from the inconclusive small headless comparison.
+
+Evidence: `.context/drawable-boundary-ordered-r1/` and
+`.context/drawable-boundary-ordered-analysis-r1/`. Independent accounting SHA256:
+`e1a83c69f696ea8966c22867d719c51e2e7f36d56972a042b22f4b9148975a9c`.
+No fresh distribution/browser-memory/Node/three-engine/conformance or broad
+benchmark acceptance follows from this trace.
