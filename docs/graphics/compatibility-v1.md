@@ -10716,3 +10716,26 @@ result above. Neither earlier attempt is represented as a test run.
 Original commands, hashes and evidence remain in
 `.context/process-snapshot-compare-validation/` and the fresh
 `process-snapshot-compare-validation-r3/` directory.
+
+
+The candidate's independent normal preview producer
+`preview5668-snapshot-compare-6bf002e64d-1030-224427-5b22` finishes0 in
+13m56s, all seven stages0: own xtask; normal kernel/desktop/rootfs/host;
+SDK64; rootfs refresh; freshness;93-owner245-member identity capture;
+and selected-kernel ABI check. The selected kernel is the same5c011b2d
+artifact exercised by Node. The immutable server job
+`preview5668-snapshot-compare-6bf002e64d-1030-225831-9203` independently
+rechecks freshness, SDK/artifact inventory and ABI, then serves
+http://127.0.0.1:5668/pages/kandelo/. Actual root/gallery HTTP200 with
+COOP same-origin and COEP require-corp are verified. Availability is
+announced immediately, before browser acceptance. The earlier5667
+preview is preserved.
+
+Compared with5667, all245 members remain present. Only the kernel,
+Nethack Wasm/browser bundle and shell.vfs.zst bytes differ; Sway, Foot,
+SFWBar, Cage and Labwc are unchanged. Private comparison is
+`.context/process-snapshot-compare-package-comparison.json`. The normal
+receipt SHA256 is `cbfcaff9de1e4366c1a5d17daf8b0737c33b8d216cace90a7c5dc39b8ad3164b`;
+owner inventory SHA256 is `7c30e7dbe3aa3216f530af785cf20b1a0d1884389f63721d5aa6cadcf2d08e6f`.
+Browser rendering, terminal-count performance and broader acceptance
+remain unrun for this preview at publication.
