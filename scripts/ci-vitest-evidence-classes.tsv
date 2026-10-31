@@ -267,7 +267,6 @@ host/test/node-call-sites.test.ts	source-only
 host/test/node-compat-builtin-exports.test.ts	prepared-product
 host/test/node-core-compat.test.ts	prepared-product
 host/test/node-fatal-exit.test.ts	source-only
-host/test/node-tcp-server.test.ts	source-only
 host/test/node-guest-build.test.ts	source-only
 host/test/node-host-mounts.test.ts	prepared-product
 host/test/node-host-vfs-only-metadata.test.ts	source-only
@@ -288,6 +287,7 @@ host/test/node-process-teardown-ordering.test.ts	source-only
 host/test/node-response-body.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
+host/test/node-tcp-server.test.ts	source-only
 host/test/node-text-decoder.test.ts	source-only
 host/test/node-url-exit-contracts.test.ts	source-only
 host/test/node-worker-adapter.test.ts	prepared-product

@@ -164,6 +164,46 @@ covers real sockets, including cancellation racing immediate completion;
 it does not establish pending external-TCP deadlines on every backend or
 complete TLS handshake lifetime behavior.
 
+## Real TCP listener regression
+
+The net module now owns real nonblocking bind/listen/accept operations.
+Closing a server stops accepts immediately and waits for accepted
+socket descriptors to close before reporting server closure. Socket end
+performs a real write-half shutdown after writes complete; native watch
+references drive ref/unref lifetime. Listener and accepted descriptors
+are close-on-exec.
+
+The focused normal-image regression runs the same IPv4/IPv6 lifetime,
+bind-conflict, port-release and listener-unref programs used by the
+pinned native controls, then tests both families against an independent
+C client. The C program uses actual connect/write/shutdown/read calls.
+It is compiled through the checkout SDK and stamped normally. No guest
+compatibility APIs or upstream sources are substituted.
+
+```sh
+for engine in node chromium firefox webkit; do
+  scripts/dev-shell.sh env WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+    WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1" \
+    host/node_modules/.bin/tsx scripts/run-nodejs-tcp-server-tests.ts \
+    "$engine" ".context/node-tcp-new-$engine"
+done
+```
+
+Each host passed all five cases, with no timeout or harness error, at
+implementation bdaf87bbe5125a96687d25dba2329bd4884d308f.
+Reports `.context/node26-tcp-server-HOST/` and
+`.context/node26-tcp-server-audit.json` retain identical source, image,
+peer and runtime identities. The normal targeted build passed; 97
+source/reference checks and the ABI snapshot check passed (ABI 55).
+The complete product rebuild remains deferred.
+
+This is the first real listener implementation, not complete net
+compatibility. Callable constructors, listen overloads and descriptors,
+IPC paths/fd listeners, maxConnections/drop, BlockList, socket options,
+stream encoding/backpressure, timer unref and disposal remain gaps.
+The unchanged networking/DNS inventory must remain a separate report;
+these focused checks never refresh unselected baseline rows.
+
 ## Current evidence and limits
 
 - All 83 source/harness tests pass under the exact native Node 26.13.0

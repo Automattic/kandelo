@@ -54,6 +54,14 @@ particular:
   Complete MIME parsing, formData, Request bodies, Headers guards and
   Web-object cloning/transfer remain gaps.
 
+- TCP servers now bind/listen/accept through real nonblocking POSIX
+  sockets. Server closure waits for accepted descriptors; Socket.end uses
+  actual write-half shutdown. Native watch reference state drives listener
+  and socket lifetime. Five focused cases pass on each host, including an
+  independent C client over IPv4 and IPv6. Callable constructors, complete
+  listen overloads/descriptors, IPC/fd listeners, connection limits,
+  BlockList, socket controls and full stream behavior remain gaps.
+
 - Streams, Fetch networking and process lifecycle need broader upstream
   coverage. Shared natural exit now has a shell teardown hook for files and eval,
   including queued work and fatal status. File/eval/ESM regressions pass
