@@ -51,7 +51,7 @@ equal(globalThis.__entrySideEffect, 1);
 equal(globalThis.__payloadRuns, 1);
 equal(answer, 42);
 equal(payload.answer, 42);
-equal('import.meta.url', 'import.meta.url');
+equal('import.meta.url', ['import', 'meta', 'url'].join('.'));
 assert.ok(import.meta.url.endsWith('/esm-main.mjs'));
 equal(read(), 3); update(); equal(read(), 6);
 const require = createRequire(import.meta.url);
