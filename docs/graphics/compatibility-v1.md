@@ -10739,3 +10739,61 @@ receipt SHA256 is `cbfcaff9de1e4366c1a5d17daf8b0737c33b8d216cace90a7c5dc39b8ad31
 owner inventory SHA256 is `7c30e7dbe3aa3216f530af785cf20b1a0d1884389f63721d5aa6cadcf2d08e6f`.
 Browser rendering, terminal-count performance and broader acceptance
 remain unrun for this preview at publication.
+
+
+### File comparison: actual Chromium consumers and desktop result (2026-10-30)
+
+Headless Chromium job
+`snapshot-compare-new-browser-semantics-s-1030-230056-1620` finishes0
+in10s: both normal C programs pass their unchanged success-marker,
+exit0, empty-stderr and runtime-error assertions. The cases cover file
+mappings across opens/fork/descriptor I/O and a sole SysV attachment
+seeing a departed child's stores. Exact bounded normally built/stamped
+fixture URLs are routed; the served test runner, kernel, SDK contract
+and lifecycle are unchanged. Before/after93-owner245-member, SDK, kernel
+and source guards pass. This is Chromium coverage only.
+
+The uninstrumented headless desktop job
+`snapshot-compare-new-native2x-terminals-1030-230144-24c8` finishes0 in
+5m51s, with workload, after-collector and after-guard0. All six stages
+(1/2/3/4/5/recovered1) have the expected actual Foot processes and
+independent painted bodies/title ink; early/late Start categories appear.
+There are1896 trusted input events, no runtime/finalization errors and
+stable identity. This proves the observed functional path, not prompt
+readiness, a PID-to-window association or full application/focus/lifecycle
+acceptance. It does not establish acceptable responsiveness.
+
+Both columns below are separate NONQUIET observations with the same
+native2880x1620/DPR2 workload, canonical headless Chromium defaults,
+200 requested moves over10s and first-to-last sampled flip deltas over
+about9.9s. Source/runtime artifacts are recorded independently. The
+preceding a53 observation is historical, not an alternating quiet control;
+uncontrolled user/external CPU/GPU activity prevents isolated causal or
+no-regression claims. Menu values include screenshot/poll overhead.
+
+| Terminal stage | Motion flip delta a53 / 6bf | Early Start ms a53 / 6bf | Late Start ms a53 / 6bf |
+|---|---|---|---|
+| count-1 | 56 / 27 | 15377 / 22868 | 2997 / 5046 |
+| count-2 | 31 / 9 | 3765 / 5427 | 2977 / 6448 |
+| count-3 | 15 / 6 | 3692 / 5878 | 2995 / 7793 |
+| count-4 | 22 / 5 | 3739 / 8051 | 4320 / 9097 |
+| count-5 | 9 / 3 | 4462 / 7332 | 4543 / 9897 |
+| recovered-1 | 66 / 28 | 2946 / 4995 | 2952 / 4366 |
+
+Every6bf row is poorer in this observation. No performance improvement
+is established, and the equal-case allocation/copy reduction alone is
+not an acceptable completion result. The next diagnostic profiles the
+actual new kernel worker to identify whether the bottleneck moved into
+the comparison or remains elsewhere. The preview remains experimental;
+full benchmarks against the destination, POSIX and three-engine memory/
+rendering gates remain open.
+
+Raw new report:
+`.context/process-snapshot-compare-desktop-probe-r2/cohorts/new-native2x-terminals-snapshot-compare-r2/chromium/sway/report.json`,
+SHA256 `6334cd049ea350c8a7545993b4a577d7bfdf9d430780ce8a82cc008dcecf700b`.
+The read-only derived comparison is
+`.context/process-snapshot-compare-desktop-comparison.json`.
+The first consumer preparation's mistyped full support HEAD never
+launched a test; it is preserved. The fresh r2 sealer derives HEAD from
+Git and requires equality before sealing, and both actual consumers use
+support55428d6607 with all original artifact guards intact.
