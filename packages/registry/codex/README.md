@@ -197,10 +197,13 @@ removes it before the request leaves the browser.
 Through the default Playground proxy, browser model requests still fail
 even after "Allow for this process": its preflight does not allow
 Codex's headers yet. The Spacefast proxy (`apps/spacefast-cors-proxy`)
-allows them and relays the response fields Codex reads, but no Codex
-turn through a deployed one has been verified. Both proxies also have
-hosting boundaries that cut a long streamed model turn; they belong to
-the hosting platforms, not the proxy code:
+allows them and relays the response fields Codex reads, and Codex's
+device-code sign-in completes through a deployed one, but `chatgpt.com`
+refuses that proxy's outgoing connections (a Cloudflare address), so
+Codex then stops at "workspace routing discovery failed". The
+Playground proxy's outgoing addresses reach `chatgpt.com`. Both proxies
+also have hosting boundaries that cut a long streamed model turn; they
+belong to the hosting platforms, not the proxy code:
 
 - Spacefast Functions stop a request 30 seconds after dispatching it,
   and the limit bounds the whole streamed response, so a model turn that

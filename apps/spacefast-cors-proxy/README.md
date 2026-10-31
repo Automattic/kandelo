@@ -126,6 +126,28 @@ own boundary: in Kandelo's 2026-10-27 probe through it, a streamed
 response arrived only when it completed, and a 150-second response got
 `504` at 120 seconds.
 
+### chatgpt.com refuses this proxy's outgoing connections
+
+The proxy opens its upstream connections with `cloudflare:sockets`
+([`src/pinned-fetch.ts`](src/pinned-fetch.ts)), so they leave from the
+Functions runtime's network, not the web server's. On 2026-10-31 a
+deployed proxy's outgoing address was seen as `2a06:98c0:3600::103` (a
+Cloudflare address), and `https://chatgpt.com/` refused it: an anonymous `GET
+/backend-api/wham/accounts/check` through the proxy got `403` with an
+"Unable to load site … If you are using a VPN, try turning it off"
+page, where OpenAI's backend answers `401`. The same request through the
+Playground proxy on WP Cloud (outgoing addresses `66.71.208.184` and
+`74.114.155.251`) and directly from a home network got `401`.
+`auth.openai.com` accepted the Spacefast proxy, so Codex's device-code
+sign-in completes through it and its first `chatgpt.com` request
+(workspace routing discovery) fails. The refusal is measured; what it
+keys on (the outgoing address, or Cloudflare's marking of requests from
+its Workers runtime) is not established. Either way it is a hosting
+boundary: the runtime, not the proxy, chooses how its connections leave
+and how they are marked. Codex through a deployed
+browser machine needs a proxy whose outgoing connections `chatgpt.com`
+accepts.
+
 ## Destination security and the Spacefast workaround
 
 The production entry `handler.ts` uses Spacefast's ordinary hostname `fetch()`.
