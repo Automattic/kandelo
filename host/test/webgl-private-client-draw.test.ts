@@ -10,6 +10,8 @@ type Pointer = {buffer: object|null; size: number; type: number; normalized: boo
 type Fault = {method: string; nth: number; after?: boolean; throws?: boolean};
 class Gl {
   errors: number[] = [];
+  errorReads = 0;
+  pointerSources: (object|null)[] = [];
   buffers = new Map<object,Uint8Array>();
   alive = new Set<object>();
   array: object|null = null;
@@ -37,6 +39,7 @@ class Gl {
     }
   }
   getError() {
+    this.errorReads++;
     if (this.postCreateCheckThrows) { this.postCreateCheckThrows = false; throw new Error("post-create check"); }
     return this.errors.shift() ?? 0;
   }
@@ -75,6 +78,7 @@ class Gl {
     });
   }
   vertexAttribPointer(index: number, size: number, type: number, normalized: boolean, stride: number, offset: number) {
+    this.pointerSources.push(this.array);
     this.method("vertexAttribPointer",() => {
       if (!this.array && offset !== 0) { this.errors.push(0x502); return; }
       this.attributes.set(index,{buffer:this.array,size,type,normalized,stride,offset});
@@ -112,7 +116,7 @@ function fixture(type = FLOAT, size = 2, stride = 0, offset = 0) {
   gl.attributes.set(0,{buffer:null,size,type:type === FIXED ? FLOAT : type,normalized:false,
     stride:type === FIXED || stride > 255 ? 0 : stride,offset:0});
   const attributes = vao.attributes, oldNative = {...gl.attributes.get(0)!};
-  gl.counts.clear();
+  gl.counts.clear(); gl.errorReads = 0;
   const restored = () => {
     expect(vao.attributes).toBe(attributes); expect(vao.attributes.get(0)).toEqual({buffer:null,enabled:true,size,type,normalized:false,stride,offset});
     expect(gl.attributes.get(0)).toEqual(oldNative); expect(gl.array).toBe(array); expect(gl.element).toBe(element);
@@ -135,6 +139,22 @@ it("draws packed client vertices without public buffer names and restores exact 
   expect(gl.counts.get("createBuffer")).toBe(1); expect(gl.counts.get("deleteBuffer")).toBe(1);
   expect(b.errors).toEqual([]); restored();
 });
+for (const first of [0,3]) {
+  for (const pending of [false,true]) {
+    it(`checks every private upload step with one clean entry (first=${first}, pending=${pending})`,() => {
+      const {b,gl,restored} = fixture();
+      if (pending) gl.errors.push(0x500,0x505);
+      expect(drawPrivateClientArrays(b,payload({first}))).toEqual({attempted:true,accepted:true,restored:true});
+      // Creation, draw, inverse and retirement keep their own checked scopes.
+      // Only bind/upload/pointer share their successful predecessor's post-check.
+      expect(gl.errorReads).toBe((first === 0 ? 14 : 15)+(pending ? 2 : 0));
+      expect(gl.counts.get("bufferData")).toBe(1);
+      expect(gl.counts.get("bufferSubData") ?? 0).toBe(first === 0 ? 0 : 1);
+      expect(gl.draws).toHaveLength(1);
+      expect(b.errors).toEqual(pending ? [0x500,0x505] : []); restored();
+    });
+  }
+}
 it("uploads a nonzero first without reading or changing the unused prefix",() => {
   const {b,gl,restored} = fixture();
   expect(drawPrivateClientArrays(b,payload({first:3,count:2})).accepted).toBe(true);
@@ -196,10 +216,21 @@ for (const method of ["createBuffer","bindBuffer","bufferData","bufferSubData","
   for (const after of [false,true]) for (const throws of [false,true]) {
     it(`retains/restores owners after ${method} ${after ? "post" : "pre"}-effect ${throws ? "throw" : "error"}${method === "createBuffer" && after && throws ? " at returned-handle validation" : ""}`,() => {
       const {b,gl,restored} = fixture(); gl.fault = {method,nth:1,after,throws};
+      gl.errors.push(0x500,0x505);
       const result = drawPrivateClientArrays(b,payload({first:method === "bufferSubData" ? 3 : 0}));
       expect(result.accepted).toBe(false); expect(result.attempted).toBe(method === "drawArrays");
       expect(gl.draws.length).toBe(method === "drawArrays" && after ? 1 : 0);
-      expect(repairNativeState(b.gl!)).toBe(true); expect(b.errors).toContain(0x502); restored();
+      if (method === "createBuffer" || method === "bindBuffer") expect(gl.counts.get("bufferData") ?? 0).toBe(0);
+      if (method === "createBuffer" || method === "bindBuffer" || method === "bufferData") {
+        expect(gl.counts.get("bufferSubData") ?? 0).toBe(0);
+      }
+      // Inverse pointer restoration uses ARRAY=null. No private pointer may be
+      // attempted after a failed prerequisite, including an accepted-then-error.
+      if (!["vertexAttribPointer","drawArrays"].includes(method)) {
+        expect(gl.pointerSources.filter(source => source !== null)).toHaveLength(0);
+      }
+      expect(repairNativeState(b.gl!)).toBe(true);
+      expect(b.errors).toEqual([0x500,0x505,0x502]); restored();
     });
   }
 }

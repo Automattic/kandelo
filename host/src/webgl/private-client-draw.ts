@@ -2,7 +2,7 @@ import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, prepareBufferDraw } from "./buffer-storage.js";
 import { prepareImageDraw } from "./image-storage.js";
-import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_BYTES, INLINE_DRAW_MAX_ATTRIBUTES } from "./ops.js";
 import {
   applyNativeChanges, nativeInverse, repairNativeState,
@@ -111,21 +111,26 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
     });
     const restoreArray: NativeCall[] = [["bindBuffer",ARRAY,b.shadow.arrayBuffer]];
     const completion = {submitted:false,complete:false};
-    const changes: NativeChange[] = draw.attributes.map((a,i) => ({
-      apply: () => {
-        const temporary = allocateNativeBuffer(b,retirements[i]!);
-        if (!temporary || !checkedGlCall(b,() => gl.bindBuffer(ARRAY,temporary))) return false;
-        if (draw.first === 0) {
-          if (!checkedGlCall(b,() => gl.bufferData(ARRAY,uploads[i],STREAM_DRAW))) return false;
-        } else {
-          if (!checkedGlCall(b,() => gl.bufferData(ARRAY,(draw.first+draw.count)*a.elementBytes,STREAM_DRAW)) ||
-              !checkedGlCall(b,() => gl.bufferSubData(ARRAY,draw.first*a.elementBytes,uploads[i]))) return false;
-        }
-        return checkedGlCall(b,() => gl.vertexAttribPointer(a.index,a.size,a.type === FIXED ? FLOAT : a.type,
-          a.type === FIXED ? false : a.normalized,0,0));
-      },
-      restore:nativeInverse(b,pointers[i]),
-    }));
+    const changes: NativeChange[] = draw.attributes.map((a,i) => {
+      let temporary: WebGLBuffer | null = null;
+      // Allocate callbacks before native effects. This synchronous scope has
+      // one physical context/error owner and only single native operations:
+      // each successful post-check is the next dependent step's clean entry.
+      const upload = draw.first === 0
+        ? [() => gl.bufferData(ARRAY,uploads[i],STREAM_DRAW)]
+        : [() => gl.bufferData(ARRAY,(draw.first+draw.count)*a.elementBytes,STREAM_DRAW),
+          () => gl.bufferSubData(ARRAY,draw.first*a.elementBytes,uploads[i])];
+      const calls = [() => gl.bindBuffer(ARRAY,temporary),...upload,
+        () => gl.vertexAttribPointer(a.index,a.size,a.type === FIXED ? FLOAT : a.type,
+          a.type === FIXED ? false : a.normalized,0,0)];
+      return {
+        apply: () => {
+          temporary = allocateNativeBuffer(b,retirements[i]!);
+          return temporary !== null && checkedGlSequence(b,calls);
+        },
+        restore:nativeInverse(b,pointers[i]),
+      };
+    });
     changes.push({apply:() => {
       result.accepted = checkedGlCall(b,() => {
         result.attempted = true;
