@@ -2146,7 +2146,7 @@
 +
 +  if (IsKandeloNodeProgramName(argc > 0 ? argv[0] : nullptr) && argc == 2 &&
 +      (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
-+    puts("v22.0.0");
++    puts(KANDELO_NODE_COMPAT_VERSION);
 +    return EXIT_SUCCESS;
 +  }
 

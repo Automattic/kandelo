@@ -27,6 +27,7 @@ function outcome(fn: () => unknown) {
 function guestProcess() {
   let status: number | undefined;
   const context = {
+    _nodeCompatibilityTarget: JSON.parse(readFileSync(new URL("../../packages/registry/node-compat/target.json", import.meta.url), "utf8")),
     events: { EventEmitter }, os: { getcwd: () => ["/tmp"], getpid: () => 1 },
     std: { getenv: () => undefined, exit: (code: number) => { status = code; } },
   };

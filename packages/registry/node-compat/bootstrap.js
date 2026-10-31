@@ -775,16 +775,14 @@ const process = (() => {
 
     Object.assign(proc, {
         title: 'node',
-        version: 'v22.0.0', // Compatibility target
+        version: 'v' + _nodeCompatibilityTarget.version, // API target, not a conformance claim
         versions: {
-            node: '22.0.0',
+            node: _nodeCompatibilityTarget.version,
             spidermonkey: '140.11.0esr',
-            modules: '131',
-            v8: '0.0.0',  // Not V8
-            uv: '0.0.0',  // Not libuv
+            // Native Node addons, V8 and libuv are not provided by this runtime.
         },
         arch: 'wasm32',
-        platform: 'linux', // POSIX-compatible
+        platform: 'kandelo', // POSIX platform, not a Linux runtime
         env: envProxy,
         argv: [],  // Set by node-main.c
         argv0: '',
@@ -887,7 +885,7 @@ const process = (() => {
 
         features: {},
         config: { variables: {} },
-        release: { name: 'node' },
+        release: { name: 'node', lts: _nodeCompatibilityTarget.lts },
         moduleLoadList: [],
         // npm-install-checks reads `process.report.getReport().sharedObjects`
         // to detect glibc-vs-musl when /usr/bin/ldd is unavailable.
@@ -2112,8 +2110,8 @@ const nodeOs = (() => {
     return {
         EOL: '\n',
         arch() { return 'wasm32'; },
-        platform() { return 'linux'; },
-        type() { return 'Linux'; },
+        platform() { return process.platform; },
+        type() { return 'Kandelo'; },
         release() { return '6.0.0-wasm'; },
         hostname() {
             try {

@@ -975,15 +975,21 @@ SpiderMonkey needs the standalone JS shell wasm binary:
 bash packages/registry/spidermonkey/build-spidermonkey.sh
 ```
 
-Node.js library tests use the SpiderMonkey-backed `node.wasm` package and the
-upstream Node.js source tree. By default the runner downloads the source bundle
-matching the host `node` version and verifies it with Node.js `SHASUMS256.txt`;
-override with `NODEJS_TEST_VERSION` or `NODEJS_SOURCE_DIR`:
+Node.js library tests use the pinned LTS source and native reference in
+`packages/registry/node-compat/target.json`, independently of host Node.
+See [the suite guide](../tests/nodejs/README.md) for inventory, outcome
+accounting, source checks, host parity and current gaps.
 
 ```bash
-bash packages/registry/spidermonkey-node/build-spidermonkey-node.sh
-scripts/run-nodejs-library-tests.sh --host node --list
+scripts/run-nodejs-library-tests.sh --prepare-only
+scripts/run-nodejs-library-tests.sh --list --out .context/nodejs-inventory
+scripts/run-nodejs-library-tests.sh --host native --all \
+  --out .context/nodejs-native --limit 100
 ```
+
+Guest runs compose upstream data into the normal shell image using the
+current image writer and launch `/usr/bin/node` through the VFS. They do
+not compile packages automatically; a stale target fails preflight.
 
 Browser runs build suite-specific VFS images under
 `apps/browser-demos/public/` when missing:
@@ -992,5 +998,4 @@ Browser runs build suite-specific VFS images under
 bash images/vfs/scripts/build-sqlite-test-vfs-image.sh
 bash images/vfs/scripts/build-php-test-vfs-image.sh
 bash images/vfs/scripts/build-spidermonkey-test-vfs-image.sh
-bash images/vfs/scripts/build-nodejs-test-vfs-image.sh
 ```

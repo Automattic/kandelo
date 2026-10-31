@@ -238,36 +238,10 @@ for bootstrap_part in "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFF
 done
 mkdir -p "$OBJ_DIR"
 echo "==> Generating SpiderMonkey Node bootstrap include..."
-python3 - "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" "$NODE_BOOTSTRAP_JS" "$NODE_BOOTSTRAP_INC" "$NODE_WEB_PLATFORM_JS" <<'PY'
-from pathlib import Path
-import sys
-
-adapter = Path(sys.argv[1]).read_text(encoding="utf-8")
-shared = Path(sys.argv[2]).read_text(encoding="utf-8")
-suffix = Path(sys.argv[3]).read_text(encoding="utf-8")
-generated = Path(sys.argv[4])
-dest = Path(sys.argv[5])
-
-shared_lines = [
-    line for line in shared.splitlines()
-    if not line.startswith("import * as ")
-]
-web_platform_source = Path(sys.argv[6]).read_text(encoding="utf-8")
-source_text = adapter.rstrip() + "\n" + web_platform_source + "\n" + "\n".join(shared_lines) + "\n" + suffix.rstrip() + "\n"
-generated.write_text(source_text, encoding="utf-8")
-source = source_text.encode("utf-8")
-dest.parent.mkdir(parents=True, exist_ok=True)
-with dest.open("w", encoding="ascii") as f:
-    f.write("#ifndef shell_kandelo_node_bootstrap_h\n")
-    f.write("#define shell_kandelo_node_bootstrap_h\n\n")
-    f.write("static const unsigned char kKandeloNodeBootstrap[] = {\n")
-    for i in range(0, len(source), 12):
-        chunk = source[i:i + 12]
-        f.write("  " + ", ".join(f"0x{b:02x}" for b in chunk) + ",\n")
-    f.write("};\n")
-    f.write("static const size_t kKandeloNodeBootstrapLen = sizeof(kKandeloNodeBootstrap);\n")
-    f.write("\n#endif  // shell_kandelo_node_bootstrap_h\n")
-PY
+python3 "$REPO_ROOT/scripts/generate-node-bootstrap.py" \
+    "$NODE_ADAPTER_JS" "$NODE_SHARED_BOOTSTRAP_JS" "$NODE_SUFFIX_JS" \
+    "$NODE_BOOTSTRAP_JS" "$NODE_BOOTSTRAP_INC" "$NODE_WEB_PLATFORM_JS" \
+    "$REPO_ROOT/packages/registry/node-compat/target.json"
 
 WASM_RUST_TARGET_FEATURES='-Ctarget-feature=+atomics,+bulk-memory,+mutable-globals'
 GETRANDOM_BACKEND_RUSTFLAG='--cfg=getrandom_backend=\"custom\"'

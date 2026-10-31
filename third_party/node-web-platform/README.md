@@ -4,8 +4,10 @@ The shared Node compatibility layer embeds `whatwg-url` 14.2.0, an MIT
 licensed implementation of the WHATWG URL standard, and its dependencies.
 It also embeds MIT licensed `web-streams-polyfill` 4.3.0 for Web Streams.
 The lockfile records exact versions and npm tarball integrity hashes.
-Version 14 supports Node 18 and the Node 22.0 compatibility target; newer
-releases require newer Node versions.
+These implementations run on the SpiderMonkey engine, independently of
+the host Node toolchain. Their versions are pinned and remain partial
+inputs to the Node 26.13.0 compatibility target; an LTS target does not
+imply complete Node or web-platform conformance.
 
 `node-web-platform.js` is a generated, self-contained CommonJS bundle wrapped in a
 factory. It includes every dependency's license. The factory runs after the

@@ -571,6 +571,7 @@ tests/package-system/installed-host-package.test.ts	prepared-product
 tests/package-system/kandelo-build-image.test.ts	prepared-product
 tests/package-system/kernel-test-fixtures.test.ts	prepared-product
 tests/package-system/local-build-wrapper.test.ts	source-only
+tests/package-system/nodejs-harness.test.ts	source-only
 tests/package-system/playwright-server-policy.test.ts	prepared-product
 tests/package-system/program-resolver-literals.test.ts	prepared-product
 tests/package-system/qtbase-package.test.ts	source-only
