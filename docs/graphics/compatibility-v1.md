@@ -130,6 +130,11 @@ three-engine desktop acceptance, destination-main benchmarks, conformance
 and the remaining graphics baseline stay open. Detailed evidence, original
 failures, artifact receipts and exact scope are retained in this ledger.
 
+A fresh coherent normal build at `8b5242ea0ebb` is running for the compound
+submit/query transport described below. It uses its own SDK32/64, products
+and full ABI/layout checks, under the existing numeric ABI family. Proposed
+port5682 is not available yet. Published previews remain frozen.
+
 ### Historical desktop checkpoint, 2026-10-30
 
 The desktop work is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601),
@@ -14907,5 +14912,128 @@ operations. Complete reader/writer/lifetime coverage and executable causal
 controls remain required; this is not implemented or proven smaller/faster.
 The source inventory includes exec, exchange/export, remap/fork and direct
 storage reads. Evidence: `.context/shared-completion-deferred-publication-review-r1/`.
-The standalone consumer-model screen is preparation only. Full graphics and
-POSIX completion remain open; ordinary gaps are not platform boundaries.
+The standalone two-worker model now passes14 causal controls and24 measured
+rows under the declared Node24 shell. Broken generation-only deferral really
+loses a source write; the candidate observes it. Late stores, independent
+baselines, duplicate aliases, partial refresh, lost acknowledgments, pending
+admission and retirement remain explicitly covered within this finite model.
+All12 matched output pairs agree and all76 exact worker terminations are
+awaited. This is not arbitrary concurrent Wasm or POSIX conformance evidence.
+
+The scan counts reject a blanket consumer barrier for frequent readers:
+
+| Twelve cycles, 4MiB mappings | Baseline scans / MiB | Consumer scans / MiB |
+|---|---:|---:|
+| Equal, sparse1KiB reads | 24 / 96 | 18 / 72 |
+| Changed, sparse1KiB reads | 24 / 96 | 18 / 72 |
+| Equal,1KiB read each cycle | 24 / 96 | 38 / 152 |
+| Canonical write each cycle | 48 / 192 | 74 / 296 |
+
+Sparse consumers save scans, but frequent consumers and backing writes add
+them. This does not justify adoption for the observed Start read workload.
+Actual wall samples are retained; a concurrent normal build prevents a quiet
+timing claim. These counts exclude separately reported canonical comparisons,
+worker refreshes and transport copies. No production optimization or desktop
+gain follows. Evidence: `.context/shared-consumer-publication-screen-r1/` and
+the root-verified `.context/shared-consumer-publication-analysis-r1/REPORT.md`.
+The narrower trusted-worker parking alternative remains source investigation;
+guest-written PENDING alone cannot justify dropping a completion scan.
+Full graphics and POSIX completion remain open; ordinary gaps are not
+platform boundaries.
+
+### Private dirty-page bitmap theory screen, 2026-10-31
+
+A separate trusted generated Wasm prototype uses shared data Memory0 and an
+unexported per-instance secondary Memory for ordinary dirty-bit OR operations.
+There is no per-store shared lock. Node24 accepts it; WABT validation and
+disassembly confirm real scalar, atomic, SIMD and bulk data operations.
+Eight two-worker causal controls pass, including real lost-write failure in
+an ACK-without-held-resume design, independent alias baselines, partial failure,
+lost/stale acknowledgment and clean-page canonical refresh. Both exact workers
+are joined through terminate with no pending controls. This is not universal
+writer coverage or production parking authority.
+
+Eight operation/pattern rows each retain seven alternating raw/marked pairs
+with equal whole4MiB output hashes. One-page patterns capture4KiB instead of
+4MiB; spread patterns still capture4MiB. Cache-local scalar/atomic/SIMD marked
+store loops cost roughly2.2–2.3 times the raw loops in these isolated wall
+samples. Some spread scalar/SIMD ratios are below1 and remain unexplained;
+they are not evidence that adding markers makes stores faster. The normal
+build was concurrent. Local phase totals omit real worker transport, full
+writer admission, range checks and alias publication. No desktop gain follows.
+
+R1 assembly fails before runtime on an invalid symbolic atomic memory
+immediate. Fresh R2 uses implicit data Memory0, preserving the atomic opcode;
+the original failure remains retained. Evidence:
+`.context/shared-store-private-bitmap-screen-r2/` and root-verified
+`.context/shared-store-private-bitmap-analysis-r2/REPORT.md`. Source/module
+coverage, host writes, lifecycle and authenticated held parking remain open.
+
+The first three-engine functionality probe compiles and instantiates the exact
+module in Chromium153.0.8010.12, Firefox155 and WebKit26.6, then fails before
+its first assertion group: the diagnostic passes a shared-memory view to
+WebCrypto hashing, which requires an ordinary owned input. This is a fixture
+error, not a multi-memory failure or engine defect. All three workers return
+their operation-finished stop acknowledgments; contexts, browsers and owned
+Firefox home cleanup complete. The failed report remains in
+`.context/shared-store-private-bitmap-browser-results-r1/`.
+
+Fresh R2 hashes an exact bounded ordinary copy and passes11 functionality
+groups in each of those three canonical headless engines, with identical module
+hash, raw/marked full-output equality, scalar/atomic/SIMD/bulk page coverage,
+held-entry traps, cross-page store and private-memory separation. All worker
+stop acknowledgments and context/browser/home cleanup complete; before/after
+inputs match. The extra owned hash copy and finite allocation totals are
+disclosed. This proves the bounded synthetic mechanism, not production writer
+coverage, physical reclamation or desktop gain. Job
+`private-bitmap-browser-r2-1031-155216-a070` finishes0 in1m13s. Report:
+`.context/shared-store-private-bitmap-browser-results-r2/report.json`, SHA256
+`f5d5609d0757cea90840395f5929f8b0609d6acaf02e96a76d48a702280b1dbe`.
+
+### Closed private client upload sequence, 2026-10-31
+
+Source `f509e2a51f73` replaces separate checked calls only around private
+client-array bind/upload/pointer operations with the existing checked sequence.
+Each operation still has its post-check and stops dependent work on failure;
+the successful post-check supplies the next step's clean entry. Native buffer
+allocation, draw, inverse/repair and retirement keep their existing scopes.
+Callbacks are reserved before effects, and no cross-call clean-state cache or
+new ABI is introduced. Shared Node/browser code changes together.
+
+Four causal controls fail against8b before this change. The resulting six-file
+source selection passes289 controls with no skips, including per-step native
+errors/throws, prior-error custody, dependency refusal and restoration. For one
+attribute, first0 uses14 error polls instead of16; nonzero first uses15 instead
+of18. These bounded operation counts do not establish application speed, and
+the extra callback allocation remains unmeasured. Browser/native-driver and
+combined normal acceptance remain open. The frozen8b normal producer and all
+published previews exclude this later host increment. Evidence:
+`.context/private-client-sequence-candidate-r1/HANDOFF.md` and
+`.context/native-error-custody-source-r1/HANDOFF.md`.
+
+### Trusted wait and refresh-only completion proof, 2026-10-31
+
+A bounded compiled Wasm/two-Node-worker prototype passes21 controls with
+ordinary uninstrumented data stores and a real synchronous JavaScript wait
+import. Its private host gate is not guest memory. The coordinator acquires
+the held lease before entry publication; actual helper acknowledgments prove
+COMPLETE/notify alone does not run the post-wait guest store. Exact release
+then permits the observed Wasm return/store. Forged PENDING, late READY,
+stale/foreign notices and predecessor release tokens cannot mint authority.
+
+With a valid clean cut the candidate captures source once instead of twice.
+New canonical bytes still refresh before return, without a second source
+capture; baseline/candidate output bytes agree. Overlapping/unknown host
+writes, pending/active second writers and failed entry retain the full path.
+All42 exact worker terminations are awaited with no pending controls; an
+injected malformed release remains faulted until containment, not a successful
+guest return. This measures mechanism counts, not throughput or desktop gain.
+
+The ordinary SDK currently waits inside Wasm, so this is not a production
+optimization. An explicit trusted wait boundary, complete physical-Memory
+writer/admission ownership, overlapping host-write observation and every
+signal/cancellation/retry/exec/death release path remain necessary. Existing
+PENDING, channel counts and GC safepoint timeouts supply no such certificate.
+No production scan or ABI change follows from the proof. Evidence:
+`.context/shared-parked-lease-screen-r1/` and root-verified
+`.context/shared-parked-lease-analysis-r1/REPORT.md`.
