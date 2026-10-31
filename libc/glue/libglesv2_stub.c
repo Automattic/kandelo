@@ -1439,7 +1439,13 @@ static int checked_container_query(uint32_t op, const uint32_t *words, uint32_t 
         return 0;
     }
     if (!rc && reply[container_count+2] == WPK_GL_QUERY_REPLY_MAGIC) {
-        if (reply[0] == 1) return 0;
+        if (reply[0] == 1) {
+            // Only a canonical rejected receipt proves the candidate unused.
+            // Contradictory payload must retain uncertain input ownership.
+            uint32_t i = 1;
+            while (i < container_count+2 && reply[i] == 0) i++;
+            if (i == container_count+2) return 0;
+        }
         if (reply[0] == 0 && reply[1] == 1 && (container_count != 1 || reply[2] != 0)) {
             memcpy(containers,reply+2,container_count*4);
             return 1;

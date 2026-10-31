@@ -1140,6 +1140,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 if (q->op == 0x27) reply[3] = reply[0] == 0 ? read : 0;
                 if (failure == 7) reply[2] = 0; // Malformed accepted attachment receipt.
             }
+            if (failure >= 8 && failure <= 10) {
+                // Contradictory extended rejection with a valid completion
+                // marker: each payload field must be checked independently.
+                assert(q->op == 0x27 || q->op == 0x28);
+                assert(q->out_buf_len == (q->op == 0x27 ? 20u : 16u));
+                assert(failure != 10 || q->op == 0x27);
+                reply[0] = 1;
+                reply[1] = failure == 8 ? 1u : 0u;
+                reply[2] = failure == 9 ? 1u : 0u;
+                if (q->op == 0x27) reply[3] = failure == 10 ? 1u : 0u;
+            }
             reply[footer] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
             if (q->op == 0x2a && (!failure || failure == 6)) (void)native_framebuffer_bind(slot,input[0],input[1]);
             if (q->op == 0x27 && (!failure || failure == 6) && input[1]) {
@@ -4179,6 +4190,78 @@ int main(int argc, char **argv) {
         }
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
                allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-attach-rejected-accepted-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-accepted-rbo") ||
+        !strcmp(argv[1], "image-attach-rejected-container-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-container-rbo") ||
+        !strcmp(argv[1], "image-attach-rejected-zero-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-zero-rbo")) {
+        int texture = strstr(argv[1], "-texture") != NULL;
+        int definite = strstr(argv[1], "-zero-") != NULL;
+        unsigned failure = definite ? 2 : strstr(argv[1], "-accepted-") ? 8 : 9;
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        GLuint name = 17, framebuffer;
+        EGLImageKHR img = image(dpy);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        image_mutation_failure = failure;
+        if (texture)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name, 0);
+        else
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, name);
+        GLenum error = glGetError();
+        assert(eglDestroyImageKHR(dpy, img));
+        if (texture) glDeleteTextures(1, &name);
+        else glDeleteRenderbuffers(1, &name);
+        // Malformed refusal cannot release candidate ownership. Canonical
+        // all-zero rejection must release it, even with a live sharing peer.
+        assert(closes == (unsigned)definite);
+        assert(error == (definite ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        assert(closes == (unsigned)definite);
+        _wpk_gl_destroy_encoder(peer);
+        assert(closes == 1 && eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-delete-rejected-payload-texture") ||
+        !strcmp(argv[1], "image-delete-rejected-payload-rbo")) {
+        int texture = strstr(argv[1], "-texture") != NULL;
+        binding_model = 1;
+        GLuint name = 17;
+        EGLImageKHR img = image(dpy);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        for (unsigned failure = 8; failure <= 10; failure++) {
+            image_mutation_failure = failure;
+            if (texture) glDeleteTextures(1, &name);
+            else glDeleteRenderbuffers(1, &name);
+            assert(glGetError() == GL_INVALID_OPERATION && closes == 0);
+            GLint binding = -1;
+            binding_query_kind = texture ? GL_TEXTURE_BINDING_2D : GL_RENDERBUFFER_BINDING;
+            glGetIntegerv(binding_query_kind, &binding);
+            binding_query_kind = 0;
+            assert(binding == (GLint)name);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && closes == 1);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
         return 0;
     }

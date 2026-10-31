@@ -15176,3 +15176,22 @@ These fixtures are not normal guest, three-engine, browser-memory or POSIX
 acceptance. R3 observed no such runtime failure, and no speed claim follows.
 Evidence in the mutable checkout:
 `.context/shared-mapping-boundary-failure-candidate-r1/HANDOFF.md`.
+
+
+### Validate contradictory container rejections, 2026-10-31
+
+Extended container receipts now treat rejected status1 as definite refusal
+only when every payload word is zero, as the published protocol requires.
+A valid-footer reply with nonzero accepted/container data remains indeterminate
+and retains the existing attachment quarantine instead of releasing ownership.
+Canonical all-zero rejection still releases its candidate. Legacy12-byte
+mutation handling is byte-identical; reply layouts/digest are unchanged.
+
+Six malformed reply controls fail before this correction; two canonical-zero
+controls already pass. The resulting default native C UBSan inventory passes
+248/248, including texture/renderbuffer attachment holds across sharing peers,
+all deletion payload fields, correct error reporting and final group cleanup.
+This is source/native-device-double evidence, not compiled Wasm/browser
+integration or performance evidence. The mutable checkout retains exact
+before/after logs and hashes under
+`.context/image-container-rejection-validation-r1/HANDOFF.md`.
