@@ -502,6 +502,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Public globals and private embedding utilities | [#1613](https://github.com/Automattic/kandelo/pull/1613) |
 | Native module graphs and file entrypoints | [#1614](https://github.com/Automattic/kandelo/pull/1614) |
 | Engine call-site records and selected reruns | [#1615](https://github.com/Automattic/kandelo/pull/1615) |
+| Default fatal shutdown with live work | [#1616](https://github.com/Automattic/kandelo/pull/1616) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
