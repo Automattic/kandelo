@@ -69,7 +69,9 @@ Firefox and WebKit; it is synthetic scratch-kernel correctness, not actual
 desktop, normal compiled Rust, memory or performance acceptance. The first
 fresh Sway pair completes all48 moves across both sides. Crossing medians
 are lower, but ranges overlap and the candidate five-terminal maximum is
-higher; sustained-motion and single-terminal benefit remain unproven.
+higher; sustained-motion and single-terminal benefit remain unproven. The user
+subsequently reports5681 feels worse than before. Treat it as a reported
+responsiveness regression; the earlier small sample does not rebut that report.
 Availability was announced before its
 validation completed, and frozen5679/5680 remain unchanged.
 
@@ -14717,3 +14719,77 @@ Evidence: `.context/kms-selector-delta-native-r2/`,
 `.context/kms-selector-delta-native-results-r2/` and
 `.context/kms-selector-delta-native-analysis-r2/`. Report SHA256:
 `50f21307885959f00a6296e2d1636eb9f068028ee1db78b2652e45fecfa48355`.
+
+### Sustained-motion diagnostic admission and transport lead, 2026-10-31
+
+The first new sustained-pointer candidate run stops before measured motion:
+`sustained-pointer-candidate-r1-1031-144650-9fa5` finishes workload1/collector0/
+guard0 in29s. Its actual single-Foot prelude fails the independent96px cursor
+offset calibration. An already-selected single title does not acknowledge
+cursor arrival; deriving the initial offset from that title alone can use stale
+cursor pixels. No sustained block runs. Normal same-page replacement, source/
+product guards and actual module capture complete. This is a diagnostic
+calibration failure, not a measured responsiveness regression or successful
+test. Calibration observations were not retained before this early throw;
+that evidence gap requires a fresh diagnostic, not an asserted cause or change
+to the sealed failed run. Evidence: `.context/desktop-sustained-pointer-prep-r1/`.
+
+Before launching, root runs28 pure Node controls, four Python control groups,
+source-preservation/TypeScript syntax and shell syntax checks. The bounded
+scheduler predeclares121 complete33ms intervals in4s (last nominal3960ms),
+retaining strict actual-end/deadline/cap4 refusal. The original122nd-command
+fixture fails after this refinement; its log is retained and its causal
+actual-end test is corrected before passing. Exact-token observer cleanup,
+pre-motion600ms cost admission and actual1/3/5/recovery stages are independently
+reviewed. Passing pure controls do not prove actual cursor calibration. The
+36-input run seal is
+`b9ac1994d5eba04cdf8aa127acec27f947923ef9b6cf5dfcb49ad78a8b1bb5a4`.
+
+Source review now identifies real pinned wlroots0.20.2 queued-prefix-to-checked-
+query paths: ActiveTexture followed by BindTexture in pass.c231-232; the render
+helper's final queued DisableVertexAttribArray before checked unbind at250-252;
+and GenTexture/GenRenderbuffer/GenFramebuffer followed by checked binds. External
+texture liveness can insert a different query and consume the prefix first.
+These source occurrences do not supply actual browser pair counts. C does not
+emit an extra queued bind after the checked bind, so no duplicate-bind bypass
+is justified. A generic combined ordered ioctl could remove one whole guest
+entry/completion synchronization pair while retaining both native phases,
+checks, error ordering and once-only consumption. Implementation and executable
+validation are pending; no saved CPU or application gain is established.
+Source authority and failure/allocation/alias/forwarding constraints are in
+`.context/focus-query-transport-review-r1/HANDOFF.md`; input manifest SHA256:
+`6ef02379b16d98e267c5d5e7d673f19939fa1ca9ee2a2f3fdb86c01870f9a6fd`.
+
+Fresh sustained R2 retains the failed R1 unchanged and records full calibration
+observations before admission/throw. A separated safe parking point, actual
+pixel arrival, relative move to the first endpoint and independent96px move
+establish the offset without treating an already-selected title as pointer
+acknowledgment. All33 pure Node controls, four Python groups, source preservation
+and syntax checks pass before execution. Its first root admission incorrectly
+expects an absent helper seal instead of the supplied empty UNSEALED placeholder;
+a corrected exact placeholder check precedes passing controls. A second root
+admission expects ROOT_PENDING_REVIEW instead of actual ROOT_PENDING; its shell
+then launches despite that assertion. Job
+`sustained-pointer-candidate-r2-1031-145359-fcec` refuses before collector/browser.
+Pending inputs and this root sequencing mistake remain preserved. Preparation
+and launch are then separate tool calls; no failed check is promoted to pass.
+
+Retry `sustained-pointer-candidate-r2-retry-1031-145458-ed9f` finishes workload1/
+collector0/guard0 in38s. Actual single-terminal calibration succeeds with19
+full-plane observations over953ms and offset(-13,-24). The no-motion observer
+screen obtains16 samples, whose p95/max cost4.1ms exceeds its predeclared4ms
+budget. It refuses before issuing any measured motion. No sustained-response
+or regression magnitude follows. Normal replacement, ownership and source/
+artifact guards complete. Do not relax the budget retrospectively or present
+this failed diagnostic as a passing desktop test. Exact evidence is in
+`.context/desktop-sustained-pointer-prep-r2/`;41-input helper seal SHA256:
+`af86a7136046683f995e8b25230ea33446e988e15b3312d03bf4925e059a7d82`.
+
+The user now reports latest5681 feels worse; their reference preview is not yet
+identified. This supersedes any inference of a reliable benefit from the sparse
+pair, while retaining its raw measurements. Existing previews remain immutable.
+A fresh exact606 operation capture is being prepared to identify any added
+recurring work relative to ce7; its results remain pending. The private-bitmap
+alternative is source preparation only, not executed or adopted. Generic
+compound transport implementation is in progress, without a normal artifact or
+desktop benefit claim. Broad acceptance remains open.
