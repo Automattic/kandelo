@@ -1,5 +1,5 @@
-/* A real POSIX listener for Node client tests. The current JS Server is partial,
- * so using it as the peer would hide failures behind its listening event. */
+/* Independent POSIX listener for Node client tests, so client and server
+ * do not share the same JavaScript socket implementation. */
 #define _POSIX_C_SOURCE 200809L
 #include <arpa/inet.h>
 #include <errno.h>

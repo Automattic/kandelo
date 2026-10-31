@@ -164,6 +164,46 @@ covers real sockets, including cancellation racing immediate completion;
 it does not establish pending external-TCP deadlines on every backend or
 complete TLS handshake lifetime behavior.
 
+## Real TCP listener regression
+
+The net module now owns real nonblocking bind/listen/accept operations.
+Closing a server stops accepts immediately and waits for accepted
+socket descriptors to close before reporting server closure. Socket end
+performs a real write-half shutdown after writes complete; native watch
+references drive ref/unref lifetime. Listener and accepted descriptors
+are close-on-exec.
+
+The focused normal-image regression runs the same IPv4/IPv6 lifetime,
+bind-conflict, port-release and listener-unref programs used by the
+pinned native controls, then tests both families against an independent
+C client. The C program uses actual connect/write/shutdown/read calls.
+It is compiled through the checkout SDK and stamped normally. No guest
+compatibility APIs or upstream sources are substituted.
+
+```sh
+for engine in node chromium firefox webkit; do
+  scripts/dev-shell.sh env WASM_POSIX_RESOLUTION_POLICY=source-only-v1 \
+    WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1" \
+    host/node_modules/.bin/tsx scripts/run-nodejs-tcp-server-tests.ts \
+    "$engine" ".context/node-tcp-new-$engine"
+done
+```
+
+Each host passed all five cases, with no timeout or harness error, at
+implementation bdaf87bbe5125a96687d25dba2329bd4884d308f.
+Reports `.context/node26-tcp-server-HOST/` and
+`.context/node26-tcp-server-audit.json` retain identical source, image,
+peer and runtime identities. The normal targeted build passed; 97
+source/reference checks and the ABI snapshot check passed (ABI 55).
+The complete product rebuild remains deferred.
+
+This is the first real listener implementation, not complete net
+compatibility. Callable constructors, listen overloads and descriptors,
+IPC paths/fd listeners, maxConnections/drop, BlockList, socket options,
+stream encoding/backpressure, timer unref and disposal remain gaps.
+The unchanged networking/DNS inventory must remain a separate report;
+these focused checks never refresh unselected baseline rows.
+
 ## Current evidence and limits
 
 - All 83 source/harness tests pass under the exact native Node 26.13.0
@@ -471,14 +511,79 @@ and runtime identity audit is
 `.context/node26-fatal-upstream-audit.json`. The pre-fix differential
 reproduction is retained at `.context/node26-fatal-exit-red.json`.
 
-The next priorities are real TCP bind/listen/accept and server lifetime,
-DNS/Resolver APIs and accurate capability metadata, socket/stream controls
+Real TCP bind/listen/accept is now implemented and covered above. The
+remaining priorities include DNS/Resolver APIs, accurate capability
+metadata and socket/stream controls
 including Readable.setEncoding, and the remaining process event policies.
 Persistent EventEmitter listener defaults/warnings and assertion
 diagnostics/native key comparisons remain confirmed gaps. Call-site
 source-map remapping and the other partial APIs in
 `packages/registry/node-compat/README.md` also remain incomplete. The
 other 37 upstream categories need configuration and fixture review.
+
+## TCP follow-up: complete networking selection
+
+The unchanged 206-case net/dns filename selection is now complete on all
+four hosts at implementation bdaf87bbe5125a96687d25dba2329bd4884d308f.
+Every host reports 47 pass, 123 fail, 5 upstream skips, 25 unsupported,
+6 timeouts and no harness errors or pending cases. The audit found no
+per-case status/exit-code differences, and verified identical target,
+source, selection, code inputs, image and runtime hashes. Reports remain
+separate at `.context/node26-tcp-net-dns-HOST/`; the combined audit is
+`.context/node26-tcp-net-dns-audit.json`.
+
+The earlier complete 206-case Node report had 17 passes. Across the staged
+fixes, 31 failures became passes; 6 became timeouts, one prior pass now
+fails, one timeout now fails and one failure became an upstream skip.
+The prior pass was test-net-reuseport.js: the old synthetic Server never
+bound a port. It now exposes a real second-bind failure. In the earlier
+47-case call-site selection, seven more failures now pass, while the two
+server-unref cases now correctly report their throwing timer callbacks;
+timer unref remains a no-op. No failing/unsupported/skipped case counts as
+passing compatibility, and unselected baseline rows remain unchanged.
+
+The current product also passed all 15 Node-host core cases and the
+previous real-C-peer client regression on every host, including dialing,
+local binding and cancellation. Full product/POSIX/memory/performance
+gates remain deferred. The public API inventory is still unreviewed;
+these results do not establish complete networking or Node compatibility.
+
+The exact selection is committed at `selections/net-dns.json`, rather
+than an arbitrary-sized sample. It is bound to this source pin. To repeat
+one host through the normal runner, first prepare a small job wrapper:
+
+```sh
+cat > .context/run-net-dns.py <<'PY'
+import json, subprocess, sys
+selection = json.load(open('tests/nodejs/selections/net-dns.json'))
+pin = json.load(open('packages/registry/node-compat/target.json'))
+if (selection['version'], selection['sourceCommit']) != (pin['version'], pin['source']['commit']):
+    raise SystemExit('Update the selection for this source pin')
+raise SystemExit(subprocess.run([
+    'host/node_modules/.bin/tsx', 'scripts/run-nodejs-library-tests.ts',
+    '--host', sys.argv[1], '--out', sys.argv[2], '--timeout', '30',
+    *selection['tests'],
+]).returncode)
+PY
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+scripts/agent-job start -- scripts/dev-shell.sh python3 \
+  .context/run-net-dns.py node .context/net-dns-new-node
+```
+
+Repeat with fresh directories for chromium, firefox and webkit. Collect
+the terminal job result; exit 1 is expected while cases remain failures.
+The initial run is retained, including failures, before any focused replay.
+
+The next failures to close include real interface/capability metadata,
+reuse-port binding, large writes/backpressure, maxConnections/drop,
+callable constructors/overloads, stream encoding and timer reference
+semantics. An independent C getifaddrs probe confirms that the current
+libc interface list has IPv4 but omits the working IPv6 loopback address;
+Node also ignores that existing list. Fix the owning state/API instead
+of overriding upstream capability checks. A mixed fatal callback plus
+throwing exit listener also exposes status 3 where native Node returns 1;
+that exit-status mapping remains a separate follow-up.
 
 ## Draft delivery stack
 
@@ -503,6 +608,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Native module graphs and file entrypoints | [#1614](https://github.com/Automattic/kandelo/pull/1614) |
 | Engine call-site records and selected reruns | [#1615](https://github.com/Automattic/kandelo/pull/1615) |
 | Default fatal shutdown with live work | [#1616](https://github.com/Automattic/kandelo/pull/1616) |
+| Real TCP listeners and half-close | [#1617](https://github.com/Automattic/kandelo/pull/1617) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

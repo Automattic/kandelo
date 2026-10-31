@@ -488,6 +488,10 @@
             return native.socketConnect(host, port, family, localAddress, localPort);
         },
         socketCancelConnect(promise) { return native.socketCancelConnect(promise); },
+        socketListen(...args) { return native.socketListen(...args); },
+        socketAccept(fd) { return native.socketAccept(fd); },
+        socketShutdown(fd) { return native.socketShutdown(fd); },
+        socketRef(handle, referenced) { return native.socketRef(handle, referenced); },
         socketAddress(fd, peer) { return native.socketAddress(fd, peer); },
         socketRead(fd, length) { return native.socketRead(fd, length); },
         socketWrite(fd, bytes) { return native.socketWrite(fd, bytes); },

@@ -60,3 +60,10 @@ fixes should be considered for upstreaming.
   path without draining active timers or I/O, checks unhandled rejections
   after each microtask checkpoint, and reports timer callback exceptions.
   The standalone engine shell keeps its existing drain policy.
+
+- `0033-kandelo-node-tcp-listeners.patch`: adds real nonblocking POSIX
+  bind/listen/accept, write-half shutdown and native operation reference
+  control. Listener and accepted descriptors are close-on-exec; failures
+  close untransferred descriptors. The shared net module owns overloads,
+  DNS, public errors and server/socket lifetime. Existing kernel calls and
+  ABI are used without a host or demo-specific networking path.

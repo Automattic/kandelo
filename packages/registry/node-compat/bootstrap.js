@@ -3953,7 +3953,7 @@ const net = (() => {
     }
     _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}) {
         const options = normalizeOptions(rawOptions);
-        let done = false, active = null, timer = null, destinations = [], current = 0;
+        let done = false, active = null, timer = null, destinations = [], current = 0, referenced = true;
         let multiple = false, lookupCalled = false;
         const errors = [];
         let resolveResult, rejectResult;
@@ -3988,6 +3988,7 @@ const net = (() => {
             try { pending = nat.socketConnect(address, options.port, family, options.localAddress, options.localPort); }
             catch (error) { return fail(error); }
             active = pending;
+            if (!referenced) nat.socketRef(pending, false);
             pending.then(fd => {
                 if (done || active !== pending) { nat.socketClose(fd); return; }
                 active = null; done = true; cleanup();
@@ -4058,6 +4059,7 @@ const net = (() => {
         }
         return {
             promise,
+            ref(value) { referenced = value; if (active) nat.socketRef(active, value); },
             cancel(error = connectError({ code: 'ECANCELED', errno: -125 }, options.host, options.port)) { fail(error); },
             start() {
                 if (done) return;
@@ -4090,6 +4092,31 @@ const net = (() => {
             this.localAddress = undefined;
             this.localPort = undefined;
             this._connectOperation = null;
+            this._referenced = true;
+            this.allowHalfOpen = !!options?.allowHalfOpen;
+            this.destroyed = false;
+            this.on('end', () => {
+                if (!this.allowHalfOpen) queueMicrotask(() => {
+                    if (!this._socketDestroyed && !this._writableState.ending) this.end();
+                });
+                this._maybeCloseSocket();
+            });
+            this.on('finish', () => this._maybeCloseSocket());
+        }
+
+        _adoptFd(fd) {
+            this._fd = fd;
+            const peer = nat.socketAddress(fd, true), local = nat.socketAddress(fd);
+            this.remoteAddress = peer.address; this.remoteFamily = peer.family; this.remotePort = peer.port;
+            this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
+        }
+        _maybeCloseSocket() {
+            if (this._readableState.ended && this._writableState.ended) this.destroy();
+        }
+        _final(cb) {
+            if (this.connecting) { this.once('connect', () => this._final(cb)); return; }
+            try { nat.socketShutdown(this._fd); cb(); }
+            catch (reason) { cb(connectError(reason, this.remoteAddress, this.remotePort, 'shutdown')); }
         }
 
         connect(...args) {
@@ -4104,16 +4131,13 @@ const net = (() => {
                 else this.emit(event, ...values);
             });
             this._connectOperation = operation;
+            operation.ref(this._referenced);
             this.connecting = true;
             operation.promise.then(({ fd }) => {
                 if (this._socketDestroyed || this._connectOperation !== operation) { nat.socketClose(fd); return; }
                 this._connectOperation = null;
-                this._fd = fd;
-                try {
-                    const peer = nat.socketAddress(fd, true), local = nat.socketAddress(fd);
-                    this.remoteAddress = peer.address; this.remoteFamily = peer.family; this.remotePort = peer.port;
-                    this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
-                } catch (error) { this.destroy(error); return; }
+                try { this._adoptFd(fd); }
+                catch (error) { this.destroy(error); return; }
                 this.connecting = false;
                 this.emit('connect');
                 if (this._socketDestroyed) return;
@@ -4137,7 +4161,9 @@ const net = (() => {
         _scheduleRead() {
             if (this._fd < 0 || this._socketDestroyed || this._reading) return;
             this._reading = true;
-            nat.socketRead(this._fd, 64 * 1024).then(
+            const pending = nat.socketRead(this._fd, 64 * 1024);
+            if (!this._referenced) nat.socketRef(this._fd, false);
+            pending.then(
                 (ab) => {
                     this._reading = false;
                     if (this._socketDestroyed) return;
@@ -4164,6 +4190,7 @@ const net = (() => {
                 return;
             }
             nat.socketWrite(this._fd, buf).then(() => cb(null), cb);
+            if (!this._referenced) nat.socketRef(this._fd, false);
         }
 
         _flushWriteQueue() {
@@ -4171,12 +4198,15 @@ const net = (() => {
             this._writeQueue = [];
             for (const { buf, cb } of q) {
                 nat.socketWrite(this._fd, buf).then(() => cb(null), cb);
+                if (!this._referenced) nat.socketRef(this._fd, false);
             }
         }
 
         destroy(err) {
             if (this._socketDestroyed) return this;
             this._socketDestroyed = true;
+            this.destroyed = true;
+            this.readable = false; this.writable = false;
             this.connecting = false;
             const operation = this._connectOperation;
             this._connectOperation = null;
@@ -4187,6 +4217,7 @@ const net = (() => {
             }
             for (const { cb } of this._writeQueue) cb(err || new Error('socket destroyed'));
             this._writeQueue = [];
+            this._onServerSocketClose?.(); this._onServerSocketClose = null;
             queueMicrotask(() => {
                 if (err) this.emit('error', err);
                 this.emit('close', !!err);
@@ -4194,35 +4225,127 @@ const net = (() => {
             return this;
         }
 
+        resume() { super.resume(); this._scheduleRead(); return this; }
         setEncoding(enc) { this._encoding = enc; return this; }
         setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
         address() { return this._fd < 0 ? {} : nat.socketAddress(this._fd); }
-        ref() { return this; }
-        unref() { return this; }
+        ref() { this._referenced = true; this._connectOperation?.ref(true); if (this._fd >= 0) nat.socketRef(this._fd, true); return this; }
+        unref() { this._referenced = false; this._connectOperation?.ref(false); if (this._fd >= 0) nat.socketRef(this._fd, false); return this; }
     }
 
-    /* Server is still a stub — Phase 3 ships client sockets only. */
+    // Listeners own real kernel fds. A close stops accept immediately and
+    // waits for accepted sockets before reporting the server's close event.
     class Server extends events.EventEmitter {
         constructor(options, connectionListener) {
             super();
             if (typeof options === 'function') { connectionListener = options; options = {}; }
+            options ??= {};
+            this.allowHalfOpen = !!options.allowHalfOpen;
+            this.pauseOnConnect = !!options.pauseOnConnect;
+            this._fd = -1; this._connections = 0; this._generation = 0;
+            this._referenced = true; this._closing = false;
+            this.listening = false;
             if (connectionListener) this.on('connection', connectionListener);
         }
-        listen(port, host, cb) {
-            if (typeof host === 'function') { cb = host; host = '0.0.0.0'; }
-            if (typeof port === 'function') { cb = port; port = 0; }
-            this._port = port;
-            this._host = host || '0.0.0.0';
+        listen(...args) {
+            if (this._fd >= 0 || this._opening) throw argumentError('ERR_SERVER_ALREADY_LISTEN', 'Listen method has been called more than once without closing.');
+            const [options, cb] = normalizeArgs(args);
+            for (const option of ['path', 'fd', 'blockList']) {
+                if (options[option] != null) throw argumentError('ERR_NOT_IMPLEMENTED', 'net.Server ' + option + ' is not implemented');
+            }
+            options.port ??= 0;
+            const port = Number(options.port);
+            if (!['number', 'string'].includes(typeof options.port) ||
+                typeof options.port === 'string' && !options.port.trim() ||
+                !Number.isInteger(port) || port < 0 || port > 65535)
+                throw argumentError('ERR_SOCKET_BAD_PORT', 'Port should be >= 0 and < 65536. Received ' + String(options.port), true);
+            let host = options.host;
+            if (host != null && typeof host !== 'string') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "host" argument must be of type string');
+            if (host?.includes('\0')) throw argumentError('ERR_INVALID_ARG_VALUE', 'Host must not contain null bytes');
+            const backlog = options.backlog ?? (typeof args[1] === 'number' ? args[1] : typeof args[2] === 'number' ? args[2] : 511);
+            if (!Number.isInteger(backlog) || backlog < -2147483648 || backlog > 2147483647)
+                throw argumentError('ERR_OUT_OF_RANGE', 'The "backlog" argument must be a signed 32-bit integer', true);
+            const ipv6Only = options.ipv6Only === undefined ? false : boolean(options.ipv6Only, 'options.ipv6Only');
+            const reusePort = options.reusePort === undefined ? false : boolean(options.reusePort, 'options.reusePort');
+            const signal = options.signal;
+            if (signal != null && typeof signal.addEventListener !== 'function') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "options.signal" property must be an AbortSignal');
             if (cb) this.once('listening', cb);
-            queueMicrotask(() => this.emit('listening'));
+            const generation = ++this._generation;
+            this._opening = true; this._closing = false;
+            const fail = reason => {
+                if (this._generation !== generation) return;
+                this._opening = false;
+                this._abortCleanup?.(); this._abortCleanup = null;
+                queueMicrotask(() => this.emit('error', connectError(reason, host || '::', port, 'listen')));
+            };
+            const bind = (address, family) => {
+                if (this._generation !== generation) return;
+                let fd;
+                try { fd = nat.socketListen(address, port, family, backlog || 511, ipv6Only, reusePort); }
+                catch (reason) { fail(reason); return; }
+                this._fd = fd; this._opening = false; this.listening = true;
+                this._accept(generation);
+                queueMicrotask(() => {
+                    if (this._generation === generation && this.listening) this.emit('listening');
+                });
+            };
+            if (signal) {
+                const abort = () => this.close();
+                this._abortCleanup = () => signal.removeEventListener('abort', abort);
+                if (signal.aborted) { queueMicrotask(abort); return this; }
+                signal.addEventListener('abort', abort, { once: true });
+            }
+            host ||= '::';
+            const family = isIP(host);
+            if (family) bind(host, family);
+            else _nodeDnsLookup.lookup(host, (error, address, resolvedFamily) => error ? fail(error) : bind(address, resolvedFamily));
             return this;
         }
-        address() { return { address: this._host, port: this._port, family: 'IPv4' }; }
-        close(cb) { if (cb) cb(); return this; }
-        ref() { return this; }
-        unref() { return this; }
+        _accept(generation) {
+            if (this._fd < 0 || this._generation !== generation) return;
+            const pending = nat.socketAccept(this._fd);
+            if (!this._referenced) nat.socketRef(this._fd, false);
+            pending.then(fd => {
+                if (this._fd < 0 || this._generation !== generation) { nat.socketClose(fd); return; }
+                const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
+                try { socket._adoptFd(fd); }
+                catch (error) { socket.destroy(); this.emit('error', error); return; }
+                socket.server = this;
+                this._connections++;
+                socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
+                // Arm the next accept before user callbacks can close/relisten.
+                this._accept(generation);
+                this.emit('connection', socket);
+                if (!this.pauseOnConnect) socket._scheduleRead();
+            }, reason => {
+                if (this._fd >= 0 && this._generation === generation) this.emit('error', connectError(reason, undefined, undefined, 'accept'));
+            });
+        }
+        address() { return this._fd < 0 ? null : nat.socketAddress(this._fd); }
+        getConnections(cb) { queueMicrotask(() => cb(null, this._connections)); return this; }
+        close(cb) {
+            const running = this._fd >= 0 || this._opening;
+            if (cb) this.once('close', () => {
+                let error;
+                if (!running) { error = new Error('Server is not running.'); error.code = 'ERR_SERVER_NOT_RUNNING'; }
+                cb(error);
+            });
+            this._generation++; this._opening = false;
+            this.listening = false; this._closing = true;
+            this._abortCleanup?.(); this._abortCleanup = null;
+            if (this._fd >= 0) { const fd = this._fd; this._fd = -1; nat.socketClose(fd); }
+            this._maybeClose();
+            return this;
+        }
+        _maybeClose() {
+            if (!this._closing || this._connections !== 0) return;
+            this._closing = false;
+            queueMicrotask(() => this.emit('close'));
+        }
+        ref() { this._referenced = true; if (this._fd >= 0) nat.socketRef(this._fd, true); return this; }
+        unref() { this._referenced = false; if (this._fd >= 0) nat.socketRef(this._fd, false); return this; }
     }
 
     return {
