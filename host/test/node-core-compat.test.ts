@@ -7,6 +7,7 @@ import { bufferValidationSource } from "./fixtures/node-buffer-validation";
 import { nodeFileSyncCommand } from "./fixtures/node-file-sync";
 import { nodeProcessExitCommand, nodeProcessExitExpected } from "./fixtures/node-process-exit";
 import { nodeSpawnPathCommand, nodeSpawnPathExpected } from "./fixtures/node-spawn-path";
+import { nodeStdinDecodingCommand } from "./fixtures/node-stdin-decoding";
 import { nodeStdinCommand } from "./fixtures/node-stdin";
 import { nodeUrlCommand } from "./fixtures/node-url";
 import { nodeWebStreamsCommand } from "./fixtures/node-web-streams";
@@ -45,6 +46,7 @@ const cases: Array<[string, string, readonly string[]]> = [
   ["exit-code absence and exit listeners", nodeProcessExitCommand, nodeProcessExitExpected],
   ["stdin bytes, EOF and reader lifetime", nodeStdinCommand, ["stdin-eof:[]", "stdin-eof:[68656c6c6f]", "stdin-pipe:[hello]", "stdin-pause-exit-ok", "stdin-unref-exit-ok", "stdin-resume-exit-ok", "stdin-ref-exit-ok"]],
   ["child PATH, working directories and chmod", nodeSpawnPathCommand, nodeSpawnPathExpected],
+  ["streaming stdin decoding and EOF", nodeStdinDecodingCommand, ["node-stdin-decoding-ok"]],
   ["WHATWG URL validation and mutation", nodeUrlCommand, ["node-url-ok"]],
   ["pull-based Web Streams and cancellation", nodeWebStreamsCommand, ["node-web-streams-ok"]],
 ];

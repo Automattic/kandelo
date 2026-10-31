@@ -23,8 +23,14 @@ Export presence is not implementation coverage. In particular:
 - Filesystem, process, Buffer and URL regressions have targeted source and
   guest fixtures. Windows file URL options, legacy URL helpers and complete
   filesystem argument/error validation remain incomplete.
-- Streams, Fetch body behavior, text decoding and process lifecycle need
-  broader upstream coverage. Eval shutdown differs from file entry points.
+- The shared source has streaming UTF-8/UTF-16 decoding, Windows-1252,
+  BOM/fatal handling, complete UTF-8 encodeInto writes, and Node-specific
+  StringDecoder buffering/flush behavior. Source/native comparisons pass;
+  rebuilt guest integration is still deferred. Other legacy TextDecoder
+  charsets and custom inspection remain gaps. Buffer's non-UTF8 encoding
+  APIs are still partial.
+- Streams, Fetch body behavior and process lifecycle need broader upstream
+  coverage. Eval shutdown differs from file entry points.
 - `assert`/`assert/strict` and `util.isDeepStrictEqual` have known false
   positives; the upstream harness refuses baseline counts until its
   adversarial assertion readiness check succeeds.

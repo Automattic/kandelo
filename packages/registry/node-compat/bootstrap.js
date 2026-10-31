@@ -14,100 +14,274 @@ import * as _nodeNative from 'qjs:node';
 // ============================================================
 
 if (typeof globalThis.TextEncoder === 'undefined') {
-    globalThis.TextEncoder = class TextEncoder {
-        get encoding() { return 'utf-8'; }
-        encode(str) {
-            if (typeof str !== 'string') str = String(str);
-            const bytes = [];
-            for (let i = 0; i < str.length; i++) {
-                let code = str.charCodeAt(i);
-                if (code >= 0xD800 && code <= 0xDBFF && i + 1 < str.length) {
-                    const low = str.charCodeAt(i + 1);
-                    if (low >= 0xDC00 && low <= 0xDFFF) {
-                        code = ((code - 0xD800) << 10) + (low - 0xDC00) + 0x10000;
-                        i++;
-                    }
-                }
-                if (code < 0x80) {
-                    bytes.push(code);
-                } else if (code < 0x800) {
-                    bytes.push(0xC0 | (code >> 6), 0x80 | (code & 0x3F));
-                } else if (code < 0x10000) {
-                    bytes.push(0xE0 | (code >> 12), 0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F));
-                } else {
-                    bytes.push(0xF0 | (code >> 18), 0x80 | ((code >> 12) & 0x3F),
-                               0x80 | ((code >> 6) & 0x3F), 0x80 | (code & 0x3F));
-                }
-            }
-            return new Uint8Array(bytes);
+    const ByteArray = Uint8Array;
+    const charCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
+    const typedArray = Object.getPrototypeOf(ByteArray.prototype);
+    const typedArrayName = Object.getOwnPropertyDescriptor(typedArray, Symbol.toStringTag).get;
+    const byteLength = Object.getOwnPropertyDescriptor(typedArray, 'byteLength').get;
+    function pointAt(source, index) {
+        const first = charCodeAt(source, index);
+        if (first < 0xd800 || first > 0xdfff) return first;
+        const second = charCodeAt(source, index + 1);
+        if (first <= 0xdbff && second >= 0xdc00 && second <= 0xdfff) {
+            return 0x10000 + ((first - 0xd800) << 10) + second - 0xdc00;
         }
-        encodeInto(str, dest) {
-            const encoded = this.encode(str);
-            const len = Math.min(encoded.length, dest.length);
-            dest.set(encoded.subarray(0, len));
-            return { read: str.length, written: len };
+        return 0xfffd;
+    }
+    function width(point) { return point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4; }
+    function write(source, target) {
+        const capacity = byteLength.call(target);
+        let read = 0, written = 0;
+        while (read < source.length) {
+            const point = pointAt(source, read), size = width(point);
+            if (written + size > capacity) break;
+            if (size === 1) target[written++] = point;
+            else {
+                if (size === 2) target[written++] = 0xc0 | (point >> 6);
+                else if (size === 3) {
+                    target[written++] = 0xe0 | (point >> 12);
+                    target[written++] = 0x80 | ((point >> 6) & 0x3f);
+                } else {
+                    target[written++] = 0xf0 | (point >> 18);
+                    target[written++] = 0x80 | ((point >> 12) & 0x3f);
+                    target[written++] = 0x80 | ((point >> 6) & 0x3f);
+                }
+                target[written++] = 0x80 | (point & 0x3f);
+            }
+            read += point > 0xffff ? 2 : 1;
+        }
+        return { read, written };
+    }
+    globalThis.TextEncoder = class TextEncoder {
+        #encoding = 'utf-8';
+        get encoding() { return this.#encoding; }
+        #encode(input) {
+            const source = `${input}`;
+            let length = 0;
+            for (let i = 0; i < source.length;) {
+                const point = pointAt(source, i);
+                length += width(point);
+                i += point > 0xffff ? 2 : 1;
+            }
+            const bytes = new ByteArray(length);
+            write(source, bytes);
+            return bytes;
+        }
+        encode(input = '') { return this.#encode(input); }
+        #encodeInto(source, destination) { return write(source, _nodeBufferSourceBytes(destination)); }
+        encodeInto(source, destination) {
+            if (typeof source !== 'string' || typedArrayName.call(destination) !== 'Uint8Array') {
+                const error = new TypeError('encodeInto requires a string source and Uint8Array destination');
+                error.code = 'ERR_INVALID_ARG_TYPE';
+                throw error;
+            }
+            return this.#encodeInto(source, destination);
         }
     };
+    for (const name of ['encoding', 'encode', 'encodeInto']) {
+        Object.defineProperty(globalThis.TextEncoder.prototype, name, { enumerable: true });
+    }
+    Object.defineProperty(globalThis.TextEncoder.prototype, Symbol.toStringTag, { value: 'TextEncoder', configurable: true });
+}
+
+function _nodeBufferSourceBytes(input, allowRaw = false) {
+    const typedArray = Object.getPrototypeOf(Uint8Array.prototype);
+    if (ArrayBuffer.isView(input)) {
+        let buffer, offset, length;
+        try {
+            buffer = Object.getOwnPropertyDescriptor(typedArray, 'buffer').get.call(input);
+            offset = Object.getOwnPropertyDescriptor(typedArray, 'byteOffset').get.call(input);
+            length = Object.getOwnPropertyDescriptor(typedArray, 'byteLength').get.call(input);
+        } catch (_) {
+            buffer = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer').get.call(input);
+            try {
+                offset = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset').get.call(input);
+                length = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength').get.call(input);
+            } catch (_) { return new Uint8Array(0); } // Detached/out-of-bounds views are empty to Node's decoder.
+        }
+        return length === 0 ? new Uint8Array(0) : new Uint8Array(buffer, offset, length);
+    }
+    if (allowRaw) for (const constructor of [ArrayBuffer, typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null]) {
+        if (!constructor) continue;
+        let length;
+        try { length = Object.getOwnPropertyDescriptor(constructor.prototype, 'byteLength').get.call(input); }
+        catch (_) { continue; }
+        return length === 0 ? new Uint8Array(0) : new Uint8Array(input);
+    }
+    const received = input == null ? String(input) : typeof input === 'object'
+        ? 'an instance of ' + (Array.isArray(input) ? 'Array' : 'Object')
+        : 'type ' + typeof input + ' (' + String(input) + ')';
+    const accepted = allowRaw ? 'ArrayBuffer, SharedArrayBuffer, or ArrayBufferView' : 'Buffer, TypedArray, or DataView';
+    const error = new TypeError('The "' + (allowRaw ? 'input' : 'buf') + '" argument must be an instance of ' + accepted + '. Received ' + received);
+    error.code = 'ERR_INVALID_ARG_TYPE';
+    throw error;
 }
 
 if (typeof globalThis.TextDecoder === 'undefined') {
-    // Build the result by batching codepoints into 8K chunks and joining via
-    // String.fromCharCode.apply. The naive `result += String.fromCharCode(c)`
-    // loop produces a per-character string rope; JS_ToCStringLen (invoked
-    // when C reads the string, e.g. native JSON.parse on a 38 MB npm
-    // packument) must linearize that rope into a flat UTF-16 buffer and
-    // SIGABRTs from heap fragmentation on multi-MB inputs.
-    // Array.prototype.join('') is unsafe — QJS-NG zeros leading parts when
-    // joining many large 8-bit strings.
-    const _CHUNK = 8192;
+    const states = new WeakMap();
+    const bufferOf = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), 'buffer').get;
+    const sharedLength = typeof SharedArrayBuffer === 'function'
+        ? Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength').get : null;
+    function isShared(bytes) {
+        if (!sharedLength) return false;
+        try { sharedLength.call(bufferOf.call(bytes)); return true; } catch (_) { return false; }
+    }
+    const labels = Object.create(null);
+    for (const [encoding, aliases] of [
+        ['utf-8', 'unicode-1-1-utf-8 unicode11utf8 unicode20utf8 utf-8 utf8 x-unicode20utf8'],
+        ['utf-16le', 'csunicode iso-10646-ucs-2 ucs-2 unicode unicodefeff utf-16 utf-16le'],
+        ['utf-16be', 'unicodefffe utf-16be'],
+        ['windows-1252', 'ansi_x3.4-1968 ascii cp1252 cp819 csisolatin1 ibm819 iso-8859-1 iso-ir-100 iso8859-1 iso88591 iso_8859-1 iso_8859-1:1987 l1 latin1 us-ascii windows-1252 x-cp1252'],
+    ]) for (const label of aliases.split(' ')) labels[label] = encoding;
+    const windows1252 = [0x20ac,0x81,0x201a,0x192,0x201e,0x2026,0x2020,0x2021,
+        0x2c6,0x2030,0x160,0x2039,0x152,0x8d,0x17d,0x8f,
+        0x90,0x2018,0x2019,0x201c,0x201d,0x2022,0x2013,0x2014,
+        0x2dc,0x2122,0x161,0x203a,0x153,0x9d,0x17e,0x178];
+    function invalidType(message) {
+        const error = new TypeError(message);
+        error.code = 'ERR_INVALID_ARG_TYPE';
+        return error;
+    }
+    function stateOf(receiver) {
+        const state = states.get(receiver);
+        if (state) return state;
+        const error = new TypeError('Value of this must be of type TextDecoder');
+        error.code = 'ERR_INVALID_THIS';
+        throw error;
+    }
+    function validateOptions(options) {
+        if (options != null && typeof options !== 'object') throw invalidType('The options argument must be an object');
+    }
+    function reset(state) {
+        state.bomSeen = false;
+        state.needed = state.seen = state.point = 0;
+        state.lower = 0x80; state.upper = 0xbf;
+        state.byte = state.surrogate = undefined;
+    }
     globalThis.TextDecoder = class TextDecoder {
-        constructor(encoding) {
-            this._encoding = (encoding || 'utf-8').toLowerCase();
-        }
-        get encoding() { return this._encoding; }
-        decode(input, options) {
-            if (!input) return '';
-            const bytes = input instanceof Uint8Array ? input :
-                          input instanceof ArrayBuffer ? new Uint8Array(input) :
-                          new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-            // Native UTF-8 → JS string in one pass. The JS fallback below
-            // does the same but takes ~10 s on a 38 MB npm packument.
-            if (typeof _nodeNative.decodeUtf8 === 'function') {
-                return _nodeNative.decodeUtf8(bytes);
+        constructor(label = 'utf-8', options) {
+            const labelText = `${label}`;
+            validateOptions(options);
+            const name = labelText
+                .replace(/^[\t\n\f\r ]+|[\t\n\f\r ]+$/g, '').toLowerCase();
+            if (!labels[name]) {
+                const error = new RangeError('The encoding label provided is invalid: ' + name);
+                error.code = 'ERR_ENCODING_NOT_SUPPORTED';
+                throw error;
             }
-            let result = '';
-            let chunk = [];
-            let i = 0;
-            while (i < bytes.length) {
-                let code;
-                if (bytes[i] < 0x80) {
-                    code = bytes[i++];
-                } else if ((bytes[i] & 0xE0) === 0xC0) {
-                    code = ((bytes[i++] & 0x1F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF0) === 0xE0) {
-                    code = ((bytes[i++] & 0x0F) << 12) | ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else if ((bytes[i] & 0xF8) === 0xF0) {
-                    code = ((bytes[i++] & 0x07) << 18) | ((bytes[i++] & 0x3F) << 12) |
-                           ((bytes[i++] & 0x3F) << 6) | (bytes[i++] & 0x3F);
-                } else {
-                    code = 0xFFFD;
-                    i++;
+            const state = { encoding: labels[name], fatal: !!options?.fatal,
+                ignoreBOM: !!options?.ignoreBOM, stream: false };
+            reset(state);
+            states.set(this, state);
+        }
+        decode(input = undefined, options) {
+            const state = stateOf(this);
+            validateOptions(options);
+            const bytes = input === undefined ? new Uint8Array(0) : _nodeBufferSourceBytes(input, true);
+            if (!state.stream) reset(state);
+            state.stream = !!options?.stream;
+            // Native conversion is valid only for a complete UTF-8 span with no
+            // pending sequence. Incomplete or malformed input needs the state
+            // machine below; the adapter's one-shot converter cannot retain it.
+            // Shared spans may change between validation and conversion, so
+            // decode each observed byte directly instead of trusting that check.
+            if (state.encoding === 'utf-8' && state.needed === 0 &&
+                typeof _nodeNative.decodeUtf8 === 'function' && !isShared(bytes) && _bufferIsUtf8(bytes)) {
+                let result = _nodeNative.decodeUtf8(bytes);
+                if (!state.bomSeen && result.length) {
+                    state.bomSeen = true;
+                    if (!state.ignoreBOM && result.charCodeAt(0) === 0xfeff) result = result.slice(1);
                 }
-                if (code > 0xFFFF) {
-                    code -= 0x10000;
-                    chunk.push(0xD800 + (code >> 10), 0xDC00 + (code & 0x3FF));
-                } else {
-                    chunk.push(code);
+                return result;
+            }
+            const parts = [];
+            let units = [];
+            function emit(point) {
+                if (!state.bomSeen) {
+                    state.bomSeen = true;
+                    if (!state.ignoreBOM && point === 0xfeff) return;
                 }
-                if (chunk.length >= _CHUNK) {
-                    result += String.fromCharCode.apply(null, chunk);
-                    chunk = [];
+                if (point > 0xffff) {
+                    point -= 0x10000;
+                    units.push(0xd800 + (point >> 10), 0xdc00 + (point & 0x3ff));
+                } else units.push(point);
+                if (units.length >= 8192) { parts.push(String.fromCharCode(...units)); units = []; }
+            }
+            function error() {
+                if (state.fatal) {
+                    state.stream = false;
+                    const failure = new TypeError('The encoded data was not valid for encoding ' + state.encoding);
+                    failure.code = 'ERR_ENCODING_INVALID_ENCODED_DATA';
+                    throw failure;
+                }
+                emit(0xfffd);
+            }
+            if (state.encoding === 'utf-8') {
+                for (let i = 0; i < bytes.length; i++) {
+                    const byte = bytes[i];
+                    if (state.needed === 0) {
+                        if (byte <= 0x7f) { emit(byte); continue; }
+                        if (byte >= 0xc2 && byte <= 0xdf) { state.needed = 1; state.point = byte & 0x1f; }
+                        else if (byte >= 0xe0 && byte <= 0xef) {
+                            state.needed = 2; state.point = byte & 0xf;
+                            if (byte === 0xe0) state.lower = 0xa0;
+                            if (byte === 0xed) state.upper = 0x9f;
+                        } else if (byte >= 0xf0 && byte <= 0xf4) {
+                            state.needed = 3; state.point = byte & 7;
+                            if (byte === 0xf0) state.lower = 0x90;
+                            if (byte === 0xf4) state.upper = 0x8f;
+                        } else error();
+                    } else if (byte < state.lower || byte > state.upper) {
+                        state.needed = state.seen = state.point = 0;
+                        state.lower = 0x80; state.upper = 0xbf;
+                        error();
+                        i--; // An invalid continuation may start a new sequence.
+                    } else {
+                        state.lower = 0x80; state.upper = 0xbf;
+                        state.point = (state.point << 6) | (byte & 0x3f);
+                        if (++state.seen === state.needed) {
+                            emit(state.point);
+                            state.needed = state.seen = state.point = 0;
+                        }
+                    }
+                }
+                if (!state.stream && state.needed !== 0) { state.needed = 0; error(); }
+            } else if (state.encoding === 'windows-1252') {
+                for (const byte of bytes) emit(byte >= 0x80 && byte <= 0x9f ? windows1252[byte - 0x80] : byte);
+            } else {
+                for (const byte of bytes) {
+                    if (state.byte === undefined) { state.byte = byte; continue; }
+                    const unit = state.encoding === 'utf-16le' ? state.byte | (byte << 8) : (state.byte << 8) | byte;
+                    state.byte = undefined;
+                    if (state.surrogate !== undefined) {
+                        const lead = state.surrogate;
+                        state.surrogate = undefined;
+                        if (unit >= 0xdc00 && unit <= 0xdfff) {
+                            emit(0x10000 + ((lead - 0xd800) << 10) + unit - 0xdc00);
+                            continue;
+                        }
+                        error();
+                    }
+                    if (unit >= 0xd800 && unit <= 0xdbff) state.surrogate = unit;
+                    else if (unit >= 0xdc00 && unit <= 0xdfff) error();
+                    else emit(unit);
+                }
+                if (!state.stream && (state.byte !== undefined || state.surrogate !== undefined)) {
+                    state.byte = state.surrogate = undefined;
+                    error();
                 }
             }
-            if (chunk.length > 0) result += String.fromCharCode.apply(null, chunk);
-            return result;
+            if (units.length) parts.push(String.fromCharCode(...units));
+            return parts.join('');
         }
+        get encoding() { return stateOf(this).encoding; }
+        get fatal() { return stateOf(this).fatal; }
+        get ignoreBOM() { return stateOf(this).ignoreBOM; }
     };
+    for (const name of ['decode', 'encoding', 'fatal', 'ignoreBOM']) {
+        Object.defineProperty(globalThis.TextDecoder.prototype, name, { enumerable: true });
+    }
+    Object.defineProperty(globalThis.TextDecoder.prototype, Symbol.toStringTag, { value: 'TextDecoder', configurable: true });
 }
 
 // Some JavaScript engine parsers are very slow on multi-MB npm packuments.
@@ -497,7 +671,7 @@ events.setMaxListeners = function (n, ...emitters) {
 
 const Buffer = (() => {
     const _encoder = new TextEncoder();
-    const _decoder = new TextDecoder();
+    const _decoder = new TextDecoder('utf-8', { ignoreBOM: true });
 
     class Buffer extends Uint8Array {
         // Static factory methods
@@ -1137,15 +1311,16 @@ function _createReadStream(fd) {
         if (bytes.byteLength === 0) {
             ended = true;
             _uninstall();
+            if (_decoder) { const tail = _decoder.end(); if (tail) _emit('data', tail); }
             s.readable = false;
             s.readableEnded = true;
             _emit('end');
             _emit('close');
             return;
         }
-        if (_encoding === 'utf8' || _encoding === 'utf-8') {
-            if (!_decoder) _decoder = new TextDecoder('utf-8', { fatal: false });
-            _emit('data', _decoder.decode(bytes, { stream: true }));
+        if (_decoder) {
+            const text = _decoder.write(bytes);
+            if (text) _emit('data', text);
         } else {
             const copy = Buffer.alloc(bytes.byteLength);
             copy.set(bytes);
@@ -1263,10 +1438,12 @@ function _createReadStream(fd) {
         pause() { _uninstall(); return s; },
         pipe(dest, options) { return stream.Stream.prototype.pipe.call(s, dest, options); },
         unpipe() { return s; },
+        get readableEncoding() { return _decoder ? _decoder.encoding : null; },
         setEncoding(enc) {
-            _encoding = enc;
-            s._encoding = enc;
-            if (enc !== 'utf8' && enc !== 'utf-8') _decoder = null;
+            const decoder = new string_decoder.StringDecoder(enc);
+            _decoder = decoder;
+            _encoding = decoder.encoding;
+            s._encoding = decoder.encoding;
             return s;
         },
         setRawMode(raw) {
@@ -2890,21 +3067,146 @@ const querystring = (() => {
 // string_decoder module
 // ============================================================
 
+// Byte-boundary accounting adapted from Node.js v26.13.0
+// src/string_decoder.cc; WHATWG and Node StringDecoder flush rules differ.
+/*
+Copyright Node.js contributors. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to
+deal in the Software without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
+sell copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+*/
 const string_decoder = (() => {
-    class StringDecoder {
-        constructor(encoding) {
-            this.encoding = (encoding || 'utf8').toLowerCase();
-            this._decoder = new TextDecoder(this.encoding === 'utf-8' ? 'utf-8' : this.encoding);
+    const states = new WeakMap();
+    function characters(bytes, encoding) {
+        if (!bytes.length) return '';
+        if (encoding === 'utf8') return new TextDecoder('utf-8', { ignoreBOM: true }).decode(bytes);
+        if (encoding === 'hex' || encoding === 'base64' || encoding === 'base64url') {
+            const encoded = Buffer.from(bytes).toString(encoding === 'hex' ? 'hex' : 'base64');
+            return encoding === 'base64url' ? encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '') : encoded;
         }
-        write(buf) {
-            if (typeof buf === 'string') return buf;
-            return this._decoder.decode(buf, { stream: true });
+        const parts = [];
+        let units = [];
+        for (let i = 0; i < bytes.length;) {
+            if (encoding === 'utf16le') { units.push(bytes[i] | (bytes[i + 1] << 8)); i += 2; }
+            else units.push(bytes[i++] & (encoding === 'ascii' ? 0x7f : 0xff));
+            if (units.length >= 8192) { parts.push(String.fromCharCode(...units)); units = []; }
         }
-        end(buf) {
-            if (buf) return this.write(buf);
-            return '';
-        }
+        if (units.length) parts.push(String.fromCharCode(...units));
+        return parts.join('');
     }
+    function StringDecoder(encoding) {
+        'use strict';
+        let name = encoding == null ? 'utf8' : encoding;
+        if (typeof name !== 'string') {
+            try { name = String.prototype.valueOf.call(name); } catch (_) { name = undefined; }
+        }
+        if (name !== undefined) {
+            name = name.toLowerCase();
+            if (name === '' || name === 'utf-8') name = 'utf8';
+            if (name === 'utf-16le' || name === 'ucs-2' || name === 'ucs2') name = 'utf16le';
+            if (name === 'binary') name = 'latin1';
+        }
+        if (!['utf8', 'utf16le', 'latin1', 'ascii', 'hex', 'base64', 'base64url'].includes(name)) {
+            const error = new TypeError('Unknown encoding: ' + String(encoding));
+            error.code = 'ERR_UNKNOWN_ENCODING';
+            throw error;
+        }
+        this.encoding = name;
+        states.set(this, { encoding: name, buffered: 0, missing: 0, lastChar: Buffer.alloc(4) });
+    }
+    StringDecoder.prototype.write = function write(buf) {
+        if (typeof buf === 'string') return buf;
+        let bytes = _nodeBufferSourceBytes(buf);
+        const state = states.get(this);
+        if (!state) {
+            const error = new TypeError('Value of this must be of type StringDecoder');
+            error.code = 'ERR_INVALID_THIS';
+            throw error;
+        }
+        const encoding = state.encoding;
+        if (encoding === 'ascii' || encoding === 'latin1' || encoding === 'hex') return characters(bytes, encoding);
+        let prefix = '';
+        if (state.missing) {
+            let take = Math.min(bytes.length, state.missing), interrupted = false;
+            if (encoding === 'utf8') {
+                for (let i = 0; i < take; i++) if ((bytes[i] & 0xc0) !== 0x80) {
+                    take = i;
+                    state.missing = 0;
+                    interrupted = true;
+                    break;
+                }
+            }
+            state.lastChar.set(bytes.subarray(0, take), state.buffered);
+            state.buffered += take;
+            if (!interrupted) state.missing -= take;
+            bytes = bytes.subarray(take);
+            if (!state.missing) {
+                prefix = characters(state.lastChar.subarray(0, state.buffered), encoding);
+                state.buffered = 0;
+            }
+        }
+        if (!bytes.length) return prefix;
+        let buffered = 0, missing = 0;
+        if (encoding === 'utf8' && (bytes[bytes.length - 1] & 0x80)) {
+            for (let i = bytes.length - 1; i >= 0; i--) {
+                buffered++;
+                if ((bytes[i] & 0xc0) === 0x80) {
+                    if (buffered >= 4 || i === 0) { buffered = 0; break; }
+                    continue;
+                }
+                let total = 0;
+                if ((bytes[i] & 0xe0) === 0xc0) total = 2;
+                else if ((bytes[i] & 0xf0) === 0xe0) total = 3;
+                else if ((bytes[i] & 0xf8) === 0xf0) total = 4;
+                if (!total || buffered >= total) buffered = 0;
+                else missing = total - buffered;
+                break;
+            }
+        } else if (encoding === 'utf16le') {
+            if (bytes.length % 2) { buffered = 1; missing = 1; }
+            else if ((bytes[bytes.length - 1] & 0xfc) === 0xd8) { buffered = 2; missing = 2; }
+        } else if (encoding === 'base64' || encoding === 'base64url') {
+            buffered = bytes.length % 3;
+            if (buffered) missing = 3 - buffered;
+        }
+        state.buffered = buffered; state.missing = missing;
+        const length = bytes.length - buffered;
+        if (buffered) state.lastChar.set(bytes.subarray(length));
+        return prefix + characters(bytes.subarray(0, length), encoding);
+    };
+    StringDecoder.prototype.end = function end(buf) {
+        let text = buf === undefined ? '' : this.write(buf);
+        const state = states.get(this);
+        if (state.encoding === 'utf16le' && state.buffered % 2) { state.buffered--; state.missing--; }
+        text += characters(state.lastChar.subarray(0, state.buffered), state.encoding);
+        state.buffered = state.missing = 0;
+        return text;
+    };
+    StringDecoder.prototype.text = function text(buf, offset) {
+        const state = states.get(this);
+        state.buffered = state.missing = 0;
+        return this.write(buf.slice(offset));
+    };
+    Object.defineProperties(StringDecoder.prototype, {
+        lastChar: { configurable: true, enumerable: true, get() { return states.get(this).lastChar; } },
+        lastNeed: { configurable: true, enumerable: true, get() { return states.get(this).missing; } },
+        lastTotal: { configurable: true, enumerable: true, get() { const state = states.get(this); return state.missing + state.buffered; } },
+    });
     return { StringDecoder };
 })();
 
@@ -4409,7 +4711,7 @@ const https = makeHttpModule({
 // ============================================================
 
 // Validate byte input without decoding it: replacement characters would hide
-// malformed UTF-8, and the TextDecoder polyfill does not implement fatal mode.
+// malformed UTF-8. These predicates inspect bytes directly.
 function _bufferInputBytes(input) {
     const typedArrayName = Object.getOwnPropertyDescriptor(
         Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;

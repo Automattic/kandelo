@@ -3,6 +3,7 @@ import { bufferValidationSource } from "../../../host/test/fixtures/node-buffer-
 import { nodeFileSyncCommand } from "../../../host/test/fixtures/node-file-sync";
 import { nodeProcessExitCommand, nodeProcessExitExpected } from "../../../host/test/fixtures/node-process-exit";
 import { nodeSpawnPathCommand, nodeSpawnPathExpected } from "../../../host/test/fixtures/node-spawn-path";
+import { nodeStdinDecodingCommand } from "../../../host/test/fixtures/node-stdin-decoding";
 import { nodeStdinCommand } from "../../../host/test/fixtures/node-stdin";
 import { nodeUrlCommand } from "../../../host/test/fixtures/node-url";
 import { nodeWebStreamsCommand } from "../../../host/test/fixtures/node-web-streams";
@@ -20,6 +21,7 @@ test("base shell implements Node filesystem, process, URL, streams and encoding 
     [nodeProcessExitCommand, nodeProcessExitExpected],
     [nodeStdinCommand, ["stdin-eof:[]", "stdin-eof:[68656c6c6f]", "stdin-pipe:[hello]", "stdin-pause-exit-ok", "stdin-unref-exit-ok", "stdin-resume-exit-ok", "stdin-ref-exit-ok"]],
     [nodeSpawnPathCommand, nodeSpawnPathExpected],
+    [nodeStdinDecodingCommand, ["node-stdin-decoding-ok"]],
     [nodeUrlCommand, ["node-url-ok"]],
     [nodeWebStreamsCommand, ["node-web-streams-ok"]],
   ];
