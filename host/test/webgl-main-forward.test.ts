@@ -610,3 +610,34 @@ it("uses the same checked constant publication for forwarded invalid and indeter
   expect(query.rc).toBe(24);expect([...new Float32Array(query.bytes.buffer,4,4)]).toEqual([1,2,3,4]);
   dispose();
 });
+
+it("preserves queued framebuffer selection and opt-in container receipts across actual forwarding",() => {
+  const worker = new FakeWorker(), gl = Object.assign(new RecordingGl(), {
+    createTexture:() => ({}), bindTexture:(_target:number,_value:object|null) => {},
+    bindFramebuffer:(_target:number,_value:object|null) => {},
+    framebufferTexture2D:(_target:number,_point:number,_textarget:number,_value:object|null,_level:number) => {},
+  });
+  const dispose = setupMainForward(worker,fakeCanvas(gl).canvas,7);
+  const channel = createMainForwardChannel({postMessage:message => worker.fire(message)},7);
+  const command = (op:number,words:number[]) => {
+    const bytes = new Uint8Array(4+4*words.length), view = new DataView(bytes.buffer);
+    view.setUint16(0,op,true); view.setUint16(2,4*words.length,true);
+    words.forEach((word,i) => view.setUint32(4+4*i,word,true)); channel.onSubmit(bytes);
+  };
+  const query = (op:number,words:number[],length:number) => {
+    const result = channel.onQuery!(op,new Uint8Array(new Uint32Array(words).buffer),length);
+    expect(result.rc).toBe(length);
+    return [...new Uint32Array(result.bytes.buffer,result.bytes.byteOffset,length/4)];
+  };
+  try {
+    expect(channel.onCreateContext()).toBe(0);
+    command(O.OP_BIND_TEXTURE,[0x0de1,17]); command(O.OP_BIND_FRAMEBUFFER,[0x8d40,77]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,17,0],12)).toEqual([0,1,0x47514c33]);
+    command(O.OP_BIND_FRAMEBUFFER,[0xdead,92]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,17,0],16)).toEqual([0,1,77,0x47514c33]);
+    expect(query(O.QOP_GET_ERROR,[],4)).toEqual([0x500]);
+    expect(query(O.QOP_IMAGE_OBJECT_DELETE,[1,17],20)).toEqual([0,1,77,77,0x47514c33]);
+    command(O.OP_BIND_FRAMEBUFFER,[0x8d40,0]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,0,0],16)).toEqual([1,0,0,0x47514c33]);
+  } finally { channel.onDestroyContext(); dispose(); }
+});

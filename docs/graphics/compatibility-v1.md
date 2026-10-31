@@ -15087,3 +15087,39 @@ Final metadata SHA256:
 Published5681 remains unchanged and the user's worse-responsiveness report
 remains unresolved. Fresh8b normal products are still building; no5682
 availability claim follows from these tests.
+
+
+### Host-authoritative framebuffer selection candidate, 2026-10-31
+
+The candidate removes the C framebuffer selector mirror. Ordinary binds queue
+existing commands; actual host bind checks, errors and repair remain. Opt-in
+attachment/deletion receipts return the host's selected logical container names
+when C must update ownership. Legacy12-byte replies remain unchanged; the new
+16/20-byte modes stage identity before mutation. C reserves publication storage
+before entry, publishes only validated acceptance, releases proven non-entry
+candidates and retains uncertain effects through existing group ownership.
+Deletion retains unbound/peer container references. An initial reply-allocation
+failure control exposed an over-retained hold; explicit internal query-entry
+classification repairs it without changing the old heap-reply wrapper behavior.
+
+The source checkpoint passes936 WebGL host controls in33files,240 native
+C/UBSan cases,88 shared Rust controls and two actual receipt serialization/
+Program-digest tests. Root reruns host/C after generated imports: same936/240,
+no skipped/unloaded source cases. Canonical own kernel/export generation,
+complete dump-abi output check, standalone resolver reproduction and workaround
+registry checks finish0 in the focused generation job
+`framebuffer-authority-generation-r1-1031-163305-4090`. The existing suspected
+heap-reply workaround remains qualified and unchanged;12entries/39sites agree.
+The complete SDK-dependent ABI/layout wrapper and new normal guest/browser
+integration have not run for this increment.
+
+Program56/host3/GL17/fork21 remain fixed. New Program section
+`gl_image_container_receipts` changes the program contract digest from019c0d77…
+to `cdd38c6387544155c1a25773a0a6f3bcae6a50548bf8e33341c87dfd48075cd8`.
+All previous snapshot sections retain their values; the Program surface
+inventory adds the receipt section. Normal8b products and published previews
+exclude this candidate and cannot be relabeled as its regenerated artifacts.
+The all-product build already in progress remains frozen at8b. No desktop
+speed or syscall-count reduction is claimed from the focused source tests.
+Evidence: `.context/framebuffer-authority-candidate-r1/` and the mutable
+checkout's `.context/framebuffer-authority-generation-r1/` stage logs.

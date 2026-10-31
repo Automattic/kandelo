@@ -5,6 +5,11 @@ export const ABI_VERSION = 56 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+export const GL_QUERY_REPLY_MAGIC = 1196510259 as const;
+export const GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES = 12 as const;
+export const GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES = 16 as const;
+export const GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES = 20 as const;
+
 /* Kandelo's reference instant: the first Kandelo commit's time. Stamped
 * on image files when no time is supplied; never 0, which software
 * reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */

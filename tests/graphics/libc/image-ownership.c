@@ -223,6 +223,7 @@ struct device_slot {
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
+    uint32_t framebuffer_draw, framebuffer_read;
 
     struct {
         GLuint name;
@@ -310,6 +311,8 @@ static unsigned image_failure, image_queries, fail_image_storage, image_pixel_up
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
+static unsigned framebuffer_bind_queries;
+static int fail_alloc_after_image_mutation;
 static EGLImageKHR nested_image_import, nested_image_state;
 static struct wpk_gles_context *close_group_peer;
 static unsigned close_group_reservations;
@@ -463,6 +466,15 @@ static void orphan_image_source(struct device_slot *slot, uint32_t kind, uint32_
 }
 /* Model definite native rejection on both legacy queued binds and checked
  * binding queries so the regression can execute against unchanged sources. */
+/* Actual checked selection, independent of the C encoder's bookkeeping. */
+static int native_framebuffer_bind(struct device_slot *slot, uint32_t target, uint32_t name) {
+    if (target != GL_FRAMEBUFFER && target != 0x8ca9 && target != 0x8ca8) {
+        query_gl_error = GL_INVALID_ENUM; return 0;
+    }
+    if (target != 0x8ca8) slot->framebuffer_draw = name;
+    if (target != 0x8ca9) slot->framebuffer_read = name;
+    return 1;
+}
 static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum target, GLuint name) {
     if (bind_failure == 2) {
         bind_failure = 0;
@@ -825,6 +837,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 at += 4 + len;
                 continue;
             }
+            if (op == OP_BIND_FRAMEBUFFER) (void)native_framebuffer_bind(slot,words[0],words[1]);
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
             if (op == OP_DELETE_BUFFERS)
@@ -1093,12 +1106,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             egl_trace(14,fd,reply,16);
             return 0;
         }
+        if (q->op == 0x2a) framebuffer_bind_queries++;
         if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29 || q->op == 0x2a) {
-            assert(q->out_buf_len == 12);
+            assert(q->out_buf_len == 12 || (q->op == 0x28 && q->out_buf_len == 16) || (q->op == 0x27 && q->out_buf_len == 20));
             assert(q->op == 0x29 ? q->in_buf_len == 20 || q->in_buf_len == 40
                                  : q->in_buf_len == (q->op == 0x28 ? 24u : 8u));
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
-            uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, q->out_buf_len);
+            uint32_t draw = slot->framebuffer_draw, read = slot->framebuffer_read;
             unsigned failure = image_mutation_failure;
             image_mutation_failure = 0;
             image_mutation_queries++;
@@ -1106,6 +1121,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 raw_discard_queries++;
                 if (raw_discard_failure) failure = raw_discard_failure;
             }
+            int attachment_error = q->op == 0x28 && !(input[1] == 0x8ca8 ? read : draw);
+            if (attachment_error && !failure) failure = 2;
             int storage_error = q->op == 0x29 && fail_image_storage;
             if (storage_error && !failure)
                 failure = 2;
@@ -1114,10 +1131,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 return -1;
             }
             if (failure == 2)
-                query_gl_error = storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
+                query_gl_error = attachment_error ? GL_INVALID_OPERATION : storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
             reply[0] = failure == 2 ? 1u : failure == 5 ? 2u : 0u;
             reply[1] = failure == 2 ? 0u : failure == 4 ? 9u : 1u;
-            reply[2] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
+            unsigned footer = q->out_buf_len/4-1;
+            if (q->out_buf_len > 12) {
+                reply[2] = reply[0] == 0 ? (q->op == 0x28 && input[1] == 0x8ca8 ? read : draw) : 0;
+                if (q->op == 0x27) reply[3] = reply[0] == 0 ? read : 0;
+                if (failure == 7) reply[2] = 0; // Malformed accepted attachment receipt.
+            }
+            reply[footer] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
+            if (q->op == 0x2a && (!failure || failure == 6)) (void)native_framebuffer_bind(slot,input[0],input[1]);
             if (q->op == 0x27 && (!failure || failure == 6) && input[1]) {
                 if (input[0] == 1 && image_groups[slot->image_group].raw_name == input[1]) {
                     image_groups[slot->image_group].raw_name++;
@@ -1135,6 +1159,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                             slot->texture_targets[t].name = 0;
                 } else if (input[0] == 2 && slot->renderbuffer_binding == input[1])
                     slot->renderbuffer_binding = 0;
+                else if (input[0] == 3) {
+                    if (slot->framebuffer_draw == input[1]) slot->framebuffer_draw = 0;
+                    if (slot->framebuffer_read == input[1]) slot->framebuffer_read = 0;
+                }
             }
             if (q->op == 0x29 && !failure) {
                 if (input[0] == OP_TEX_IMAGE_2D) {
@@ -1147,10 +1175,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     orphan_image_source(slot, 2, slot->renderbuffer_binding);
                 }
             }
-            uint32_t trace[13] = {q->op, 12, reply[0]};
+            uint32_t trace[13] = {q->op, q->out_buf_len, reply[0]};
             memcpy(trace + 3, input, q->in_buf_len);
             egl_trace(11, fd, trace, 12 + q->in_buf_len);
-            protocol_trace(2, q->op, input, q->in_buf_len, 12);
+            protocol_trace(2, q->op, input, q->in_buf_len, q->out_buf_len);
+            if (fail_alloc_after_image_mutation) {
+                fail_alloc_after_image_mutation = 0; fail_malloc = fail_calloc = 1;
+            }
             return 0;
         }
         if (q->op == 0x2c) {
@@ -2957,12 +2988,96 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS compound-query-success"); return 0;
     }
+    if (!strcmp(argv[1], "framebuffer-publication-texture") || !strcmp(argv[1], "framebuffer-publication-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-publication-texture");
+        GLuint name=17,framebuffer=77; EGLImageKHR img=image(dpy);
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+        if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+        else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+        for (unsigned allocation=0;allocation<4;allocation++) {
+            unsigned before=image_mutation_queries;
+            if (allocation<2) calloc_before_failure=(int)allocation;
+            else malloc_before_failure=(int)allocation-2;
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+            calloc_before_failure=malloc_before_failure=-1;
+            assert(image_mutation_queries==before && glGetError()==GL_OUT_OF_MEMORY && closes==0);
+        }
+        unsigned before=image_mutation_queries;
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer); fail_submit=1;
+        if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+        else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        fail_submit=0;
+        assert(image_mutation_queries==before && glGetError()==GL_INVALID_OPERATION);
+        fail_alloc_after_image_mutation=1;
+        if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+        else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        assert(fail_malloc && fail_calloc); fail_malloc=fail_calloc=0;
+        assert(glGetError()==GL_NO_ERROR && eglDestroyImageKHR(dpy,img) && closes==0);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+        assert(closes==0); glDeleteFramebuffers(1,&framebuffer); assert(closes==1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-outer-unknown-texture") || !strcmp(argv[1], "framebuffer-outer-unknown-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-outer-unknown-texture");
+        struct wpk_gles_context *peer=_wpk_gl_create_shared_encoder(_wpk_gl_current_encoder()); assert(peer);
+        GLuint name=17; glBindFramebuffer(GL_FRAMEBUFFER,77);
+        for (unsigned failure=1;failure<=4;failure++) {
+            EGLImageKHR img=image(dpy);
+            if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+            else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+            glClear(GL_COLOR_BUFFER_BIT); compound_failure=failure;
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+            assert(glGetError()==GL_INVALID_OPERATION && eglDestroyImageKHR(dpy,img));
+            if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+            assert(closes==0);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && closes==0);
+        _wpk_gl_destroy_encoder(peer); assert(closes==1);
+        assert(eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-deletion-texture") || !strcmp(argv[1], "framebuffer-deletion-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-deletion-texture");
+        GLuint name=17,framebuffers[3]={71,72,73}; EGLImageKHR img=image(dpy);
+        if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+        else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+        for (unsigned i=0;i<3;i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[i]);
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        }
+        assert(eglDestroyImageKHR(dpy,img) && closes==0);
+        /* Exercise the already-supported split bridge selectors; this native
+         * ownership control does not advertise a GLES3 API or extension. */
+        glBindFramebuffer(0x8ca9,framebuffers[0]); glBindFramebuffer(0x8ca8,framebuffers[1]);
+        if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+        assert(closes==0 && glGetError()==GL_NO_ERROR);
+        glDeleteFramebuffers(1,&framebuffers[2]); assert(closes==1);
+        glDeleteFramebuffers(2,framebuffers);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-queued-bind")) {
+        GLuint framebuffers[2]; glGenFramebuffers(2,framebuffers); _wpk_gl_flush();
+        unsigned before_queries=framebuffer_bind_queries,before_submits=submit_batches;
+        for (unsigned i=0;i<6;i++) glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[i%2]);
+        assert(framebuffer_bind_queries==before_queries && submit_batches==before_submits);
+        glFlush(); assert(submit_batches==before_submits+1 && glGetError()==GL_NO_ERROR);
+        glDeleteFramebuffers(2,framebuffers);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        puts("PASS framebuffer-queued-bind"); return 0;
+    }
     if (!strcmp(argv[1], "compound-framebuffer-success")) {
         GLuint framebuffer;glGenFramebuffers(1,&framebuffer);
         unsigned batches=submit_batches,compounds=compound_batches;
         glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
-        assert(compound_batches==compounds+1 && submit_batches==batches+1);
+        assert(compound_batches==compounds && submit_batches==batches);
         assert(glGetError()==GL_NO_ERROR);
+        assert(compound_batches==compounds+1 && submit_batches==batches+1);
         glBindFramebuffer(GL_FRAMEBUFFER,0);assert(compound_batches==compounds+1);
         glDeleteFramebuffers(1,&framebuffer);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
@@ -4075,7 +4190,7 @@ int main(int argc, char **argv) {
         GLuint name = 17, framebuffer;
         glGenFramebuffers(1, &framebuffer);
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        for (unsigned failure = 1; failure <= 5; failure += failure == 1 ? 2 : 1) {
+        for (unsigned failure = 1; failure <= 7; failure += failure == 1 ? 2 : 1) {
             EGLImageKHR img = image(dpy);
             if (texture) {
                 glBindTexture(GL_TEXTURE_2D, name);

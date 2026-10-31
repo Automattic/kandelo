@@ -20,6 +20,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_submit_query",
       "host_env_imports",
@@ -1370,6 +1371,53 @@
     "value_capture_prefixes": [
       "__abi_"
     ]
+  },
+  "gl_image_container_receipts": {
+    "accepted_payload": 1,
+    "attachment": {
+      "container_reply_bytes": 16,
+      "query": 40,
+      "success_container": "nonzero-context-local-logical-name",
+      "words": [
+        "status",
+        "accepted",
+        "container_name",
+        "completion_magic"
+      ]
+    },
+    "byte_order": "little-endian",
+    "deletion": {
+      "containers_reply_bytes": 20,
+      "default_container_name": 0,
+      "detachment_scope": "matching-object-in-invoking-context-selected-containers",
+      "equal_draw_read_names": true,
+      "query": 39,
+      "words": [
+        "status",
+        "accepted",
+        "draw_name",
+        "read_name",
+        "completion_magic"
+      ]
+    },
+    "failure_payload": "all-zero",
+    "identity_capture": "after-queued-prefix-before-query-effects",
+    "legacy": {
+      "reply_bytes": 12,
+      "unchanged": true,
+      "words": [
+        "status",
+        "accepted",
+        "completion_magic"
+      ]
+    },
+    "op_version": 17,
+    "publication": "validated-complete-success-only",
+    "rejected_status": 1,
+    "reply_magic": 1196510259,
+    "success_status": 0,
+    "unknown_completion": "retain-input-ownership-no-replay",
+    "word_type": "u32"
   },
   "gl_inline_client_draw": {
     "attribute_bytes": 20,

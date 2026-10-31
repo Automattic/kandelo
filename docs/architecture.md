@@ -4292,6 +4292,24 @@ persistent replay authority or deferred server ordering. The program-surface
 digest includes the new transport; normal SDK and product artifacts need a
 coherent rebuild. Validation status remains in the compatibility inventory.
 
+Framebuffer selection is authoritative in the host. Ordinary
+`glBindFramebuffer` queues the existing command rather than maintaining a C
+selector mirror. Image attachment queries optionally return a 16-byte checked
+receipt containing the accepted logical container name. Image deletion queries
+optionally return a 20-byte receipt containing the invoking context's selected
+draw/read container names. Identity is captured after the queued prefix and
+before query effects; zero identifies logical default storage, while accepted
+attachments require a named container. Legacy 12-byte replies retain their
+layout and behavior.
+
+C reserves attachment publication storage and uncertain-completion holds before
+query entry. Only a validated successful receipt publishes ownership changes;
+definite non-entry releases candidates, while uncertain entry retains them
+through the existing group lifetime without replay. Deletion releases matching
+object references only in the acknowledged selected containers. Unbound and
+peer containers retain their references. The Program digest binds these opt-in
+layouts so matching numeric epochs cannot admit older incompatible products.
+
 The combined graphics branch uses ABI 56, one version above current main's
 ABI 55, with kernel-host version 3. It joins main's kernel-owned waits,
 executable admission and lifecycle contracts with the graphics interfaces

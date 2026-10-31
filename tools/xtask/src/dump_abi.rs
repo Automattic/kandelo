@@ -1486,6 +1486,27 @@ fn render_ts_module() -> String {
         shared::abi::ABI_KERNEL_EXPORT
     ));
 
+    // The opt-in image receipts are program-visible even in one unpublished
+    // ABI epoch. Project the shared source for checked host reply lengths.
+    for (name, value) in [
+        ("GL_QUERY_REPLY_MAGIC", shared::gl::QUERY_REPLY_MAGIC),
+        (
+            "GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES",
+            shared::gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+        ),
+        (
+            "GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES",
+            shared::gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+        ),
+        (
+            "GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES",
+            shared::gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+        ),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
+    out.push('\n');
+
     // Not an ABI value: the one fixed instant image builders use when a fixed
     // time is needed (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). It
     // lives in this generated module so the TypeScript builders read the same
@@ -4361,6 +4382,11 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
+    s.add(
+        Program,
+        "gl_image_container_receipts",
+        gl_image_container_receipts(),
+    );
     s.add(Program, "gl_submit_query", json!({
         "request": shared::gl::GLIO_SUBMIT_QUERY,
         "phase_submit": shared::gl::SUBMIT_QUERY_PHASE_SUBMIT,
@@ -4411,6 +4437,44 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
+}
+
+fn gl_image_container_receipts() -> Value {
+    use shared::gl;
+    // The unpublished epoch/op-table alone cannot distinguish older hosts that
+    // reject these opt-in sizes. Bind the reply agreement into the program digest.
+    json!({
+        "op_version": gl::OP_VERSION,
+        "byte_order": "little-endian",
+        "word_type": "u32",
+        "reply_magic": gl::QUERY_REPLY_MAGIC,
+        "success_status": 0,
+        "rejected_status": 1,
+        "accepted_payload": 1,
+        "failure_payload": "all-zero",
+        "legacy": {
+            "reply_bytes": gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+            "words": ["status", "accepted", "completion_magic"],
+            "unchanged": true,
+        },
+        "attachment": {
+            "query": gl::QOP_IMAGE_ATTACHMENT,
+            "container_reply_bytes": gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+            "words": ["status", "accepted", "container_name", "completion_magic"],
+            "success_container": "nonzero-context-local-logical-name",
+        },
+        "deletion": {
+            "query": gl::QOP_IMAGE_OBJECT_DELETE,
+            "containers_reply_bytes": gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+            "words": ["status", "accepted", "draw_name", "read_name", "completion_magic"],
+            "default_container_name": 0,
+            "equal_draw_read_names": true,
+            "detachment_scope": "matching-object-in-invoking-context-selected-containers",
+        },
+        "identity_capture": "after-queued-prefix-before-query-effects",
+        "publication": "validated-complete-success-only",
+        "unknown_completion": "retain-input-ownership-no-replay",
+    })
 }
 
 fn gl_inline_client_draw() -> Value {
@@ -8590,6 +8654,97 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn image_container_receipts_serialize_shared_values_and_generated_constants() {
+        let receipt = gl_image_container_receipts();
+        assert_eq!(receipt["legacy"]["reply_bytes"], json!(12));
+        assert_eq!(
+            receipt["attachment"]["query"],
+            json!(shared::gl::QOP_IMAGE_ATTACHMENT)
+        );
+        assert_eq!(receipt["attachment"]["container_reply_bytes"], json!(16));
+        assert_eq!(
+            receipt["deletion"]["query"],
+            json!(shared::gl::QOP_IMAGE_OBJECT_DELETE)
+        );
+        assert_eq!(receipt["deletion"]["containers_reply_bytes"], json!(20));
+        assert_eq!(receipt["reply_magic"], json!(shared::gl::QUERY_REPLY_MAGIC));
+        let root: JsonMap = receipt
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        let serialized = render_deterministic(&root);
+        assert_eq!(serde_json::from_str::<Value>(&serialized).unwrap(), receipt);
+        let rendered = render_ts_module();
+        for (name, value) in [
+            ("GL_QUERY_REPLY_MAGIC", shared::gl::QUERY_REPLY_MAGIC),
+            (
+                "GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES",
+                shared::gl::IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+            ),
+            (
+                "GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES",
+                shared::gl::IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+            ),
+            (
+                "GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES",
+                shared::gl::IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+            ),
+        ] {
+            assert!(rendered.contains(&format!("export const {name} = {value} as const;")));
+        }
+    }
+
+    #[test]
+    fn image_container_receipts_change_program_digest_without_changing_epoch() {
+        let snapshot = |include_receipt| {
+            let mut root = JsonMap::new();
+            root.insert("abi_version".into(), json!(shared::ABI_VERSION));
+            let mut sections = Sections {
+                root,
+                program: Vec::new(),
+                kernel_host: Vec::new(),
+            };
+            if include_receipt {
+                sections.add(
+                    Surface::Program,
+                    "gl_image_container_receipts",
+                    gl_image_container_receipts(),
+                );
+            }
+            Value::Object(sections.finish().into_iter().collect())
+        };
+        let old = snapshot(false);
+        let new = snapshot(true);
+        let digest = |value: &Value| {
+            crate::local_abi_identity::program_contract_digest(value, shared::ABI_VERSION).unwrap()
+        };
+        assert_eq!(old["abi_version"], new["abi_version"]);
+        assert_ne!(digest(&old), digest(&new));
+        assert!(
+            new[SURFACES_KEY]["program"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("gl_image_container_receipts"))
+        );
+        for path in [
+            "/gl_image_container_receipts/attachment/container_reply_bytes",
+            "/gl_image_container_receipts/deletion/containers_reply_bytes",
+            "/gl_image_container_receipts/reply_magic",
+            "/gl_image_container_receipts/identity_capture",
+        ] {
+            let mut changed = new.clone();
+            *changed.pointer_mut(path).unwrap() = json!("changed-wire-contract");
+            assert_ne!(
+                digest(&new),
+                digest(&changed),
+                "unbound receipt field {path}"
+            );
+        }
+    }
 
     #[test]
     fn syscall_log_names_match_existing_trace_spelling() {
