@@ -18,6 +18,7 @@ import { nodeGlobalScopeCommand } from "./fixtures/node-global-scope";
 import { nodeModuleEntryCommand } from "./fixtures/node-module-entrypoints";
 import { nodeCallSiteCommand } from "./fixtures/node-call-sites";
 import { nodeFatalExitCommand, nodeFatalExitExpected } from "./fixtures/node-fatal-exit";
+import { nodeExitListenerCommand, nodeExitListenerExpected } from './fixtures/node-exit-listeners';
 
 async function runShell(command: string) {
   let stdout = "", stderr = "";
@@ -48,6 +49,7 @@ async function runShell(command: string) {
 }
 
 const cases: Array<[string, string, readonly string[]]> = [
+  ["throwing exit listeners and fatal status preservation", nodeExitListenerCommand, nodeExitListenerExpected],
   ["fatal exits with outstanding work", nodeFatalExitCommand, nodeFatalExitExpected],
   ["engine call-site records and source coordinates", nodeCallSiteCommand, ["node-call-sites-cjs-ok", "node-call-sites-esm-ok", "node-call-sites-eval-ok"]],
   ["public global namespace and private embedding utilities", nodeGlobalScopeCommand, ["node-global-scope-ok", "node-global-eval-ok"]],

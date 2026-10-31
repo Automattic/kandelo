@@ -129,15 +129,21 @@ and Vite servers and do not attach to a user's demo.
 ## Source checks without product rebuilds
 
 ```sh
+# Prepare and verify the pinned source and native reference first.
+scripts/run-nodejs-library-tests.sh --prepare-only --out .context/nodejs-source-inputs
+# This example is for the supported darwin-arm64 native reference.
+export NODE_REFERENCE="$PWD/.context/nodejs-lts-cache-v2/node-v26.13.0-darwin-arm64/bin/node"
 scripts/dev-shell.sh bash -c \
-  'cd host && npx vitest run --config vitest.node-core.config.ts'
+  'cd host && exec "$1" node_modules/vitest/vitest.mjs run --config vitest.node-core.config.ts' \
+  _ "$NODE_REFERENCE"
 ```
 
 The config contains only source-classified tests and omits the prepared
-product/C-fixture global setup. To use the exact LTS oracle, prepare it
-first and replace `npx vitest` with its absolute `bin/node` path followed by
-`node_modules/vitest/vitest.mjs` from `host/`. The runner's host/build Node
-version and the pinned reference are separate identities.
+product/C-fixture global setup. Use the prepared reference directory
+matching your host architecture.
+The runner's host/build Node version and the pinned reference are separate
+identities. Running Vitest under the build toolchain skips exact-native
+controls and does not support a no-skips reference claim.
 
 ## Real TCP client regression
 
@@ -583,7 +589,54 @@ libc interface list has IPv4 but omits the working IPv6 loopback address;
 Node also ignores that existing list. Fix the owning state/API instead
 of overriding upstream capability checks. A mixed fatal callback plus
 throwing exit listener also exposes status 3 where native Node returns 1;
-that exit-status mapping remains a separate follow-up.
+the following exit-listener fix closes that reproduced mapping gap.
+
+## Exit-listener status and diagnostics
+
+The Node-mode finalizer now preserves the validated exit status after an
+exit listener throws, including an explicitly assigned zero. Explicit
+`process.exit()` keeps the status selected by the listener, and already
+fatal callbacks retain the original diagnostic rather than reporting a
+secondary listener error. The shell saves and restores the original
+exception while querying the actual status; it never re-emits exit.
+Standalone SpiderMonkey shell behavior is unchanged.
+
+The targeted product at production commit
+`61ff0a65a9d2b7463375b93eb1ed89aa1a913444` passed:
+
+- 114 source/reference checks under exact Node 26.13.0, with no skips.
+- All 16 Node-host core cases.
+- Six browser tests, serially with no retries or skips: 17 new listener
+  programs and ten preceding fatal-exit programs on each browser engine.
+- Five real TCP cases on each of the four hosts, including C peers.
+- Three unchanged upstream exit files on each host:
+  `test-process-exit.js`, `test-process-exit-recursive.js` and
+  `test-process-exit-handler.js`. All passed, with no unsupported, skip,
+  timeout or harness-error rows.
+
+The permanent fixtures include natural, explicit and fatal exits,
+cleared/zero/changed statuses, thrown falsy values and stalled top-level
+await. Their commands are in `host/test/fixtures/node-exit-listeners.ts`;
+the browser spec is `node-exit-listeners.spec.ts`. Run the upstream
+selection with the normal runner and fresh per-host report directories.
+
+Frozen artifact hashes are in
+`.context/node26-exit-listener-runtime-inputs/manifest.json` (Node archive
+`a4d24764af4fef68dbe10f138b8bc5d85c8f3d305f1e0766eb0fb58b4703f338`).
+The upstream and TCP audits are
+`.context/node26-exit-listener-upstream-audit.json` and
+`.context/node26-exit-listener-tcp-audit.json`. Browser report
+`.context/node26-exit-listener-browser-reports/playwright.2ZbHyQ/` and
+Node report `.context/node-prepared-reports/vitest.V4hW55/` retain results.
+
+An initial targeted build failed the engine's include-order check before
+being corrected. An initial guest fixture used an unregistered lazy grep
+asset and failed; equivalent Bash literal checks removed that incidental
+dependency before the passing run. Both failed logs remain retained.
+The ABI snapshot check passed at ABI 55. No full product rebuild ran.
+Custom exception/rejection hooks, beforeExit, complete timer ordering and
+stalled-module warning text remain gaps; this is not complete lifecycle
+or core-module conformance.
 
 ## Draft delivery stack
 
@@ -609,6 +662,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Engine call-site records and selected reruns | [#1615](https://github.com/Automattic/kandelo/pull/1615) |
 | Default fatal shutdown with live work | [#1616](https://github.com/Automattic/kandelo/pull/1616) |
 | Real TCP listeners and half-close | [#1617](https://github.com/Automattic/kandelo/pull/1617) |
+| Exit-listener status and fatal diagnostics | [#1619](https://github.com/Automattic/kandelo/pull/1619) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

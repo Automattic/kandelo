@@ -67,3 +67,8 @@ fixes should be considered for upstreaming.
   close untransferred descriptors. The shared net module owns overloads,
   DNS, public errors and server/socket lifetime. Existing kernel calls and
   ABI are used without a host or demo-specific networking path.
+
+- `0034-kandelo-node-exit-listener-status.patch`: preserves the validated
+  Node exit status after reporting an exit-listener exception, including
+  explicitly assigned zero. The original exception stack is saved during
+  the side-effect-free status query; standalone shell status is unchanged.
