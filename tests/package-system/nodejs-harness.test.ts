@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, rmdirSync, chmodSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { runInNewContext } from 'node:vm';
 import { afterAll, describe, expect, it } from 'vitest';
-import { collectNodejsLibraryTests, parseNodejsTestMetadata, nodejsTarget, repoRoot, ensureSourceModuleBoundary, sourceFiles, sourceTreeHash, preparePinnedArchive, fileHash } from '../../scripts/nodejs-source-helper';
+import { collectNodejsLibraryTests, parseNodejsTestMetadata, nodejsTarget, repoRoot, ensureSourceModuleBoundary, sourceFiles, sourceEntries, sourceTreeHash, preparePinnedArchive, fileHash } from '../../scripts/nodejs-source-helper';
 import { classifyNodejsResult } from '../../scripts/nodejs-test-results';
 import { runNativeNodejsCase } from '../../scripts/nodejs-native-runner';
 
@@ -32,20 +32,43 @@ describe('pinned Node upstream harness', () => {
     expect(() => collectNodejsLibraryTests(directory, ['../test-inventory.js'])).toThrow();
   });
 
-  it('preserves and verifies nested node_modules and out fixtures', () => {
+  it('preserves and verifies fixture files, links, empty directories and modes', () => {
     const source = join(directory, 'archive-input'), cache = join(directory, 'archive-cache');
     mkdirSync(join(source, 'test/fixtures/node_modules/pkg'), { recursive: true });
     mkdirSync(join(source, 'test/fixtures/out'), { recursive: true });
+    mkdirSync(join(source, 'test/fixtures/wasi/subdir'), { recursive: true });
+    chmodSync(join(source, 'test/fixtures/wasi/subdir'), 0o750);
     mkdirSync(cache);
     writeFileSync(join(source, 'test/fixtures/node_modules/pkg/index.js'), 'module.exports=42;');
     writeFileSync(join(source, 'test/fixtures/out/data'), 'fixture');
+    symlinkSync('../node_modules/pkg/index.js', join(source, 'test/fixtures/out/link'));
     expect(sourceFiles(source)).toContain('test/fixtures/node_modules/pkg/index.js');
     expect(sourceFiles(source)).toContain('test/fixtures/out/data');
+    expect(sourceEntries(source)).toContain('test/fixtures/wasi/subdir');
     const archive = join(cache, 'pinned.tar.gz');
     execFileSync('tar', ['-czf', archive, '-C', source, '.']);
     const artifact = { url: 'https://example.invalid/pinned.tar.gz', sha256: fileHash(archive) };
     const prepared = preparePinnedArchive(cache, artifact);
     expect(sourceTreeHash(prepared.directory)).toBe(sourceTreeHash(source));
+    const empty = join(prepared.directory, 'test/fixtures/wasi/subdir');
+    rmdirSync(empty);
+    expect(() => preparePinnedArchive(cache, artifact)).toThrow('Pinned extraction changed');
+    writeFileSync(empty, 'directory:');
+    chmodSync(empty, 0o750);
+    expect(() => preparePinnedArchive(cache, artifact)).toThrow('Pinned extraction changed');
+    rmSync(empty);
+    mkdirSync(empty, { mode: 0o750 });
+    chmodSync(empty, 0o700);
+    expect(() => preparePinnedArchive(cache, artifact)).toThrow('Pinned extraction changed');
+    chmodSync(empty, 0o1750);
+    expect(() => preparePinnedArchive(cache, artifact)).toThrow('Pinned extraction changed');
+    chmodSync(empty, 0o750);
+    expect(preparePinnedArchive(cache, artifact).treeHash).toBe(prepared.treeHash);
+    const stamp = prepared.directory + '.verified.json';
+    const identity = readFileSync(stamp, 'utf8');
+    writeFileSync(stamp, JSON.stringify({ ...JSON.parse(identity), hashPolicy: 'all-source-files-v1' }));
+    expect(() => preparePinnedArchive(cache, artifact)).toThrow('unknown hash policy');
+    writeFileSync(stamp, identity);
     writeFileSync(join(prepared.directory, 'test/fixtures/node_modules/pkg/index.js'), 'tampered');
     expect(() => preparePinnedArchive(cache, artifact)).toThrow('Pinned extraction changed');
   });

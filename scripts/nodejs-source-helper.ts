@@ -69,26 +69,33 @@ export function auditNodejsCategories(sourceRoot: string) {
   });
 }
 
-export function sourceFiles(root: string): string[] {
+function collectSourceEntries(root: string, includeDirectories: boolean): string[] {
   const found: string[] = [];
   function walk(dir: string) {
     for (const name of readdirSync(dir).sort()) {
       const path = join(dir, name), stat = lstatSync(path);
-      if (stat.isDirectory()) walk(path);
-      else if (stat.isFile() || stat.isSymbolicLink()) found.push(relative(root, path).split('\\').join('/'));
+      if (stat.isDirectory()) {
+        if (includeDirectories) found.push(relative(root, path).split('\\').join('/'));
+        walk(path);
+      } else if (stat.isFile() || stat.isSymbolicLink()) found.push(relative(root, path).split('\\').join('/'));
     }
   }
   walk(root);
   return found;
 }
 
+export const sourceFiles = (root: string) => collectSourceEntries(root, false);
+export const sourceEntries = (root: string) => collectSourceEntries(root, true);
+
 export function sourceTreeHash(root: string) {
   const digest = createHash('sha256');
-  for (const name of sourceFiles(root)) {
+  for (const name of sourceEntries(root)) {
     const path = join(root, name), stat = lstatSync(path);
-    digest.update(name + '\0' + (stat.mode & 0o777).toString(8) + '\0');
-    digest.update(stat.isSymbolicLink() ? 'link:' + readlinkSync(path) : readFileSync(path));
-    digest.update('\0');
+    // Typed JSON records keep file bytes from impersonating a directory or
+    // another entry's metadata. A file's contents are represented by its hash.
+    const kind = stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file';
+    const contents = kind === 'directory' ? null : kind === 'symlink' ? readlinkSync(path) : fileHash(path);
+    digest.update(JSON.stringify({ path: name, kind, mode: stat.mode & 0o7777, contents }) + '\n');
   }
   return digest.digest('hex');
 }
@@ -115,14 +122,14 @@ export function preparePinnedArchive(cache: string, artifact: { url: string; sha
       execFileSync('tar', ['-xzf', archive, '--strip-components=1', '-C', work]);
       const treeHash = sourceTreeHash(work);
       renameSync(work, extracted);
-      writeFileSync(stamp, JSON.stringify({ ...artifact, hashPolicy: 'all-source-files-v1', treeHash }, null, 2) + '\n');
+      writeFileSync(stamp, JSON.stringify({ ...artifact, hashPolicy: 'all-source-entries-v2', treeHash }, null, 2) + '\n');
     } finally { rmSync(work, { recursive: true, force: true }); }
   }
   const identity = JSON.parse(readFileSync(stamp, 'utf8'));
   if (identity.sha256 !== artifact.sha256 || identity.url !== artifact.url) {
     throw Error(`Pinned extraction identity differs: ${extracted}`);
   }
-  if (identity.hashPolicy !== 'all-source-files-v1' || sourceTreeHash(extracted) !== identity.treeHash) {
+  if (identity.hashPolicy !== 'all-source-entries-v2' || sourceTreeHash(extracted) !== identity.treeHash) {
     throw Error(`Pinned extraction changed or has an unknown hash policy: ${extracted}; use a fresh cache directory`);
   }
   return { directory: extracted, archiveSha256: artifact.sha256, treeHash: identity.treeHash as string };

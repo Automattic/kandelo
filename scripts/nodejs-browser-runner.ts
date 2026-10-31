@@ -1,6 +1,15 @@
 /** Vite-served browser controller; avoids serializing transpiler closures. */
 import { BrowserKernel } from '../host/src/browser-kernel-host';
 import type { NodejsRun } from './nodejs-test-results';
+let inputImage: { origin: string; bytes: Promise<Uint8Array> } | undefined;
+function immutableImage(origin: string): Promise<Uint8Array> {
+  if (inputImage && inputImage.origin !== origin) throw Error('Input origin changed within one runner page');
+  inputImage ??= { origin, bytes: fetch(origin + 'suite.vfs').then(async response => {
+    if (!response.ok) throw Error('Suite image fetch failed: '+response.status);
+    return new Uint8Array(await response.arrayBuffer());
+  }) };
+  return inputImage.bytes;
+}
 export async function runNodejsBrowserCase({ origin, filename, flags, environment, timeout }: {
   origin: string; filename: string; flags: string[]; environment: string[]; timeout: number;
 }): Promise<NodejsRun> {
@@ -20,7 +29,10 @@ export async function runNodejsBrowserCase({ origin, filename, flags, environmen
   });
   try {
     const exitCode = await Promise.race([
-      (async () => { const image = new Uint8Array(await (await fetch(origin + 'suite.vfs')).arrayBuffer());
+      (async () => {
+        // Cache only immutable plain input bytes. Every kernel receives an
+        // independent copy, so guest writes and teardown cannot affect cases.
+        const image = (await immutableImage(origin)).slice();
         await kernel.initFromImage({ vfsImage: image, lazyUrlBase: origin, lazyAssetDirectory: origin });
         const child = await kernel.spawnFromVfs('/usr/bin/node', ['node', ...flags, filename],
           { cwd: '/node-src', env: environment, stdin: new Uint8Array() }); return child.exit; })(),
