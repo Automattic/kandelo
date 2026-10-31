@@ -50,13 +50,24 @@ workers. Its click-issued→menu-observed bracket remains about11.6s, with
 about9.1s after receipt of the final new-worker entry-attempt record. Those
 are instrumented NONQUIET observer endpoints, not guest readiness or a
 matched performance comparison. Native-clock standalone controls distinguish
-busy and waiting threads; both first real-guest native captures are incomplete
-from actual trace loss/output caps, so no guest CPU totals follow yet.
+busy and waiting threads; both first real-guest continuous native captures
+are incomplete from actual trace loss/output caps. A later boot-only native
+identity capture plus public macOS thread counters succeeds: the kernel
+worker uses7,689.511ms CPU and SFWBar main137.355ms during their separately
+bounded cold-menu snapshot intervals. Thirteen existing workers are joined;
+eight late workers have no baseline and remain censored. This directs the
+investigation toward platform work without establishing whole-process CPU,
+utilization, per-function attribution or an application improvement.
 A bounded cold-Start aggregate now passes, recording26,484 comparisons
 requesting133.5GB over its12.5s input/stop observation bracket;26,330 return
 equal. Their instrumented import scopes accumulate5.2s. Read contexts
 account for16,752 comparisons. These are operation/elapsed observations,
 not active CPU, actual bus traffic or permission to skip synchronization.
+A separate passing scalar trace proves8,312 dominant SFWBar reads each
+request and return1,024bytes, while triggering16,624 equal comparisons of
+4,190,208bytes. The dominant population is not one-byte reads or underfill.
+This identifies platform synchronization amplification; a safe write-tracking
+model remains unimplemented.
 
 Availability is separate from completed validation. Browser-memory, real
 three-engine desktop acceptance, destination-main benchmarks, conformance
@@ -13138,3 +13149,115 @@ entry, then stops tracing before external CPU snapshots/workload. It must
 prove immutable binding and live same-target/session identity instead of
 assuming a later rundown can execute in a blocked worker. That repair and
 actual desktop CPU attribution remain unvalidated here.
+
+### Existing-thread CPU and read-size attribution, 2026-10-31
+
+The fresh bounded capture
+`import-metadata-cold-os-cpu-r2-1031-090930-41c4` finishes0 in1m03s,
+with workload/collector/guard0/0/0. Unlike the failed continuous traces,
+this records native worker identities during boot and fully stops/reads/closes
+the trace before external CPU sampling and the actual click. Its loss-free
+99,098,395-byte trace contains581,100 events and34 native identity records.
+The stop request occurs18,519.977458ms into the30s boot budget. Independent
+review verifies13 exact surviving target/session/tag/URL bindings to unique
+OS threads, process-start/UID identity and all integer counter subtractions.
+Exact Chromium153 source records an immutable backing-thread ID for each
+surviving dedicated-worker target; a replacement target cannot substitute.
+
+| Existing owned thread | User CPU ms | System CPU ms | Total CPU ms |
+|---|---:|---:|---:|
+| Kernel worker | 7,297.694 | 391.817 | 7,689.511 |
+| SFWBar main worker, guest PID109 | 94.861 | 42.494 | 137.355 |
+
+Each row covers its own sequential counter-snapshot bounds, approximately
+9.44s; input-issued→observed-menu is separately9,348.898625ms. These clocks
+are not subtracted across realms. The values include any JS/Wasm/GC/native
+work charged to that OS thread. They are not pure Rust/guest CPU, a common
+exact input interval, utilization, whole-process CPU, or causal function
+attribution. Eight newly observed SFWBar threads117–124 lack a baseline and
+remain censored; nineteen earlier excluded/departed boot records are a
+different population. The raw `result.lateWorkersCensored` array is empty
+because postJoin retains originals only; the eight actual late targets are
+separately retained in `osCpu.lateObservedTargets`. No zero-CPU inference is
+made for them. Other browser/GPU/audio threads are outside this measurement.
+
+The genuine menu, pager and Foot prompt are root-viewed. Normal same-page
+Bare-shell replacement completes with unchanged timeOrigin, no reported
+runtime/observer/cleanup errors and stable source/SDK/kernel/host/own93/245
+guards. Independent analysis verifies39 sealed helpers and five sampler
+toolchain inputs. This directs investigation toward kernel-worker work;
+it does not establish an application improvement or replace acceptance gates.
+
+Raw report SHA256
+`76e93fa96a6d2787392e902b36e13fff00bda83f4d8032959da27f72b9f4e9f6`;
+native identity trace SHA256
+`26002efd78e4a7d01656591f680ce89af9e4434b49b0022c8afd6988e7fcf651`.
+Independent accounting, exact counters/bounds, source authority and verification
+are under `.context/import-metadata-os-cpu-analysis-r2/`. FailedR1 remains
+unchanged. No SDK/kernel/program/image rebuild is needed for this diagnostic.
+Accounting SHA256
+`7962f7e98b308609da94352f50b998f20d76b253397bffcb342f296612994848`.
+
+A separate fresh headless cold-menu job,
+`import-metadata-cold-read-histogram-r1-1031-091709-1e49`, finishes0 in59s,
+with workload/collector/guard0/0/0. Two scalar-only source overlays record
+normalized Read byte counts, Readv iov counts, Llseek status and completion
+results before logical request finish. Actor PID and compared target PID are
+separate. No payload, pointer, iovec-table inspection or native GL wrapper is
+added. Fresh42 pure controls, nine local startup seams, nine served startup
+seams and two served read seams pass before the actual browser launch.
+
+All9,909 selected new requests normalize, observe a completion attempt and
+logically finish; retries, pending, left-censored, unavailable results,
+unknown/internal/open-scope/cap counts are zero. The worker input-down→stop
+bracket is11,510.425ms, including stop-RPC delivery after observed menu.
+
+| Observed SFWBar request/result | Count | Requested bytes | Returned bytes |
+|---|---:|---:|---:|
+| Read, FD number15 | 8,312 | 8,511,488 | 8,511,488 |
+| Readv, FD numbers15/9 | 760 | Unknown | 788,168 |
+| Llseek, FD numbers15/9 | 795 | Not applicable | Status0, not bytes |
+| Read requested1/returned1, FD number5 | 19 | 19 | 19 |
+
+The dominant Read bucket has an upper bound1,024 and both totals equal
+8,312×1,024, proving every observed request and return there is exactly1,024.
+There are zero requested>1/returned1 observations. This rules out the proposed
+one-byte-read/underfill explanation for this dominant population; it does
+not prove every descriptor's semantics. Readv's iov count is not a requested
+byte count. Numeric FD15 can be reused across opens; neither one file nor
+an open-file-description identity or path is established. Error/EOF rows
+remain separate. The trace still executes every original comparison.
+
+The selected contexts record20,306 comparisons requesting91,220,828,160bytes
+with3,331.790ms of instrumented worker elapsed scopes. Another6,386 comparison
+calls are outside the selected contexts. These are a different capture from
+the CPU measurement and earlier full aggregate; do not add their elapsed
+values or treat requested bytes as actual bus traffic. Normal consumer and
+same-page replacement/source/artifact guards complete without reported errors.
+Both single- and multi-terminal responsiveness gains remain unproven.
+
+In this capture, all20,306 selected comparisons return equal and independently
+recorded actor PID equals target PID. The dominant8,312 Read requests on
+SFWBar FD number15 account for8,312entry plus8,312completion comparisons of
+4,190,208bytes:69,658,017,792 requested comparison bytes and2,555.365ms of
+instrumented scopes. This is8,184 requested comparison bytes per returned
+byte for that population, not measured memory traffic. No exact per-request
+pair IDs or common CPU clock are exported. Independent accounting verifies
+44 sealed helper files,35 harness identities and recorded normal93/245,
+SDK/kernel/guard/job evidence under
+`.context/import-metadata-read-analysis-r1/`.
+
+Raw read histogram SHA256
+`5eb32ca3f1540e4f468a45403b806866529268deb14fda69f4f8161ca1a4d20d`.
+Functional report SHA256
+`af83f16d7a861249c82122c4910515291861f32d5247ffd704a373f22c8a11e9`.
+Independent accounting SHA256
+`191f297621a724156de19b366612b09addd999523b48f856fd81d760e4f95c60`.
+Source review also confirms no existing channel/kernel/loader lock proves
+absence of all writers to a physical process memory. Reusing an entry-time
+equality result at completion could miss pthread/borrowed-address-space or
+host copyout writes, and canonical peer updates must still refresh. A correct
+dirty-page protocol requires complete writer coverage, private bounded
+metadata and race-safe publication/refresh. A dirty mark before and after a
+store alone is insufficient. No comparison skip, dirty protocol or new
+production optimization is implemented by these observations.
