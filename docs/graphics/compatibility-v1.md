@@ -10797,3 +10797,47 @@ The first consumer preparation's mistyped full support HEAD never
 launched a test; it is preserved. The fresh r2 sealer derives HEAD from
 Git and requires equality before sealing, and both actual consumers use
 support55428d6607 with all original artifact guards intact.
+
+
+### File comparison: new kernel CPU profile (2026-10-30)
+
+CPU-only headless Chromium job
+`snapshot-compare-new-native2x-terminal-c-1030-230942-651d` finishes0
+in3m31s, including after-collection and artifact guards. It profiles the
+normal5668/6bf/5c011b2d cohort above in one NONQUIET session, with
+1/3/5 real terminal windows, Start, five-second idle and100 requested
+pointer moves over five seconds. All selected profiler start/stop/write
+acknowledgements complete; the observer is disposed and runtime and
+finalization error arrays are empty. The selected related dedicated
+worker graph is bounded; eight workers arrive late during first Start.
+No browser-main/GPU/audio/shared-worker or whole-system coverage follows.
+
+Read-only analysis verifies raw profile hashes and calibrates worker/
+profiler clocks against Node marker brackets. Only samples whose entire
+possible timestamp interval is inside the workload enter these counts;
+outside, uncertain and uncalibrated bins remain separate. The unique
+kernel is identified by its owned worker URL, not guest PID inference.
+
+| Motion stage | Definite kernel samples | JS comparison self | Comparison share |
+|---|---:|---:|---:|
+| one terminal |3992|2862|71.69%|
+| three terminals |3996|2850|71.32%|
+| five terminals |3414|2414|70.71%|
+
+The new JavaScript comparison is the dominant sampled path. Kernel-byte
+copying beneath mapping synchronization has zero definite samples in
+these motion phases; this is sampled attribution, not proof of zero
+calls or bytes. The earlier reduction in copying has moved substantial
+work into a slow scan. No performance improvement is established.
+Replacing that scan must preserve full-range proof, snapshot ownership,
+backing refresh and a correct owned-copy path when optimization is
+unavailable. Native helper construction and memory retention need
+measurement alongside actual desktop timings before accepting a repair.
+
+Raw report/profiles are under
+`.context/snapshot-compare-cpu-profile/cohorts/new-native2x-terminal-cpu-snapshot-compare-cpu-r1/chromium/sway/`.
+Derived analysis is `.context/snapshot-compare-cpu-analysis.json` and
+`.context/snapshot-compare-cpu-analysis.md`; exact source URLs, line/column
+identities, raw hashes and phase boundaries are retained. Instrumented
+elapsed times are not compared with uninstrumented desktop observations.
+No Wasm function identity is borrowed from the earlier kernel binary.
