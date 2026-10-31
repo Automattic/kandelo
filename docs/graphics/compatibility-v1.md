@@ -12421,3 +12421,119 @@ or program rebuild. Latest available preview remains normal e303 at
 http://127.0.0.1:5675/pages/kandelo/; acceptance of the broader desktop,
 combined graphics, memory, conformance and performance inventory remains
 open.
+
+### Startup worker milestones: native control and initial captures
+
+Continue beyond frame counts into the cold Start path using the same
+frozen normal e303/5675 artifacts. `.context/worker-launch-native-url-r1/`
+passes a headless Chromium native Worker control through actual Vite
+URL modules and normal worker source imports. The production scalar URL
+tagger preserves existing query values (including repeated values) while
+adding one launch identity. Native Worker URL and worker-global location
+match the prepared URL. The control appends only its scalar response to
+the fetched worker entry; it sends no guest init message and boots no
+Kandelo kernel/machine. Worker/context/browser cleanup succeeds. The
+unused Firefox home created by canonical configuration is removed using
+its exact recorded path; no guessed test directories are removed. This
+is URL/source-loading evidence, not startup performance.
+
+Native control report SHA256 `94fcfddd979142bde88814ffe7d535abe1090b8d38d54e6fef5b70402a53ef54`.
+
+The R3 preparation controls pass 13/13. A fresh private cold-Start
+harness reuses the bounded scalar logger, exact three-module AST overlays,
+recursive CDP observer, and normal before/after 93-owner/245-member source,
+SDK, kernel and host guards. It observes an actual first Start click and
+painted category menu, then requests ordinary same-page gallery replacement
+with Bare shell. Unique worker URL tags and routing can affect caching;
+there are no calibrated cross-realm timings or active-CPU claims.
+
+Cold capture R1 (`worker-launch-cold-start-r1-1031-064139-f278`) ends
+workload 1 / collector 0 / guard 0 in 1m15s, before any Worker target.
+The observer treats Vite's worker&url wrapper (a URL export) as executable
+worker source and rejects the missing handler seam; host setup fails
+visibly. Normal gallery cleanup cannot run without host UI. The failure
+and original outputs remain; no platform regression is inferred.
+
+R2 forwards the URL wrapper unchanged and passes 14 pure controls plus
+all three actual served-source seam/syntax checks. Job
+`worker-launch-cold-start-r2-1031-064447-5fd2` ends 1 / 0 / 0 in 25s.
+It exposes an insufficient source-response cap of 32 during normal boot
+and an immediate process-readiness assertion before all clients launch.
+Observer shutdown also disables root autoattach before child sessions
+retire, producing a retained inconsistent-parent cleanup error. These
+are observer defects, not startup measurements or runtime fixes.
+
+R3 uses a hard pre-await admission cap of 128 source responses (the
+129th still fails), polls real compositor/panel/terminal readiness,
+freezes bounded scalar snapshots, and retires child observer sessions
+before disabling parent/root autoattach. New controls cover these
+contracts. Its first control run passes 16/17 because the new mock wrongly
+applies a disable-order assertion to a detach command; after correcting
+only the mock, controls pass 17/17, and all three actual served seams pass.
+The failed control log remains. Fresh capture job
+`worker-launch-cold-start-r3-1031-064828-ce97` is running; no old failed
+result or artifact receipt is restamped. No rebuild was needed.
+
+Cold capture R3 completes all workload/collector/guard stages with exit 0
+in 42s, paints the actual category menu and completes ordinary same-page
+Bare-shell replacement. Independent accounting verifies the unchanged
+normal source/SDK/kernel/host/93-owner identities. It records 40 targets
+(38 tagged process/thread targets plus the kernel and image composer),
+but only 32 parent/target/init/stage joins are complete: the parent
+logger's 128-event limit is reached. Six later parent launch joins remain
+missing; that original R3 trace stays partial. No duration is invented
+for a missing endpoint.
+
+Fresh R4 raises only the logger event allowance to its already supported
+256 bound; the explicit 257th overflow control passes. All 18 pure
+controls and all three actual served seam/syntax checks pass. Job
+`worker-launch-cold-start-r4-1031-065103-0750` completes 0 / 0 / 0 in
+49s. The actual menu screenshot is inspected: Games, Graphics and System
+Tools are visible above Start. Ordinary same-page replacement completes
+without a document reload, runtime failure or forced-release diagnostic.
+This remains distinct from the full repeated browser-memory gate.
+
+Independent R4 accounting in `.context/worker-launch-cold-analysis-r2/`
+verifies all 38 observed parent launches against their exact tagged
+target/init identities, with 38 complete joins, 494 scalar startup
+events, no unmatched observed parent launches, no overflow/rejected
+targets, and no observer/record/cleanup errors. Both ordinary Procs
+snapshots retain the same Sway, SFWBar and Foot identities. Eight newly
+observed tagged targets since the before-click snapshot belong to the
+actual SFWBar PID 109, TIDs 117–124. Console arrival and attachment are
+not a calibrated proof of exact creation time. No Profiler, Debugger,
+pause, worker Runtime.evaluate or guest-memory inspection is used.
+
+Every observed process/thread uses the precompiled-module selection
+branch; worker-side WebAssembly.compile is not invoked. This does not
+measure or exclude parent/kernel module preparation before construction.
+For the eight newly observed SFWBar threads, ordered same-realm endpoint
+deltas in this single instrumented NONQUIET capture are:
+
+| Observed interval | Range across eight threads, ms |
+|---|---:|
+| Reflection registration | 9.39–40.89 |
+| Reflection end to native instantiation begin | 59.30–115.04 |
+| Native instantiation invocation | 12.44–21.84 |
+| Instantiation end to selected entry attempt | 82.23–148.77 |
+
+These spans include scheduling, waiting and recorder overhead. They are
+not CPU shares, successful guest entry, first Wasm execution, native GPU
+time, an uninstrumented startup benchmark or a before/after improvement.
+Overlapping thread intervals must not be summed into a menu delay.
+
+The next bounded investigation is the actual shared worker setup inside
+these broad regions: template identity, imported state, activation/table
+registration and reconciliation, thread bootstrap/TLS and channel binding.
+Source inspection identifies these operations in the measured regions but
+does not establish which dominates. Preserve Node/browser parity and all
+ABI/lifetime/ownership checks when choosing an optimization.
+No startup optimization or new web build is claimed by this diagnostic.
+
+R4 raw report SHA256 `389bc980c09c997fd562a02c61a75fa84a2374af853f7146c5b1e26b99b09635`.
+R4 accounting SHA256 `16e0a18017129ccefb40bd56565b11c8b58678539edc2013d6517949faca52a4`.
+R4 analyzer SHA256 `bf7a40ff2439e6e620502ffdb86e288f6f59683959698d96fe127c0a07438a8c`.
+
+Preview e303 remains available at
+http://127.0.0.1:5675/pages/kandelo/. Single-terminal responsiveness and
+the complete graphics/desktop/conformance/performance goal remain open.
