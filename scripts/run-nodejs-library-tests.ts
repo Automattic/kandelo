@@ -11,7 +11,7 @@ type Host = 'native' | 'node' | 'chromium' | 'firefox' | 'webkit';
 async function main() {
   const args = process.argv.slice(2), selectors: string[] = [];
   let host: Host = 'node', timeout = 30_000, limit = Infinity, list = false, resume = false, prepare = false;
-  let cache = join(repoRoot, '.context/nodejs-lts-cache'), out: string | undefined;
+  let cache = join(repoRoot, '.context/nodejs-lts-cache-v2'), out: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--host') host = args[++i] as Host;
@@ -32,7 +32,7 @@ async function main() {
   --limit N             Bound new cases this invocation; pending cases stay visible
   --timeout SECONDS     Per-case deadline (default 30)
   --out DIR --resume    Continue a matching manifest; never reuse another runtime's results
-  --cache DIR           Pinned source/reference cache (default .context/nodejs-lts-cache)
+  --cache DIR           Pinned source/reference cache (default .context/nodejs-lts-cache-v2)
 No command compiles packages. Missing/stale guest products fail preflight.
 Other upstream categories are audited but require separate configuration support.`);
       return;

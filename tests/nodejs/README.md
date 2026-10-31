@@ -18,7 +18,10 @@ scripts/run-nodejs-library-tests.sh --prepare-only
 scripts/run-nodejs-library-tests.sh --list --out .context/nodejs-inventory
 ```
 
-Preparation verifies pinned archive and extracted-tree hashes. A
+Preparation verifies pinned archive and extracted-tree hashes, including
+empty directories, entry kinds, links and permission modes. The default
+cache is `.context/nodejs-lts-cache-v2`; older file-only verification
+stamps are rejected. Use a fresh cache rather than reusing a weaker stamp. A
 harness-owned CommonJS package boundary surrounds the cache so embedding
 it beneath this repository does not change upstream module semantics.
 Upstream sources, fixtures, helpers, assertions and package files remain
@@ -97,29 +100,53 @@ version and the pinned reference are separate identities.
 
 ## Current evidence and limits
 
-- Twenty-six source/harness tests pass under the exact native Node 26.13.0
-  reference: nine URL/exit/Buffer contracts, six harness tests and eleven
-  codec tests.
+- All 57 source/harness tests pass under the exact native Node 26.13.0
+  reference, including execution of the assembled bootstrap and
+  adversarial fixture-cache integrity checks.
+
 - Native harness controls verify real flags/environments, assertion and
-  exit-listener failures, skips, deadlines, process termination and spawn
-  errors. Bootstrap generation is checked without compiling the engine.
-- Ten unchanged upstream URL, exit-code, positional-read validation and
-  streaming-decoder tests pass on the pinned native reference.
-- Existing products boot through this runner on Node, Chromium, Firefox
-  and WebKit and are correctly rejected at the old Node 22 identity. No
-  upstream passing counts are produced from those stale products.
-- Eleven unchanged upstream codec files passed against isolated codec
-  source hosted on native Node 26.13.0. Only the codec subjects were
-  replaced; assertions, fixtures, helpers and other core APIs stayed native.
-  This is source conformance evidence, not a Kandelo guest baseline.
-- The complete 5,147-case native baseline has not run. Guest baselines and
-  three-engine integration remain unrun on updated products. The user
-  deferred a full rebuild; existing products predate the new target.
-- Existing guest `assert` false positives must be fixed before its
-  readiness check can pass. Other known gaps include positioned descriptor
-  offsets and response consumption. Streaming text codec source fixes and
-  real-pipe guest regressions are prepared; rebuilt guest validation is
-  still deferred. These are runtime work, not harness shims.
+  exit-listener failures, skips, deadlines, process termination and
+  spawn errors. Ten unchanged upstream cases pass in bounded
+  3-to-10-case resumption; a changed deadline is rejected without
+  changing results.
+
+- The rebuilt normal shell product passes eleven Node-host core cases
+  and the complete shared contract on Chromium, Firefox and WebKit. This
+  covers the URL/Buffer/exit review findings, assertion brands and
+  mismatches, positioned I/O, streaming stdin decoding, Response/Blob
+  bodies and the existing process/stream checks.
+
+- The associated resident-filesystem correction passes 3,240 Rust
+  workspace tests and doctests, the ABI snapshot check, and three
+  unchanged Sortix C cases on both Node and Chromium under SourceOnly.
+  The kernel keeps ABI 55. A full product rebuild, broad POSIX suites
+  and performance comparisons have not run.
+
+- Source isolation on native Node passed eleven unchanged codec files
+  and six unchanged FileAPI WPT inputs (494 subtests, no skips). Other
+  helpers and core APIs stayed native. These are source-conformance
+  observations, not guest baseline passes or real browser WPT coverage.
+
+- Two incomplete four-host baseline attempts are retained separately.
+  Archive auditing first found an omitted empty WASI fixture directory,
+  then upstream cases exposed missing documentation and source headers.
+  The composer now copies the complete pinned source archive, preserving
+  directories, modes, files and links. Guest readiness checks empty
+  directories and reads documentation, headers and the root license.
+  The resulting image fits the existing capacity; no ceiling was raised.
+  Browser pages cache immutable input bytes and copy them for each fresh
+  kernel, without sharing mutable guest state.
+
+- Full 5,147-case baselines are being restarted separately for Node,
+  Chromium, Firefox and WebKit with the complete input contract.
+  Completion and pending counts belong to each report; no full-suite
+  passing claim is made.
+
+- Early unmodified upstream cases expose a missing net family-attempt
+  timeout API in test/common. Minimal native-versus-guest reproducers
+  also confirm incorrect require.main identity and malformed rewriting
+  of side-effect ESM imports. No harness shims supply these APIs or
+  alter the upstream source.
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
