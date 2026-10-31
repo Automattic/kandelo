@@ -17,6 +17,7 @@ export default {
       'test/node-network-attempts.test.ts',
       'test/node-module-entrypoints.test.ts',
       'test/node-call-sites.test.ts',
+      'test/node-fatal-exit.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,
