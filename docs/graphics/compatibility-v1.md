@@ -13994,3 +13994,49 @@ Independent accounting SHA256:
 Evidence is under `.context/desktop-boundary-trace-r2/` and
 `.context/desktop-boundary-trace-analysis-r2/`. No candidate responsiveness
 improvement or complete graphics acceptance follows from these counts.
+
+
+### New normal retained-wait preview available, 2026-10-31
+
+Normal frozen candidate `b6d57a94dfdc225020e333ed5fef7b71bf32642b` completes
+its own seven-stage producer `retained-epoll-normal-products-r1-1031-121159-c394`
+in26m29s. Stages include own xtask,64bit SDK completion, normal kernel/shell/
+rootfs/host products, host stamp, freshness, all-owner identity collection and
+selected-kernel ABI. Both SDK inventories and93owners245members are bound.
+The source family remains program56/host3/GL17/fork21. This is a new normal
+combined checkpoint containing the retained epoll probe, foreground resize
+repair and prior source/graphics candidates; no previous validation is carried.
+
+Preview: http://127.0.0.1:5679/pages/kandelo/
+
+Server `retained-epoll-preview-r2-1031-124156-fd44` separately rechecks exact
+producer FINISHED0, coherent owner fields, freshness and ABI before serving.
+Root and app HTTP200/COOP/COEP checks pass. Availability is announced immediately
+for user testing, before interactive validation; this does not establish a
+boundary-stall fix or responsiveness improvement. Older5678/5677/5676 previews
+remain frozen. The fresh normal headless motion cohort is separately admitted
+and must record its own result rather than inherit old response measurements.
+
+The first server attempt `retained-epoll-preview-r1-1031-123948-ab6c` exits1
+before HTTP because this checkout lacks the pinned @vitejs/plugin-react app
+dependency. The corresponding HTTP guard correctly refuses the exited job.
+Normal `npm ci` installs the app's66locked dependencies; the failed serving
+records are moved intact to `.context/preview-serving-r1-failed-server1/` with
+five original file hashes and a relocation record. The original sealed helper
+scripts, producer receipt and built artifacts are not changed. The new server
+uses a fresh receipt in the ordinary serving location; no failed result is
+relabelled as success.
+
+Actual selected kernel:1,839,060bytes, SHA256:
+`1a8ec0cf5db3c273429fe969c9b5265a2bb0d0551d3b53f24c9f09aeda5dc607`.
+Normal producer receipt SHA256:
+`8f0d9fc09f0ad8cbc6a6654b10ad76e5138ffd5d900f395f1142cbc7af0c6c2d`.
+Owners SHA256:
+`3e2a82e53529cd3a3a7e202f81052d43ce32a6bf74dde4245b559f6de70c4223`.
+Serving receipt SHA256:
+`258978fe9c626d92188fd2734c7ce1d5a26b3bc44ff9141532618795054a4c30`.
+HTTP proof SHA256:
+`9ba59983a0d46b1dce95cdafe812552461c0ac90c6a03ed716e9260755961b57`.
+Evidence lives in the normal candidate's `.context/normal-products-r1/` and
+`.context/preview-serving-r1/`. Actual compiled-guest, cross-host readiness,
+browser-memory, relevant POSIX and all benchmark acceptance remain open.
