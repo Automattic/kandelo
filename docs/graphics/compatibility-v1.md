@@ -13756,3 +13756,50 @@ checks pass, but the failed overall result is retained. R1/R2 report SHAs:
 `62605d7fb23112dc63d63b3345f61a668c3f88e79e38869f191326869e9583f5` and
 `551194a3f69c81eaa967b52d0c825912d21f1ef5e88eafdca9bfd9eb08fab8d8`.
 Evidence is under `.context/desktop-responsiveness-r1/` and`-r2/`.
+
+
+### Pointer crossing reproduces the focus stall, 2026-10-31
+
+A fresh canonical headless Chromium session compares equal96native-pixel
+moves inside the left terminal and across its boundary with its neighbour.
+At each of three and five independently painted Foot windows, four ABBA
+blocks contain three moves each, giving six observations per movement kind.
+The nominal cadence is3seconds within each block. Public cursor alpha and
+both selected-title pixel crops must independently reach the expected state;
+no subsequent move is issued after a missing response. Calibration proves
+one actual right-to-left focus transition, then validates the cursor shape
+and offset with a second96pixel move. Polling is25ms with a2.5second bound.
+No clicks, keyboard commands, frame recorder or CPU profiler run in these
+blocks. Whole-plane calibration and full PNGs occur outside measured blocks.
+
+| Foot windows | Within cursor median / range ms | Crossing cursor median / range ms | Crossing highlight median / range ms |
+|---|---:|---:|---:|
+| Three | 70.4 / 37.8–127.5 | 148.6 / 129.5–268.0 | 164.3 / 129.5–268.0 |
+| Five | 68.9 / 37.7–191.7 | 175.0 / 131.4–273.9 | 191.5 / 162.4–273.9 |
+
+All24moves are observed without censoring. These are request-to-observation
+upper brackets, including normal input dispatch,25ms sampling, public pixel
+reads and scheduling. Six samples per kind in one ordered NONQUIET session
+reproduce the reported distinction; they do not establish hardware latency,
+a before/after gain, a scaling law, Brave-specific timing or its cause.
+A selected title that remains selected is not a focus-latency observation.
+
+Job `desktop-boundary-response-r1-1031-114938-15d5` completes0/0/0in1m43s.
+Normal gallery replacement, original-Foot preservation, source/SDK/kernel/
+93owner245member/host guards and actual production module response identities
+pass. Root reviews the original five-window crossing PNG: the second title
+is highlighted and the cursor is inside its body. Runtime is the unchanged
+5678experimental proxy (normalc775 artifacts plus exacta196 production source
+changes), not a newly built combined kernel or the pending epoll candidate.
+The earlier timed Bash-read crash remains open and is not exercised here.
+
+Report SHA256:
+`5f9966860be1582e5eeb51dcf21f43d8dfdeb73479380cd85038fe03bd0dc7c2`.
+Helper manifest SHA256:
+`f37bfaa8ecb89fa473d175b9833d620208a1bdb94235251e0706d92460269c84`.
+Offline audit SHA256:
+`9484643f9d94a28e00c253192a37825bf5850c01f99b1ae003409cb21950919d`.
+Raw records live under `.context/desktop-boundary-response-r1/`; the audit
+is `.context/desktop-boundary-response-analysis-r1/audit.json`. The next
+capture applies bounded operation/retry tracing to these same motion blocks
+so extra focus work can be distinguished from recurring idle overhead.
