@@ -15037,3 +15037,53 @@ PENDING, channel counts and GC safepoint timeouts supply no such certificate.
 No production scan or ABI change follows from the proof. Evidence:
 `.context/shared-parked-lease-screen-r1/` and root-verified
 `.context/shared-parked-lease-analysis-r1/REPORT.md`.
+
+
+### Native client-upload sequence and real shared-file identity, 2026-10-31
+
+The exact committed f509 private-upload implementation now passes11 native
+functional cases in each canonical headless engine: Chromium153.0.8010.12,
+Firefox155 and WebKit26.6. The real historical C-emitted88-byte command,
+logical state restoration, nonzero first, mixed buffers, fixed attributes,
+after-effect draw failure and repair retain their assertions. Actual one-
+attribute first0/nonzero paths use14/15 error polls and render the expected
+red pixel. Context/browser/home cleanup completes; source and sealed inputs
+match before/after. This is33 synthetic native cases, not compiled current-
+guest, desktop responsiveness or broad browser-memory acceptance. Job
+`client-upload-native-r2-1031-162322-d778` finishes0 in6s. Report:
+`.context/client-upload-native-results-r2/report.json`, SHA256
+`c53bf4343efec403572fa103938e31cf026e36f0784c653b6a298d8ac7c103a6`.
+The first fixture build refuses a stale hardcoded mutable source import before
+runtime; R2 resolves allowlisted imports through the frozen source authority.
+
+A separate metadata-only capture identifies the actual hot4,190,208-byte
+range as a memfd candidate shared by SFWBar and Sway: both original fstat
+identities are dev0/ino1296387328, and both exact registration transactions
+successfully track the file with matching Memory/request/channel ownership.
+There are at least two directly observed overlapping aliases. During the
+cold Start phase SFWBar alone requests24,097 comparisons, all equal,
+covering100,971,442,176 requested bytes. Across the workload this hot size
+has35,557 comparisons,35,556equal/1different. Requested bytes are not copied
+bytes or independent hardware reads. The capture supports investigating
+shared-file synchronization, not changing menu application behavior.
+
+An unrelated successful remap causes conservative observer censoring of
+SFWBar alias history. It does not establish that the hot mapping moved;
+post-remap full alias/writer counts remain unknown. Inherited aliases also
+remain unknown. No production scan is removed on these diagnostic counts.
+
+Job `hot-shared-mapping-r2-1031-162324-cfa8` finishes0 in36s with workload,
+all-owner collector and source/artifact guards all0. One cold Start paints
+category rows, normal keys create three actual Foot processes/windows and
+recover the original, observer stop acknowledges, and normal same-page Bare
+shell replacement completes. Actual ten production source responses/two
+observers, own normal93owners/245members, both SDKs and selected kernel ABI
+remain exact. Four causal controls reject the old observer;14 pass the
+corrected recorder. Concurrent normal Clang compilation is disclosed: this
+is mapping/count evidence, not latency or application-speed evidence.
+Root analysis: `.context/hot-shared-mapping-analysis-r2/REPORT.md`.
+Final metadata SHA256:
+`73eff8d80ef57251553d10175f4439530d90d70dcd30327f8f083097d2f48b68`.
+Published5681 remains unchanged and the user's worse-responsiveness report
+remains unresolved. Fresh8b normal products are still building; no5682
+availability claim follows from these tests.
