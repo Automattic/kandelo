@@ -12953,3 +12953,33 @@ Raw report SHA256
 The next standalone probe tests actual native trace thread timestamps before
 using that mechanism for guest attribution. No profiler sample count alone
 establishes guest utilization or the cause of the nine-second remainder.
+
+
+The subsequent standalone `.context/worker-cpu-trace-probe-r1/` also exits0
+and releases its exact worker/session/context/browser/server. Native Chromium
+trace output includes usable thread timestamps and an exact authenticated
+CDP worker-target→trace-thread join. The busy control has200,245us wall and
+191,740us thread time between its markers; timed Atomics.wait has212,541us
+wall and486us thread time. One enclosing completed RunTask reports
+202,667/192,489us wall/thread for busy and212,720/656us for wait. Nested
+slices are not added again. These are actual scoped thread-clock controls,
+not whole-system coverage or a performance fix.
+
+Actual advertised categories are queried first. The trace uses a12,800KiB
+buffer/output cap, no CPU sampling/system tracing/heap walk, streamed JSON,
+1,332,925 retained bytes and dataLossOccurred=false. Automatic scalar native
+trace counters remain part of the original output. Native fields and their
+units follow the [CDP tracing protocol](https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/master/pdl/domains/Tracing.pdl)
+and [Perfetto JSON thread-time test](https://chromium.googlesource.com/external/github.com/google/perfetto/+/ef6cda3a98d37cef8025cd253dab88605c49099c/test/trace_processor/diff_tests/parser/json/tests.py).
+Applying this to real guests still needs exact target/thread joins and
+nonoverlapping completed-event accounting. Missing thread fields, open tasks,
+boundary-straddling tasks, data loss and unmatched workers must remain
+unknown or censored; do not prorate thread time by wall overlap or treat
+missing completion as zero CPU.
+
+Raw native trace SHA256
+`1b03f8564b422cfa8261d7a929b72e67ba4fc4e5faf1f2c35892965741316bfa`;
+analysis SHA256
+`6c8b3ae749c94e156bba626307a8ec232b04c0b414cf3ae8f40959044ac62889`.
+No Kandelo runtime source or SDK/kernel/program/image rebuild is needed for
+these two standalone diagnostic controls.
