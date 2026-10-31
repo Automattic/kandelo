@@ -5,6 +5,26 @@
 // std, os, and native surfaces that bootstrap expects, backed by the
 // SpiderMonkey shell and Kandelo POSIX helpers.
 (function () {
+    // Capture the embedding's utilities before removing them from Node's
+    // public realm. Closures keep the real shell functions, not user globals.
+    const shellGlobalNames = Object.getOwnPropertyNames(globalThis);
+    const { print, printErr, putstr, quit, drainJobQueue,
+        setSharedObject, joinWorkerThreads, evalInWorker } = globalThis;
+    const ecmaGlobalNames = new Set([
+        'globalThis', 'Infinity', 'NaN', 'undefined', 'eval', 'isFinite', 'isNaN',
+        'parseFloat', 'parseInt', 'decodeURI', 'decodeURIComponent', 'encodeURI',
+        'encodeURIComponent', 'escape', 'unescape', 'Object', 'Function',
+        'Boolean', 'Symbol', 'Error', 'AggregateError', 'SuppressedError', 'EvalError', 'RangeError',
+        'ReferenceError', 'SyntaxError', 'TypeError', 'URIError', 'Number',
+        'BigInt', 'Math', 'Date', 'String', 'RegExp', 'Array', 'Int8Array',
+        'Uint8Array', 'Uint8ClampedArray', 'Int16Array', 'Uint16Array',
+        'Int32Array', 'Uint32Array', 'BigInt64Array', 'BigUint64Array',
+        'Float16Array', 'Float32Array', 'Float64Array', 'Map', 'Set', 'WeakMap',
+        'WeakSet', 'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics',
+        'JSON', 'WeakRef', 'FinalizationRegistry', 'Iterator', 'Promise',
+        'Reflect', 'Proxy', 'Intl', 'WebAssembly', 'DisposableStack',
+        'AsyncDisposableStack', 'Temporal',
+    ]);
     if (typeof globalThis.queueMicrotask !== 'function') {
         globalThis.queueMicrotask = function queueMicrotask(callback) {
             Promise.resolve().then(() => callback());
@@ -368,6 +388,16 @@
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
+        prepareGlobalScope(publicNames) {
+            const retained = new Set(publicNames);
+            for (const name of shellGlobalNames) {
+                if (!ecmaGlobalNames.has(name) && !retained.has(name)) {
+                    if (!Reflect.deleteProperty(globalThis, name)) {
+                        throw new Error('Cannot remove shell global from Node realm: ' + name);
+                    }
+                }
+            }
+        },
         cloneValue(value) {
             // Keep the engine's structured-clone graph, cycles and byte views;
             // the unrelated global JSON fallback cannot clone stream chunks.
@@ -448,5 +478,5 @@
 
     const entryPath = typeof scriptPath === 'string' && scriptPath ? scriptPath : '';
     const args = typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : [];
-    globalThis.argv0 = 'node';
-    globalThis.execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];
+    const argv0 = 'node';
+    const execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];

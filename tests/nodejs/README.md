@@ -237,11 +237,20 @@ scripts/run-nodejs-library-tests.sh --host node --all \
 Use separate output directories for `chromium`, `firefox` and `webkit`.
 The wrapper enters the declared dev shell and never compiles products.
 
-The next work is real networking defaults and connection attempts, then
-a fresh four-host run to expose the blocked test bodies. The ordered
-backlog also includes loader identity/import parsing, EventEmitter
-warnings, assertion diagnostics/native key support, and the partial APIs
-listed in `packages/registry/node-compat/README.md`. The other 37 upstream
+The networking defaults and real connection attempts are implemented in
+follow-up draft PR 1612. Eight unchanged affected networking files pass
+under the pinned native reference; every guest host records eight failures
+at the next shared prerequisite: leaked SpiderMonkey shell globals. These
+results belong to `.context/node26-network-targeted-HOST/` at
+`60c3ce9b540b73723fccdf15318f94b2df1e7b93`, separate from the initial
+baseline. The shared Node namespace is being corrected before further
+networking runs. No 500-case post-networking batch ran.
+
+Further coverage selects networking modules, followed by fixing exposed
+failures and persistent loader identity/import parsing and EventEmitter
+failures. It does not repeat an arbitrary alphabetical inventory prefix.
+Assertion diagnostics/native key support and the partial APIs listed in
+`packages/registry/node-compat/README.md` remain gaps. The other 37 upstream
 categories still need configuration and fixture review.
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older

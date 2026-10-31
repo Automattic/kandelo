@@ -10,6 +10,7 @@ import { nodeResponseBodyCommand } from "../../../host/test/fixtures/node-respon
 import { nodeStdinCommand } from "../../../host/test/fixtures/node-stdin";
 import { nodeUrlCommand } from "../../../host/test/fixtures/node-url";
 import { nodeWebStreamsCommand } from "../../../host/test/fixtures/node-web-streams";
+import { nodeGlobalScopeCommand } from "../../../host/test/fixtures/node-global-scope";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -19,6 +20,7 @@ test("base shell implements Node filesystem, process, URL, streams and encoding 
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 }).toContain("kandelo$");
   const cases: Array<[string, readonly string[]]> = [
+    [nodeGlobalScopeCommand, ["node-global-scope-ok", "node-global-eval-ok"]],
     [`set -eu\ncat > /tmp/buffer-core.cjs <<'JS'\nconst {isUtf8,isAscii}=require('buffer');\n${bufferValidationSource}\nJS\nnode /tmp/buffer-core.cjs`, ["buffer-validation-ok"]],
     [nodeFileSyncCommand, ["node-file-sync-ok", "node-file-io-errors-ok"]],
     [nodeProcessExitCommand, nodeProcessExitExpected],
