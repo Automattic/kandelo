@@ -10,14 +10,16 @@ const rows = [
   ['explicit-changed', undefined, 'process.exitCode = 8;', 'process.exit(9);', 9, 8, true],
   ['natural-changed', 7, 'process.exitCode = 8;', '', 7, 8, true],
   ['primitive', undefined, '', '', 0, 1, true, 'false'],
+  ['tla-stalled', undefined, '', 'await new Promise(() => {});', 13, 13, true, "Error('exit-listener-secondary')", '.mjs'],
+  ['tla-zero', undefined, 'process.exitCode = 0;', 'await new Promise(() => {});', 13, 0, true, "Error('exit-listener-secondary')", '.mjs'],
   ['fatal-sync', 7, '', "setInterval(() => {}, 1000);\nthrow Error('main-primary');", 1, 1, false],
   ['fatal-promise', 7, '', "setInterval(() => {}, 1000);\nPromise.resolve().then(() => { throw Error('main-primary'); });", 1, 1, false],
   ['fatal-timer', 7, '', "setInterval(() => {}, 1000);\nsetTimeout(() => { throw Error('main-primary'); }, 1);", 1, 1, false],
   ['fatal-changed', 7, 'process.exitCode = 8;', "throw Error('main-primary');", 1, 8, false],
   ['fatal-cleared', 7, 'process.exitCode = undefined;', "throw Error('main-primary');", 1, 1, false],
 ] as const;
-export const nodeExitListenerCases = rows.map(([name, assigned, listener, body, eventStatus, status, secondary, thrown = "Error('exit-listener-secondary')"]) => ({
-  name, status, secondary,
+export const nodeExitListenerCases = rows.map(([name, assigned, listener, body, eventStatus, status, secondary, thrown = "Error('exit-listener-secondary')", extension = '.cjs']) => ({
+  name, status, secondary, extension,
   secondaryNeedle: thrown === 'false' ? 'false' : 'Error: exit-listener-secondary',
   marker: `node-exit-listener-${name}:${eventStatus}`,
   source: `
@@ -35,7 +37,7 @@ const quote = (value: string) => `'${value.replace(/'/g, `'"'"'`)}'`;
 export const nodeExitListenerCommand = `set -eu
 mkdir -p /tmp/node-exit-listeners
 ` + nodeExitListenerCases.map(c => {
-  const file = `/tmp/node-exit-listeners/${c.name}.cjs`;
+  const file = `/tmp/node-exit-listeners/${c.name}${c.extension}`;
   return `cat > ${quote(file)} <<'JS'\n${c.source}\nJS\n` + `
 if node ${quote(file)} >/tmp/node-exit-listener.out 2>/tmp/node-exit-listener.err; then status=0; else status=$?; fi
 if test "$status" -ne ${c.status}; then cat /tmp/node-exit-listener.out; cat /tmp/node-exit-listener.err >&2; exit 1; fi
