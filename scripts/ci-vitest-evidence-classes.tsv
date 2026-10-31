@@ -33,6 +33,7 @@ host/test/byte-range-fetch.test.ts	source-only
 host/test/cage-smoke.test.ts	prepared-product
 host/test/catch-ref-fresh-worker.test.ts	prepared-product
 host/test/centralized-spawn.test.ts	prepared-product
+host/test/channel-completion-wait.test.ts	source-only
 host/test/channel-listener-reclamation.test.ts	source-only
 host/test/channel-listener-scheduling.test.ts	source-only
 host/test/channel-request-validation.test.ts	prepared-product

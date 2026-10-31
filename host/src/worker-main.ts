@@ -143,6 +143,7 @@ import {
 import { ForkHostImportWorkerRuntime } from "./fork-host-import-runtime";
 import { trapProcessWorker } from "./fork-worker-import-exceptions";
 import { createHeapSafepointImport } from "./heap-safepoint";
+import { waitForChannelCompletion } from "./channel-completion-wait";
 import {
   ForkImportedGlobalCapture,
   ForkImportedGlobalPlanner,
@@ -273,11 +274,7 @@ function continuationMmap(
   let i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
   view = new DataView(memory.buffer);
   i32 = new Int32Array(memory.buffer);
@@ -315,11 +312,7 @@ function continuationMunmap(
   const i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
   const resultView = new DataView(memory.buffer);
   const resultI32 = new Int32Array(memory.buffer);
   const result = Number(resultView.getBigInt64(base + CH_RETURN, true));
@@ -541,12 +534,7 @@ function buildKernelImports(
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait until the reusable kernel transaction returns and the host has
       // committed the exit before terminating this disposable process Worker.
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
       onKernelExit?.(status);
       // Execute unreachable inside Wasm: a RuntimeError thrown by JavaScript
       // is catchable by guest noexcept handlers, which can issue writev on
@@ -589,12 +577,7 @@ function buildKernelImports(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
@@ -623,12 +606,7 @@ function buildKernelImports(
       const i32 = new Int32Array(memory.buffer);
       Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
       const result = Number(view.getBigInt64(base + CH_RETURN, true));
       const err = view.getUint32(base + CH_ERRNO, true);
@@ -1477,11 +1455,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait for the kernel Worker */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const errno = view.getUint32(base + CH_ERRNO, true);
     clearDeferredSignalDelivery(view, base);
@@ -1516,11 +1490,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait for mmap */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
@@ -1573,11 +1543,7 @@ export function buildDlopenImports(
     const i32 = new Int32Array(memory.buffer);
     Atomics.store(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
     Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
-    while (
-      Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) === "ok"
-    ) {
-      /* wait */
-    }
+    waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
 
     const result = Number(view.getBigInt64(base + CH_RETURN, true));
     const err = view.getUint32(base + CH_ERRNO, true);
@@ -4766,15 +4732,7 @@ function sendForkSyscall(
   const i32 = new Int32Array(memory.buffer);
   Atomics.store(i32, (channelOffset + CH_STATUS) / 4, CHANNEL_STATUS_PENDING);
   Atomics.notify(i32, (channelOffset + CH_STATUS) / 4, 1);
-  while (
-    Atomics.wait(
-      i32,
-      (channelOffset + CH_STATUS) / 4,
-      CHANNEL_STATUS_PENDING,
-    ) === "ok"
-  ) {
-    /* */
-  }
+  waitForChannelCompletion(i32, (channelOffset + CH_STATUS) / 4);
 
   const result = Number(view.getBigInt64(channelOffset + CH_RETURN, true));
   const err = view.getUint32(channelOffset + CH_ERRNO, true);
@@ -6044,12 +6002,7 @@ export async function centralizedThreadWorkerMain(
       Atomics.notify(i32, (base + CH_STATUS) / 4, 1);
       // Wait for kernel to process the exit. The kernel completes the channel
       // (CH_STATUS -> COMPLETE), which returns this Atomics.wait.
-      while (
-        Atomics.wait(i32, (base + CH_STATUS) / 4, CHANNEL_STATUS_PENDING) ===
-        "ok"
-      ) {
-        /* */
-      }
+      waitForChannelCompletion(i32, (base + CH_STATUS) / 4);
       // Intentionally do NOT reset CH_STATUS back to IDLE here. A normal syscall
       // resets to IDLE so the next syscall can set PENDING, but an exiting thread
       // issues no further syscalls — the channel is torn down and the slot is

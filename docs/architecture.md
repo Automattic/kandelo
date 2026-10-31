@@ -907,6 +907,15 @@ Compiled into every user program. Three main files:
 
 Each process has a dedicated channel region in its SharedArrayBuffer memory. The channel is placed in a host-reserved control slab immediately before the guest-managed brk/mmap region, not at the maximum memory address. This lets a process start with a small shared `WebAssembly.Memory` while keeping the channel address stable as guest brk/mmap activity grows memory on demand.
 
+JavaScript-generated channel requests share `waitForChannelCompletion` in
+`host/src/channel-completion-wait.ts`. It borrows the caller's status view,
+re-enters the native wait after notifications while the status remains pending,
+and preserves native failures. Each caller still owns request publication,
+result interpretation, signal handling and exit behavior. These waits retain
+their unbounded policy; libc's separate bounded wait and heap safepoint remain
+unchanged. This shared routine supplies no execution hold or proof of unchanged
+process memory and does not omit shared-mapping synchronization.
+
 ### Channel Layout
 
 ```

@@ -15272,3 +15272,65 @@ unacceptable. Preserve it alongside the earlier report that 5681 felt worse;
 neither establishes an isolated improvement. Startup, single-terminal and
 multi-terminal responsiveness remain unresolved, and full normal combined
 Node/browser, browser-memory, POSIX and application acceptance remain open.
+
+
+### Actual Foot and SFWBar binary coverage, 2026-10-31
+
+The private diagnostic compiler now rewrites the actual immutable normal b6
+Foot and SFWBar modules, rather than only the small synthetic corpus. Both
+originals validate before adding private declarations, and both complete
+rewritten outputs independently validate. A separate structural check preserves
+original import prefixes, exports, recursive types, function types, tables,
+globals, tags, initializer expressions, data/element segments and start identity.
+All original defined bodies are visited, including existing fork helpers.
+
+| Actual module | Defined functions | Original instructions | Instrumented mutation sites | Input bytes | Output bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Foot | 4,936 | 977,045 | 36,182 | 3,781,920 | 4,505,642 |
+| SFWBar | 87,147 | 12,569,922 | 317,934 | 35,599,255 | 42,867,348 |
+
+This extends diagnostic binary coverage to known nonmutating declarations and
+instructions under an explicit pinned opcode policy. Unsupported proposals and
+memory.discard still refuse visibly. Original memory remains shared, with its
+1 GiB maximum unchanged; one private 64 KiB marker memory covers the bounded
+page bitset and layout-invalid flag. Original active data/start effects still
+require a full initial baseline. Imported callbacks and dynamic linking are
+preserved, but **every output remains runtime-ineligible**: other module writers,
+host writes and trusted capture/refresh ownership are not established.
+
+The declared-shell private compiler build finishes in 23.57 seconds; the two
+static rewrites take approximately 1.74/19.25 seconds under concurrent normal
+compilation. These are provisioning/diagnostic elapsed observations, not guest
+or desktop performance. No guest module is instantiated, no SDK is rebuilt for
+this diagnostic, no normal cache artifact is replaced and no scan is omitted.
+All eleven frozen preparation files and the 406-file tracked dependency closure
+match before/after; actual original artifact bytes retain their recorded owner
+hashes. Report `.context/store-dirty-normal-module-coverage-r1/results-r1/report.json`
+SHA256 `ba25b8df3b19674d86beb175d73f774b9f0d1218e37f5c1bcd5755729be36daa`;
+compiler SHA256 `d15c62cd92233d8ef00fb5a85f5c5598af8ab4481f6feb72fa710cad897d0352`.
+Root launcher/log and input/after checks are `.context/normal-rewrite-root-r1*`.
+The corrected normal 8b R2 checkpoint is separately building after cache recovery,
+with both required build submodules initialized and two concurrent package jobs.
+No port 5682 availability follows from this static compiler result.
+
+
+### Shared generated-request wait seam, 2026-10-31
+
+All ten JavaScript-generated channel wait loops now use one shared borrowed-
+view/status-index routine. It preserves the existing unbounded native wait,
+spurious-wake re-entry and exception behavior. Publication, result/errno,
+signal handling, IDLE reset and exit decisions remain with their callers;
+archive/loader locks remain separate. C's bounded wait and heap safepoint are
+unchanged. This is a common implementation seam, not trusted execution hold,
+writer admission, scan elision or a measured optimization. No ABI changes.
+
+The declared-shell focused selection passes 23/23 across four source files,
+including actual Node workers invoking the production helper from Wasm and
+once-only continuation/error checks. The corrected source-before control has
+eight passes and one failure for the missing ten callers. Strict helper/test
+typecheck and the 641-file evidence registry pass. Initial WABT output-path and
+TypeScript executable-path failures remain retained as harness failures.
+No normal SDK/guest/browser, browser-memory or POSIX acceptance follows.
+Root verifies exact source and evidence hashes at
+`.context/channel-completion-wait-foundation-r1/source-identities.json` before
+commit. The normal frozen 8b build and published previews exclude this step.
