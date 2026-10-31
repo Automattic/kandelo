@@ -10397,3 +10397,87 @@ which establishes wrapper mechanics only. The successful CPU profiles
 instead support prioritizing process-copy/coherence work; sampled
 readPixels stacks belong to cursor readback, and CPU-image storage has
 only two definite-workload samples across all nine captured phases.
+
+### Owned staging build and actual consumers (2026-10-30)
+
+Runtime cdf51686bd has a new normal preview at
+http://127.0.0.1:5666/pages/kandelo/. Producer
+`preview5666-owned-snapshot-cdf51686bd-bu-1030-204038-f1bb` finishes0 in
+16m56s. All seven stages pass: own xtask, normal kernel/shell/rootfs/host
+products, SDK64, rootfs refresh, freshness, all-owner identity collection,
+and selected-kernel ABI verification. SDK32/64 and all93 owners/245
+members belong to this checkout; no earlier validation is carried forward.
+The selected kernel is1835146 bytes, SHA256
+`f65de9b91a3b9f0d6d460601927ae3af7e25a5b2ed1e3194ce042852b827465a`.
+The normal own-coherence receipt SHA256 is
+`39f7f6811b3ff2bca1bccf52fcdd2a4f4296596241127b0b53bb3a997327d1da`.
+Its separate immutable server0c55 rechecks those artifacts before serving;
+actual root and gallery HTTP200/COOP/COEP checks pass. The unpublished
+56/3/17/21 version family is unchanged.
+
+Normal root kernel preparation1e02 finishes0. Actual rebuilt-Wasm Node
+job `owned-snapshot-node-semantics-1030-205205-aca4` passes both canonical
+file-mapping and departed-SysV-peer cases, with no skips/load failures and
+the same selected kernel hash before/after. Headless Chromium153 job
+`owned-snapshot-new-browser-semantics-own-1030-210122-231c` passes both
+corresponding C programs through normal `runFetchedWasmProgram`, including
+all unchanged stdout markers, exit0, blank stderr and no runtime errors.
+Only the two exact fixture requests are supplied with the normal own-SDK
+compiled/stamped bytes; bounded regular-file reads and before/after
+hashes are recorded. No preview files or runtime behavior are replaced.
+Workload, after-collector and after-guard exit0. These cases exercise the
+actual Wasm full-read implementation, rather than only its native safe
+fallback. Unexpected-positive-import acknowledgements have source review,
+not an injected actual-Wasm negative test.
+
+Headless Chromium153 desktop job
+`owned-snapshot-new-native2x-terminals-ow-1030-210144-58f5` finishes0 in
+4m18s against5666. The unchanged workload uses one page/context/machine
+at native2880x1620/DPR2, actual Foot processes and separate painted
+bodies/title ink at counts1/2/3/4/5/1, ordinary open/close bindings, early
+and late Start clicks, and200 pointer moves over each10s motion phase.
+Sway101, SFWBar109 and original Foot110 survive;125/127/129/131 are added
+then removed. All1635 recorded DOM pointer events are trusted, without
+overflow, console/page errors or finalization errors. Source, kernel,
+SDKs and all93 owners/245 members remain unchanged before/after.
+Workload, after-collector and after-guard exit0.
+
+| Live Foot clients | Motion seconds | Accepted-flip increase | Idle increase | Early/late menu observed after down issue, ms |
+| --- | --- | --- | --- | --- |
+| 1 | 10.129 | 67 | 10 | 13395 / 2943 |
+| 2 | 10.134 | 39 | 10 | 3050 / 2961 |
+| 3 | 10.173 | 12 | 10 | 3602 / 3675 |
+| 4 | 10.145 | 22 | 10 | 3744 / 3640 |
+| 5 | 10.151 | 12 | 10 | 4366 / 2930 |
+| 1 after closing extras | 10.151 | 73 | 9 | 2935 / 2260 |
+
+The earlier1c16 run above and this run are separate nonquiet observations,
+not alternating quiet benchmarks. A peer workspace's browser suite is
+active and user CPU/GPU activity is uncontrolled. These counters are
+coarse accepted PAGE_FLIP admissions, not FPS or input-to-pixel latency;
+menu times include screenshot/poll overhead. The single-client delay and
+substantial client-count degradation remain. Removing eager zeroing does
+not establish a repair for either report. It does not justify skipping
+coherence boundaries or changing application behavior.
+
+Both cohorts have245 members. Eleven payloads differ: kernel, shell
+image, build image, SDK bundle, KandeloCC, image module, Termchat, Nethack
+and its bundle, Labwc and labnag. Sway, Foot and SFWBar payloads are
+identical. The portable source-key change caused normal rebuilds; no
+isolated kernel-effect or destination-main performance claim is made.
+Private evidence is under `.context/owned-snapshot-desktop-probe/`;
+raw desktop report SHA256 is
+`821e0862eee6369560b8cad7ca3e1cf5b992bb60191b2daa93e56a3ea02d8812`.
+Read-only derived observations and package differences are in
+`.context/owned-snapshot-desktop-comparison.json` and
+`.context/owned-snapshot-package-comparison.json`. Original probes,
+failures, profiles and producer receipts are preserved.
+
+Further investigation targets the larger shared-mapping copy and
+reconciliation cost. Completion-time reconciliation cannot be omitted
+merely because a calling thread is blocked: sibling threads, syscall
+output writes and peer publications still require an accurate model.
+All nine Node/browser benchmark suites with destination-baseline
+comparison, relevant POSIX conformance, browser-memory across all three
+engines, full desktop menu/focus/launch/lifecycle acceptance and the wider
+graphics inventory remain open. This candidate is not merge-validated.
