@@ -147,6 +147,8 @@ describe('pinned Node upstream harness', () => {
     expect(realm.process.version).toBe(`v${nodejsTarget.version}`);
     expect(realm.require('url').URL).toBe(realm.URL);
     expect(realm.require('stream/web').ReadableStream).toBe(realm.ReadableStream);
+    expect(realm.require('buffer').atob).toBe(realm.atob);
+    expect(realm.require('buffer').btoa).toBe(realm.btoa);
     expect(realm.DisposableStack).toBe(disposal);
     for (const name of ['print','quit','options','shellDebugHelper']) {
       expect(Object.hasOwn(realm, name), name).toBe(false);

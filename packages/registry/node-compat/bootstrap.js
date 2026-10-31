@@ -5133,6 +5133,8 @@ const _builtinModules = {
     'events': events,
     'buffer': {
         Buffer,
+        atob: globalThis.atob,
+        btoa: globalThis.btoa,
         isAscii: _bufferIsAscii,
         isUtf8: _bufferIsUtf8,
         // Node's buffer.constants (64-bit values).

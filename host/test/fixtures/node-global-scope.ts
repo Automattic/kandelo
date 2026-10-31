@@ -28,6 +28,9 @@ for (const name of ['Buffer','process','URL','URLSearchParams','console',
 assert.equal(Object.prototype.toString.call(globalThis), '[object global]');
 assert.equal(require('node:process'), process);
 assert.equal(require('node:buffer').Buffer, Buffer);
+assert.equal(require('node:buffer').atob, atob);
+assert.equal(require('node:buffer').btoa, btoa);
+assert.equal(atob(btoa('\x00\xffabc')), '\x00\xffabc');
 console.log('node-global-scope-ok');
 `;
 
