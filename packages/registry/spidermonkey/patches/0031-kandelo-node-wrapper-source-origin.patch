@@ -14,7 +14,7 @@
                     strlen(source.get()), JS::SourceOwnership::Borrowed)) {
 --- a/js/src/shell/ModuleLoader.cpp
 +++ b/js/src/shell/ModuleLoader.cpp
-@@ -754,6 +754,20 @@
+@@ -754,6 +754,21 @@
      return nullptr;
    }
  
@@ -28,7 +28,8 @@
 +    RootedValue sourceUrl(cx);
 +    if (!JS_GetProperty(cx, sourceMeta, "url", &sourceUrl)) return nullptr;
 +    if (sourceUrl.isString()) {
-+      filename = JS_EncodeStringToUTF8(cx, sourceUrl.toString());
++      RootedString sourceName(cx, sourceUrl.toString());
++      filename = JS_EncodeStringToUTF8(cx, sourceName);
 +      if (!filename) return nullptr;
 +    }
 +  }
