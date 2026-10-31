@@ -15470,3 +15470,57 @@ Named job `stdio-read-caller-r3-1031-182808-825a` ends 0; report SHA256
 `.context/stdio-read-caller-capture-r3/cohorts/candidate-stdio-read-caller-capture-r3/chromium/sway/report.json`.
 The intrusive pauses are caller evidence, never latency or CPU-rate evidence.
 Production sources, published preview and numeric ABI 56 remain unchanged.
+
+### Normal 5682 availability and remaining desktop failures, 2026-10-31
+
+The corrected frozen 8b producer now finishes all ten normal stages with exit 0:
+both SDKs, canonical ABI/layout, kernel/program/image/host products, freshness,
+all 93 owners/245 members and selected-kernel ABI. Numeric family remains
+56/3/17/21, program digest
+`019c0d77c97c672aa4e62db0cefe792761dfaf90ebe3a3e7ca33d41c9ade7241`.
+Owners SHA256 `3bda0eb56759e679140fbb6bc3bed804017d12c67ee6f8fdef28d68c8f283926`;
+selected kernel `8635aee37ade363403360d1fcc7507b236251bc482c944d076cfdcc711c19f6c`.
+The exact producer is `compound-normal-products-r2-1031-172754-04b9`.
+
+Server `compound-preview-r2-1031-183119-7009` serves
+http://127.0.0.1:5682/pages/kandelo/ after a separate fresh artifact check.
+Both HTML endpoints return 200 with COOP/COEP. Availability was announced
+immediately, before application validation. The canonical headless Chromium
+Sway GLES2 integration then passes in 37.1 seconds, with fresh before/after
+SDK/kernel/93-owner/245-member checks and immutable source/helper guards.
+Workload, collector and guard all return 0. Evidence lives in the frozen
+checkout's `.context/normal-sway-validation-r1/`. This checkpoint excludes
+later cdd framebuffer/upload/admission increments and dirty-store tracking.
+It is not full compatibility or responsiveness acceptance.
+
+The requested post-build cache-GC recheck completes: dry run selects only
+the same three 54.9 MiB permission-denied debris entries; apply removes 0 B.
+Sixty-six live roots protect current generations, including 55.0 GiB below
+ABI 55. No root protection or lock is overridden. The earlier actual recovery
+remains 7.5 GiB. Logs: `.context/cache-gc-post-build-r2/`.
+
+A separate five-point headless caller run over unchanged 5681 samples exactly
+the predeclared eligible distinct Read1024 ordinals 1, 512, 2048, 4096 and
+8,192. All five authenticate the actual static SFWBar bytes against its normal
+owner. The first follows getline/getdelim; the other four follow fread; every
+sample continues through xcursor_load_theme and GDK cursor scaling. These are
+five explicit population points, not attribution of every read or CPU shares.
+No duplicate eligible observations, unknown TIDs or diagnostic errors occur
+within the sampled window. Every guest/kernel resume, painted menu, normal
+replacement and full artifact after-guard completes. Job
+`stdio-read-caller-r4-1031-183900-e72d` ends 0; report SHA256
+`4d38116bd173b44dc247cceda01a8c76244e3f45466d613f16f2c0af230a9922`;
+`.context/stdio-read-caller-root-result-r4.json` provides the compact summary.
+
+Latest user feedback, presumed 5682, remains unacceptable responsiveness:
+slightly improved movement, slow crossing between terminals, delayed Start,
+reported failure after selecting ScummVM, and somewhat faster movement after
+SFWBar exits. This is subjective evidence, not a controlled bar-stop comparison.
+The supplied 18:36 screenshot shows a titled ScummVM window without application
+contents and terminal output `Failed to initialize OpenGL loader!`, alongside
+asset/locale warnings. The exact rendering and reported bar-failure causes
+remain unconfirmed. Source audit establishes the ordinary Sway launch chain:
+SFWBar sends Sway IPC exec, a shell supervisor starts the engine and waits.
+The bar, supervisor and engine require separate exit evidence. Reproduction
+plan: `.context/scummvm-start-repro-plan-r1/HANDOFF.md`; no reproduction executed
+yet. Do not reinterpret a passing compositor integration as ScummVM support.
