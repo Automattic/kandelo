@@ -1611,6 +1611,15 @@ read readiness, and the URL/Web Streams classes used by HTTP clients.
 SpiderMonkey embeds the integrity-locked JavaScript bundle under
 `third_party/node-web-platform/`; this code runs in the guest and does not
 substitute host networking or host process state.
+The engine's native module loader owns ESM parsing, linking and evaluation;
+entry files are not rewritten into async functions. CommonJS retains its
+wrapper and process-wide cache, including the main module's identity before
+its children execute. Wrapped scripts register a reference path for relative
+dynamic imports. File and eval entry points return to the same native
+job/timer/I/O loop, which owns natural exit after pending work finishes.
+An unresolved ESM entry graph without remaining work uses exit status 13
+unless a nonzero status was assigned. Module URL identities, package
+conditions and CommonJS named-export discovery remain partial.
 Its filesystem adapter translates negative operating-system results into Node
 errors, including `ENOSPC` from the bounded in-kernel filesystem. Whole-file
 writes consume partial writes until completion or an error; npm must not

@@ -45,3 +45,8 @@ fixes should be considered for upstreaming.
   Pending connects are cancelled by promise identity, and failure/cancellation
   closes the owned descriptor. Shared JavaScript owns family alternation and
   per-attempt deadlines; kernel and host networking remain authoritative.
+
+- `0030-kandelo-node-module-entrypoints.patch`: registers wrapped script paths
+  with the native module loader, applies Node format dispatch to file imports,
+  and separates import.meta.resolve from CommonJS execution. Node file mains
+  return to the normal job/timer/I/O loop without a second raw evaluation.
