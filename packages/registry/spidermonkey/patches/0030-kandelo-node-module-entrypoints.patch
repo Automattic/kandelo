@@ -1,0 +1,143 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2065,10 +2065,18 @@
+                    strlen(source.get()), JS::SourceOwnership::Borrowed)) {
+     return false;
+   }
++  RootedScript script(cx, JS::Compile(cx, opts, srcBuf));
++  if (!script) return false;
++  // A filename in CompileOptions alone does not register a referring script.
++  // The native module loader uses this private record for relative import().
++  RootedString path(cx, JS_NewStringCopyUTF8N(
++      cx, JS::UTF8Chars(filename.get(), strlen(filename.get()))));
++  if (!path) return false;
++  RootedObject info(cx, js::CreateScriptPrivate(cx, path));
++  if (!info) return false;
++  JS::SetScriptPrivate(script, ObjectValue(*info));
+   RootedValue rval(cx);
+-  if (!JS::Evaluate(cx, opts, srcBuf, &rval)) {
+-    return false;
+-  }
++  if (!JS_ExecuteScript(cx, script, &rval)) return false;
+   args.rval().set(rval);
+   return true;
+ }
+@@ -14329,8 +14337,12 @@
+     return false;
+   }
+ 
+-  if (IsKandeloNodeMode() && !RunKandeloNodeBootstrap(cx)) {
+-    return false;
++  if (IsKandeloNodeMode()) {
++    if (!RunKandeloNodeBootstrap(cx)) return false;
++    // The bootstrap submitted the file to the Node module loader. Return to
++    // the normal job/I/O/timer loop rather than evaluating it again as a raw
++    // shell script. Eval and interactive entry points still use the shell.
++    if (op->getStringArg("script")) return true;
+   }
+ 
+   MultiStringRange filePaths = op->getMultiStringOption('f');
+@@ -14731,9 +14743,9 @@
+       }
+     }
+ 
+-    // Node's eval path has no file-main wrapper to emit natural exit. Finish
+-    // only after jobs, native watches, timers and rejection reporting. Explicit
+-    // process.exit() and file mains already quit and must not emit twice.
++    // Finish Node file and eval entry points after jobs, native watches,
++    // timers and rejection reporting. Explicit process.exit() already quit
++    // and must not emit twice.
+     if (IsKandeloNodeMode() && !sc->quitting) {
+       AutoReportException are(cx);
+       RootedValue finalizer(cx);
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -62,7 +62,8 @@
+ static bool KandeloResolveBareSpecifier(JSContext* cx,
+                                         Handle<JSLinearString*> specifier,
+                                         Handle<JSLinearString*> referrerPath,
+-                                        JS::MutableHandleString out) {
++                                        JS::MutableHandleString out,
++                                        bool resolveOnly = false) {
+   out.set(nullptr);
+ 
+   RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+@@ -78,8 +79,9 @@
+     return true;
+   }
+ 
+-  JS::RootedValueArray<2> args(cx);
++  JS::RootedValueArray<3> args(cx);
+   args[0].setString(specifier);
++  args[2].setBoolean(resolveOnly);
+   if (referrerPath) {
+     args[1].setString(referrerPath);
+   } else {
+@@ -504,6 +506,18 @@
+                                      JS::Handle<JS::Value> referencingPrivate,
+                                      JS::Handle<JSString*> specifier,
+                                      JS::MutableHandle<JSString*> urlOut) {
++  // Resolving a specifier must not evaluate its CommonJS module. Ask the
++  // Node resolver for its public URL before the loading/namespace bridge.
++  Rooted<JSLinearString*> name(cx, JS_EnsureLinearString(cx, specifier));
++  Rooted<JSLinearString*> refPath(cx);
++  if (!name || (!referencingPrivate.isUndefined() &&
++                !getScriptPath(cx, referencingPrivate, &refPath))) return false;
++  RootedString nodeUrl(cx);
++  if (!KandeloResolveBareSpecifier(cx, name, refPath, &nodeUrl, true)) return false;
++  if (nodeUrl) {
++    urlOut.set(nodeUrl);
++    return true;
++  }
+   Rooted<JSLinearString*> path(cx, resolve(cx, specifier, referencingPrivate));
+   if (!path) {
+     return false;
+@@ -640,9 +654,17 @@
+     return nullptr;
+   }
+ 
+-  if (IsJavaScriptURL(name) || IsAbsolutePath(name)) {
+-    return name;
+-  }
++  if (IsJavaScriptURL(name)) return name;
++
++  // Node format dispatch applies to relative and absolute file imports too:
++  // CommonJS must use its wrapper/cache, while ESM stays in this module graph.
++  Rooted<JSLinearString*> refPath(cx);
++  if (!referencingInfo.isUndefined() &&
++      !getScriptPath(cx, referencingInfo, &refPath)) return nullptr;
++  RootedString resolved(cx);
++  if (!KandeloResolveBareSpecifier(cx, name, refPath, &resolved)) return nullptr;
++  if (resolved) return JS_EnsureLinearString(cx, resolved);
++  if (IsAbsolutePath(name)) return name;
+ 
+   // Treat |name| as a relative path if it starts with either "./" or "../".
+   bool isRelative =
+@@ -651,27 +673,6 @@
+       || StringStartsWith(name, u".\\") || StringStartsWith(name, u"..\\")
+ #endif
+       ;
+-
+-  // Kandelo: a specifier that is neither absolute, a javascript: URL, nor
+-  // relative is a Node "bare" specifier (a builtin or a node_modules package).
+-  // Resolve it through node-compat rather than as a file under the load path.
+-  if (!isRelative) {
+-    Rooted<JSLinearString*> refPath(cx);
+-    if (!referencingInfo.isUndefined()) {
+-      if (!getScriptPath(cx, referencingInfo, &refPath)) {
+-        return nullptr;
+-      }
+-    }
+-    RootedString bareResolved(cx);
+-    if (!KandeloResolveBareSpecifier(cx, name, refPath, &bareResolved)) {
+-      return nullptr;
+-    }
+-    if (bareResolved) {
+-      return JS_EnsureLinearString(cx, bareResolved);
+-    }
+-    // Fall through: unresolved bare specifier keeps the default behavior so the
+-    // failure stays visible instead of being silently swallowed.
+-  }
+ 
+   RootedString path(cx, loadPathStr);
+ 

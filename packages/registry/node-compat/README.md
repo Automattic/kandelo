@@ -55,10 +55,19 @@ particular:
   Web-object cloning/transfer remain gaps.
 
 - Streams, Fetch networking and process lifecycle need broader upstream
-  coverage. Shared natural exit now has a shell teardown hook for eval,
+  coverage. Shared natural exit now has a shell teardown hook for files and eval,
   including queued work and fatal status. File/eval/ESM regressions pass
   on the Node host and all three browser engines. beforeExit,
   uncaughtException and complete unhandled-rejection policy remain gaps.
+
+- CommonJS entries publish their module identity before children execute.
+  Explicit ESM entries use the native parser/linker and module graph, with
+  cycles and top-level await. Wrapped CommonJS scripts register their
+  reference path for relative import(). File mains return to the owning
+  job/timer/I/O loop. A stalled module graph exits 13 when no nonzero status
+  was assigned. Its native diagnostic text remains incomplete. Ambiguous
+  `.js` format detection, static CommonJS named-export discovery, complete
+  URL/query identities and package exports/conditions remain partial.
 
 - Assertion and deep-comparison source uses the pinned Node algorithms,
   including error matchers, strict aliases, Maps/Sets and cycle

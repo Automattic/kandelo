@@ -8,7 +8,7 @@
     // Capture the embedding's utilities before removing them from Node's
     // public realm. Closures keep the real shell functions, not user globals.
     const shellGlobalNames = Object.getOwnPropertyNames(globalThis);
-    const { print, printErr, putstr, quit, drainJobQueue,
+    const { print, printErr, putstr, quit,
         setSharedObject, joinWorkerThreads, evalInWorker } = globalThis;
     const ecmaGlobalNames = new Set([
         'globalThis', 'Infinity', 'NaN', 'undefined', 'eval', 'isFinite', 'isNaN',
@@ -388,6 +388,7 @@
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
+        importModule(filename) { return import(filename); },
         prepareGlobalScope(publicNames) {
             const retained = new Set(publicNames);
             for (const name of shellGlobalNames) {

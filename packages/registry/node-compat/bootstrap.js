@@ -5856,6 +5856,7 @@ function _resolveFile(id, basedir) {
 // keyed by absolute resolved path. Without this, circular requires loop
 // forever (each module gets its own cache and re-evaluates the cycle).
 const _moduleCache = {};
+let _mainModule;
 
 function _stripShebang(source) {
     if (source && source.charCodeAt(0) === 35 && source.charCodeAt(1) === 33) {
@@ -5866,7 +5867,7 @@ function _stripShebang(source) {
     return source;
 }
 
-function _makeRequire(filename) {
+function _makeRequire(filename, entry = false) {
     const basedir = path.dirname(_moduleRealpath(filename || process.cwd() + '/repl'));
 
     function require(id) {
@@ -5960,8 +5961,9 @@ function _makeRequire(filename) {
 
         // Create module object
         const dirname = path.dirname(resolved);
+        const isMain = entry && resolved === _moduleRealpath(filename);
         const mod = {
-            id: resolved,
+            id: isMain ? '.' : resolved,
             filename: resolved,
             loaded: false,
             exports: {},
@@ -5970,6 +5972,10 @@ function _makeRequire(filename) {
             require: null,
         };
         _moduleCache[resolved] = mod;
+        if (isMain) {
+            _mainModule = mod;
+            process.mainModule = mod;
+        }
 
         // Wrap and execute. Compile via evalScriptAsFunction (not `new Function`)
         // so the wrapped script's [[ScriptOrModule]] carries `resolved` — that's
@@ -6009,7 +6015,7 @@ function _makeRequire(filename) {
     };
 
     require.cache = _moduleCache;
-    require.main = null;
+    require.main = _mainModule;
 
     return require;
 }
@@ -6040,57 +6046,6 @@ function _looksLikeEsmMain(filename, source) {
     return /(^|\n)\s*(import\s+(?:[^('"`]|[\r\n])+?\s+from\s*['"]|export\s+)/.test(withoutShebang);
 }
 
-function _namedImportBindings(bindings) {
-    return bindings
-        .replace(/^\s*\{|\}\s*$/g, '')
-        .split(',')
-        .map((part) => part.trim())
-        .filter(Boolean)
-        .map((part) => part.replace(/\s+as\s+/g, ': '))
-        .join(', ');
-}
-
-let _esmImportTempId = 0;
-function _defaultImportBinding(name, moduleRef) {
-    return `const ${name} = (${moduleRef} && Object.prototype.hasOwnProperty.call(${moduleRef}, 'default')) ? ${moduleRef}.default : ${moduleRef};`;
-}
-
-const _esmRequireBinding = '__kandelo_require';
-
-function _rewriteStaticEsmImports(source) {
-    source = source.replace(
-        /(^|\n)\s*import\s+([\s\S]*?)\s+from\s*(['"][^'"]+['"])[ \t]*;?/g,
-        (match, prefix, clause, specLiteral) => {
-            clause = clause.trim();
-            if (clause.startsWith('{')) {
-                return `${prefix}const { ${_namedImportBindings(clause)} } = ${_esmRequireBinding}(${specLiteral});`;
-            }
-            if (clause.startsWith('*')) {
-                const ns = clause.match(/^\*\s+as\s+([A-Za-z_$][\w$]*)$/);
-                if (!ns) return match;
-                return `${prefix}const ${ns[1]} = ${_esmRequireBinding}(${specLiteral});`;
-            }
-            const comma = clause.indexOf(',');
-            if (comma >= 0) {
-                const defaultName = clause.slice(0, comma).trim();
-                const named = clause.slice(comma + 1).trim();
-                const tmp = `__kandelo_esm_${_esmImportTempId++}`;
-                let out = `${prefix}const ${tmp} = ${_esmRequireBinding}(${specLiteral});\n${_defaultImportBinding(defaultName, tmp)}`;
-                if (named.startsWith('{')) {
-                    out += `\nconst { ${_namedImportBindings(named)} } = ${tmp};`;
-                }
-                return out;
-            }
-            return `${prefix}const __kandelo_esm_${_esmImportTempId} = ${_esmRequireBinding}(${specLiteral});\n` +
-                _defaultImportBinding(clause, `__kandelo_esm_${_esmImportTempId++}`);
-        },
-    );
-    return source.replace(
-        /(^|\n)\s*import\s+(['"][^'"]+['"])[ \t]*;?/g,
-        (_match, prefix, specLiteral) => `${prefix}${_esmRequireBinding}(${specLiteral});`,
-    );
-}
-
 // Natural shutdown retains the pre-event status if a listener clears the
 // assignment. Explicit process.exit() instead defaults an unset status to 0.
 function _runNaturalExit(failureStatus = 0, returnStatus = false) {
@@ -6106,10 +6061,8 @@ function _runNaturalExit(failureStatus = 0, returnStatus = false) {
 }
 
 function _runCommonJsMain(filename) {
-    const mainRequire = _makeRequire(filename);
+    const mainRequire = _makeRequire(filename, true);
     mainRequire(filename);
-    if (typeof drainJobQueue === 'function') drainJobQueue();
-    _runNaturalExit();
 }
 
 function _formatThrownFailure(failure) {
@@ -6126,42 +6079,20 @@ function _formatThrownFailure(failure) {
     return headline + '\n' + stack;
 }
 
-function _runEsmMain(filename, source) {
-    const module = { id: filename, filename, loaded: false, exports: {}, children: [], paths: Module._nodeModulePaths(path.dirname(filename)) };
-    const require = _makeRequire(filename);
-    module.require = require;
-    const dirname = path.dirname(filename);
-    const fileUrl = url.pathToFileURL(filename).href;
-    const transformed = _rewriteStaticEsmImports(_stripShebang(source))
-        .replace(/\bimport\.meta\.url\b/g, JSON.stringify(fileUrl));
-    const wrappedFn = _nodeNative.evalScriptAsFunction(
-        '(async function () {\n' +
-            `const ${_esmRequireBinding} = arguments[0];\n` +
-            transformed +
-            '\n})',
-        filename,
+// Module parsing, linking, cycles and top-level await belong to the engine's
+// native module loader. File execution returns to the owning event loop; it
+// must not quit merely because the initial script evaluation completed.
+let _esmMainPending = false;
+function _runEsmMain(filename) {
+    _esmMainPending = true;
+    _nodeNative.importModule(filename).then(
+        () => { _esmMainPending = false; },
+        failure => {
+            _esmMainPending = false;
+            console.error(_formatThrownFailure(failure));
+            process.exitCode = 1;
+        },
     );
-    let settled = false;
-    let failed = false;
-    let failure = null;
-    Promise.resolve(wrappedFn(require)).then(
-        () => { settled = true; },
-        (err) => { failure = err; failed = true; settled = true; },
-    );
-    let spins = 0;
-    while (!settled && typeof drainJobQueue === 'function') {
-        drainJobQueue();
-        if (++spins > 100000) {
-            failure = new Error('ES module main did not settle after draining the SpiderMonkey job queue');
-            failed = true;
-            settled = true;
-        }
-    }
-    if (failed) {
-        console.error(_formatThrownFailure(failure));
-        process.exitCode = 1;
-    }
-    _runNaturalExit();
 }
 
 function _runMainScriptIfPresent() {
@@ -6173,7 +6104,7 @@ function _runMainScriptIfPresent() {
         throw err;
     }
     if (_looksLikeEsmMain(_mainScriptPath, source)) {
-        _runEsmMain(_mainScriptPath, source);
+        _runEsmMain(_mainScriptPath);
     } else {
         _runCommonJsMain(_mainScriptPath);
     }
@@ -6183,7 +6114,7 @@ function _runMainScriptIfPresent() {
 // Set up globals
 // ============================================================
 
-// process.argv is set by the C entry point via execArgv global
+// The engine adapter captures the entry point's arguments before user code.
 if (typeof execArgv !== 'undefined') {
     process.argv = Array.from(execArgv);
     process.argv0 = typeof argv0 !== 'undefined' ? argv0 : (process.argv[0] || 'node');
@@ -6209,12 +6140,14 @@ globalThis.require = _makeRequire(
 //
 // The C shell loader (js/src/shell/ModuleLoader.cpp, patched via
 // patches/0015-kandelo-esm-bare-specifier.patch) calls __kandeloResolveBare for
-// any bare specifier. We return a synthetic module *path* (a stable token) and
+// specifiers, including relative/absolute CommonJS imports. ESM paths stay in
+// the native module graph. For CommonJS we return a stable synthetic path and
 // stash the generated ES-module source in __kandeloBareSources under that same
 // token; the loader's fetchSource() serves it instead of reading a file. The
 // synthetic source reads the real module object back out of __kandeloBareModules
-// so the namespace's `default` and named exports are live references to the
-// object require() produced. All namespace generation stays here in JS.
+// so its default is the object require() produced; named exports snapshot its
+// current enumerable properties. Static CommonJS export discovery remains a
+// compatibility gap. Namespace generation stays here in JS.
 globalThis.__kandeloBareModules = Object.create(null);
 globalThis.__kandeloBareSources = Object.create(null);
 
@@ -6255,14 +6188,8 @@ function _makeBareEsmSource(token, obj) {
     return src;
 }
 
-globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
+globalThis.__kandeloResolveBare = function (specifier, referrerPath, resolveOnly = false) {
     if (typeof specifier !== 'string' || specifier.length === 0) return null;
-    // Only bare specifiers reach here, but guard against relative/absolute in
-    // case a caller passes them: those are not our responsibility.
-    if (specifier.startsWith('./') || specifier.startsWith('../') ||
-        specifier.startsWith('/')) {
-        return null;
-    }
 
     let bareName = specifier;
     if (bareName.startsWith('node:')) bareName = bareName.slice(5);
@@ -6270,12 +6197,13 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
     let token;
     let obj;
     if (_builtinModules[bareName] !== undefined) {
+        if (resolveOnly) return 'node:' + bareName;
         // Node builtin (with or without the `node:` prefix). Dedup `fs` and
         // `node:fs` onto a single synthetic module.
         token = '/__kandelo_bare__/builtin/' + bareName;
         obj = _builtinModules[bareName];
     } else {
-        // node_modules package. Resolve the concrete file so the token (and the
+        // Package or file specifier. Resolve the concrete file so the token (and the
         // native loader's module registry) dedups by real path, then load the
         // object through the ordinary node-compat require so CJS interop and the
         // process-global module cache apply.
@@ -6290,6 +6218,7 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
             resolvedPath = null;
         }
         if (!resolvedPath) return null;
+        if (resolveOnly) return url.pathToFileURL(_moduleRealpath(resolvedPath)).href;
 
         // ESM target: hand the real path back to the native loader so it
         // CompileModules the file (dedup-safe via the native per-path module
@@ -6300,16 +6229,14 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
         // Returning an absolute path here is handled natively by
         // ModuleLoader.cpp (confirmed: absolute paths bypass the bare-token
         // synthesis below and are read + compiled as a module directly).
-        if ((resolvedPath.endsWith('.mjs') || _nearestPackageType(resolvedPath) === 'module') && !resolvedPath.endsWith('.cjs')) {
+        if (_looksLikeEsmMain(resolvedPath, std.loadFile(resolvedPath))) {
             return resolvedPath;
         }
 
-        token = '/__kandelo_bare__/pkg' + resolvedPath;
-        try {
-            obj = _makeRequire(base)(specifier);
-        } catch (_e) {
-            return null;
-        }
+        token = '/__kandelo_bare__/pkg' + _moduleRealpath(resolvedPath);
+        // Propagate execution errors from CommonJS rather than reinterpreting
+        // a failed require as an ES module or a missing file.
+        obj = _makeRequire(base)(resolvedPath);
     }
 
     if (globalThis.__kandeloBareSources[token] === undefined) {
@@ -6322,8 +6249,7 @@ globalThis.__kandeloResolveBare = function (specifier, referrerPath) {
 // The native ES-module metadata hook (SpiderMonkey shell ModuleLoader.cpp,
 // patches/0016-kandelo-import-meta.patch) calls __kandeloModuleMeta with the
 // resolved module path and copies the returned url/dirname/require onto
-// import.meta. This is the NATIVE import() module system's import.meta — it is
-// distinct from _runEsmMain's regex-based import.meta.url string replacement.
+// import.meta, shared by ESM entry points, import() and require(esm).
 // Extracted Bun apps read import.meta.require and import.meta.dirname, so
 // populating them here lets those apps run without any source rewriting.
 // Returning null lets the C hook keep its default (url = raw path) behavior so
@@ -7161,9 +7087,13 @@ globalThis.__nodeBootstrapReady = true;
 
 // The shell owns eval/print/stdin completion. It calls this only after its
 // normal job/timer/I/O loop and rejection reporting, before tearing down the
-// realm. File mains and explicit process.exit() have already finalized.
+// realm. Explicit process.exit() has already finalized. An unsettled module
+// graph with no remaining work exits 13, unless a nonzero status was assigned.
 Object.defineProperty(globalThis, '__kandeloNodeFinalize', {
-    value: failureStatus => _runNaturalExit(failureStatus, true),
+    value: failureStatus => {
+        if (_esmMainPending && !failureStatus && !process.exitCode) failureStatus = 13;
+        return _runNaturalExit(failureStatus, true);
+    },
 });
 
 // Public Node globals are a different namespace from an engine's command-line
