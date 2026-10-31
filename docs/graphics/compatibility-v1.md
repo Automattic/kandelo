@@ -13346,9 +13346,37 @@ memory-authority audit. Fixture-producing global setup is explicitly omitted;
 no guest tests are inferred. Normal host bundling/declarations also pass.
 Logs and exact sources are retained in the mutable evidence checkout's
 `.context/comparator-four-vector-*` and `snapshot-comparator-source-tests-r2.log`.
-All32native browser variants, actual desktop effect, normal combined products,
-browser-memory and destination-main Node/browser benchmark acceptance remain
-open. Published04f preview5676 remains unchanged.
+A fresh correctness-only named job,
+`comparator-four-vector-native-parity-r1-1031-095944-a0c1`, finishes0 in7s.
+All32variants and16actual production selectors execute on each of Node24.15.0,
+Chromium153.0.8010.12, Firefox155.0 and WebKit26.6:128/128variants and64/64selectors
+pass, with zero constructor/validation refusals or runtime/cleanup errors.
+Each host makes2,028,472native calls, constructs32memories with6MiB cumulative
+declared maxima and96instances, within the fixed caps. Exhaustive byte/tail,
+adjacent-span, seeded random, duplicate-bit, alias and input-immutability
+controls pass. Equal out-of-bounds calls trap. Intentionally invalid early-
+mismatch ranges retain the documented old-return/new-SIMD-trap qualification;
+full host range admission remains unchanged. Memory64 uses real i64 imports,
+but addresses above4GiB are outside the small fixture budget.
+
+Before/after source guards match exact candidatec77584 and baseline04f.
+Independent offline accounting verifies31sealed helpers, eight source files,
+three canonical driver inputs and all raw counts. The Node worker is explicitly
+terminated after its complete reply and returns termination code1, not a
+graceful exit0. Firefox/WebKit CDP metadata remains explicitly unavailable.
+This establishes bounded native correctness, not memory reclamation or speed.
+Raw report SHA256
+`bfe21f28c2ad04dd8d0dc1ee5674d5bdf3546544a07faae33135b222d2f4ebe5`;
+independent verification SHA256
+`7a5e900ac26148f7a5610bfb59074d29eac54d1fc04ebcb7d4f2b79e0b8ae00c`.
+Evidence: `.context/comparator-four-vector-native-parity-results-r1/` and
+`.context/comparator-four-vector-native-parity-analysis-r1/`.
+
+Normal candidate job `four-vector-normal-products-r1-1031-100112-1e8a` is now
+running in its own detachedc77584 checkout; no completion is inferred.
+Actual desktop effect, normal combined products, browser-memory and destination-
+main Node/browser benchmark acceptance remain open. Published04f preview5676
+remains unchanged. Neither single- nor multi-terminal improvement is established.
 
 The separate active1/3/5/recovered1 diagnostic
 `import-metadata-active-os-cpu-r1-1031-094024-4867` finishes1/0/0 in7m33s.
@@ -13361,3 +13389,39 @@ unapproved. Four bounded frame/CPU captures precede these review gates; their
 analysis remains diagnostic only. Normal same-page Bare-shell replacement and
 source/SDK/kernel/host/own93/245 final guards complete without cleanup errors.
 No complete four-stage pass or responsiveness gain follows from this attempt.
+
+Offline accounting retains the failed qualification and separates each CPU
+window from its two much shorter logical DRM intervals:
+
+| Terminal stage | Kernel CPU ms | CPU observation window ms | Two DRM interval total ms | Equal comparisons | Requested comparison GB |
+|---|---:|---:|---:|---:|---:|
+| 1 | 3339.972 | 5537.497–5537.528 | 413.870 | 352 | 3.687383 |
+| 3 | 2865.868 | 4901.760–4901.777 | 293.710 | 362 | 3.792138 |
+| 5 | 3931.402 | 6349.271–6349.293 | 211.895 | 354 | 3.708334 |
+| recovered 1, failed review | 2910.187 | 5022.447–5022.634 | 536.245 | 518 | 5.426320 |
+
+The exact original kernel target/session/native PID/start UID/unique TID join
+survives all four snapshots; native identity trace loss is false and its stream
+is closed before active work. Foot, SFWBar, other worker, main and GPU CPU are
+not measured in this cohort. The window ends after first observed multirow
+paint plus four seconds, not at command completion. CPU/count changes are not
+monotonic with terminal count and do not establish scaling or causation.
+Only the selected target prints; extra windows are not concurrent rendering
+workloads. This also does not cover the user's15–30second accumulation report.
+
+Every selected readPixels call is64×64 RGBA8 cursor storage:23/18/13/33calls.
+There is no full-scene or CPU-image-purpose readback in these intervals.
+At1/3/5terminals the selected intervals contain the same16public GL queries
+and three guest native draws. Primary/cursor polling accounts for most native
+getError calls, but those counts do not assign the external CPU delta to a
+function. CPU-image prepare/begin/publish counts alone do not prove live
+mirrors or copied bytes; no CPU-image-purpose upload occurs. Native calls
+straddling interval boundaries stay separate, and nested elapsed spans are
+never summed as CPU. These results support investigating persistent comparison
+and polling work at every window count; they do not establish a cache leak.
+
+Independent exact accounting and per-interval ancestry are under
+`.context/import-metadata-active-os-cpu-analysis-r1/`; analysis SHA256
+`dfca9fbd50da6cb1c79ac1c1d92bb7077d64fd7b6ea2dab1cc019f1400fbcd7a`.
+All recorded source/SDK/kernel/host/93owner/245member guards match. This audit
+verifies recorded provenance, without relabeling the failed run as acceptance.
