@@ -30,7 +30,10 @@ Export presence is not implementation coverage. In particular:
   charsets and custom inspection remain gaps. Buffer's non-UTF8 encoding
   APIs are still partial.
 - Streams, Fetch body behavior and process lifecycle need broader upstream
-  coverage. Eval shutdown differs from file entry points.
+  coverage. Shared natural exit now has a shell teardown hook for eval,
+  including queued work and fatal status; compilation and rebuilt guest
+  integration are deferred. beforeExit, uncaughtException and complete
+  unhandled-rejection policy remain gaps.
 - Assertion and deep-comparison source uses the pinned Node algorithms,
   including error matchers, strict aliases, Maps/Sets and cycle detection.
   Source differential tests pass; rebuilt guest integration is deferred.

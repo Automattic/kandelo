@@ -1,0 +1,29 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -14597,2 +14597,26 @@
+         fputs("Error while printing unhandled rejection\n", fp);
++      }
++    }
++
++    // Node's eval path has no file-main wrapper to emit natural exit. Finish
++    // only after jobs, native watches, timers and rejection reporting. Explicit
++    // process.exit() and file mains already quit and must not emit twice.
++    if (IsKandeloNodeMode() && !sc->quitting) {
++      AutoReportException are(cx);
++      RootedValue finalizer(cx);
++      if (!JS_GetProperty(cx, glob, "__kandeloNodeFinalize", &finalizer)) {
++        result = EXIT_FAILURE;
++      } else if (finalizer.isObject() && JS::IsCallable(&finalizer.toObject())) {
++        RootedValue failureStatus(cx, Int32Value(result || sc->exitCode ? 1 : 0));
++        RootedValue finalStatus(cx);
++        bool finished = JS_CallFunctionValue(cx, glob, finalizer,
++                                            HandleValueArray(failureStatus),
++                                            &finalStatus);
++        if (!finished && !sc->quitting) {
++          sc->exitCode = EXIT_FAILURE;
++        } else if (finished) {
++          sc->exitCode = finalStatus.isInt32() ? finalStatus.toInt32()
++                                             : EXIT_FAILURE;
++        }
++        result = sc->exitCode;
+       }
