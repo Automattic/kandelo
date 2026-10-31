@@ -237,20 +237,64 @@ scripts/run-nodejs-library-tests.sh --host node --all \
 Use separate output directories for `chromium`, `firefox` and `webkit`.
 The wrapper enters the declared dev shell and never compiles products.
 
-The networking defaults and real connection attempts are implemented in
-follow-up draft PR 1612. Eight unchanged affected networking files pass
-under the pinned native reference; every guest host records eight failures
-at the next shared prerequisite: leaked SpiderMonkey shell globals. These
-results belong to `.context/node26-network-targeted-HOST/` at
-`60c3ce9b540b73723fccdf15318f94b2df1e7b93`, separate from the initial
-baseline. The shared Node namespace is being corrected before further
-networking runs. No 500-case post-networking batch ran.
+## Networking-only follow-up (2026-10-31)
 
-Further coverage selects networking modules, followed by fixing exposed
-failures and persistent loader identity/import parsing and EventEmitter
-failures. It does not repeat an arbitrary alphabetical inventory prefix.
-Assertion diagnostics/native key support and the partial APIs listed in
-`packages/registry/node-compat/README.md` remain gaps. The other 37 upstream
+The next collection selected every `net` and `dns` filename family in the
+pinned parallel/sequential inventory: 174 TCP and 32 DNS files. It ran at
+`f0eaf9086765e269dd7257c327e7e11e2a03c5af`, after the connection-policy,
+public-global and native module-entry fixes. This is a module selection,
+not a random sample or an alphabetical prefix. Other networking modules
+and the other upstream categories remain outside this collection.
+
+| Host | Pass | Fail | Upstream skip | Unsupported | Timeout | Harness error | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node | 17 | 159 | 4 | 25 | 1 | 0 | 0 |
+| Chromium | 17 | 160 | 4 | 25 | 0 | 0 | 0 |
+| Firefox | 17 | 159 | 4 | 25 | 1 | 0 | 0 |
+| WebKit | 17 | 158 | 4 | 25 | 1 | 1 | 0 |
+
+Every host finalized all 206 cases. WebKit lost its execution context at
+`sequential/test-net-response-size.js`; the harness-error row remains.
+Resumption on matching inputs completed its three pending cases. The two
+cross-host outcome differences involve that case and
+`sequential/test-net-GH-5504.js`, which timed out on Node, Firefox and
+WebKit and failed on Chromium. Its logs show missing Readable.setEncoding
+before shutdown waits on spawned work. These anomalies are not passing
+results or evidence of an outside-runtime defect.
+
+All four reports retain the same 17 passing filenames. A callback-only
+file such as `test-net-reuseport.js` can pass against the pre-existing
+listening-server stub; it does not prove actual bind/listen or port
+sharing. Real TCP client behavior is separately checked by the C-peer
+fixture through SDK/POSIX sockets on all four hosts. The four upstream
+skips result from crypto and IPv6 capability checks. IPv6 loopback works
+in the real peer test; incomplete runtime capability metadata remains a
+fixable gap. Unsupported launcher flags are separate from passing files.
+
+The original eight affected files now have six passes and two failures
+on each host. Public shell-global leakage and buffer Base64 export
+identity no longer block their exit checks. Their two server-dependent
+files expose missing `util.getCallSites()` and actual server behavior.
+
+The Node report contains 40 failed files whose logs mention the missing
+call-site API, sometimes alongside real connection errors. Further
+clusters include connection refusal at the stub's port zero, missing
+`dgram`/Resolver/lookupService APIs, socket option validation, Unix sockets
+and stream/worker semantics. The next fixes should implement these in
+their owning runtime modules and native bindings; diagnostic groups are
+not independent root-cause counts.
+
+Reports live at `.context/node26-net-dns-entrypoints-HOST/`; the combined
+audit is `.context/node26-net-dns-entrypoints-audit.json`. Earlier failed
+eight-case runs remain at `.context/node26-network-targeted-HOST/` and
+`.context/node26-global-network-HOST/`. They are not merged with this
+collection or the original full baseline. No 500-case post-networking
+batch ran.
+
+The ordered backlog includes call-site capture, real TCP listening,
+resolver and capability metadata, socket/stream controls, EventEmitter
+warnings, assertion diagnostics/native key support, and the partial APIs
+listed in `packages/registry/node-compat/README.md`. The other 37 upstream
 categories still need configuration and fixture review.
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older

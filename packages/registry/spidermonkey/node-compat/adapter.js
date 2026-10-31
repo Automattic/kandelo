@@ -38,6 +38,11 @@
     const nativeJsonParse = JSON.parse.bind(JSON);
     const serializeValue = globalThis.serialize;
     const deserializeValue = globalThis.deserialize;
+    const captureSavedStack = globalThis.saveStack;
+    const callSiteCreate = Object.create;
+    const callSiteAssign = Object.assign;
+    const callSiteDefine = Object.defineProperty;
+    const callSiteString = String;
     let nextTimerId = 1;
     const pendingTimers = new Map();
 
@@ -388,6 +393,34 @@
 
     const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
+        captureCallSites(frameCount) {
+            if (typeof captureSavedStack !== 'function') {
+                const error = new Error('This engine does not expose saved frames');
+                error.code = 'ERR_NOT_IMPLEMENTED';
+                throw error;
+            }
+            // The native saved-frame chain includes this adapter and the public
+            // util wrapper. Skip exactly those two owned frames; retain actual
+            // user and embedding callers, including their engine source IDs.
+            let frame = captureSavedStack(frameCount + 2);
+            for (let i = 0; i < 2 && frame; i++) frame = frame.parent;
+            const sites = [];
+            while (frame && sites.length < frameCount) {
+                const site = callSiteAssign(callSiteCreate(null), {
+                    functionName: frame.functionDisplayName || '',
+                    scriptId: callSiteString(frame.sourceId),
+                    scriptName: frame.source === '-e' ? '[eval]' : frame.source || '',
+                    lineNumber: frame.line,
+                    columnNumber: frame.column,
+                    column: frame.column,
+                });
+                callSiteDefine(sites, sites.length, {
+                    value: site, enumerable: true, writable: true, configurable: true,
+                });
+                frame = frame.parent;
+            }
+            return sites;
+        },
         importModule(filename) { return import(filename); },
         prepareGlobalScope(publicNames) {
             const retained = new Set(publicNames);
@@ -408,9 +441,9 @@
         isPromise: value => native.isPromise(value),
         isNativeError: Error.isError,
         isProxy: globalThis.isProxy,
-        evalScriptAsFunction(source, filename) {
+        evalScriptAsFunction(source, filename, firstLine = 1) {
             if (typeof native.evalScriptAsFunction === 'function') {
-                return native.evalScriptAsFunction(source, filename);
+                return native.evalScriptAsFunction(source, filename, firstLine);
             }
             return (0, eval)(source + '\n//# sourceURL=' + filename);
         },

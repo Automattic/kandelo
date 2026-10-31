@@ -1,0 +1,37 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -2058,8 +2058,10 @@
+       !KandeloGetString(cx, args[1], &filename)) {
+     return false;
+   }
++  uint32_t firstLine = 1;
++  if (args.length() >= 3 && !JS::ToUint32(cx, args[2], &firstLine)) return false;
+   JS::CompileOptions opts(cx);
+-  opts.setFileAndLine(filename.get(), 1).setForceFullParse();
++  opts.setFileAndLine(filename.get(), firstLine).setForceFullParse();
+   JS::SourceText<Utf8Unit> srcBuf;
+   if (!srcBuf.init(cx, reinterpret_cast<const Utf8Unit*>(source.get()),
+                    strlen(source.get()), JS::SourceOwnership::Borrowed)) {
+--- a/js/src/shell/ModuleLoader.cpp
++++ b/js/src/shell/ModuleLoader.cpp
+@@ -754,6 +754,20 @@
+     return nullptr;
+   }
+ 
++  // Module identity remains a filesystem path internally; Node's public
++  // source name is its module URL. Saved frames and errors use that name.
++  RootedObject sourceMeta(cx, JS_NewPlainObject(cx));
++  bool nodeMeta = false;
++  if (!sourceMeta ||
++      !KandeloPopulateImportMeta(cx, path, sourceMeta, &nodeMeta)) return nullptr;
++  if (nodeMeta) {
++    RootedValue sourceUrl(cx);
++    if (!JS_GetProperty(cx, sourceMeta, "url", &sourceUrl)) return nullptr;
++    if (sourceUrl.isString()) {
++      filename = JS_EncodeStringToUTF8(cx, sourceUrl.toString());
++      if (!filename) return nullptr;
++    }
++  }
+   JS::CompileOptions options(cx);
+   options.setFileAndLine(filename.get(), 1);
+ 

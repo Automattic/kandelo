@@ -50,3 +50,8 @@ fixes should be considered for upstreaming.
   with the native module loader, applies Node format dispatch to file imports,
   and separates import.meta.resolve from CommonJS execution. Node file mains
   return to the normal job/timer/I/O loop without a second raw evaluation.
+
+- `0031-kandelo-node-wrapper-source-origin.patch`: lets the adapter specify
+  the compilation origin of a wrapped script, keeping its first user line
+  at line one, and uses the existing Node module metadata for ESM source
+  URLs. Module registry keys retain their underlying filesystem paths.
