@@ -26,7 +26,28 @@ stacked on #1574. Neither increment is part of the landing runtime cut.
 Remaining baseline implementation and broad conformance belong to that
 follow-up; no missing API is reclassified as a platform boundary.
 
-## Latest desktop checkpoint, 2026-10-30
+## Latest desktop checkpoint, 2026-10-31
+
+The desktop work remains in draft
+[PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
+cage/sway landing. The frozen local preview at
+http://127.0.0.1:5673/pages/kandelo/ serves `71a283c2d290`, including the
+traced null-attribute clearing repair described below. Its own normal
+SDK/kernel/shell/rootfs/host producer finishes 0, with freshness, artifact
+identity and kernel ABI checks. The selected kernel SHA256 is
+`edb881f99ee69bc83bd441d98dc865de8ead15a30c52cf71d4b1f817de822e82`;
+all 93 owners / 245 members match their normal output records.
+
+Availability is separate from completed validation. The headless persistent
+one-to-five-and-recovered-one terminal observations finish 0 against this
+candidate and the frozen `deece03e6327` preview on port 5672. These are
+nonquiet diagnostics, not isolated performance acceptance. The user is
+unsure whether the single-terminal case is better;
+neither that improvement nor multi-terminal scaling is established.
+Browser-memory, real three-engine desktop acceptance, destination-main
+benchmarks, conformance and the remaining graphics baseline stay open.
+
+### Historical desktop checkpoint, 2026-10-30
 
 The desktop work is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601),
 stacked on the cage/sway landing. Source `1c80c5d713` integrates shared
@@ -11558,9 +11579,20 @@ finishes 0 in 1m26s. It first copies independent installed SDK files from the
 frozen primary, then requires the ordinary --ensure input/output checks;
 those checks rebuild both own cores and DRI/EGL/GLES archives rather than
 admitting the copied state. No alias, forced cache identity or stale SDK
-acceptance is used. Full normal desktop
-products, real 1/3/5-terminal comparison, browser-memory, main integration,
-benchmarks, conformance and the remaining graphics baseline are still open.
+acceptance is used. Normal desktop producer
+`null-attribute-normal-products-1031-021817-2b0f` finishes 0 in 11m31s at
+`71a283c2d29008b587b757f5c2f901ad5abdec6d`. Its own xtask, normal products,
+host stamp, freshness, identities and kernel ABI stages all finish 0.
+The own normal 93-owner / 245-member manifest SHA256 is
+`cc0087bd00fc679caa7389e56446e40a619f74936ab1dd28aaa6e0435d757a5d`.
+The preview server `null-attribute-preview5673-1031-023237-63de` repeats
+freshness, ownership and ABI checks before serving the frozen candidate.
+Both root and gallery return HTML 200 with COOP same-origin / COEP
+require-corp. HTTP proof SHA256 is
+`3859613dd20b9cf29a6d0c82832dfe78bc32821ae4d77d8edaf17bd6dbddf3ad`.
+This is artifact and availability evidence only. Real terminal comparison,
+browser-memory, main integration, benchmarks, conformance and the remaining
+graphics baseline are still open.
 
 Evidence: `.context/native-null-attribute-r{1,2}/`,
 `.context/native-null-helper-r1/` and the isolated candidate's
@@ -11576,3 +11608,115 @@ Native Chromium/Firefox/WebKit report SHA256:
 `3c0424d1cda166f387b02804d3e1acc5f71cf60b2ee0caec1f8a9bbd8c270bcc`,
 `115d3f246e5c6bfb97cd2559ba15b4b5ae537ada132c3cddeb3115a2cd10b905`.
 Single-terminal improvement remains unproven, as the user clarified.
+
+### Frozen normal desktop observations after null clearing (2026-10-31)
+
+`null-desktop-candidate-r1-1031-023334-208d` finishes 0 in 3m37s, followed
+by `null-desktop-baseline-r1-1031-023717-6b6c` finishing 0 in 3m39s.
+Both run headless Chromium 153.0.8010.12 at native 2880x1620 / DPR2.
+Each keeps one Sway/SFWBar session, its original Foot process and painted
+window, adds actual separate Foot processes/windows to five, then closes
+the extras and repeats at one. All six stages complete, including early
+and late Start category panels, ten-second idle and 200-requested-move
+phases. There are no page errors, input-record overflow, identity changes
+or finalization failures. Workload, before/after owner collectors and
+source/host/helper guards all finish 0 with own 93 owners / 245 members.
+
+Actual retained screenshots were reviewed: the candidate's one-terminal
+Start panel contains Games, Graphics and System Tools; two- and
+five-terminal images contain separate title/body/prompt regions, and the
+baseline three-terminal Start panel shows the same real categories.
+Process snapshots separately establish actual PIDs; rectangles are not
+asserted to identify a particular PID.
+
+| Terminal stage | Baseline early / late Start observation, ms | Candidate early / late Start observation, ms |
+|---|---:|---:|
+| 1 initial | 8237 / 1563 | 7527 / 1568 |
+| 2 | 1539 / 1561 | 1580 / 1593 |
+| 3 | 1569 / 1575 | 1531 / 1564 |
+| 4 | 1543 / 1560 | 1552 / 1564 |
+| 5 | 1534 / 1602 | 1565 / 1564 |
+| 1 recovered | 1557 / 1601 | 1541 / 1558 |
+
+These are click-issued-to-observed-panel times including screenshot,
+classifier and polling work. They are not exact input latency. This is
+one nonquiet candidate-first pair, not alternating quiet trials or a
+comparison against destination main. The idle/motion phases do not impose
+matched sustained terminal rendering; accepted flip counts are not FPS.
+Neither single-terminal improvement nor multi-terminal performance is
+established by these observations. Browser-memory and complete desktop /
+graphics acceptance remain open.
+
+Evidence: `.context/null-attribute-consumer-r1/`, including sealed helpers,
+config, per-side runs/cohorts, `pair-summary.json` and visual review.
+Candidate report SHA256:
+`d6499b7bb51cf365c0c2beeca13233784222edad205cac80b3ba9e9e3e96e20e`.
+Baseline report SHA256:
+`26b008d7e92a8f716c3835b15a7fd31c59942923b2f2965a6181c73758345901`.
+
+### Syscall-labelled candidate frame trace (2026-10-31)
+
+`gl-transaction-trace-r2-1031-024126-fe18` finishes 0 in 32s against the
+same frozen normal candidate at port 5673. No SDK, program or image rebuild
+is needed for this diagnostic. Test-context response overlays cover the
+same 17 served modules; the published source/server is unchanged. The
+recorder still caps each capture at 32768 twelve-scalar records / 3 MiB
+and two seconds. All three captures complete two selected DRM latch
+intervals and a subsequent accepted device draw: 3975 / 3749 / 7946
+records, no unclosed spans or native errors. Ten recorder/served-seam
+controls pass. Actual before/after freshness, normal 93/245 collectors
+and frozen source/host/helper guards finish 0. A separate explicit
+post-pair baseline freshness check also returns 0.
+
+New scalar events label incoming boundaries using the existing normalized
+syscall number, ioctl request and fd for read/write/ioctl only. No new
+guest-payload read, memory view, pointer capture or persistent owner is
+introduced. Request widths are normalized to u32 for analysis. A compare
+is attributed only through its exact enclosing incoming-handle span;
+deferred completions without that ancestor remain unknown. Table entries
+count equal comparisons requested for the registered 4,190,208-byte
+shared cursor pool across each whole diagnostic capture, including its
+prelude. They are not copied/inspected-byte measurements or a scaling
+curve; the captures have differing work.
+
+| Exact enclosing request category | 1 terminal | 3 terminals | 5 terminals |
+|---|---:|---:|---:|
+| ClockGettime | 26 | 28 | 42 |
+| EpollPwait / Ppoll | 19 | 17 | 17 |
+| Read | 18 | 18 | 18 |
+| GLIO_MAKE_CURRENT | 12 | 12 | 36 |
+| GLIO_SUBMIT | 12 | 12 | 40 |
+| GLIO_QUERY | 26 | 26 | 78 |
+| Other DRM ioctls | 30 | 30 | 30 |
+| Other message/write/terminal requests | 6 | 6 | 30 |
+| No incoming handle available | 1 | 1 | 1 |
+| **Total equal compare requests** | **150** | **150** | **292** |
+
+This establishes clock/event/input traffic as additional reconciliation
+causes, rather than guessing that all unclassified work is event dispatch.
+It does not justify skipping coherence for a syscall class: other threads,
+host output writes, aliases and peer publications remain real writers.
+No complete writer-epoch/quiescence proof is implemented.
+
+The real desktop deletion examples now contain exactly eight native error
+queries and no temporary createBuffer / bufferData / temporary deletion,
+matching the native helper's final-reference result. Captured owned-command
+descriptors show one staged attribute per observed client draw, with
+48-byte uploads / first0 / count6 at one and five terminals, and a
+96-byte upload / first0 / count12 at three. All use triangle draws.
+There are only 1 / 1 / 3 such draws in these captures; those observations
+do not establish a general workload distribution or sustained rendering
+throughput. These small records support screening a bounded inline private
+client-upload transport before changing the SDK. Exact logical state,
+checked native acceptance, once-only drawing, inverse repair and retirement
+remain requirements. No transport change or application gain is claimed.
+
+Evidence: `.context/gl-transaction-trace-r2/`, including raw captures,
+overlaid source hashes, scalar cause analysis and verification. Capture
+report SHA256:
+`858eb0184c1914ea810f869a602525e5181308e5db8afbccb0393a90655dac74`.
+Cause-analysis SHA256:
+`bac76bdf1d57279cd2f0198602fdf6ddb12004b4f5f98d5fb7d51fe3f78c0757`.
+Earlier retained-trace attribution/design review is in
+`.context/synchronization-cause-review-r1.md`. Neither single-terminal
+improvement nor overall desktop performance is established.
