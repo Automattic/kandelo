@@ -15195,3 +15195,80 @@ This is source/native-device-double evidence, not compiled Wasm/browser
 integration or performance evidence. The mutable checkout retains exact
 before/after logs and hashes under
 `.context/image-container-rejection-validation-r1/HANDOFF.md`.
+
+
+### Failed normal checkpoint and bounded dirty-store screens, 2026-10-31
+
+The fresh own 8b normal producer
+`compound-normal-products-r1-1031-153625-1de6` finishes with exit 1 after 1h36m.
+Provisioning, own xtask, both complete SDKs and the full canonical ABI/layout
+stage pass; normal-products fails. GTK3, SDL2-image/demo and Qtbase report
+ENOSPC. FFmpeg's facts database also reports "database or disk is full" and
+truthfully rejects its builtin fallback. Separate failures in kandelo-cc,
+termchat and librsvg report `sdk/rust/libc-upstream not initialized`: the
+producer provisioned only `libc/musl`. This is a repairable provisioning
+omission, not a platform boundary or disk-only failure. The next producer must
+initialize both build submodules; the failed original remains retained.
+Clang eventually completes and publishes, but that does not make
+the combined checkpoint successful. Host-stamp/freshness/all-owner/selected-
+kernel final stages are not reached. No port 5682 preview is available, and no new
+full candidate build has been launched after this failure. Exact stage status
+and build output remain in
+`.context/compound-transport-runtime/.context/normal-products-r1/`.
+
+Post-build cache collection uses `--below-abi 55 --above-abi 56 --max-age-days 1` policy while
+protecting live roots. The first apply exits 0 but reclaims 0 B because the peer
+cache lock blocks collection. The second actual apply removes 134 generations
+and 268 sidecars, 7.5 GiB total, with 66 live checkout roots protected. Three ordinary
+read-only debris entries, 54.9 MiB, remain after permission-denied warnings;
+no deletion is claimed for them. The subsequent filesystem snapshot reports
+21,656,732KiB available (about 20.7 GiB). Available space is a separate quantity
+from bytes reclaimed by GC. Evidence:
+`.context/cache-gc-post-build-r1/apply-r1.log` and `apply-r2.log`.
+
+A private actual-binary dirty-store rewriting prototype now passes 174 Node
+runtime cases, 13 explicit admission refusals and two-worker 2,000-call atomic
+RMW controls. The exact compiler SHA256 is
+`aa80d09ff9fcde3067e1cecf1669324f9c2c4ba76a162fc30c2db1b055781c1a`.
+The same 174-case synthetic corpus passes in each canonical headless Chromium,
+Firefox and WebKit engine (522 browser cases); all worker stop acknowledgments,
+context/browser closure and Firefox-home cleanup complete, with no report
+errors. Browser corpus timing does not include the separate two-worker atomic
+concurrency control. Report SHA256:
+`7ffe15d654b33ea7f06b6935f0cbbd6d6b75f27563e4d7184a5eb4a0a38584cc`,
+`.context/store-dirty-rewriter-browser-results-r1/report.json`.
+These are bounded private transformations with visible unsupported-input
+refusals, not production loader admission or complete writer/lifecycle coverage.
+No normal program, SDK or host scan-elision policy adopts this prototype.
+
+A separate NONQUIET Node 24.15 cost screen passes seven rows/84 ABBA cells in about 710 ms,
+with all owned workers joined. It measures the actual transformed instruction
+body separately from setup, owned capture and refresh. Its body median ratios
+are rewritten/raw within this screen:
+
+| Synthetic store body | Rewritten/raw median ratio |
+| --- | ---: |
+| Repeated scalar store | 2.99 |
+| Repeated SIMD store | 3.07 |
+| Atomic store | 3.39 |
+| Bulk 1 KiB | 1.27 |
+| Bulk 4 MiB | 1.03 |
+| Atomic read-modify-write | 1.01 |
+| Spread scalar store | 0.95 |
+
+The spread row's lower ratio remains unexplained and is not a gain claim.
+The screen's raw full-owned-copy path is **not** the current allocation-free
+native comparator baseline. Do not sum components into an application result
+or infer that dirty tracking is worthwhile from reduced capture bytes alone.
+Report SHA256:
+`28ef47c769fb666f347c8b878f4dadf2e2cd39329cf380f9efb9017a50d503e3`,
+`.context/store-dirty-cost-screen-r1/results-r1/report.json`.
+
+The later 5949 boundary-failure correction and cfd7f680 extended-rejection
+validation retain their 80 source-host/248 native C controls recorded above.
+Neither is in the failed frozen 8b normal checkpoint or the published 606 preview.
+The user's latest subjective report is better responsiveness, but still
+unacceptable. Preserve it alongside the earlier report that 5681 felt worse;
+neither establishes an isolated improvement. Startup, single-terminal and
+multi-terminal responsiveness remain unresolved, and full normal combined
+Node/browser, browser-memory, POSIX and application acceptance remain open.
