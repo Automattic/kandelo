@@ -6212,11 +6212,17 @@ function _looksLikeEsmMain(filename, source) {
 // Natural shutdown retains the pre-event status if a listener clears the
 // assignment. Explicit process.exit() instead defaults an unset status to 0.
 function _runNaturalExit(failureStatus = 0, returnStatus = false) {
-    if (failureStatus) process.exitCode = failureStatus;
+    if (failureStatus && !process._exiting) process.exitCode = failureStatus;
     const status = process.exitCode === undefined ? 0 : process.exitCode;
     if (!process._exiting) {
         process._exiting = true;
-        process.emit('exit', status);
+        if (failureStatus === 1) {
+            // Node's fatal-exception exit path suppresses a second failure
+            // from exit listeners. The original failure was already reported.
+            try { process.emit('exit', status); } catch (_) {}
+        } else {
+            process.emit('exit', status);
+        }
     }
     const finalStatus = process.exitCode === undefined ? status : process.exitCode;
     if (returnStatus) return finalStatus;
@@ -7255,7 +7261,11 @@ globalThis.__nodeBootstrapReady = true;
 // realm. Explicit process.exit() has already finalized. An unsettled module
 // graph with no remaining work exits 13, unless a nonzero status was assigned.
 Object.defineProperty(globalThis, '__kandeloNodeFinalize', {
-    value: failureStatus => {
+    value: (failureStatus, statusOnly = false) => {
+        // A throwing exit listener prevents the normal return. The native
+        // owner saves that exception and reads this status without emitting
+        // again, then reports the original exception with its actual stack.
+        if (statusOnly) return process.exitCode === undefined ? 1 : process.exitCode;
         if (_esmMainPending && !failureStatus && !process.exitCode) failureStatus = 13;
         return _runNaturalExit(failureStatus, true);
     },

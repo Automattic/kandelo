@@ -1,0 +1,55 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -129,6 +129,7 @@
+ #include "js/Array.h"        // JS::NewArrayObject
+ #include "js/ArrayBuffer.h"  // JS::{CreateMappedArrayBufferContents,NewMappedArrayBufferWithContents,IsArrayBufferObject,GetArrayBufferLengthAndData}
+ #include "js/BuildId.h"      // JS::BuildIdCharVector, JS::SetProcessBuildIdOp
++#include "js/ValueArray.h"  // JS::RootedValueArray
+ #include "js/CallAndConstruct.h"  // JS::Call, JS::IsCallable, JS_CallFunction, JS_CallFunctionValue
+ #include "js/CharacterEncoding.h"  // JS::StringIsASCII
+ #include "js/CompilationAndEvaluation.h"
+@@ -14902,6 +14903,8 @@
+     // Finish Node file and eval entry points after jobs, native watches,
+     // timers and rejection reporting. Explicit process.exit() already quit
+     // and must not emit twice.
++    bool restoreNodeStatus = false;
++    int32_t nodeStatus = EXIT_FAILURE;
+     if (IsKandeloNodeMode() && !sc->quitting) {
+       AutoReportException are(cx);
+       RootedValue finalizer(cx);
+@@ -14914,7 +14917,20 @@
+                                             HandleValueArray(failureStatus),
+                                             &finalStatus);
+         if (!finished && !sc->quitting) {
+-          sc->exitCode = EXIT_FAILURE;
++          // Reporting the exit-listener exception sets the standalone shell's
++          // status. Preserve its real stack while querying Node's authoritative
++          // exitCode, then restore that status after the reporter has run.
++          JS::AutoSaveExceptionState originalException(cx);
++          JS::RootedValueArray<2> queryArgs(cx);
++          queryArgs[0].setInt32(0);
++          queryArgs[1].setBoolean(true);
++          RootedValue requestedStatus(cx);
++          if (JS_CallFunctionValue(cx, glob, finalizer, queryArgs,
++                                   &requestedStatus) && requestedStatus.isInt32()) {
++            nodeStatus = requestedStatus.toInt32();
++          }
++          originalException.restore();
++          restoreNodeStatus = true;
+         } else if (finished) {
+           sc->exitCode = finalStatus.isInt32() ? finalStatus.toInt32()
+                                              : EXIT_FAILURE;
+@@ -14923,7 +14939,12 @@
+       }
+     }
+ 
+-    if (sc->exitCode) {
++    if (restoreNodeStatus) {
++      // An explicitly assigned zero is meaningful too; do not let the shell's
++      // generic runtime-error code override Node's chosen exit status.
++      sc->exitCode = nodeStatus;
++      result = nodeStatus;
++    } else if (sc->exitCode) {
+       result = sc->exitCode;
+     }
+ 
