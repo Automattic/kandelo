@@ -31,16 +31,29 @@ follow-up; no missing API is reclassified as a platform boundary.
 The desktop work remains in draft
 [PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
 cage/sway landing. The current frozen normal preview is
-http://127.0.0.1:5677/pages/kandelo/ at `c77584dea985`;5676 remains04f.
-The new preview includes the four-vector comparator and excludes the newer
-selected-context preservation candidate. Its own normal
+http://127.0.0.1:5679/pages/kandelo/ at `b6d57a94dfdc`. It includes the
+four-vector comparator, selected-context preservation for fixed KMS helpers,
+foreground PTY resize routing and retained epoll negative-readiness probe.
+Its own normal
 SDK32/64, kernel, programs/libraries, shell/rootfs and host producer finishes0
 with freshness, selected-kernel ABI and all93-owner/245-member identity
 checks. Kernel SHA256:
-`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+`1a8ec0cf5db3c273429fe969c9b5265a2bb0d0551d3b53f24c9f09aeda5dc607`.
 Earlier previews remain frozen at their separately recorded revisions.
 
-The latest performance candidates are also available, without tracing, at
+The user's repeated stall when crossing terminal boundaries is reproduced
+on5679. In one headless Chromium session, equal96native-pixel moves have
+median cursor response brackets of70.5ms within a terminal versus136.7ms
+crossing at3terminals, and71.8ms versus135.4ms at5terminals (six observations
+per kind/count). These are25ms-polled, NONQUIET observations, not an isolated
+epoll benefit or a matched comparison against main. The focus stall remains
+open. The separate accepted operation trace records substantially more Sway
+queries, submissions, draws and shared-memory comparisons during crossing,
+while cursor readback counts stay nearly constant. Complete ordered operation
+capture and checked-query transport/state invalidation investigations are the
+next discriminators; no focus workaround or synchronization skip is justified.
+
+The earlier selected-context candidate remains available, without tracing, at
 http://127.0.0.1:5678/pages/kandelo/ . This experimental local source proxy
 retains normalc775 artifacts and comparator, applying only the committeda196
 kernel.ts/GL-registry selection delta. Its two actual HTTP module outputs
