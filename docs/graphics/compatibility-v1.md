@@ -11190,3 +11190,61 @@ excluded or reclassified to hide a product dependency.
 
 The complete evidence-class rerun passes:636 files, registry and live Vitest
 inventory agree. No source-only/prepared-product mismatch is waived.
+
+
+### KMS candidate: no-build actual GPU screening (2026-10-31)
+
+Candidate24d36b98ddad89feeb256965cd687109ffd085a3 and immutable baseline
+e660 are loaded as ordinary source modules by a temporary minimal Vite
+server. Three serial canonical headless engines use one disposable worker
+and synthetic native WebGL2 context each. Eight warmups precede four
+alternating baseline/candidate rounds,16 cursor64x64 readbacks or8 primary
+2880x1620 draws per batch. Result bytes, opaque primary pixels and original
+framebuffer/pack/scissor/color state are checked. Query counts are measured
+separately, untimed, by forwarding every native getError result unchanged.
+
+| Engine | Cursor readback baseline/candidate, median ms/call | Primary draw baseline/candidate, median ms/call |
+|---|---|---|
+| Chromium153.0.8010.12 | 1.030 / 0.871 | 1.170 / 0.969 |
+| Firefox155.0 | 0.820 / 0.700 | 0.741 / 0.623 |
+| WebKit26.6 | 0.188 / 0.156 | 0.125 / 0.125 |
+
+All three complete both checked operation cases; actual native query counts
+are28-to22 per read and26-to20 per draw. The extra callback array and native
+calls are included in timing. These NONQUIET same-context operation
+observations support application testing, not a desktop speedup, native
+reclamation or destination benchmark claim. WebKit's batched clock is
+coarse (no positive tick in4096 immediate probes); its equal primary row
+is not evidence of no regression. Chromium/Firefox minimum observed ticks
+are0.005/0.020ms. Actual launch argv, raw rounds, module response hashes,
+context/version metadata and load remain with the reports.
+
+The original r1 fixture omitted its texture attachment, so all engines
+failed framebuffer completeness before measuring either helper. The r2
+fixture attaches its owned texture and keeps the same completeness, pixel
+and state assertions. Original failures remain; no production change is
+made to accommodate this diagnostic. Corrected source hashes are sealed
+at input manifest
+`c1be0cb412e321c964363ce94229ead24bf9dc5f8488ce764eaaf07d4e415b6b`.
+Raw r2 report hashes: Chromium
+`7b371f3aee905e3ff4ec081b1725e6e6507512b2f07cd203a56af025524cb8e2`,
+Firefox `199cb9f7e75d648495aa34246376169f7829952468b660ed251abaf35036a395`,
+WebKit `33e16876699247b5fa7debddcad0774ec1340cb4113bdb9b140ec4b21ed33540`.
+Evidence is under `.context/kms-native-probe-r2/results-r1/`. Before/after
+source and diagnostic inputs match byte-for-byte. All owned native handles
+are deleted before context-loss request and worker retirement; browser and
+context close acknowledgements pass. The aggregate command retains exit1
+for the previously observed owned Firefox-home ENOTEMPTY. No aggregate
+acceptance is inferred from the successful operation rows. The temporary
+source server is stopped with exit0 before subsequent edits.
+
+The primary checkout's incremental host build passes, including all32
+comparator generated-byte checks and declarations. Its existing selected
+kernel remains1835532-byte edb881f9 and verify-fresh passes. Read-only
+owner capture finds78 owners194 members, including cage/foot/rootfs but
+missing the shell/Sway/Labwc/SFWBar closure. That first capture overlaps
+host distribution generation outside its collected package/source inputs
+and is diagnostic only. It is not a desktop-ready cohort. The next normal
+shell-vfs/rootfs build will resolve the missing owners using the existing
+SDK/cache, followed by a fresh post-writer identity capture. No unconditional
+SDK reconstruction or copied artifact bridge is introduced.
