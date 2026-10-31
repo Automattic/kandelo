@@ -44,7 +44,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
-import { applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
+import { prepareDrawableTransition, applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
 import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
@@ -2965,8 +2965,16 @@ export class WasmPosixKernel {
             // Revoking a kernel binding does not alter the cached native
             // context or wait on a renderer. Queued forwarded commands still
             // observe their old drawable; a new bind is acknowledged in order.
-            if (b) { releaseSurfaceResources(b); b.currentDrawable = null; }
-            return 0;
+            try {
+              if (b) {
+                if (b.gl) {
+                  const muxer = this.glMuxerFor(b.gl);
+                  if (prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl))) muxer.invalidateFramebuffers(b);
+                }
+                releaseSurfaceResources(b); b.currentDrawable = null;
+              }
+              return 0;
+            } catch { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           }
           if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;
           if ((drawId === 0) !== (readId === 0)) return -22;
@@ -2988,9 +2996,16 @@ export class WasmPosixKernel {
               if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
             } catch { return -5; }
           }
-          if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          try { if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) return -12; }
-          catch { return -5; }
+          try {
+            if (b.gl) {
+              const muxer = this.glMuxerFor(b.gl);
+              if (prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl),drawable)) muxer.invalidateFramebuffers(b);
+            }
+            if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
+              if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent();
+              return -12;
+            }
+          } catch { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           return 0;
         },
         host_gl_submit: (

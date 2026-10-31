@@ -3640,7 +3640,17 @@ scalars rather than guest memories or bindings. CPU WebGL scanout also resets
 its complete draw/upload dependencies on each accepted frame. Every utility
 captures the outgoing logical owner's errors before native work. Generic
 presenter callbacks invalidate the muxer so later GLES work restores that
-context's state. The fixed GPU cursor readback, scanout and GBM front-copy/readback
+context's state. A reviewed already-current drawable release/rebind may instead
+retain the exact selected owner with only its read/draw framebuffer selectors
+marked unknown. Before that owner executes again, a private checked sequence
+rebinds both selectors from desired logical state; a failed prefix invalidates
+and refuses dependent work. This does not treat a mutated shadow as proof of
+physical selector values. First-current viewport/scissor initialization,
+new surfaceless allocation, owner-dead surface collection, pending repair or
+execution cleanup and client-array restoration retain full invalidation.
+A forwarded drawable mark is published only with its acknowledged logical
+commit. Peer selection and full invalidation discard the partial witness;
+a thrown full-replay prefix also revokes the previous owner's identity. The fixed GPU cursor readback, scanout and GBM front-copy/readback
 helpers may preserve its selected owner after their complete checked selector
 inverse succeeds. Front export retains its own errno and private errors; CPU
 front bytes are published only after the final error, context-loss and pending

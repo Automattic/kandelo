@@ -9,7 +9,7 @@ import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQue
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./surface-capabilities.js";
 import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH } from "./ops.js";
 import { GlMuxer } from "./muxer.js";
-import { prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
+import { prepareDrawableTransition, prepareCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable, type GlDrawableBinding } from "./current.js";
 import {
   completeGlForwardQuery, createGlForwardQueryMailbox, glForwardQueryCapacity,
   glForwardRequestPending, GL_FORWARD_QUERY_MAX_BYTES, prepareGlForwardQuery, retireGlForwardQuery,
@@ -214,19 +214,29 @@ export function setupMainForward(
             completeGlForwardQuery(msg.mailbox,-22,new Uint8Array()); return;
           }
           if (!glForwardRequestPending(msg.mailbox)) return;
+          const selected = muxer(b.gl);
+          // All fallible capture/cleanup fencing precedes acknowledgement.
+          // Only the nonthrowing drawable mark waits for accepted commit.
+          const drawableOnly = prepareDrawableTransition(b,selected,reg.hasExecutionRetirements(b.gl),msg.drawable);
           if (!reg.retryExecutionRetirements(b.gl)) {
+            selected.invalidateCurrent();
             completeGlForwardQuery(msg.mailbox,-5,new Uint8Array()); return;
           }
-          muxer(b.gl).invalidateCurrent();
           const prepared = prepareCurrentDrawable(b, msg.drawable, surfaces ?? undefined);
           if (!prepared) {
+            selected.invalidateCurrent();
             completeGlForwardQuery(msg.mailbox, -12, new Uint8Array());
             return;
           }
           try {
-            if (completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) prepared.commit();
-          } finally { prepared.cancel(); }
+            if (completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
+              if (drawableOnly) selected.invalidateFramebuffers(b);
+              prepared.commit();
+            }
+          } catch (error) { selected.invalidateCurrent(); throw error; }
+          finally { prepared.cancel(); }
         } catch {
+          if (b.gl) muxer(b.gl).invalidateCurrent();
           try { completeGlForwardQuery(msg.mailbox, -5, new Uint8Array()); } catch { /* no reply authority */ }
         }
         return;

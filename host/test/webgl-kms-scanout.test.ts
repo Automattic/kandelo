@@ -4,8 +4,8 @@ import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess } from "../sr
 import { defaultShadow } from "../src/webgl/shadow";
 import type { GlMuxer } from "../src/webgl/muxer";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
-import { QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
-import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery";
+import { OP_CLEAR, QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
+import { hasNativeRepair, repairNativeState, reserveNativeRetirement } from "../src/webgl/native-recovery";
 
 function renderer() {
   const read = {}, draw = {}, pack = {}, fbo = {};
@@ -29,7 +29,7 @@ function renderer() {
     cullFace() {}, frontFace() {}, useProgram() {}, vertexAttrib4f() {},
     activeTexture: (value: number) => state.set(0x84e0, value),
     createTexture: () => ({}), createFramebuffer: () => fbo, createRenderbuffer: () => ({}),
-    deleteTexture() {}, deleteFramebuffer() {}, deleteRenderbuffer() {},
+    deleteTexture() {}, deleteFramebuffer() {}, deleteRenderbuffer() {}, deleteVertexArray() {},
     bindTexture: (_target: number, value: unknown) => state.set(0x8069, value),
     bindRenderbuffer: (_target: number, value: unknown) => state.set(0x8ca7, value),
     texImage2D() {}, texParameteri() {}, framebufferTexture2D() {},
@@ -575,4 +575,143 @@ it("refuses another guard's cleanup while the selected peer's flags remain unrea
   r.gl.getError=getError;expect(r.run()).toBe(0);expect(cleanups).toBe(1);
   expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
   expect(lease.release()).toBe(true);
+});
+
+function selectedDrawable() {
+  const r = selectedFront("gpu");
+  r.binding.cmdbufView = new Uint8Array(0);
+  expect(r.imports.host_gl_make_current(8,22,71,71,12)).toBe(0);
+  expect(r.imports.host_gl_submit(8,0,0,12)).toBe(0);
+  const before = r.selections();
+  const binds: unknown[][] = [], bind = r.gl.bindFramebuffer.bind(r.gl);
+  r.gl.bindFramebuffer = (target,value) => { binds.push([target,value]); bind(target,value); };
+  return {...r,before,binds,submit:()=>r.imports.host_gl_submit(8,0,0,12),
+    makeCurrent:()=>r.imports.host_gl_make_current(8,22,71,71,12),
+    release:()=>r.imports.host_gl_make_current(8,0,0,0,12)};
+}
+
+it.each([false,true])("restores only framebuffer selectors after same-owner current transition (release: %s)",release=>{
+  const r=selectedDrawable();r.binding.shadow.viewport=[3,4,5,6];r.binding.shadow.scissor.rect=[1,2,3,4];
+  // Selectors are context state; changing these through ordinary commands is
+  // outside this fixture's transition. Explicitly establish their selection.
+  r.muxer.invalidateCurrent();expect(r.submit()).toBe(0);const before=r.selections();r.binds.length=0;
+  r.setError(0x501);
+  if(release)expect(r.release()).toBe(0);
+  expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.selections()).toBe(before);
+  expect(r.binds).toEqual([[0x8ca9,r.binding.shadow.fbo],[0x8ca8,r.binding.shadow.readFbo]]);
+  expect(r.binding.shadow.viewport).toEqual([3,4,5,6]);expect(r.binding.shadow.scissor.rect).toEqual([1,2,3,4]);
+  expect(r.binding.errors).toEqual([0x501]);expect(r.owner.errors).toEqual([]);
+});
+
+it("restores distinct draw/read defaults without displacing user FBO state",()=>{
+  const r=selectedDrawable(), readFbo={};
+  r.kernel.gl.bind({pid:8,sessionId:14,cmdbufAddr:0,cmdbufLen:0});
+  const second=r.kernel.gl.get(8,14)!;second.gl=r.gl;second.contextId=24;
+  second.surfaceId=72;second.renderTargetFbo=readFbo;second.surfaceSize={width:2,height:2};
+  expect(r.imports.host_gl_make_current(8,22,71,72,12)).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);expect(r.state.get(0x8caa)).toBe(readFbo);
+  expect(r.selections()).toBe(r.before);
+  const userDraw={},userRead={};r.binding.shadow.fbo=userDraw;r.binding.shadow.readFbo=userRead;
+  r.muxer.invalidateCurrent();expect(r.submit()).toBe(0);const before=r.selections();
+  expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.state.get(0x8ca6)).toBe(userDraw);expect(r.state.get(0x8caa)).toBe(userRead);
+  expect(r.selections()).toBe(before);
+});
+
+it("never retains a drawable witness across a peer selection or a generic mutation",()=>{
+  const r=selectedDrawable();expect(r.release()).toBe(0);
+  r.muxer.switchTo(r.owner);const before=r.selections();
+  expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);expect(r.selections()).toBe(before+1);
+  expect(r.makeCurrent()).toBe(0);
+  getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl,()=>r.gl.bindFramebuffer(0x8d40,null));
+  expect(r.submit()).toBe(0);expect(r.selections()).toBe(before+2);
+});
+
+it("keeps first-current initialization outside the framebuffer-only witness",()=>{
+  const r=selectedFront("gpu");r.binding.cmdbufView=new Uint8Array(0);
+  r.muxer.switchTo(r.binding);const before=r.selections();
+  expect(r.imports.host_gl_make_current(8,22,71,71,12)).toBe(0);
+  expect(r.imports.host_gl_submit(8,0,0,12)).toBe(0);expect(r.selections()).toBe(before+1);
+  expect(r.binding.shadow.viewport).toEqual([0,0,2,2]);expect(r.binding.shadow.scissor.rect).toEqual([0,0,2,2]);
+});
+
+it("uses full selection for a newly allocated surfaceless container, then restores only its selectors",()=>{
+  const r=selectedDrawable();
+  expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.selections()).toBe(r.before+1);const fbo=r.binding.undefinedDefaultFbo;expect(fbo).not.toBeNull();
+  expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);expect(r.submit()).toBe(0);
+  expect(r.selections()).toBe(r.before+1);expect(r.state.get(0x8ca6)).toBe(fbo);expect(r.state.get(0x8caa)).toBe(fbo);
+});
+
+for(const target of [0x8ca9,0x8ca8])for(const fault of ["native","throw"]as const)
+  it(`refuses dependent guest work after ${fault} drawable selector ${target}`,()=>{
+    const r=selectedDrawable();let draws=0,rejected=false;
+    r.gl.clear=()=>{draws++;};
+    const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);view.setUint16(0,OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
+    r.binding.cmdbufView=bytes;r.binding.cmdbufLen=8;
+    expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
+    r.gl.bindFramebuffer=(which,value)=>{if(!rejected&&which===target){rejected=true;if(fault==="throw")throw Error("selector refused");r.setError(0x502);return;}bind(which,value);};
+    expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-5);expect(draws).toBe(0);
+    expect(r.binding.errors).toEqual([]);
+    r.gl.bindFramebuffer=bind;expect(r.imports.host_gl_submit(8,0,8,12)).toBe(0);expect(draws).toBe(1);
+    expect(r.selections()).toBe(r.before+1);
+  });
+
+it("invalidates before releasing an owner-dead surface's final native allocation",()=>{
+  const r=selectedDrawable(),fbo=r.storage.fbo,texture={},depth={};
+  const retirement=reserveNativeRetirement({gl:r.gl,errors:[]},[["deleteFramebuffer",fbo],["deleteTexture",texture],["deleteRenderbuffer",depth]])!;
+  r.binding.surface.presentTarget={fbo,tex:texture,depthStencil:depth,w:2,h:2,retirement};
+  const surface=r.binding.surface;surface.ownerAlive=false;
+  let deletes=0,selectedDuringDeletion:unknown;
+  r.gl.deleteFramebuffer=()=>{deletes++;selectedDuringDeletion=Reflect.get(r.muxer,"current");};
+  expect(r.release()).toBe(0);expect(deletes).toBe(1);expect(surface.users.size).toBe(0);
+  expect(selectedDuringDeletion).toBeNull();
+  r.muxer.switchTo(r.binding);expect(r.selections()).toBe(r.before+1);
+});
+
+it("keeps the dirty drawable witness through a fixed KMS helper's exact native inverse",()=>{
+  const r=selectedDrawable(),nextFbo={};
+  r.kernel.gl.bind({pid:8,sessionId:14,cmdbufAddr:0,cmdbufLen:0});
+  const second=r.kernel.gl.get(8,14)!;second.gl=r.gl;second.contextId=24;
+  second.surfaceId=72;second.renderTargetFbo=nextFbo;second.surfaceSize={width:2,height:2};
+  expect(r.imports.host_gl_make_current(8,22,72,72,12)).toBe(0);
+  expect(r.binding.shadow.fbo).toBe(nextFbo);expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);
+  r.kernel.kms.setMaster(100,1n,1n);r.kernel.kms.setCursor(100,3,42,2,2,0,0,0,0);
+  // The helper restores the actual old native preimage, not the new shadow.
+  expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);
+  expect(r.submit()).toBe(0);expect(r.state.get(0x8ca6)).toBe(nextFbo);
+  expect(r.state.get(0x8caa)).toBe(nextFbo);expect(r.selections()).toBe(r.before);
+});
+
+it("uses full selection after pending native repair during a drawable transition",()=>{
+  const r=selectedDrawable();r.failRead();
+  const bind=r.gl.bindFramebuffer.bind(r.gl);let reads=0,reject=true;
+  r.gl.bindFramebuffer=(which,value)=>{
+    if(which===0x8ca8&&++reads>1&&reject){r.setError(0x502);return;}
+    bind(which,value);
+  };
+  expect(readGpuScanout(r.storage,2,2)).toBeNull();expect(hasNativeRepair(r.gl)).toBe(true);
+  r.allowRead();reject=false;expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
+  expect(hasNativeRepair(r.gl)).toBe(false);expect(r.selections()).toBe(r.before+1);
+});
+
+it("refuses a dirty drawable after context loss before dependent guest work",()=>{
+  const r=selectedDrawable();let draws=0;r.gl.clear=()=>{draws++;};
+  const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);
+  view.setUint16(0,OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
+  r.binding.cmdbufView=bytes;r.binding.cmdbufLen=8;
+  expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
+  r.gl.bindFramebuffer=(which,value)=>{bind(which,value);r.loseContext();};
+  expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-5);expect(draws).toBe(0);
+  expect(Reflect.get(r.muxer,"current")).toBeNull();
+});
+
+it("does not reuse a dirty drawable witness for a replacement context with the same numeric identity",()=>{
+  const r=selectedDrawable();expect(r.makeCurrent()).toBe(0);
+  r.imports.host_gl_destroy_context(8,22);
+  const replacement=r.kernel.gl.get(8,12)!;replacement.gl=r.gl;replacement.contextId=22;
+  replacement.cmdbufView=new Uint8Array(0);replacement.hasBeenCurrent=true;
+  expect(r.imports.host_gl_submit(8,0,0,12)).toBe(0);expect(r.selections()).toBe(r.before+1);
 });

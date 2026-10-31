@@ -1,5 +1,6 @@
 import type { GlBinding } from "./registry.js";
-import { repairNativeState } from "./native-recovery.js";
+import type { GlMuxer } from "./muxer.js";
+import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { defaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { selectSurfaceResources, type GlSurfaceResources } from "./surface-resources.js";
@@ -33,6 +34,28 @@ export function resolveDrawableSurfaces(registry: { getSurface(pid: number, id: 
 }
 
 export type GlDrawableSurfaces = { draw: GlSurfaceResources; read: GlSurfaceResources };
+
+/** Only already-current drawable membership/default-selector changes are
+ * native-free. Releasing an owner-dead surface may delete native storage;
+ * first-current also changes viewport/scissor, and surfaceless allocation or
+ * pending cleanup can mutate beyond the two framebuffer selectors. */
+export function prepareDrawableTransition(b: GlBinding, muxer: GlMuxer,
+  executionRetirementPending: boolean, drawable?: GlDrawableBinding): boolean {
+  const collect = b.drawSurface?.ownerAlive === false || b.readSurface?.ownerAlive === false;
+  const allocation = drawable?.drawSurfaceId === 0 && !b.undefinedDefaultFbo;
+  const cleanup = executionRetirementPending || hasNativeRepair(muxer.context);
+  if (b.hasBeenCurrent && !collect && !allocation && !cleanup &&
+      !b.clientArrayEndRequested && !muxer.context.isContextLost?.()) {
+    // The caller marks only immediately before the logical commit, after
+    // any forwarded mailbox acknowledgement has accepted it.
+    return true;
+  }
+  muxer.invalidateCurrent();
+  // Invalidation retains unread error ownership on refusal. Do not let native
+  // cleanup/allocation consume those flags before a successful capture.
+  if (collect || allocation || cleanup) muxer.captureCurrentErrors();
+  return false;
+}
 
 /** Prepare native storage without changing current ownership. Forwarded
  * callers commit only after the reply mailbox accepts acknowledgement.

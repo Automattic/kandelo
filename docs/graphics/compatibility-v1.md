@@ -14169,3 +14169,56 @@ Evidence: `.context/desktop-boundary-ordered-r1/`,
 `.context/compound-gl-transport-source-r1/`. The unpublished family remains
 program56 / host3 / GL17 / fork21. No new preview or focus-performance gain is
 claimed from this checkpoint.
+
+### Drawable-selector transition candidate, 2026-10-31
+
+The new shared muxer model retains an exact selected-owner witness with a
+bounded framebuffer-selectors-dirty bit. Reviewed native-free logical drawable
+release/rebind marks that bit before changing defaults. Before the same owner
+executes again, both desired DRAW/READ selectors are checked in one synchronous
+sequence, retaining every post-check. A failed selector write, throw, context
+loss or repair refuses dependent GLES work and invalidates the full witness.
+First-current viewport/scissor initialization, owner-dead surface collection,
+new surfaceless allocation, pending cleanup/repair and client-array restoration
+remain full-invalidating. A matching PID or mutable shadow is not evidence of
+unchanged physical selectors. Peer/full switches clear the partial witness;
+fixed KMS exact inverses preserve the dirty bit. Full replay now revokes the
+old selected identity before any native prefix, so a thrown peer replay cannot
+authorize the old owner's same-identity shortcut.
+
+Direct and forwarded paths share transition eligibility. The forwarded mark
+occurs only after its actual mailbox acknowledgment accepts the logical commit;
+late/rejected acknowledgment publishes neither shadow nor a dirty mark. A
+required pre-collection error capture can now return EIO before releasing the
+logical binding, retaining unread peer flags for retry. No ABI layout/version,
+SDK or package change is made. Candidate source is not in preview5679.
+
+Focused source controls pass263/263 across10 graphics files with0skips in the
+declared shell. Before controls reproduce unnecessary full replay on repeated
+current binding and release/rebind. Negative controls cover each checked
+selector error/throw, lost renderer, distinct draw/read defaults, user FBOs,
+first-current and surfaceless fallback, peer/generic invalidation, dirty state
+through a fixed KMS inverse, pending repair, owner-dead collection, same numeric
+identity replacement, forwarded late/ACK race and thrown full peer replay.
+Standalone full typecheck remains failing with byte-identical diagnostics to
+the preceding failed check; this is baseline comparison of that command, not a
+green project typecheck. Source review finds no new blocker. An inherited
+full-invalidation gap remains: constant-attribute clearing indices are not
+retained across loss of the prior owner; FBO/VAO refusal controls do not prove
+complete constant-attribute recovery. This ordinary gap remains open.
+
+Application operation counts, responsiveness, normal combined distribution,
+Node/browser rendering, browser-memory, conformance and destination-main
+benchmarks remain unrun for this candidate. Its checked selector restoration
+adds work of its own; reduced full-state replay is not an application gain.
+Evidence is `.context/focus-drawable-transition-candidate-r1/` and
+`.context/focus-make-current-source-r1/`.
+
+The second ordered trace `desktop-boundary-ordered-r2-1031-132007-dfa6` also
+finishes **FAILED**, workload1/collector0/guard0 in43s. Its first capture has
+29,948rows, no overflow/unknowns, but22 observer-internal errors; crossing does
+not run. The observer used Map.prototype.get on the actual WeakMap of muxers,
+and its source control incorrectly substituted Map. This is an observer defect,
+not a rendering defect. The next fresh observer uses the actual WeakMap and a
+source declaration assertion, while keeping the failed capture immutable.
+No complete ordered focus claim follows from R2. Preview5679 stays unchanged.
