@@ -30,22 +30,38 @@ follow-up; no missing API is reclassified as a platform boundary.
 
 The desktop work remains in draft
 [PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
-cage/sway landing. The frozen local preview at
-http://127.0.0.1:5673/pages/kandelo/ serves `71a283c2d290`, including the
-traced null-attribute clearing repair described below. Its own normal
-SDK/kernel/shell/rootfs/host producer finishes 0, with freshness, artifact
-identity and kernel ABI checks. The selected kernel SHA256 is
-`edb881f99ee69bc83bd441d98dc865de8ead15a30c52cf71d4b1f817de822e82`;
-all 93 owners / 245 members match their normal output records.
+cage/sway landing. The current frozen normal preview is
+http://127.0.0.1:5676/pages/kandelo/ at `04f60e90e38c`. Its own normal
+SDK32/64, kernel, programs/libraries, shell/rootfs and host producer finishes0
+with freshness, selected-kernel ABI and all93-owner/245-member identity
+checks. Kernel SHA256:
+`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+Earlier previews remain frozen at their separately recorded revisions.
 
-Availability is separate from completed validation. The headless persistent
-one-to-five-and-recovered-one terminal observations finish 0 against this
-candidate and the frozen `deece03e6327` preview on port 5672. These are
-nonquiet diagnostics, not isolated performance acceptance. The user is
-unsure whether the single-terminal case is better;
-neither that improvement nor multi-terminal scaling is established.
-Browser-memory, real three-engine desktop acceptance, destination-main
-benchmarks, conformance and the remaining graphics baseline stay open.
+The current runtime includes the bounded client-draw/restoration changes
+and the shared import-metadata reader optimization. Exact native-operation
+counts, parser result parity and isolated screens are recorded below;
+**single-terminal and multi-terminal responsiveness improvements remain
+unproven**. Do not turn those operation results into an application claim.
+
+A fresh headless Chromium cold Start observation passes functional menu,
+normal same-page replacement and source/artifact guards, joining38/38 tagged
+workers. Its click-issued→menu-observed bracket remains about11.6s, with
+about9.1s after receipt of the final new-worker entry-attempt record. Those
+are instrumented NONQUIET observer endpoints, not guest readiness or a
+matched performance comparison. Native-clock standalone controls distinguish
+busy and waiting threads; both first real-guest native captures are incomplete
+from actual trace loss/output caps, so no guest CPU totals follow yet.
+A bounded cold-Start aggregate now passes, recording26,484 comparisons
+requesting133.5GB over its12.5s input/stop observation bracket;26,330 return
+equal. Their instrumented import scopes accumulate5.2s. Read contexts
+account for16,752 comparisons. These are operation/elapsed observations,
+not active CPU, actual bus traffic or permission to skip synchronization.
+
+Availability is separate from completed validation. Browser-memory, real
+three-engine desktop acceptance, destination-main benchmarks, conformance
+and the remaining graphics baseline stay open. Detailed evidence, original
+failures, artifact receipts and exact scope are retained in this ledger.
 
 ### Historical desktop checkpoint, 2026-10-30
 
@@ -13005,3 +13021,120 @@ native capture report
 `e80ae43b63a16e2897cd9c27ba906f554261302750f5d02589503dc93ac4621d`.
 All live under `.context/import-metadata-cold-cpu-trace-r1/`; this attempt
 requires no rebuild and changes no production source or published preview.
+
+
+### Cold Start request/comparison/presentation aggregate
+
+Actual named job
+`import-metadata-cold-aggregate-trace-r1-1031-084405-8bdd` finishes0 in1m01s,
+with workload/collector/guard0/0/0 on normal04f/5676. The genuine three-row
+menu, pager1 and Foot prompt are root-viewed. Normal same-page replacement
+completes; source/SDK/kernel/host/own93-owner245-member guards stay equal.
+All226 native methods are wrapped for this worker window, the four required
+methods are present and original descriptors restore. Unknown/internal/cap/
+open-scope counts are zero. Fresh38 pure controls, nine local startup seams,
+nine served startup seams and eight served aggregate seams pass before launch.
+
+Two preparation failures remain visible. A2M-character source cap rejects the
+actual2,952,625-byte Vite kernel-worker response before browser launch; the
+private source cap becomes4M after recording exact sizes/hashes. The first
+named attempt `...084135-e20b` refuses the unsealed configuration before any
+browser runs after a parent seal-script KeyError. The corrected independent
+seal and successful job do not rewrite that failure. Root adaptations and
+original logs remain within the new namespace.
+
+Kernel input-down→stop-after-main-menu-observation is12,527.890ms. Its upper
+endpoint includes stop-RPC delivery; it is not exact physical paint latency.
+Lifetime conservation is11,632new +5left-censored =11,624finished +13pending;
+1,950 handler retries do not create new requests. Pending waits are censored,
+not successful zero-duration calls. Logical finish differs from guest notify.
+
+After input-down:
+
+| Observed work | Count | Requested bytes | Accumulated worker elapsed ms |
+|---|---:|---:|---:|
+| Process comparison imports | 26,484 | 133,537,026,176 | 5,198.700 |
+| Comparisons in Read context | 16,752 | 70,848,036,864 | 2,750.835 |
+| Comparisons in Llseek context | 1,858 | 11,154,333,696 | 436.615 |
+| Comparisons in Readv context | 1,718 | 9,687,760,896 | 380.620 |
+| Native getError | 30,890 | — | 2,197.695 |
+| Native readPixels | 764 | — | 119.055 |
+| Native blitFramebuffer | 764 | — | 7.635 |
+
+Comparison results are26,330equal/154different/0unavailable/0other/0throws.
+The4,190,208-byte requested length appears24,411times, all equal, with
+4,018.665ms of import scopes. Length does not establish backing/file identity
+or immutability. Equal observations never authorize a later skip. Requested
+bytes are not actual scanned bytes or measured memory traffic. These are
+NONQUIET instrumented same-worker elapsed scopes, not CPU/GPU shares,
+matched application timings or predicted removable delay. Parent handler,
+sync, KSM and tick durations contain these calls and must not be added again;
+parked request lifetimes overlap across workers.
+
+Actor handler counts show SFWBar Read8,338, Llseek795 and Readv760. The ABI
+source confirms119 means Llseek, not ClockGettime. No returned byte counts or
+errno were captured, so these are not8,338 proven successful reads. Comparison
+keys contain target PID plus inherited syscall context; they omit the actor
+PID separately. Rust can publish other observers of a backing, so do not
+infer actor=target or exact request pairs from aggregated phase counts.
+A new bounded FD/request-size/actual-return histogram would distinguish
+small upstream requests from possible short-read behavior without copying
+payloads, reading iovecs privately or guessing file/OFD identity.
+
+There are764vblank attempts (max inter-attempt gap130.620ms),764primary
+blits and764cursor readbacks. Primary/cursor getError counts remain exactly
+19/20 per device operation; all flags are zero. This does not support complete
+timer starvation or prove physical60fps. Actual decoded guest command count
+is322, including18private client draws and95 synchronous queries. Repeated
+platform observation work is a concrete next optimization target; no cache,
+dirty ledger, syscall-name skip or application speedup is implemented here.
+
+Raw aggregate SHA256
+`392672330c2175b4c0cbf1c6816a75c225eb49a954775e77091c99214b813a6c`;
+functional report
+`0c4d7b28b284d3016e049be37d37d31d759652a02623fd4d225b292b341c8e61`.
+Independent offline accounting and source/hash/guard verification are under
+`.context/import-metadata-cold-aggregate-analysis-r1/`; it verifies the recorded
+normal collections rather than pretending to rehash245 files again.
+
+The second native full-desktop trace
+`import-metadata-cold-cpu-trace-r2-1031-083953-ea93` also ends1/0/0 in1m08s
+from actual native trace loss and the hard64MiB output cap. The requested two
+categories were applied. Its complete prefix already contains162,338RunTask,
+53,038FunctionCall and53,288UpdateCounters events, filling before retained
+click/menu stamps. No guest CPU totals are accepted. Partial SHA256
+`d4a9043e2169aebb068cc6c49c6fd10af7d6ad679a0e22158bf1b9a84b35b485`;
+report SHA256
+`92a332b1992b7877bf1b7b9f2e6f624b4f44d405989f6ede49c13ec161898800`.
+
+Standalone `.context/libproc-browser-thread-cpu-r1/` instead proves external
+macOS public thread-counter sampling on one exactly joined owned headless
+Chromium worker. A short loss-free88,322-byte identity trace ties the actual
+CDP target to native PID/thread; it stops before the workload. Existing process
+start/UID/thread identities remain equal across samples. A200ms busy control
+uses187.347ms thread CPU; a203.825ms timed Atomics.wait uses0.410ms. All own
+browser/session/server cleanup completes. This is a host-specific diagnostic
+capability, not a runtime workaround, guest performance result or whole-worker
+coverage. Raw report SHA256
+`349079e1705886fd3b5993e6cff17518b4c99f4466244ca580307c10355ecbb0`.
+An actual desktop existing-thread subset capture remains next; newly created,
+departed, inaccessible or unjoined workers must remain censored, not zero CPU.
+
+
+Aggregate accounting SHA256
+`416fbb79b74d4b477df04de9a0ef1d514729587c30a17db85cac78bc77106f51`.
+The first actual OS-counter attempt
+`import-metadata-cold-os-cpu-r1-1031-085638-9818` finishes1/0/0 in46s before
+click or any counter snapshot. The88,716-byte identity trace is complete and
+loss-free but joins only the kernel, so the required SFWBar-main identity
+check correctly refuses measurement. Other guest workers are explicitly
+unjoined. Normal replacement and all source/artifact/cleanup guards complete.
+No desktop CPU delta is reported. Raw functional report SHA256
+`4b4ad79bc9de320b40b04128635bfb06833494107116f2e5cd8ea3f9835542dd`;
+identity trace SHA256
+`4831e4e33c035168f0d1c1212cf5e0b181d2a0e828385611bba8551f22885de1`.
+A fresh proposal captures identities during boot before long-running guest
+entry, then stops tracing before external CPU snapshots/workload. It must
+prove immutable binding and live same-target/session identity instead of
+assuming a later rundown can execute in a blocked worker. That repair and
+actual desktop CPU attribution remain unvalidated here.
