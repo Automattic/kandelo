@@ -15,6 +15,43 @@ The compatibility goal is public Node 26 LTS APIs across all four hosts,
 with explicit engine and platform limits. Implementation gaps remain
 failures to close; platform limits must not be counted as passing support.
 
+The active completion goal extends beyond the initial baseline and first
+fixes. Completion requires an audited public-API matrix and behavioral
+evidence for Node, Chromium, Firefox and WebKit. The matrix must cover
+documented exports, inherited methods, globals used by core modules,
+aliases, descriptors, errors, asynchronous ordering and resource lifetime.
+Documented experimental and legacy APIs stay in the inventory with their
+real activation requirements. An experimental flag or upstream skip is
+not permission to omit an implementation gap.
+
+Reference discovery must combine the pinned API documentation, native
+exports and upstream builtin exposure policies. Option-gated modules can
+be absent from the default builtin list. Export discovery is a review
+inventory, never a compatibility score; getter presence does not validate
+its behavior, and own properties do not cover inherited APIs.
+
+For each API, retain its upstream document/symbol, per-host state and
+test evidence bound to actual source and runtime identities. Unknown,
+partial, failed, skipped and unsupported states remain distinct. A
+documented engine/platform boundary needs a concrete capability reason;
+ordinary missing code, option handling, native bindings and syscall
+defects remain work to implement. Portable algorithms such as Windows
+path conversion are not excluded merely because Kandelo is POSIX.
+
+Run unchanged upstream assertions and native differential controls, with
+focused regressions for ordering, byte boundaries, cancellation and
+lifetime where relevant. Callback-only success against a stub does not
+validate the resource contract. Review the other upstream categories and
+record their applicability rather than equating parallel/sequential with
+the complete public core surface. Never refresh unselected baseline rows
+from a filtered follow-up.
+
+Continue through useful source work and targeted normal builds while the
+full product rebuild remains deferred. Required deferred validation stays
+visible and cannot be converted into completed compatibility. Changes
+remain in focused draft PRs; completion of an individual fix is not
+completion of this goal.
+
 ## Prepare and inspect without rebuilding
 
 ```sh
@@ -389,20 +426,54 @@ scripts/run-nodejs-library-tests.sh --host node --timeout 30 \
   parallel/test-util-getcallsites-preparestacktrace.js
 ```
 
-The current product passed 14 Node-host core cases and all fourteen
-commands on Chromium and WebKit. Firefox completed the new call-site
-command, then timed out in the existing combined exit-code fixture in
-both the three-project run and a separate single-project recheck. The
-recheck progressed further through the fixture before the same
-120-second deadline. Both observations remain failures; their cause is
-unresolved, concurrent build load was present, and no timeout was raised.
-Reports are `.context/node-browser-prepared-reports/playwright.IAOJHS/`
-and `playwright.jPIKF8/`. Diagnose this lifecycle/timing anomaly before
-claiming a clean current four-host core run.
+The earlier call-site product passed 14 Node-host core cases and all
+fourteen commands on Chromium and WebKit. Firefox timed out twice in the
+combined exit-code fixture at its unchanged 120-second deadline. A later
+unchanged, single-project run passed all fourteen commands under lower
+concurrent load. The original failures remain recorded; mixed outcomes
+do not establish the cause or a reliability claim. Reports remain at
+`.context/node-browser-prepared-reports/playwright.IAOJHS/`,
+`playwright.jPIKF8/` and `playwright.d9w5j6/`.
+
+### Default fatal shutdown
+
+A native differential reproduction found that the guest drained live work
+after an uncaught synchronous exception, and delayed unhandled-rejection
+reporting until every timer and I/O watch had drained. A parent with an
+open interval could therefore hang indefinitely after a fatal error.
+Timer callback exceptions were also discarded by the native shell loop.
+
+The owning Node-mode event loop now exits on a synchronous fatal error,
+reports unhandled rejections after the microtask checkpoint, and retains
+thrown timer/ESM values. Standalone SpiderMonkey shell behavior is
+unchanged. A nonzero assigned process.exitCode still permits ordinary
+work to finish, and a rejection handled during the same checkpoint does
+not become fatal. Custom uncaughtException/unhandledRejection policy,
+beforeExit and complete timer ordering remain implementation gaps.
+
+The normal targeted shell build passed 93 source/reference checks, all
+15 Node-host core cases and the ten-program fatal regression on Chromium,
+Firefox and WebKit. The regression includes file/eval/ESM errors, timer
+and Promise failures, live child I/O, and nonfatal controls. The real
+C-socket peer check also passed on all four hosts. These are focused
+checks; no complete product rebuild was performed. The unchanged broader
+fourteen-command browser core check passed on all three engines with
+retries disabled (13.1 minutes total), recorded at
+`.context/node26-core-goal-browser-reports/playwright.0lAhBE/`.
+The focused fatal-browser report is `playwright.mo1elZ/` in that parent.
+
+The unchanged upstream sequential/test-net-GH-5504.js now fails on all
+four hosts at the actual missing Readable.setEncoding method, with no
+timeout or harness error. Earlier reports contained three timeouts and
+one failure. This is a newly exposed failure, not a compatibility pass.
+Reports are `.context/node26-fatal-upstream-HOST/`; the combined source
+and runtime identity audit is
+`.context/node26-fatal-upstream-audit.json`. The pre-fix differential
+reproduction is retained at `.context/node26-fatal-exit-red.json`.
 
 The next priorities are real TCP bind/listen/accept and server lifetime,
 DNS/Resolver APIs and accurate capability metadata, socket/stream controls
-including Readable.setEncoding, and fatal shutdown with spawned work.
+including Readable.setEncoding, and the remaining process event policies.
 Persistent EventEmitter listener defaults/warnings and assertion
 diagnostics/native key comparisons remain confirmed gaps. Call-site
 source-map remapping and the other partial APIs in
