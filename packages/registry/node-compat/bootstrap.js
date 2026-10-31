@@ -354,6 +354,9 @@ function _errnoToCode(errno) {
         22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 27: 'EFBIG', 28: 'ENOSPC', 29: 'ESPIPE',
         30: 'EROFS', 31: 'EMLINK', 32: 'EPIPE', 36: 'ENAMETOOLONG',
         39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 75: 'EOVERFLOW', 95: 'ENOTSUP',
+        88: 'ENOTSOCK', 89: 'EDESTADDRREQ', 90: 'EMSGSIZE', 93: 'EPROTONOSUPPORT',
+        97: 'EAFNOSUPPORT', 100: 'ENETDOWN', 103: 'ECONNABORTED', 105: 'ENOBUFS',
+        108: 'ESHUTDOWN', 113: 'EHOSTUNREACH', 114: 'EALREADY', 115: 'EINPROGRESS', 125: 'ECANCELED',
         98: 'EADDRINUSE', 99: 'EADDRNOTAVAIL', 101: 'ENETUNREACH',
         107: 'ENOTCONN', 110: 'ETIMEDOUT',
         111: 'ECONNREFUSED', 104: 'ECONNRESET',
@@ -3713,18 +3716,329 @@ crypto.X509Certificate = (function () {
 })();
 
 // ============================================================
-// net module (minimal stubs)
+// net module (TCP client policy; listening servers remain incomplete)
 // ============================================================
 
+// Public lookup uses the real libc resolver. The current libc transport still
+// returns one IPv4 answer for external hostnames; it is not a full DNS client.
+const _nodeDnsLookup = (() => {
+    let order = 'verbatim';
+    // musl getaddrinfo flags on the Kandelo target (not host Node constants).
+    const ADDRCONFIG = 32, ALL = 16, V4MAPPED = 8;
+    const orders = ['verbatim', 'ipv4first', 'ipv6first'];
+    function invalid(code, message) { const error = new TypeError(message); error.code = code; return error; }
+    function selectOrder(value, name) {
+        if (!orders.includes(value)) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid ' + name + ': ' + String(value));
+        return value;
+    }
+    function lookup(hostname, options, callback) {
+        if (hostname && typeof hostname !== 'string') throw invalid('ERR_INVALID_ARG_TYPE', 'The "hostname" argument must be of type string');
+        if (typeof hostname === 'string' && hostname.includes('\0')) throw invalid('ERR_INVALID_ARG_VALUE', 'hostname must not contain null bytes');
+        let family = 0, hints = 0, all = false, resultOrder = order;
+        if (typeof options === 'function') { callback = options; options = undefined; }
+        if (typeof callback !== 'function') throw invalid('ERR_INVALID_ARG_TYPE', 'The "callback" argument must be of type function');
+        if (typeof options === 'number') family = options + 0;
+        else if (options !== undefined && (typeof options !== 'object' || options === null)) {
+            if (options !== null) throw invalid('ERR_INVALID_ARG_TYPE', 'The "options" argument must be an integer or object');
+        } else if (options) {
+            if (options.family != null) family = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family;
+            if (options.hints != null) {
+                if (typeof options.hints !== 'number') throw invalid('ERR_INVALID_ARG_TYPE', 'options.hints must be a number');
+                hints = options.hints >>> 0;
+                if ((hints & ~(ADDRCONFIG | ALL | V4MAPPED)) !== 0) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid options.hints');
+            }
+            for (const name of ['all', 'verbatim']) if (options[name] != null && typeof options[name] !== 'boolean') {
+                throw invalid('ERR_INVALID_ARG_TYPE', 'options.' + name + ' must be a boolean');
+            }
+            all = options.all === true;
+            if (options.verbatim != null) resultOrder = options.verbatim ? 'verbatim' : 'ipv4first';
+            if (options.order != null) resultOrder = selectOrder(options.order, 'options.order');
+        }
+        if (family !== 0 && family !== 4 && family !== 6) throw invalid('ERR_INVALID_ARG_VALUE', 'Invalid options.family: ' + String(family));
+        if (!hostname) throw invalid('ERR_INVALID_ARG_VALUE', 'hostname must be a non-empty string');
+        const literal = net.isIP(hostname);
+        function deliver(records) {
+            const sorted = records.slice();
+            if (resultOrder !== 'verbatim') {
+                const first = resultOrder === 'ipv4first' ? 4 : 6;
+                sorted.sort((a, b) => Number(b.family === first) - Number(a.family === first));
+            }
+            if (all) callback(null, sorted);
+            else if (sorted.length) callback(null, sorted[0].address, sorted[0].family);
+            else failed({ code: 'ENOTFOUND', errno: -3008 });
+        }
+        function failed(reason) {
+            if (reason instanceof Error || _nodeNative.isNativeError?.(reason)) { callback(reason); return; }
+            const code = reason?.code || 'EAI_FAIL';
+            const error = new Error('getaddrinfo ' + code + ' ' + hostname);
+            Object.assign(error, { code, errno: reason?.errno, syscall: 'getaddrinfo', hostname });
+            callback(error);
+        }
+        if (literal) queueMicrotask(() => deliver([{ address: hostname, family: literal }]));
+        else {
+            const query = _nodeNative.socketLookup(hostname, family, hints);
+            Promise.resolve(query).then(deliver, failed);
+        }
+        return {};
+    }
+    return { lookup, ADDRCONFIG, ALL, V4MAPPED,
+        getDefaultResultOrder() { return order; },
+        setDefaultResultOrder(value) { order = selectOrder(value, 'dnsOrder'); },
+    };
+})();
+
+// Shared TCP dialing policy. Defaults are consumed by actual connection
+// attempts, including callers such as TLS; they are not harness overrides.
+let _nodeBeginSocketConnection;
 const net = (() => {
     const nat = _nodeNative;
+    let autoSelectFamilyDefault = true;
+    let attemptTimeoutDefault = 500;
     const toU8 = (b) => {
         if (b instanceof Uint8Array) return b;
         if (b instanceof ArrayBuffer) return new Uint8Array(b);
         if (typeof b === 'string') return Buffer.from(b, 'utf8');
         throw new TypeError('socket: chunk must be Buffer, Uint8Array, ArrayBuffer, or string');
     };
+    function argumentError(code, message, range = false) {
+        const error = range ? new RangeError(message) : new TypeError(message);
+        error.code = code;
+        return error;
+    }
+    function received(value) {
+        if (value == null) return String(value);
+        if (typeof value === 'object') {
+            let name = 'Object';
+            try { name = Object.getPrototypeOf(value)?.constructor?.name || name; } catch (_) {}
+            return 'an instance of ' + name;
+        }
+        return 'type ' + typeof value + ' (' + util.inspect(value) + ')';
+    }
+    function boolean(value, name) {
+        if (typeof value !== 'boolean') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "' + name + '" argument must be of type boolean. Received ' + received(value));
+        return value;
+    }
+    function timeout(value, name) {
+        if (typeof value !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "' + name + '" argument must be of type number. Received ' + received(value));
+        const constraint = !Number.isInteger(value) ? 'an integer' : value < 1 || value > 2147483647
+            ? '>= 1 && <= 2147483647' : null;
+        if (constraint) throw argumentError('ERR_OUT_OF_RANGE', 'The value of "' + name +
+            '" is out of range. It must be ' + constraint + '. Received ' + String(value), true);
+        return Math.max(value, 10);
+    }
 
+    // Node 26.13.0 lib/internal/net.js IP grammar. Copyright Node.js
+    // contributors; MIT license in third_party/node-core/LICENSE.
+    const v4Seg = '(?:25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])';
+    const v4Str = `(?:${v4Seg}\\.){3}${v4Seg}`;
+    const IPv4Reg = new RegExp(`^${v4Str}$`);
+    const v6Seg = '(?:[0-9a-fA-F]{1,4})';
+    const IPv6Reg = new RegExp('^(?:' +
+        `(?:${v6Seg}:){7}(?:${v6Seg}|:)|` +
+        `(?:${v6Seg}:){6}(?:${v4Str}|:${v6Seg}|:)|` +
+        `(?:${v6Seg}:){5}(?::${v4Str}|(?::${v6Seg}){1,2}|:)|` +
+        `(?:${v6Seg}:){4}(?:(?::${v6Seg}){0,1}:${v4Str}|(?::${v6Seg}){1,3}|:)|` +
+        `(?:${v6Seg}:){3}(?:(?::${v6Seg}){0,2}:${v4Str}|(?::${v6Seg}){1,4}|:)|` +
+        `(?:${v6Seg}:){2}(?:(?::${v6Seg}){0,3}:${v4Str}|(?::${v6Seg}){1,5}|:)|` +
+        `(?:${v6Seg}:){1}(?:(?::${v6Seg}){0,4}:${v4Str}|(?::${v6Seg}){1,6}|:)|` +
+        `(?::(?:(?::${v6Seg}){0,5}:${v4Str}|(?::${v6Seg}){1,7}|:))` +
+        ')(?:%[0-9a-zA-Z-.:]{1,})?$');
+    const testIP = Function.call.bind(RegExp.prototype.test);
+    const isIPv4 = value => testIP(IPv4Reg, value);
+    function isIPv6(value) {
+        if (typeof value === 'string' && (value.length < 2 || value.indexOf(':') === -1)) return false;
+        return testIP(IPv6Reg, value);
+    }
+    function isIP(value) { return isIPv4(value) ? 4 : isIPv6(value) ? 6 : 0; }
+    function normalizeArgs(args) {
+        const first = args[0];
+        const options = typeof first === 'object' && first !== null ? { ...first }
+            : typeof first === 'string' && Number.isNaN(Number(first)) ? { path: first }
+            : { port: first, ...(typeof args[1] === 'string' ? { host: args[1] } : {}) };
+        const last = args[args.length - 1];
+        return [options, typeof last === 'function' ? last : null];
+    }
+    function normalizeOptions(options) {
+        if (options.port === undefined && options.path == null) throw argumentError('ERR_MISSING_ARGS',
+            'The "options" or "port" or "path" argument must be specified');
+        if (options.path != null) throw new Error('net.Socket Unix paths are not implemented on spidermonkey-node');
+        if (options.blockList != null) throw new Error('net.Socket blockList enforcement is not implemented on spidermonkey-node');
+        const host = options.host || 'localhost';
+        if (typeof host !== 'string') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "options.host" property must be of type string. Received ' + received(host));
+        if (host.includes('\0')) throw argumentError('ERR_INVALID_ARG_VALUE',
+            'The property \'options.host\' must be a string without null bytes');
+        if (typeof options.port !== 'number' && typeof options.port !== 'string') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "options.port" property must be one of type number or string. Received ' + received(options.port));
+        const port = Number(options.port);
+        if (!Number.isInteger(port) || port < 0 || port > 65535 ||
+            typeof options.port === 'string' && !options.port.trim()) throw argumentError('ERR_SOCKET_BAD_PORT',
+            'Port should be >= 0 and < 65536. Received ' + util.inspect(options.port) + '.', true);
+        const autoSelectFamily = options.autoSelectFamily == null ? autoSelectFamilyDefault
+            : boolean(options.autoSelectFamily, 'options.autoSelectFamily');
+        const attemptTimeout = options.autoSelectFamilyAttemptTimeout == null ? attemptTimeoutDefault
+            : timeout(options.autoSelectFamilyAttemptTimeout, 'options.autoSelectFamilyAttemptTimeout');
+        if (!isIP(host) && options.lookup != null && typeof options.lookup !== 'function') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "options.lookup" property must be of type function. Received ' + received(options.lookup));
+        if (options.localAddress && !isIP(options.localAddress)) throw argumentError('ERR_INVALID_IP_ADDRESS',
+            'Invalid IP address: ' + options.localAddress);
+        if (options.localPort && typeof options.localPort !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE',
+            'The "options.localPort" property must be of type number. Received ' + received(options.localPort));
+        const family = options.family === 'IPv4' ? 4 : options.family === 'IPv6' ? 6 : options.family;
+        const all = autoSelectFamily && family !== 4 && family !== 6 && !options.localAddress;
+        const signal = options.signal;
+        if (signal != null && (typeof signal !== 'object' || typeof signal.addEventListener !== 'function')) {
+            throw argumentError('ERR_INVALID_ARG_TYPE', 'The "options.signal" property must be an AbortSignal');
+        }
+        return { ...options, host, port, family, all, attemptTimeout, signal,
+            localAddress: options.localAddress || undefined, localPort: options.localPort || undefined };
+    }
+    function connectError(reason, address, port, syscall = 'connect') {
+        if (reason instanceof Error || nat.isNativeError?.(reason)) return reason;
+        const errno = typeof reason?.errno === 'number' ? reason.errno : undefined;
+        const code = reason?.code || (errno === undefined ? 'UNKNOWN' : _errnoToCode(errno));
+        syscall = reason?.syscall || syscall;
+        const error = new Error(syscall + ' ' + code + ' ' + address + (syscall === 'connect' ? ':' + port : ''));
+        error.code = code;
+        if (errno !== undefined) error.errno = errno;
+        error.syscall = syscall;
+        if (syscall === 'getaddrinfo') error.hostname = address;
+        else { error.address = address; error.port = port; }
+        return error;
+    }
+    function abortError(signal) {
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError'; error.code = 'ABORT_ERR'; error.cause = signal?.reason;
+        return error;
+    }
+    _nodeBeginSocketConnection = function beginConnection(rawOptions, emit = () => {}) {
+        const options = normalizeOptions(rawOptions);
+        let done = false, active = null, timer = null, destinations = [], current = 0;
+        let multiple = false, lookupCalled = false;
+        const errors = [];
+        let resolveResult, rejectResult;
+        const promise = new Promise((resolve, reject) => { resolveResult = resolve; rejectResult = reject; });
+        function stopTimer() { if (timer !== null) clearTimeout(timer); timer = null; }
+        function cleanup() { stopTimer(); options.signal?.removeEventListener('abort', onAbort); }
+        function cancelAttempt() {
+            const pending = active;
+            active = null;
+            if (pending) nat.socketCancelConnect(pending);
+        }
+        function fail(error) {
+            if (done) return;
+            done = true; cleanup(); cancelAttempt(); rejectResult(error);
+        }
+        function onAbort() { fail(abortError(options.signal)); }
+        function exhausted() {
+            if (!multiple) return fail(errors[0] || connectError({ code: 'ERR_SOCKET_CONNECTION_TIMEOUT' }, options.host, options.port));
+            const error = new AggregateError(errors);
+            if (errors[0]?.code) error.code = errors[0].code;
+            fail(error);
+        }
+        function attempt() {
+            if (done) return;
+            stopTimer();
+            if (current === destinations.length) return exhausted();
+            const { address, family } = destinations[current++];
+            emit('connectionAttempt', address, options.port, family);
+            if (done) return;
+            if (multiple) emit('_attemptedAddress', address + ':' + options.port);
+            let pending;
+            try { pending = nat.socketConnect(address, options.port, family, options.localAddress, options.localPort); }
+            catch (error) { return fail(error); }
+            active = pending;
+            pending.then(fd => {
+                if (done || active !== pending) { nat.socketClose(fd); return; }
+                active = null; done = true; cleanup();
+                resolveResult({ fd, address, family, port: options.port });
+            }, reason => {
+                if (done || active !== pending) return;
+                active = null; stopTimer();
+                const error = connectError(reason, address, options.port);
+                errors.push(error);
+                emit('connectionAttemptFailed', address, options.port, family, error);
+                if (!done) attempt();
+            });
+            // Like Node, a single address and the final address use the socket's
+            // normal connection outcome, rather than a family-fallback timer.
+            if (multiple && current < destinations.length) timer = setTimeout(() => {
+                if (done || active !== pending) return;
+                timer = null;
+                emit('connectionAttemptTimeout', address, options.port, family);
+                if (done) return;
+                errors.push(connectError({ code: 'ETIMEDOUT', errno: -110 }, address, options.port));
+                cancelAttempt();
+                attempt();
+            }, options.attemptTimeout);
+        }
+        function resolved(error, values, family) {
+            if (done || lookupCalled) return;
+            lookupCalled = true;
+            if (error) {
+                emit('lookup', error, undefined, undefined, options.host);
+                return fail(connectError(error, options.host, options.port, 'getaddrinfo'));
+            }
+            const records = options.all ? values : [{ address: values, family }];
+            if (!Array.isArray(records) || records.length === 0) return fail(argumentError('ERR_INVALID_IP_ADDRESS', 'Invalid IP address: undefined'));
+            if (options.all) {
+                const groups = [[], []], seen = new Set();
+                let firstFamily;
+                for (const record of records) {
+                    const address = record?.address, family = record?.family;
+                    emit('lookup', null, address, family, options.host);
+                    if (done) return;
+                    if ((family !== 4 && family !== 6) || typeof address !== 'string' || !isIP(address)) continue;
+                    firstFamily ??= family;
+                    const key = family + ':' + address;
+                    if (!seen.has(key)) { seen.add(key); groups[family === firstFamily ? 0 : 1].push({ address, family }); }
+                }
+                for (let i = 0; i < Math.max(groups[0].length, groups[1].length); i++) {
+                    if (groups[0][i]) destinations.push(groups[0][i]);
+                    if (groups[1][i]) destinations.push(groups[1][i]);
+                }
+            } else {
+                emit('lookup', null, values, family, options.host);
+                if (done) return;
+                if (typeof values === 'string' && isIP(values) && (family === 4 || family === 6)) destinations = records;
+            }
+            if (!destinations.length) {
+                const first = records[0];
+                if (typeof first?.address === 'string' && isIP(first.address)) {
+                    const error = argumentError('ERR_INVALID_ADDRESS_FAMILY', 'Invalid address family: ' +
+                        String(first.family) + ' ' + rawOptions.host + ':' + rawOptions.port, true);
+                    error.host = rawOptions.host; error.port = rawOptions.port;
+                    return fail(error);
+                }
+                return fail(argumentError('ERR_INVALID_IP_ADDRESS', 'Invalid IP address: ' + first?.address));
+            }
+            multiple = destinations.length > 1;
+            if (multiple) emit('_attemptsStarted');
+            attempt();
+        }
+        return {
+            promise,
+            cancel(error = connectError({ code: 'ECANCELED', errno: -125 }, options.host, options.port)) { fail(error); },
+            start() {
+                if (done) return;
+                if (options.signal?.aborted) return onAbort();
+                options.signal?.addEventListener('abort', onAbort, { once: true });
+                const literalFamily = isIP(options.host);
+                if (literalFamily) {
+                    destinations = [{ address: options.host, family: literalFamily }];
+                    queueMicrotask(attempt);
+                } else {
+                    const dnsOptions = { family: options.family, hints: options.hints || 0, ...(options.all ? { all: true } : {}) };
+                    if (dnsOptions.family !== 4 && dnsOptions.family !== 6 && dnsOptions.hints === 0) {
+                        dnsOptions.hints = _nodeDnsLookup.ADDRCONFIG;
+                    }
+                    (options.lookup || _nodeDnsLookup.lookup)(options.host, dnsOptions, resolved);
+                }
+            },
+        };
+    };
     class Socket extends stream.Duplex {
         constructor(options) {
             super(options);
@@ -3733,38 +4047,52 @@ const net = (() => {
             this._reading = false;
             this._writeQueue = [];
             this.connecting = false;
-            this.remoteAddress = null;
-            this.remotePort = null;
-            this.localAddress = null;
-            this.localPort = null;
+            this.remoteAddress = undefined;
+            this.remotePort = undefined;
+            this.localAddress = undefined;
+            this.localPort = undefined;
+            this._connectOperation = null;
         }
 
-        connect(port, host, cb) {
-            if (typeof port === 'object' && port !== null) {
-                cb = host; host = port.host; port = port.port;
-            }
-            if (typeof host === 'function') { cb = host; host = undefined; }
-            host = host || 'localhost';
+        connect(...args) {
+            const [options, cb] = normalizeArgs(args);
             if (cb) this.once('connect', cb);
-
+            if (this.connecting) throw argumentError('ERR_SOCKET_CONNECTION_IN_PROGRESS', 'Socket is already connecting');
+            if (this._fd >= 0) throw argumentError('ERR_SOCKET_ALREADY_CONNECTED', 'Socket is already connected');
+            this._socketDestroyed = false;
+            const operation = _nodeBeginSocketConnection(options, (event, ...values) => {
+                if (event === '_attemptsStarted') this.autoSelectFamilyAttemptedAddresses = [];
+                else if (event === '_attemptedAddress') this.autoSelectFamilyAttemptedAddresses.push(values[0]);
+                else this.emit(event, ...values);
+            });
+            this._connectOperation = operation;
             this.connecting = true;
-            this.remoteAddress = host;
-            this.remotePort = port;
-
-            nat.socketConnect(host, port).then(
-                (fd) => {
-                    if (this._socketDestroyed) { nat.socketClose(fd); return; }
-                    this._fd = fd;
+            operation.promise.then(({ fd }) => {
+                if (this._socketDestroyed || this._connectOperation !== operation) { nat.socketClose(fd); return; }
+                this._connectOperation = null;
+                this._fd = fd;
+                try {
+                    const peer = nat.socketAddress(fd, true), local = nat.socketAddress(fd);
+                    this.remoteAddress = peer.address; this.remoteFamily = peer.family; this.remotePort = peer.port;
+                    this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
+                } catch (error) { this.destroy(error); return; }
+                this.connecting = false;
+                this.emit('connect');
+                if (this._socketDestroyed) return;
+                this.emit('ready');
+                this._scheduleRead();
+                this._flushWriteQueue();
+            }, error => {
+                if (!this._socketDestroyed && this._connectOperation === operation) {
+                    this._connectOperation = null;
                     this.connecting = false;
-                    this.emit('connect');
-                    this._scheduleRead();
-                    this._flushWriteQueue();
-                },
-                (err) => {
-                    this.connecting = false;
-                    this.destroy(err);
-                },
-            );
+                    this.destroy(error);
+                }
+            });
+            try { operation.start(); }
+            catch (error) {
+                this._connectOperation = null; this.connecting = false; operation.cancel(); throw error;
+            }
             return this;
         }
 
@@ -3811,14 +4139,20 @@ const net = (() => {
         destroy(err) {
             if (this._socketDestroyed) return this;
             this._socketDestroyed = true;
+            this.connecting = false;
+            const operation = this._connectOperation;
+            this._connectOperation = null;
+            if (operation) operation.cancel();
             if (this._fd >= 0) {
                 nat.socketClose(this._fd);
                 this._fd = -1;
             }
             for (const { cb } of this._writeQueue) cb(err || new Error('socket destroyed'));
             this._writeQueue = [];
-            if (err) this.emit('error', err);
-            this.emit('close', !!err);
+            queueMicrotask(() => {
+                if (err) this.emit('error', err);
+                this.emit('close', !!err);
+            });
             return this;
         }
 
@@ -3826,7 +4160,7 @@ const net = (() => {
         setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
-        address() { return { address: this.localAddress, port: this.localPort, family: 'IPv4' }; }
+        address() { return this._fd < 0 ? {} : nat.socketAddress(this._fd); }
         ref() { return this; }
         unref() { return this; }
     }
@@ -3856,15 +4190,13 @@ const net = (() => {
     return {
         Socket, Server,
         createServer(options, listener) { return new Server(options, listener); },
-        createConnection(port, host, cb) { return new Socket().connect(port, host, cb); },
-        connect(port, host, cb) { return new Socket().connect(port, host, cb); },
-        isIP(input) {
-            if (/^\d+\.\d+\.\d+\.\d+$/.test(input)) return 4;
-            if (input.includes(':')) return 6;
-            return 0;
-        },
-        isIPv4(input) { return net.isIP(input) === 4; },
-        isIPv6(input) { return net.isIP(input) === 6; },
+        createConnection(...args) { return new Socket().connect(...args); },
+        connect(...args) { return new Socket().connect(...args); },
+        isIP, isIPv4, isIPv6,
+        getDefaultAutoSelectFamily() { return autoSelectFamilyDefault; },
+        setDefaultAutoSelectFamily(value) { autoSelectFamilyDefault = boolean(value, 'value'); },
+        getDefaultAutoSelectFamilyAttemptTimeout() { return attemptTimeoutDefault; },
+        setDefaultAutoSelectFamilyAttemptTimeout(value) { attemptTimeoutDefault = timeout(value, 'value'); },
     };
 })();
 
@@ -3967,6 +4299,7 @@ const tls = (() => {
         destroy(err) {
             if (this._tlsDestroyed) return this;
             this._tlsDestroyed = true;
+            if (this._connectOperation) { this._connectOperation.cancel(); this._connectOperation = null; }
             if (this._tlsHandle >= 0) {
                 nat.tlsClose(this._tlsHandle);
                 this._tlsHandle = -1;
@@ -4002,13 +4335,18 @@ const tls = (() => {
         const sock = new TLSSocket(options);
         if (cb) sock.once('secureConnect', cb);
         const servername = options.servername || options.host || 'localhost';
-        nat.socketConnect(options.host || 'localhost', options.port).then(
-            (fd) => {
+        const operation = _nodeBeginSocketConnection(options);
+        sock._connectOperation = operation;
+        operation.promise.then(
+            ({ fd }) => {
+                sock._connectOperation = null;
                 if (sock._tlsDestroyed) { nat.socketClose(fd); return; }
                 sock._attach(fd, servername, options);
             },
-            (err) => sock.destroy(err),
+            (err) => { if (!sock._tlsDestroyed) sock.destroy(err); },
         );
+        try { operation.start(); }
+        catch (error) { sock._connectOperation = null; operation.cancel(); throw error; }
         return sock;
     }
 
@@ -4946,10 +5284,7 @@ const _builtinModules = {
         toUnicode(s) { return s; },
     },
     'dns': {
-        lookup(hostname, options, cb) {
-            if (typeof options === 'function') { cb = options; options = {}; }
-            cb(null, '127.0.0.1', 4);
-        },
+        ..._nodeDnsLookup,
         resolve(hostname, rrtype, cb) {
             if (typeof rrtype === 'function') { cb = rrtype; rrtype = 'A'; }
             cb(null, ['127.0.0.1']);
@@ -5239,7 +5574,14 @@ _builtinModules['path/posix'] = path.posix;
 // (docs/posix-status.md, node-compat approximate implementations).
 _builtinModules['path/win32'] = path.win32;
 
-const _dnsPromises = { lookup: util.promisify(_builtinModules['dns'].lookup) };
+const _dnsPromises = {
+    lookup(hostname, options) {
+        return new Promise((resolve, reject) => _nodeDnsLookup.lookup(hostname, options,
+            (error, address, family) => error ? reject(error) : resolve(Array.isArray(address) ? address : { address, family })));
+    },
+    getDefaultResultOrder: _nodeDnsLookup.getDefaultResultOrder,
+    setDefaultResultOrder: _nodeDnsLookup.setDefaultResultOrder,
+};
 _builtinModules['dns'].promises = _dnsPromises;
 _builtinModules['dns/promises'] = _dnsPromises;
 

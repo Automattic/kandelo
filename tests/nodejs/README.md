@@ -102,9 +102,34 @@ first and replace `npx vitest` with its absolute `bin/node` path followed by
 `node_modules/vitest/vitest.mjs` from `host/`. The runner's host/build Node
 version and the pinned reference are separate identities.
 
+## Real TCP client regression
+
+After preparing the normal shell product, this focused check compiles one
+small C peer through the checkout's SDK, stamps its ABI contract, and runs
+Node against its real IPv6 loopback listener. It checks address fallback,
+local binding, actual endpoints, AbortSignal behavior and descriptor
+release. It uses no JavaScript listening-server substitute.
+
+```sh
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+for host in node chromium firefox webkit; do
+  scripts/run-nodejs-network-tests.sh "$host"
+done
+```
+
+Every invocation writes a fresh report; an explicit output directory is
+accepted as the second argument and cannot overwrite an existing result.
+Source tests also exercise intermediate-attempt deadlines, deduplication,
+family ordering, cancellation and late completion through the actual
+shared policy with a controlled private engine boundary. The guest test
+covers real sockets, including cancellation racing immediate completion;
+it does not establish pending external-TCP deadlines on every backend or
+complete TLS handshake lifetime behavior.
+
 ## Current evidence and limits
 
-- All 57 source/harness tests pass under the exact native Node 26.13.0
+- All 69 source/harness tests pass under the exact native Node 26.13.0
   reference, including execution of the assembled bootstrap and
   adversarial fixture-cache integrity checks.
 
@@ -120,7 +145,7 @@ version and the pinned reference are separate identities.
   mismatches, positioned I/O, streaming stdin decoding, Response/Blob
   bodies and the existing process/stream checks.
 
-- The associated resident-filesystem correction passes 3,240 Rust
+- The resident-filesystem and IPv6 endpoint corrections pass 3,241 Rust
   workspace tests and doctests, the ABI snapshot check, and three
   unchanged Sortix C cases on both Node and Chromium under SourceOnly.
   The kernel keeps ABI 55. A full product rebuild, broad POSIX suites

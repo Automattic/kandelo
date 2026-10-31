@@ -419,7 +419,12 @@
         inflateSync(input) { return native.inflateSync(input); },
         gzipSync(input, level) { return native.gzipSync(input, level); },
         gunzipSync(input) { return native.gunzipSync(input); },
-        socketConnect(host, port) { return native.socketConnect(host, port); },
+        socketLookup(host, family, hints) { return native.socketLookup(host, family, hints); },
+        socketConnect(host, port, family, localAddress, localPort) {
+            return native.socketConnect(host, port, family, localAddress, localPort);
+        },
+        socketCancelConnect(promise) { return native.socketCancelConnect(promise); },
+        socketAddress(fd, peer) { return native.socketAddress(fd, peer); },
         socketRead(fd, length) { return native.socketRead(fd, length); },
         socketWrite(fd, bytes) { return native.socketWrite(fd, bytes); },
         socketClose(fd) { return native.socketClose(fd); },
