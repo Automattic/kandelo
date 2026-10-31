@@ -573,6 +573,21 @@ positive import results are errors. This avoids initializing a buffer before
 the trusted host fills it, while retaining the same boundary synchronization,
 alias ordering and snapshot comparisons. Other mapping backends retain the
 safe initialized-slice implementation.
+
+For file mappings, the Wasm backend first compares the live process range
+against the existing initialized Rust snapshot through the synchronous
+`host_proc_compare_bytes` import. The host validates both complete ranges,
+rechecks the exact kernel Memory and generation after process lookup, and
+keeps all read-only views inside that call. Equal bytes retain the old
+snapshot without allocating or copying a new full range. Different bytes
+use the ordinary separately validated owned-copy path. Exactly zero means
+equal, one means different, and errors never publish partial bytes.
+This comparison is one observation, not a persistent no-writer epoch:
+every mapping still participates in the authoritative backing-refresh
+phase, including stale readers, descriptor writes and earlier aliases of
+a later publisher. A later guest store remains detectable against the
+retained baseline. Changed mappings pay an additional comparison; desktop
+and benchmark validation of this tradeoff is still pending.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit

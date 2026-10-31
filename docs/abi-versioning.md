@@ -2387,6 +2387,15 @@ and preserves the new program-only contract digest and exact kernel-host
 version check. Keep 56 across increments of this unpublished effort.
 Kernel-host version 3 covers the incompatible graphics import signatures,
 session routing, acknowledged resources and exact DRM file/grant identity.
+The same unpublished host3 contract also includes the required read-only
+`host_proc_compare_bytes(pid: i32, addr: i64, snapshot: i32, len: i32) -> i32`
+import used by file-mapping publication. The snapshot pointer names an
+initialized Rust slice lent only for that synchronous comparison. Results
+are exactly0 for equal,1 for different, or negative errno; all views remain
+inside the host call. Both hosts must implement it. Earlier development
+host3 kernels and hosts are not interchangeable with this regenerated
+contract; rebuild them together. This completes the already-reserved
+successor to main's host2 rather than allocating another development ABI.
 The GL operation table stays 17 and fork-state record version stays 21.
 
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver

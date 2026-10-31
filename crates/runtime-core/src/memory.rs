@@ -1561,9 +1561,10 @@ impl SharedMappingStat {
 
 /// Capabilities the mapping table needs from its environment.
 ///
-/// Only `read_process`/`write_process` cross to the host, through the existing
-/// `host_proc_read_bytes` / `host_proc_write_bytes` imports: each process owns
-/// a separate linear memory the kernel cannot address. Everything else —
+/// Process read/write operations cross to the host through byte-copy imports;
+/// the Wasm backend can also compare a process range with its Rust-owned
+/// snapshot before allocating a copy. Each process owns a separate linear
+/// memory the kernel cannot address. Everything else —
 /// positional file access and identity on a kernel mapping handle, SysV
 /// segment access, handle retention, diagnostics — is an in-kernel operation
 /// the kernel already owns; it appears here as a trait only so the protocol is
@@ -1582,6 +1583,29 @@ pub trait SharedMappingIo {
         let mut bytes = vec![0u8; len];
         self.read_process(pid, addr, &mut bytes)?;
         Ok(bytes)
+    }
+    /// Read one complete process range only when it differs from `snapshot`.
+    /// `None` means this observation found no local publication; it is not a
+    /// no-writer epoch and must not suppress authoritative backing refresh.
+    /// The default performs the same full read before comparing. A backend
+    /// may compare in place, but must validate the entire source and snapshot
+    /// ranges, return errors rather than partial bytes, and retain no views.
+    fn read_process_if_changed(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        len: usize,
+        snapshot: &[u8],
+    ) -> Result<Option<Vec<u8>>, Errno> {
+        if len == 0 {
+            return Ok(None);
+        }
+        let current = self.read_process_owned(pid, addr, len)?;
+        if snapshot.len() == len && !range_differs_from_snapshot(&current, snapshot) {
+            Ok(None)
+        } else {
+            Ok(Some(current))
+        }
     }
     /// Copy `src` into process `pid`'s linear memory at `addr`.
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno>;
@@ -2925,8 +2949,15 @@ impl SharedMappingTable {
             let Some(snapshot) = mapping.snapshot.take() else {
                 continue;
             };
-            let current = match io.read_process_owned(pid, *map_addr, mapping.len) {
-                Ok(current) => current,
+            let current = match io.read_process_if_changed(pid, *map_addr, mapping.len, &snapshot) {
+                Ok(Some(current)) => current,
+                Ok(None) => {
+                    // No local publication in this observation. Keep the old
+                    // baseline so a later guest store remains detectable;
+                    // every candidate still reaches phase 2 refresh below.
+                    mapping.snapshot = Some(snapshot);
+                    continue;
+                }
                 Err(err) => {
                     mapping.snapshot = Some(snapshot);
                     return Err(err);
@@ -4381,6 +4412,110 @@ mod shared_mapping_tests {
         assert_eq!(io.peek(1, 0, 8), b"ABCDEFGH".to_vec());
         io.fail_read_process_at = None;
         assert_eq!(io.read_process_owned(1, 2, 4).unwrap(), b"CDEF".to_vec());
+    }
+
+    #[test]
+    fn conditional_process_snapshot_default_checks_bytes_lengths_and_faults() {
+        let mut io = MockIo::new().with_process(1, 8);
+        io.poke(1, 0, b"ABCDEFGH");
+        let baseline = b"CDEF".to_vec();
+        assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Ok(None));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CD"), Ok(Some(b"CDEF".to_vec())));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, b"CDEFX"), Ok(Some(b"CDEF".to_vec())));
+        assert_eq!(io.read_process_if_changed(99, u64::MAX, 0, &[]), Ok(None));
+        assert_eq!(io.read_process_if_changed(99, 0, 1, b"A"), Err(Errno::ESRCH));
+        assert_eq!(io.read_process_if_changed(1, 7, 2, b"H?"), Err(Errno::EFAULT));
+        io.poke(1, 3, b"Z");
+        assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Ok(Some(b"CZEF".to_vec())));
+        io.fail_read_process_at = Some((1, 2));
+        assert_eq!(io.read_process_if_changed(1, 2, 4, &baseline), Err(Errno::EFAULT));
+        assert_eq!(baseline, b"CDEF".to_vec(), "failed partial read cannot change the baseline");
+        assert_eq!(io.peek(1, 0, 8), b"ABCZEFGH".to_vec());
+    }
+
+    #[test]
+    fn conditional_file_alias_failure_restores_snapshots_after_an_unchanged_alias() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        let baseline = b"........".to_vec();
+        io.poke(1, 16, &baseline);
+        table.file_backing_mut(&key).unwrap().ref_count += 1;
+        table.insert_mapping(1, 16, SharedMapping::file(
+            3, 0, 8, true, true, key.clone(), baseline.clone(), 0,
+        ));
+        // Alias zero is unchanged; the later alias fails after a partial read.
+        io.poke(1, 16, b"....BBBB");
+        io.fail_read_process_at = Some((1, 16));
+        let version = table.file_backing(&key).unwrap().version;
+        assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EFAULT));
+        for addr in [0, 16] {
+            assert_eq!(table.mapping(1, addr).unwrap().snapshot.as_deref(), Some(baseline.as_slice()));
+        }
+        assert_eq!(table.file_backing(&key).unwrap().version, version);
+        assert_eq!(io.files[&10], baseline);
+        assert_eq!(io.peek(2, 0, 8), b"........".to_vec());
+        io.fail_read_process_at = None;
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"....BBBB".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"....BBBB".to_vec());
+    }
+
+    #[test]
+    fn conditional_unchanged_file_reader_still_imports_a_peer_publication() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.poke(1, 0, b"AAAA....");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        let baseline = table.mapping(2, 0).unwrap().snapshot.clone().unwrap();
+        assert_eq!(io.read_process_if_changed(2, 0, 8, &baseline), Ok(None));
+        assert_eq!(io.peek(2, 0, 8), b"........".to_vec());
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"AAAA....".to_vec());
+        let mapping = table.mapping(2, 0).unwrap();
+        assert_eq!(mapping.snapshot.as_deref(), Some(&b"AAAA...."[..]));
+        assert_eq!(mapping.seen_version, table.file_backing(&key).unwrap().version);
+        // A later store still publishes after the earlier no-change result.
+        io.poke(2, 4, b"BBBB");
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec());
+    }
+
+    #[test]
+    fn conditional_unchanged_earlier_alias_imports_later_alias_publication() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.poke(1, 16, b"........");
+        table.file_backing_mut(&key).unwrap().ref_count += 1;
+        table.insert_mapping(1, 16, SharedMapping::file(
+            3, 0, 8, true, true, key.clone(), b"........".to_vec(), 0,
+        ));
+        io.poke(1, 16, b"....BBBB");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        for addr in [0, 16] {
+            assert_eq!(io.peek(1, addr, 8), b"....BBBB".to_vec());
+            assert_eq!(table.mapping(1, addr).unwrap().snapshot.as_deref(), Some(&b"....BBBB"[..]));
+        }
+    }
+
+    #[test]
+    fn conditional_unchanged_file_reader_still_imports_descriptor_writes() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.descriptor_write(10, 2, b"ZZ");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"..ZZ....".to_vec());
+        assert_eq!(io.files[&10], b"..ZZ....".to_vec());
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot.as_deref(), Some(&b"..ZZ...."[..]));
     }
 
     #[test]

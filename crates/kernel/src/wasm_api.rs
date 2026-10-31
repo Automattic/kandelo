@@ -350,6 +350,10 @@ unsafe extern "C" {
     /// `publish_transfer_directly`.
     fn host_publish_wait_completion(pid: i32, channel_addr: u64, ret: i64, errno: u32) -> i32;
     fn host_proc_read_bytes(pid: i32, addr: u64, dst_ptr: *mut u8, len: u32) -> i32;
+    /// Compare a complete process range against a live initialized Rust
+    /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
+    /// The host may read but never mutate or retain the snapshot allocation.
+    fn host_proc_compare_bytes(pid: i32, addr: u64, snapshot_ptr: *const u8, len: u32) -> i32;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
     /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
@@ -1277,9 +1281,9 @@ impl HostIO for WasmHostIO {
 /// (`host/src/kernel-worker.ts`) and never reach this table, so a host handle
 /// is refused here rather than half-served.
 ///
-/// Only two operations cross to the host, both existing imports:
-/// `host_proc_read_bytes` / `host_proc_write_bytes`, because each process owns
-/// a separate linear memory the kernel cannot address.
+/// Each process owns a separate linear memory the kernel cannot address.
+/// Read/write byte copies cross to the host, and a read-only comparison can
+/// avoid allocating a full copy for an unchanged file-mapping publication.
 struct WasmSharedMappingIo {
     /// pid → committed linear-memory length, for the pids an entry point was
     /// handed a length for. See [`Self::process_memory_len`] for the rest.
@@ -1373,6 +1377,39 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         // partially initialized allocation is dropped without exposing bytes.
         unsafe { bytes.set_len(len) };
         Ok(bytes)
+    }
+
+    fn read_process_if_changed(
+        &mut self,
+        pid: u32,
+        addr: u64,
+        len: usize,
+        snapshot: &[u8],
+    ) -> Result<Option<Vec<u8>>, Errno> {
+        if len == 0 {
+            return Ok(None);
+        }
+        if snapshot.len() != len {
+            return self.read_process_owned(pid, addr, len).map(Some);
+        }
+        let host_len = checked_host_buffer_len(len)?;
+        // SAFETY: snapshot names exactly len initialized bytes owned by the
+        // current Rust allocation. The trusted synchronous host import only
+        // reads that borrow, validates the full process range, and retains no
+        // view or capability. Equal is this observation, never a write epoch.
+        let compared = unsafe {
+            host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len)
+        };
+        match compared {
+            0 => Ok(None),
+            1 => self.read_process_owned(pid, addr, len).map(Some),
+            other => {
+                // The compare protocol admits exactly 0/1, not every
+                // nonnegative value accepted by other host imports.
+                i32_to_result(other)?;
+                Err(Errno::EIO)
+            }
+        }
     }
 
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
@@ -8252,8 +8289,9 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
 // And the boundary sync must run before *every* syscall, including the ones
 // the host completes without entering the kernel.
 //
-// No new `env.host_*` import is required: reading and writing a process's
-// memory are the existing `host_proc_read_bytes` / `host_proc_write_bytes`.
+// Process byte transfer uses `host_proc_read_bytes` / `host_proc_write_bytes`.
+// `host_proc_compare_bytes` adds a checked read-only comparison against a
+// Rust-owned snapshot; it changes no boundary or backing-refresh obligation.
 
 /// `SHM_RDONLY`. `crate::ipc`'s copy is private, and fork inheritance is the
 /// only other site that must reproduce a guest's attach flags.

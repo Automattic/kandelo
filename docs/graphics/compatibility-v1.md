@@ -10620,3 +10620,59 @@ three-engine browser-memory and graphics inventory remain unrun for this
 candidate. The next implementation targets the separately profiled
 file-mapping full-read/compare path while preserving both publication
 and authoritative backing-refresh phases.
+
+
+### File publication compares before allocating a full snapshot (2026-10-30)
+
+The next source candidate adds the required read-only
+`host_proc_compare_bytes` kernel-host import. For writable file mappings,
+comparison against the existing initialized Rust snapshot precedes an
+owned full read. Equal observations retain that baseline and avoid the
+new full-range allocation/copy; different observations use the existing
+independently validated owned read. The publication candidate list,
+publication order, descriptor reconciliation and complete backing-refresh
+phase are preserved. Equal never establishes a no-writer epoch. Anonymous,
+SysV, fork and teardown copy paths are unchanged.
+
+The host proves both complete ranges before an early difference result,
+rechecks exact kernel Memory/generation after process lookup, and keeps
+all views inside one synchronous private helper. Captured constructors
+and Memory-buffer intrinsics avoid forged getters or replacements. A
+word comparison handles matching alignment, with byte prefix/tail and a
+byte fallback otherwise. Narrow read-only authority classifications pass
+the repository audit; no broader exemption or owner downgrade is added.
+Independent source review finds no concrete defect and identifies the
+additional changed-mapping scan as a performance risk. A late difference
+can scan almost the whole range before the ordinary copy; application
+benefit is unmeasured until the new cohort runs.
+
+Native job a509 passes39 ordinary memory cases; it does not select the
+new shared-mapping controls. The explicit shared-mapping job
+`snapshot-compare-rust-mappings-1030-223835-b514` passes80/80, including
+five new controls for equal/different/length/fault handling, snapshot
+restoration after an earlier unchanged alias, stale peer refresh and a
+later store, same-process alias ordering, and descriptor writes. Host
+job `snapshot-compare-host-focused-1030-223800-90a2` passes93/93 across
+public scratch and the source authority audit, with no skips/load
+failures. Its eight new comparison cases include both kernel pointer
+widths, all alignment pairs, first/interior/last differences and tails,
+whole-range faults before early mismatch, missing/throwing providers,
+kernel/process growth, forged buffer getters and replaced constructors.
+
+ABI update f145 and subsequent check/resolver-bundle job f88e pass. The
+snapshot adds exactly the comparison import; generated C/TypeScript and
+resolver bytes are otherwise unchanged. The immediate predecessor and
+candidate program-contract digests match:
+`c4b9030d388d1f98dc81475b83f94e4e989d7aa4c1d795141e8e5588acb1a487`.
+The check's program-rebuild message compares the entire branch with
+main55, not this kernel-host-only increment. The already-reserved
+unpublished program56/host3/GL17/fork21 family is retained per the user's
+single-ABI policy; earlier development host3 kernel/host pairs must be
+rebuilt together. No stale-cohort compatibility is added.
+
+Actual rebuilt Node/browser consumers, normal desktop artifacts,
+headless desktop observations, full Node/browser benchmarks, browser-
+memory and required POSIX remain pending for this new candidate. The
+existing5667 preview still serves a53 and does not contain this change.
+Private source hashes and exact commands are under
+`.context/process-snapshot-compare-validation/`.

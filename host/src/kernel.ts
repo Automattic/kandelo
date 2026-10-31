@@ -192,6 +192,7 @@ const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
   "byteLength",
 )!.get!;
 const IntrinsicUint8Array = Uint8Array;
+const IntrinsicUint32Array = Uint32Array;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicDataView = DataView;
 const IntrinsicWasmMemory = WebAssembly.Memory;
@@ -3313,6 +3314,14 @@ export class WasmPosixKernel {
         },
         // `addr` arrives as a BigInt and is checked at width 8 for the same
         // reason as `host_proc_write_bytes` above.
+        // The immutable snapshot span is lent by Rust for this import only.
+        // Equal means an observed comparison, never a persistent no-write epoch.
+        host_proc_compare_bytes: (
+          pid: number,
+          addr: bigint,
+          snapshot_ptr: KernelPointer,
+          len: number,
+        ): number => this.#compareProcessSnapshot(pid, addr, snapshot_ptr, len),
         host_proc_read_bytes: (
           pid: number,
           addr: bigint,
@@ -3481,6 +3490,67 @@ export class WasmPosixKernel {
       range.pointer,
       range.end,
     );
+  }
+
+  /** Compare a Rust-lent initialized snapshot without copying either side.
+   * Exact 0/1 is equal/different; invalid ranges return negative EFAULT.
+   * All views stay inside this synchronous method and are never published. */
+  #compareProcessSnapshot(
+    pid: number,
+    addr: bigint,
+    snapshotPointer: KernelPointer,
+    length: number,
+  ): number {
+    try {
+      const memory = this.#memory;
+      const generation = this.#memoryGeneration;
+      if (!memory) return -14;
+      // These arguments are the Rust slice's allocation span, not permission
+      // to inspect the rest of the kernel Memory. Prove it before callbacks.
+      const snapshot = checkedWasmImportMemoryRange(
+        memory, snapshotPointer, length, this.#kernelPtrWidth,
+        "host_proc_compare_bytes Rust snapshot",
+      );
+      const processMemory = this.callbacks.getProcessMemory?.(pid);
+      if (!processMemory) return -14;
+      const process = checkedWasmImportMemoryRange(
+        processMemory, addr, length, 8,
+        "host_proc_compare_bytes process source", true,
+      );
+      // A provider may grow or replace memory. Revalidate this same borrow
+      // after it returns, retaining the exact lent capacity and owner.
+      if (memory !== this.#memory || generation !== this.#memoryGeneration)
+        return -14;
+      const liveSnapshot = checkedMemoryRange(
+        memory, snapshot.pointer, snapshot.length, this.#kernelPtrWidth,
+        "host_proc_compare_bytes live Rust snapshot",
+      );
+      const processBuffer = wasmMemoryBuffer(processMemory);
+      const snapshotBuffer = wasmMemoryBuffer(memory);
+      const current = new IntrinsicUint8Array(processBuffer, process.pointer, process.length);
+      const baseline = new IntrinsicUint8Array(snapshotBuffer, liveSnapshot.pointer, liveSnapshot.length);
+      let i = 0;
+      // Alignment and the remainder are proved before constructing word
+      // views. No caller-overridable math, constructors or methods run here.
+      if (process.pointer % 4 === liveSnapshot.pointer % 4) {
+        let lead = (4 - process.pointer % 4) % 4;
+        if (lead > process.length) lead = process.length;
+        for (; i < lead; i++) if (current[i] !== baseline[i]) return 1;
+        const remaining = process.length - lead;
+        const words = (remaining - remaining % 4) / 4;
+        if (words > 0) {
+          const currentWords = new IntrinsicUint32Array(processBuffer, process.pointer + lead, words);
+          const baselineWords = new IntrinsicUint32Array(snapshotBuffer, liveSnapshot.pointer + lead, words);
+          for (let word = 0; word < words; word++)
+            if (currentWords[word] !== baselineWords[word]) return 1;
+        }
+        i = lead + words * 4;
+      }
+      for (; i < process.length; i++) if (current[i] !== baseline[i]) return 1;
+      return 0;
+    } catch {
+      return -14;
+    }
   }
 
   /**

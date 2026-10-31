@@ -1504,6 +1504,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "This true-private current-buffer view is returned only to the separately audited checked read and Rust-lent write helpers and never crosses a callback or promise.",
   },
   {
+    key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-view::new IntrinsicUint8Array(snapshotBuffer, liveSnapshot.pointer, liveSnapshot.length)",
+    disposition: "rust-lent",
+    why: "Rust lends exactly one initialized snapshot slice to this synchronous read-only import. Its whole range and private Memory generation are revalidated after the process provider; this lexical view never escapes or crosses another callback.",
+  },
+  {
+    key: "host/src/kernel.ts::WasmPosixKernel.#compareProcessSnapshot::kernel-view::new IntrinsicUint32Array(snapshotBuffer, liveSnapshot.pointer + lead, words)",
+    disposition: "rust-lent",
+    why: "The aligned word view is a read-only subset of that same revalidated Rust slice, with a checked prefix, positive word count and bounded tail. It stays inside the synchronous comparison and never escapes.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.#getMemoryBuffer::kernel-view::new IntrinsicUint8Array(wasmMemoryBuffer(this.#memory))",
     disposition: "kernel-read",
     why: "The private constructor reacquires the current backing buffer for one synchronous checked helper; no cached view survives memory growth.",
