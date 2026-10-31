@@ -14074,3 +14074,31 @@ Offline audit SHA256:
 `2d86b5be08901d3d01fe23826564b540ef7ac2701aa34b0f979e069ea901602f`.
 Raw evidence and audit live under `.context/retained-epoll-boundary-response-r1/`
 and `.context/retained-epoll-boundary-response-analysis-r1/` respectively.
+
+
+The separate normalc775↔b6artifact audit freshly rehashes all490members across
+both93owner245member manifests.84complete owner tuples match; six payloads
+differ. Sway, Foot and Bash are byte-identical. SFWBar differs only in its
+binary build-key custom section (31of32key bytes); all other Wasm sections,
+including code, data, imports, ABI and fork metadata, match exactly. Its menu,
+configuration and runtime files also match. The SFWBar recipe declares generated
+ABI TypeScript as an input, so the new optional export correctly changes its
+normal build key; no metadata is stripped to manufacture acceptance.
+
+Kernel and image-writer Wasm contain real code/data/type changes. NetHack's
+only executable difference is its build key, and its ZIP otherwise has the
+same extracted entries. Compressed shell-image bytes differ and its internal
+tree is not decoded by this audit. Each SDK's289payload entries match, but
+musl input stamps differ. All2,829enumerated SDK source files and musl HEAD
+match; historical tool/plugin inputs are not reconstructed, so stamp equality
+is not claimed. Active dependency closure identities match across37library
+names;50artifacts in36retained exact-key shared roots are freshly rehashed.
+The ncurses archive root is unavailable; actual Bash bytes still match. No
+artifact is rebuilt, borrowed, restamped or substituted for this comparison.
+
+Evidence is `.context/retained-epoll-artifact-pair-analysis-r1/`, README SHA256
+`c277436828ba472dc1726ab967bf381fab81dc471aacdb0922c0026f58077b5d`, comparison SHA256
+`6c1d391af78e75c8dca7c34d676d85f739b3eaee263f4afd619b7b7f75db8397`. These normal source changes include prior graphics selection
+preservation, foreground resize routing and the epoll candidate. Historical
+5678uses its separately pinned selection overlay; neither comparison isolates
+the new probe nor replaces a fresh alternating responsiveness benchmark.
