@@ -11,6 +11,10 @@ The host/build toolchain remains the repository's declared Node 24.
 `--host node` means Kandelo running on the Node host. A compatibility target
 is not a claim of full Node conformance.
 
+The compatibility goal is public Node 26 LTS APIs across all four hosts,
+with explicit engine and platform limits. Implementation gaps remain
+failures to close; platform limits must not be counted as passing support.
+
 ## Prepare and inspect without rebuilding
 
 ```sh
@@ -123,9 +127,17 @@ version and the pinned reference are separate identities.
   and performance comparisons have not run.
 
 - Source isolation on native Node passed eleven unchanged codec files
-  and six unchanged FileAPI WPT inputs (494 subtests, no skips). Other
-  helpers and core APIs stayed native. These are source-conformance
-  observations, not guest baseline passes or real browser WPT coverage.
+  and five positioned-filesystem files. Six selected unchanged FileAPI
+  WPT inputs passed 494 subtests with no skips. Assertion isolation passed
+  seven of fourteen files; seven fail on messages, diffs, source
+  expressions and unsupported native key comparisons. Other helpers and
+  core APIs stayed native. These are source-conformance observations,
+  not guest baseline passes or real browser WPT coverage.
+
+- The source checks from the browser memory gate pass 161 host tests and
+  seven protocol/ownership checks. The full application-switching and
+  engine teardown gate remains unrun; its complete product preparation
+  is deferred with the full rebuild.
 
 - Two incomplete four-host baseline attempts are retained separately.
   Archive auditing first found an omitted empty WASI fixture directory,
@@ -137,16 +149,75 @@ version and the pinned reference are separate identities.
   Browser pages cache immutable input bytes and copy them for each fresh
   kernel, without sharing mutable guest state.
 
-- Full 5,147-case baselines are being restarted separately for Node,
-  Chromium, Firefox and WebKit with the complete input contract.
-  Completion and pending counts belong to each report; no full-suite
-  passing claim is made.
+## Complete initial baseline (2026-10-31)
 
-- Early unmodified upstream cases expose a missing net family-attempt
-  timeout API in test/common. Minimal native-versus-guest reproducers
-  also confirm incorrect require.main identity and malformed rewriting
-  of side-effect ESM imports. No harness shims supply these APIs or
-  alter the upstream source.
+All four reports completed the same 5,147-case inventory at
+`66db9db1f640afdb57a1a91e79c06df4653c74de`, using the complete source
+archive and the targeted normal shell product. Every case has retained
+stdout/stderr and exactly one result. The audit found zero per-case
+status/exit-code differences across hosts and matching kernel, base image,
+suite image and input hashes.
+
+| Host | Pass | Fail | Upstream skip | Unsupported | Timeout | Harness error | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node 24.15.0 host | 3 | 3,721 | 0 | 1,423 | 0 | 0 | 0 |
+| Chromium 153.0.8010.12 | 3 | 3,721 | 0 | 1,423 | 0 | 0 | 0 |
+| Firefox 155.0 | 3 | 3,721 | 0 | 1,423 | 0 | 0 | 0 |
+| WebKit 26.6 | 3 | 3,721 | 0 | 1,423 | 0 | 0 | 0 |
+
+The guest API target on every host is Node 26.13.0. Node 24 in this table
+is the independent execution host, not the API target. Each completed
+runner exits 1 because cases failed; that is not a harness incident.
+
+The passing files are `test-regression-object-prototype.js`,
+`test-vm-not-strict.js` and `test-zlib-no-stream.js` in `parallel/`.
+Their assertions remain unchanged. A passing file is not complete module
+coverage, and export presence is not implementation coverage.
+
+The failures on each host group as follows:
+
+| Failure cluster | Cases | Representative |
+| --- | ---: | --- |
+| Missing net family-attempt timeout API in `test/common` | 3,687 | `parallel/test-assert-async.js` |
+| Side-effect ESM import rewriting | 32 | `parallel/test-cli-node-cli-manpage-env-vars.mjs` |
+| Incorrect `require.main` identity | 1 | `parallel/test-cli-eval.js` |
+| EventEmitter listener defaults and warning dispatch | 1 | `parallel/test-global-console-exists.js` |
+
+Most test bodies are blocked by a shared helper prerequisite. These are
+not 3,687 independently diagnosed networking bugs, and this baseline does
+not establish the behavior of the blocked core modules. Five minimal
+native-versus-guest programs confirm the four clusters: all five succeed
+under the pinned native reference and fail in the guest. No harness shim
+supplies the missing APIs or alters upstream source.
+
+Reports are retained under `.context/node26-v3-full-HOST/`, with the
+combined audit at `.context/node26-v3-baseline-audit.json`. The runtime
+kernel hash is
+`36d97bfbef2e46a8813de186742daf4b1cc07803822b3830bfdca96e37393258`;
+the suite image hash is
+`172a0fa13b365e250fc5fe18c03380014388da8f8e66087ba77184808c479673`.
+The manifests bind the remaining artifact and source identities.
+
+These runs used `--all --limit 500 --timeout 30`, resuming unchanged
+reports until pending reached zero. For a new run, choose a fresh output
+directory and repeat the second command until complete:
+
+```sh
+scripts/run-nodejs-library-tests.sh --host node --all \
+  --limit 500 --timeout 30 --out .context/nodejs-new-node
+scripts/run-nodejs-library-tests.sh --host node --all \
+  --limit 500 --timeout 30 --out .context/nodejs-new-node --resume
+```
+
+Use separate output directories for `chromium`, `firefox` and `webkit`.
+The wrapper enters the declared dev shell and never compiles products.
+
+The next work is real networking defaults and connection attempts, then
+a fresh four-host run to expose the blocked test bodies. The ordered
+backlog also includes loader identity/import parsing, EventEmitter
+warnings, assertion diagnostics/native key support, and the partial APIs
+listed in `packages/registry/node-compat/README.md`. The other 37 upstream
+categories still need configuration and fixture review.
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

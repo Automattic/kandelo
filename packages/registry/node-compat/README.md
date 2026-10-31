@@ -7,6 +7,11 @@ SpiderMonkey package generator embeds this same pin in the shared
 bootstrap and C CLI version string, preventing separate version
 constants from drifting.
 
+The compatibility goal is public Node 26 LTS APIs on the Node host,
+Chromium, Firefox and WebKit, with explicit engine and platform limits.
+The implementation remains partial; that goal does not turn missing
+behavior into supported behavior.
+
 The guest engine remains SpiderMonkey 140.11.0 ESR. It reports `wasm32`
 and `kandelo`, including through `os.platform()`. It provides no native
 Node addon ABI, V8 or libuv implementation, so `process.versions` does

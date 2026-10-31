@@ -51,17 +51,35 @@ Buffer input storage/bounds. File URL conversion rejects foreign hosts,
 encoded slashes and NUL filesystem paths. POSIX backslashes remain valid.
 Windows file URL options and complete legacy URL helpers remain gaps.
 
-The source-only tests `host/test/node-url-exit-contracts.test.ts` and
-`host/test/node-buffer-encoding.test.ts` passed 9/9 against the exact native
-Node 26.13.0 reference. Expanded shell fixtures also passed on that native
-reference. These tests exercise actual shared functions in isolated
-contexts; they do not establish that rebuilt guest products pass.
+The Node 26.13.0 API target, exact source tag/commit and native reference
+archives are pinned in `packages/registry/node-compat/target.json`.
+The independent host/build toolchain remains Node 24; the guest engine
+remains SpiderMonkey 140.11.0 ESR on `kandelo`/`wasm32`.
 
-A full package rebuild is deferred at the user's request. The updated
-base-shell Node and three-engine browser integration tests remain pending
-that rebuild. Earlier passing guest results predate these fixes. The full
-upstream Node counts in the table above are historical, not coverage of
-these changes or Node 26.
+All 57 source/harness tests pass under the exact native Node 26.13.0
+reference. Targeted builds through the normal shell product graph also
+pass eleven Node-host core cases and the shared contract on Chromium,
+Firefox and WebKit. These exercise the review findings, assertions,
+positioned I/O, streaming stdin, Response/Blob bodies and process/stream
+behavior. The related filesystem correction passes 3,240 Rust tests and
+doctests, the ABI snapshot check, and three unchanged Sortix C cases on
+both Node and Chromium under SourceOnly. ABI 55 is unchanged.
+
+The restored unchanged upstream suite completed 5,147 parallel/sequential
+cases separately on all four hosts. Each recorded 3 passes, 3,721 failures
+and 1,423 unsupported requirements, with no skips, timeouts, harness errors
+or pending cases. The audit found no per-case status/exit-code differences
+across hosts. Of the failures, 3,687 stop at one missing networking API in
+`test/common`; most test bodies therefore remain unmeasured. The three
+passing files do not establish complete compatibility of those modules.
+
+See [the current suite report](../tests/nodejs/README.md) for commands,
+provenance, all failure clusters and source-isolation limits, including
+seven failing assertion-isolation files. Source memory checks pass 161
+host tests and seven protocol checks. A full product rebuild, broad POSIX
+and performance suites, and the full browser application-switching memory
+gate remain deferred. The older upstream Node counts in the table above
+are historical and do not describe the new LTS target.
 
 ## 2026-06-16 PHP PHPT Node Source-PR Full Run
 
