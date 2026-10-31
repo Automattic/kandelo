@@ -1,0 +1,8 @@
+TIME  limits/_POSIX2_BC_BASE_MAX (timeout)
+  exit: 124
+XFAIL-MISMATCH basic/pthread/pthread_getcpuclockid (expected to fail by output, failed by timeout: exit: 124)
+  exit: 124
+FAIL:    19
+XFAIL:   4
+SKIP:    50
+TIMEOUT: 1357

@@ -1,0 +1,9 @@
+XFAIL mlock/12-1 (expected — exit 1)
+XFAIL munmap/1-1 (expected — exit 1)
+XFAIL munmap/1-2 (expected — exit 1)
+SKIP  sched_get_priority_max/1-3
+SKIP  sched_get_priority_min/1-3
+UNRES sigaltstack/9-1
+XFAIL:      3
+SKIP:       2
+UNRESOLVED: 1
