@@ -11367,3 +11367,121 @@ terminal readiness. r6 uses actual DRM latches and preserves that readiness
 assertion. None of these failures is an established engine/platform defect
 or erased by the successful diagnostic. Full ordinary desktop comparison,
 browser-memory, the three-engine gates and broader baseline remain open.
+
+### Mapping origin and checked-transaction traces (2026-10-31)
+
+The user explicitly withdrew the tentative single-terminal improvement
+observation. Single-terminal responsiveness and scaling to more terminals
+both remain open. No application performance improvement is established.
+The normal preview remains frozen at deece03e6327f6fa023e05cf5069df39ad66cdb8
+on port 5672; these investigations use disposable headless browser response
+overlays and do not change its source, SDK or artifacts. The source receipt
+remains af8ceafe54849bf228b3b78b079773a247d9b688e6d54d3fef5bb4060c17e03e.
+No full package/image rebuild was needed for either trace investigation.
+
+Mapping-origin capture `mapping-origin-r3/run.sh-1031-013932-81a6`
+finishes 0 in 34 s. Existing mmap preparation and accepted registration
+metadata are captured in a separate 512 × 12 scalar buffer, without reading
+file contents or retaining pointers/views. The pool grows through ten sizes
+from 4096 to 4190208 bytes in SFWBar pid 109 fd 7, and Sway pid 101 fd 53 maps
+the same observed sizes. The ordinary KernelHost VFS inspector lists the
+live SFWBar descriptor as `7→ memfd:wayland-cursor`. Both observed mappings
+are writable. This identifies cursor-theme storage, not terminal pixels.
+It does not establish immutable content or justify skipping reconciliation.
+Synthetic stat inodes alone are not stable mapping identity; the existing
+kernel table correctly pins a separate backing handle.
+
+The mapping metadata has 258 rows and no overflow. The run includes six
+complete latch intervals across persistent 1/3/5-terminal captures,
+unchanged helper inputs, normal before/after 93-owner 245-member collection,
+SDK/kernel/source/artifact equality and freshness/serving guards. Ten
+recorder/overlay controls pass in r2; those exact bytes are unchanged in
+r3. The earlier r2 aggregate remains failed 1 because its VFS fixture read
+before the asynchronous descriptor listing completed. r3 waits for the
+actual fd row; it does not change production VFS behavior or assertions.
+Evidence: `.context/mapping-origin-r3/verification.json`, report SHA256
+`8ef0484f5b47184f8d85b8a4d1037387f9c1ffab566551c74f97b8aa0aa183c7`.
+
+A second capture adds exact checked-call, checked-sequence, error-capture,
+buffer-lifetime, query-opcode and image-preparation seams: 17 served modules,
+10 passing controls. Native call wrappers also retain bounded scalar
+selector/draw/copy metadata, never payloads or native/guest objects.
+`gl-transaction-trace-r1-1031-015023-1f7b` finishes 0 in 34 s with workload,
+serving guard, artifact collector and freshness all 0. All six intervals
+complete, no span remains open, native error flags are0, helper inputs are
+unchanged, and own 93/245 source/SDK/kernel/artifact identities match before
+and after. Three captures use 3284/3587/29299 records within the 32768 cap.
+
+| Terminals | Complete interval | Guest drawArrays | Primary blits / cursor reads | Native getError calls | Adjacent error queries in one synchronous outer span |
+|---|---|---:|---:|---:|---:|
+| 1 | first | 1 | 3 / 3 | 229 | 92 |
+| 1 | second | 0 | 2 / 2 | 116 | 44 |
+| 3 | first | 0 | 2 / 2 | 116 | 44 |
+| 3 | second | 0 | 2 / 2 | 116 | 44 |
+| 5 | first | 3 | 6 / 6 | 558 | 222 |
+| 5 | second | 3 | 5 / 5 | 589 | 237 |
+
+These windows include ordinary pointer activity and different capture
+preludes; several complete intervals contain no guest draw. They are
+operation/lifecycle evidence, not matched rendering-load, scaling, FPS or
+input-latency benchmarks. External work remains NONQUIET. Adjacent queries
+return 0 on the same physical context without an intervening observed native
+operation; this alone does not prove that either query can safely be removed.
+Native timings include instrumentation and waits, not GPU execution time.
+
+The trace demonstrates a specific lifecycle expansion. An ordinary
+QOP_DELETE_BUFFER with a current vertex reference issues createBuffer,
+bindBuffer, bufferData, vertexAttribPointer, bindBuffer, deleteBuffer of
+the temporary and deleteBuffer of the retired original, with 14 error
+queries in the observed example. The temporary buffer clears native VAO
+references while logical storage can survive in other contexts/VAOs.
+This is a shared platform cost, not an application-specific patch target.
+A proposed final-reference path must prove actual surviving references,
+keep logical format metadata and fence ambiguous irreversible deletion
+outcomes; a false checked result after deletion cannot simply revive the
+old native handle. No such production path has been implemented here.
+
+No copySource/copyTexSubImage2D call appears in these captures;
+prepareImageDraw executes without an imported-image copy. That does not
+prove image copying is cheap or absent in other workloads. Earlier r6
+muxer replays issue 145 native calls but only one direct getError each;
+the total inclusive replay spans are 7.600/1.510/4.075 ms versus
+352.925/58.110/151.295 ms inside all getError spans in those same complete
+captures including prelude. Counts are not synchronous GPU completion, and
+asynchronous work can be charged to a later query. Replay count alone does
+not establish the principal stall. Replacing cursor readback with a shader
+also needs a complete checked-state budget; zero readPixels does not imply
+fewer error queries or a measured gain.
+
+A separate no-build native worker WebGL2 diagnostic exercises buffer
+lifetime in Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6. All three
+observe current ARRAY/VAO detachment, retained native references in another
+unbound VAO, a red pixel drawn from those retained bytes, and
+INVALID_OPERATION for a draw using the detached enabled attribute. The
+aggregate is **2 passed, 1 failed**, preserved under
+`.context/native-buffer-deletion-r1/`: the fixture assumed native deleted
+attribute format metadata stayed size 2 / stride 8 in every engine. Firefox
+instead reports size 4 / stride 0; Chromium/WebKit retain 2/8. This is an observed
+native difference, not an established engine defect or accepted Kandelo
+behavior change. The host's logical attribute model must remain authoritative;
+no browser-specific workaround or assertion relaxation was introduced.
+
+Transaction evidence and read-only accounting:
+`.context/gl-transaction-trace-r1/{verification.json,analysis.json}`.
+Report SHA256:
+`9e19c6c8c13714fb7c10defaf172af60d238617d3d9ac74293e3be29c7356dd3`.
+Trace SHA256 by 1/3/5 terminals:
+`a8d65be54ded11ff3e45f0c670cc82c6e5c9f219dd8d4a6c902ae28b3631226f`,
+`3b8284c7f6d446b17a14928cb779ef032951ed1d6f2aae20322573c5711ea2f8`,
+`47a7db4cd069c92a648826871389c62de5b01f4ef8fe2444388c0e67c084722c`.
+Recorder/overlay SHA256:
+`c74851de07e5d12a988b969f0ffbdc31a85fe6b32d6746cad302d1aa2d6dd965`,
+`bcde00f12c7a2022dc68974f524a7cedd9a4d122afd81a5e83d3f70e6ec40728`.
+Analysis SHA256:
+`8179ca6f4cff550b52ca2bf59e4950551a8645cc8e0f43c1ff36139a1a4478d9`.
+The first read-only verifier attempt failed on a mismatched analysis field
+name; its failure log is retained and the corrected schema verifier passes.
+These are private diagnostics plus documentation. The normal uninstrumented
+candidate comparison, matched sustained rendering load, browser-memory,
+all-engine desktop gates, full benchmarks and broader compatibility effort
+remain unvalidated; no new runtime fix is included in this checkpoint.
