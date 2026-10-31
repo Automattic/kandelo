@@ -25,7 +25,7 @@ does not permit deleting incompatible storage or claiming upgrades exist.
 | KIFS filesystem body | 1 or 2 | Rust image filesystem reader |
 | Overlay journal | `KOVL`, version 1 | Rust `persistent_overlay` |
 | Overlay checkpoint index | 1–5 | Rust `persistent_overlay_index` |
-| Journal inode record | 1 | Rust rootfs replay |
+| Journal inode record | 1; version 2 for durable deferred providers | Rust rootfs replay |
 | Original-program reference | 1 | Rust `fork-instrument` |
 
 These numbers do not advance with a kernel-host ABI bump or every build.
@@ -35,6 +35,32 @@ export. Unknown manifests or checked-image formats must not be treated as
 damage that permits falling back to an older generation. Interrupted-creation
 collection must preserve newer, malformed, or unreadable metadata; only a
 known creation marker with no metadata and no installed data can be collected.
+
+### Durable deferred-provider records
+
+The upgrade branch adds a version-2 inode record, kind 7, for newly staged
+deferred files. Ordinary created inodes and immutable-base metadata retain
+their version-1 representation. A provider record keeps the normal inode
+metadata followed by one bounded SDEF-v5 section: exactly one synthetic
+inode-1 file declaration and its optional archive declaration. The synthetic
+number is local to the descriptor, not the live filesystem's inode identity.
+
+The record retains size, SHA-256 content identity, fetch address, opaque
+transport description and any archive/member relationship together. Reopen
+reconstructs the Rust-owned file and archive binding without fetching the
+content. The host still applies its own transport permissions. Package
+content identities are distinct from the configurable CRC32C/SHA-256 policy
+for immutable image blocks.
+
+Inode records are bounded to 192 KiB, sufficient for both maximum-size SDEF
+payloads and addresses. Other inode kinds retain their earlier 4 KiB bound.
+Unknown record versions and conflicting declarations for an existing archive
+ID are refused without repairing or rewriting the journal. Updating a durable
+descriptor requires staging a new binding and activating it transactionally;
+the image-builder descriptor setters cannot silently edit such a live inode.
+
+This is a Rust storage foundation. It is not yet an exposed package updater,
+maintenance coordinator or accepted Node/browser upgrade workflow.
 
 Existing journals are opened without truncating incomplete tails. Recovery
 retains a logical committed end, validates filesystem metadata, and leaves

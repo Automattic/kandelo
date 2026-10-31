@@ -226,7 +226,7 @@ impl MetadataCheckpointEntry {
         }
         if let Some((offset, length)) = self.value {
             let valid_length = match self.key {
-                OverlayKey::Inode(_) => (1..=4096).contains(&length),
+                OverlayKey::Inode(_) => (1..=super::persistent_overlay::MAX_INODE_RECORD_BYTES as u32).contains(&length),
                 _ => length == 8,
             };
             if !valid_length

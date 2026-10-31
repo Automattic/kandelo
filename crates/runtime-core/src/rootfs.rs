@@ -50,6 +50,7 @@ use wasm_posix_shared::mode::{S_IFDIR, S_IFIFO, S_IFLNK, S_IFMT, S_IFREG, S_IFSO
 
 mod metadata_export;
 mod namespace_activation;
+mod provider_record;
 mod recovery_slots;
 
 // Open-file creation flags we honor here (mirrors syscalls.rs / tmpfs.rs).
@@ -217,6 +218,7 @@ struct Inode {
     /// deferred file re-emitted as a stub silently becomes a zero-length
     /// ordinary file, which is the loss this flag exists to prevent.
     deferred_base: bool,
+    persistent_provider: OwnedMetadata,
     /// Permission bits only (no `S_IFMT`).
     mode: u32,
     uid: u32,
@@ -254,6 +256,7 @@ impl Inode {
             deferred_uri: OwnedMetadata::empty(&ROOTFS_METADATA),
             deferred_digest: crate::sdef::DIGEST_NONE,
             deferred_base: false,
+            persistent_provider: OwnedMetadata::empty(&ROOTFS_METADATA),
             mode,
             uid,
             gid,
@@ -720,6 +723,10 @@ impl RootfsState {
             .map(|inode| inode.nlink == 0 && inode.open_count == 0 && inode.map_pins == 0)
             .unwrap_or(false);
         if drop_it {
+            let archive = self.get(idx).and_then(|inode| match inode.kind {
+                InodeKind::LazyMember { archive_id, .. } if !inode.persistent_provider.is_empty() => Some(archive_id),
+                _ => None,
+            });
             if let Some(key) = self.get(idx).map(|inode| inode.ino) {
                 self.verified_reads.invalidate(key);
             }
@@ -727,6 +734,14 @@ impl RootfsState {
             self.dirty_persistent_timestamps.remove(&idx);
             self.inodes[idx as usize] = None;
             self.free_inodes.push(idx);
+            if let Some(archive) = archive.filter(|id| !self.inodes.iter().flatten().any(|inode|
+                matches!(inode.kind, InodeKind::LazyMember { archive_id, .. } if archive_id == *id)))
+            {
+                self.archives.remove(&archive);
+                self.archive_verified_reads.invalidate(archive as u64);
+                self.archive_readers.retain(|(id, _)| *id != archive);
+                self.archive_directories.retain(|(id, _)| *id != archive);
+            }
         }
     }
 
@@ -866,6 +881,7 @@ struct PreparedPersistentMetadataChange {
     kind: u8,
     target: Vec<u8>,
     metadata: PersistentInodeMetadata,
+    _provider_scratch: MetadataReservation<'static>,
 }
 
 impl PreparedPersistentMetadataChange {
@@ -874,12 +890,17 @@ impl PreparedPersistentMetadataChange {
             InodeKind::PersistentRegular => 1,
             InodeKind::Dir(_) => 2,
             InodeKind::Symlink(_) => 3,
-            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } => 4,
+            InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. } => {
+                if inode.persistent_provider.is_empty() { 4 } else { 7 }
+            },
             InodeKind::Special(S_IFIFO) => 5,
             InodeKind::Special(S_IFSOCK) => 6,
             InodeKind::Special(_) => return Err(Errno::EINVAL),
             InodeKind::Regular(_) => return Err(Errno::EROFS),
         };
+        let provider_scratch = ROOTFS_METADATA.reserve_temporary(
+            if kind == 7 { inode.persistent_provider.len().checked_mul(2).ok_or(Errno::ENOMEM)? } else { 0 },
+        )?;
         let target = match &inode.kind {
             InodeKind::Symlink(target) => {
                 let mut owned = Vec::new();
@@ -887,6 +908,12 @@ impl PreparedPersistentMetadataChange {
                 owned.extend_from_slice(target);
                 owned
             }
+            _ if kind == 7 => {
+                let mut owned = Vec::new();
+                owned.try_reserve_exact(inode.persistent_provider.len()).map_err(|_| Errno::ENOMEM)?;
+                owned.extend_from_slice(&inode.persistent_provider);
+                owned
+            },
             _ => Vec::new(),
         };
         Ok(Self {
@@ -895,6 +922,7 @@ impl PreparedPersistentMetadataChange {
             kind,
             target,
             metadata: PersistentInodeMetadata::from_inode(inode),
+            _provider_scratch: provider_scratch,
         })
     }
 
@@ -916,7 +944,7 @@ impl PreparedPersistentMetadataChange {
         }
         let value = encode_inode_record(
             record_kind,
-            if record_kind == 3 { &self.target } else { &[] },
+            if matches!(record_kind, 3 | 7) { &self.target } else { &[] },
             self.metadata,
         )?;
         Ok(Mutation::Put { key: OverlayKey::Inode(self.ino), value })
@@ -1388,9 +1416,10 @@ fn commit_persistent_namespace(
         }
     }
     let journal = &mut mount.journal;
-    let mut transaction = mutations.to_vec();
+    let mut transaction = crate::persistent_overlay::MutationBatch::copy_from(mutations, changes.len())?;
     for change in &changes {
-        transaction.push(change.mutation(journal)?);
+        transaction.push_with(PERSISTENT_REGULAR_RECORD_BYTES.checked_add(change.target.len()).ok_or(Errno::ENOMEM)?,
+            || change.mutation(journal))?;
     }
     let mut promote = reserve_replay_vec(names.len().checked_add(base_dirents.len()).ok_or(Errno::ENOMEM)?, &mut retained_scratch)?;
     let mut demote = reserve_replay_vec(removed_names.len(), &mut retained_scratch)?;
@@ -1407,7 +1436,7 @@ fn commit_persistent_namespace(
     for removed in &mut removed_names { demote.push(removed.credit.as_mut().expect("prepared namespace credit missing")); }
     let admitted = ROOTFS_METADATA.exchange(&mut promote, &mut demote);
     let committed = admitted.and_then(|()| {
-        let committed = journal.commit(&transaction);
+        let committed = journal.commit(transaction.as_slice());
         if committed.is_err() {
             ROOTFS_METADATA.exchange(&mut demote, &mut promote).expect("namespace admission rollback failed");
         }
@@ -1441,7 +1470,7 @@ fn encode_inode_record(kind: u8, target: &[u8], metadata: PersistentInodeMetadat
     let length = PERSISTENT_REGULAR_RECORD_BYTES.checked_add(target.len()).ok_or(Errno::ENOMEM)?;
     let mut value = Vec::new();
     value.try_reserve_exact(length).map_err(|_| Errno::ENOMEM)?;
-    value.extend_from_slice(&[1, kind, 0, 0]);
+    value.extend_from_slice(&[if kind == 7 { 2 } else { 1 }, kind, 0, 0]);
     value.extend_from_slice(&metadata.mode.to_le_bytes());
     value.extend_from_slice(&metadata.uid.to_le_bytes());
     value.extend_from_slice(&metadata.gid.to_le_bytes());
@@ -1466,6 +1495,8 @@ fn encode_persistent_inode(inode: &Inode) -> Result<Vec<u8>, Errno> {
         InodeKind::Symlink(target) => (3, target.as_slice()),
         InodeKind::Special(S_IFIFO) => (5, &[][..]),
         InodeKind::Special(S_IFSOCK) => (6, &[][..]),
+        InodeKind::BaseRegular { .. } | InodeKind::LazyMember { .. }
+            if !inode.persistent_provider.is_empty() => (7, inode.persistent_provider.as_slice()),
         _ => unreachable!(),
     };
     if inode.mode & !persistent_inode_mode_mask(kind) != 0 {
@@ -1476,8 +1507,9 @@ fn encode_persistent_inode(inode: &Inode) -> Result<Vec<u8>, Errno> {
 
 fn decode_inode_record(value: &[u8]) -> Result<PersistentInodeMetadata, Errno> {
     if value.len() < PERSISTENT_REGULAR_RECORD_BYTES
-        || value.len() > 4096
-        || value[0] != 1
+        || value.len() > crate::persistent_overlay::MAX_INODE_RECORD_BYTES
+        || (value[1] != 7 && value.len() > 4096)
+        || !matches!((value[0], value[1]), (1, 1..=6) | (2, 7))
         || value[2..4] != [0, 0]
     {
         return Err(Errno::EIO);
@@ -1509,6 +1541,7 @@ fn validate_persistent_inode_record(value: &[u8]) -> Result<PersistentInodeMetad
     match value[1] {
         1 | 2 | 5 | 6 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => {},
         3 if value.len() > PERSISTENT_REGULAR_RECORD_BYTES => {},
+        7 => { provider_record::decode(&value[PERSISTENT_REGULAR_RECORD_BYTES..])?; },
         _ => return Err(Errno::EIO),
     }
     if metadata.mode & !persistent_inode_mode_mask(value[1]) != 0 {
@@ -1519,6 +1552,9 @@ fn validate_persistent_inode_record(value: &[u8]) -> Result<PersistentInodeMetad
 
 fn decode_persistent_inode(ino: u64, value: &[u8]) -> Result<Inode, Errno> {
     let metadata = validate_persistent_inode_record(value)?;
+    if value[1] == 7 {
+        return provider_record::inode(ino, &value[PERSISTENT_REGULAR_RECORD_BYTES..], metadata);
+    }
     let kind = match value[1] {
         1 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::PersistentRegular,
         2 if value.len() == PERSISTENT_REGULAR_RECORD_BYTES => InodeKind::Dir(DirectoryEntries::new()),
@@ -1635,7 +1671,7 @@ fn enable_persistence_internal(
     let mut base_update_count = 0usize;
     let mut namespace_replay = false;
     let mut referenced_count = 0usize;
-    let mut cursor = journal.metadata_cursor(4096)?;
+    let mut cursor = journal.metadata_cursor(crate::persistent_overlay::MAX_INODE_RECORD_BYTES)?;
     while let Some((key, value)) = journal.next_metadata(&mut cursor)? {
         if matches!(key, OverlayKey::Inode(ino) if *ino < minimum_created_ino) {
             base_update_count = base_update_count.checked_add(1).ok_or(Errno::ENOMEM)?;
@@ -1661,7 +1697,7 @@ fn enable_persistence_internal(
     drop(cursor);
     let mut base_updates = reserve_replay_vec(base_update_count, &mut recovery_scratch)?;
     let mut referenced = reserve_replay_vec(referenced_count, &mut recovery_scratch)?;
-    let mut cursor = journal.metadata_cursor(4096)?;
+    let mut cursor = journal.metadata_cursor(crate::persistent_overlay::MAX_INODE_RECORD_BYTES)?;
     while let Some((key, value)) = journal.next_metadata(&mut cursor)? {
         if matches!(key, OverlayKey::Dirent { .. }) {
             if let Some(value) = value {
@@ -1675,7 +1711,7 @@ fn enable_persistence_internal(
     referenced.dedup();
     let mut created = reserve_replay_vec(referenced.len(), &mut recovery_scratch)?;
     let mut maximum_created_ino = None;
-    let mut cursor = journal.metadata_cursor(4096)?;
+    let mut cursor = journal.metadata_cursor(crate::persistent_overlay::MAX_INODE_RECORD_BYTES)?;
     while let Some((key, value)) = journal.next_metadata(&mut cursor)? {
         if let OverlayKey::Inode(ino) = key {
             if !resizable || *ino == u64::MAX {
@@ -1808,6 +1844,7 @@ fn enable_persistence_internal(
             visit(slots.physical_index(index), path, metadata)
         }), namespace_replay)
     })?;
+    let archives = ROOTFS.with(|state| provider_record::prepare_archives(state, created.iter().map(|(_, inode)| inode)))?;
     #[cfg(test)]
     if FAIL_PERSISTENCE_FIFO_RESTORE.swap(false, Ordering::SeqCst) { return Err(Errno::ENOMEM); }
     let replay = replay.map(|replay| ROOTFS.with(|state| replay.admit(state))).transpose()?;
@@ -1818,6 +1855,7 @@ fn enable_persistence_internal(
                 metadata.apply(state.get_mut(index).expect("validated base inode missing"));
             }
             slots.publish(state, created, replay);
+            if let Some(archives) = archives { state.archives = archives; }
             if let Some(ino) = maximum_created_ino { state.bump_next_ino(ino); }
         });
     }
@@ -3093,6 +3131,7 @@ pub fn set_deferred_payload(path: &[u8], payload: &[u8]) -> Result<(), Errno> {
         let root = state.mount_root()?;
         let idx = state.walk(root, &comps)?;
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        if !inode.persistent_provider.is_empty() { return Err(Errno::EBUSY); }
         inode.deferred_payload = own_metadata(payload)?;
         Ok(())
     })
@@ -3114,6 +3153,7 @@ pub fn set_deferred_source(path: &[u8], uri: &[u8], digest: &[u8]) -> Result<(),
         let root = state.mount_root()?;
         let idx = state.walk(root, &comps)?;
         let inode = state.get_mut(idx).ok_or(Errno::ENOENT)?;
+        if !inode.persistent_provider.is_empty() { return Err(Errno::EBUSY); }
         inode.deferred_uri = own_metadata(uri)?;
         inode.deferred_digest = digest;
         Ok(())
@@ -3329,6 +3369,10 @@ pub fn insert_lazy_file(
         }
         Ok(())
     })
+}
+
+pub fn stage_persistent_deferred_file(path: &[u8], provider: &[u8], mode: u32, uid: u32, gid: u32) -> Result<u64, Errno> {
+    provider_record::stage(path, provider, mode, uid, gid)
 }
 
 /// What a builder needs to know about whether `path`'s bytes are in the image.
@@ -7400,18 +7444,8 @@ fn persistent_namespace_blocks(
             retired.push(index);
         }
     }
-    if retired.iter().any(|index| {
-        state
-            .get(*index)
-            .is_some_and(|inode| persistent_deferred_record_bytes(inode) != 0)
-    }) {
-        projected += i128::from(blocks_for_file(persistent_deferred_section_bytes(
-            state, &retired,
-        )?)) - i128::from(blocks_for_file(persistent_deferred_section_bytes(
-            state,
-            &[],
-        )?));
-    }
+    projected += i128::from(blocks_for_file(provider_record::section_bytes_after(state, &retired, mutations)?))
+        - i128::from(blocks_for_file(persistent_deferred_section_bytes(state, &[])?));
     u64::try_from(projected).map_err(|_| Errno::EIO)
 }
 
@@ -8751,6 +8785,10 @@ pub fn archive_source(
 /// until the last member is registered. Folding them into one setter would mean
 /// every seal rewrite restating an address it has no business restating.
 pub fn set_archive_source(archive_id: u32, uri: &[u8], digest: &[u8]) -> Result<(), Errno> {
+    if ROOTFS.with(|state| state.inodes.iter().flatten().any(|inode|
+        !inode.persistent_provider.is_empty()
+            && matches!(inode.kind, InodeKind::LazyMember { archive_id: id, .. } if id == archive_id)))
+    { return Err(Errno::EBUSY); }
     if uri.len() > crate::sdef::MAX_URI_LEN as usize {
         return Err(Errno::EINVAL);
     }
@@ -8774,6 +8812,10 @@ pub fn set_archive_source(archive_id: u32, uri: &[u8], digest: &[u8]) -> Result<
 /// be completed. The module completes them at export, which means rewriting a
 /// payload that was already stored.
 pub fn set_archive_payload(archive_id: u32, payload: &[u8]) -> Result<(), Errno> {
+    if ROOTFS.with(|state| state.inodes.iter().flatten().any(|inode|
+        !inode.persistent_provider.is_empty()
+            && matches!(inode.kind, InodeKind::LazyMember { archive_id: id, .. } if id == archive_id)))
+    { return Err(Errno::EBUSY); }
     ROOTFS.with(|state| match state.archives.get_mut(&archive_id) {
         Some(entry) => {
             entry.payload = own_metadata(payload)?;
@@ -14837,6 +14879,7 @@ mod tests {
     }
 
     mod persistent_image;
+    mod persistent_providers;
 
     /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
     /// archive requests are `ENOSYS`, so a test that accidentally reaches for

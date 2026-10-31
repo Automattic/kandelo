@@ -153,7 +153,7 @@ pub(super) fn commit(
         let inode = state.get(index).ok_or(Errno::EIO)?;
         let target_bytes = match &inode.kind {
             InodeKind::Symlink(target) => target.len(),
-            _ => 0,
+            _ => inode.persistent_provider.len(),
         };
         let previous = scratch.bytes();
         scratch.resize(

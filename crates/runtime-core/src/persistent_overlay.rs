@@ -29,6 +29,7 @@ const TRANSACTION_HEADER_BYTES: usize = 24;
 const TRANSACTION_TRAILER_BYTES: usize = 36;
 const MAX_TRANSACTION_BYTES: usize = 1024 * 1024;
 pub(crate) const FILE_BLOCK_BYTES: usize = 4096;
+pub(crate) const MAX_INODE_RECORD_BYTES: usize = 192 * 1024;
 pub(crate) const CACHE_BLOCKS: usize = 64;
 const METADATA_CACHE_ENTRIES: usize = 64;
 const ACTIVE_TAIL_LIMIT_BYTES: u64 = 63 * 1024 * 1024;
@@ -113,6 +114,7 @@ pub(crate) struct MutationBatch {
     mutations: IoBuffer<Mutation>,
     payload: MetadataReservation<'static>,
     limit: usize,
+    encoded_bytes: usize,
 }
 
 impl MutationBatch {
@@ -124,7 +126,8 @@ impl MutationBatch {
 
     fn new_in(capacity: usize, writeback: bool) -> Result<Self, Errno> {
         let mutations = IoBuffer::allocate(capacity, writeback, |values| values.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM))?;
-        Ok(Self { mutations, payload: reserve_payload(0, writeback)?, limit: capacity })
+        Ok(Self { mutations, payload: reserve_payload(0, writeback)?, limit: capacity,
+            encoded_bytes: TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES })
     }
 
     pub(crate) fn len(&self) -> usize { self.mutations.len() }
@@ -135,19 +138,44 @@ impl MutationBatch {
         let mut credit = self.payload.budget().reserve(bytes.checked_mul(2).ok_or(Errno::ENOMEM)?)?;
         let mutation = create()?;
         resize_mutation_payload_credit(&mut credit, core::slice::from_ref(&mutation))?;
+        let name = match mutation_key(&mutation) { OverlayKey::Dirent { name, .. } => name.len(), _ => 0 };
+        let value = match &mutation { Mutation::Put { value, .. } => value.len(), _ => 0 };
+        let encoded_bytes = self.encoded_bytes.checked_add(23).and_then(|length| length.checked_add(name))
+            .and_then(|length| length.checked_add(value)).ok_or(Errno::EFBIG)?;
+        if encoded_bytes > MAX_TRANSACTION_BYTES { return Err(Errno::EFBIG); }
         self.mutations.push(mutation);
         self.payload.merge(credit);
+        self.encoded_bytes = encoded_bytes;
         Ok(())
+    }
+
+    pub(crate) fn copy_from(mutations: &[Mutation], additional: usize) -> Result<Self, Errno> {
+        let mut batch = Self::new(mutations.len().checked_add(additional).ok_or(Errno::ENOMEM)?)?;
+        for mutation in mutations {
+            let key = mutation_key(mutation);
+            let name = match key { OverlayKey::Dirent { name, .. } => name.len(), _ => 0 };
+            let value = match mutation { Mutation::Put { value, .. } => value.len(), _ => 0 };
+            batch.push_with(name.checked_add(value).ok_or(Errno::ENOMEM)?, || Ok(match mutation {
+                Mutation::Put { value, .. } => Mutation::Put {
+                    key: copy_metadata_key(key)?, value: copy_transaction_bytes(value)?,
+                },
+                Mutation::Delete { .. } => Mutation::Delete { key: copy_metadata_key(key)? },
+            }))?;
+        }
+        Ok(batch)
     }
 
     fn flush<S: OverlayStorage>(&mut self, target: &mut OverlayJournal<S>) -> Result<(), Errno> {
         target.commit_transaction(&self.mutations)?;
         self.mutations.clear();
+        self.encoded_bytes = TRANSACTION_HEADER_BYTES + TRANSACTION_TRAILER_BYTES;
         self.payload.resize(0)
     }
 
     fn flush_if_full<S: OverlayStorage>(&mut self, target: &mut OverlayJournal<S>) -> Result<(), Errno> {
-        if self.mutations.len() == self.limit { self.flush(target)?; }
+        if self.mutations.len() == self.limit
+            || self.encoded_bytes > MAX_TRANSACTION_BYTES - MAX_INODE_RECORD_BYTES - 23 - 255
+        { self.flush(target)?; }
         Ok(())
     }
 }
@@ -481,7 +509,7 @@ fn read_indexed_metadata<S: OverlayStorage>(
     let Some((_, length)) = entry.value else {
         return Ok(false);
     };
-    if length > 4096 { return Err(Errno::EIO); }
+    if length as usize > MAX_INODE_RECORD_BYTES { return Err(Errno::EIO); }
     reserve_cache(bytes, length as usize)?;
     bytes.resize(length as usize, 0);
     read_indexed_metadata_bytes(storage, entry, bytes)?;
@@ -505,7 +533,7 @@ fn read_indexed_metadata_admitted<S: OverlayStorage>(
     reclaim: impl FnMut() -> bool,
 ) -> Result<bool, Errno> {
     let Some((_, length)) = entry.value else { return Ok(false); };
-    if length > 4096 { return Err(Errno::EIO); }
+    if length as usize > MAX_INODE_RECORD_BYTES { return Err(Errno::EIO); }
     allocate_after_read_cache_reclaim(
         || bytes.reserve_with(length as usize, |values| reserve_cache(values, length as usize)),
         reclaim,
@@ -521,7 +549,7 @@ fn read_indexed_metadata_bytes<S: OverlayStorage>(
     bytes: &mut [u8],
 ) -> Result<(), Errno> {
     let (offset, length) = entry.value.ok_or(Errno::EIO)?;
-    if length as usize != bytes.len() || length > 4096 { return Err(Errno::EIO); }
+    if length as usize != bytes.len() || length as usize > MAX_INODE_RECORD_BYTES { return Err(Errno::EIO); }
     storage.read_exact_at(offset, bytes)?;
     if entry.value_digest.is_some_and(|digest| Sha256::digest(&*bytes)[..] != digest) {
         return Err(Errno::EIO);
@@ -1063,7 +1091,7 @@ impl<S: OverlayStorage> OverlayJournal<S> {
         F: FnMut(u64, &mut Self) -> Result<Option<u64>, Errno>,
     {
         let max_zero_block = i64::MAX as u64 / FILE_BLOCK_BYTES as u64 + 1;
-        let mut cursor = self.metadata_cursor(4096)?;
+        let mut cursor = self.metadata_cursor(MAX_INODE_RECORD_BYTES)?;
         while let Some((key, value)) = self.next_metadata(&mut cursor)? {
             if matches!(key, OverlayKey::Dirent { .. } | OverlayKey::Inode(_)) {
                 continue;
@@ -2834,7 +2862,8 @@ fn read_legacy_mutation_value<S: OverlayStorage>(
         return Ok(None);
     }
     let length = reference.value_length as usize;
-    if length > FILE_BLOCK_BYTES || reference.offset < HEADER_BYTES as u64 {
+    let limit = if reference.kind == 0 { MAX_INODE_RECORD_BYTES } else { FILE_BLOCK_BYTES };
+    if length > limit || reference.offset < HEADER_BYTES as u64 {
         return Err(Errno::EIO);
     }
     let mut value = Vec::new();
@@ -2849,8 +2878,9 @@ fn read_legacy_mutation_bytes<S: OverlayStorage>(
     reference: LegacyMutationReference,
     value: &mut [u8],
 ) -> Result<(), Errno> {
+    let limit = if reference.kind == 0 { MAX_INODE_RECORD_BYTES } else { FILE_BLOCK_BYTES };
     if reference.deleted || reference.offset < HEADER_BYTES as u64
-        || reference.value_length as usize != value.len() || value.len() > FILE_BLOCK_BYTES
+        || reference.value_length as usize != value.len() || value.len() > limit
     { return Err(Errno::EIO); }
     source.read_exact_at(reference.offset, value)?;
     if Sha256::digest(value)[..] != reference.digest { return Err(Errno::EIO); }
@@ -2863,7 +2893,8 @@ fn emit_legacy_mutation<S: OverlayStorage, T: OverlayStorage>(
     batch: &mut MutationBatch,
     reference: LegacyMutationReference,
 ) -> Result<(), Errno> {
-    if reference.value_length as usize > FILE_BLOCK_BYTES { return Err(Errno::EIO); }
+    let limit = if reference.kind == 0 { MAX_INODE_RECORD_BYTES } else { FILE_BLOCK_BYTES };
+    if reference.value_length as usize > limit { return Err(Errno::EIO); }
     let bytes = reference.name_length as usize + reference.value_length as usize;
     batch.push_with(bytes, || {
         let key = reference.key()?;
@@ -3251,7 +3282,7 @@ fn validate_mutation(mutation: &Mutation) -> Result<(), Errno> {
         Mutation::Put { key, value } => {
             validate_key(key)?;
             match key {
-                OverlayKey::Inode(_) if !value.is_empty() && value.len() <= 4096 => Ok(()),
+                OverlayKey::Inode(_) if !value.is_empty() && value.len() <= MAX_INODE_RECORD_BYTES => Ok(()),
                 OverlayKey::FileSize(_) if value.len() == 8 => Ok(()),
                 OverlayKey::FileZeroFrom(_) if value.len() == 8 => Ok(()),
                 OverlayKey::FileBlock { .. } if value.len() == FILE_BLOCK_BYTES => Ok(()),
@@ -3579,7 +3610,7 @@ fn decode_mutation(bytes: &[u8], consumed: usize) -> Result<(DecodedMutation<'_>
         let value = match operation {
             1 => {
                 let valid = match kind {
-                    1 => value_length != 0 && value_length <= 4096,
+                    1 => value_length != 0 && value_length <= MAX_INODE_RECORD_BYTES,
                     2 => value_length == FILE_BLOCK_BYTES,
                     3 => value_length == 8 && bytes[..8] != [0; 8],
                     4 | 5 => value_length == 8,
@@ -4239,7 +4270,7 @@ mod tests {
     #[test]
     fn indexed_metadata_length_is_checked_before_cache_allocation() {
         let mut storage = MemoryStorage::default();
-        let entry = MetadataCheckpointEntry { key: inode_key(), value: Some((72, 4097)), value_digest: None };
+        let entry = MetadataCheckpointEntry { key: inode_key(), value: Some((72, MAX_INODE_RECORD_BYTES as u32 + 1)), value_digest: None };
         let mut bytes = Vec::new();
         let fault = fail_cache_after(0);
         assert_eq!(read_indexed_metadata(&mut storage, &entry, &mut bytes), Err(Errno::EIO));
