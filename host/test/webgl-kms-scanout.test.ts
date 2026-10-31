@@ -4,6 +4,7 @@ import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess } from "../sr
 import { defaultShadow } from "../src/webgl/shadow";
 import type { GlMuxer } from "../src/webgl/muxer";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
 import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery";
 
 function renderer() {
@@ -226,7 +227,7 @@ function selectedKernel() {
   muxer.switchTo(owner);
   const selected = new Map(r.state);
   const selections = () => r.calls.filter(call => call[0] === "select vertex array").length;
-  return { ...r, kernel, muxer, owner, selected, selections };
+  return { ...r, kernel, memory, muxer, owner, selected, selections };
 }
 
 it("preserves the selected GL owner across successful live GPU cursor samples", () => {
@@ -421,4 +422,157 @@ for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-c
   expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2) !== null).toBe(true);
   expect(reads).toBe(kind === "draw" ? 16 : 17);
   expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+/** Real kernel front-export callback, with a separately selected peer owner.
+ * These controls prove selector/error ownership, not native pixel performance. */
+function selectedFront(kind: "gpu" | "cpu") {
+  const r = selectedKernel(), target = {}, pending: number[] = [];
+  let fault = "", afterFront = () => {}, copies = 0, publications = 0;
+  const originalError = r.gl.getError.bind(r.gl);
+  r.gl.getError = () => pending.shift() ?? originalError();
+  r.state.set(0x0c02, 0x8ce1); r.selected.set(0x0c02, 0x8ce1);
+  r.gl.readBuffer = (value: number) => { r.state.set(0x0c02, value); };
+  r.gl.blitFramebuffer = () => {
+    expect(r.state.get(0x8caa)).toBe(r.storage.fbo);
+    expect(r.state.get(0x8ca6)).toBe(target);
+    copies++;
+    if (fault === "throw") throw Error("front copy unavailable");
+    if (fault === "memory") pending.push(0x505);
+    afterFront();
+  };
+  const nativeRead = r.gl.readPixels.bind(r.gl);
+  r.gl.readPixels = ((...args: Parameters<WebGL2RenderingContext["readPixels"]>) => {
+    copies++;
+    if (fault === "throw") throw Error("front read unavailable");
+    if (fault === "memory") { pending.push(0x505); afterFront(); return; }
+    Reflect.apply(nativeRead, r.gl, args); afterFront();
+  }) as WebGL2RenderingContext["readPixels"];
+  // Imports read their private scratch attrs from this kernel's existing
+  // memory; the published BO remains independent canonical storage.
+  const imports = r.kernel.testAuthority.buildImportObject(r.memory) as {env:Record<string,(...args:any[])=>any>};
+  r.kernel.gl.bind({pid:8,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
+  const binding = r.kernel.gl.get(8,12)!;
+  binding.gl = r.gl; binding.contextId = 22; binding.surfaceId = 71;
+  binding.pendingRenderTargetBoId = 42; binding.renderTargetFbo = r.storage.fbo;
+  binding.surfaceSize = {width:2,height:2};
+  if (kind === "gpu") {
+    const create = r.gl.createFramebuffer;
+    r.gl.createFramebuffer = () => target as WebGLFramebuffer;
+    expect(r.kernel.gl.createGpuBo(43,r.gl,2,2)).toBeGreaterThan(0);
+    r.gl.createFramebuffer = create;
+  } else {
+    r.kernel.bos.create({pid:8,bo_id:43,size:16,w:2,h:2,stride:8});
+    const publish = r.kernel.bos.publishDevicePixels.bind(r.kernel.bos);
+    r.kernel.bos.publishDevicePixels = (bo,pixels) => {publications++; return publish(bo,pixels);};
+  }
+  const attrs = new DataView(r.memory.buffer,64,32);
+  attrs.setUint32(0,1,true); attrs.setUint32(4,2,true); attrs.setUint32(8,2,true);
+  attrs.setUint32(12,1,true); attrs.setUint32(20,43,true);
+  if (kind === "cpu") {attrs.setUint32(24,0x34324241,true);attrs.setUint32(28,8,true);}
+  // Allocation is legitimately stateful; establish the known peer afterward.
+  r.muxer.switchTo(r.owner); const before = r.selections();
+  return {...r,binding,attrs,before,imports:imports.env,
+    run:()=>imports.env.host_gl_update_surface(8,71,64,32,12),
+    fault:(value:string)=>{fault=value;},afterFront:(callback:()=>void)=>{afterFront=callback;},
+    copies:()=>copies,publications:()=>publications,
+  };
+}
+
+for (const kind of ["gpu","cpu"] as const) {
+  it(`keeps the selected peer and its pending errors after checked ${kind} front export`,()=>{
+    const r=selectedFront(kind);r.setError(0x500);
+    expect(r.run()).toBe(0);expect(r.copies()).toBe(1);
+    expect(r.owner.errors).toEqual([0x500]);expect(r.binding.errors).toEqual([]);
+    expect(r.state).toEqual(r.selected);r.muxer.switchTo(r.owner);
+    expect(r.selections()).toBe(r.before);
+    if(kind==="cpu")expect(r.publications()).toBe(1);
+  });
+  it.each(["memory","throw"])(`invalidates ${kind} front export after %s and preserves errno`,fault=>{
+    const r=selectedFront(kind);r.fault(fault);
+    expect(r.run()).toBe(fault==="memory"?-12:-5);
+    expect(r.binding.errors).toEqual([]);expect(r.owner.errors).toEqual([]);
+    r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
+    expect(r.state).toEqual(r.selected);expect(r.publications()).toBe(0);
+  });
+  it(`refuses ${kind} front publication after late native context loss`,()=>{
+    const r=selectedFront(kind);r.afterFront(r.loseContext);
+    expect(r.run()).toBe(-5);expect(r.publications()).toBe(0);
+    r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
+  });
+  it(`preserves ${kind} front ENOMEM even when the final context-loss guard rejects`,()=>{
+    const r=selectedFront(kind);r.fault("memory");r.afterFront(r.loseContext);
+    expect(r.run()).toBe(-12);expect(r.publications()).toBe(0);
+    expect(hasNativeRepair(r.gl)).toBe(true);
+    expect(() => r.muxer.switchTo(r.owner)).toThrow("Native GL restoration remains pending");
+    expect(r.selections()).toBe(r.before);
+  });
+  it(`retains failed ${kind} front inverses and revokes selection before later repair`,()=>{
+    const r=selectedFront(kind);r.failRestore();
+    expect(r.run()).toBe(-5);expect(hasNativeRepair(r.gl)).toBe(true);
+    expect(r.publications()).toBe(0);r.allowRestore();
+    expect(r.run()).toBe(0);expect(hasNativeRepair(r.gl)).toBe(false);
+    r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
+    expect(r.state).toEqual(r.selected);expect(r.binding.errors).toEqual([]);
+  });
+  it(`retains ${kind} front invalid-source errno before the private capture`,()=>{
+    const r=selectedFront(kind),getError=r.gl.getError;let captures=0;
+    r.binding.renderTargetFbo=null;
+    r.gl.getError=()=>{if(++captures>1)throw Error("private capture must not run");return getError();};
+    expect(r.run()).toBe(-22);expect(captures).toBe(1);expect(r.copies()).toBe(0);
+    r.gl.getError=getError;r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before);
+  });
+  it(`refuses ${kind} front work when outgoing error capture fails`,()=>{
+    const r=selectedFront(kind),getError=r.gl.getError;r.setError(0x501);
+    r.gl.getError=()=>{throw Error("capture unavailable");};
+    expect(r.run()).toBe(-5);expect(r.copies()).toBe(0);expect(r.publications()).toBe(0);
+    r.gl.getError=getError;r.muxer.switchTo(r.owner);
+    expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
+    expect(r.selections()).toBe(r.before+1);
+  });
+  it(`does not borrow ${kind} front state across another guard's execution cleanup`,()=>{
+    const r=selectedFront(kind);r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
+    const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
+    let refuse=true;
+    const guard={context:r.gl,prepareRetirement(){if(refuse)return false;r.gl.bindFramebuffer(0x8d40,null);return true;}};
+    const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
+    r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);
+    refuse=false;expect(r.run()).toBe(0);expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
+    r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);expect(lease.release()).toBe(true);
+  });
+}
+
+it("revokes selected peer state before a capabilities query retries another guard's cleanup",()=>{
+  const r=selectedFront("gpu");r.state.set(0x0d33,4096);r.state.set(0x84e8,4096);
+  r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
+  const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
+  let refuse=true;
+  const guard={context:r.gl,prepareRetirement(){if(refuse)return false;r.gl.bindFramebuffer(0x8d40,null);return true;}};
+  const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
+  r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);refuse=false;
+  r.setError(0x501);
+  expect(r.imports.host_gl_query(8,QOP_SURFACE_CAPABILITIES,0,0,512,16,12)).toBe(16);
+  r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
+  expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
+  expect(lease.release()).toBe(true);
+});
+
+it("invalidates a successful CPU front read if canonical publication refuses",()=>{
+  const r=selectedFront("cpu");r.kernel.bos.publishDevicePixels=()=>false;
+  expect(r.run()).toBe(-5);r.muxer.switchTo(r.owner);
+  expect(r.selections()).toBe(r.before+1);expect(r.binding.errors).toEqual([]);
+});
+
+it("refuses another guard's cleanup while the selected peer's flags remain unread",()=>{
+  const r=selectedFront("gpu");r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
+  const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
+  let refuse=true,cleanups=0;
+  const guard={context:r.gl,prepareRetirement(){if(refuse)return false;cleanups++;r.gl.bindFramebuffer(0x8d40,null);return true;}};
+  const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
+  r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);refuse=false;
+  const getError=r.gl.getError;r.setError(0x501);r.gl.getError=()=>{throw Error("unread selected error");};
+  expect(r.run()).toBe(-5);expect(cleanups).toBe(0);expect(r.copies()).toBe(0);
+  r.gl.getError=getError;expect(r.run()).toBe(0);expect(cleanups).toBe(1);
+  expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
+  expect(lease.release()).toBe(true);
 });

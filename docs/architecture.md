@@ -3640,10 +3640,15 @@ scalars rather than guest memories or bindings. CPU WebGL scanout also resets
 its complete draw/upload dependencies on each accepted frame. Every utility
 captures the outgoing logical owner's errors before native work. Generic
 presenter callbacks invalidate the muxer so later GLES work restores that
-context's state. The fixed GPU cursor readback and scanout helpers may preserve
-its selected owner after their complete checked selector inverse succeeds.
-Pending execution cleanup and native repair invalidate before mutation;
-resize invalidates before the first drawing-buffer dimension write. Failure
+context's state. The fixed GPU cursor readback, scanout and GBM front-copy/readback
+helpers may preserve its selected owner after their complete checked selector
+inverse succeeds. Front export retains its own errno and private errors; CPU
+front bytes are published only after the final error, context-loss and pending
+repair checks succeed. Failed native export or publication revokes selection
+reuse. Shared query, submit, import and front-copy preparation invalidates
+before retrying execution cleanup or native repair, including cleanup registered
+through another guard. Resize invalidates before the first drawing-buffer
+dimension write. Failure
 or context loss also invalidates, and private device errors remain separate
 from the guest's pending flags. This is selector validity, not content
 immutability: cursor pixels are still sampled on every observation, including

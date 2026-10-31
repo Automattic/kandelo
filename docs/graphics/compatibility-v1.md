@@ -14115,3 +14115,57 @@ Evidence is `.context/retained-epoll-artifact-pair-analysis-r1/`, README SHA256
 preservation, foreground resize routing and the epoll candidate. Historical
 5678uses its separately pinned selection overlay; neither comparison isolates
 the new probe nor replaces a fresh alternating responsiveness benchmark.
+
+### Bounded ordered focus capture and separate front-export repair, 2026-10-31
+
+`desktop-boundary-ordered-r1-1031-130901-4251` finishes **FAILED**, workload1 /
+collector0 / guard0, after47s. Frozen normalc775 plus exacta196 selection source
+and19 private observer modules remain the inputs; no published preview is
+instrumented. Eight source controls and the actual19-module HTTP composition
+pass before launch. One96nativepx within-window move and one crossing each have
+an explicit1s kernel-clock capture at3Foot, native2880x1620/DPR2 in headless
+Chromium. Both visible responses and normal same-page replacement occur;
+source/SDK/kernel/93-owner/245-member guards pass. The within capture retains
+26,288 ordered rows, no drops/errors/unknowns and one complete internal DRM-latch
+interval. The crossing reaches its65,536-row limit and drops9,321 rows; its
+ordered-completeness assertion correctly fails. Eight internal latch intervals
+are observed there, but missing rows prohibit complete ordered-crossing claims.
+Edges and actual stop lateness remain explicit. Physical GPU completion is
+unobserved. The failed capture is immutable; a fresh bounded rerun is required.
+
+The retained callsite aggregates name make-current as the executed invalidation
+site (3 within,24 crossing); neither front-copy nor update-surface executes in
+these windows. This redirects the focus investigation toward physical versus
+logical context selection across release/rebind. Mutable logical shadow or a
+matching PID alone cannot authorize physical-state reuse. A proposed compound
+submit/query transport remains source/design work: adjacent requests do not
+prove their libc call origin or an application benefit.
+
+A separately implemented shared front-export repair is **not a demonstrated
+focus-stall fix**. Successful checked GPU copies/CPU readbacks preserve the
+selected native owner after their full inverses; native errors, pending repair,
+context loss, exceptions and publication refusal invalidate. CPU front bytes
+are published after the final guard, closing the reproduced late-context-loss
+success/publication gap. Shared retirement preparation now revokes selection
+before another guard's cleanup or native repair and refuses unread outgoing
+errors before cleanup. Existing helper errno ordering uses shared pure
+preflights; no native acceptance check, pixel sample or memory boundary is
+removed. The code is shared by Node/browser and changes no ABI version or
+layout. It is not present in normal preview5679.
+
+Source controls pass215/215 across9 graphics files with0skips in the declared
+shell, using a private config without product-building global setup. The initial
+controls reproduce two unnecessary-replay and two late-context-loss failures;
+two additional initial assertions were overstrong about replay during retained
+repair and are recorded as fixture corrections. A direct typecheck invocation
+first fails on a wrong tool path; the corrected full typecheck also fails on
+module/other-file diagnostics. Neither is a passing typecheck or established
+baseline-equivalence claim. `git diff --check` passes. Distribution builds,
+real browser/Node rendering, browser-memory, conformance, full benchmarks and
+responsiveness benefit remain unrun for this repair.
+
+Evidence: `.context/desktop-boundary-ordered-r1/`,
+`.context/focus-frontcopy-candidate-r1/`, and
+`.context/compound-gl-transport-source-r1/`. The unpublished family remains
+program56 / host3 / GL17 / fork21. No new preview or focus-performance gain is
+claimed from this checkpoint.

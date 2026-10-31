@@ -71,7 +71,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
-import { copyGbmFront, readGbmFront, packGbmFront } from "./webgl/gbm-front-copy";
+import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
@@ -1014,13 +1014,17 @@ export class WasmPosixKernel {
 
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
-      if (!this.gl.retryExecutionRetirements(b.gl)) return false;
+      const muxer = this.gl_muxers.get(b.gl);
+      // A retirement's guard can own the renderer without owning this muxer.
+      // Revoke its selection before any cleanup or pending inverse can run.
+      if (this.gl.hasExecutionRetirements(b.gl) || hasNativeRepair(b.gl)) muxer?.invalidateCurrent();
       try {
-        // Cleanup may belong to an already retired owner. Preserve the
-        // currently selected peer's flags before replaying that cleanup.
-        this.gl_muxers.get(b.gl)?.captureCurrentErrors();
-        if (!repairNativeState(b.gl)) return false;
-      } catch { return false; }
+        // Refuse before cleanup if the selected peer's flags cannot be read,
+        // including when invalidation above retained that unread ownership.
+        muxer?.captureCurrentErrors();
+        if (!this.gl.retryExecutionRetirements(b.gl)) { muxer?.invalidateCurrent(); return false; }
+        if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
+      } catch { muxer?.invalidateCurrent(); return false; }
     }
     if (!this.gl.hasForeignRetirements()) return true;
     for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
@@ -1051,7 +1055,7 @@ export class WasmPosixKernel {
     } finally { muxer.invalidateCurrent(); }
   }
 
-  /** Only the fixed scanout helpers below may borrow selected device state:
+  /** Only fixed scanout and GBM front helpers may borrow selected device state:
    * success proves their complete checked inverse, unlike a generic presenter. */
   private withRestoredGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
     const muxer = this.glMuxerFor(gl);
@@ -2888,8 +2892,16 @@ export class WasmPosixKernel {
                   (format !== 0 && format !== 0x34324241 && format !== 0x34325241) || (!format && pitch)) return -22;
               if (!this.prepareForeignRetirements(b)) return -5;
               const muxer = this.glMuxerFor(gl);
-              const capture = () => { muxer.captureCurrentErrors(); muxer.invalidateCurrent(); };
-              if (copy) return copyGbmFront(b.surface, copy, capture);
+              const capture = () => { muxer.captureCurrentErrors(); };
+              if (copy) {
+                if (!validGbmFrontCopy(b.surface, copy)) return -22;
+                let rc = -5;
+                try {
+                  this.withRestoredGraphicsState(gl, () => { rc = copyGbmFront(b.surface, copy, capture); });
+                } catch { if (rc === 0) rc = -5; }
+                if (rc !== 0) muxer.invalidateCurrent();
+                return rc;
+              }
               const dimensions = this.bos.dims(copyId), canonical = this.bos.pixelView(copyId);
               const rowBytes = size.width * 4;
               if (!dimensions || !canonical || (format !== 0x34324241 && format !== 0x34325241) || pitch !== dimensions.stride ||
@@ -2899,12 +2911,27 @@ export class WasmPosixKernel {
                 return -22;
               let linear: Uint8Array<ArrayBuffer>;
               try { linear = new Uint8Array(canonical.byteLength); } catch { return -12; }
-              const read = readGbmFront(b.surface, capture);
-              if (read.rc !== 0 || !read.pixels) return read.rc || -5;
+              if (!validGbmFrontRead(b.surface)) return -22;
+              let read: ReturnType<typeof readGbmFront> = {rc: -5};
               try {
-                packGbmFront(read.pixels,linear,size.width,size.height,pitch,format);
-              } catch { return -12; }
-              return this.bos.publishDevicePixels(copyId, linear) ? 0 : -5;
+                read = this.withRestoredGraphicsState(gl, () => {
+                  read = readGbmFront(b.surface, capture);
+                  return read;
+                });
+              } catch {
+                muxer.invalidateCurrent();
+                return read.rc === 0 ? -5 : read.rc;
+              }
+              if (read.rc !== 0 || !read.pixels) { muxer.invalidateCurrent(); return read.rc || -5; }
+              // Publication follows the wrapper's final loss/repair/error guard.
+              // An unsuccessful export never authorizes selection reuse.
+              let published = false;
+              try {
+                try { packGbmFront(read.pixels,linear,size.width,size.height,pitch,format); }
+                catch { return -12; }
+                published = this.bos.publishDevicePixels(copyId, linear);
+                return published ? 0 : -5;
+              } finally { if (!published) muxer.invalidateCurrent(); }
             }
             if (format || pitch) return -22;
             const target = this.gl.gpuBo(targetId);
