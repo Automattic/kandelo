@@ -10676,3 +10676,12 @@ memory and required POSIX remain pending for this new candidate. The
 existing5667 preview still serves a53 and does not contain this change.
 Private source hashes and exact commands are under
 `.context/process-snapshot-compare-validation/`.
+
+
+The surrounding host run
+`snapshot-compare-host-boundaries-1030-224147-cbe6` also passes238/238
+without skips/load failures:177 transfer-boundary,55 file page-cache and
+six shared-mapping inheritance-entry cases. Its normal fixture setup
+rebuilds stale fixtures; no selected built kernel execution is claimed
+from these mocked boundary cases. Exact tested source bytes are unchanged
+through implementation commit6bf002e64deb124995e40683722b93b430236df7.
