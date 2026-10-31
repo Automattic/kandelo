@@ -14468,3 +14468,68 @@ plus unchanged checked-limit/muxer dependencies. Evidence is
 `.context/vertex-constant-publication-review-r1/`. The frozen5679 and5680
 previews do not include this repair; distribution, Node/browser rendering,
 browser-memory and graphics conformance acceptance remain open.
+
+
+### Residual scope costs and dirty-store screen, 2026-10-31
+
+Offline decomposition of the accepted ce7 trace passes138,539 nesting/range/
+conservation checks. Disjoint observed root occupancy is319.370ms within and
+553.125ms crossing per1s window; time outside those roots is not proven idle.
+Exclusive occupancy subtracts direct observed children but still includes tracer
+bookkeeping, driver waits, scheduling and uninstrumented work. It is not CPU or
+predicted savings. Per-call timestamps have a minimum positive5µs step and
+many zero-duration scopes, so tiny operation costs are not separately precise.
+
+| Instrumented exclusive worker-clock occupancy ms | Within | Crossing |
+|---|---:|---:|
+|Native getError|155.960|197.830|
+|Shared-file comparison imports|33.785|118.495|
+|DRI flushMemoryToSab|31.890|98.600|
+|DRI syncImportsForPid, excluding observed children|7.830|26.130|
+|Native readPixels|7.510|5.340|
+|Native createBuffer / bufferData / deleteBuffer|0.015 / 0.015 / 0.020|0.205 / 0.305 / 0.105|
+
+The private draw helper's crossing41.625ms inclusive scope contains37.055ms of
+instrumented getError scopes; its own exclusive remainder is0.520ms. The trace
+does not support raw temporary-buffer allocation as the dominant observed
+staging cost. The first complete crossing logical latch interval is97.210ms,
+with91.500ms clipped observed root occupancy. Its106-segment timeline and470
+nested render/query/sync scopes preserve request/channel joins and edge flags;
+no kernel-clock mark proves it is the physical focus frame. Cost evidence is
+`.context/drawable-boundary-cost-decomposition-r1/`.
+
+The source review in `.context/shared-store-dirty-tracking-review-r1/` finds
+no existing universal guest-memory writer authority. Fork table dirty tracking
+is unrelated; modules with disabled fork instrumentation, generated helpers and
+host/kernel/device writers require explicit coverage. Plain dirty bits or
+exchange-before-capture do not protect refresh against an in-flight writer.
+This is an implementable platform model gap, not a hard boundary.
+
+A separate standalone Node/Wasm prototype in
+`.context/shared-store-dirty-tracking-screen-r1/` passes9 deterministic controls
+with two real writer workers and8 actual generated instruction checks. Broken
+post-mark/exchange/pre+post schemes reproduce lost stores. A gated two-alias
+model refuses contention before effects, retains independent owned captures/
+baselines, merges disjoint writes and acknowledges each alias before scan reuse.
+Both workers are joined; no browser or production runtime is modified.
+
+The tiny no-libc Wasm artifact uses a fixed8MiB shared memory,4MiB data and8KiB
+control range. Seven alternating pairs per row retain full raw samples and
+matching data hashes. Conservative per-operation CAS/dirty/unlock bookkeeping
+has substantial synthetic overhead: final cache-hot scalar/atomic/SIMD median
+ratios15.11x/11.87x/12.67x; spread-page ratios1.00x/2.39x/1.63x. Bulk-fill ratios
+are1.17x/1.09x in the final sample, with earlier successful samples varying.
+These are a bookkeeping subset's wall-clock store-loop costs, not a full
+instrumentation protocol, worst-case bound, neutrality or desktop result.
+Production instruction parking/retry, every writer, traps, lifecycle, memory64
+and alias/counter boundaries remain unimplemented. The toy's explicit refused
+store result cannot be substituted for an arbitrary Wasm instruction. Initial
+wrapped-clang target and C-macro failures remain retained. No full normal
+rebuild or adoption is justified by this screen alone.
+
+The next host-only candidate investigates fewer actual selector writes in fixed
+presentation helpers, using their freshly checked native preimages. Every
+attempted native operation must retain its acceptance/error check and inverse;
+no cached pixels, guest-shadow guess or arbitrary synchronization skip is
+licensed by these observations. Implementation and application benefit are
+pending at this checkpoint.
