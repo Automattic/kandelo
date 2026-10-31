@@ -1,0 +1,74 @@
+--- a/js/src/shell/OSObject.cpp
++++ b/js/src/shell/OSObject.cpp
+@@ -45,2 +45,3 @@
+ #include "js/ArrayBuffer.h"
++#include "js/BigInt.h"  // JS::BigIntFits
+ #include "js/CharacterEncoding.h"
+@@ -1544,1 +1545,57 @@
++// Exact positioned I/O uses the existing libc/kernel path. It never seeks or
++// changes the shared open-file-description cursor.
++static bool PositionedIO(JSContext* cx, unsigned argc, Value* vp, bool writing) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd, offset, length;
++  if (args.length() != 5 || !args[0].isNumber() ||
++      !args[2].isNumber() || !args[3].isNumber() ||
++      !JS::ToInt32(cx, args[0], &fd) || !JS::ToInt32(cx, args[2], &offset) ||
++      !JS::ToInt32(cx, args[3], &length) ||
++      args[0].toNumber() != double(fd) || args[2].toNumber() != double(offset) ||
++      args[3].toNumber() != double(length)) {
++    JS_ReportErrorASCII(cx, "positioned I/O requires fd, buffer, offset, length, position");
++    return false;
++  }
++  int64_t position;
++  if (args[4].isBigInt()) {
++    if (!JS::BigIntFits(args[4].toBigInt(), &position) || position < 0) {
++      JS_ReportErrorASCII(cx, "positioned I/O offset must fit a nonnegative int64");
++      return false;
++    }
++  } else if (args[4].isNumber()) {
++    double number = args[4].toNumber();
++    if (!(number >= 0 && number <= 9007199254740991.0) ||
++        double(int64_t(number)) != number) {
++      JS_ReportErrorASCII(cx, "positioned I/O offset must be a safe integer");
++      return false;
++    }
++    position = int64_t(number);
++  } else {
++    JS_ReportErrorASCII(cx, "positioned I/O offset must be a number or bigint");
++    return false;
++  }
++  uint8_t* data = nullptr;
++  size_t dataLen = 0;
++  if (!GetArrayBufferBytes(cx, args[1], &data, &dataLen)) return false;
++  if (offset < 0 || length < 0 || size_t(offset) > dataLen ||
++      size_t(length) > dataLen - size_t(offset)) {
++    JS_ReportErrorASCII(cx, "positioned I/O offset/length out of range");
++    return false;
++  }
++  static_assert(sizeof(off_t) >= sizeof(int64_t), "positioned I/O requires 64-bit off_t");
++  uint8_t* bytes = data ? data + offset : nullptr;
++  ssize_t n = writing ? pwrite(fd, bytes, size_t(length), off_t(position))
++                      : pread(fd, bytes, size_t(length), off_t(position));
++  args.rval().setInt32(n >= 0 ? int32_t(n) : -errno);
++  return true;
++}
++
++static bool os_pread(JSContext* cx, unsigned argc, Value* vp) {
++  return PositionedIO(cx, argc, vp, false);
++}
++
++static bool os_pwrite(JSContext* cx, unsigned argc, Value* vp) {
++  return PositionedIO(cx, argc, vp, true);
++}
++
+ static bool os_write(JSContext* cx, unsigned argc, Value* vp) {
+@@ -1975,1 +2032,9 @@
++    JS_FN_HELP("pread", os_pread, 5, 0,
++"pread(fd, buffer, offset, length, position)",
++"  Read without changing the descriptor cursor; returns count or -errno."),
++
++    JS_FN_HELP("pwrite", os_pwrite, 5, 0,
++"pwrite(fd, buffer, offset, length, position)",
++"  Write without changing the descriptor cursor; returns count or -errno."),
++
+     JS_FN_HELP("write", os_write, 4, 0,

@@ -351,9 +351,9 @@ function _errnoToCode(errno) {
         1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR',
         5: 'EIO', 9: 'EBADF', 11: 'EAGAIN', 12: 'ENOMEM',
         13: 'EACCES', 17: 'EEXIST', 20: 'ENOTDIR', 21: 'EISDIR',
-        22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 28: 'ENOSPC',
+        22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 27: 'EFBIG', 28: 'ENOSPC', 29: 'ESPIPE',
         30: 'EROFS', 31: 'EMLINK', 32: 'EPIPE', 36: 'ENAMETOOLONG',
-        39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 95: 'ENOTSUP',
+        39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 75: 'EOVERFLOW', 95: 'ENOTSUP',
         98: 'EADDRINUSE', 99: 'EADDRNOTAVAIL', 101: 'ENETUNREACH',
         107: 'ENOTCONN', 110: 'ETIMEDOUT',
         111: 'ECONNREFUSED', 104: 'ECONNRESET',
@@ -1857,39 +1857,138 @@ const fs = (() => {
         if (result < 0) _throwErrno(-result, 'close');
     }
 
-    function readSync(fd, buffer, offset, length, position) {
-        if (position !== null && position !== undefined) {
-            const result = os.seek(fd, position, std.SEEK_SET);
-            if (result < 0) _throwErrno(-result, 'read');
+    function _ioArgumentError(name, range = false) {
+        const error = range ? new RangeError('The ' + name + ' argument is out of range')
+            : new TypeError('The ' + name + ' argument has an invalid type');
+        error.code = range ? 'ERR_OUT_OF_RANGE' : 'ERR_INVALID_ARG_TYPE';
+        throw error;
+    }
+
+    const _ioTypedPrototype = Object.getPrototypeOf(Uint8Array.prototype);
+    const _ioViewGet = (proto, name) => Function.prototype.call.bind(Object.getOwnPropertyDescriptor(proto, name).get);
+    const _ioTypedName = _ioViewGet(_ioTypedPrototype, Symbol.toStringTag);
+    const _ioTypedBuffer = _ioViewGet(_ioTypedPrototype, 'buffer');
+    const _ioTypedOffset = _ioViewGet(_ioTypedPrototype, 'byteOffset');
+    const _ioTypedLength = _ioViewGet(_ioTypedPrototype, 'byteLength');
+    const _ioDataBuffer = _ioViewGet(DataView.prototype, 'buffer');
+    const _ioDataOffset = _ioViewGet(DataView.prototype, 'byteOffset');
+    const _ioDataLength = _ioViewGet(DataView.prototype, 'byteLength');
+    const _ioIsView = ArrayBuffer.isView;
+    function _ioView(value) {
+        if (!_ioIsView(value)) _ioArgumentError('buffer');
+        const typed = _ioTypedName(value) !== undefined;
+        return { buffer: typed ? _ioTypedBuffer(value) : _ioDataBuffer(value),
+            byteOffset: typed ? _ioTypedOffset(value) : _ioDataOffset(value),
+            byteLength: typed ? _ioTypedLength(value) : _ioDataLength(value) };
+    }
+    function _ioInteger(value, name, min = 0, max = Number.MAX_SAFE_INTEGER) {
+        if (typeof value !== 'number') _ioArgumentError(name);
+        if (!Number.isInteger(value) || value < min || value > max) _ioArgumentError(name, true);
+    }
+    function _ioFd(fd) { _ioInteger(fd, 'fd', 0, 0x7fffffff); }
+    function _readPosition(position, length) {
+        if (position == null) return null;
+        if (typeof position === 'bigint') {
+            if (position < -1n || position > 0x7fffffffffffffffn - BigInt(length)) _ioArgumentError('position', true);
+        } else _ioInteger(position, 'position', -1);
+        return position === -1 || position === -1n ? null : position;
+    }
+
+    function _readParameters(buffer, offset, length, position) {
+        const view = _ioView(buffer);
+        if (offset === undefined) offset = 0;
+        else _ioInteger(offset, 'offset');
+        length |= 0;
+        position = _readPosition(position, length);
+        if (length !== 0) {
+            if (view.byteLength === 0) {
+                const error = new TypeError('The buffer is empty and cannot be written');
+                error.code = 'ERR_INVALID_ARG_VALUE';
+                throw error;
+            }
+            if (length < 0 || offset + length > view.byteLength) _ioArgumentError('length', true);
         }
-        const start = offset ?? 0;
-        const result = os.read(fd, buffer.buffer, buffer.byteOffset + start,
-            length ?? (buffer.byteLength - start));
+        return { view, offset, length, position };
+    }
+    function _readTransfer(fd, { view, offset, length, position }) {
+        if (length === 0) return 0;
+        const result = position === null
+            ? os.read(fd, view.buffer, view.byteOffset + offset, length)
+            : os.pread(fd, view.buffer, view.byteOffset + offset, length, position);
         if (result < 0) _throwErrno(-result, 'read');
         return result;
     }
+    function _readOptions(options) {
+        if (options != null && (typeof options !== 'object' || Array.isArray(options))) _ioArgumentError('options');
+        return options ?? {};
+    }
+    function readSync(fd, buffer, offsetOrOptions, length, position) {
+        const view = _ioView(buffer);
+        let offset = offsetOrOptions;
+        if (arguments.length <= 3 || typeof offsetOrOptions === 'object') {
+            ({ offset = 0, length = view.byteLength - offset, position = null } = _readOptions(offsetOrOptions));
+        }
+        const params = _readParameters(buffer, offset, length, position);
+        // Node returns before touching the descriptor for a zero-byte read.
+        if (params.length !== 0) _ioFd(fd);
+        return _readTransfer(fd, params);
+    }
+    function read(fd, buffer, offsetOrOptions, length, position, cb) {
+        _ioFd(fd);
+        let offset = offsetOrOptions;
+        if (arguments.length <= 4) {
+            let options = null;
+            if (arguments.length === 4) {
+                cb = length;
+                options = _readOptions(offsetOrOptions);
+            } else if (arguments.length === 3) {
+                cb = offsetOrOptions;
+                if (!_ioIsView(buffer)) {
+                    options = _readOptions(buffer);
+                    ({ buffer = Buffer.alloc(16384) } = options);
+                }
+            } else {
+                cb = buffer;
+                buffer = Buffer.alloc(16384);
+            }
+            ({ offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = options ?? {});
+        }
+        _ioView(buffer);
+        if (typeof cb !== 'function') _ioArgumentError('cb');
+        // Unlike readSync, the callback overload accepts a null byte offset.
+        const params = _readParameters(buffer, offset == null ? 0 : offset, length, position);
+        let result;
+        try { result = _readTransfer(fd, params); }
+        catch (error) { queueMicrotask(() => cb(error, 0, buffer)); return; }
+        queueMicrotask(() => cb(null, result, buffer));
+    }
 
     function writeSync(fd, data, offsetOrPosition, lengthOrEncoding, position) {
-        let buf;
+        let offset = offsetOrPosition, length = lengthOrEncoding, view;
         if (typeof data === 'string') {
-            buf = new TextEncoder().encode(data);
-            if (typeof offsetOrPosition === 'number') {
-                const result = os.seek(fd, offsetOrPosition, std.SEEK_SET);
-                if (result < 0) _throwErrno(-result, 'write');
-            }
+            view = _ioView(Buffer.from(data, lengthOrEncoding));
+            position = offsetOrPosition;
+            offset = 0;
+            length = view.byteLength;
         } else {
-            buf = data;
-            const offset = offsetOrPosition ?? 0;
-            const length = lengthOrEncoding ?? (buf.byteLength - offset);
-            if (position !== null && position !== undefined) {
-                const result = os.seek(fd, position, std.SEEK_SET);
-                if (result < 0) _throwErrno(-result, 'write');
+            view = _ioView(data);
+            if (typeof offset === 'object') {
+                ({ offset = 0, length = view.byteLength - offset, position = null } = offset ?? {});
             }
-            const result = os.write(fd, buf.buffer, buf.byteOffset + offset, length);
-            if (result < 0) _throwErrno(-result, 'write');
-            return result;
+            if (offset == null) offset = 0;
+            else _ioInteger(offset, 'offset');
+            if (typeof length !== 'number') length = view.byteLength - offset;
+            if (offset > view.byteLength) _ioArgumentError('offset', true);
+            if (length < 0 || length > view.byteLength - offset) _ioArgumentError('length', true);
+            _ioInteger(length, 'length', 0, 0x7fffffff);
         }
-        const result = os.write(fd, buf.buffer, 0, buf.length);
+        _ioFd(fd);
+        // Node's write binding accepts a safe integer position; other values
+        // (including bigint) select the sequential path. Reads are stricter.
+        const positioned = Number.isSafeInteger(position) && position >= 0;
+        const result = positioned
+            ? os.pwrite(fd, view.buffer, view.byteOffset + offset, length, position)
+            : os.write(fd, view.buffer, view.byteOffset + offset, length);
         if (result < 0) _throwErrno(-result, 'write');
         return result;
     }
@@ -1982,8 +2081,17 @@ const fs = (() => {
             this._closed = true;
         }
 
-        async read(buffer, offset = 0, length = buffer.byteLength - offset, position = null) {
-            this._assertOpen();
+        async read(buffer, offset, length, position) {
+            this._assertOpen('read');
+            if (!_ioIsView(buffer)) {
+                const options = _readOptions(buffer);
+                ({ buffer = Buffer.alloc(16384), offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = options);
+            } else if (typeof offset === 'object') {
+                ({ offset = 0, length = _ioView(buffer).byteLength - offset, position = null } = _readOptions(offset));
+            } else {
+                offset = offset === undefined ? 0 : offset;
+                length = length === undefined ? _ioView(buffer).byteLength - offset : length;
+            }
             const bytesRead = readSync(this.fd, buffer, offset, length, position);
             return { bytesRead, buffer };
         }
@@ -2154,14 +2262,7 @@ const fs = (() => {
         futimes: _callbackify(futimesSync),
         fsync: _callbackify(fsyncSync),
         fdatasync: _callbackify(fdatasyncSync),
-        read(fd, buffer, offset, length, position, cb) {
-            try {
-                const n = readSync(fd, buffer, offset, length, position);
-                queueMicrotask(() => cb(null, n, buffer));
-            } catch (err) {
-                queueMicrotask(() => cb(err));
-            }
-        },
+        read,
         write(fd, data, ...rest) {
             const cb = rest.pop();
             try {

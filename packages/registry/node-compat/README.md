@@ -23,6 +23,12 @@ Export presence is not implementation coverage. In particular:
 - Filesystem, process, Buffer and URL regressions have targeted source and
   guest fixtures. Windows file URL options, legacy URL helpers and complete
   filesystem argument/error validation remain incomplete.
+- Positioned reads/writes now use libc pread/pwrite without changing the
+  shared descriptor cursor. Read positions retain exact signed-64-bit
+  bigint values, and read/write options follow the pinned Node target.
+  Source differential checks pass; compilation and rebuilt guest checks
+  remain deferred. Shared-buffer filesystem I/O, full async I/O scheduling
+  and exact argument messages remain gaps.
 - The shared source has streaming UTF-8/UTF-16 decoding, Windows-1252,
   BOM/fatal handling, complete UTF-8 encodeInto writes, and Node-specific
   StringDecoder buffering/flush behavior. Source/native comparisons pass;
