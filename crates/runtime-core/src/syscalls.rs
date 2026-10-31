@@ -18976,12 +18976,20 @@ fn is_terminal_ioctl_request(request: u32) -> bool {
 /// ioctl -- device control.
 /// Supports generic ioctls (FIONREAD, FIONBIO, FIOCLEX, FIONCLEX) on any fd type,
 /// plus terminal ioctls (TIOCGWINSZ, TIOCSWINSZ) on host terminals and PTYs.
-pub fn sys_ioctl(
+/// Local ioctl effects must be consumed by ProcessTable::ioctl. Keeping this
+/// helper crate-private prevents a kernel adapter from dropping group signals.
+#[derive(Default)]
+pub(crate) struct IoctlEffects {
+    pub terminal_resize: Option<crate::terminal::TerminalResizeEffect>,
+}
+
+pub(crate) fn sys_ioctl_local(
     proc: &mut Process,
     host: &mut dyn HostIO,
     fd: i32,
     request: u32,
     buf: &mut [u8],
+    effects: &mut IoctlEffects,
 ) -> Result<(), Errno> {
     // FIOCLEX / FIONCLEX operate on the fd entry directly, not the OFD.
     match request {
@@ -19573,25 +19581,14 @@ pub fn sys_ioctl(
                 ws_xpixel: u16::from_le_bytes([buf[4], buf[5]]),
                 ws_ypixel: u16::from_le_bytes([buf[6], buf[7]]),
             };
-            let fg_pgid = match file_type {
+            effects.terminal_resize = match file_type {
                 FileType::PtyMaster | FileType::PtySlave => {
                     let pty_idx = host_handle as usize;
-                    if let Some(pty) = crate::pty::get_pty(pty_idx) {
-                        pty.terminal.winsize = ws;
-                        pty.terminal.foreground_pgid
-                    } else {
-                        0
-                    }
+                    let pty = crate::pty::get_pty(pty_idx).ok_or(Errno::ENOTTY)?;
+                    pty.terminal.replace_winsize(ws)
                 }
-                _ => {
-                    proc.terminal.winsize = ws;
-                    proc.terminal.foreground_pgid
-                }
+                _ => proc.terminal.replace_winsize(ws),
             };
-            // POSIX: TIOCSWINSZ sends SIGWINCH to the foreground process group
-            if fg_pgid > 0 {
-                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
-            }
             Ok(())
         }
         TCSBRK => {
@@ -24247,6 +24244,19 @@ mod tests {
             sys_lstat(&mut proc, &mut host, b"/var/run/wire.fifo").unwrap_err(),
             Errno::ENOENT
         );
+    }
+
+    // Storage/device unit fixtures intentionally test the local operation.
+    // Cross-process resize effects are tested through the production table
+    // boundary in process_table::tests::terminal_resize_*.
+    fn sys_ioctl(
+        proc: &mut Process,
+        host: &mut dyn HostIO,
+        fd: i32,
+        request: u32,
+        buf: &mut [u8],
+    ) -> Result<(), Errno> {
+        sys_ioctl_local(proc, host, fd, request, buf, &mut IoctlEffects::default())
     }
 
     struct PtyFixture {

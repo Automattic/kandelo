@@ -13092,60 +13092,77 @@ pub extern "C" fn kernel_ioctl(
     buf_len: u32,
     process_pointer_width: u32,
 ) -> i32 {
-    let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    if table.current_pid() == 0 {
+        panic!("no current process in table");
+    }
     let mut host = WasmHostIO;
-    let result = match wasm_posix_shared::ioctl_contract::request_contract(request) {
-        Some(contract) => (|| {
-            let pointer_width = u8::try_from(process_pointer_width)
-                .ok()
-                .filter(|width| *width == 4 || *width == 8)
-                .ok_or(Errno::EINVAL)?;
-            let expected_size = contract
-                .size_for_pointer_width(pointer_width)
-                .ok_or(Errno::EOVERFLOW)?;
-            use wasm_posix_shared::ioctl_contract::IoctlArgKind;
-            match contract.arg_kind {
-                IoctlArgKind::None => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut [])
+    let mut dispatched = false;
+    let result = {
+        let mut ioctl = |buf: &mut [u8]| {
+            dispatched = true;
+            table.ioctl(&mut host, fd, request, buf)
+        };
+        match wasm_posix_shared::ioctl_contract::request_contract(request) {
+            Some(contract) => (|| {
+                let pointer_width = u8::try_from(process_pointer_width)
+                    .ok()
+                    .filter(|width| *width == 4 || *width == 8)
+                    .ok_or(Errno::EINVAL)?;
+                let expected_size = contract
+                    .size_for_pointer_width(pointer_width)
+                    .ok_or(Errno::EOVERFLOW)?;
+                use wasm_posix_shared::ioctl_contract::IoctlArgKind;
+                match contract.arg_kind {
+                    IoctlArgKind::None => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            ioctl(&mut [])
+                        }
+                    }
+                    IoctlArgKind::ScalarI32 => {
+                        if buf_len != 0 {
+                            Err(Errno::EINVAL)
+                        } else {
+                            // WHY: scalar ioctl arguments occupy the same channel
+                            // slot as pointers. Decode the value without ever
+                            // treating it as an address.
+                            let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
+                            ioctl(&mut scalar)
+                        }
+                    }
+                    IoctlArgKind::Pointer => {
+                        if buf_len != expected_size {
+                            Err(Errno::EINVAL)
+                        } else if buf_ptr.is_null() {
+                            Err(Errno::EFAULT)
+                        } else {
+                            let buf = unsafe {
+                                core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
+                            };
+                            ioctl(buf)
+                        }
                     }
                 }
-                IoctlArgKind::ScalarI32 => {
-                    if buf_len != 0 {
-                        Err(Errno::EINVAL)
-                    } else {
-                        // WHY: scalar ioctl arguments occupy the same channel
-                        // slot as pointers. Decode the value without ever
-                        // treating it as an address.
-                        let mut scalar = (buf_ptr as usize as u32).to_le_bytes();
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, &mut scalar)
-                    }
-                }
-                IoctlArgKind::Pointer => {
-                    if buf_len != expected_size {
-                        Err(Errno::EINVAL)
-                    } else if buf_ptr.is_null() {
-                        Err(Errno::EFAULT)
-                    } else {
-                        let buf = unsafe {
-                            core::slice::from_raw_parts_mut(buf_ptr, expected_size as usize)
-                        };
-                        syscalls::sys_ioctl(proc, &mut host, fd, request, buf)
-                    }
-                }
-            }
-        })(),
-        // Unknown requests stage no caller pointer. Let the fd/device path
-        // choose EBADF/ENOTTY/ENOSYS using an empty slice.
-        None => syscalls::sys_ioctl(proc, &mut host, fd, request, &mut []),
+            })(),
+            // Unknown requests stage no caller pointer. Let the fd/device path
+            // choose EBADF/ENOTTY/ENOSYS using an empty slice.
+            None => ioctl(&mut []),
+        }
     };
+    if !dispatched {
+        // Layout rejection still finishes the caller's existing signal path.
+        let (proc, locks) = table
+            .current_process_and_advisory_locks()
+            .expect("current ioctl caller disappeared");
+        deliver_pending_signals_with_locks(proc, locks, &mut host);
+    }
     let result = match result {
         Ok(()) => 0,
         Err(e) => -(e as i32),
     };
-    deliver_pending_signals_with_locks(proc, advisory_locks, &mut host);
     result
 }
 
@@ -16471,40 +16488,12 @@ pub extern "C" fn kernel_pty_master_read(pty_idx: u32, buf_ptr: *mut u8, buf_len
 /// to it (ink/blessed re-render on 'resize'), corrupting cursor accounting.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_pty_set_winsize(pty_idx: u32, rows: u32, cols: u32) -> i32 {
-    let pty = match crate::pty::get_pty(pty_idx as usize) {
-        Some(p) => p,
-        None => return -(Errno::ENOENT as i32),
-    };
-
-    let new_rows = rows as u16;
-    let new_cols = cols as u16;
-    let changed =
-        pty.terminal.winsize.ws_row != new_rows || pty.terminal.winsize.ws_col != new_cols;
-
-    pty.terminal.winsize = crate::terminal::WinSize {
-        ws_row: new_rows,
-        ws_col: new_cols,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-
-    if !changed {
-        return 0;
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    match table.set_pty_winsize(pty_idx as usize, rows as u16, cols as u16, &mut WasmHostIO) {
+        Ok(()) => 0,
+        Err(error) => -(error as i32),
     }
-
-    // Send SIGWINCH to foreground process group
-    let fg_pgid = pty.terminal.foreground_pgid;
-    if fg_pgid > 0 {
-        let table = unsafe { &mut *PROCESS_TABLE.0.get() };
-        let pids = table.pids_in_group(fg_pgid as u32);
-        for pid in pids {
-            if let Some(proc) = table.get_mut(pid) {
-                proc.raise_signal(wasm_posix_shared::signal::SIGWINCH);
-            }
-        }
-    }
-
-    0
 }
 
 // ---------------------------------------------------------------------------

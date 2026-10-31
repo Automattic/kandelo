@@ -1546,6 +1546,17 @@ parked. Signal-mask wait deferral and finite deadlines remain owned by the
 normal retry implementation. Host PTY
 input schedules its reader wake independently of output callback attachment.
 
+Terminal resize storage and signal routing belong to the shared process table.
+`TIOCSWINSZ` compares all four window-size fields and signals live members of
+that terminal's foreground process group in its controlling session only when
+the value changes. The master setter need not belong to that group. An
+unclaimed terminal stores the size without inventing a controlling session.
+Host rows/columns resize uses the same routing, retaining its cell-change-only
+notification policy. Delivery selects each recipient's actual task and wakes
+parked terminal/readiness retries to observe pending signals without adding
+input bytes. Source regressions cover routing, masks, no-ops and kernel parks;
+normal compiled guest and real Foot/Bash validation remain pending.
+
 ### exec()
 
 Every result-bearing target operation runs immediately or refuses a busy
