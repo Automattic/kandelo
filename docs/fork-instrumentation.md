@@ -26,6 +26,14 @@ ABI version: `ABI_VERSION` in
 
 ## Policy
 
+**Upgrade warning:** the instrumentation contract is versioned but is not yet
+stable across Kandelo releases. User-built forking programs cannot currently
+be upgraded automatically and may require rebuilding with the current SDK.
+Incompatible programs are refused before execution; their files are preserved.
+Packaged programs need compatible prebuilt replacements. Automatic on-demand
+instrumentation and protected-original retention are a future stage, described
+in [staged fork compatibility](persistent-program-compatibility.md#staged-fork-compatibility).
+
 The instrumenter reads program artifact constants and types from the
 dependency-free `wasm-posix-program-abi` crate. `wasm-posix-shared` re-exports
 those declarations for the kernel, host generators, and other Rust consumers.
@@ -55,7 +63,7 @@ shared kernel-host-only metadata into every instrumented package's cache key.
   fork instrumenter does not require preserved function names or onlylists; if
   a build keeps debug-info flags, it should be for a current diagnostic reason.
 - On Unix hosts, the CLI preserves the input Wasm file's permission mode on
-  its output, including when `--output` names the input file. Package build
+  pathname output, including when `--output` names the input file. Package build
   scripts can therefore instrument installed executables in place without
   making them non-executable.
 
@@ -804,8 +812,8 @@ imports, indirect/reference calls and possible tail-transparent targets.
 This avoids retaining routing frames for ordinary direct recursion and its
 abort replay, without introducing a new tail-call feature requirement.
 
-The CLI snapshots the opened input before analysis and publish
-only after transformation, optional Binaryen optimization and validation
+The CLI snapshots the opened input before analysis and publishes pathname
+output only after transformation, optional Binaryen optimization and validation
 succeed. Permissions come from that same opened source. Failures leave the
 destination's bytes and mode intact, including in-place instrumentation. The
 final rename replaces the destination entry: an output symlink is replaced
@@ -822,6 +830,16 @@ section-length ceiling. These byte caps cover instrumenter-owned storage and
 validated optimizer results; they do not bound Binaryen's own process memory.
 Optimizer paths remain private, and its result is copied into an immutable
 snapshot before validation and atomic publication.
+
+POSIX controllers can instead pass `--input-fd FD` and `--output-fd FD` for
+private staged I/O without changing inherited shared offsets. Input is readonly;
+output must be empty, unlinked, regular, writable and nonappend. This mode
+does not copy permissions or atomically publish an executable. A write/sync
+failure may leave partial private output for the controller to discard.
+`--bind-original` binds validated raw content without creating another named
+original copy or consulting an ambient store. See the
+[descriptor contract](persistent-program-compatibility.md#private-preparer-descriptor-io)
+for ownership, close-on-exec behavior and the still-required execution service.
 
 Focused evidence includes file-limit/failure tests, real post-optimization,
 12 main/dynamic/side and memory32/64 artifacts accepted by the production host

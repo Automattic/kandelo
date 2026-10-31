@@ -11,6 +11,9 @@ import type {
   MemMapEntry, SyscallEvent, VfsDirent, LazyDownloadEvent, LazyDownloadSummary,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/src/lazy-download";
+import { syslogRows } from "./syslog-progress";
+import { filesystemConfigRows, parseFilesystemMemoryReport } from "./filesystem-config";
+import { useComputerLibrary } from "../views/ComputerLibrary";
 
 export const INSPECTOR_TABS = [
   { id: "syslog", label: "Syslog" },
@@ -22,6 +25,14 @@ export const INSPECTOR_TABS = [
 ];
 
 const LABEL_BY_TAB = new Map(INSPECTOR_TABS.map((t) => [t.id, t.label]));
+
+export const BootLog: React.FC = () => {
+  const lines = useDmesg();
+  return <section className="kinternals-surface" aria-label="Boot log">
+    <div className="kinternals-title">Boot log</div>
+    <div className="kinternals-body"><SyslogTable lines={lines} /></div>
+  </section>;
+};
 
 export const Inspector: React.FC<{
   tab: string;
@@ -59,16 +70,19 @@ function normalizeInspectorTab(tab: string): string {
 
 const SyslogTable: React.FC<{ lines: DmesgLine[] }> = ({ lines }) => {
   const ref = React.useRef<HTMLDivElement>(null);
+  const [raw, setRaw] = React.useState(false);
+  const rows = React.useMemo(() => syslogRows(lines, raw), [lines, raw]);
   React.useEffect(() => {
     if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
   }, [lines.length]);
   return (
     <div ref={ref} style={{ height: "100%", overflow: "auto", padding: "8px 0" }}>
-      {lines.map((l, i) => (
-        <div key={i} className="ksys-line">
+      <label className="ksys-raw-control"><input type="checkbox" checked={raw} onChange={event => setRaw(event.target.checked)} /> Show raw log</label>
+      {rows.map((l, i) => (
+        <div key={i} className="ksys-line" data-progress-operation={l.progress?.id}>
           <span className="ksys-t">[{(l.t / 1000).toFixed(6).padStart(11, " ")}]</span>
           <span className={`ksys-lvl ksys-lvl-${l.level}`}>{l.level}</span>
-          <span className="ksys-msg">{l.msg}</span>
+          <span className="ksys-msg">{l.msg}{!raw && l.level === "info" && l.progress?.status === "loading" && <progress aria-label={l.progress.label} {...(l.progress.total && l.progress.total > 0 ? { max: l.progress.total, value: Math.min(l.progress.completed, l.progress.total) } : {})} />}</span>
         </div>
       ))}
     </div>
@@ -604,10 +618,41 @@ function decodePreview(bytes: Uint8Array): { text: string; binary: boolean } {
 
 const ConfigTab: React.FC = () => {
   const host = useKernelHost();
-  const mounts = useAsyncOnce<MountInfo[]>(() => host.getMounts(), [host]);
-  const kstate = useAsyncOnce<KernelStateKV[]>(() => host.getKernelState(), [host]);
+  const status = useStatus();
+  const [revision, refresh] = React.useReducer(value => value + 1, 0);
+  const librarySnapshot = useComputerLibrary(host.computers);
+  const mounts = useAsyncOnce<MountInfo[]>(() => host.getMounts(), [host, status, revision]);
+  const kstate = useAsyncOnce<KernelStateKV[]>(() => host.getKernelState(), [host, status, revision]);
+  const memory = useAsyncOnce(async () => status === "running"
+    ? parseFilesystemMemoryReport(await host.readFileText("/proc/kandelo/fs_memory")) : null, [host, status, revision]);
+  const filesystem = host.getFilesystemConfiguration?.();
+  const rows = filesystem ? filesystemConfigRows(filesystem, librarySnapshot) : [];
   return (
     <div style={{ height: "100%", overflow: "auto", paddingBottom: 8 }}>
+      <ConfigSection title="Filesystem">
+        <div style={{ padding: "8px 10px" }}>
+          <button type="button" className="kbtn" onClick={refresh} aria-label="Refresh filesystem details">Refresh</button>
+        </div>
+        {rows.length === 0 ? <p style={{ padding: "0 10px" }}>Mounted filesystem details are not available.</p> : <>
+          <table className="ktable" aria-label="Filesystem configuration"><tbody>{rows.map(row => <tr key={row.label}>
+            <th scope="row">{row.label}</th><td style={{ overflowWrap: "anywhere" }}>{row.value}</td>
+          </tr>)}</tbody></table>
+          <p style={{ padding: "0 10px" }}>Base file size is not disk capacity or total OPFS usage. Temporary computers also use OPFS.</p>
+        </>}
+      </ConfigSection>
+      <ConfigSection title="Filesystem memory admission">
+        <p style={{ padding: "0 10px" }}>Kernel-reported admission credits, not measured RAM or disk usage. Refresh to update this snapshot.</p>
+        {memory.kind === "loading" && <Loading />}
+        {memory.kind === "error" && <ErrorBox message={memory.message} />}
+        {memory.kind === "missing" && <MissingEndpoint label="Filesystem memory" detail={memory.message} />}
+        {memory.kind === "ready" && memory.value !== null && <>
+          <p style={{ padding: "0 10px" }}>Current: {memory.value.current.toLocaleString()} · Peak: {memory.value.peak.toLocaleString()}</p>
+          <table className="ktable" aria-label="Filesystem memory admission"><thead><tr><th>OWNER</th><th>LIVE</th><th>TEMPORARY</th><th>LIMIT</th><th>PEAK</th></tr></thead>
+            <tbody>{memory.value.owners.map(owner => <tr key={owner.owner}><th scope="row">{owner.owner}</th>
+              <td>{owner.live.toLocaleString()}</td><td>{owner.temporary.toLocaleString()}</td><td>{owner.limit.toLocaleString()}</td><td>{owner.peak.toLocaleString()}</td>
+            </tr>)}</tbody></table>
+        </>}
+      </ConfigSection>
       <ConfigSection title="Kernel">
         {kstate.kind === "loading" && <Loading />}
         {kstate.kind === "missing" && <MissingEndpoint label="Kernel state" detail={kstate.message} />}

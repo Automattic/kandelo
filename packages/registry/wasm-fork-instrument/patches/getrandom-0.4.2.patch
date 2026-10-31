@@ -1,0 +1,34 @@
+--- a/src/backends.rs
++++ b/src/backends.rs
+@@ -107,6 +107,7 @@
+     } else if #[cfg(any(
+         target_os = "android",
+         target_os = "linux",
++        target_os = "kandelo",
+         target_os = "dragonfly",
+         target_os = "freebsd",
+         target_os = "hurd",
+--- a/src/utils/get_errno.rs
++++ b/src/utils/get_errno.rs
+@@ -1,7 +1,7 @@
+ cfg_if! {
+     if #[cfg(any(target_os = "netbsd", target_os = "openbsd", target_os = "android", target_os = "cygwin"))] {
+         use libc::__errno as errno_location;
+-    } else if #[cfg(any(target_os = "linux", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
++    } else if #[cfg(any(target_os = "kandelo", target_os = "linux", target_os = "emscripten", target_os = "hurd", target_os = "redox", target_os = "dragonfly"))] {
+         use libc::__errno_location as errno_location;
+     } else if #[cfg(target_os = "illumos")] {
+         use libc::___errno as errno_location;
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -139,6 +139,10 @@
+ version = "0.2.154"
+ default-features = false
+ 
++[target.'cfg(target_os = "kandelo")'.dependencies.libc]
++version = "0.2.154"
++default-features = false
++
+ [lints.clippy]
+ cast_lossless = "warn"
+ cast_possible_truncation = "warn"

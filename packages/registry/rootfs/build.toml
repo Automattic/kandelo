@@ -3,6 +3,12 @@ inputs = [
   "packages/registry/rootfs/build-rootfs-package.sh",
   "scripts/build-rootfs.sh",
   "scripts/generate-rootfs-package-manifest.mjs",
+  "images/vfs/scripts/program-originals.ts",
+  "images/vfs/scripts/dependency-original-inputs.ts",
+  "host/src/binary-resolver.ts",
+  "host/src/native-artifact-identity.ts",
+  "host/src/constants.ts",
+  "host/src/vfs/vfs-asset-group-reference.ts",
   "package.json",
   "package-lock.json",
   "MANIFEST",
@@ -35,4 +41,4 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 14
+revision    = 15

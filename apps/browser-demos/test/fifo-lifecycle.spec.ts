@@ -51,12 +51,10 @@ const guests = [
 ] as const;
 
 for (const guest of guests) {
-  test(`${guest.name} works in Chromium`, async ({
+  test(`${guest.name} works in the browser`, async ({
     page,
     baseURL,
-    browserName,
   }) => {
-    test.skip(browserName !== "chromium", "the aggregate browser gate uses Chromium");
     expect(baseURL).toBeTruthy();
 
     const runtimeErrors: string[] = [];

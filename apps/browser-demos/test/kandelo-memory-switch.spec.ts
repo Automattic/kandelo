@@ -1,14 +1,17 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
 import { gotoMachine, gotoMachineOrSkip, previewFrame } from "./support/kandelo-machine";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures, memoryBoundaryRealmId } from "./support/browser-memory-boundary";
 import { QUAKE_ZIP_URL } from "../../../web-libs/kandelo-session/src/demo-guides";
+import { expectRunningMachineAudio } from "./support/machine-audio";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 
 async function launch(page: Page, title: string, profile: string): Promise<void> {
-  await page.getByRole("button", { name: "New", exact: true }).click();
-  await page.locator(".kgal-row", {
-    has: page.locator(".kgal-machine-title", { hasText: title }),
-  }).getByRole("button", { name: "Launch", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`profile=${profile}(?:&|$)`), { timeout: 240_000 });
+  await configureNewComputer(page, profile);
+  await page.getByLabel("Computer name", { exact: true }).fill(title);
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await expect(page).toHaveURL(/computer=[0-9a-f-]{36}(?:&|$)/, { timeout: 240_000 });
+  await expect.poll(async () => (await currentComputerMetadata(page)).profileId, { timeout: 240_000 }).toBe(profile);
   expect(new URL(page.url()).searchParams.get("memoryProfile")).toBe("constrained");
   await expect(page.locator(".kmprogress-card")).toHaveCount(0, { timeout: 240_000 });
 }
@@ -17,15 +20,7 @@ async function expectGameFrame(page: Page): Promise<void> {
   const canvas = page.locator("canvas.kframebuffer-canvas").first();
   await expect(canvas).toBeVisible({ timeout: 180_000 });
   await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-  // Guest audio backpressure can block the first rendered frame. Activate
-  // through the production control before waiting for pixels, as a user can.
-  await expect.poll(async () => {
-    const state = await page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    if (state !== "running" && await page.locator(".kpcm-audio-enable").isVisible()) {
-      await page.locator(".kpcm-audio-enable").click();
-    }
-    return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-  }, { timeout: 30_000 }).toBe("running");
+  await expectRunningMachineAudio(page);
   await expect.poll(() => canvas.evaluate((el: HTMLCanvasElement) => {
     const bytes = el.getContext("2d")!.getImageData(0, 0, el.width, el.height).data;
     const colors = new Set<number>();
@@ -95,20 +90,14 @@ test("@slow framebuffer games, Freeciv, LÖVE, tmux and WordPress survive repeat
     await launch(page, "Freeciv", "freeciv");
     await expect(page.locator(".kmodeset-canvas")).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-    await expect.poll(async () => {
-      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
-      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    }, { timeout: 60_000 }).toBe("running");
+    await expectRunningMachineAudio(page, 60_000);
     await expect.poll(async () => Number(await page.locator(".kmodeset-surface").getAttribute("data-kms-present-count")),
       { timeout: 180_000 }).toBeGreaterThan(0);
     await launch(page, "LÖVE games", "love");
     const loveCanvas = page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
     await expect(loveCanvas).toBeVisible({ timeout: 180_000 });
     await expect(page.locator('[data-audio-active="true"]')).toHaveCount(1, { timeout: 180_000 });
-    await expect.poll(async () => {
-      if (await page.locator(".kpcm-audio-enable").isVisible()) await page.locator(".kpcm-audio-enable").click();
-      return page.locator('[data-audio-state]').getAttribute("data-audio-state");
-    }, { timeout: 60_000 }).toBe("running");
+    await expectRunningMachineAudio(page, 60_000);
     const loveFlips = () => page.locator("body").innerText().then(text =>
       Number(text.match(/(\d+)\s*flips\s*·/i)?.[1] ?? -1));
     const initialFlips = await loveFlips();

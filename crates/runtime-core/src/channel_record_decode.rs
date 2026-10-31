@@ -35,7 +35,7 @@
 //! - No `data[i]` indexing that can panic: all reads go through
 //!   [`slice::get`], mapping a miss to the appropriate error.
 
-use alloc::vec::Vec;
+use crate::IoBuffer;
 
 use wasm_posix_shared::channel_record::{
     span_kind_is_valid, IOVEC_ARRAY_COUNT_OFFSET, IOVEC_ARRAY_ENTRIES_OFFSET,
@@ -71,7 +71,7 @@ pub struct DecodedSyscall<'a> {
     /// The six syscall scalar words, carried unchanged.
     pub scalars: [i64; 6],
     /// The validated pointer-argument spans, in descriptor order.
-    pub spans: Vec<ResolvedSpan<'a>>,
+    pub spans: IoBuffer<ResolvedSpan<'a>>,
 }
 
 /// One validated span resolved to a byte slice that borrows the input.
@@ -94,13 +94,13 @@ pub struct ResolvedSpan<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Nested<'a> {
     /// An iovec array: the validated list of buffer slices, in order.
-    Iovec(Vec<&'a [u8]>),
+    Iovec(IoBuffer<&'a [u8]>),
     /// A msghdr: socket name, iovec buffers, ancillary control data, flags.
     MsgHdr {
         /// Socket address bytes (empty if absent).
         name: &'a [u8],
         /// The scatter/gather buffers.
-        iov: Vec<&'a [u8]>,
+        iov: IoBuffer<&'a [u8]>,
         /// Ancillary control-message bytes (empty if absent).
         control: &'a [u8],
         /// `msg_flags`.
@@ -111,6 +111,7 @@ pub enum Nested<'a> {
 /// Why a record failed to decode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecodeError {
+    Memory,
     /// `magic` did not equal [`RECORD_MAGIC`].
     BadMagic,
     /// `record_abi` did not equal [`RECORD_ABI`].
@@ -184,10 +185,10 @@ pub fn decode(data: &[u8], data_capacity: usize) -> Result<DecodedSyscall<'_>, D
 
     // The header+descriptor region is reserved; a payload span may not collide
     // with it. Seed the top-level occupied set with that interval.
-    let mut occupied: Vec<(usize, usize)> = Vec::new();
+    let mut occupied = IoBuffer::try_with_capacity(span_count + 1).map_err(|_| DecodeError::Memory)?;
     occupied.push((0, desc_end));
 
-    let mut spans: Vec<ResolvedSpan<'_>> = Vec::new();
+    let mut spans = IoBuffer::try_with_capacity(span_count).map_err(|_| DecodeError::Memory)?;
     for i in 0..span_count {
         // Descriptor position is within `desc_end <= data_capacity`.
         let dpos = RECORD_HEADER_BYTES
@@ -214,7 +215,7 @@ pub fn decode(data: &[u8], data_capacity: usize) -> Result<DecodedSyscall<'_>, D
 
         let nested = match kind {
             SPAN_KIND_IOVEC_ARRAY => {
-                let mut local: Vec<(usize, usize)> = Vec::new();
+                let mut local = IoBuffer::new();
                 let (bufs, _block_end) = parse_iovec(data, data_capacity, start, &mut local)?;
                 Some(Nested::Iovec(bufs))
             }
@@ -249,8 +250,8 @@ fn parse_iovec<'a>(
     data: &'a [u8],
     cap: usize,
     region_start: usize,
-    occupied: &mut Vec<(usize, usize)>,
-) -> Result<(Vec<&'a [u8]>, usize), DecodeError> {
+    occupied: &mut IoBuffer<(usize, usize)>,
+) -> Result<(IoBuffer<&'a [u8]>, usize), DecodeError> {
     let count_pos = region_start
         .checked_add(IOVEC_ARRAY_COUNT_OFFSET)
         .ok_or(DecodeError::Arith)?;
@@ -272,7 +273,8 @@ fn parse_iovec<'a>(
         return Err(DecodeError::LenOob);
     }
 
-    let mut bufs: Vec<&'a [u8]> = Vec::new();
+    occupied.try_reserve(count + 2).map_err(|_| DecodeError::Memory)?;
+    let mut bufs = IoBuffer::try_with_capacity(count).map_err(|_| DecodeError::Memory)?;
     for i in 0..count {
         let epos = entries_start
             .checked_add(i.checked_mul(IOVEC_ARRAY_ENTRY_BYTES).ok_or(DecodeError::Arith)?)
@@ -318,7 +320,7 @@ fn parse_msghdr<'a>(data: &'a [u8], cap: usize, region_start: usize) -> Result<N
         .ok_or(DecodeError::Arith)?;
 
     // Overlap set shared across name, iovec buffers, and control.
-    let mut occupied: Vec<(usize, usize)> = Vec::new();
+    let mut occupied = IoBuffer::new();
     let (iov, block_end) = parse_iovec(data, cap, block_start, &mut occupied)?;
 
     let control_off = read_u32(data, block_end, cap)?;
@@ -652,6 +654,22 @@ mod tests {
         assert_eq!(decoded.flags, 0);
         assert_eq!(decoded.scalars, [1, 2, 3, 4, 5, 6]);
         assert!(decoded.spans.is_empty());
+    }
+
+    #[test]
+    fn decoder_admission_is_distinct_from_malformed_input_and_releases_scratch() {
+        let data = RecordBuilder::new().build();
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(decode(&data, data.len()), Err(DecodeError::Memory));
+            let malformed = [0u8; RECORD_HEADER_BYTES];
+            assert_eq!(decode(&malformed, malformed.len()), Err(DecodeError::BadMagic));
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        }
+        let decoded = decode(&data, data.len()).unwrap();
+        drop(decoded);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
     }
 
     #[test]

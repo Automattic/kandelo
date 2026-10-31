@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 
 /** A stable frame shared by invitation boot, setup, and the active session. */
 export function NetworkDialog({ title, close, actions, summary, notice, children }: {
-  title: string; close: () => void; actions: React.ReactNode; summary?: React.ReactNode; notice?: React.ReactNode; children: React.ReactNode;
+  title: string; close: () => void; actions?: React.ReactNode; summary?: React.ReactNode; notice?: React.ReactNode; children: React.ReactNode;
 }) {
   const heading = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
@@ -26,7 +26,7 @@ export function NetworkDialog({ title, close, actions, summary, notice, children
       {summary && <div className="knetwork-summary">{summary}</div>}
       {notice && <div className="knetwork-notice-slot">{notice}</div>}
       <div className="kshare-body">{children}</div>
-      <div className="kshare-actions">{actions}</div>
+      {actions && <div className="kshare-actions">{actions}</div>}
     </div>
   </div>, document.body);
 }

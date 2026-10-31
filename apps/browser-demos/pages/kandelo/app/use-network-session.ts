@@ -16,7 +16,9 @@ function signallingServer(): string | null {
 
 const transport = { createInvite: createNetworkInvite, answerInvite: answerNetworkInvite, bridge: attachNetworkBridge };
 
-export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismissed = false) {
+export type InitialSessionInvitation = ReturnType<typeof sessionInvitation>;
+
+export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismissed = false, initialInvitation?: InitialSessionInvitation) {
   const controller = React.useMemo(() => new NetworkSessionController({
     machine: () => host.getStatus() === "running" ? host : null,
     server: signallingServer,
@@ -36,7 +38,7 @@ export function useNetworkSession(host: KernelHost, initiallyOpen = true, dismis
   // and the Share dialog builds machine links from the current address. Kept
   // in memory, an unjoined invitation still survives a machine switch.
   const [invitation, setInvitation] = React.useState(() => {
-    const found = sessionInvitation(location.href);
+    const found = initialInvitation === undefined ? sessionInvitation(location.href) : initialInvitation;
     if (found) {
       const url = new URL(location.href);
       url.searchParams.delete("network"); url.searchParams.delete("networkName");

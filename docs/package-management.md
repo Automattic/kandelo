@@ -1394,10 +1394,71 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_BUILD_GIT_<NAME>_COMMIT` | Exact declared commit corresponding to that checkout.                                                                                                                                                                                                                                                                                            |
 
 `local-build` passes its current executable as `WASM_POSIX_XTASK_BIN` to
-recipes. Runtime-file metadata queries reuse that source-built driver rather
+recipes. Output and runtime-file metadata queries reuse that source-built driver rather
 than compiling another xtask inside every recipe's private Cargo roots.
 Standalone callers still prepare xtask through Cargo and use its reported
 artifact path.
+
+The resolver also supplies `WASM_POSIX_INSTALL_OUTPUT_METADATA`, a JSON array
+of Rust-selected program output declarations for this exact package. Sealed
+`install_local_binary` calls use it without Cargo, verify the package name and
+refuse ambiguous output lookup or a conflicting explicit fork policy. Ordinary
+mirrored installs query the manifest instead of trusting ambient metadata.
+Recipes must not manufacture this metadata or pass another package's array.
+
+When selected direct dependencies declare originals, the resolver supplies
+`WASM_POSIX_DEP_ORIGINAL_INPUTS`: a readonly, version-1 JSON file in the private
+recipe work directory. Its kind is `kandelo-dependency-original-inputs`; it
+binds the consumer package and each original to the selected executable,
+architecture, cache key, native paths, permissions, lengths and SHA-256 hashes.
+The parent applies ordinary cache admission and verifies original content
+before issuing it, including wasm32 fallback for wasm64 consumers. It removes
+inherited values and leaves the variable absent when no dependency needs it.
+Readers limit metadata to 4 MiB and 4096 records, refuse unknown fields and
+duplicate identities, and recheck actual files with bounded stable reads.
+This build-time handoff avoids nested index generation inside sealed image
+recipes; it is not guest execution or package-upgrade authority.
+
+The optional producer-side `[[outputs]].original_wasm` declaration associates
+a raw original with an output without changing executable layout. When used,
+the resolver supplies `WASM_POSIX_BUILD_ORIGINAL_STORE` below the private work
+root so transformation can retain the exact input before recipes overwrite it.
+Inspection modes do not touch that store. The installer verifies and copies the
+original before publishing its output; canonical admission checks content and
+receipt binding. Neither environment variable is a runtime execution authority.
+SourceOnly publication and its index/aggregate receipts now carry immutable
+companion generations below the reserved
+`programs/<arch>/.originals/<package>/<cache-key>/` namespace. Originals are
+associated data, not executable/runtime members that change scalar layout.
+Companions become durable before executable activation and are never replaced
+with different content at the same generation path. The `less` recipe is the
+first SourceOnly producer to enable retention. Shell image builders resolve
+the exact associated original from the selected package, validate its binding
+in Rust and register a read-only digest-bound lazy file rather than embedding
+its body. An existing lazy executable from an explicitly selected dependency
+does not suppress original registration. Programs provided only by the base
+image remain base-owned rather than becoming undeclared direct dependencies.
+The actual package and image save/reload path are validated; full products have
+not yet been rebuilt for this change. Cache-backed Default mirrors also publish
+immutable originals before executable links, retaining scalar/package layouts
+and revalidating originals before each executable mutation. Default asset
+collection binds original paths to the same selected executable generation;
+missing executables cannot bypass that binding through literal-path fallback.
+The rootfs manifest generator also consumes these dependency bindings, either
+through the inherited variable or explicit `--original-inputs` argument
+(`ROOTFS_ORIGINAL_INPUTS` for `build-rootfs.sh`). Both eager and lazy programs
+retain readonly lazy originals; unrelated data files remain ordinary data.
+Standalone selected SourceOnly trees consult their recorded declarations even
+if a program's original reference was stripped. An opaque resolved-output map
+without local prepared bytes cannot be combined with original bindings yet.
+Generated references must round-trip through the image-owned lazy grammar;
+unsupported original names are refused before registration, including literal
+percent escapes that would otherwise name a different file after decoding.
+Manual direct-local sessions, runtime-side module originals and automatic
+execution remain unfinished. Direct-local sessions require their own complete
+original staging rather than borrowing a cache-backed generation's originals.
+See [original-program retention](persistent-program-compatibility.md#original-program-retention-prototype)
+for the current integration boundary and unfinished runtime work.
 
 Scripts that accept the optional sealed-build roots should source
 `scripts/package-build-roots.sh`. Explicit source, work, and output roots must

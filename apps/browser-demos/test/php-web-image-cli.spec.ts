@@ -58,7 +58,7 @@ for (const { profile, title, pageText } of [
     expect(response.status).toBe(200);
     expect(response.body).toMatch(pageText);
     // Switching surfaces must preserve the live document and its navigation.
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Web", exact: true }).click();
     await expect(preview).toBeVisible();
     await expect.poll(previewText, { timeout: 30_000 }).toMatch(pageText);
   });

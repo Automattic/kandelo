@@ -1,5 +1,6 @@
 script_path = "images/vfs/scripts/build-redis-vfs-image.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "packages/registry/redis-vfs/app/router.php",
   "packages/registry/redis-vfs/app/index.html",
   "packages/registry/redis-vfs/app/admin-config.php",
@@ -43,4 +44,4 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 9
+revision = 10

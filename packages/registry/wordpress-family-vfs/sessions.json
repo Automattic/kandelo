@@ -1,0 +1,35 @@
+{
+  "kind": "kandelo-package-sessions",
+  "version": 1,
+  "package": "wordpress-family-vfs",
+  "packageVersion": "0.1.0",
+  "offers": [
+    {
+      "id": "service",
+      "title": "WordPress website",
+      "description": "Invite people to browse the website currently running on this computer. Files and changes stay on the hosting computer.",
+      "join": "client",
+      "attachExisting": true,
+      "requiresHost": true,
+      "hostRequires": [
+        "/usr/local/bin/kandelo-service"
+      ],
+      "fields": []
+    }
+  ],
+  "joins": [
+    {
+      "id": "client",
+      "title": "Open website",
+      "description": "Open the host computer’s current website without starting a duplicate server.",
+      "fields": [],
+      "launch": {
+        "surface": "web",
+        "host": "network.host",
+        "port": 8080,
+        "path": "/"
+      },
+      "computer": "default"
+    }
+  ]
+}

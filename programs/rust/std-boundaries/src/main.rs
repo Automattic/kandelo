@@ -5,8 +5,12 @@
 //! which aborts (Kandelo's Rust is panic=abort).
 
 use std::backtrace::{Backtrace, BacktraceStatus};
+use std::fs::OpenOptions;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
+use std::os::fd::{AsFd, OwnedFd};
+use std::os::unix::fs::FileExt;
 use std::process::Command;
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -30,6 +34,26 @@ fn main() {
         err.kind() == ErrorKind::NotFound && err.raw_os_error() == Some(2),
         "File::open of a missing path is NotFound (ENOENT)",
     );
+
+    let path = format!("/tmp/rust-descriptor-{}", std::process::id());
+    let mut source = OpenOptions::new().read(true).write(true).create_new(true).open(&path).unwrap();
+    std::fs::remove_file(path).unwrap();
+    source.write_all(b"original bytes").unwrap();
+    source.seek(SeekFrom::Start(3)).unwrap();
+    let owned: OwnedFd = source.as_fd().try_clone_to_owned().unwrap();
+    let mut duplicate = std::fs::File::from(owned);
+    let mut prefix = [0; 4];
+    duplicate.read_exact_at(&mut prefix, 0).unwrap();
+    duplicate.write_all_at(b"new", 0).unwrap();
+    check(prefix == *b"orig" && source.stream_position().unwrap() == 3
+        && duplicate.stream_position().unwrap() == 3, "positioned IO preserves shared descriptor offsets");
+    duplicate.read_exact(&mut prefix).unwrap();
+    check(source.stream_position().unwrap() == 7, "ordinary IO shares the duplicated descriptor offset");
+    drop(source);
+    let mut clone = duplicate.try_clone().unwrap();
+    drop(duplicate);
+    clone.read_exact_at(&mut prefix, 0).unwrap();
+    check(prefix == *b"newg", "owned descriptor clones retain independent lifetimes");
 
     // A port nothing listens on: bind one, then close it.
     let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();

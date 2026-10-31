@@ -200,6 +200,73 @@ function mutableState(harness: EntryHarness) {
 }
 
 describe("teardown and pipe notifications at the kernel entry gate", () => {
+  it("includes an already-exited parked worker in terminal retirement without dispatching Rust", async () => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as { hostReaped: Set<number> };
+    state.hostReaped.add(PID);
+    const completeRaw = vi.fn(() => {
+      harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    });
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({ completeChannelRaw: completeRaw });
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(completeRaw).toHaveBeenCalledExactlyOnceWith(harness.channel, -1, 4);
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.channelView.getUint32(CH_SIG_SI_CODE, true)).toBe(EXIT_RETIRE_SIGNAL_CODE);
+  });
+
+  it("drops a stopped channel's obsolete parked completion before its terminal wake", async () => {
+    const harness = makeHarness();
+    const state = harness.worker as unknown as {
+      parkedChannelCompletions: Map<TestChannel, unknown>;
+      deferredStoppedChannels: Map<TestChannel, boolean>;
+      stoppedPids: Set<number>;
+    };
+    state.parkedChannelCompletions = new Map([[harness.channel, {}]]);
+    state.deferredStoppedChannels = new Map([[harness.channel, true]]);
+    state.stoppedPids = new Set([PID]);
+    await harness.worker.beginKernelTeardown();
+    expect(state.parkedChannelCompletions.size).toBe(0);
+    expect(state.deferredStoppedChannels.size).toBe(0);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+  });
+
+  it.each([ABI_SYSCALLS.Exit, ABI_SYSCALLS.ExitGroup])("does not overwrite an already-pending exit syscall %s", async syscall => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_SYSCALL, syscall, true);
+    const relisten = vi.fn();
+    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
+      completeChannel: harness.completeChannel, relistenChannel: relisten,
+    });
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(0);
+    expect(relisten).toHaveBeenCalledExactlyOnceWith(harness.channel);
+  });
+
+  it("keeps a running process in the retirement set and cooperatively exits its later syscall", async () => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    expect(await harness.worker.beginKernelTeardown()).toEqual(new Set([PID]));
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_PENDING, true);
+    harness.channelView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Read, true);
+    harness.worker.testAuthority.dispatchScratchBoundarySyscallForTest(harness.channel);
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel).toHaveBeenCalledWith(harness.channel,
+      ABI_SYSCALLS.Read, [0, 0, 0, 0, 0, 0], expect.anything(), -1, 4);
+  });
+
+  it("does not republish a terminal wake for a completed stale dispatch", async () => {
+    const harness = makeHarness();
+    harness.channelView.setUint32(CH_STATUS, CHANNEL_STATUS_COMPLETE, true);
+    await harness.worker.beginKernelTeardown();
+    harness.worker.testAuthority.dispatchScratchBoundarySyscallForTest(harness.channel);
+    expect(harness.handleChannel).not.toHaveBeenCalled();
+    expect(harness.completeChannel).not.toHaveBeenCalled();
+  });
   it("defers teardown behind an active export and resolves after its wake publication", async () => {
     const harness = makeHarness();
     const getExitStatus = vi.fn(() => -1);

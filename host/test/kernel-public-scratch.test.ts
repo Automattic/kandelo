@@ -606,6 +606,25 @@ describe("WasmPosixKernel public API scratch ownership", () => {
 });
 
 describe("Rust-owned host import ranges", () => {
+  it("reports stable readonly nosuid storage for an anonymous program image", () => {
+    const delegated = vi.fn();
+    const { kernel, memory } = fullKernelHarness({ fstatfs: delegated });
+    const handle = kernel.registerProgramImage(Uint8Array.of(0, 97, 115, 109));
+    const imports = kernel.testAuthority.buildImportObject(memory) as {
+      env: Record<string, (...args: any[]) => any>;
+    };
+    expect(imports.env.host_fstatfs(handle, 4096)).toBe(0);
+    const view = new DataView(memory.buffer, 4096);
+    expect(view.getUint32(0, true)).toBe(0x4b505247);
+    expect(view.getBigUint64(8, true)).toBe(1n);
+    expect(view.getBigUint64(32, true)).toBe(1n);
+    expect(view.getUint32(64, true)).toBe(3);
+    expect(imports.env.host_fstatfs(handle, memory.buffer.byteLength - 1)).toBe(-14);
+    expect(delegated).not.toHaveBeenCalled();
+    expect(imports.env.host_close(handle)).toBe(0);
+    expect(kernel.heldProgramImageCount).toBe(0);
+  });
+
   it("rejects a truncated kernel source instead of invoking the backend", () => {
     // `host_openat` takes a directory handle plus ONE path component; the
     // component's bytes are the kernel-owned source that must be range-checked

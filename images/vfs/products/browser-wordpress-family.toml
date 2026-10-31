@@ -1,0 +1,52 @@
+schema = 1
+id = "browser-wordpress-family"
+architecture = "wasm32"
+output = "wordpress-family-vfs.vfs.zst"
+builder = "packages/registry/wordpress-family-vfs/build.sh"
+
+[[composition.product]]
+id = "browser-lamp"
+materialization = "embedded"
+
+[[composition.product]]
+id = "browser-wordpress"
+materialization = "embedded"
+
+[[software.package]]
+name = "wordpress-family-vfs"
+outputs = ["wordpress-family-vfs"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/bin/sh", "/sbin/kandelo-init", "wordpress-sqlite"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+USER = "root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "wordpress-family-service-switch"
+
+[evidence.browser]
+test = "wordpress-family-live-activities"

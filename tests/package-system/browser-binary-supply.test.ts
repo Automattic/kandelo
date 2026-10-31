@@ -150,6 +150,7 @@ note = 'literal #string'
   it("checks the published artifacts behind the browser's virtual modules", () => {
     expect(virtualModuleDemands().map((demand) => demand.binary).sort()).toEqual([
       "kandelo_image_module32.wasm",
+      "kandelo_image_module_positioned32.wasm",
       "kernel.wasm",
       "programs/wasm32/rootfs.vfs.zst",
     ]);

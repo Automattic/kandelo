@@ -1,4 +1,5 @@
-import { expect, test, type Browser, type Page } from "@playwright/test";
+import { expect, type Browser, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -26,7 +27,7 @@ async function offer(p: Page, activity: string, configure?: (form: ReturnType<Pa
   const form = p.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption(activity);
   await configure?.(form);
-  await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(p.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
   const link = (await p.locator("[data-network-link]").getAttribute("data-network-link"))!;
   await close(p);
@@ -55,7 +56,7 @@ async function readableKms(page: Page) {
 }
 async function openQuakeConsole(page: Page) {
   await page.bringToFront();
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
   await page.locator("canvas.kframebuffer-canvas").first().focus();
   // Escape leaves chat/console for game/menu. TyrQuake's hard-coded
@@ -98,7 +99,7 @@ for (const source of ["freedoom1", "freedoom2", "freedm"]) {
       await expect.poll(() => terminal(page), { timeout: 120_000 }).toContain("player 1 of 2 (2 nodes)");
       await expect.poll(() => terminal(other.page), { timeout: 120_000 }).toContain("player 2 of 2 (2 nodes)");
       for (const p of [page, other.page]) {
-        await p.getByRole("button", { name: "Demo", exact: true }).click();
+        await p.getByRole("button", { name: "Graphics", exact: true }).click();
         await expect(p.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
       }
       // A separate command terminal observes the real installed license file.
@@ -157,8 +158,8 @@ for (const source of ["shareware", "librequake", "openquartz"]) {
       await other.page.keyboard.press("Escape", { delay: 150 });
       await expect.poll(() => terminal(page), { timeout: 60_000 }).toContain("guest: activity-guest-ready");
       for (const p of [page, other.page]) {
-        await expect(p.getByRole("button", { name: "Demo", exact: true })).toBeEnabled({ timeout: 30_000 });
-        await p.getByRole("button", { name: "Demo", exact: true }).click();
+        await expect(p.getByRole("button", { name: "Graphics", exact: true })).toBeEnabled({ timeout: 30_000 });
+        await p.getByRole("button", { name: "Graphics", exact: true }).click();
         await expect(p.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
       }
       await page.screenshot({ path: `../../.context/activity-quake-${source}-host.png` });
@@ -179,8 +180,8 @@ test("Freeciv activity prepares the shell's KMS display and connects two named p
   try {
     await expect.poll(() => terminal(page), { timeout: 180_000 }).toMatch(/guest has connected from 10\.89\.0\.2/);
     for (const p of [page, other.page]) {
-      await expect(p.getByRole("button", { name: "Demo", exact: true })).toBeEnabled({ timeout: 90_000 });
-      await p.getByRole("button", { name: "Demo", exact: true }).click();
+      await expect(p.getByRole("button", { name: "Graphics", exact: true })).toBeEnabled({ timeout: 90_000 });
+      await p.getByRole("button", { name: "Graphics", exact: true }).click();
       await expect(p.locator(".kmodeset-canvas")).toBeVisible();
       // Exercise absolute game UI, using the same real lock release as the
       // existing Freeciv UI tests; never replace requestPointerLock.
@@ -246,7 +247,7 @@ for (const density of [1, 2]) test.describe(`Freeciv activity density ${density}
   test("uses the demo's readable monitor for fresh and repeated launches", async ({ page, browserName }) => {
     test.setTimeout(300_000);
     await offer(page, "freeciv-browser-bundle/game");
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Graphics", exact: true }).click();
     await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/, { timeout: 90_000 });
     await readableKms(page);
     const firstOwner = await page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid");
@@ -255,10 +256,10 @@ for (const density of [1, 2]) test.describe(`Freeciv activity density ${density}
     await page.getByRole("button", { name: "Change activity", exact: true }).click();
     const form = page.getByRole("form", { name: "Host activity" });
     await form.getByLabel("Activity", { exact: true }).selectOption("freeciv-browser-bundle/game");
-    await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+    await form.getByRole("button", { name: "Start activity", exact: true }).click();
     await expect(page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible({ timeout: 90_000 });
     await close(page);
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
+    await page.getByRole("button", { name: "Graphics", exact: true }).click();
     await expect.poll(() => page.locator(".kmodeset-surface").getAttribute("data-kms-owner-pid"), { timeout: 90_000 }).not.toBe(firstOwner);
     await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/);
     await readableKms(page);
@@ -274,7 +275,7 @@ for (const pkg of ["python-browser-bundle", "php"]) {
     const form = page.getByRole("form", { name: "Host activity" });
     await form.getByLabel("Activity", { exact: true }).selectOption(`${pkg}/server`);
     await form.getByLabel("Directory to serve").fill("/tmp/activity-www");
-    await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+    await form.getByRole("button", { name: "Start activity", exact: true }).click();
     await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 90_000 });
     const link = (await page.locator("[data-network-link]").getAttribute("data-network-link"))!;
     const title = pkg === "php" ? "Join and open PHP web server" : "Join and open Python file server";
@@ -292,7 +293,7 @@ for (const pkg of ["python-browser-bundle", "php"]) {
         await other.page.keyboard.type("php -S 0.0.0.0:8081 -t /tmp/local-www");
         await other.page.keyboard.press("Enter");
         await expect.poll(() => terminal(other.page), { timeout: 60_000 }).toContain("Development Server");
-        await other.page.getByRole("button", { name: "Demo", exact: true }).click();
+        await other.page.getByRole("button", { name: "Web", exact: true }).click();
         const address = other.page.getByRole("textbox", { name: "Preview URL path" });
         await address.fill("http://localhost:8081/"); await address.press("Enter");
         await expect(other.page.frameLocator("iframe.kweb-frame").locator("body")).toContainText("local-preview-file", { timeout: 60_000 });
@@ -313,7 +314,7 @@ test("a connected client discovers a newly advertised Netcat activity and joins 
   test.setTimeout(300_000);
   await gotoMachine(page, "shell"); await running(page);
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
-  await page.getByRole("button", { name: "Create invite", exact: true }).click();
+  await page.getByRole("button", { name: "Start network session", exact: true }).click();
   const hostLink = page.locator("[data-network-link]");
   await expect(hostLink).toHaveAttribute("data-network-link", /network=/, { timeout: 60_000 });
   const roomLink = (await hostLink.getAttribute("data-network-link"))!;
@@ -328,7 +329,7 @@ test("a connected client discovers a newly advertised Netcat activity and joins 
     const form = page.getByRole("form", { name: "Host activity" });
     await form.getByLabel("Activity", { exact: true }).selectOption("netcat/server");
     await form.getByLabel("Port", { exact: true }).fill("7788");
-    await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+    await form.getByRole("button", { name: "Start activity", exact: true }).click();
     await expect(hostLink).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 60_000 });
     expect(new URL((await hostLink.getAttribute("data-network-link"))!).searchParams.get("network")).toBe(new URL(roomLink).searchParams.get("network"));
     await other.page.getByRole("button", { name: "Change activity", exact: true }).click();
@@ -350,7 +351,7 @@ test("a connected client discovers a newly advertised Netcat activity and joins 
     await other.page.getByRole("button", { name: "New session", exact: true }).click();
     await expect(other.page.getByLabel("Activity", { exact: true }).locator('option[value="fbdoom/game"]')).toHaveCount(1);
     await other.page.getByLabel("Session name").fill("Solar Whales");
-    await other.page.getByRole("button", { name: "Create invite", exact: true }).click();
+    await other.page.getByRole("button", { name: "Start network session", exact: true }).click();
     await expect(other.page.getByRole("dialog", { name: "Active session", exact: true })).toBeVisible();
     const newLink = (await other.page.locator("[data-network-link]").getAttribute("data-network-link"))!;
     expect(new URL(newLink).searchParams.get("network")).not.toBe(new URL(roomLink).searchParams.get("network"));
@@ -364,7 +365,7 @@ test("a Freeciv activity opens a measured, owned KMS display after a terminal-on
     await form.getByLabel("Your name", { exact: true }).fill("SoloHost");
   });
   await expect.poll(() => terminal(page), { timeout: 150_000 }).toMatch(/SoloHost has connected from (?:localhost|127\.0\.0\.1)/);
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kmodeset-canvas")).toBeVisible();
   await expect(page.locator(".kmodeset-surface")).toHaveAttribute("data-kms-owner-pid", /^[1-9]\d*$/, { timeout: 60_000 });
   await page.screenshot({ path: `../../.context/activity-freeciv-shell-${test.info().project.name}.png` });
@@ -374,11 +375,11 @@ test("a Freeciv activity opens a measured, owned KMS display after a terminal-on
   const form = page.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption("freeciv-browser-bundle/game");
   await form.getByLabel("Already running").check();
-  await form.getByRole("button", { name: "Share running activity", exact: true }).click();
+  await form.getByRole("button", { name: "Show join link", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/);
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form.getByLabel("Activity", { exact: true }).selectOption("fbdoom/game");
-  await expect(form.getByRole("button", { name: "Start and invite", exact: true })).toBeEnabled();
+  await expect(form.getByRole("button", { name: "Start activity", exact: true })).toBeEnabled();
   await page.getByRole("button", { name: "Back to active session", exact: true }).click();
 });
 
@@ -390,10 +391,10 @@ test("a running website survives opening and quitting a Quake activity", async (
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   const form = page.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption("tyrquake/game");
-  await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
   await close(page);
-  await page.getByRole("button", { name: "Demo", exact: true }).click();
+  await page.getByRole("button", { name: "Graphics", exact: true }).click();
   await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 90_000 });
   await expect.poll(() => terminal(page), { timeout: 120_000 }).toContain("Using protocol");
   await openQuakeConsole(page);
@@ -412,6 +413,6 @@ test("a working local website stays visible when a new preview destination fails
   await expect(page.getByRole("alert")).toContainText("No in-kernel listener");
   await expect(frame.getByRole("heading", { name: "Hello from nginx on WebAssembly!" })).toBeVisible();
   await address.fill("http://outside.example/"); await address.press("Enter");
-  await expect(page.getByRole("alert")).toContainText("Kandelo network");
+  await expect(page.getByRole("alert")).toContainText("connected Kandelo peer");
   await expect(frame.getByRole("heading", { name: "Hello from nginx on WebAssembly!" })).toBeVisible();
 });

@@ -1397,7 +1397,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 2,
+      "required_host_adapter_version": 4,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -1521,6 +1521,7 @@
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
       "kernel_host_adapter_manifest_ptr",
+      "kernel_initial_exec_commit",
       "kernel_install_host_stdin_pipe",
       "kernel_ipc_shm_lookup_mapping_for_task",
       "kernel_ipc_shm_record_mapping_for_process",
@@ -1562,6 +1563,7 @@
       "kernel_set_main_channel_addr",
       "kernel_spawn_exec_commit",
       "kernel_spawn_exec_target_prepare",
+      "kernel_spawn_exec_target_prepare_handle",
       "kernel_spawn_process",
       "kernel_take_process_timer_cleanup",
       "kernel_tcp_connection_id",
@@ -1577,7 +1579,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 2,
+    "version": 4,
     "worker_features": [
       {
         "bit": 2,
@@ -3025,6 +3027,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_initial_exec_commit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_inject_connection",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -3167,6 +3174,11 @@
       "kind": "func",
       "name": "kernel_next_wait_deadline_ns",
       "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_overlay_activation_codec",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3331,7 +3343,7 @@
     {
       "kind": "func",
       "name": "kernel_push_argv",
-      "signature": "(i32,i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3380,6 +3392,56 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_activate_persistence_compaction",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_cancel_persistence_compaction",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_checkpoint_prepared_persistence",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_convert_unindexed_fixed_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_convert_unindexed_resizable_persistence",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_fixed_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_enable_resizable_persistence_indexed",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_export_container_cancel",
+      "signature": "() -> ()"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_export_container_read",
       "signature": "(i32,i32,i32,i32) -> (i32)"
     },
@@ -3405,6 +3467,26 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_io_limit_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_io_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_journal_state_memory_pressure",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_journal_state_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_lazy_resource_limits",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -3415,8 +3497,28 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_load_persistent_image",
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_metadata_used_bytes",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_mkdir_parents",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_persistence_recovery_is_pristine",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_prepare_persistence_compaction",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3435,8 +3537,28 @@
     },
     {
       "kind": "func",
+      "name": "kernel_rootfs_set_io_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_journal_state_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_set_metadata_budget_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_rootfs_stat_mode",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_rootfs_sync_persistence",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -3672,6 +3794,11 @@
       "kind": "func",
       "name": "kernel_spawn_exec_target_prepare",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_exec_target_prepare_handle",
+      "signature": "(i32,i32,i64,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4198,6 +4325,96 @@
     {
       "kind": "func",
       "module": "env",
+      "name": "host_overlay_compaction_flush",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_compaction_len",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_compaction_read",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_compaction_truncate",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_compaction_write",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_flush",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_len",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_read",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_target_flush",
+      "signature": "() -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_target_len",
+      "signature": "() -> (i64)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_target_read",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_target_truncate",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_target_write",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_truncate",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_overlay_write",
+      "signature": "(i64,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_pread",
       "signature": "(i64,i32,i32,i32,i32) -> (i32)"
     },
@@ -4325,7 +4542,7 @@
       "kind": "memory",
       "maximum_pages": 16384,
       "memory64": false,
-      "minimum_pages": 18,
+      "minimum_pages": 19,
       "module": "env",
       "name": "memory",
       "shared": true

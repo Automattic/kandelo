@@ -391,6 +391,7 @@ function fixturePaths(root: string) {
     demoProfileOverlayPath,
     dependencyRoots,
     resolveArtifact,
+    resolveOriginal: () => null,
   };
 }
 
@@ -485,7 +486,7 @@ describe("canonical source-rootfs shell", () => {
     }
     expect(wrapper).toContain("EXTENDED_DEPENDENCIES=(");
     expect(composer).toContain(
-      "populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact)",
+      "populateSourceRootfsShellOverlay(fs, inputs.resolveArtifact, {",
     );
     for (const forbidden of [
       "WASM_POSIX_BUILD_GIT_",
@@ -584,6 +585,72 @@ describe("canonical source-rootfs shell", () => {
     expect(
       text(readVfsFile(fs, "/etc/profile.d/00-kandelo-shell.sh")),
     ).toContain("export PS1='kandelo$ '");
+  });
+
+  it("adds the selected original even when its executable already exists in the base", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    const source = await writeRootfs(paths.rootfsPath);
+    const original = Buffer.from("\0asm\x01\0\0\0");
+    const sha256 = createHash("sha256").update(original).digest("hex");
+    const reference = Buffer.alloc(44);
+    reference.writeUInt32LE(1);
+    reference.writeBigUInt64LE(BigInt(original.length), 4);
+    Buffer.from(sha256, "hex").copy(reference, 12);
+    const sectionName = Buffer.from("kandelo.original-program");
+    const program = Buffer.concat([original, Buffer.from([0, 1 + sectionName.length + reference.length, sectionName.length]), sectionName, reference]);
+    const executablePath = paths.resolveArtifact("programs/less.wasm", "less");
+    writeFileSync(executablePath, program);
+    const base = KandeloImageFs.create();
+    base.loadImage(source.image);
+    const programUri = "kandelo-lazy:preserved-base/less.wasm";
+    base.registerLazyFile("/usr/bin/less", programUri, program.length, 0o755,
+      createHash("sha256").update(program).digest("hex"));
+    const baseImage = await base.saveImage();
+    writeFileSync(paths.rootfsPath, baseImage);
+    const relPath = `programs/wasm32/.originals/less/${"a".repeat(64)}/originals/less.wasm`;
+    const image = await buildSourceRootfsShellImage({
+      ...paths,
+      resolveOriginal: (_resolverPath, dependency) => dependency === "less" ? {
+        path: join(root, "originals/less.wasm"), packageName: "less", sourceArtifact: "originals/less.wasm",
+        cacheKey: "a".repeat(64), relPath, size: original.length, sha256, mode: 0o444,
+      } : null,
+      outFile: join(root, "original.vfs.zst"),
+      sourceDateEpoch: "0",
+    });
+    const composed = KandeloImageFs.create();
+    composed.loadImage(image);
+    expect(composed.lazyEntries().files.find(entry => entry.path === "/usr/bin/less")).toMatchObject({
+      uri: programUri, size: program.length,
+    });
+    expect(composed.stat("/usr/bin/less").ino).toBe(composed.stat("/bin/less").ino);
+    const originalPath = `/usr/lib/kandelo/originals/${sha256}.wasm`;
+    expect(composed.lstat(originalPath).mode & 0o7777).toBe(0o444);
+    expect(composed.lazyEntries().files.find(entry => entry.path === originalPath)).toMatchObject({
+      uri: `kandelo-lazy:${relPath}`, size: original.length,
+    });
+  });
+
+  it("does not resolve a resident base-owned program as an undeclared dependency", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    const source = await writeRootfs(paths.rootfsPath);
+    const base = KandeloImageFs.create();
+    base.loadImage(source.image);
+    const programPath = SHELL_LAZY_BINARY_SPECS.find(spec => spec.id === "coreutils")!.vfsPath;
+    base.writeFile(programPath, Buffer.from("resident base program"), 0o755);
+    writeFileSync(paths.rootfsPath, await base.saveImage());
+    const dependencies: string[] = [];
+    await expect(buildSourceRootfsShellImage({
+      ...paths,
+      resolveArtifact: (resolverPath, dependency) => {
+        dependencies.push(dependency);
+        return paths.resolveArtifact(resolverPath, dependency);
+      },
+      outFile: join(root, "resident.vfs.zst"),
+      sourceDateEpoch: "0",
+    })).rejects.toThrow(`source-rootfs shell omitted production lazy utility ${programPath}`);
+    expect(dependencies).not.toContain("coreutils");
   });
 
   it("preserves ABI, capacity, and lazy identities while adding exact image-owned files", async () => {
@@ -925,7 +992,7 @@ describe("canonical source-rootfs shell", () => {
       shellCommand: "/usr/local/bin/doom-launch",
     });
     const doomLaunch = text(readVfsFile(fs, "/usr/local/bin/doom-launch"));
-    expect(doomLaunch).toContain("wad=/doom1.wad");
+    expect(doomLaunch).toContain("wad=/usr/share/doom/doom1.wad");
     // The engine reads the keyboard from the terminal the supervisor saved
     // on fd 3, not the /dev/null a background command would get.
     expect(doomLaunch).toContain("exec 3<&0");
@@ -938,7 +1005,7 @@ describe("canonical source-rootfs shell", () => {
     ]);
     expect(resolveDemoAssets(demo!, "doom")).toEqual([
       {
-        path: "/doom1.wad",
+        path: "/usr/share/doom/doom1.wad",
         url: DOOM_WAD_URL,
         sha256: DOOM_WAD_SHA256,
         mode: 0o644,

@@ -1,0 +1,143 @@
+import { clickDockTool } from "./support/dock";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./support/persistent-page";
+import { machineUrl } from "./support/kandelo-machine";
+import { runTerminalCommand } from "./support/terminal-command";
+import { resolve } from "node:path";
+import { configureNewComputer, bootStoredComputer } from "./support/computer-library";
+
+async function ready(page: Page): Promise<void> {
+  await expect.poll(async () => {
+    const setupFailure = page.getByRole("alert");
+    if (await setupFailure.count()) throw new Error(await setupFailure.first().innerText());
+    const status = await page.locator(".kdock-status-text").count() === 0 ? null
+      : await page.locator(".kdock-status-text").getAttribute("data-status");
+    if (status === "error") {
+      await clickDockTool(page, "Internals").catch(() => {});
+      throw new Error((await page.locator(".ksys-line").allTextContents()).join("\n"));
+    }
+    return status;
+  }, { timeout: 180_000 }).toBe("running");
+  await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 60_000 });
+  await expect.poll(() => page.locator(".xterm-rows").first().textContent(), { timeout: 120_000 }).toMatch(/kandelo(?:-bash-[0-9.]+)?\$ ?/);
+}
+
+test("saved computers reload, checkpoint and switch independently; temporary computers can be kept or deleted", async ({ page, baseURL }, testInfo) => {
+  test.setTimeout(600_000);
+  page.setDefaultTimeout(30_000);
+  page.on("dialog", dialog => void dialog.accept());
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const target = await machineUrl(page, "shell");
+  const imageUrl = new URL(target, baseURL).searchParams.get("vfs")!;
+  await page.goto(target);
+  await ready(page);
+  const savedUrl = page.url();
+  console.log("saved computer booted", savedUrl);
+  const savedId = new URL(savedUrl).searchParams.get("computer");
+  expect(savedId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(new URL(savedUrl).searchParams.has("vfs")).toBe(false);
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await page.locator(`[data-computer-id="${savedId}"]`).getByRole("button", { name: "Keep this computer", exact: true }).click();
+  await expect(page.locator(`[data-computer-id="${savedId}"]`)).toContainText("Saved on this device");
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await runTerminalCommand(page, "set -eu; printf 'saved-a\\n' > /home/projects/library-note; sync; printf 'LIBRARY_A_WRITTEN\\n'", "LIBRARY_A_WRITTEN");
+  await page.addInitScript(() => {
+    if (sessionStorage.getItem("computer-metadata-quota-tested")) return;
+    sessionStorage.setItem("computer-metadata-quota-tested", "1");
+    const original = FileSystemFileHandle.prototype.createWritable;
+    (window as unknown as { restoreComputerMetadataWrites: () => void }).restoreComputerMetadataWrites = () => { FileSystemFileHandle.prototype.createWritable = original; };
+    FileSystemFileHandle.prototype.createWritable = function(options) {
+      if (this.name === "computer.json") return Promise.reject(new DOMException("injected metadata quota", "QuotaExceededError"));
+      return original.call(this, options);
+    };
+  });
+  await page.route(imageUrl, route => route.abort("failed"));
+  await page.reload();
+  await ready(page);
+  console.log("saved computer reloaded");
+  expect(page.url()).toBe(savedUrl);
+  await page.evaluate(() => {
+    (window as unknown as { restoreComputerMetadataWrites: () => void }).restoreComputerMetadataWrites();
+  });
+  await runTerminalCommand(page, "set -eu; test \"$(cat /home/projects/library-note)\" = saved-a; printf 'LIBRARY_A_RELOADED\\n'", "LIBRARY_A_RELOADED");
+  await clickDockTool(page, "Internals");
+  await page.getByRole("button", { name: "Checkpoint image", exact: true }).click();
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "booting", { timeout: 60_000 });
+  await ready(page);
+  console.log("saved computer checkpointed");
+  await runTerminalCommand(page, "set -eu; test \"$(cat /home/projects/library-note)\" = saved-a; printf 'LIBRARY_A_CHECKPOINTED\\n'", "LIBRARY_A_CHECKPOINTED");
+  await page.unroute(imageUrl);
+  await configureNewComputer(page, "shell");
+  await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
+  await page.getByRole("radio", { name: "Temporary", exact: true }).check();
+  await page.getByRole("button", { name: "Create and boot", exact: true }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("computer"), { timeout: 60_000 }).not.toBe(savedId);
+  await ready(page);
+  console.log("temporary computer booted");
+  const temporaryId = new URL(page.url()).searchParams.get("computer");
+  expect(temporaryId).not.toBe(savedId);
+  await runTerminalCommand(page, "set -eu; test ! -f /home/projects/library-note; printf 'temporary-b\\n' > /home/projects/library-note; sync; printf 'LIBRARY_B_INDEPENDENT\\n'", "LIBRARY_B_INDEPENDENT");
+  await page.reload();
+  await ready(page);
+  expect(new URL(page.url()).searchParams.get("computer")).toBe(temporaryId);
+  await runTerminalCommand(page, "set -eu; test \"$(cat /home/projects/library-note)\" = temporary-b; printf 'LIBRARY_B_RELOADED\\n'", "LIBRARY_B_RELOADED");
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  const entry = page.locator(`[data-computer-id="${temporaryId}"]`);
+  await expect(entry).toHaveAttribute("aria-current", "true");
+  await expect(entry.getByText("Current computer", { exact: true })).toBeVisible();
+  await expect(entry.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+  await expect(entry.getByRole("button", { name: "Delete", exact: true })).toHaveAccessibleDescription("Open another computer before deleting this one");
+  await expect(entry.getByRole("button", { name: "Delete", exact: true })).toHaveAttribute("title", "Open another computer before deleting this one");
+  await expect(entry.getByText("Open another computer before deleting this one", { exact: true })).toHaveCount(0);
+  await expect(page.locator(`[data-computer-id="${savedId}"]`).getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "List", exact: true }).click();
+  await expect(entry.getByText("Current computer", { exact: true })).toBeVisible();
+  await expect(entry.getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Gallery", exact: true }).click();
+  await entry.getByRole("button", { name: "Keep this computer", exact: true }).click();
+  await expect(entry).toContainText("Saved on this device");
+  expect(new URL(page.url()).searchParams.get("computer")).toBe(temporaryId);
+  await entry.getByRole("button", { name: "Rename", exact: true }).click();
+  await entry.getByRole("textbox", { name: "Computer name" }).fill("Kept test computer");
+  await entry.getByRole("button", { name: "Save name", exact: true }).click();
+  await expect(entry.locator("strong")).toHaveText("Kept test computer");
+  await page.screenshot({ path: resolve(import.meta.dirname, `../../../.context/computer-library-current-${testInfo.project.name}.png`) });
+  await bootStoredComputer(page, savedId!);
+  await expect.poll(() => new URL(page.url()).searchParams.get("computer"), { timeout: 60_000 }).toBe(savedId);
+  await ready(page);
+  expect(page.url()).toBe(savedUrl);
+  await runTerminalCommand(page, "set -eu; test \"$(cat /home/projects/library-note)\" = saved-a; printf 'LIBRARY_A_UNCHANGED\\n'", "LIBRARY_A_UNCHANGED");
+  await page.getByRole("button", { name: "Library", exact: true }).click();
+  await expect(page.locator(`[data-computer-id="${savedId}"]`)).toHaveAttribute("aria-current", "true");
+  await expect(page.locator(`[data-computer-id="${savedId}"]`).getByRole("button", { name: "Delete", exact: true })).toBeDisabled();
+  await expect(entry).not.toHaveAttribute("aria-current", "true");
+  await expect(entry.getByRole("button", { name: "Delete", exact: true })).toBeEnabled();
+  await page.evaluate(async id => {
+    const root = await navigator.storage.getDirectory();
+    const directory = await (await (await root.getDirectoryHandle("kandelo")).getDirectoryHandle("computers")).getDirectoryHandle(id!);
+    await directory.removeEntry("filesystem", { recursive: true });
+  }, temporaryId);
+  await page.locator(`[data-computer-id="${temporaryId}"]`).getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("alert").first()).toContainText("Saved filesystem is missing");
+  expect(new URL(page.url()).searchParams.get("computer")).toBe(savedId);
+  await page.locator(`[data-computer-id="${temporaryId}"]`).getByRole("button", { name: "Delete", exact: true }).click();
+  const deletion = page.getByRole("dialog", { name: "Delete computer", exact: true });
+  const deleteName = await page.locator(`[data-computer-id="${temporaryId}"] .kcomputer-details > strong`).textContent();
+  await expect(deletion.getByRole("button", { name: "Delete computer", exact: true })).toBeDisabled();
+  await deletion.getByLabel("Type the computer name to confirm").fill("not-the-computer");
+  await expect(deletion.getByRole("button", { name: "Delete computer", exact: true })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(deletion).toHaveCount(0);
+  await expect(page.locator(`[data-computer-id="${temporaryId}"]`)).toBeVisible();
+  await page.locator(`[data-computer-id="${temporaryId}"]`).getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(deletion.getByLabel("Type the computer name to confirm")).toHaveValue("");
+  await deletion.getByLabel("Type the computer name to confirm").fill(deleteName!);
+  await deletion.getByRole("button", { name: "Delete computer", exact: true }).click();
+  await expect(page.locator(`[data-computer-id="${temporaryId}"]`)).toHaveCount(0);
+  await expect(page.locator(`[data-computer-id="${savedId}"]`)).toBeVisible();
+  await page.getByRole("button", { name: "+ New computer", exact: true }).click();
+  await page.getByRole("button", { name: "Choose Base Shell", exact: true }).click();
+  await expect(page.getByRole("radio", { name: "Temporary", exact: true })).toBeChecked();
+  expect(errors).toEqual([]);
+});

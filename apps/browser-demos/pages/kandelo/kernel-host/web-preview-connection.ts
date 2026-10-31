@@ -2,6 +2,7 @@ import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { LiveKernelHost, WebPreviewState, WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
 import { observePreviewRequest } from "../panes/preview-progress";
+import { validateWebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 
 /** A boot-scoped preview connection; changing destinations retires its bridge. */
 export class WebPreviewConnection {
@@ -10,16 +11,17 @@ export class WebPreviewConnection {
   private original: WebPreviewState | null | undefined;
   private network = false;
   private pendingNetwork = false;
+  private opening = false;
   constructor(private host: LiveKernelHost, private kernel: BrowserKernel,
     private swUrl: string, private scope: string, private isCurrent: () => boolean) {}
 
   async open(target: WebPreviewTarget): Promise<void> {
+    validateWebPreviewTarget(target);
+    if (this.opening) throw new Error("A web preview connection is already in progress; wait for it to finish");
+    this.opening = true;
     const hostname = target.hostname;
     const local = hostname === "localhost" || hostname === "127.0.0.1";
-    if (!local && hostname !== "host" && !/^peer-(?:[1-9]\d{0,2})$/.test(hostname) && !/^10\.89\.0\.(?:[1-9]\d{0,2})$/.test(hostname)) throw new Error("Choose localhost or a computer on this Kandelo network");
-    if (!Number.isInteger(target.port) || target.port < 1 || target.port > 65535) throw new Error("Invalid web preview port");
     const path = target.path ?? "/";
-    if (!path.startsWith("/") || path.startsWith("//") || path.length > 4096 || /[\\\u0000-\u001f\u007f]/.test(path)) throw new Error("Invalid web preview path");
     const current = ++this.sequence;
     this.pendingNetwork = !local;
     const active = () => this.isCurrent() && this.sequence === current;
@@ -46,6 +48,7 @@ export class WebPreviewConnection {
         destination: { hostname, port: target.port }, initialPath: path, port: local ? target.port : undefined, status: "running" });
       preparedBridge = undefined;
     } finally {
+      this.opening = false;
       preparedBridge?.dispose();
       if (active()) this.pendingNetwork = false;
     }

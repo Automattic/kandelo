@@ -67,7 +67,7 @@ describe("process generation detach host parity", () => {
         /processMemoryCreators\.closeAndRunAfterDrain\(\s*performDestroy\s*,?\s*\)/,
       );
       expect(destroy).toContain("processGenerationDetaches.retryPending()");
-      expect(destroy).toContain("processMemoryAllocator.clear()");
+      expect(destroy).toMatch(/processMemoryAllocator(?:\?)?\.clear\(\)/);
       expect(destroy).not.toContain("processes.clear()");
       // The outer kernel Worker can be a safe final containment boundary only
       // after it has explicitly terminated every process Worker and the
@@ -75,7 +75,7 @@ describe("process generation detach host parity", () => {
       expect(destroy).toContain("terminateThreadWorkers(pid)");
       expect(destroy).toContain("terminateTrackedWorker(info.worker");
       expect(destroy).toContain(
-        "kernelRealmDestroyResult(gracefulDetachComplete)",
+        "kernelRealmDestroyResult(gracefulDetachComplete, persistenceSyncFailure)",
       );
       // WHY: Worker termination yields. Keep the installed object itself,
       // rather than looking the PID up afterward and accidentally retiring an

@@ -2638,6 +2638,7 @@ export function describeWasmArtifactPolicyFailures(
     requireForkInstrumentation &&
     (hasForkArtifactSurface || importNames.includes("kernel.kernel_fork"))
   ) {
+    const failureCount = failures.length;
     try {
       failures.push(
         ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
@@ -2647,6 +2648,13 @@ export function describeWasmArtifactPolicyFailures(
         `cannot validate ABI 43 fork-artifact contract: ${
           error instanceof Error ? error.message : String(error)
         }`,
+      );
+    }
+    if (failures.length > failureCount) {
+      failures.push(
+        "Fork instrumentation is versioned but not stable across Kandelo releases. " +
+          "Rebuild user-built forking programs with the current Kandelo SDK, " +
+          "or install a compatible package update. Automatic re-instrumentation is unavailable.",
       );
     }
   }

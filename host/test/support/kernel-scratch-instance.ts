@@ -2,7 +2,7 @@ type WasmValueType = "i32" | "i64";
 
 interface WasmFunctionSignature {
   readonly parameters: readonly WasmValueType[];
-  readonly result: WasmValueType;
+  readonly result?: WasmValueType;
 }
 
 function unsignedLeb128(value: number): number[] {
@@ -100,8 +100,16 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i32,
     },
+    kernel_initial_exec_commit: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_spawn_exec_target_prepare: {
       parameters: [i32, i32, pointer, pointer],
+      result: i32,
+    },
+    kernel_spawn_exec_target_prepare_handle: {
+      parameters: [i32, i32, i64, pointer, i32],
       result: i32,
     },
     kernel_publish_spawn_child: {
@@ -151,6 +159,21 @@ function signatures(
     kernel_get_fork_count: {
       parameters: [i32],
       result: i64,
+    },
+    kernel_rootfs_inspect_directory: {
+      parameters: [pointer, i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_lazy_resource_limits: {
+      parameters: [i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_export_container_read: {
+      parameters: [i32, i32, pointer, i32],
+      result: i32,
+    },
+    kernel_rootfs_export_container_cancel: {
+      parameters: [],
     },
     kernel_get_memory_pages: {
       parameters: [],
@@ -564,6 +587,18 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_inject_connection: {
+      parameters: [i32, i32, i32, i32, i32, i32, i32, i32],
+      result: i32,
+    },
+    kernel_tcp_connection_id: {
+      parameters: [i32, i32],
+      result: i32,
+    },
+    kernel_reset_tcp_connection: {
+      parameters: [i32, i32, i32],
+      result: i32,
+    },
     kernel_pick_tcp_listener_target: {
       parameters: [i32, i32, pointer, i32],
       result: i32,
@@ -771,7 +806,7 @@ export function createKernelScratchTestInstance(
     2,
     0,
   ];
-  const imports: Record<string, (...args: Array<number | bigint>) => number | bigint>
+  const imports: Record<string, (...args: Array<number | bigint>) => number | bigint | void>
     = {};
   const waitDeadlineDefaults = createWaitDeadlineTestDouble() as
     Record<string, unknown>;
@@ -781,8 +816,7 @@ export function createKernelScratchTestInstance(
       0x60,
       ...unsignedLeb128(signature.parameters.length),
       ...signature.parameters.map(valueType),
-      1,
-      valueType(signature.result),
+      ...(signature.result === undefined ? [0] : [1, valueType(signature.result)]),
     );
     importPayload.push(
       ...wasmString("scratch"),
@@ -816,6 +850,7 @@ export function createKernelScratchTestInstance(
         throw new Error(`missing test implementation for ${name}`);
       }
       const result = Reflect.apply(implementation, undefined, args);
+      if (signature.result === undefined) return;
       return signature.result === "i64"
         ? BigInt(result as bigint | number)
         : Number(result);

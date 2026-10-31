@@ -19,6 +19,8 @@ export interface KernelConfig {
    * see `runtime-memory-profile.ts`.
    */
   kernelMaxPages?: number;
+  rootfsMetadataBytes?: number;
+  maxVfsFileReadBytes?: number;
   /**
    * Deterministic image-build mode, for kernels an image builder boots while
    * building a VFS image: `CLOCK_REALTIME` counts up from `epochSeconds` and

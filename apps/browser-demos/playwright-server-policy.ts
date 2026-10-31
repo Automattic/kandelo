@@ -6,6 +6,7 @@ export interface PlaywrightServerEnvironment {
   KANDELO_CANONICAL_FLAT_SHELL_STRICT?: string;
   KANDELO_NETWORK_LAB?: string;
   KANDELO_PLAYWRIGHT_SERVE_DIST?: string;
+  KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL?: string;
   KANDELO_SOURCE_ROOTFS_SHELL_STRICT?: string;
 }
 
@@ -20,6 +21,9 @@ export function playwrightTestIgnoreForEnvironment(
   );
   if (env.KANDELO_ABI_STAGING_ASSEMBLED_SITE_ROOT === undefined) {
     ignored.push(/abi-staging-pages-assembled-site\.spec\.ts$/);
+  }
+  if (env.KANDELO_PROGRAM_COMPATIBILITY_IMAGE_URL === undefined) {
+    ignored.push(/program-compatibility\.spec\.ts$/);
   }
   // Ordinary browser runs have no protected evidence handoff. Keep an
   // explicitly named evidence spec visible so its missing-input check fails

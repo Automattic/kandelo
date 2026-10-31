@@ -52,6 +52,7 @@ export function useDockActions(
   frameCount: number | null = null,
   stop?: () => Promise<void>,
   readFrameCount?: () => number,
+  terminalPath?: string,
 ): {
   controls: React.ReactNode;
   toasts: React.ReactNode;
@@ -108,6 +109,7 @@ export function useDockActions(
     try {
       await runDemoDockAction(host, action, {
         stop,
+        terminalPath,
         onPhase: async (phase) => {
           // Dispatch may still be waiting on the old prompt during teardown.
           if (machineLeftRunning) throw new Error("Dock action cancelled");
@@ -133,7 +135,7 @@ export function useDockActions(
               return;
             }
             setFollowing({ label: action.label, progress });
-          });
+          }, terminalPath);
           // Following can end while attachPty is still in flight (a frame
           // arrived, or the pane unmounted); the command is still written.
           if (followingGenerationRef.current !== generation) {
@@ -151,7 +153,7 @@ export function useDockActions(
       unsubscribeStatus();
       setRunning(null);
     }
-  }, [host, running, stopFollowing, stop, readFrameCount]);
+  }, [host, running, stopFollowing, stop, readFrameCount, terminalPath]);
 
   const controls = React.useMemo(() => {
     if (status !== "running" || actions.length === 0) return null;

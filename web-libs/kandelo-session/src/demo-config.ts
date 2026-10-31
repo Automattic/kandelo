@@ -319,6 +319,7 @@ export interface KandeloDemoProfileConfig {
   dockActions?: DemoDockActionConfig[];
   runtime?: DemoRuntimeConfigInput;
   init?: DemoInitConfig;
+  activity?: { shellCommand: string };
   web?: DemoWebConfigInput;
   identity?: DemoIdentityConfig;
   display?: DemoDisplayConfig;
@@ -337,6 +338,7 @@ export interface KandeloDemoProfileConfig {
  */
 export interface KandeloDemoConfig {
   version: 1;
+  image?: { title: string };
   defaultProfile?: string;
   profiles?: Record<string, KandeloDemoProfileConfig>;
 }
@@ -412,6 +414,7 @@ const PROFILE_ONLY_KEYS = [
   "dockActions",
   "runtime",
   "init",
+  "activity",
   "web",
   "identity",
   "display",
@@ -432,6 +435,10 @@ function retiredIngestMessage(where: string, exchangeField: string): string {
 export function validateKandeloDemoConfig(config: KandeloDemoConfig): void {
   if (!isRecord(config) || config.version !== 1) {
     throw new Error("demo config must use version 1");
+  }
+  if (config.image !== undefined) {
+    if (!isRecord(config.image) || Object.keys(config.image).some(key => key !== "title")) throw new Error("image must declare only a title");
+    requiredString(config.image.title, "image.title");
   }
   if ((config as Record<string, unknown>).ingest !== undefined) {
     throw new Error(retiredIngestMessage("ingest", "profiles.<id>.exchange"));
@@ -985,6 +992,7 @@ function validateProfileFields(
   value: Record<string, unknown>,
   field: string,
 ): void {
+  if (value.activity !== undefined) normalizeActivity(value.activity, `${field}.activity`);
   if (value.presentation !== undefined) {
     normalizePresentationConfig(value.presentation);
   }
@@ -1021,6 +1029,21 @@ function validateProfileFields(
   if (value.dockActions !== undefined) {
     normalizeDockActions(value.dockActions, `${field}.dockActions`);
   }
+}
+
+function normalizeActivity(value: unknown, field: string): { shellCommand: string } {
+  if (!isRecord(value) || Object.keys(value).some(key => key !== "shellCommand")) {
+    throw new Error(`${field} must declare only a shellCommand`);
+  }
+  const shellCommand = requiredString(value.shellCommand, `${field}.shellCommand`);
+  if (shellCommand.length > MAX_SHELL_COMMAND_CHARS) throw new Error(`${field}.shellCommand is too long`);
+  if (shellCommand.includes("\0")) throw new Error(`${field}.shellCommand must not contain NUL`);
+  return { shellCommand };
+}
+
+export function resolveDemoActivity(config: KandeloDemoConfig, profileId: string): { shellCommand: string } | null {
+  const value = profileConfig(config, profileId)?.activity;
+  return value === undefined ? null : normalizeActivity(value, `profiles.${profileId}.activity`);
 }
 
 function normalizeDockActions(value: unknown, field: string): DemoDockActionConfig[] {
@@ -1147,6 +1170,10 @@ function normalizeAsset(value: unknown, field: string): DemoAssetConfig {
     ...(typeof value.sha256 === "string" ? { sha256: value.sha256 } : {}),
     ...(typeof value.mode === "number" ? { mode: value.mode } : {}),
   };
+}
+
+export function parseShortcutConfig(value: unknown): DemoGuideConfig {
+  return normalizeGuide(value, "shortcuts");
 }
 
 function normalizeGuide(value: unknown, field: string): DemoGuideConfig {

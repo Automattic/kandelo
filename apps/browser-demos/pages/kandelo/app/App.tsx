@@ -5,13 +5,23 @@ import activityClientImageUrl from "@binaries/programs/wasm32/shell.vfs.zst?url"
 
 import * as React from "react";
 import { flushSync } from "react-dom";
-import { useDemoGuide, useKernelHost, useLazyDownloads, useMachineProgress } from "../kernel-host/react";
+import { useKernelHost, useLazyDownloads, useMachineProgress, useWebPreview } from "../kernel-host/react";
+import { useServiceControls } from "./use-service-controls";
+import { ServicesPanel } from "./ServicesPanel";
+import { previewServiceNotice, runningServiceShortcuts } from "../../../../../web-libs/kandelo-session/src/computer-services";
 import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
 import { MachineView, useMachineSurfaceController } from "../views/MachineView";
 import { MachineProgressOverlay } from "../panes/MachineProgressOverlay";
 import { descriptorFromGalleryItem } from "../gallery-descriptor";
-import { Gallery } from "../views/Gallery";
+import { ComputerLibraryView, useComputerLibrary } from "../views/ComputerLibrary";
+import type { ComputerRetention } from "../../../../../web-libs/kandelo-session/src/computer-library";
+import { DEFAULT_COMPUTER_RETENTION } from "../../../../../web-libs/kandelo-session/src/computer-library";
+import { OpenWebsiteDialog } from "./OpenWebsiteDialog";
+import type { WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
+import { AboutDialog } from "./AboutDialog";
+import { PERSISTENCE_RELEASE_WARNING } from "./PersistenceReleaseWarning";
+import { isMachineProgressBlocking } from "../panes/machine-progress-format";
 import { EmptyState } from "../views/EmptyState";
 import { createShellTerminal, type ShellTerminal } from "../panes/Shell";
 import { Inspector, INSPECTOR_TABS } from "../panes/Inspector";
@@ -27,11 +37,14 @@ import { lazyDownloadAssetLabel } from "../../../../../web-libs/kandelo-session/
 import { useWebMcp } from "../webmcp/use-webmcp";
 import type { DisplayHandle } from "../panes/Display";
 import { TerminalDockControls } from "./TerminalDockControls";
-import { useNetworkSession } from "./use-network-session";
+import { useNetworkSession, type InitialSessionInvitation } from "./use-network-session";
 import { usePackageSessions } from "./use-package-sessions";
 import type { SessionLaunch } from "../../../../../web-libs/kandelo-session/src/package-sessions";
 import { NetworkPanel } from "./NetworkPanel";
 import { ExchangeToasts, useExchangePicker } from "./ExchangeToasts";
+import { ActivitiesPanel } from "./ActivitiesPanel";
+import { activityConflicts } from "./activity-launcher";
+import { stopDeviceOwner } from "../../../../../web-libs/kandelo-session/src/device-owner";
 import { useExchangeConsumer } from "../kernel-host/react";
 
 type InternalsTab = "syslog" | "procs" | "vfs" | "lazy-load" | "config" | "syscalls";
@@ -47,32 +60,71 @@ const THEME_MODES: Array<{ mode: ThemeMode; label: string }> = [
 ];
 
 const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
+  library: {
+    title: "Computer Library",
+    subtitle: "Open and manage computers stored on this device.",
+  },
   gallery: {
-    title: "Launch New Computer",
-    subtitle: "Choose a published Kandelo computer or local demo image to boot.",
+    title: "Computer Library",
+    subtitle: "Create a computer from a published filesystem image.",
+  },
+  activities: {
+    title: "Activities",
+    subtitle: "Launch apps and services on this computer without rebooting.",
   },
 };
 
-export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boolean }> = ({ invitationOpen = true, invitationDismissed = false }) => {
+export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boolean; initialInvitation?: InitialSessionInvitation }> = ({ invitationOpen = true, invitationDismissed = false, initialInvitation }) => {
   const host = useKernelHost();
-  const networkSession = useNetworkSession(host, invitationOpen, invitationDismissed);
+  const library = useComputerLibrary(host.computers);
+  const [computerError, setComputerError] = React.useState<string | null>(null);
+  const [keepingComputer, setKeepingComputer] = React.useState(false);
+  const keepCurrentComputer = async () => {
+    const computer = library.current;
+    if (!computer || !host.computers || keepingComputer || computer.retention !== "temporary") return;
+    if (!window.confirm(`Keep “${computer.title}” on this device? It will stay in your Library until you delete it.\n\n${PERSISTENCE_RELEASE_WARNING}`)) return;
+    setKeepingComputer(true);
+    try { await host.computers.keep(computer.id); }
+    catch (error) { setComputerError(String(error)); setDockPane("library"); }
+    finally { setKeepingComputer(false); }
+  };
+  React.useEffect(() => {
+    if (!host.computers) return;
+    const refresh = () => { void host.computers!.refresh().catch(error => setComputerError(String(error))); };
+    const timer = window.setInterval(refresh, 15 * 60 * 1000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [host]);
+  const networkSession = useNetworkSession(host, invitationOpen, invitationDismissed, initialInvitation);
   const exchangeConsumer = useExchangeConsumer();
   const exchangePicker = useExchangePicker();
-  const demoGuide = useDemoGuide();
   const lazyDownloads = useLazyDownloads();
   const machineProgress = useMachineProgress();
   const surface = useMachineSurfaceController();
+  const services = useServiceControls(host, surface.status);
+  const webPreview = useWebPreview();
+  const serviceNotice = surface.activeView === "web"
+    ? previewServiceNotice(services.entries, webPreview?.destination ?? (webPreview?.port === undefined ? undefined : { hostname: "localhost", port: webPreview.port }))
+    : null;
+  const shortcuts = React.useMemo(() => runningServiceShortcuts(services.entries), [services.entries]);
+  const [servicesOpen, setServicesOpen] = React.useState(false);
 
   const [dockPane, setDockPane] = React.useState<DockPaneId | null>(null);
   const [dockHeight, setDockHeight] = React.useState(0);
   const [dockLayout, setDockLayout] = React.useState<DockLayoutState>({ collapsed: false, fullWidth: true });
-  // The demo guide never auto-opens; the dock's Demo button is the only way
-  // in. Machines with a guide simply have that button enabled.
   const [demoGuideOpen, setDemoGuideOpen] = React.useState(false);
   const [demoDockControls, setDemoDockControls] = React.useState<React.ReactNode | null>(null);
   const [demoGuidePopup, setDemoGuidePopup] = React.useState<React.ReactNode | null>(null);
   const [internalsOpen, setInternalsOpen] = React.useState(false);
   const [shareOpen, setShareOpen] = React.useState(false);
+  const [aboutOpen, setAboutOpen] = React.useState(false);
+  const [openWebsite, setOpenWebsite] = React.useState(false);
+  const [websiteTarget, setWebsiteTarget] = React.useState<WebPreviewTarget | undefined>();
+  const changeWebTarget = React.useCallback((target?: WebPreviewTarget) => {
+    setWebsiteTarget(target);
+    setOpenWebsite(true);
+  }, []);
+  const [previewError, setPreviewError] = React.useState<string | null>(null);
   const [internalsTab, setInternalsTab] = React.useState<InternalsTab>("syslog");
   const [theme, setTheme] = React.useState<ThemePreference>(() => readThemePreference());
   const [systemThemeMode, setSystemThemeMode] = React.useState<ResolvedThemeMode>(() => getSystemThemeMode());
@@ -169,23 +221,43 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   }, [resolvedThemeMode, theme]);
 
   React.useEffect(() => {
-    const key = `${desc.id}:${demoGuide?.title ?? "no-guide"}`;
+    const key = `${desc.id}:${shortcuts.map(service => service.id).join(",")}`;
     if (autoOpenedDemoGuideKey.current === key) return;
     autoOpenedDemoGuideKey.current = key;
     // Close a guide left open by the previous machine; never auto-open.
     setDemoGuideOpen(false);
-  }, [demoGuide?.title, desc.id, dockPane]);
+  }, [shortcuts, desc.id, dockPane]);
 
   React.useEffect(() => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
     setInternalsOpen(false);
     setThemeOpen(false);
+    setServicesOpen(false);
   }, [desc.id]);
 
   const closeDockPane = React.useCallback(() => {
     setDockPane(null);
   }, []);
+
+  React.useEffect(() => {
+    if (surface.status === "booting") setDockPane(current => current === "library" || current === "gallery" ? null : current);
+  }, [surface.status]);
+
+  React.useEffect(() => {
+    let lastDestination: string | undefined;
+    return host.subscribeWebPreview(preview => {
+      if (!preview?.destination || preview.url === lastDestination) return;
+      lastDestination = preview.url;
+      setPreviewError(null);
+      closeDockPane();
+      surface.requestActivityWeb();
+    });
+  }, [host, closeDockPane, surface.requestActivityWeb]);
+
+  React.useEffect(() => {
+    if (surface.status !== "running") { setOpenWebsite(false); setPreviewError(null); }
+  }, [surface.status]);
 
   const selectDockPane = React.useCallback((pane: DockPaneId | null) => {
     setInternalsOpen(false);
@@ -198,16 +270,17 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     setDockPane(null);
     setInternalsOpen(false);
     setThemeOpen(false);
-    surface.chooseView(view);
+    if (view === "web" && !surface.canOpenWeb) { setWebsiteTarget(undefined); setOpenWebsite(true); }
+    else surface.chooseView(view);
   }, [surface]);
 
   const toggleDemoGuide = React.useCallback(() => {
-    if (!demoGuide) return;
+    if (!shortcuts.length) return;
     setDockPane(null);
     setInternalsOpen(false);
     setThemeOpen(false);
     setDemoGuideOpen((open) => !open);
-  }, [demoGuide]);
+  }, [shortcuts.length]);
 
   const toggleInternals = React.useCallback(() => {
     if (!surface.canUseInternals) return;
@@ -230,16 +303,10 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     });
   }, [host, closeDockPane]);
 
-  const launchGalleryItem = React.useCallback(async (item: GalleryItem) => {
+  const launchGalleryItem = React.useCallback(async (item: GalleryItem, retention: ComputerRetention = DEFAULT_COMPUTER_RETENTION, title?: string) => {
     let vfsImageUrl = item.vfsImageUrl;
     if (!vfsImageUrl && item.resolveVfsImageUrl) {
-      try {
-        vfsImageUrl = await item.resolveVfsImageUrl();
-      } catch (err) {
-        // Applying the descriptor below lets the host surface the same
-        // missing-artifact error through its normal boot diagnostics.
-        console.warn("resolveVfsImageUrl failed:", err);
-      }
+      vfsImageUrl = await item.resolveVfsImageUrl();
     }
     // Boot in place, then move the address bar to match.
     //
@@ -264,8 +331,9 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       vfsImageUrl ? { ...item, vfsImageUrl } : item,
       host.getBootDescriptor(),
     );
-    await host.applyBootDescriptor(next);
-    if (vfsImageUrl) {
+    if (host.computers) await host.computers.create(next, retention, title);
+    else await host.applyBootDescriptor(next);
+    if (vfsImageUrl && !host.computers) {
       // WHY after the boot: if composition fails, applyBootDescriptor throws
       // and the address bar keeps naming the machine that is actually
       // loaded, rather than one that never booted.
@@ -278,7 +346,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   }, [host, closeDockPane]);
 
   const onLaunchGalleryItem = React.useCallback((item: GalleryItem) => {
-    void launchGalleryItem(item).catch((err) => console.warn("applyBootDescriptor failed:", err));
+    setComputerError(null);
+    void launchGalleryItem(item).catch((err) => setComputerError(err instanceof Error ? err.message : String(err)));
   }, [launchGalleryItem]);
 
   const createTerminal = React.useCallback((activate: boolean) => {
@@ -290,20 +359,33 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
 
   const onAddTerminal = React.useCallback(() => { createTerminal(true); }, [createTerminal]);
 
-  const activityTerminal = React.useRef<{ job: string; terminal: ShellTerminal } | null>(null);
-  // A replacement awaits the old process's exit; the render which began
-  // preparation may still describe that process as the display owner.
-  const activityDisplayOccupied = React.useRef(surface.displayOccupied);
-  activityDisplayOccupied.current = surface.displayOccupied;
-  React.useEffect(() => host.subscribeStatus(status => { if (status !== "running") activityTerminal.current = null; }), [host]);
-  const replacement = {
-    available: () => activityTerminal.current !== null,
-    stop: async () => {
-      const activity = activityTerminal.current;
-      if (!activity) return;
-      const check = () => { if (activityTerminal.current !== activity) throw new Error("The activity's computer was replaced"); };
+  type ManagedActivity = { job: string; terminal: ShellTerminal; identity: string; display: boolean; ports: number[] };
+  const activityTerminals = React.useRef(new Map<string, ManagedActivity>());
+  const [openActivities, setOpenActivities] = React.useState<ManagedActivity[]>([]);
+  const [activityStopError, setActivityStopError] = React.useState<string | null>(null);
+  const [activityStopping, setActivityStopping] = React.useState(false);
+  const activityTransition = React.useRef(false);
+  React.useEffect(() => host.subscribeStatus(status => {
+    if (status !== "running") { activityTerminals.current.clear(); setOpenActivities([]); }
+  }), [host]);
+  const stopManagedActivity = async (activity: ManagedActivity) => {
+      const check = () => { if (activityTerminals.current.get(activity.job) !== activity || host.getStatus() !== "running") throw new Error("The activity's computer was replaced"); };
+      check();
       const deadline = Date.now() + 30_000;
       try {
+        const before = await host.readOwnedJob(activity.job, undefined, 1); check();
+        if (!before.expired && !before.terminationObserved) {
+          const processes = await host.enumProcs(); check();
+          const family = new Set([before.pid]);
+          let previousSize = 0;
+          while (previousSize !== family.size) {
+            previousSize = family.size;
+            for (const process of processes) if (family.has(process.ppid)) family.add(process.pid);
+          }
+          await Promise.all(processes.filter(process => process.pid !== before.pid && family.has(process.pid) && process.state !== "Z")
+            .map(process => stopDeviceOwner(host, process.pid, { timeoutMs: 10_000 })));
+          check();
+        }
         let result = await host.readOwnedJob(activity.job, undefined, 1, true); check();
         while (result.expired || !result.terminationObserved) {
           if (Date.now() >= deadline) throw new Error("The previous activity has not finished stopping. Try again to finish closing it.");
@@ -317,26 +399,57 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
         // the ID so a later attempt can still cancel/release the real family.
         if (!String(error).includes("UNKNOWN_JOB")) throw error;
       }
-      host.setKmsDisplayScale?.(null);
       host.removePty(activity.terminal.path);
       setTerminals(previous => previous.filter(terminal => terminal.id !== activity.terminal.id));
       setActiveTerminalId(previous => previous === activity.terminal.id ? "tty-1" : previous);
-      activityTerminal.current = null;
-    },
+      activityTerminals.current.delete(activity.job);
+      setOpenActivities([...activityTerminals.current.values()]);
   };
-  const launchActivity = React.useCallback(async (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch) => {
+  const stopActivity = async (job: string) => {
+    if (activityTransition.current) return;
+    const activity = activityTerminals.current.get(job);
+    if (!activity) return;
+    activityTransition.current = true; setActivityStopping(true); setActivityStopError(null);
+    try {
+      if (activity.display) for (const pid of host.getDisplayOwners?.() ?? []) await stopDeviceOwner(host, pid, { timeoutMs: 10_000 });
+      await stopManagedActivity(activity);
+    } catch (error) { setActivityStopError(String(error)); }
+    finally { activityTransition.current = false; setActivityStopping(false); }
+  };
+  const launchActivity = async (command: string, title: string, assertCurrent: () => void, procedure: SessionLaunch, identity: string, ports: number[] = []) => {
     assertCurrent();
+    if (activityTransition.current) throw new Error("Another activity is starting or stopping");
+    activityTransition.current = true;
+    setActivityStopError(null);
+    try {
     if (procedure.surface === "web") {
       if (!host.openWebPreview) throw new Error("This computer cannot open a web preview");
       await host.openWebPreview({ hostname: procedure.host === "network.host" ? "host" : "localhost", port: procedure.port, path: procedure.path, label: title });
       assertCurrent();
-      selectMachineView("demo");
+      closeDockPane();
+      flushSync(() => surface.requestActivityWeb());
       return;
     }
-    if (procedure.surface === "display" && activityDisplayOccupied.current) throw new Error("Quit the program using the display before starting a new activity.");
+    if (procedure.surface === "display") {
+      if (!host.getDisplayOwners) throw new Error("This computer cannot report display ownership");
+      for (const pid of host.getDisplayOwners()) { await stopDeviceOwner(host, pid, { timeoutMs: 10_000 }); assertCurrent(); }
+    }
+    const next = { identity, display: procedure.surface === "display", ports };
+    for (const activity of activityTerminals.current.values()) if (activityConflicts(activity, next)) {
+      await stopManagedActivity(activity); assertCurrent();
+    }
+    if (procedure.surface === "display") {
+      const deadline = Date.now() + 10_000;
+      while (host.getDisplayOwners?.().length) {
+        if (Date.now() >= deadline) throw new Error("The previous display owner has not released the display");
+        await new Promise(resolve => setTimeout(resolve, 25)); assertCurrent();
+      }
+    }
+    if (activityTerminals.current.size >= 32) throw new Error("Close an activity before opening another (32 per computer)");
     const terminal = { ...createShellTerminal(nextTerminalIndex.current++), label: title };
-    const activity = { job: `activity-${crypto.randomUUID()}`, terminal };
-    activityTerminal.current = activity;
+    const activity = { job: `activity-${crypto.randomUUID()}`, terminal, ...next };
+    activityTerminals.current.set(activity.job, activity);
+    setOpenActivities([...activityTerminals.current.values()]);
     // Own the fresh login/PTY before it can fork. The worker's existing job
     // ledger follows every descendant across exec, reparenting and setsid.
     const pty = await host.attachPty(terminal.path, undefined, { id: activity.job, timeoutMs: 0 });
@@ -350,7 +463,6 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       if (!host.setKmsDisplayMode || !host.whenKmsDisplaySized || !host.getSurfaceAvailability().kms) throw new Error("This computer does not provide the required KMS display");
       if (procedure.displayScale !== undefined && !host.setKmsDisplayScale) throw new Error("This computer cannot configure the activity display scale");
       host.setKmsDisplayScale?.(procedure.displayScale ?? null);
-      host.setKmsDisplayMode("webgl2-scanout");
       flushSync(() => surface.requestActivityDisplay("kms"));
       if (!await host.whenKmsDisplaySized(1, 5000)) throw new Error("The activity display could not be prepared");
       assertCurrent();
@@ -358,13 +470,14 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     if (procedure.surface === "display" && procedure.display !== "kms") flushSync(() => surface.requestActivityDisplay("framebuffer"));
     await host.dispatchShellCommand(command, { path: terminal.path, beforeWrite: () => {
       assertCurrent();
-      if (procedure.surface === "display" && (host.getSurfaceAvailability().framebuffer || activityDisplayOccupied.current)) {
-        throw new Error("Quit the program using the display before starting a new activity.");
+      if (procedure.surface === "display" && host.getDisplayOwners?.().length) {
+        throw new Error("Another program acquired the display while the activity was being prepared");
       }
     } });
     assertCurrent();
-  }, [host, selectMachineView, surface]);
-  const packageSessions = usePackageSessions(host, networkSession, launchActivity, surface.displayOccupied, activityClientImageUrl, replacement);
+    } finally { activityTransition.current = false; }
+  };
+  const packageSessions = usePackageSessions(host, networkSession, launchActivity, activityClientImageUrl);
 
   useWebMcp({
     host, terminals, activeTerminalId,
@@ -383,7 +496,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     navigatePreview: (path) => {
       if (!webMcpPreview.current) return false;
       webMcpPreview.current.navigate(path);
-      selectMachineView("demo");
+      selectMachineView("web");
       return true;
     },
   });
@@ -405,7 +518,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     ? surface.activeView
     : null;
   const viewControls = !isEmpty
-    ? surface.activeView === "demo"
+    ? surface.activeView === "web" || surface.activeView === "graphics"
       ? demoDockControls
       : surface.activeView === "terminal"
         ? (
@@ -424,6 +537,14 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       <InternalsPopup
         activeTab={internalsTab}
         onTab={(tab) => setInternalsTab(tab as InternalsTab)}
+        onCheckpoint={host.supportsPersistentImageCheckpoint?.() && surface.status === "running" && (!host.computers || library.current !== null)
+          ? () => {
+            if (!window.confirm("Checkpoint this persistent computer? Running processes will stop while Kandelo verifies and replaces its VFS image. Keep this tab open until it reboots.")) return;
+            void host.checkpointPersistentImage?.().catch((error) => {
+              console.warn("persistent image checkpoint failed:", error);
+            });
+          }
+          : undefined}
       />
     )
     : null;
@@ -453,7 +574,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
     <div className={appClassName} style={appStyle} data-audio-state={audioState} data-audio-active={audioActive ? "true" : "false"}>
       <div
         data-machine-content
-        {...(machineProgress === null ? {} : { inert: true })}
+        {...(isMachineProgressBlocking(machineProgress) ? { inert: true } : {})}
       >
         <main className={`kmain kdocked-main${isEmpty ? " kmain-flush" : ""}`}>
           {isEmpty ? (
@@ -464,6 +585,11 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
             />
           ) : (
             <MachineView
+              shortcuts={shortcuts}
+              servicesBusy={services.busy}
+              onPreviewError={setPreviewError}
+              onChangeWebTarget={changeWebTarget}
+              activityTerminalPath={openActivities.find(activity => activity.display)?.terminal.path}
               webMcpPreviewRef={webMcpPreview}
               surface={surface}
               demoGuideOpen={demoGuideOpen}
@@ -492,12 +618,12 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
               subtitle={meta.subtitle}
               onClose={closeDockPane}
             >
-              {dockPane === "gallery" && (
-                <Gallery
-                  compact
-                  onLaunch={onLaunchGalleryItem}
-                />
-              )}
+              {(dockPane === "gallery" || dockPane === "library") && <>
+                {computerError && <p className="kcomputer-error" role="alert">{computerError}</p>}
+                <ComputerLibraryView library={host.computers} onOpened={closeDockPane} onCreate={launchGalleryItem} initialScreen={dockPane === "gallery" ? "templates" : "computers"} />
+              </>}
+              {dockPane === "activities" && <ActivitiesPanel session={networkSession} activity={packageSessions} running={surface.status === "running"} onStarted={closeDockPane}
+                openActivities={openActivities.map(activity => ({ id: activity.job, title: activity.terminal.label }))} stopping={activityStopping} stopError={activityStopError} onStop={job => void stopActivity(job)} />}
             </DockPane>
           </>
         )}
@@ -525,20 +651,25 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onOpenNetwork={() => networkSession.setOpen(true)}
           activePane={dockPane}
           activeView={dockActiveView}
+          serviceNotice={serviceNotice}
+          persistenceWarning={library.current !== null || host.supportsPersistentImageCheckpoint?.() === true}
           viewControls={viewControls}
           guidePopup={demoGuidePopup}
           internalsPopup={internalsPopup}
           themePopup={<ThemePopup theme={theme} resolvedMode={resolvedThemeMode} onThemeChange={setTheme} />}
-          guideAvailable={!isEmpty && demoGuide !== null}
-          guideOpen={!isEmpty && demoGuide !== null && demoGuideOpen}
+          guideAvailable={!isEmpty && shortcuts.length > 0}
+          guideOpen={!isEmpty && shortcuts.length > 0 && demoGuideOpen}
           internalsAvailable={!isEmpty && surface.canUseInternals}
           internalsOpen={!isEmpty && surface.canUseInternals && internalsOpen}
           themeOpen={themeOpen}
           shareAvailable={!isEmpty}
           status={surface.status}
-          machineTitle={desc.title}
+          machineTitle={library.current === null ? desc.title : `${library.current.title} · ${library.current.retention === "saved" ? "Saved on this device" : "Temporary"}`}
+          temporary={library.current?.retention === "temporary"}
+          onKeepComputer={library.current?.retention === "temporary" && !keepingComputer ? () => void keepCurrentComputer() : undefined}
           viewDisabled={{
-            demo: !surface.canOpenDemo,
+            web: surface.status !== "running" || !host.openWebPreview,
+            graphics: !surface.canOpenGraphics,
             terminal: !surface.canUseTerminal,
           }}
           onSelectPane={selectDockPane}
@@ -547,6 +678,9 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onToggleInternals={toggleInternals}
           onToggleTheme={toggleTheme}
           onOpenShare={() => setShareOpen(true)}
+          onOpenAbout={() => setAboutOpen(true)}
+          servicesAvailable={services.entries.length > 0 || services.starting || services.error !== null}
+          onOpenServices={() => setServicesOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
@@ -556,6 +690,14 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       </div>
 
       <MachineProgressOverlay />
+      {openWebsite && <OpenWebsiteDialog session={networkSession.state.snapshot} initialTarget={websiteTarget} onClose={() => setOpenWebsite(false)} />}
+      {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {servicesOpen && <ServicesPanel controls={services} onClose={() => setServicesOpen(false)} onStarted={service => {
+        const preview = host.getWebPreview();
+        const target = preview?.destination ?? (preview?.port === undefined ? undefined : { hostname: "localhost", port: preview.port });
+        if (target && ["localhost", "127.0.0.1"].includes(target.hostname) && target.port === service.port) webMcpPreview.current?.navigate("/");
+      }} />}
+      {previewError && <aside className="kpreview-request-error" role="alert">{previewError}<button type="button" aria-label="Dismiss preview error" onClick={() => setPreviewError(null)}>×</button></aside>}
     </div>
   );
 };
@@ -594,7 +736,8 @@ const AudioStatusToast: React.FC<{
 const InternalsPopup: React.FC<{
   activeTab: string;
   onTab: (id: string) => void;
-}> = ({ activeTab, onTab }) => (
+  onCheckpoint?: () => void;
+}> = ({ activeTab, onTab, onCheckpoint }) => (
   <div className="kinternals-popup">
     <div className="kinternals-tabs" role="tablist" aria-label="Internals sections">
       {INSPECTOR_TABS.map((tab) => (
@@ -609,6 +752,12 @@ const InternalsPopup: React.FC<{
           {tab.label}
         </button>
       ))}
+      {onCheckpoint && (
+        <button type="button" className="kinternals-checkpoint" onClick={onCheckpoint}
+          title="Optional full-image snapshot and reboot. Normal filesystem persistence does not require this.">
+          Checkpoint image
+        </button>
+      )}
     </div>
     <Inspector tab={activeTab} showTitle={false} />
   </div>

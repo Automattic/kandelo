@@ -20,3 +20,4 @@ script_path = "packages/registry/sudo-lite/build-sudo-lite.sh"
 [[outputs]]
 name = "sudo-lite"
 wasm = "sudo-lite.wasm"
+fork_instrumentation = "disabled"

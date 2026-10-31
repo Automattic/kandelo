@@ -262,8 +262,8 @@ function connectionLifecycle(declaration: PeerConnectionDeclaration) {
   rtc.addEventListener("connectionstatechange", () => {
     if (rtc.connectionState === "failed") {
       close(new Error(hasTurn
-        ? "the peer connection failed — no route between the peers with the configured ICE servers"
-        : "the peer connection failed — no direct route between the peers, and no TURN relay is configured"));
+        ? "the peer connection failed with the configured ICE servers"
+        : "the peer connection failed; no TURN relay is configured"));
     } else if (rtc.connectionState === "closed") close();
     for (const listener of [...readyListeners]) listener();
   });

@@ -63,6 +63,26 @@ test("names the image being loaded", async ({ page }) => {
     .toBeVisible();
 });
 
+test("keeps download bytes above a separate decompression bar", async ({ page }) => {
+  await setProgress(page, {
+    phase: "image", label: "shell.vfs.zst", operation: "download",
+    completed: 2 * 1024 * 1024, total: 2 * 1024 * 1024,
+    unit: "bytes", status: "loading",
+    decompression: { completed: 8 * 1024 * 1024, status: "loading" },
+  });
+  await expect(page.locator(bar)).toHaveCount(2);
+  const download = page.getByRole("progressbar", { name: "Downloading shell.vfs.zst" });
+  const decompression = page.getByRole("progressbar", { name: "Decompressing shell.vfs.zst" });
+  await expect(download).toHaveAttribute("aria-valuenow", "100");
+  await expect(download).toHaveAttribute("aria-valuetext", "2.0 MiB / 2.0 MiB");
+  await expect(decompression).not.toHaveAttribute("aria-valuenow", /.*/);
+  await expect(decompression).toHaveAttribute("aria-valuetext", "8.0 MiB");
+  const downloadBounds = await download.boundingBox();
+  const decompressionBounds = await decompression.boundingBox();
+  expect(decompressionBounds!.y).toBeGreaterThan(downloadBounds!.y);
+  await page.screenshot({ path: "../../.context/persistent-download-decompression.png" });
+});
+
 test("falls back to an indeterminate bar when no total is known", async ({ page }) => {
   // A user-supplied ?vfs= image behind a compressing CDN has no trustworthy
   // denominator; the bar must not invent one.

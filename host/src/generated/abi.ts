@@ -794,7 +794,7 @@ export const SPAWN_MAX_ENVP_COUNT = 4096 as const;
 export const SPAWN_MAX_ACTION_COUNT = 1024 as const;
 export const SPAWN_WIRE_MAX_BYTES = 8417320 as const;
 
-export const HOST_ADAPTER_VERSION = 2 as const;
+export const HOST_ADAPTER_VERSION = 4 as const;
 export const HOST_ADAPTER_MANIFEST_MAGIC = 1296781399 as const;
 export const HOST_ADAPTER_MANIFEST_VERSION = 1 as const;
 export const HOST_ADAPTER_MANIFEST_SIZE = 40 as const;
@@ -858,6 +858,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_has_sa_nocldstop",
   "kernel_host_adapter_manifest_len",
   "kernel_host_adapter_manifest_ptr",
+  "kernel_initial_exec_commit",
   "kernel_install_host_stdin_pipe",
   "kernel_ipc_shm_lookup_mapping_for_task",
   "kernel_ipc_shm_record_mapping_for_process",
@@ -899,6 +900,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_set_main_channel_addr",
   "kernel_spawn_exec_commit",
   "kernel_spawn_exec_target_prepare",
+  "kernel_spawn_exec_target_prepare_handle",
   "kernel_spawn_process",
   "kernel_take_process_timer_cleanup",
   "kernel_tcp_connection_id",

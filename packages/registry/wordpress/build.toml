@@ -1,5 +1,6 @@
 script_path = "packages/registry/wordpress/build-wordpress.sh"
 inputs = [
+  "host/src/native-artifact-identity.ts",
   "web-libs/kandelo-session/src/session-dependencies.ts",
   "web-libs/kandelo-session/src/package-sessions.ts",
   "web-libs/kandelo-session/src/game-levels.ts",
@@ -19,6 +20,8 @@ inputs = [
   "images/vfs/scripts/package-shell-vfs-build.ts",
   "images/vfs/scripts/shell-lazy-archives.ts",
   "images/vfs/scripts/source-rootfs-shell-overlay.ts",
+  "images/vfs/scripts/program-originals.ts",
+  "images/vfs/scripts/dependency-original-inputs.ts",
   "images/vfs/scripts/package-session-files.ts",
   "scripts/package-runtime-file.ts",
   "images/vfs/scripts/smtp-capture-helpers.ts",
@@ -44,5 +47,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 24
+revision = 27
 publication_state = "pending"

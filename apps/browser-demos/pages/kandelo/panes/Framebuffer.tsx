@@ -49,6 +49,7 @@ const CAPTURE_LABELS = [
 ] as const;
 
 export interface FramebufferProps {
+  activityTerminalPath?: string;
   dragProps?: import("./PaneHead").PaneHeadDragProps;
   onCollapse?: () => void;
   onMaximize?: () => void;
@@ -57,7 +58,7 @@ export interface FramebufferProps {
   onDockControlsChange?: (controls: React.ReactNode | null) => void;
 }
 
-export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange }) => {
+export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onDockControlsChange, activityTerminalPath }) => {
   const host = useKernelHost();
   const status = useStatus();
   const exchangeHints = useDemoExchange();
@@ -225,6 +226,7 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
   const stopDisplayProgram = React.useCallback(async () => {
     const pid = handleRef.current?.getBoundPid() ?? null;
     if (pid === null) {
+      if (activityTerminalPath !== undefined) return;
       await host.interruptShellForeground({ timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS });
       return;
     }
@@ -232,8 +234,8 @@ export const Framebuffer: React.FC<FramebufferProps> = ({ autoFocus = false, onD
       waitForRelease: waitForFbRelease,
       timeoutMs: FRAMEBUFFER_REBIND_TIMEOUT_MS,
     });
-  }, [host, waitForFbRelease]);
-  const dockActions = useDockActions("fb", null, stopDisplayProgram);
+  }, [host, waitForFbRelease, activityTerminalPath]);
+  const dockActions = useDockActions("fb", null, stopDisplayProgram, undefined, activityTerminalPath);
 
 
   const showCanvas = status === "running" && !error;

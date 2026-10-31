@@ -92,6 +92,9 @@ generator_args=(
 if [ -n "$rootfs_default_install" ]; then
     generator_args+=(--default-install "$rootfs_default_install")
 fi
+if [ -n "${ROOTFS_ORIGINAL_INPUTS:-}" ]; then
+    generator_args+=(--original-inputs "$ROOTFS_ORIGINAL_INPUTS")
+fi
 # With none of these, the generator asks the repository's binary resolver for
 # every output -- the resolver the hosts serve lazy outputs from. These three
 # are the package system's sealed inputs (see packages/registry/rootfs).
@@ -147,11 +150,18 @@ rootfs_input_hash() {
         "$ROOTFS_SOURCE_TREE_PATH" \
         tools/mkrootfs/src \
         images/vfs/lib/kandelo-image-fs.ts \
+        images/vfs/scripts/program-originals.ts \
+        images/vfs/scripts/dependency-original-inputs.ts \
         crates/kandelo-image-module \
+        crates/wasm-artifact \
         crates/runtime-core/Cargo.toml \
         crates/runtime-core/src \
         crates/shared/src \
         host/src/vfs/zip.ts \
+        host/src/vfs/vfs-asset-group-reference.ts \
+        host/src/binary-resolver.ts \
+        host/src/native-artifact-identity.ts \
+        host/src/constants.ts \
         scripts/build-rootfs.sh \
         scripts/generate-rootfs-package-manifest.mjs \
         scripts/build-step-input-hash.sh \

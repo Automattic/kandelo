@@ -7,6 +7,7 @@
 import * as React from "react";
 import { createPortal } from "react-dom";
 import { useKernelHost } from "../kernel-host/react";
+import { galleryItemUrl, vfsImageUrlFromDescriptor } from "../url-state";
 import {
   classifyTier, encodeBootDescriptor, HARD_CAPS,
 } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
@@ -95,7 +96,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
       try {
         const trimmed = script.trim();
         if (!trimmed) {
-          if (!cancelled) { setUrl(workingShareUrl(null)); setError(null); }
+          if (!cancelled) { setUrl(workingShareUrl(null, baseDescriptor)); setError(null); }
           return;
         }
         const text = script.endsWith("\n") ? script : `${script}\n`;
@@ -127,7 +128,7 @@ export const SharePanel: React.FC<SharePanelProps> = ({
           },
         };
         const { fragment } = await encodeBootDescriptor(desc);
-        if (!cancelled) { setUrl(workingShareUrl(fragment)); setError(null); }
+        if (!cancelled) { setUrl(workingShareUrl(fragment, baseDescriptor)); setError(null); }
       } catch (err) {
         if (!cancelled) {
           setUrl("");
@@ -177,12 +178,13 @@ export const SharePanel: React.FC<SharePanelProps> = ({
             <circle cx="16" cy="17" r="2.4" />
             <path d="M7.6 10l6.4-3.6M7.6 12l6.4 3.6" />
           </svg>
-          <div className="kshare-title">Share this machine</div>
+          <div className="kshare-title">Share setup</div>
           <button className="kshare-x" onClick={onClose} title="Close" aria-label="Close">✕</button>
         </div>
         )}
 
         <div className="kshare-body">
+          {host.computers?.getSnapshot().current && <p>Shares the starting image, not this computer’s saved files. Use an image export to transfer your changes.</p>}
           {/* Script */}
           <div className="kshare-script">
             <div className="kshare-sect-lbl" style={{ marginBottom: 6 }}>
@@ -224,7 +226,6 @@ export const SharePanel: React.FC<SharePanelProps> = ({
         </div>
 
         <div className="kshare-actions">
-          <button className="kshare-btn" onClick={onClose}>Cancel</button>
           <div style={{ flex: 1 }} />
           <button
             className="kshare-btn"
@@ -258,8 +259,8 @@ export const SharePanel: React.FC<SharePanelProps> = ({
  * current page URL (which already carries ?vfs=<image>&profile=<id> machine
  * identity) plus the descriptor fragment.
  */
-function workingShareUrl(fragment: string | null): string {
-  const url = new URL(window.location.href);
+function workingShareUrl(fragment: string | null, descriptor: BootDescriptor): string {
+  const url = new URL(galleryItemUrl({ id: descriptor.id, vfsImageUrl: vfsImageUrlFromDescriptor(descriptor) ?? undefined }));
   url.hash = fragment ?? "";
   return url.href;
 }

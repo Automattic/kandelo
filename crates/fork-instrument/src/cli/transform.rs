@@ -1,7 +1,6 @@
 //! Bounded instrumentation, optimization and atomic publication.
 use anyhow::{Context, Result};
-use fork_instrument::{Options, native};
-use std::{fs::Permissions, path::Path};
+use fork_instrument::{Options, artifact_io::MappedArtifact, native, original_artifact::{OriginalReference, attach_original_reference}};
 
 #[path = "optimize.rs"]
 mod optimize;
@@ -10,14 +9,13 @@ pub(super) struct Settings<'a> {
     pub optimize: &'a str,
     pub keep_names: bool,
     pub output_bytes: u64,
+    pub original: Option<&'a OriginalReference>,
 }
 pub(super) fn run(
     input: &[u8],
     options: &Options,
-    destination: &Path,
-    permissions: Permissions,
     settings: Settings<'_>,
-) -> Result<()> {
+) -> Result<MappedArtifact> {
     let output = native::instrument(
         input,
         options,
@@ -46,5 +44,8 @@ pub(super) fn run(
         native::validate(artifact.bytes())
             .context("validating output before atomic publication")?;
     }
-    artifact.publish(destination, permissions)
+    if let Some(original) = settings.original {
+        artifact = attach_original_reference(&artifact, original, settings.output_bytes)?;
+    }
+    Ok(artifact)
 }

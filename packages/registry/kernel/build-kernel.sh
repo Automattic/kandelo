@@ -67,6 +67,7 @@ wasm_require_exports "$OUT" \
     kernel_exchange_stream_start \
     kernel_exchange_take_pending \
     kernel_exec_commit \
+    kernel_initial_exec_commit \
     kernel_exec_target_admit \
     kernel_exec_target_cancel \
     kernel_exec_target_prepare \
@@ -126,6 +127,7 @@ wasm_require_exports "$OUT" \
     kernel_set_main_channel_addr \
     kernel_spawn_exec_commit \
     kernel_spawn_exec_target_prepare \
+    kernel_spawn_exec_target_prepare_handle \
     kernel_spawn_process \
     kernel_take_process_timer_cleanup \
     kernel_tcp_connection_id \

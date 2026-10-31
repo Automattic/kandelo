@@ -50,6 +50,7 @@ export interface PreparedExecKernel {
    *  is; see `CentralizedKernelWorker.deferredFetchSettled`. Optional: a
    *  kernel without a deferred pipe never returns EAGAIN for one. */
   deferredFetchSettled?(): Promise<void> | null;
+  deferredFetchProgressAt?(): number | undefined;
 }
 
 export class PreparedExecTargetError extends Error {
@@ -160,8 +161,10 @@ export async function readPreparedExecTarget(
       if (read === -EAGAIN) {
         // The deferred bytes are still being fetched: retry the same offset
         // once the fetch has settled.
-        eagainSince ??= Date.now();
-        const eagainWaitedMs = Date.now() - eagainSince;
+        eagainSince ??= performance.now();
+        const inFlight = kernel.deferredFetchSettled?.() ?? null;
+        const progressAt = inFlight === null ? undefined : kernel.deferredFetchProgressAt?.();
+        const eagainWaitedMs = performance.now() - Math.max(eagainSince, progressAt ?? eagainSince);
         if (eagainWaitedMs >= EXEC_TARGET_EAGAIN_MAX_WAIT_MS) {
           throw new PreparedExecTargetError(
             "prepared exec target read did not become available after "
@@ -170,7 +173,6 @@ export async function readPreparedExecTarget(
             ETIMEDOUT,
           );
         }
-        const inFlight = kernel.deferredFetchSettled?.() ?? null;
         await waitForDeferredFetch(
           inFlight,
           inFlight === null

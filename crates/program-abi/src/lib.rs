@@ -228,6 +228,7 @@ pub const ABI_VERSION: u32 = 55;
 
 
 pub mod abi {
+    pub const THREAD_SLOT_DECL_EXPORT: &str = "__wasm_posix_thread_slots";
     /// Name of the wasm custom section in which user programs embed their
     /// ABI version (single little-endian u32). The kernel host rejects
     /// binaries whose value does not match [`crate::ABI_VERSION`].

@@ -12,24 +12,28 @@ export class BrowserWorkerAdapter implements WorkerAdapter {
     // Worker terminates a nested classic Worker that is still starting
     // (docs/measurements/2026-10-28-firefox-nested-classic-worker-termination.md).
     const worker = new Worker(this.entryUrl, { type: "module" });
-    // Web Workers don't have workerData — send init data via postMessage
-    try {
-      worker.postMessage(workerData);
-    } catch (error) {
-      // No handle owns this Worker yet. Terminate the exact constructed realm
-      // synchronously, then preserve the structured-clone failure for the
-      // caller's existing launch/fatal boundary.
-      try {
-        worker.terminate();
-      } catch {
-        // The initial post failure is the authoritative launch error.
-      }
-      throw error;
-    }
-    // Install callbacks only after the initial post succeeds. A failed clone
-    // therefore leaves neither a Worker realm nor unreachable callbacks.
-    return new BrowserWorkerHandle(worker);
+    return initializeBrowserWorker(worker, workerData);
   }
+}
+
+export function initializeBrowserWorker(worker: Worker, workerData: unknown): WorkerHandle {
+  // Web Workers don't have workerData — send init data via postMessage
+  try {
+    worker.postMessage(workerData);
+  } catch (error) {
+    // No handle owns this Worker yet. Terminate the exact constructed realm
+    // synchronously, then preserve the structured-clone failure for the
+    // caller's existing launch/fatal boundary.
+    try {
+      worker.terminate();
+    } catch {
+      // The initial post failure is the authoritative launch error.
+    }
+    throw error;
+  }
+  // Install callbacks only after the initial post succeeds. A failed clone
+  // therefore leaves neither a Worker realm nor unreachable callbacks.
+  return new BrowserWorkerHandle(worker);
 }
 
 class BrowserWorkerHandle implements WorkerHandle {

@@ -182,47 +182,46 @@ impl WritebackLossLog {
     ///
     /// `reason` is last on the line precisely because it is the only field that
     /// may contain spaces.
-    pub fn render(&self) -> Vec<u8> {
-        use alloc::format;
-        let mut out = Vec::new();
-        out.extend_from_slice(format!("total {}\n", self.total).as_bytes());
-        out.extend_from_slice(format!("recorded {}\n", self.records.len()).as_bytes());
-        out.extend_from_slice(format!("dropped {}\n", self.dropped()).as_bytes());
+    pub fn try_render(&self) -> Result<crate::IoBuffer<u8>, wasm_posix_shared::Errno> {
+        let mut out = crate::IoBuffer::new();
+        out.try_write_fmt(format_args!("total {}\nrecorded {}\ndropped {}\n",
+            self.total, self.records.len(), self.dropped()))?;
         for record in &self.records {
             match record.kind {
-                MappingLossKind::Writeback => out.extend_from_slice(
-                    format!(
+                MappingLossKind::Writeback => out.try_write_fmt(
+                    format_args!(
                         "loss kind={} pid={} {}={:#x} reason=",
                         record.kind.label(),
                         record.pid,
                         record.kind.operand_label(),
                         record.operand,
                     )
-                    .as_bytes(),
                 ),
-                MappingLossKind::UnheldHandle => out.extend_from_slice(
-                    format!(
+                MappingLossKind::UnheldHandle => out.try_write_fmt(
+                    format_args!(
                         "loss kind={} {}={:#x} reason=",
                         record.kind.label(),
                         record.kind.operand_label(),
                         record.operand,
                     )
-                    .as_bytes(),
                 ),
-                MappingLossKind::UnseededProcess => out.extend_from_slice(
-                    format!(
+                MappingLossKind::UnseededProcess => out.try_write_fmt(
+                    format_args!(
                         "loss kind={} pid={} reason=",
                         record.kind.label(),
                         record.pid,
                     )
-                    .as_bytes(),
                 ),
-            }
+            }?;
+            out.try_reserve(record.reason.len() + 1)?;
             out.extend_from_slice(&record.reason);
             out.push(b'\n');
         }
-        out
+        Ok(out)
     }
+
+    #[cfg(test)]
+    pub fn render(&self) -> Vec<u8> { self.try_render().unwrap().as_slice().to_vec() }
 }
 
 /// Global wrapper for static storage.
@@ -297,8 +296,8 @@ pub fn resolve_process_memory_len(
 }
 
 /// Render the kernel-wide log as the `/proc/kandelo/writeback_losses` content.
-pub fn render_writeback_losses() -> Vec<u8> {
-    unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).render() }
+pub fn render_writeback_losses() -> Result<crate::IoBuffer<u8>, wasm_posix_shared::Errno> {
+    unsafe { (*GLOBAL_WRITEBACK_LOSS_LOG.0.get()).try_render() }
 }
 
 #[cfg(test)]

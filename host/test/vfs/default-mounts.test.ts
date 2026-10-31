@@ -103,21 +103,19 @@ function typeScriptSources(root: string): string[] {
 }
 
 describe("DEFAULT_MOUNT_SPEC", () => {
-  it("includes the eight canonical mount points", () => {
+  it("keeps homes and service data on the root filesystem", () => {
     const paths = DEFAULT_MOUNT_SPEC.map((m) => m.path).sort();
     expect(paths).toEqual(
       [
         "/",
-        "/home/maker",
-        "/root",
-        "/srv",
         "/tmp",
         "/var/log",
         "/var/run",
         "/var/tmp",
       ].sort(),
     );
-    expect(DEFAULT_MOUNT_SPEC).toHaveLength(8);
+    expect(DEFAULT_MOUNT_SPEC).toHaveLength(5);
+    for (const path of ["/home/maker", "/root", "/srv"]) expect(KERNEL_TMPFS_OWNED_PREFIXES).not.toContain(path);
   });
 
   it("declares / as a writable set-ID-capable image mount", () => {
@@ -140,8 +138,8 @@ describe("DEFAULT_MOUNT_SPEC", () => {
 
 // The in-kernel tmpfs is the unconditional authority for its scratch prefixes,
 // so `resolveForNode`/`resolveForBrowser` always drop the tmpfs-owned scratch
-// mounts (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`, `/home/maker`, `/root`,
-// `/srv`, `/dev/shm`). Node still materialises host scratch backends for any
+// mounts (`/tmp`, `/var/tmp`, `/var/log`, `/var/run`,
+// `/dev/shm`). Node still materialises host scratch backends for any
 // *non*-tmpfs scratch mount, so these suites exercise
 // that surviving machinery through a spec of non-tmpfs scratch paths that mirror
 // the canonical mode/uid/gid variety.

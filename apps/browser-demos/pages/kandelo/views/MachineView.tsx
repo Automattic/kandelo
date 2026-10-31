@@ -7,17 +7,18 @@
 
 import * as React from "react";
 import {
-  useDemoGuide,
   usePresentation,
   useStatus,
   useSurfaceAvailability,
   useWebPreview,
 } from "../kernel-host/react";
-import { Inspector } from "../panes/Inspector";
+import { BootLog, Inspector } from "../panes/Inspector";
 import { Display, type DisplayHandle, type WordPressLoginOptions } from "../panes/Display";
+import type { WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/web-preview-address";
 import { Shell, type ShellTerminal } from "../panes/Shell";
 import { DemoGuide } from "../panes/DemoGuide";
 import type { DemoActionConfig } from "../../../../../web-libs/kandelo-session/src/demo-config";
+import type { ComputerServiceStatus } from "../../../../../web-libs/kandelo-session/src/computer-services";
 import type {
   DemoPresentation,
   MachineStatus,
@@ -25,7 +26,7 @@ import type {
   SurfaceAvailability,
 } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
-export type MachineSurfaceView = "demo" | "terminal" | "internals";
+export type MachineSurfaceView = "web" | "graphics" | "terminal" | "internals";
 
 export interface MachineSurfaceController {
   status: MachineStatus;
@@ -34,32 +35,32 @@ export interface MachineSurfaceController {
   activePrimary: PrimarySurface;
   activeView: MachineSurfaceView;
   primaryLabel: string;
-  demoSurface: PrimarySurface | null;
-  canOpenDemo: boolean;
+  canOpenWeb: boolean;
+  canOpenGraphics: boolean;
   canUseTerminal: boolean;
   canUseInternals: boolean;
-  shouldMountDemoSurface: boolean;
   choosePrimary: (surface: PrimarySurface) => void;
   chooseView: (view: MachineSurfaceView) => void;
-  followDemoSurface: () => void;
   focusInternals: () => void;
   onKmsOwnerChange: (pid: number | null) => void;
   requestActivityDisplay: (kind: "framebuffer" | "kms") => void;
+  requestActivityWeb: () => void;
   displayOccupied: boolean;
+  kmsAvailable: boolean;
 }
 
 export function useMachineSurfaceController(): MachineSurfaceController {
   const status = useStatus();
   const presentation = usePresentation();
   const rawAvailability = useSurfaceAvailability();
-  const [activityDisplay, setActivityDisplay] = React.useState<"framebuffer" | "kms" | null>(null);
-  const activityOwnerSeen = React.useRef(false);
+  const [requestedSurface, setRequestedSurface] = React.useState<"framebuffer" | "kms" | "web" | null>(null);
+  const [lastGraphics, setLastGraphics] = React.useState<"framebuffer" | "kms">("framebuffer");
   const [kmsOwnerPid, onKmsOwnerChange] = React.useState<number | null>(null);
   React.useEffect(() => {
-    if (status !== "running") { setActivityDisplay(null); onKmsOwnerChange(null); }
+    if (status !== "running") { setRequestedSurface(null); onKmsOwnerChange(null); }
   }, [status]);
   React.useEffect(() => {
-    if (!rawAvailability.kms) { onKmsOwnerChange(null); setActivityDisplay(null); }
+    if (!rawAvailability.kms) onKmsOwnerChange(null);
   }, [rawAvailability.kms]);
   const webPreview = useWebPreview();
   const availability = React.useMemo<SurfaceAvailability>(() => ({
@@ -73,17 +74,13 @@ export function useMachineSurfaceController(): MachineSurfaceController {
         webPreview?.status === "reconnecting"),
   }), [rawAvailability, kmsOwnerPid, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
-  const [requestedDemo, setRequestedDemo] = React.useState(false);
-  const requestActivityDisplay = React.useCallback((kind: "framebuffer" | "kms") => {
-    activityOwnerSeen.current = false;
-    setActivityDisplay(kind); setRequestedDemo(true);
+  const requestActivityDisplay = React.useCallback((kind: "framebuffer" | "kms" | "web") => {
+    setRequestedSurface(kind);
   }, []);
+  const requestActivityWeb = React.useCallback(() => requestActivityDisplay("web"), [requestActivityDisplay]);
   React.useEffect(() => {
-    if (!activityDisplay) return;
-    const owned = activityDisplay === "kms" ? kmsOwnerPid !== null : availability.framebuffer;
-    if (owned) activityOwnerSeen.current = true;
-    else if (activityOwnerSeen.current) { setActivityDisplay(null); activityOwnerSeen.current = false; }
-  }, [activityDisplay, kmsOwnerPid, availability.framebuffer]);
+    if (activePrimary === "framebuffer" || activePrimary === "kms") setLastGraphics(activePrimary);
+  }, [activePrimary]);
   const [primaryMode, setPrimaryMode] = React.useState<"following-demo" | "pinned">("following-demo");
   const previousAvailability = React.useRef(availability);
   const canUseTerminal = status === "running" && availability.terminal;
@@ -108,73 +105,47 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     previousAvailability.current = availability;
     if (status !== "running") return;
     if (activePrimary !== "terminal") return;
-    const preferred = presentation.runningPrimary[0];
+    const preferred = !previous.framebuffer && availability.framebuffer ? "framebuffer"
+      : !previous.kms && availability.kms ? "kms" : presentation.runningPrimary[0];
     if (!preferred || preferred === "terminal") return;
     if (previous[preferred] || !availability[preferred]) return;
 
     setActivePrimary(preferred);
-    setPrimaryMode("following-demo");
-  }, [activePrimary, availability, presentation.runningPrimary, status]);
+    setPrimaryMode(preferred === defaultPrimary ? "following-demo" : "pinned");
+  }, [activePrimary, availability, defaultPrimary, presentation.runningPrimary, status]);
 
   React.useEffect(() => {
     setPrimaryMode("following-demo");
   }, [presentation.runningPrimary]);
 
   const choosePrimary = React.useCallback((surface: PrimarySurface) => {
-    setRequestedDemo(false);
+    setRequestedSurface(null);
     if (status !== "running" && surface !== "syslog") return;
     if (!isSurfaceAvailable(surface, availability)) return;
     setActivePrimary(surface);
     setPrimaryMode(surface === defaultPrimary ? "following-demo" : "pinned");
   }, [availability, defaultPrimary, status]);
 
-  const demoSurface = React.useMemo(
-    // Profiles choose the preferred layout; a real framebuffer owner can
-    // also create a display when a graphical program starts from a shell.
-    () => availability.framebuffer ? "framebuffer" : activityDisplay === "kms" ? "kms" : availability.web ? "web" : resolveDemoSurface(presentation.runningPrimary),
-    [presentation.runningPrimary, availability.framebuffer, availability.web, activityDisplay],
-  );
-  const canOpenDemo =
-    demoSurface !== null &&
-    isSurfaceAvailable(demoSurface, availability) &&
-    status === "running";
-  // A KMS display mounts as soon as the kernel exposes it, while booting too:
-  // hidden, but laid out, so it attaches and reports its size before the
-  // machine's command starts a client that picks its video mode from that
-  // size (live-setup waits for the report). Other demo surfaces wait for
-  // "running" — there is nothing for them to show or measure earlier.
-  const shouldMountDemoSurface =
-    demoSurface !== null &&
-    (status === "running" || (demoSurface === "kms" && status === "booting")) &&
-    // Keep the capability mounted for display sizing and future owners,
-    // including while the shell is visible after a graphical app exits.
-    isSurfaceAvailable(demoSurface, demoSurface === "kms" ? rawAvailability : availability);
+  const graphicsSurface = availability[lastGraphics] ? lastGraphics
+    : availability.framebuffer ? "framebuffer" : availability.kms ? "kms" : null;
+  const canOpenWeb = status === "running" && availability.web;
+  const canOpenGraphics = status === "running" && graphicsSurface !== null;
   const canUseInternals = status !== "idle" && isSurfaceAvailable("syslog", availability);
 
   React.useEffect(() => {
-    if (status !== "running") { setRequestedDemo(false); return; }
-    if (!requestedDemo || !canOpenDemo || !demoSurface || (activityDisplay && demoSurface !== activityDisplay)) return;
-    setRequestedDemo(false);
-    setActivePrimary(demoSurface);
-    setPrimaryMode(demoSurface === defaultPrimary ? "following-demo" : "pinned");
-  }, [requestedDemo, canOpenDemo, demoSurface, defaultPrimary, status, activityDisplay]);
+    if (status !== "running" || !requestedSurface || !isSurfaceAvailable(requestedSurface, availability)) return;
+    setRequestedSurface(null);
+    setActivePrimary(requestedSurface);
+    setPrimaryMode(requestedSurface === defaultPrimary ? "following-demo" : "pinned");
+  }, [requestedSurface, availability, defaultPrimary, status]);
 
   const chooseView = React.useCallback((view: MachineSurfaceView) => {
-    if (view === "demo") {
-      // A launch can finish dispatch before its process opens the device.
-      // Remember the person's choice until an actual surface is available.
-      if (demoSurface && isSurfaceAvailable(demoSurface, availability)) choosePrimary(demoSurface);
-      else setRequestedDemo(true);
+    if (view === "graphics") {
+      if (graphicsSurface) choosePrimary(graphicsSurface);
       return;
     }
-    choosePrimary(view === "terminal" ? "terminal" : "syslog");
-  }, [choosePrimary, demoSurface, availability]);
-
-  const followDemoSurface = React.useCallback(() => {
-    if (!demoSurface) return;
-    setActivePrimary(demoSurface);
-    setPrimaryMode("following-demo");
-  }, [demoSurface]);
+    choosePrimary(view === "web" ? "web" : view === "terminal" ? "terminal" : "syslog");
+  }, [choosePrimary, graphicsSurface]);
 
   const focusInternals = React.useCallback(() => {
     setActivePrimary("syslog");
@@ -186,7 +157,7 @@ export function useMachineSurfaceController(): MachineSurfaceController {
       ? "terminal"
       : activePrimary === "syslog"
         ? "internals"
-        : "demo";
+        : activePrimary === "web" ? "web" : "graphics";
 
   return {
     status,
@@ -195,22 +166,27 @@ export function useMachineSurfaceController(): MachineSurfaceController {
     activePrimary,
     activeView,
     primaryLabel: surfaceLabel(activePrimary),
-    demoSurface,
-    canOpenDemo,
+    canOpenWeb,
+    canOpenGraphics,
     canUseTerminal,
     canUseInternals,
-    shouldMountDemoSurface,
     choosePrimary,
     chooseView,
-    followDemoSurface,
     focusInternals,
     onKmsOwnerChange,
     requestActivityDisplay,
+    requestActivityWeb,
     displayOccupied: availability.framebuffer || kmsOwnerPid !== null,
+    kmsAvailable: rawAvailability.kms && (status === "booting" || status === "running"),
   };
 }
 
 export interface MachineViewProps {
+  shortcuts: ComputerServiceStatus[];
+  servicesBusy: boolean;
+  onChangeWebTarget?: (target?: WebPreviewTarget) => void;
+  onPreviewError?: (message: string) => void;
+  activityTerminalPath?: string;
   webMcpPreviewRef?: React.RefObject<DisplayHandle | null>;
   surface: MachineSurfaceController;
   demoGuideOpen: boolean;
@@ -225,6 +201,11 @@ export interface MachineViewProps {
 }
 
 export const MachineView: React.FC<MachineViewProps> = ({
+  shortcuts,
+  servicesBusy,
+  onChangeWebTarget,
+  onPreviewError,
+  activityTerminalPath,
   surface,
   webMcpPreviewRef,
   demoGuideOpen,
@@ -237,15 +218,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
   onActiveTerminalId,
   onAddTerminal,
 }) => {
-  const demoGuide = useDemoGuide();
+  const [kmsControls, setKmsControls] = React.useState<React.ReactNode>(null);
+  const [framebufferControls, setFramebufferControls] = React.useState<React.ReactNode>(null);
+  const [webControls, setWebControls] = React.useState<React.ReactNode>(null);
   const localDisplayRef = React.useRef<DisplayHandle | null>(null);
   const displayRef = webMcpPreviewRef ?? localDisplayRef;
   const {
     activePrimary,
-    demoSurface,
     canUseTerminal,
-    shouldMountDemoSurface,
-    followDemoSurface,
     chooseView,
   } = surface;
   const terminalActive = activePrimary === "terminal" && canUseTerminal;
@@ -257,14 +237,14 @@ export const MachineView: React.FC<MachineViewProps> = ({
 
   const runWebAction = React.useCallback(async (action: DemoActionConfig): Promise<string | void> => {
     if (action.kind === "web.wordpressLogin") {
-      followDemoSurface();
+      chooseView("web");
       const preview = displayRef.current;
       if (!preview) throw new Error("Web preview is not available");
       await preview.loginToWordPress(parseWordPressLoginPayload(action.payload));
       return "Logged into WordPress";
     }
     throw new Error(`Unsupported web action: ${action.kind}`);
-  }, [followDemoSurface]);
+  }, [chooseView, displayRef]);
 
   const shellProps = {
     terminals,
@@ -273,11 +253,11 @@ export const MachineView: React.FC<MachineViewProps> = ({
     onAddTerminal,
   };
 
-  const showDemoGuide = demoGuide !== null && demoGuideOpen;
+  const showDemoGuide = shortcuts.length > 0 && demoGuideOpen;
 
   React.useEffect(() => {
-    if (!shouldMountDemoSurface) onDemoDockControlsChange(null);
-  }, [onDemoDockControlsChange, shouldMountDemoSurface]);
+    onDemoDockControlsChange(activePrimary === "kms" ? kmsControls : activePrimary === "framebuffer" ? framebufferControls : activePrimary === "web" ? webControls : null);
+  }, [activePrimary, kmsControls, framebufferControls, webControls, onDemoDockControlsChange]);
 
   const openTerminalFromGuide = React.useCallback(() => {
     if (canUseTerminal) chooseView("terminal");
@@ -286,13 +266,13 @@ export const MachineView: React.FC<MachineViewProps> = ({
   const demoGuidePopup = React.useMemo(() => {
     if (!showDemoGuide) return null;
     return (
-      <DemoGuide
+      <div>{shortcuts.map(service => <DemoGuide key={service.id} guide={service.shortcuts!} busy={servicesBusy}
         onClose={() => onDemoGuideOpenChange(false)}
         onOpenTerminal={openTerminalFromGuide}
         onRunWebAction={runWebAction}
-      />
+      />)}</div>
     );
-  }, [onDemoGuideOpenChange, openTerminalFromGuide, runWebAction, showDemoGuide]);
+  }, [onDemoGuideOpenChange, openTerminalFromGuide, runWebAction, showDemoGuide, shortcuts, servicesBusy]);
 
   React.useEffect(() => {
     onDemoGuidePopupChange(demoGuidePopup);
@@ -303,29 +283,34 @@ export const MachineView: React.FC<MachineViewProps> = ({
     <div className="kmachine">
       <div className="kmachine-workspace">
         <div className="kmachine-primary">
-          {shouldMountDemoSurface && (
-            <PrimarySurfaceSlot
-              active={activePrimary === demoSurface}
-              measureWhileHidden={demoSurface === "kms"}
-            >
+          {surface.kmsAvailable && (
+            <PrimarySurfaceSlot active={activePrimary === "kms"} measureWhileHidden>
+              <Display active={activePrimary === "kms"} autoFocus={activePrimary === "kms"} surface="kms" activityTerminalPath={activityTerminalPath}
+                onDockControlsChange={setKmsControls} onKmsOwnerChange={surface.onKmsOwnerChange} />
+            </PrimarySurfaceSlot>
+          )}
+          {surface.status === "running" && (
+            <PrimarySurfaceSlot active={activePrimary === "framebuffer"}>
               <Display
-                ref={displayRef}
-                active={activePrimary === demoSurface}
-                autoFocus={activePrimary === demoSurface}
-                surface={demoSurface ?? undefined}
-                onDockControlsChange={onDemoDockControlsChange}
-                onKmsOwnerChange={surface.onKmsOwnerChange}
+                active={activePrimary === "framebuffer"} autoFocus={activePrimary === "framebuffer"}
+                surface="framebuffer" onDockControlsChange={setFramebufferControls} activityTerminalPath={activityTerminalPath}
               />
+            </PrimarySurfaceSlot>
+          )}
+          {surface.availability.web && (
+            <PrimarySurfaceSlot active={activePrimary === "web"}>
+              <Display ref={displayRef} active={activePrimary === "web"} autoFocus={activePrimary === "web"}
+                surface="web" onDockControlsChange={setWebControls} onChangeWebTarget={onChangeWebTarget} />
             </PrimarySurfaceSlot>
           )}
           {canUseTerminal && (terminalActive || terminalVisited) && (
             <PrimarySurfaceSlot active={terminalActive}>
-              <Shell visible={terminalActive} autoFocus={terminalActive} {...shellProps} />
+              <Shell visible={terminalActive} autoFocus={terminalActive} onPreviewError={onPreviewError} {...shellProps} />
             </PrimarySurfaceSlot>
           )}
           {activePrimary === "syslog" && (
             <PrimarySurfaceSlot active>
-              <Inspector tab={internalsTab} />
+              {surface.status === "running" ? <Inspector tab={internalsTab} /> : <BootLog />}
             </PrimarySurfaceSlot>
           )}
         </div>
@@ -390,12 +375,6 @@ function resolvePrimary(
   fallback: PrimarySurface,
 ): PrimarySurface {
   return preferences.find((surface) => isSurfaceAvailable(surface, availability)) ?? fallback;
-}
-
-function resolveDemoSurface(preferences: readonly PrimarySurface[]): PrimarySurface | null {
-  return preferences.find((surface) =>
-    surface === "web" || surface === "framebuffer" || surface === "kms",
-  ) ?? null;
 }
 
 function isSurfaceAvailable(surface: PrimarySurface, availability: SurfaceAvailability): boolean {

@@ -18,6 +18,59 @@ import {
   validateKandeloDemoConfig,
 } from "../src/demo-config";
 import { readKandeloDemoConfigFromVfs } from "../src/demo-config-vfs";
+import { parseComputerServices, parseComputerServiceStatus, previewServiceNotice, runningServiceShortcuts } from "../src/computer-services";
+
+describe("computer services and shortcuts", () => {
+  it("annotates stopped local services without treating remote, unknown or replacement services as stopped", () => {
+    const service = { id: "site", title: "Site", port: 8080, state: "stopped" as const, enabled: false };
+    const target = { hostname: "localhost", port: 8080 };
+    expect(previewServiceNotice([service], target)).toBe("Service stopped · Last loaded page");
+    expect(previewServiceNotice([{ ...service, state: "failed" }], target)).toBe("Service failed · Last loaded page");
+    for (const hostname of ["peer-2", "10.89.0.2", "host"]) expect(previewServiceNotice([service], { ...target, hostname })).toBeNull();
+    expect(previewServiceNotice([service], { ...target, port: 3000 })).toBeNull();
+    expect(previewServiceNotice([], target)).toBeNull();
+    for (const state of ["running", "starting", "stopping", "unknown"] as const) {
+      expect(previewServiceNotice([service, { ...service, id: "other", state }], target)).toBeNull();
+    }
+    expect(previewServiceNotice([{ ...service, state: "not-loaded" }], target)).toBeNull();
+  });
+  const declaration = { version: 1, services: [{ id: "web-php", title: "PHP", port: 8080, shortcuts: {
+    title: "PHP shortcuts", groups: [{ title: "Commands", actions: [{ id: "curl", label: "Fetch page", kind: "terminal.run", payload: "curl localhost:8080" }] }],
+  } }] };
+  it("uses supervisor state, not boot enablement, to expose shortcuts", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    const stopped = parseComputerServiceStatus("KANDELO_SERVICES\t1\nweb-php\tstopped\tenabled\n", services);
+    expect(stopped[0]).toMatchObject({ state: "stopped", enabled: true });
+    expect(runningServiceShortcuts(stopped)).toEqual([]);
+    const running = parseComputerServiceStatus("KANDELO_SERVICES\t1\nweb-php\trunning\tdisabled\n", services);
+    expect(runningServiceShortcuts(running)).toHaveLength(1);
+    expect(running[0].enabled).toBe(false);
+  });
+  it("hides shortcuts for failed, transitional and empty services", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    for (const state of ["starting", "stopping", "failed", "skipped", "not-loaded", "unknown"]) {
+      expect(runningServiceShortcuts(parseComputerServiceStatus(`KANDELO_SERVICES\t1\nweb-php\t${state}\tdisabled\n`, services))).toEqual([]);
+    }
+    expect(runningServiceShortcuts([{ id: "empty", title: "Empty", port: 8080, state: "running", enabled: false, shortcuts: { title: "Empty", groups: [] } }])).toEqual([]);
+  });
+  it("refuses unsupported, duplicate, oversized or unsafe declarations", () => {
+    for (const value of [
+      { ...declaration, version: 2 }, { ...declaration, requiredFutureFeature: true },
+      { ...declaration, services: [declaration.services[0], declaration.services[0]] },
+      { ...declaration, services: [{ ...declaration.services[0], id: "../outside" }] },
+      { ...declaration, services: [{ ...declaration.services[0], port: 0 }] },
+      { ...declaration, services: [{ ...declaration.services[0], surprise: true }] },
+      { ...declaration, services: [{ ...declaration.services[0], shortcuts: { title: "Broken", groups: [{ title: "Actions", actions: [{ kind: "host.execute" }] }] } }] },
+    ]) expect(() => parseComputerServices(JSON.stringify(value))).toThrow();
+    expect(() => parseComputerServices(" ".repeat(65537))).toThrow();
+  });
+  it("refuses incomplete or unrecognized supervisor reports instead of inventing state", () => {
+    const services = parseComputerServices(JSON.stringify(declaration));
+    for (const report of ["", "KANDELO_SERVICES\t2\n", "KANDELO_SERVICES\t1\n", "KANDELO_SERVICES\t1\nweb-php\tmaybe\tenabled\n", "KANDELO_SERVICES\t1\nother\trunning\tdisabled\n", "KANDELO_SERVICES\t1\nweb-php\trunning\tmaybe\n", "KANDELO_SERVICES\t1\nweb-php\trunning\tenabled\nweb-php\tstopped\tdisabled\n"]) {
+      expect(() => parseComputerServiceStatus(report, services)).toThrow();
+    }
+  });
+});
 import {
   experimentalTerminalSessionPolicy,
   parseExperimentalTerminalSession,
@@ -28,6 +81,7 @@ import {
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
   assertVfsImageFitsProfile,
+  assertVfsImageCapacityMetadata,
 } from "../src/vfs-capacity";
 import {
   decodeBootDescriptor,
@@ -241,6 +295,42 @@ function makeVfs(
 
 // ── LiveKernelHost ─────────────────────────────────────────────────────
 
+describe("LiveKernelHost: mounted filesystem configuration", () => {
+  it("reports the mounted OPFS base instead of presenting the download URL as its storage", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR, status: "running" });
+    const configuration = { storage: "opfs" as const, directory: "kandelo/computers/actual/filesystem", baseFile: "generation-7.base", baseGeneration: 7 };
+    host.setFilesystemConfiguration(configuration);
+    configuration.directory = "mutated";
+    expect((await host.getMounts())[0]).toMatchObject({
+      source: "opfs:kandelo/computers/actual/filesystem/generation-7.base", target: "/", fs: "kandelo-vfs", opts: "ro,relatime,journaled",
+    });
+    const snapshot = host.getFilesystemConfiguration()!;
+    snapshot.directory = "mutated again";
+    expect(host.getFilesystemConfiguration()?.directory).toBe("kandelo/computers/actual/filesystem");
+    expect((await host.getMounts())[1]).toMatchObject({ target: "/tmp", fs: "tmpfs", opts: "rw,ephemeral,tmpfs" });
+  });
+
+  it("does not reuse a previous machine's storage details across reboot, replacement or errors", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR, status: "running" });
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    host.setFilesystemConfiguration({ storage: "opfs", directory: "old" });
+    host.setStatus("booting");
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    expect((await host.getMounts())[0].source).toBe("image:rootfs@abc123");
+    host.setFilesystemConfiguration({ storage: "opfs", directory: "another" });
+    host.attachKernel({});
+    expect(host.getFilesystemConfiguration()).toBeNull();
+    host.setFilesystemConfiguration({ storage: "memory" });
+    host.setStatus("error");
+    expect(host.getFilesystemConfiguration()).toBeNull();
+  });
+
+  it("labels the configured kernel reference honestly instead of calling it an image hash", async () => {
+    const host = new LiveKernelHost({ descriptor: DUMMY_DESCRIPTOR });
+    expect(await host.getKernelState()).toEqual([{ k: "kandelo.kernel", v: DUMMY_DESCRIPTOR.runtime.kernel }]);
+  });
+});
+
 describe("LiveKernelHost: status", () => {
   it("returns the initial status from the constructor option", () => {
     const host = new LiveKernelHost({ status: "running" });
@@ -434,6 +524,73 @@ describe("LiveKernelHost: owned jobs", () => {
     ).rejects.toThrow("cannot own a command family");
     await expect(host.readOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
     await expect(host.releaseOwnedJob("job-1")).rejects.toThrow("cannot own a command family");
+  });
+});
+
+describe("LiveKernelHost: bounded metadata reads", () => {
+  it("uses positioned reads and refuses oversized files without a whole-file allocation", async () => {
+    const readFileFromVfs = vi.fn();
+    const readFileRangeFromVfs = vi.fn(async () => new Uint8Array(65537));
+    const host = new LiveKernelHost({ kernel: { readFileFromVfs, readFileRangeFromVfs } as unknown as KernelLike });
+    await expect(host.readVfsFile("/etc/catalog", 65536)).rejects.toThrow("exceeds 65536 bytes");
+    expect(readFileRangeFromVfs).toHaveBeenCalledWith("/etc/catalog", 0, 65537);
+    expect(readFileFromVfs).not.toHaveBeenCalled();
+  });
+  it("preserves missing and empty files and rejects invalid or unavailable bounds", async () => {
+    const readFileRangeFromVfs = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(new Uint8Array(0));
+    const host = new LiveKernelHost({ kernel: { readFileRangeFromVfs } as unknown as KernelLike });
+    expect(await host.readVfsFile("/missing", 65536)).toBeNull();
+    expect(await host.readVfsFile("/empty", 0)).toEqual(new Uint8Array(0));
+    for (const limit of [-1, 0.5, Number.MAX_SAFE_INTEGER, Infinity]) await expect(host.readVfsFile("/invalid", limit)).rejects.toThrow("Invalid bounded");
+    host.attachKernel({});
+    await expect(host.readVfsFile("/catalog", 65536)).rejects.toThrow("cannot bound");
+  });
+});
+
+describe("LiveKernelHost: bound owned job scopes", () => {
+  function kernelOwner() {
+    let token = { closed: false };
+    const kernel = {
+      getOwnedJobLifetime: () => token,
+      spawnFromVfs: vi.fn(async () => ({ pid: 1, exit: Promise.resolve(0) })),
+      readOwnedJob: vi.fn(async () => ({ expired: true as const, oldest: 0, next: 0 })),
+      releaseOwnedJob: vi.fn(async () => {}),
+    };
+    return { kernel, retire: () => { token.closed = true; }, replace: () => { token = { closed: false }; } };
+  }
+  it("never redirects an old command into a replacement computer", async () => {
+    const first = kernelOwner();
+    const second = kernelOwner();
+    const host = new LiveKernelHost({ kernel: first.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    host.attachKernel(second.kernel as unknown as KernelLike);
+    await scope.read("old-command", 0, 1, true);
+    await scope.release("old-command");
+    expect(first.kernel.readOwnedJob).toHaveBeenCalledWith("old-command", 0, 1, true);
+    expect(first.kernel.releaseOwnedJob).toHaveBeenCalledWith("old-command");
+    expect(second.kernel.readOwnedJob).not.toHaveBeenCalled();
+    expect(second.kernel.releaseOwnedJob).not.toHaveBeenCalled();
+  });
+  it("rejects a reused host namespace without falsely declaring its old owner closed", async () => {
+    const owner = kernelOwner();
+    const host = new LiveKernelHost({ kernel: owner.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    owner.replace();
+    expect(scope.closed()).toBe(false);
+    await expect(scope.read("old-command", 0, 1, true)).rejects.toThrow("OWNED_JOB_OWNER_CHANGED");
+    await expect(scope.release("old-command")).rejects.toThrow("OWNED_JOB_OWNER_CHANGED");
+    expect(owner.kernel.readOwnedJob).not.toHaveBeenCalled();
+  });
+  it("observes retirement of the exact captured owner", async () => {
+    const owner = kernelOwner();
+    const host = new LiveKernelHost({ kernel: owner.kernel as unknown as KernelLike });
+    const scope = host.captureOwnedJobs();
+    owner.retire();
+    expect(scope.closed()).toBe(true);
+    await expect(scope.start("old-command", "/bin/sh", [], {})).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    await expect(scope.read("old-command", 0, 1)).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    await expect(scope.release("old-command")).rejects.toThrow("OWNED_JOB_OWNER_CLOSED");
+    expect(owner.kernel.spawnFromVfs).not.toHaveBeenCalled();
   });
 });
 
@@ -2062,6 +2219,17 @@ describe("LiveKernelHost: descriptor + gallery lifecycle defaults", () => {
     expect(host.getStatus()).toBe("running");
   });
 
+  it("exposes persistent image checkpoint only when the page installs its hook", async () => {
+    const unavailable = new LiveKernelHost();
+    expect(unavailable.supportsPersistentImageCheckpoint()).toBe(false);
+    await expect(unavailable.checkpointPersistentImage()).rejects.toThrow("unavailable");
+    const checkpoint = vi.fn(async (_host: LiveKernelHost) => {});
+    const host = new LiveKernelHost({ checkpointPersistentImage: checkpoint });
+    expect(host.supportsPersistentImageCheckpoint()).toBe(true);
+    await host.checkpointPersistentImage();
+    expect(checkpoint).toHaveBeenCalledWith(host);
+  });
+
   it("halt sets status to halted", async () => {
     const host = new LiveKernelHost({ status: "running" });
     await host.halt();
@@ -2827,6 +2995,23 @@ describe("experimental terminal session image configuration", () => {
 });
 
 describe("Kandelo VFS consumer capacity contract", () => {
+  it("distinguishes container overhead from the filesystem ceiling", () => {
+    const capacity = { byteLength: 286740, maxByteLength: 286720 };
+    expect(() => assertVfsImageCapacityMetadata(capacity, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 512 * 1024, 286720, "full.vfs")).not.toThrow();
+    expect(() => assertVfsImageFitsProfile(capacity, 286720, 286720, "full.vfs"))
+      .toThrow("decoded image bytes");
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid container and filesystem sizes %s independently", (size) => {
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: size, maxByteLength: 4096 }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+      expect(() => assertVfsImageCapacityMetadata({ byteLength: 4096, maxByteLength: size }, undefined, "bad.vfs"))
+        .toThrow("invalid filesystem capacity");
+    },
+  );
+
   it("gives shell-derived products independent runtime capacity", () => {
     expect(MAIN_SHELL_VFS_PROFILE_MAX_BYTES).toBe(512 * 1024 * 1024);
     expect(SHELL_DERIVED_VFS_PROFILE_MAX_BYTES).toBe(768 * 1024 * 1024);
@@ -2919,6 +3104,22 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
       (globalThis as { ResizeObserver?: unknown }).ResizeObserver = real;
     }
   };
+
+  it("exposes framebuffer and KMS owners without a graphics boot profile and clears old machine ownership", () => {
+    withFakeResizeObserver(() => {
+      const host = new LiveKernelHost();
+      const kernel = makeKmsKernel();
+      host.attachKernel({ ...kernel, framebuffers: { list: () => [{ pid: 12 }], onChange: () => () => {} } } as any);
+      const handle = host.attachKmsDisplay(makeCanvas())!;
+      expect(kernel.kmsAttachCanvas.mock.calls[0][3].mode).toBe("webgl2-scanout");
+      Atomics.store(handle.stats, 8, 34);
+      expect(host.getDisplayOwners()).toEqual([12, 34]);
+      host.detachKernel();
+      expect(host.getDisplayOwners()).toEqual([]);
+      host.attachKernel(makeKmsKernel() as any);
+      expect(host.getDisplayOwners()).toEqual([]);
+    });
+  });
 
   it.each([1, 2, 3])("uses the same bitmap grid at browser density %s", (density) => {
     withFakeResizeObserver(() => {

@@ -43,6 +43,7 @@ trap 'rm -f -- "$report"' EXIT
     export CI=1 KANDELO_MEMORY_SWITCH_REQUIRED=1
     export PLAYWRIGHT_JSON_OUTPUT_FILE="$report"
     npx playwright test \
+        test/machine-audio-activation.spec.ts \
         test/kandelo-memory-switch.spec.ts \
         test/worker-exit-trap.spec.ts \
         --project=chromium --project=firefox --project=webkit --workers=1 \
@@ -51,7 +52,7 @@ trap 'rm -f -- "$report"' EXIT
 node --input-type=module - "$report" <<'NODE'
 import { readFileSync } from "node:fs";
 const { stats } = JSON.parse(readFileSync(process.argv[2], "utf8"));
-if (stats.expected < 9 || stats.skipped !== 0 || stats.flaky !== 0 || stats.unexpected !== 0) {
+if (stats.expected < 15 || stats.skipped !== 0 || stats.flaky !== 0 || stats.unexpected !== 0) {
     throw new Error(`Incomplete browser memory evidence: ${JSON.stringify(stats)}`);
 }
 NODE

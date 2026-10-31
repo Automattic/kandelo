@@ -4,7 +4,156 @@ Technical debt, deferred enhancements, and explicitly documented conformance
 gaps. Listing an item here does not imply that the current behavior is fully
 supported.
 
+## Browser workspace presentation
+
+The More menu, community links, structured image-progress rows, arbitrary
+guest website picker and terminal preview command are documented in
+[Browser support](browser-support.md#arbitrary-guest-websites).
+
+### Discover guest listeners without image declarations
+
+An optional listener inventory for Open website should come from authoritative
+kernel socket state, not preset names or host port scanning. Respect bind
+addresses and connected network membership; do not expose every listener
+automatically or imply a public URL or browser-origin isolation.
+
+### Extend structured progress to Rust-internal filesystem checks
+
+The current presentation coalesces explicit host image-progress records while
+retaining raw diagnostics. Kernel-internal checks without structured counters
+remain ordinary messages. Add stable operation identities and true counters
+at those producers instead of guessing percentages or hiding text patterns.
+Keep warnings/errors and the bounded raw log available.
+
+### Acknowledged preview requests without a UI terminal
+
+`kandelo-preview` emits a request through the terminal extension; its exit
+status cannot acknowledge asynchronous server readiness. A future guest UI
+portal could serve detached processes and return an explicit bounded response.
+It should not parse ordinary stdout or turn an unimplemented host capability
+into apparent success. Keep Node/browser capability boundaries explicit.
+
+### Exchange late peer-connection candidates
+
+`web-libs/kandelo-session/src/peer-connection.ts` currently publishes a single
+session description after a maximum three-second ICE gathering wait. Candidates
+found later are not exchanged. Preserve bounded startup, but add bounded,
+generation-owned incremental candidate signalling or explicit complete-gathering
+admission with a timeout. Cover late candidates, cancellation, stale sessions,
+and both peer roles. This is not an established cause of the reported
+Firefox-to-Chrome failure: a plain WebRTC probe also failed, and the user's
+local-network permissions were disabled. Do not request microphone access or
+disable browser privacy protections as a substitute for data-only networking.
+
+Activity data also needs progress-aware, bounded transfer scheduling. The
+current 16 KiB stop-and-wait protocol needs 556 exchanges for the 9,094,045-byte
+Quake shareware archive, against one 120-second preparation deadline. Consider
+bounded pipelining and separate setup, inactivity and total-work budgets.
+Correlate requests and responses across cancellation/retry: a late old binary
+reply must not satisfy a new handshake. Keep exact size and digest checks.
+These are concrete protocol follow-ups, not a diagnosed cause of the reported
+Quake join failure, which the current exact-link probe reaches before transfer.
+
 ## ABI modeling and package provenance
+
+### Keep program build inputs separate from kernel-host changes
+
+Program ABI 55 and its exact supported digest remain unchanged across the
+adapter-4 launch work, but normal package resolution still selected new build
+generations for the canonical rootfs dependencies. Investigate which shared
+SDK, resolver and generated-metadata inputs cause that invalidation. Preserve
+all real compiler, libc, instrumentation and program-admission inputs; do not
+drop verifier code or accept a stale projection merely to obtain cache hits.
+Prove a kernel-host-only change leaves eligible program keys unchanged while
+a program-contract or relevant build-tool change still invalidates them.
+This is build reuse work, not evidence that existing program bytes became
+incompatible or permission to restamp old artifacts.
+
+### Advisory closure memo selection authority
+
+The artifact preflight memo now includes retained originals and file metadata,
+but remains an advisory build optimization, not execution authority. Audit
+reuse when a different provenance tier, registry context or canonical package
+generation becomes selected while old immutable files remain available.
+Unchanged stamps on those old files do not by themselves establish the current
+selection or its ownership receipts. Bind any stronger memo to the complete
+native selection authority and cover retargeting, replacement and corrupted
+receipts. Fresh native product resolution remains required for acceptance.
+
+### Stable userspace ABI and durable computer upgrades
+
+The product direction is to prioritize a supported stable userspace ABI so
+saved computers, including user-compiled programs, can survive application
+releases without an archive of every previous kernel and host build. The
+initial ABI-55 baseline and frozen-program test gates are implemented; the
+complete supported upgrade path is not.
+The user approved shipping persistence and its UX first with a prominent
+release-bound storage warning. Transactional upgrades and long-lived executable
+compatibility are follow-up work, not implemented first-release guarantees.
+Agree on the supported baseline and upgrade design before changing admission
+policy. Current admission binds programs to both the
+program ABI version and its program-surface snapshot digest; kernel-host-only
+changes no longer invalidate that digest. Even compatible additions to the
+program surface can still require rebuilt programs under exact-digest admission.
+Choose an explicit supported baseline and compatibility scope rather than
+promising to revive every historical prototype ABI.
+
+The [persistent-program compatibility contract](persistent-program-compatibility.md)
+records the implemented format checks and opt-in original-Wasm retention and
+re-preparation prototype, along with the remaining transactional-upgrade gates.
+The current iteration replaces packaged binaries rather than preparing them at
+runtime. User-built forking programs may require rebuilding; their unfinished
+instrumentation contract is not promised stable. Automatic preparation and
+mandatory original retention are not current release requirements.
+
+The future stage accepts uninstrumented user programs, prepares on demand and
+retains protected originals associated with their executable identity and
+permissions. An incompatible fork-contract upgrade restores the original and
+invalidates derived instrumentation, then prepares again on next use. Eager
+preparation is optional. Do not expose execute-only originals through a public
+directory, discard user edits, or confuse this prototype with an implemented
+automatic upgrade path.
+
+Define independently versioned compatibility boundaries for persistent disk
+formats, the userspace ABI, fork instrumentation and loader requirements, and
+the kernel-host adapter. Build provenance should remain verifiable without
+being confused with a proven incompatible interface. Do not simply remove
+the current digest check or relabel incompatible binaries. Establish a
+compatibility test corpus of released programs and supported transitions
+before admitting them under a new policy.
+
+For packaged software, investigate explicit crash-safe upgrade transactions:
+stage verified replacements, reconcile configuration and package ownership,
+atomically commit the new system state, and retain rollback until verification.
+Preserve user data and make application-specific database migrations explicit.
+Quiesce affected processes before activation. If a migration changes data,
+rollback needs the matching data state, not merely the old executable files;
+do not advertise a safe rollback after an irreversible schema change.
+An immutable foundation plus writable state is worth comparing with
+package-owned updates, but a transparent whole-root overlay does not repair
+an executable ABI mismatch. Whiteouts, modified system files, hard links,
+configuration merges, and database schema changes need a defined policy.
+The existing persistent journal is bound to its base image and inode/block
+identities; it is not a package-level overlay that can safely be replayed on
+an arbitrary replacement foundation. Keep those checks. Prefer evaluating
+filesystem-level package operations against the current disk before adding a
+new root-layer/rebase mechanism with its own identity and merge semantics.
+
+Upgrade acceptance also needs a same-origin reopen test across two real app
+builds, not just a page refresh of one build. Saved descriptors and lazy
+package references must not become unusable when the app's hashed asset
+names or product map change. A stable ABI alone cannot recover an unfetched
+archive that its publisher has removed. Define retention for immutable
+package artifacts, local materialization, or an explicit managed-package
+upgrade before claiming long-lived availability or offline support. Test
+previously fetched and never-fetched programs independently, and preserve
+user-modified files rather than silently treating them as replaceable packages.
+
+Separating guest web previews onto another origin protects a browser trust
+boundary; it does not make old image-supplied privileged host scripts safe
+to run on the storage-owning application origin. Loading archived runtimes
+would add maintenance and trust obligations and is not the preferred design.
+Incompatibility must never silently reset or delete a saved computer.
 
 ### Model semantic ABI transitions in Rust-owned machine-readable data
 
@@ -41,7 +190,59 @@ upstream POSIX/man-page licensing and source roles, decide which pages are
 generated versus imported, and add a basic `man` smoke test in Node and the
 browser product that ships them.
 
+### Separate source-only contracts from artifact resolution
+
+Release-inventory review found otherwise source-testable contracts whose
+import closures reach the binary resolver, sometimes through type-only
+imports or repository-path helpers. The protected source-only checker
+correctly refuses those closures; classifying the tests as prepared
+preserves coverage but unnecessarily couples them to artifact provisioning.
+
+Extract artifact-independent types/models and repository-path helpers
+from artifact-resolution modules where appropriate. Reclassify only after
+the canonical import guard and isolated source-only run pass; do not weaken
+the guard or treat a mocked call as removal of an imported dependency.
+Current examples include destroy-progress subscriptions, kernel-realm
+destruction, and session demo-config/gallery/tracked-demo contracts.
+The WebMCP launch test also retains a stale erased type import from the
+removed session `gallery` module. Prepared classification keeps that test
+enabled but does not repair the type path; resolve it during contract/test
+maintenance before restoring source-only admission.
+
+### Detect source and ABI changes during long build plans earlier
+
+Persistence development exposed late failures when a running source-only
+build plan outlived changes to its kernel inputs or ABI snapshot. The snapshot
+participates in library/program cache identities; a source edit can also
+invalidate a documentation package's kernel prerequisite. A plan that was
+valid when started can therefore finish substantial independent compilation
+before rejecting its prerequisite or final program-authority receipts.
+
+Consider an explicit immutable input snapshot or an early input-change check
+before scheduling further nodes and publishing the projection. Report the
+changed contract and preserve valid completed cache entries for a fresh plan.
+Do not bypass provenance checks, restamp stale sealed packages or silently
+mix projections to salvage the old plan. Separately evaluate whether any
+cache-key granularity can safely distinguish guest and host ABI additions;
+that requires compatibility evidence, not just a desire to avoid rebuilding.
+Observation timeouts alone are not evidence that a build stopped or needs
+replacement.
+
 ## Kernel
+
+### Define generic noexec mount policy before exposing it
+
+The source/prepared-image exec audit confirms that the current mount-flag
+contract declares `ST_NOSUID`, but no `ST_NOEXEC` flag or generic noexec
+admission policy. Keeping mount metadata unchanged is not enforcement of a
+policy the kernel does not implement. Do not describe noexec as supported.
+
+If noexec mounts are introduced, resolve policy from the actual retained
+source backend for pathname exec, saved-descriptor exec and spawn. A procfs
+executable link or derived image's storage mount is not source authority.
+Check the policy before spawn file actions and revalidate it before commit.
+Add Node/browser tests and treat any program-visible constants or behavior
+as an explicit supported-ABI decision, not a paired-executable workaround.
 
 ### Close the remaining epoll completeness gaps
 
@@ -90,6 +291,399 @@ capacity edges, close/shutdown, one-shot rearming, exclusive waits, and cleanup.
 Also validate an actual mio consumer once Kandelo target selection is added;
 direct syscall probes alone do not establish that integration. Update the
 behavior matrix and support status only after the corresponding evidence.
+
+### Complete privileged inspection of kernel-generated virtual file bytes
+
+The bounded file-read audit reproduces an existing host-inspection gap:
+`readFileFromVfs("/proc/mounts")` returns `null` on the minimal checked-image
+fixture even though native namespace stat recognizes procfs. The Rust
+`inspect_namespace_read_file` dispatches bytes to tmpfs, rootfs or a foreign
+host handle, but does not dispatch procfs to its existing native renderer.
+Guest procfs reads have a separate implementation; this is not evidence that
+guest reads fail or that procfs content should be stored in OPFS.
+
+Complete that native dispatch and test host inspection against the same
+authoritative virtual content as guest reads on Node and browser. Do not
+synthesize procfs strings in TypeScript or treat a zero stat size as EOF:
+generated files can produce nonempty content. Preserve ordinary-file bounds,
+resource errors and namespace permissions. The bounded collector has separate
+zero-size-hint and short-read coverage; that does not close this dispatch gap.
+
+### Finish general resource admission and lifecycle hardening
+
+The persistence memory audit exposed broader kernel and host ownership work.
+These findings are not prerequisites for an OPFS byte-storage adapter or for
+the next persistent WordPress checkpoint. They remain relevant to the broader
+whole-system memory acceptance gate in [the persistence plan](persistence-plan.md).
+This inventory records unfinished work, not demonstrated failures in every
+listed path or a claim that existing admission limits bound total memory.
+
+- **Packaged sudo versus demo account policy.** An ABI-54 in-memory WordPress
+  control reaches a normal maker shell, but upstream sudo reports that maker
+  is not in sudoers after stdin authentication. Inspect the actual passwd,
+  group, sudoers and effective/supplementary credentials before attributing
+  this to the image, libc or kernel. The sudo-lite fixture is a different
+  program and cannot establish the upstream package's behavior. Do not grant
+  passwordless access or change guest policy just to collect test logs; use
+  the existing read-only Internals VFS inspector for diagnostics. This is an
+  independent follow-up, not evidence of OPFS corruption or an established
+  security vulnerability.
+- **WebKit native memory reservation recovery.** The mixed persistent
+  WordPress workload reached native constructor exhaustion even with the
+  host's byte admission enabled. A final synchronous allocation attempt in
+  the kernel realm then stopped independent worker-message delivery; private
+  instrumentation placed the stall inside that attempt, after completed
+  filesystem operations. Keep native construction in disposable workers and
+  propagate refusal instead of retrying in the kernel realm. Investigate
+  retired shared-memory wrappers and engine reservation accounting separately:
+  modeled live bytes do not prove that JavaScriptCore can construct another
+  memory. Do not raise ceilings, rely on finalizers for correctness, or report
+  an allocation refusal as an OPFS corruption failure. After removing the
+  fallback, normal three-engine post/upload recovery passes, but both larger
+  WebKit workloads fail during guest mutations with process allocation errors.
+  Sustained application acceptance is still open; returning a failure instead
+  of stalling does not close native reservation recovery.
+  The [native construction controls](measurements/2026-10-23-webkit-memory-construction.md)
+  now reproduce reservation refusal without OPFS or substantial resident
+  payload. Direct owner allocation passes that control and two real WebKit
+  application workloads. The 1.33 source candidate removes factory selection
+  after a separate read-only ownership review. Its rebuilt three-engine mixed
+  workloads and both constrained-profile WebKit workloads pass, along with
+  600 fork/exec churn cycles. Public 1.32 still uses the factory; 1.33 uses
+  canonical construction. These scoped results do not promise a portable
+  native allocation or collection deadline. Review
+  earlier native-collection stalls and ownership before release; smaller
+  ceilings merely postpone the synthetic failure.
+  The [ABI 54 follow-up](measurements/2026-10-25-abi54-persistence-acceptance.md#liveness-follow-up-and-remaining-scope)
+  captures a different post-maintenance HTTP failure while the latest memory
+  constructor has completed and the kernel still answers independent echoes.
+  Correlate guest-worker launch/exit and request progress before attributing
+  a later stall to the earlier constructor hypothesis. Keep browser process
+  ownership checks strict when native stack sampling cannot identify its target.
+- **Resident nonpersistent file data.** Rootfs `Regular(Vec<u8>)` payloads
+  grow through fallible `try_reserve` in `grow_file_bytes`, but are not charged
+  to the shared storage-I/O ledger used by persistent caches and export plans.
+  Include their retained capacity and growth overlap in the general resource
+  accounting audit. This applies to nonpersistent roots and private image
+  builder modifications, not persistent journal-backed file payloads. The
+  composer now bounds patch-text inputs and configured-asset intake; those
+  host intake limits do not establish native-wide file-data admission or
+  aggregate process-memory acceptance. Preserve the distinction between an
+  input limit, a memory budget and logical filesystem capacity.
+- **Artifact metadata admission.** ABI marker reads no longer copy every
+  function body; focused allocation regressions cover that removal. Full
+  artifact-fact catalogs still retain signature, import/export and name
+  collections. Shared signatures cloned for many imports can amplify a small
+  input, so input/output byte caps are not an aggregate heap bound. Audit
+  fallible metadata admission across ordinary artifact consumers separately
+  from filesystem cache bounds. The new automatic-preparation service must
+  use bounded checks or impose metadata admission before exposure; that is
+  part of its release gate, not permission to defer its own work budget.
+  Preparation binding now has a bounded scalar/index reader, including nested
+  type-count, compact-import and ABI-operator quotas. Native tests deny every
+  valid-input catalog allocation and check scalar refusal. The pinned parser's
+  malformed-input diagnostics still construct an infallible String/Box; the
+  accounting allowance is not an allocator reservation. Preserve this separate
+  failure-containment/fallible-diagnostic work, rather than claiming that a
+  passing valid-input allocator probe covers all malformed-input OOM paths.
+  The general ABI/thread-marker reader also still uses an allocating operator
+  control stack for its selected body; removing unrelated-body copies did not
+  bound that stack. Preparation uses a separate metered SDK-getter grammar.
+  Keep ordinary marker/catalog hardening separate from filesystem cache bounds.
+- **Signal queues and handler state.** Process and thread signal queues,
+  mask-wait stacks and returned-handler-depth arrays retain ordinary heap
+  collections. Prepare capacity before changing a mask or consuming a pending
+  signal. Reserve any completion/return storage before accepting the work that
+  will need it; handler return must not discover an allocation requirement after
+  changing handler depth. Preserve standard-signal coalescing, queued metadata,
+  real-time signal ordering and timer notification ownership. Trace each
+  caller's refusal/retry behavior rather than treating allocation failure as
+  successful delivery or a silently dropped signal.
+- **Epoll allocation admission after main convergence.** Main's ABI 51/52
+  epoll engine adds nested interests, source snapshots, fairness and parked
+  wait leases. Persistence retains that implementation and its existing heap
+  allocation model rather than substituting the prototype's older bounded
+  epoll engine. Filesystem-cache pressure must not change its readiness or
+  signal-mask semantics. Audit these new collections, deep-copy overlap and
+  failure ordering separately before claiming whole-system memory bounds;
+  the earlier prototype's allocation-refusal test is not proof for main's
+  different engine. Preserve main's full epoll behavior matrix during that
+  audit. Persistent block-cache bounds do not establish epoll memory bounds.
+- **Wait and wake delivery.** Wait-source arrays, sleeper records and returned
+  wake/cancellation cohorts need an ownership and allocation-order audit.
+  Cancellation, process teardown and readiness delivery should consume already
+  prepared storage or stream results, rather than needing a fresh allocation
+  after retiring the authoritative waiter. Preserve execution-generation
+  identity, exactly-once completion and retry-target pin release across exec,
+  exit, timeout and cancellation. This is distinct from moving host parking
+  policy into Rust; neither change should hide or lose a wakeup.
+  Main's ABI-54 native wait engine adds `wait_park` maps, completion storage
+  and retirement cohorts that still need that broader accounting review.
+  Its Rust ownership does not itself establish aggregate memory admission.
+  Preserve native generation checks and process retirement while auditing
+  those collections; filesystem payload admission is a separate contract.
+- **Timed asynchronous subscriptions.** Repeatedly racing the same pending
+  promise against a timeout does not remove the losing promise reactions.
+  A slow but healthy operation can therefore retain one callback cohort for
+  every timed retry until it finally settles. Audit other long-lived retry
+  and cancellation paths for this ownership pattern. Persistent deferred reads
+  now use a shared settlement signal with admitted, removable wait listeners;
+  that fix does not prove other queues are bounded. Require actual listener
+  removal and timer cleanup on timeout as well as successful completion, and
+  test many retries against an operation that intentionally stays pending.
+- **Terminal input.** Canonical line and cooked-input buffers still use ordinary
+  byte vectors. Define truthful admission/backpressure before consuming input
+  or producing irreversible echo/control effects. Preserve termios processing
+  and retry behavior; replacing the container alone does not establish safety.
+- **Host retention and retirement.** Inventory worker/channel registries,
+  pending callbacks, timers, transport buffers and retained typed-array views.
+  Tie release to the actual last owner and execution generation, including
+  partial startup and failed shutdown. A view or AudioWorklet can retain an
+  entire Wasm backing after the nominal machine owner is gone; a missing detach
+  acknowledgement must not be mistaken for successful retirement. Demand-driven
+  audio setup is a candidate to avoid unused owners, not proof that detach or
+  same-page reboot is correct.
+  Audit suspended async activations too: clearing an owner's descriptor field
+  does not establish release if a pending function still holds its argument
+  or local view across an unresolved await. Defer acquiring a backing until
+  the awaited prerequisite settles, and keep thin public wrappers synchronous
+  when they can directly return an owned promise. Preserve synchronous
+  activation/error semantics and terminal late-completion checks; do not use
+  presumed engine optimization of dead locals as the release proof.
+- **Guest-address versus kernel-memory growth.** The channel `mmap` dispatcher
+  and `kernel_brk` still call `ensure_memory_covers`, which grows memory index
+  zero of the kernel module, while the host separately grows the process's
+  memory. Audit the remaining direct-call assumptions before removing this
+  legacy coupling. A guest address is not a kernel allocation requirement;
+  test ordinary and fixed maps, remap, brk, direct import paths and failure
+  rollback with separate kernel/process page measurements. No memory saving
+  or performance improvement is established by this source observation alone.
+- **Stage VM growth before authoritative mutation.** The storage-mapping
+  work adds rollback for nonfixed `mmap` when process-memory growth fails.
+  Audit `brk` and `mremap` for the same ordering: a host allocation failure
+  after a Rust VM change must not leave the guest observing an error while
+  authoritative address-space state has changed. Fixed-map pre-growth also
+  cannot undo the physical memory growth when later preparation refuses.
+  Prefer explicit preparation/commit ownership and test genuine engine
+  allocation failure, not only logical-budget rejection. These are remaining
+  audit questions, not evidence that generic VM rollback is complete.
+- **Aggregate evidence.** Shared admission credits are not measured resident
+  memory. Count retained capacity, old/new growth overlap, nested payloads,
+  allocator overhead and host/engine reservations without double-counting
+  aliases. Charging an inline process-table node does not charge its nested
+  queues. Measure simultaneous Node/browser process-tree peaks during actual
+  workloads before claiming whole-system bounds; kernel page counts alone
+  cannot establish that claim.
+
+Validate refusal before publication, preservation of accepted work, retry after
+reclaim and final-owner release. Include forced allocation failure at lifecycle
+boundaries and Node/browser integration, not only container unit tests.
+File-backed mapping snapshots, dirty-byte coherence and persistence transport
+buffers remain directly storage-related; their work stays in the persistence
+plan rather than being deferred by this general-hardening inventory.
+
+**Files:** `crates/runtime-core/src/signal.rs`,
+`crates/runtime-core/src/process.rs`, `crates/runtime-core/src/terminal.rs`,
+`crates/runtime-core/src/wait_queue.rs`, `host/src/kernel-worker.ts`,
+`host/src/worker-main.ts`, `host/src/runtime-memory-profile.ts`
+
+### Apply partial-failure lessons across kernel subsystems
+
+Mapped-file writeback exposed two useful audit patterns: retrying an old
+whole-page buffer can overwrite a newer descriptor write, and comparing
+only the latest file size can miss a shrink followed by regrowth. The
+broader follow-up is to audit similar ownership and retry boundaries in
+queues, transports and lifecycle transitions. These are audit questions,
+not evidence that those other subsystems have the same defects.
+
+- **Record accepted progress before another fallible step.** A short write
+  or partially delivered batch must retire exactly the accepted prefix.
+  Retry only unfinished work; do not replay completed effects or replace
+  newer state with a stale snapshot. Test failure after partial success,
+  an intervening update by another owner, and then retry.
+- **Preserve destructive transitions, not just final state.** Equal sizes
+  or a changed generation number do not describe which bytes or resources
+  became invalid. Record invalidation when it happens, before later growth
+  or reuse can hide it. Audit truncate/regrow, exec, identifier reuse and
+  cancellation boundaries for stale references and delayed completions.
+- **Prepare the failure and completion paths too.** Reserve bookkeeping
+  before accepting work or publishing ownership. Cleanup, cancellation
+  and retry must not require a new allocation merely to discover pending
+  work or release a pin. Prefer bounded scratch space and streaming walks
+  where a temporary collection could fail after authoritative mutation.
+- **Track provisional owners through cleanup.** Register a resource as
+  soon as it is acquired, before an awaited validation or final publication
+  can fail. An empty active-owner field does not prove provisional handles
+  were closed. A logged close failure must remain an explicit unproven
+  obligation; later cleanup must not acknowledge success merely because
+  the original wrapper was forgotten. Audit worker construction, file
+  handles and callback registration for the same ownership gap.
+- **Stop admission and drain creators before final closure.** An operation
+  awaiting a resource can acquire it after shutdown starts. Mark retirement
+  before awaiting anything, reject new work, and account for already
+  accepted operations until their resources are closed or their cleanup
+  failure is retained. Closing only the currently published owners is not
+  enough. Audit asynchronous worker startup, transport setup and device
+  attachment; test shutdown while acquisition is still pending.
+- **Bind retirement evidence to the exact owner.** A startup error is not
+  proof that resource cleanup finished, and requesting worker termination
+  is not a storage-close acknowledgement. Associate completion with the
+  worker and execution generation that own the resources. Reject stale,
+  malformed, failed or missing acknowledgements rather than releasing
+  exclusive ownership on a timeout. Define separately what an explicit
+  recovery procedure can safely do when closure remains unproven.
+- **Recheck cleanup failures after callbacks finish.** Reentrant cleanup
+  or a callback that catches an inner close error can create a new failure
+  during the cleanup sweep. Preserve that failure and check it after all
+  close attempts, not only before the sweep. A later no-op or repeated
+  cleanup call must not turn an unproven close into success. Include
+  swallowed errors, nested cleanup and late acquisition in lifecycle tests.
+- **Test physical allocation failure as well as budget refusal.** An
+  admission credit is not an allocation guarantee. Exercise both cuts,
+  old/new allocation overlap, rollback before publication, and successful
+  retry after reclaim. Repeated startup failure, shutdown and same-page
+  reboot should also verify final-owner release on Node and each browser
+  engine; a passing logical counter alone does not prove memory release.
+
+The remaining storage-specific ownership work stays in the
+[persistence plan](persistence-plan.md); this cross-system audit must not
+become a new prerequisite for delivering the persistent demo.
+
+The storage-specific implementation and regression examples are
+`host/src/storage-close-ledger.ts`, `host/test/storage-close-ledger.test.ts`
+and `apps/browser-demos/test/fixed-rootfs-persistence.spec.ts`. Use them as
+starting points for the broader audit, not as evidence that unrelated
+subsystems already satisfy these rules.
+
+### Separate durable host installs from ordinary filesystem writeback
+
+Completed `writeFileToVfs` calls on both hosts sync through Rust before their
+success response. This fixes cached suffixes disappearing on immediate refresh,
+but it is a rootfs-wide durability fence and not atomic replacement. A worker
+interrupted before acknowledgment can leave a partial destination. An asset
+installer that trusts existence alone can subsequently mistake it for a complete
+install. Audit profile assets, activity dependencies, exchanges, editor uploads,
+and other host-fed file publication boundaries separately from guest POSIX
+`write`/`close` semantics.
+
+Prefer a Rust-owned atomic publication path: bounded writes to an unpublished
+inode or same-filesystem staging file, a data durability fence, atomic rename,
+and durable namespace publication before acknowledgment. Failed or cancelled
+installs must not replace a good destination; restart must distinguish unfinished
+staging from published data. Group related installs behind an explicit batch
+fence instead of removing the final fence or syncing every guest write. Preserve
+Node/browser parity, error propagation, quota admission and bounded staging.
+
+Ordinary writeback still needs evaluation of bounded dirty-age/group-commit
+policy so idle dirty files do not depend solely on eviction or application
+sync. Such a policy bounds the loss window, not absolute durability for every
+successful `write`; `fsync`/`fdatasync`/`sync` must remain explicit fences.
+Measure journal transaction counts, flush latency, foreground syscall stalls,
+and complete application throughput before changing batching or cache budgets.
+
+Dedicated host storage workers are an experiment, not an assumed speedup.
+They may own positioned byte I/O, but Rust must retain cache, journal, recovery
+and commit-order authority; process workers must not open OPFS. Forwarding a
+synchronous read to another worker still stalls its calling kernel unless the
+pipeline changes, and adds queue/wakeup costs. Any asynchronous design needs
+bounded in-flight buffers, ordered durable acknowledgments, cancellation and
+shutdown fences, and fault tests across worker death and quota exhaustion.
+Profile first to separate I/O wait from Rust bookkeeping and transaction cost.
+
+### Separate audio activation from kernel-memory attachment
+
+The browser eagerly prepares an AudioWorklet with the kernel's shared PCM
+memory even when no guest opens `/dev/dsp`; global user gestures resume it.
+Checkpoint 1.16 shell traces confirm zero stream generation and empty cursors
+on transports whose retirement later fails. Consider separating a trusted
+gesture's audio-context unlock from attaching the kernel buffer on actual
+guest audio demand. Preserve automatic later playback and explicit audio API
+behavior; an unused guest stream is not evidence that an already-attached
+worklet released its memory.
+
+In five repeated WebKit shell checkpoints, the context reports running while
+its clock remains zero. An immediate real-suspension diagnostic also fails
+all five checkpoints, so changing suspension order alone is not a proven fix.
+Fresh-context worklet lifecycle cases pass on Chromium and WebKit and do not
+explain the full application failure. Trace actual processor construction,
+message delivery and memory release before changing retirement policy. Keep
+missing detach acknowledgements visible; do not replace them with elapsed
+time, a suspended context, or an assumed absence of audio activity.
+
+A private actual-module diagnostic narrows this further: the processor is
+constructed, but its render callback never runs and its shared detach witness
+remains unset at 50, 500 and 900 ms. The real detach handler eventually runs
+near the existing one-second deadline. Suspending the context before posting
+detach also fails all three repetitions. This is not merely a late main-thread
+acknowledgement, and neither suspension ordering nor a small shared witness
+is a proven retirement fix. These observations concern the existing eager
+attachment in the real shell application; they do not establish a general
+WebKit audio limit or justify changing the filesystem's durability contract.
+
+The checkpoint 1.18 combined application run reproduces the shell detach
+failure after it did not occur in 1.17. Do not count the intervening passing
+run as a diagnosed fix. Its separate WebKit mixed WordPress workload stalls
+after content and alias comparison, before completing the inode `stat`
+command substitutions. The new failure capture includes the active journal
+and its activation controls, not just the checkpoint base. Strict native
+recovery and real Bash metadata commands succeed against those captured
+bytes on Node without changing the original capture. This narrows the
+investigation but does not prove WebKit process execution correct or connect
+that stall to PCM retirement. Keep both failures visible in release evidence.
+An isolated WebKit kernel subsequently runs the captured current state and
+the actual metadata commands successfully too, using the application's normal
+lazy-asset mapping. Investigate the full application's services, concurrent
+work and lifecycle history rather than assuming that this passing isolated
+run diagnoses the stall or establishes correct release behavior.
+
+The subsequent demand-driven host candidate separates context activation from
+worklet transport attachment. It avoids creating an unused kernel-memory owner,
+but does not establish reliable detach for an already attached, nonprocessing
+WebKit worklet. Retain that distinction in future audio work. Pending module
+preparation now has bounded shutdown and terminal late completion; that targeted
+ownership fix does not prove all other host promises or queues are bounded.
+
+### Exercise synchronous process-worker construction failure
+
+A private boot-measurement fixture accidentally changes a kernel worker's URL
+base to a blob URL. Its process-worker constructor then rejects the normal
+root-relative asset URL before the guest starts. The subsequent cleanup logs
+that it retains pid 100's exact process-memory registration because unregister
+would re-enter an active kernel export. The fixture is corrected to preserve
+the original worker URL; no production persistence change is needed for that
+measurement error, and no escaping registration leak is established.
+
+Keep the general failure path as future lifecycle hardening: inject a
+synchronous process-worker constructor exception, prove terminal spawn failure,
+and verify deferred unregister and exact inherited-resource reclamation after
+the original kernel entry closes. Exercise both hosts where applicable. Retain
+ownership until that proof exists rather than declaring a reentrant cleanup
+successful. This is not an OPFS persistence prerequisite or a diagnosis of the
+earlier WordPress failures.
+
+### Propagate worker message-deserialization failures
+
+Read-only lifecycle review found that the browser process-worker adapter
+forwards ordinary messages and worker errors but not `messageerror`.
+The child entry likewise has no initial-message deserialization handler.
+If posting initialization succeeds but the receiving endpoint cannot
+deserialize it, initialization may never start and the fork replay gate
+can remain pending without a terminal launch result.
+
+Route deserialization failures on both endpoints through the existing
+launch-failure/cancellation path. Preserve fork rollback, completion of the
+parent's pending syscall with an error, and release of inherited pipe/file
+references. Add endpoint fault-injection regressions, including failure
+before initialization begins, rather than substituting a longer timeout
+or synthesizing successful readiness.
+
+This is a statically identified missing failure path, not a confirmed cause
+of the intermittent WebKit persistence-workload stall. Keep it separate
+from storage-format work unless a reproduction reaches that path.
+
+**Files:** `host/src/worker-adapter-browser.ts`,
+`host/src/worker-entry-browser.ts`, `host/src/fork-replay-gate.ts`,
+`host/src/browser-kernel-worker-entry.ts`
 
 ### `sys_openat` duplicates `sys_open` logic
 `sys_openat` reimplements umask application, file type determination, creation flag stripping, and O_CLOEXEC handling rather than sharing code with `sys_open`. Consider extracting a shared internal helper or implementing `sys_open` as `sys_openat(proc, host, AT_FDCWD, path, oflags, mode)`.
@@ -187,6 +781,14 @@ should sit behind an explicitly documented input-device boundary, and
 what the correct behavior is for non-VT consumers. Any change must keep
 existing Linux-VT guests working and preserve Node/browser parity.
 
+A Firefox Doom save/quit regression also observed a released MEDIUMRAW key
+byte (`0xc4`, F10 release) reaching the restored interactive shell and prefixing
+its next command after Doom exited on the key press. The fixture clears the
+pending input line with Ctrl+U before probing that shell's exit status. Audit
+display-owner transitions and outstanding key releases so a frame's input
+cannot become command-line bytes after termios restoration. This observation
+does not establish a browser defect and is separate from filesystem durability.
+
 **Files:** `crates/runtime-core/src/syscalls.rs` (VT keyboard ioctls),
 `host/src/framebuffer/browser-controls.ts`
 (`encodeLinuxMediumRawKeyCode`), `crates/shared/src/ioctl_contract.rs`,
@@ -217,6 +819,25 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 **Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
 
 ## Browser
+
+### Verify served bytes when validating frozen preview artifacts
+
+`injectCorsProxyConfig` in `apps/browser-demos/vite.config.ts` intentionally
+serves a source-derived service worker in local preview so its CORS relay
+configuration follows the preview origin. Hashing a frozen output directory
+therefore does not, by itself, prove the actual service-worker response bytes.
+Other preview middleware can also consume a request before a later diagnostic
+plugin sees it. A persistence diagnostic reproduced that exact distinction:
+its kernel-worker probe was served but its service-worker probe was absent.
+
+Add a generic preview-fidelity check that records the served service worker
+and representative worker responses, including declared runtime substitutions,
+and checks diagnostic installation with a healthy request/reply control.
+An explicit immutable-artifact preview mode could serve emitted worker bytes
+while leaving ordinary local CORS-relay behavior intact. Do not silently
+remove preview's intentional proxy support or equate a directory hash audit
+with an HTTP-response audit. This is test/deployment fidelity work, not a
+filesystem durability guarantee.
 
 ### Investigate the WebKit fbDOOM WAD-drop failure
 The test that is now `apps/browser-demos/test/kandelo-doom-exchange.spec.ts`
@@ -472,6 +1093,18 @@ already does for its database directory.
 
 **Files:** `images/vfs/scripts/opcache-prewarm.ts`, the PHP image builders
 
+### Compare WordPress REST upload request paths
+
+Checkpoint 1.34 profiling observes a valid browser-generated PNG submitted
+as REST multipart form data returning HTTP 400 with
+`rest_upload_image_type_not_supported`, while the existing tested raw
+`image/png` POST with `Content-Disposition` succeeds. Real media-library UI
+uploads also have passing coverage. This is an observed request-path
+discrepancy, not evidence of filesystem corruption or a diagnosed parser bug.
+Retain a comparison of multipart and raw REST uploads before changing PHP,
+HTTP transport or file-type policy; do not weaken image validation to hide it.
+See the [profiling evidence](measurements/2026-10-23-wordpress-persisted-navigation.md).
+
 ### Define compatibility for restored lazy VFS images
 
 Kandelo currently rebuilds and publishes canonical VFS images for the current
@@ -608,6 +1241,74 @@ PR #383 (`fix(kernel): share AF_INET accept queue across fork — nginx multi-wo
 **Files:** `apps/browser-demos/lib/*-client.ts`, anything calling `BrowserKernel.injectConnection`. Convention: store `this.pid = 0` (or import `GLOBAL_PIPE_PID = 0`) for all pipe ops on injected pipes.
 
 ## Host runtime
+
+### Contain initial scanout context acquisition failures
+
+A user reported `OffscreenCanvas.getContext: Cannot update created context
+to different thread` while replacing ScummVM's launcher with Beneath a Steel
+Sky. The exception escaped `tryAttachKmsGlCanvas` through the kernel's host
+import and failed the kernel worker; a subsequent Freeciv launch repeated
+that already-failed kernel's error, not an independent Freeciv failure or
+evidence of persistence corruption.
+
+A standalone page reproduces repeated same-worker context-acquisition
+failure on installed Firefox 159, while bundled Firefox 155 does not. The
+canvas-owned acquisition cache avoids that repeated call; the reproduction,
+controls and removal criteria are in
+`tests/runtime-workarounds/FIREFOX-OFFSCREEN-CONTEXT-REACQUISITION/`.
+Sender collection was not established as a cause. Passing bundled-browser
+tests did not establish installed-browser behavior.
+
+Initial acquisition can still fail independently of that workaround. A host canvas
+exception should produce an honest guest-visible context-creation failure,
+not abort unrelated processes. The current host context-creation import
+returns no status; changing that contract requires coordinated Rust/host ABI
+work, not swallowing the exception and pretending EGL succeeded. Include
+error-injection tests and same-kernel application replacement coverage.
+
+### Preserve receipts for deferred Playwright storage cleanup
+
+A persistence acceptance run can finish while another Playwright WebKit
+browser remains alive. The conservative teardown then retains its storage
+instead of sweeping a live browser's files. Persist the exact run-owned root
+and staging-file inventory/identities when deferring, and include the retained
+root in the warning, so a later no-browser/no-open-descriptor pass can safely
+reclaim it. Do not infer ownership solely from a filename prefix or age, and
+do not turn missing receipts into permission to sweep global WebKit storage.
+This is test-runner housekeeping, not a filesystem durability guarantee.
+
+### Await TLS record writes before closing their streams
+
+ScummVM game-download and activity-replacement coverage exposed Chromium
+page errors saying `Cannot write to a CLOSED writable stream`, independently
+of the Firefox canvas failure. The stack reaches the vendored browser TLS
+implementation's `writeTLSRecord`: its final
+`clientDownstreamWriter.write(record)` promise is not awaited or returned.
+The caller can therefore finish encryption before the stream write settles,
+and a rejected write is not observed by its surrounding async operation.
+
+Preserve write ordering and backpressure through record emission, handle
+shutdown while encryption is pending, and retire stream owners explicitly.
+Add deterministic deferred-write/close tests. Do not suppress browser page
+errors in activity tests or treat an error-free game render as proof that
+the download's asynchronous owners finished successfully.
+
+**Files:** `packages/registry/openssl/src/tls/1_2/connection.ts`,
+`host/src/networking/tls-network-backend.ts`.
+
+### Honor listener backlog and define accept preparation headroom
+
+The persistent WordPress investigation exposed contention between injected
+HTTP sockets and other ordinary kernel I/O owners. Host admission and
+token-scoped cancellation bound the supported host HTTP path; they do not
+make arbitrary guest socket pressure infallible. `listen` still does not
+enforce the requested backlog, and preparing an accepted socket's descriptor
+and backing can fail before dequeue when ordinary admission is exhausted.
+Define queue admission and failure/retry semantics through the ordinary
+socket implementation, with accept-wins/cancel-wins and descriptor-preparation
+failure tests. Do not hide the problem by globally raising I/O limits or
+adding a guessed reserve. This is broader socket hardening, not another
+requirement for the OPFS byte adapter or permission to lose accepted ownership.
 
 ### Complete SpiderMonkey nonblocking TLS cancellation and write ordering
 
@@ -797,6 +1498,108 @@ in the meantime.
 **Related:** PR #423 (commit `fa9f579f6 feat(php): make opcache fully load opcache.so + survive PASS_6`) for the original root-cause analysis.
 
 ## Testing
+
+### Restore the Doom network-invitation smoke test
+
+The persistence follow-up's Chromium smoke test
+`kandelo-network-session.spec.ts` ("Doom's package offer acquires a WAD from
+bare shell and sends it to the player over WebRTC") currently fails before
+joining. The host link decodes to a complete `fbdoom` offer, but after the
+recipient opens the link, closes the invitation to inspect its terminal, and
+reopens the network dialog, the dialog says "Shared network · no activity
+selected" instead of showing the Deathmatch/E1M2 metadata. A fresh run with an
+explicit decoded-offer publication barrier reproduces it. File transfer and
+multiplayer startup are therefore not validated by that case.
+
+Trace invitation ownership across computer creation, terminal inspection and
+dialog reopening; establish whether the test's navigation sequence still
+matches the intended UI contract before changing production behavior. Keep
+the real guest-process, settings and peer-transfer assertions rather than
+removing them or treating a plain network invitation as an activity invite.
+The separate persistent Doom save/load, WAD recovery and WAD exchange tests
+pass in Chromium, Firefox and WebKit; they do not cover this invitation flow.
+
+Evidence: `.context/persistent-homes-network-final-output` and agent job
+`persistent-homes-final-validation-1029-154717-c4f4`. This observation is not
+attributed to a browser engine or the storage backend.
+
+### Avoid repeated unrelated program-index regeneration on source-checkout boot
+
+The ABI-55 persistence comparison finds a real developer-workflow cost in
+Node's automatic default-rootfs selection. Preferring the current registry
+rootfs over a possibly stale packaged alias enters `withFreshProgramIndexes`,
+which regenerates/checks the complete source program projection on every
+lookup. Three phase observations spend 2.05–2.52 seconds resolving that image;
+explicit-image initialization takes 252–265 ms instead of 2.22–2.32 seconds.
+Guest hello execution remains about 90–97 ms. This is not OPFS read latency,
+but it must not be called a neutral default-boot change.
+
+Teach resolution to prove the selected current generation without repeatedly
+rebuilding unrelated registry context. Preserve ordered-registry precedence,
+complete package closures, source/ABI identity, member hashes and refusals of
+present-but-invalid artifacts. Reverting to the older alias, caching a path
+forever, suppressing provenance checks or bypassing the normal resolver in
+benchmarks is not an acceptable fix. Existing synchronous freshness boundaries
+can batch callers, but an asynchronous operation must not borrow a global
+boundary after its scope has ended. Add mutation, replacement and stale-index
+controls before accepting any memoization. The current persistent-image paths
+use explicit installed images and do not require this development-only source
+projection step. See the ABI-55 persistence acceptance record for retained
+full-suite comparisons and phase attribution.
+
+### Freeze prepared product projections during acceptance
+
+The ABI-55 persistence batch overlaps its Node/conformance consumers with
+normal browser-product preparation. One resolver correctly rejects a lamp
+member whose new file size no longer matches the metadata captured by that
+consumer; another stops because the registry changes during projection
+generation. Neither is evidence of a guest filesystem failure, but both
+invalidate an otherwise expensive acceptance batch. Normal Vitest setup
+also legitimately replaces private SDK-helper outputs with its own
+source/toolchain-fingerprinted recipe, so an earlier helper-only hash list
+cannot remain authoritative for those paths.
+
+Provision first, record each fixture's actual builder and freeze product
+identities before starting consumers. Consider a reader lease or immutable
+generation-root capture so a running consumer can retain a verified closure
+while another build publishes a new projection. Keep the current size,
+content, ABI and single-provenance-tier checks; do not resolve this by mixing
+generations, accepting stale metadata or retrying guest operations. Source
+and artifact receipts must distinguish declaration-only host checking from
+`npm run build`, which actually replaces the JavaScript worker bundles.
+
+### Avoid redundant native debug builds in prepared-product setup
+
+The host global setup still invokes `cargo run -p xtask` even when a matching
+release tool is already supplied through `WASM_POSIX_XTASK_BIN`. During a
+persistence acceptance run, default debug information and incremental outputs
+exhausted the remaining disk before tests started. Prefer a verified prepared
+tool and retain a canonical build fallback with an explicit resource profile.
+Environment exports in a child builder do not propagate back to the parent
+validation script; the resource profile must cover the actual setup process.
+This is build/test hardening, not an OPFS filesystem completion prerequisite.
+
+### Reclaim deferred run-owned WebKit storage safely
+
+Current teardown deliberately skips cleanup while any Playwright WebKit is
+alive. Concurrent runs can therefore leave an owned home after its original
+runner exits, and the PID ownership guard correctly prevents a new process
+from claiming it. Add a recorded deferred-cleanup handoff with process-death,
+file-identity and closed-descriptor checks, without weakening live-run or
+global-store protections. Do not rewrite ownership records or sweep the user's
+existing WebKit store to compensate for a skipped teardown.
+
+### Type-check browser and host test fixtures before running them
+
+The browser app TypeScript project includes `lib` and `pages`, not Playwright
+tests; the host project similarly includes `src`, not Vitest fixtures.
+Transpilation alone can therefore admit a test that calls a nonexistent
+runtime method. A persistence recovery fixture exposed this with a misspelled
+shutdown-ownership query, wasting a browser cohort and masking earlier errors
+inside cleanup. Add dedicated no-emit test projects with the appropriate
+Node/browser/test-runner types and run their checks before expensive suites.
+Keep production emit roots separate and retain real browser validation;
+type checking cannot prove storage closure or recovery behavior.
 
 ### Browser-host vitest parity via `@vitest/browser`
 Today's host test coverage is asymmetric: `host/test/*.test.ts` runs 56 vitest files against the Node host (kernel worker, NodeKernelHost, NodePlatformIO, syscall behavior, dlopen, mmap, fork via worker_threads), but the browser host is exercised only by:

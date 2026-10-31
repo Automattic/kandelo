@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { nativeForkFixtureMemoryAllowances } from "./fixtures/native-fork-memory-authorities";
 import {
   auditWasmMemoryWrites,
   formatAuditFailures,
@@ -41,6 +42,92 @@ function auditVirtual(
 }
 
 describe("WebAssembly memory write audit", () => {
+  it("keeps native compiler-fixture authority classifications exact and single-site", () => {
+    const sourcePath = "scripts/check-fork-memory-artifact.ts";
+    const allowance = nativeForkFixtureMemoryAllowances.find((entry) =>
+      entry.key.startsWith(`${sourcePath}::<module>::wasm-memory-authority::`),
+    );
+    expect(allowance).toBeDefined();
+    const expression = allowance!.key.split("::wasm-memory-authority::")[1]!;
+    const source = `const memory = ${expression};`;
+    const options = (text: string) => ({
+      ...virtualAuditOptions({ [sourcePath]: text }, [], [allowance!]),
+      auditWasmAuthorityOrigins: true,
+    });
+    expect(formatAuditFailures(auditWasmMemoryWrites(options(source)))).toEqual([]);
+    for (const extra of [
+      source,
+      "const extra = new WebAssembly.Memory({ initial: 1 });",
+    ]) {
+      const result = auditWasmMemoryWrites(options(`${source}\n${extra}`));
+      expect(
+        result.violations.filter((finding) => finding.kind === "wasm-memory-authority"),
+      ).toHaveLength(1);
+      expect(result.unusedAllowances).toEqual([]);
+    }
+    const changed = auditWasmMemoryWrites(
+      options(source.replace("initial: 256", "initial: 257")),
+    );
+    expect(
+      changed.violations.some((finding) => finding.kind === "wasm-memory-authority"),
+    ).toBe(true);
+    expect(changed.unusedAllowances).toEqual([allowance]);
+  });
+
+  it("tracks classified object-property authorities without admitting unbound expressions", () => {
+    const sources = {
+      "authority.ts": `
+        declare const module: WebAssembly.Module;
+        declare const projectedModule: WebAssembly.Module;
+        const owners = {
+          memory: new WebAssembly.Memory({ initial: 1 }),
+          instance: new WebAssembly.Instance(module),
+          projectedMemory: new WebAssembly.Instance(projectedModule).exports.memory,
+        };
+        new Uint8Array(owners.memory.buffer).set(new Uint8Array(1));
+        new Uint8Array(owners.instance.exports.memory.buffer).set(new Uint8Array(1));
+        new Uint8Array(owners.projectedMemory.buffer).set(new Uint8Array(1));
+      `,
+    };
+    const options = {
+      ...virtualAuditOptions(sources, []),
+      auditWasmAuthorityOrigins: true,
+    };
+    const origins = auditWasmMemoryWrites(options).findings.filter((finding) =>
+      finding.kind === "wasm-memory-authority" || finding.kind === "wasm-instance-authority",
+    );
+    expect(origins).toHaveLength(3);
+    const allowances: AuditAllowance[] = origins.map((finding) => ({
+      key: finding.key,
+      disposition: "kernel-control",
+      authorityOwner: "kernel",
+      why: "Each exact object property owns a kernel authority whose writes must remain visible.",
+    }));
+    const result = auditWasmMemoryWrites({ ...options, allowances });
+    expect(result.contractErrors).toEqual([]);
+    expect(result.unusedAllowances).toEqual([]);
+    expect(
+      result.violations.filter((finding) => finding.kind === "kernel-write"),
+    ).toHaveLength(3);
+    const unboundOptions = {
+      ...virtualAuditOptions({
+        "unbound.ts": "consume(new WebAssembly.Memory({ initial: 1 }));",
+      }, []),
+      auditWasmAuthorityOrigins: true,
+    };
+    const unboundOrigin = auditWasmMemoryWrites(unboundOptions).findings.find((finding) =>
+      finding.kind === "wasm-memory-authority",
+    );
+    expect(unboundOrigin).toBeDefined();
+    const unboundResult = auditWasmMemoryWrites({
+      ...unboundOptions,
+      allowances: [{ ...allowances[0]!, key: unboundOrigin!.key }],
+    });
+    expect(unboundResult.contractErrors).toContain(
+      `authority origin has no stable binding: ${unboundOrigin!.key}`,
+    );
+  });
+
   it("requires exact owner classifications and seeds the classified origin", () => {
     const sources = {
       "kernel.ts": `

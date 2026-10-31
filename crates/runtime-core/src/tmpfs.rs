@@ -1,5 +1,5 @@
 //! In-kernel tmpfs backing Kandelo's scratch mounts (`/tmp`, `/var/tmp`,
-//! `/var/log`, `/var/run`, `/home/maker`, `/root`, `/srv`, `/dev/shm`).
+//! `/var/log`, `/var/run`, `/dev/shm`).
 //!
 //! The portable Rust kernel core, not the TypeScript host, is the filesystem
 //! authority for these mounts, so Node and browser hosts share one
@@ -118,9 +118,6 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     ScratchMount { prefix: b"/var/tmp", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 1, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     ScratchMount { prefix: b"/var/log", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 2, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     ScratchMount { prefix: b"/var/run", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 3, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/home/maker", mode: 0o755, uid: 1000, gid: 1000, st_dev: TMPFS_DEV_BASE + 4, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/root", mode: 0o700, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 5, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
-    ScratchMount { prefix: b"/srv", mode: 0o755, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 6, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // POSIX shared memory. Sticky and world-writable like `/tmp`, and served
     // here for the same reason: the kernel owns `/` and every other scratch
     // prefix, so `/dev/shm` is tmpfs like the rest. `MAP_SHARED` mappings of
@@ -128,7 +125,7 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
     // coherent by the kernel's shared-mapping table
     // (`memory::SharedMappingTable`), which pins the inode (`pin_mapping`) and
     // watches its content generation (`content_generation`).
-    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 7, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
+    ScratchMount { prefix: b"/dev/shm", mode: 0o1777, uid: 0, gid: 0, st_dev: TMPFS_DEV_BASE + 4, magic: TMPFS_MAGIC, layout: NO_LAYOUT, byte_limit: None },
     // Kandelo exchange (`crate::exchange`): files moving into and out of the
     // machine. Kernel-owned; the host mounts nothing here.
     ScratchMount {
@@ -136,7 +133,7 @@ const SCRATCH_MOUNTS: &[ScratchMount] = &[
         mode: 0o755,
         uid: 0,
         gid: 0,
-        st_dev: TMPFS_DEV_BASE + 8,
+        st_dev: TMPFS_DEV_BASE + 5,
         magic: crate::exchange::FS_MAGIC,
         layout: EXCHANGE_LAYOUT,
         byte_limit: Some(crate::exchange::DEFAULT_BYTE_LIMIT),
@@ -892,6 +889,11 @@ pub fn open(path: &[u8], flags: u32, mode: u32, uid: u32, gid: u32) -> Result<i6
         }
         state.get_mut(inode_idx).ok_or(Errno::ENOENT)?.open_count += 1;
         Ok(inode_to_file_handle(inode_idx))
+    }).map(|handle| {
+        if flags & O_TRUNC != 0 && flags & O_ACCMODE != O_RDONLY {
+            crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, 0);
+        }
+        handle
     })
 }
 
@@ -1257,6 +1259,12 @@ fn grow_file_bytes(data: &mut Vec<u8>, new_len: usize, err: Errno) -> Result<(),
 /// Truncate an open tmpfs regular file to `length`, zero-filling any growth.
 /// The caller enforces access mode and RLIMIT_FSIZE.
 pub fn truncate_handle(handle: i64, length: i64) -> Result<(), Errno> {
+    truncate_handle_inner(handle, length)?;
+    crate::kernel_file_mapping::notify_truncated(crate::ofd::FileType::Regular, handle, length as u64);
+    Ok(())
+}
+
+fn truncate_handle_inner(handle: i64, length: i64) -> Result<(), Errno> {
     let idx = file_handle_to_inode(handle)?;
     let new_len = usize::try_from(length).map_err(|_| Errno::EINVAL)?;
     TMPFS.with(|state| {
@@ -1586,6 +1594,16 @@ pub fn mknod_special(
 /// memory, not a fixed reservation), so free-space precondition checks pass.
 pub fn statfs(path: &[u8]) -> Result<WasmStatfs, Errno> {
     let (mount_idx, _) = match_mount(path).ok_or(Errno::ENOENT)?;
+    statfs_for_mount(mount_idx)
+}
+
+pub fn fstatfs(handle: i64) -> Result<WasmStatfs, Errno> {
+    let stat = fstat(handle)?;
+    let mount_idx = SCRATCH_MOUNTS.iter().position(|mount| mount.st_dev == stat.st_dev).ok_or(Errno::EBADF)?;
+    statfs_for_mount(mount_idx)
+}
+
+fn statfs_for_mount(mount_idx: usize) -> Result<WasmStatfs, Errno> {
     let (used, limit) = TMPFS.with(|state| (state.mount_bytes[mount_idx], state.byte_limits[mount_idx]));
     // A limited mount reports its real capacity and use, so ENOSPC reads as
     // what `df` shows; others report a nominal 1 GiB.
@@ -2387,7 +2405,9 @@ mod tests {
         assert!(owns_path(b"/tmp"));
         assert!(owns_path(b"/tmp/a"));
         assert!(owns_path(b"/var/run/nginx.pid"));
-        assert!(owns_path(b"/home/maker/x"));
+        assert!(!owns_path(b"/home/maker/x"));
+        assert!(!owns_path(b"/root/settings"));
+        assert!(!owns_path(b"/srv/site"));
         assert!(!owns_path(b"/tmpfoo")); // prefix must be a path boundary
         assert!(!owns_path(b"/usr/bin/sh"));
         assert!(!owns_path(b"/var")); // /var itself is not a scratch mount
@@ -2419,34 +2439,12 @@ mod tests {
     }
 
     #[test]
-    fn the_canonical_maker_home_is_writable_and_owned_by_the_maker() {
-        // PORTED from a browser spec (since removed) that asserted this of a
-        // host-side TypeScript filesystem the browser resolver used to build
-        // for `/home/maker`. The kernel owns that prefix, so the spec was
-        // asserting against a mount that no longer exists.
-        //
-        // The claim is a product one: a default profile writes into the maker
-        // home, so the home must exist, be writable, and belong to the maker
-        // rather than to root.
-        let st = lstat(b"/home/maker").unwrap();
-        assert_eq!(st.st_mode & S_IFMT, S_IFDIR);
-        assert_eq!(st.st_mode & 0o7777, 0o755);
-        assert_eq!(st.st_uid, 1000, "the maker's home, not root's");
-        assert_eq!(st.st_gid, 1000);
-
-        let p = b"/home/maker/profile.txt";
-        let h = open(p, O_CREAT | O_RDWR, 0o644, 1000, 1000).unwrap();
-        assert_eq!(write(h, 0, b"maker browser profile").unwrap(), 21);
-        assert_eq!(read_all(h), b"maker browser profile");
-        let st = lstat(p).unwrap();
-        assert_eq!(st.st_uid, 1000, "a file the maker created is the maker's");
-        assert_eq!(st.st_gid, 1000);
-        assert!(release_handle(h));
-
-        // NOT VACUOUS: `/home` itself is not a scratch mount, so the home is
-        // the mount and not an incidental directory under one.
-        assert!(!owns_path(b"/home"));
-        assert!(owns_path(b"/home/maker"));
+    fn homes_and_service_data_are_not_hidden_by_scratch_mounts() {
+        for path in [b"/home/maker".as_slice(), b"/root", b"/srv"] {
+            assert!(!owns_path(path));
+            assert!(matches!(lstat(path), Err(Errno::ENOENT)));
+            assert!(crate::rootfs::owns_path(path));
+        }
     }
 
     #[test]
@@ -2738,12 +2736,12 @@ mod tests {
 
     #[test]
     fn mkdir_and_readdir() {
-        mkdir(b"/srv/d", 0o755, 0, 0).unwrap();
-        let a = open(b"/srv/d/a", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
+        mkdir(b"/tmp/readdir-d", 0o755, 0, 0).unwrap();
+        let a = open(b"/tmp/readdir-d/a", O_CREAT | O_RDWR, 0o644, 0, 0).unwrap();
         release_handle(a);
-        mkdir(b"/srv/d/sub", 0o755, 0, 0).unwrap();
+        mkdir(b"/tmp/readdir-d/sub", 0o755, 0, 0).unwrap();
 
-        let dh = opendir(b"/srv/d").unwrap();
+        let dh = opendir(b"/tmp/readdir-d").unwrap();
         let mut names: Vec<Vec<u8>> = Vec::new();
         let mut namebuf = [0u8; 256];
         while let Some((_ino, _dt, n)) = readdir(dh, &mut namebuf).unwrap() {
@@ -2754,7 +2752,7 @@ mod tests {
         assert_eq!(names, alloc::vec![b"a".to_vec(), b"sub".to_vec()]);
 
         // Parent gained a link from the subdirectory's `..`.
-        let st = lstat(b"/srv/d").unwrap();
+        let st = lstat(b"/tmp/readdir-d").unwrap();
         assert_eq!(st.st_nlink, 3); // self + `.` + sub/..
     }
 
@@ -2810,9 +2808,9 @@ mod tests {
 
     #[test]
     fn opening_a_directory_as_file_is_eisdir() {
-        mkdir(b"/root/adir", 0o755, 0, 0).unwrap();
+        mkdir(b"/tmp/open-directory-adir", 0o755, 0, 0).unwrap();
         assert_eq!(
-            open(b"/root/adir", O_RDONLY, 0, 0, 0).unwrap_err(),
+            open(b"/tmp/open-directory-adir", O_RDONLY, 0, 0, 0).unwrap_err(),
             Errno::EISDIR
         );
     }

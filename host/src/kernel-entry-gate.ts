@@ -134,6 +134,7 @@ export function invokeKernelEntryScopedOperation<T>(
   scope: KernelVoidIngressScope,
   expectedInstance: WebAssembly.Instance,
   operation: () => T,
+  beforeInvoke?: () => void,
 ): T {
   const scopeRecord = intrinsicApply(
     intrinsicWeakMapGet,
@@ -155,6 +156,9 @@ export function invokeKernelEntryScopedOperation<T>(
     throw new IntrinsicError(
       "kernel void-ingress scope does not own the supplied operation",
     );
+  }
+  if (beforeInvoke !== undefined) {
+    scopeRecord.invokeSerializedHostOperation(beforeInvoke);
   }
   return scopeRecord.invoke(operation);
 }

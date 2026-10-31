@@ -50,14 +50,14 @@ function runCredentialProbe(overrides: Record<string, string | undefined>) {
 
 describe("run-example initial credentials", () => {
   it("starts the guest with the requested real and effective IDs", () => {
-    const result = runCredentialProbe({ KERNEL_UID: "1000", KERNEL_GID: "1001" });
+    const result = runCredentialProbe({ KERNEL_UID: "1000", KERNEL_GID: "1001", KANDELO_RUNNER_BUILTINS: "explicit" });
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("uid=1000 euid=1000 gid=1001 egid=1001");
   });
 
   it("leaves an omitted credential at the kernel default", () => {
-    const result = runCredentialProbe({ KERNEL_UID: "2000" });
+    const result = runCredentialProbe({ KERNEL_UID: "2000", KANDELO_RUNNER_BUILTINS: "explicit" });
 
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("uid=2000 euid=2000 gid=0 egid=0");
@@ -67,6 +67,7 @@ describe("run-example initial credentials", () => {
     const result = runCredentialProbe({
       KERNEL_UID: "4294967294",
       KERNEL_GID: "4294967294",
+      KANDELO_RUNNER_BUILTINS: "explicit",
     });
 
     expect(result.status, result.stderr).toBe(0);

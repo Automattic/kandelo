@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use wasm_posix_shared::WasmStat;
@@ -8,7 +7,10 @@ use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::Errno;
 
 use crate::lock::{FileId, OfdId};
+use crate::io_buffer::IoBuffer;
+use crate::metadata_budget::{MetadataBudget, MetadataReservation};
 use crate::ofd::{FileType, SharedOfdState};
+use crate::prepared_map::{MapMemory, PreparedEntry, PreparedMap};
 
 /// POSIX default pipe capacity.
 pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
@@ -23,14 +25,29 @@ pub enum FifoOpenSide {
     Writer,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct FifoOpenWaiter {
     pub side: FifoOpenSide,
     pub path: Vec<u8>,
     pub status_flags: u32,
     pub fd_flags: u32,
     pub reserved_fd: i32,
+    pub(crate) prepared_descriptor: Option<crate::process::PreparedDescriptor>,
     ready: bool,
+    _path_reservation: MetadataReservation<'static>,
+}
+
+impl MapMemory for FifoOpenWaiter {
+    fn heap_bytes(&self) -> Result<usize, Errno> { Ok(0) }
+}
+
+pub(crate) struct PreparedFifoOpen(PreparedEntry<u64, FifoOpenWaiter>);
+
+impl PreparedFifoOpen {
+    pub(crate) fn bind_descriptor(&mut self, prepared: crate::process::PreparedDescriptor) {
+        assert_eq!(prepared.fd(), self.0.value().reserved_fd);
+        self.0.value_mut().prepared_descriptor = Some(prepared);
+    }
 }
 
 /// The exact global-pipe reference owned by one pipe OFD.
@@ -61,7 +78,7 @@ pub struct InFlightFd {
     /// Scalar fields above remain validated reconstruction metadata; current
     /// offset/status/owner values come from this handle at receive time.
     shared_state: SharedOfdState,
-    pub path: Vec<u8>,
+    pub path: crate::ofd::OfdPath,
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
     pub pipe_ref_kind: Option<InFlightPipeRefKind>,
@@ -74,7 +91,31 @@ pub struct InFlightFd {
     owns_reference: bool,
 }
 
+pub type AncillaryFds = IoBuffer<InFlightFd>;
+
+impl IoBuffer<InFlightFd> {
+    pub fn try_clone_retained(&self) -> Result<Self, Errno> {
+        let mut cloned = Self::try_with_capacity(self.len())?;
+        for entry in self { cloned.push(entry.try_clone_retained()?); }
+        Ok(cloned)
+    }
+}
+
+pub trait IntoAncillaryFds {
+    fn into_ancillary(self) -> Result<AncillaryFds, Errno>;
+}
+
+impl IntoAncillaryFds for AncillaryFds {
+    fn into_ancillary(self) -> Result<AncillaryFds, Errno> { Ok(self) }
+}
+
+#[cfg(test)]
+impl IntoAncillaryFds for Vec<InFlightFd> {
+    fn into_ancillary(self) -> Result<AncillaryFds, Errno> { IoBuffer::try_adopt(self) }
+}
+
 impl InFlightFd {
+    #[cfg(test)]
     pub fn new(
         ofd_id: OfdId,
         file_id: Option<FileId>,
@@ -82,7 +123,7 @@ impl InFlightFd {
         status_flags: u32,
         host_handle: i64,
         offset: i64,
-        path: Vec<u8>,
+        path: impl AsRef<[u8]>,
     ) -> Self {
         let shared_state = SharedOfdState::new(status_flags, offset, 0);
         Self::new_with_shared_state(
@@ -92,7 +133,7 @@ impl InFlightFd {
             status_flags,
             host_handle,
             offset,
-            path,
+            crate::ofd::OfdPath::copy_from(path.as_ref()).unwrap(),
             shared_state,
         )
     }
@@ -104,7 +145,7 @@ impl InFlightFd {
         status_flags: u32,
         host_handle: i64,
         offset: i64,
-        path: Vec<u8>,
+        path: crate::ofd::OfdPath,
         shared_state: SharedOfdState,
     ) -> Self {
         Self {
@@ -189,10 +230,7 @@ impl InFlightFd {
     /// resource pressure returns an errno instead of panicking after the
     /// caller has observed a partial ancillary result.
     pub fn try_clone_retained(&self) -> Result<Self, Errno> {
-        let mut path = Vec::new();
-        path.try_reserve_exact(self.path.len())
-            .map_err(|_| Errno::ENOMEM)?;
-        path.extend_from_slice(&self.path);
+        let path = self.path.clone();
         let mut cloned = Self {
             ofd_id: self.ofd_id,
             file_id: self.file_id,
@@ -227,7 +265,9 @@ impl Drop for InFlightFd {
             return;
         }
         self.owns_reference = false;
-        crate::ofd::release_in_flight_ofd(self.ofd_id);
+        if crate::ofd::release_in_flight_ofd(self.ofd_id) {
+            crate::ofd::note_possibly_orphaned_ofd_locks();
+        }
         enqueue_deferred_in_flight_release(self.release_metadata());
     }
 }
@@ -247,11 +287,13 @@ pub struct DeferredInFlightFdRelease {
     pub prime_bo_id: Option<u32>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[must_use]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ReleasedInFlightFd {
     pub ofd_id: OfdId,
     pub final_ofd_reference: bool,
     pub host_close: Option<i64>,
+    pub secondary_host_close: Option<i64>,
     /// Bo reference the caller must drop, destroying host backing at zero.
     pub prime_bo_id: Option<u32>,
 }
@@ -263,14 +305,14 @@ pub struct ReleasedInFlightFd {
 struct StreamAncillary {
     start: u64,
     end: u64,
-    fds: Vec<InFlightFd>,
+    fds: AncillaryFds,
 }
 
 /// Result of one message-aware stream read.
 pub struct PipeMessageRead {
     pub bytes_read: usize,
     pub hit_ancillary_barrier: bool,
-    pub ancillary_fds: Option<Vec<InFlightFd>>,
+    pub ancillary_fds: Option<AncillaryFds>,
 }
 
 /// Result of a stream read that cannot return ancillary data.
@@ -280,7 +322,7 @@ pub struct PipePlainRead {
 }
 
 struct DeferredInFlightReleaseQueue {
-    records: Vec<DeferredInFlightFdRelease>,
+    records: IoBuffer<DeferredInFlightFdRelease>,
     /// Capacity promised to live `InFlightFd` values whose destructor may
     /// enqueue one record. Reserving before ownership is acquired keeps Drop
     /// allocation-free and prevents allocation failure during cleanup.
@@ -296,27 +338,42 @@ static DEFERRED_IN_FLIGHT_RELEASES: DeferredInFlightReleases =
 fn deferred_in_flight_releases() -> &'static mut DeferredInFlightReleaseQueue {
     let slot = unsafe { &mut *DEFERRED_IN_FLIGHT_RELEASES.0.get() };
     slot.get_or_insert_with(|| DeferredInFlightReleaseQueue {
-        records: Vec::new(),
+        records: IoBuffer::new(),
         reserved: 0,
     })
 }
 
 fn reserve_deferred_in_flight_release() -> Result<(), Errno> {
     let queue = deferred_in_flight_releases();
-    if queue.records.capacity() - queue.records.len() <= queue.reserved {
-        queue
-            .records
-            .try_reserve(queue.reserved.checked_add(1).ok_or(Errno::EOVERFLOW)?)
-            .map_err(|_| Errno::ENOMEM)?;
+    queue.reserve()
+}
+
+impl DeferredInFlightReleaseQueue {
+    fn reserve(&mut self) -> Result<(), Errno> {
+        let required = self.records.len().checked_add(self.reserved)
+            .and_then(|count| count.checked_add(1)).ok_or(Errno::EOVERFLOW)?;
+        if required > self.records.capacity() {
+            let capacity = required.max(self.records.capacity().saturating_mul(2));
+            self.records.reserve_with(capacity, |records| {
+                records.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)
+            })?;
+        }
+        self.reserved += 1;
+        Ok(())
     }
-    queue.reserved += 1;
-    Ok(())
+
+    fn reclaim_empty(&mut self) {
+        if self.reserved == 0 && self.records.is_empty() {
+            self.records = IoBuffer::new_in(self.records.budget());
+        }
+    }
 }
 
 fn cancel_deferred_in_flight_release() {
     let queue = deferred_in_flight_releases();
     debug_assert!(queue.reserved > 0);
     queue.reserved = queue.reserved.saturating_sub(1);
+    queue.reclaim_empty();
 }
 
 fn enqueue_deferred_in_flight_release(release: DeferredInFlightFdRelease) {
@@ -328,7 +385,10 @@ fn enqueue_deferred_in_flight_release(release: DeferredInFlightFdRelease) {
 }
 
 pub fn pop_deferred_in_flight_release() -> Option<DeferredInFlightFdRelease> {
-    deferred_in_flight_releases().records.pop()
+    let queue = deferred_in_flight_releases();
+    let release = queue.records.pop();
+    queue.reclaim_empty();
+    release
 }
 
 /// Return whether an ownership drop still needs its outer resource cleanup.
@@ -359,10 +419,10 @@ fn retain_in_flight_resource(release: DeferredInFlightFdRelease) -> Result<(), E
         FileType::Regular | FileType::Directory | FileType::CharDevice
             if release.host_handle >= 0 =>
         {
-            crate::ofd::host_handle_fork_ref(release.host_handle);
+            crate::ofd::host_handle_fork_ref(release.host_handle)?;
         }
         FileType::Pipe if release.host_handle >= 0 => {
-            crate::ofd::host_handle_fork_ref(release.host_handle);
+            crate::ofd::host_handle_fork_ref(release.host_handle)?;
         }
         FileType::Pipe => {
             let pipe_idx = (-(release.host_handle + 1)) as usize;
@@ -411,10 +471,12 @@ pub fn release_deferred_in_flight_resource(
 ) -> ReleasedInFlightFd {
     let mut final_ofd_reference = false;
     let mut host_close = None;
+    let mut secondary_host_close = None;
 
     if crate::descriptor_backing::manages_ofd(release.file_type, release.host_handle) {
-        final_ofd_reference =
-            crate::descriptor_backing::release_for_ofd(release.file_type, release.host_handle);
+        let effects = crate::descriptor_backing::release_for_ofd_effects(release.file_type, release.host_handle);
+        final_ofd_reference = effects.final_ofd_reference;
+        [host_close, secondary_host_close] = effects.into_host_closes();
     } else {
         match release.file_type {
             FileType::Regular | FileType::Directory | FileType::CharDevice
@@ -473,6 +535,7 @@ pub fn release_deferred_in_flight_resource(
         ofd_id: release.ofd_id,
         final_ofd_reference,
         host_close,
+        secondary_host_close,
         prime_bo_id: release.prime_bo_id,
     }
 }
@@ -487,6 +550,10 @@ pub fn release_deferred_in_flight_resource(
 /// cross-process pipe sharing (e.g., after fork).
 pub struct PipeBuffer {
     buf: Vec<u8>,
+    capacity: usize,
+    fifo_buffer_reservation: Option<MetadataReservation<'static>>,
+    #[cfg(test)]
+    fail_fifo_buffer_allocation: bool,
     head: usize,
     tail: usize,
     len: usize,
@@ -536,7 +603,7 @@ pub struct PipeBuffer {
     /// arrives. Keys combine pid and guest thread id. Reserving the endpoint
     /// prevents the counterpart from returning into an apparent zero-reader
     /// or zero-writer pipe before this thread gets scheduled again.
-    fifo_open_waiters: BTreeMap<u64, FifoOpenWaiter>,
+    fifo_open_waiters: PreparedMap<u64, FifoOpenWaiter>,
     /// SCM_RIGHTS batches attached to exact stream byte ranges.
     ///
     /// WHY: a detached FIFO of descriptor batches can deliver rights while
@@ -544,7 +611,7 @@ pub struct PipeBuffer {
     /// consumes their carrier. The byte range makes each sendmsg an
     /// explicit receive barrier and keeps ordinary reads and peeks coherent.
     /// Absolute positions avoid walking every later record on each read.
-    ancillary_fds: VecDeque<StreamAncillary>,
+    ancillary_fds: crate::io_buffer::IoDeque<StreamAncillary>,
     /// Writes fail with EPERM: the writer declared the stream finished
     /// (a published Kandelo exchange stream's `user.kandelo.end`).
     write_sealed: bool,
@@ -678,11 +745,24 @@ impl PipeBuffer {
     }
 
     /// Create a new pipe buffer with the given capacity.
+    #[cfg(test)]
     pub fn new(capacity: usize) -> Self {
-        let mut buf = Vec::new();
-        buf.resize(capacity, 0u8);
+        Self::try_new(capacity).unwrap()
+    }
+
+    pub fn try_new(capacity: usize) -> Result<Self, Errno> {
+        let mut pipe = Self::empty(capacity);
+        pipe.prepare_buffer_with_budget(&crate::io_buffer::IO_MEMORY)?;
+        Ok(pipe)
+    }
+
+    fn empty(capacity: usize) -> Self {
         PipeBuffer {
-            buf,
+            buf: Vec::new(),
+            capacity,
+            fifo_buffer_reservation: None,
+            #[cfg(test)]
+            fail_fifo_buffer_allocation: false,
             head: 0,
             tail: 0,
             len: 0,
@@ -705,8 +785,8 @@ impl PipeBuffer {
             fifo_names: 0,
             fifo_path_refs: 0,
             fifo_metadata: None,
-            fifo_open_waiters: BTreeMap::new(),
-            ancillary_fds: VecDeque::new(),
+            fifo_open_waiters: PreparedMap::default(),
+            ancillary_fds: crate::io_buffer::IoDeque::new(),
             write_sealed: false,
             read_error: 0,
             writes_finished: false,
@@ -716,7 +796,7 @@ impl PipeBuffer {
     /// Create a FIFO backing buffer with no endpoints open yet. Endpoints are
     /// attached as processes `open()` the FIFO by path (see `crate::fifo`).
     pub fn new_fifo(capacity: usize, metadata: WasmStat) -> Self {
-        let mut pipe = Self::new(capacity);
+        let mut pipe = Self::empty(capacity);
         pipe.read_count = 0;
         pipe.write_count = 0;
         pipe.is_fifo = true;
@@ -724,6 +804,44 @@ impl PipeBuffer {
         pipe.fifo_metadata = Some(metadata);
         pipe
     }
+
+    pub(crate) fn prepare_fifo_io(&mut self) -> Result<(), Errno> {
+        self.prepare_fifo_io_with_budget(&crate::io_buffer::IO_MEMORY)
+    }
+
+    fn prepare_fifo_io_with_budget(&mut self, budget: &'static MetadataBudget) -> Result<(), Errno> {
+        if !self.is_fifo || self.fifo_buffer_reservation.is_some() { return Ok(()); }
+        self.prepare_buffer_with_budget(budget)
+    }
+
+    fn prepare_buffer_with_budget(&mut self, budget: &'static MetadataBudget) -> Result<(), Errno> {
+        let mut reservation = budget.reserve(self.capacity.checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        #[cfg(test)]
+        if core::mem::take(&mut self.fail_fifo_buffer_allocation) { return Err(Errno::ENOMEM); }
+        let mut buffer = Vec::new();
+        buffer.try_reserve_exact(self.capacity).map_err(|_| Errno::ENOMEM)?;
+        buffer.resize(self.capacity, 0);
+        reservation.resize(buffer.capacity().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        self.buf = buffer;
+        self.fifo_buffer_reservation = Some(reservation);
+        Ok(())
+    }
+
+    pub(crate) fn release_fifo_buffer_if_idle(&mut self) {
+        if self.is_fifo && self.read_count == 0 && self.write_count == 0 {
+            debug_assert_eq!(self.len, 0);
+            self.buf = Vec::new();
+            self.fifo_buffer_reservation = None;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_next_fifo_buffer_allocation(&mut self) {
+        self.fail_fifo_buffer_allocation = true;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn resident_buffer_bytes(&self) -> usize { self.buf.capacity() }
 
     /// True if this pipe backs a named FIFO.
     pub fn is_fifo(&self) -> bool {
@@ -868,32 +986,78 @@ impl PipeBuffer {
         self.close_reference(kind);
     }
 
+    #[cfg(test)]
     pub fn reserve_fifo_open(
         &mut self,
         owner: u64,
         side: FifoOpenSide,
-        path: Vec<u8>,
+        path: &[u8],
         status_flags: u32,
         fd_flags: u32,
         reserved_fd: i32,
-    ) -> bool {
+    ) -> Result<(), Errno> {
+        self.reserve_fifo_open_with_budget(owner, side, path, status_flags, fd_flags, reserved_fd, &crate::io_buffer::IO_MEMORY)
+    }
+
+    #[cfg(test)]
+    fn reserve_fifo_open_with_budget(
+        &mut self, owner: u64, side: FifoOpenSide, path: &[u8], status_flags: u32,
+        fd_flags: u32, reserved_fd: i32, budget: &'static MetadataBudget,
+    ) -> Result<(), Errno> {
+        let prepared = self.prepare_fifo_open_with_budget(owner, side, path, status_flags, fd_flags, reserved_fd, budget)?;
+        self.publish_fifo_open_reservation(prepared);
+        Ok(())
+    }
+
+    pub(crate) fn prepare_fifo_open(
+        &mut self, owner: u64, side: FifoOpenSide, path: &[u8], status_flags: u32,
+        fd_flags: u32, reserved_fd: i32,
+    ) -> Result<PreparedFifoOpen, Errno> {
+        self.prepare_fifo_open_with_budget(owner, side, path, status_flags, fd_flags, reserved_fd, &crate::io_buffer::IO_MEMORY)
+    }
+
+    fn prepare_fifo_open_with_budget(
+        &mut self,
+        owner: u64,
+        side: FifoOpenSide,
+        path: &[u8],
+        status_flags: u32,
+        fd_flags: u32,
+        reserved_fd: i32,
+        budget: &'static MetadataBudget,
+    ) -> Result<PreparedFifoOpen, Errno> {
         debug_assert!(self.is_fifo);
         if self.fifo_open_waiters.contains_key(&owner) {
-            return false;
+            return Err(Errno::EIO);
         }
-        self.fifo_open_waiters.insert(
+        let node_reservation = PreparedEntry::<u64, FifoOpenWaiter>::reserve_in(budget, 0)?;
+        let mut path_reservation = budget.reserve(path.len().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        let mut owned_path = Vec::new();
+        owned_path.try_reserve_exact(path.len()).map_err(|_| Errno::ENOMEM)?;
+        owned_path.extend_from_slice(path);
+        path_reservation.resize(owned_path.capacity().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        let prepared = PreparedEntry::new_reserved_in(
+            budget,
             owner,
             FifoOpenWaiter {
                 side,
-                path,
+                path: owned_path,
                 status_flags,
                 fd_flags,
                 reserved_fd,
+                prepared_descriptor: None,
                 ready: false,
+                _path_reservation: path_reservation,
             },
-        );
+            node_reservation,
+        )?;
+        Ok(PreparedFifoOpen(prepared))
+    }
+
+    pub(crate) fn publish_fifo_open_reservation(&mut self, prepared: PreparedFifoOpen) {
+        let side = prepared.0.value().side;
+        self.fifo_open_waiters.insert_prepared(prepared.0);
         self.add_fifo_endpoint_ref(side);
-        true
     }
 
     /// Add an endpoint ref before the caller's fd allocation. This ref makes
@@ -920,20 +1084,20 @@ impl PipeBuffer {
                     // blocked reader ready but before that reader resumed.
                     self.fifo_read_hangup = true;
                 }
-                for waiter in self.fifo_open_waiters.values_mut() {
+                self.fifo_open_waiters.for_each_mut(|waiter| {
                     if waiter.side == FifoOpenSide::Writer {
                         waiter.ready = true;
                     }
-                }
+                });
             }
             FifoOpenSide::Writer => {
                 self.fifo_writer_ever_opened = true;
                 self.fifo_read_hangup = false;
-                for waiter in self.fifo_open_waiters.values_mut() {
+                self.fifo_open_waiters.for_each_mut(|waiter| {
                     if waiter.side == FifoOpenSide::Reader {
                         waiter.ready = true;
                     }
-                }
+                });
             }
         }
     }
@@ -942,9 +1106,9 @@ impl PipeBuffer {
         debug_assert!(self.is_fifo);
         self.fifo_writer_ever_opened = true;
         self.fifo_read_hangup = false;
-        for waiter in self.fifo_open_waiters.values_mut() {
+        self.fifo_open_waiters.for_each_mut(|waiter| {
             waiter.ready = true;
-        }
+        });
     }
 
     pub fn inherit_fifo_read_only(&mut self) {
@@ -969,12 +1133,12 @@ impl PipeBuffer {
     /// it): the opened writers then see no reader, so they get EPIPE.
     pub fn release_fifo_open_waiters(&mut self, side: FifoOpenSide) {
         let mut released = false;
-        for waiter in self.fifo_open_waiters.values_mut() {
+        self.fifo_open_waiters.for_each_mut(|waiter| {
             if waiter.side == side && !waiter.ready {
                 waiter.ready = true;
                 released = true;
             }
-        }
+        });
         if released {
             crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
         }
@@ -988,7 +1152,7 @@ impl PipeBuffer {
         {
             return None;
         }
-        self.fifo_open_waiters.remove(&owner)
+        self.remove_fifo_open_waiter(owner)
     }
 
     pub fn has_fifo_open_waiter(&self, owner: u64) -> bool {
@@ -996,7 +1160,7 @@ impl PipeBuffer {
     }
 
     pub fn cancel_fifo_open(&mut self, owner: u64) -> Option<FifoOpenWaiter> {
-        let waiter = self.fifo_open_waiters.remove(&owner)?;
+        let waiter = self.remove_fifo_open_waiter(owner)?;
         match waiter.side {
             FifoOpenSide::Reader => {
                 self.close_read_end();
@@ -1012,22 +1176,25 @@ impl PipeBuffer {
         Some(waiter)
     }
 
-    pub fn cancel_fifo_opens_for_process(&mut self, pid: u32) -> Vec<FifoOpenWaiter> {
-        let owners: Vec<u64> = self
-            .fifo_open_waiters
-            .keys()
-            .copied()
-            .filter(|owner| (*owner >> 32) as u32 == pid)
-            .collect();
-        owners
-            .into_iter()
-            .filter_map(|owner| self.cancel_fifo_open(owner))
-            .collect()
+    fn remove_fifo_open_waiter(&mut self, owner: u64) -> Option<FifoOpenWaiter> {
+        let (mut waiter, node_reservation) = self.fifo_open_waiters.remove_entry(&owner)?.into_reserved_value();
+        waiter._path_reservation.merge(node_reservation);
+        Some(waiter)
+    }
+
+    pub fn cancel_fifo_opens_for_process(&mut self, pid: u32, mut cancelled: impl FnMut(FifoOpenWaiter)) {
+        let mut owner = self.fifo_open_waiters.iter().find_map(|(owner, _)|
+            ((*owner >> 32) as u32 == pid).then_some(*owner));
+        while let Some(current) = owner {
+            owner = self.fifo_open_waiters.next_after(&current)
+                .and_then(|(next, _)| ((*next >> 32) as u32 == pid).then_some(*next));
+            if let Some(waiter) = self.cancel_fifo_open(current) { cancelled(waiter); }
+        }
     }
 
     /// Total capacity of the buffer.
     pub fn capacity(&self) -> usize {
-        self.buf.len()
+        self.capacity
     }
 
     /// Number of bytes available for reading.
@@ -1071,6 +1238,7 @@ impl PipeBuffer {
         if n == 0 {
             return 0;
         }
+        assert_eq!(self.buf.len(), cap, "FIFO I/O must be prepared before an endpoint is published");
         self.ensure_stream_sequence_room(n);
         let first = cap - self.tail;
         if n <= first {
@@ -1094,8 +1262,9 @@ impl PipeBuffer {
     pub fn write_with_ancillary(
         &mut self,
         data: &[u8],
-        fds: Vec<InFlightFd>,
+        fds: impl IntoAncillaryFds,
     ) -> Result<usize, Errno> {
+        let fds = fds.into_ancillary()?;
         if fds.is_empty() {
             return Ok(self.write(data));
         }
@@ -1235,19 +1404,12 @@ impl PipeBuffer {
         let ancillary_fds = if !crosses_ancillary {
             None
         } else if peek {
-            let mut cloned = Vec::new();
             let original = &self
                 .ancillary_fds
                 .front()
                 .expect("crossed ancillary record exists")
                 .fds;
-            cloned
-                .try_reserve_exact(original.len())
-                .map_err(|_| Errno::ENOMEM)?;
-            for fd in original {
-                cloned.push(fd.try_clone_retained()?);
-            }
-            Some(cloned)
+            Some(original.try_clone_retained()?)
         } else {
             Some(
                 self.ancillary_fds
@@ -1337,6 +1499,7 @@ impl PipeBuffer {
                 self.stream_position = 0;
             }
         }
+        self.release_fifo_buffer_if_idle();
         // Read end closed → pipe became writable (writers get EPIPE/SIGPIPE)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
@@ -1359,6 +1522,7 @@ impl PipeBuffer {
                 self.stream_position = 0;
             }
         }
+        self.release_fifo_buffer_if_idle();
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_WRITABLE);
     }
 
@@ -1380,6 +1544,7 @@ impl PipeBuffer {
                 self.fifo_read_hangup = false;
             }
         }
+        self.release_fifo_buffer_if_idle();
         // Write end closed → pipe became readable (readers get EOF)
         crate::wakeup::push(self.pipe_idx, crate::wakeup::WAKE_READABLE);
     }
@@ -1491,40 +1656,85 @@ impl PipeBuffer {
 
 /// Table of pipe buffers shared across all processes.
 pub struct PipeTable {
-    pipes: Vec<Option<PipeBuffer>>,
-    free_list: Vec<usize>,
+    pipes: IoBuffer<Option<PipeBuffer>>,
+    first_free: usize,
 }
 
 impl PipeTable {
     pub const fn new() -> Self {
         PipeTable {
-            pipes: Vec::new(),
-            free_list: Vec::new(),
+            pipes: IoBuffer::new(),
+            first_free: 0,
         }
     }
 
     /// Allocate a pipe buffer in the table. Returns the index.
-    pub fn alloc(&mut self, mut pipe: PipeBuffer) -> usize {
-        if let Some(i) = self.free_list.pop() {
-            pipe.pipe_idx = i as u32;
-            self.pipes[i] = Some(pipe);
-            return i;
+    pub(crate) fn prepare_slot(&mut self) -> Result<usize, Errno> {
+        if let Some(offset) = self.pipes[self.first_free..].iter().position(Option::is_none) {
+            return Ok(self.first_free + offset);
         }
-        let i = self.pipes.len();
-        pipe.pipe_idx = i as u32;
-        self.pipes.push(Some(pipe));
-        i
+        let index = self.pipes.len();
+        self.prepare_length(index.checked_add(1).ok_or(Errno::ENOMEM)?)?;
+        Ok(index)
+    }
+
+    pub(crate) fn prepare_slots(&mut self, count: usize) -> Result<IoBuffer<usize>, Errno> {
+        let mut indices = IoBuffer::new_in(self.pipes.budget());
+        indices.reserve_with(count, |values| {
+            values.try_reserve_exact(count).map_err(|_| Errno::ENOMEM)
+        })?;
+        for index in self.first_free..self.pipes.len() {
+            if indices.len() == count { break; }
+            if self.pipes[index].is_none() { indices.push(index); }
+        }
+        let appended = count - indices.len();
+        self.prepare_length(self.pipes.len().checked_add(appended).ok_or(Errno::ENOMEM)?)?;
+        for index in self.pipes.len()..self.pipes.len() + appended { indices.push(index); }
+        Ok(indices)
+    }
+
+    fn prepare_length(&mut self, length: usize) -> Result<(), Errno> {
+        if length > u32::MAX as usize { return Err(Errno::ENOMEM); }
+        if length > self.pipes.capacity() {
+            let capacity = length.max(self.pipes.capacity().saturating_mul(2)).max(4);
+            self.pipes.reserve_with(capacity, |slots| {
+                slots.try_reserve_exact(capacity).map_err(|_| Errno::ENOMEM)
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn publish_prepared(&mut self, index: usize, mut pipe: PipeBuffer) {
+        pipe.pipe_idx = u32::try_from(index).expect("prepared pipe index overflow");
+        if index == self.pipes.len() {
+            self.pipes.push(Some(pipe));
+        } else {
+            assert!(self.pipes[index].is_none(), "prepared pipe slot is occupied");
+            self.pipes[index] = Some(pipe);
+        }
+        if self.first_free == index { self.first_free = index + 1; }
+    }
+
+    pub fn try_alloc(&mut self, pipe: PipeBuffer) -> Result<usize, Errno> {
+        let index = self.prepare_slot()?;
+        self.publish_prepared(index, pipe);
+        Ok(index)
+    }
+
+    #[cfg(test)]
+    pub fn alloc(&mut self, pipe: PipeBuffer) -> usize {
+        self.try_alloc(pipe).unwrap()
     }
 
     /// Mint an identity that survives closing either endpoint but never
     /// follows a freed index into an unrelated pipe allocation.
     pub fn alloc_tcp_pair(&mut self, capacity: usize) -> Result<(usize, usize), Errno> {
         let token = crate::socket::allocate_host_net_handle()? as u32;
-        let mut recv = PipeBuffer::new(capacity);
-        let mut send = PipeBuffer::new(capacity);
+        let mut recv = PipeBuffer::try_new(capacity)?;
+        let mut send = PipeBuffer::try_new(capacity)?;
         recv.tcp_connection_id = token;
         send.tcp_connection_id = token;
-        Ok(self.alloc_pair(recv, send))
+        self.try_alloc_pair(recv, send)
     }
     pub fn reset_tcp_connection(
         &mut self,
@@ -1550,31 +1760,24 @@ impl PipeTable {
     /// Allocate two pipe buffers with adjacent indices (`second_idx == first_idx + 1`).
     /// The host TCP-bridge code assumes the recv and send pipes for an injected
     /// connection are consecutive (`sendPipeIdx = recvPipeIdx + 1`); this helper
-    /// preserves that invariant in the global table by skipping the free list
-    /// when it can't supply two consecutive slots.
-    pub fn alloc_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
-        // Try to find two consecutive freed slots in the free_list. The free
-        // list is a Vec of indices; sort a copy and scan for adjacent pairs.
-        if self.free_list.len() >= 2 {
-            let mut sorted = self.free_list.clone();
-            sorted.sort_unstable();
-            for w in sorted.windows(2) {
-                if w[1] == w[0] + 1 {
-                    let a = w[0];
-                    let b = w[1];
-                    self.free_list.retain(|&x| x != a && x != b);
-                    let mut p1 = first;
-                    p1.pipe_idx = a as u32;
-                    self.pipes[a] = Some(p1);
-                    let mut p2 = second;
-                    p2.pipe_idx = b as u32;
-                    self.pipes[b] = Some(p2);
-                    return (a, b);
-                }
-            }
+    /// preserves that invariant when reusable slots are fragmented.
+    pub fn try_alloc_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> Result<(usize, usize), Errno> {
+        if let Some(offset) = self.pipes[self.first_free..].windows(2)
+            .position(|slots| slots[0].is_none() && slots[1].is_none())
+        {
+            let first_index = self.first_free + offset;
+            let second_index = first_index + 1;
+            let mut first = first;
+            first.pipe_idx = first_index as u32;
+            self.pipes[first_index] = Some(first);
+            let mut second = second;
+            second.pipe_idx = second_index as u32;
+            self.pipes[second_index] = Some(second);
+            if self.first_free == first_index { self.first_free = second_index + 1; }
+            return Ok((first_index, second_index));
         }
-        // No consecutive freed pair — append both to the tail.
         let a = self.pipes.len();
+        self.prepare_length(a.checked_add(2).ok_or(Errno::ENOMEM)?)?;
         let b = a + 1;
         let mut p1 = first;
         p1.pipe_idx = a as u32;
@@ -1582,7 +1785,13 @@ impl PipeTable {
         let mut p2 = second;
         p2.pipe_idx = b as u32;
         self.pipes.push(Some(p2));
-        (a, b)
+        if self.first_free == a { self.first_free = b + 1; }
+        Ok((a, b))
+    }
+
+    #[cfg(test)]
+    pub fn alloc_pair(&mut self, first: PipeBuffer, second: PipeBuffer) -> (usize, usize) {
+        self.try_alloc_pair(first, second).unwrap()
     }
 
     /// Get a reference to a pipe buffer by index.
@@ -1602,8 +1811,9 @@ impl PipeTable {
         &mut self,
         carrier_idx: usize,
         data: &[u8],
-        fds: Vec<InFlightFd>,
+        fds: impl IntoAncillaryFds,
     ) -> Result<usize, Errno> {
+        let fds = fds.into_ancillary()?;
         debug_assert!(fds.iter().all(|fd| fd.owns_reference));
         let bytes_written = self
             .get_mut(carrier_idx)
@@ -1616,6 +1826,9 @@ impl PipeTable {
     /// Lower-level resource accounting used by the local PipeTable tests.
     #[cfg(test)]
     pub fn queue_ancillary(&mut self, carrier_idx: usize, fds: Vec<InFlightFd>) -> bool {
+        let Ok(fds) = fds.into_ancillary() else { return false; };
+        let Some(carrier) = self.get_mut(carrier_idx) else { return false; };
+        if carrier.ancillary_fds.try_reserve(1).is_err() { return false; }
         if self.get(carrier_idx).is_none() || !self.retain_ancillary_resources(&fds) {
             return false;
         }
@@ -1737,7 +1950,7 @@ impl PipeTable {
         }
 
         let pipe = self.pipes[idx].take().unwrap();
-        self.free_list.push(idx);
+        self.first_free = self.first_free.min(idx);
         for record in pipe.ancillary_fds {
             #[cfg(test)]
             for fd in &record.fds {
@@ -1755,31 +1968,31 @@ impl PipeTable {
     /// longer form graph edges between carrier pipes. A direct sweep is both
     /// sufficient and less likely to imply that lossy socket snapshots exist.
     fn collect_unreachable_ancillary(&mut self) {
-        let mut dropped = Vec::new();
-        for pipe in self.pipes.iter_mut().flatten() {
-            if !pipe.has_external_reader() {
-                dropped.extend(pipe.ancillary_fds.drain(..));
-            }
-        }
-        for batch in dropped {
-            #[cfg(test)]
-            for fd in &batch.fds {
-                if !fd.owns_reference {
-                    self.release_ancillary_resource_inner(fd);
+        for index in 0..self.pipes.len() {
+            loop {
+                let batch = self.get_mut(index)
+                    .filter(|pipe| !pipe.has_external_reader())
+                    .and_then(|pipe| pipe.ancillary_fds.pop_front());
+                let Some(batch) = batch else { break };
+                #[cfg(test)]
+                for fd in &batch.fds {
+                    if !fd.owns_reference {
+                        self.release_ancillary_resource_inner(fd);
+                    }
                 }
+                drop(batch);
             }
-            drop(batch);
         }
     }
 
     /// Release both endpoints of a newly allocated buffer that was never
     /// published to a socket or host bridge, then make its slot reusable.
     pub fn discard_unclaimed(&mut self, idx: usize) {
-        if let Some(pipe) = self.get_mut(idx) {
-            pipe.close_read_end();
-            pipe.close_write_end();
-        }
-        self.free_if_closed(idx);
+        let Some(pipe) = self.get(idx) else { return; };
+        assert!(!pipe.is_fifo && pipe.read_count == 1 && pipe.write_count == 1
+            && pipe.ancillary_fds.is_empty(), "unclaimed pipe has external owners");
+        self.pipes[idx] = None;
+        self.first_free = self.first_free.min(idx);
     }
 
     /// Drop one filesystem name from a FIFO. The slot remains live while an
@@ -1822,17 +2035,15 @@ impl PipeTable {
         cancelled
     }
 
-    pub fn cancel_fifo_opens_for_process(&mut self, pid: u32) -> Vec<FifoOpenWaiter> {
-        let mut cancelled = Vec::new();
+    pub fn cancel_fifo_opens_for_process(&mut self, pid: u32, mut cancelled: impl FnMut(FifoOpenWaiter)) {
         for idx in 0..self.pipes.len() {
             if let Some(pipe) = self.get_mut(idx) {
                 if pipe.is_fifo() {
-                    cancelled.extend(pipe.cancel_fifo_opens_for_process(pid));
+                    pipe.cancel_fifo_opens_for_process(pid, &mut cancelled);
                 }
             }
             self.free_if_closed(idx);
         }
-        cancelled
     }
 
     /// Total number of slots (including freed).
@@ -1868,6 +2079,93 @@ pub unsafe fn global_pipe_table() -> &'static mut PipeTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipe_payload_admission_precedes_allocation_and_follows_the_last_endpoint() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(128);
+        let mut pipe = PipeBuffer::empty(64);
+        BUDGET.set_limit(127).unwrap();
+        assert_eq!(pipe.prepare_buffer_with_budget(&BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(pipe.buf.capacity(), 0);
+        assert_eq!(BUDGET.usage().0, 0);
+        BUDGET.set_limit(128).unwrap();
+        pipe.fail_next_fifo_buffer_allocation();
+        assert_eq!(pipe.prepare_buffer_with_budget(&BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        pipe.prepare_buffer_with_budget(&BUDGET).unwrap();
+        let mut table = PipeTable::new();
+        let index = table.try_alloc(pipe).unwrap();
+        assert_eq!(BUDGET.usage().0, 128);
+        table.get_mut(index).unwrap().close_read_end();
+        table.free_if_closed(index);
+        assert_eq!(BUDGET.usage().0, 128);
+        table.get_mut(index).unwrap().close_write_end();
+        table.free_if_closed(index);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn pipe_arena_pair_refusal_preserves_live_slots_and_reuses_admitted_holes() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(64 * 1024);
+        let mut table = PipeTable { pipes: IoBuffer::new_in(&BUDGET), first_free: 0 };
+        BUDGET.set_limit(0).unwrap();
+        assert_eq!(table.prepare_slot(), Err(Errno::ENOMEM));
+        assert_eq!(table.pipes.len(), 0);
+        BUDGET.set_limit(64 * 1024).unwrap();
+        for _ in 0..4 { table.try_alloc(PipeBuffer::try_new(0).unwrap()).unwrap(); }
+        let retained = BUDGET.usage().0;
+        assert_eq!(retained, 2 * table.pipes.capacity() * core::mem::size_of::<Option<PipeBuffer>>());
+        BUDGET.set_limit(retained).unwrap();
+        assert_eq!(table.try_alloc_pair(PipeBuffer::empty(0), PipeBuffer::empty(0)), Err(Errno::ENOMEM));
+        assert_eq!(table.pipes.len(), 4);
+        assert_eq!(table.first_free, 4);
+        assert_eq!(table.count_active(), 4);
+        assert_eq!(BUDGET.usage().0, retained);
+        for index in [1, 2] {
+            let pipe = table.get_mut(index).unwrap();
+            pipe.close_read_end();
+            pipe.close_write_end();
+            table.free_if_closed(index);
+        }
+        assert_eq!(table.try_alloc_pair(PipeBuffer::empty(0), PipeBuffer::empty(0)), Ok((1, 2)));
+        assert_eq!(BUDGET.usage().0, retained);
+        drop(table);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn deferred_cleanup_capacity_is_admitted_before_ownership_and_reclaimed_after_drain() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut queue = DeferredInFlightReleaseQueue { records: IoBuffer::new(), reserved: 0 };
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(queue.reserve(), Err(Errno::ENOMEM));
+        }
+        assert_eq!(queue.reserved, 0);
+        queue.reserve().unwrap();
+        let old = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(old);
+            assert_eq!(queue.reserve(), Err(Errno::ENOMEM));
+            assert_eq!(queue.reserved, 1);
+            queue.reserved -= 1;
+            queue.records.push(DeferredInFlightFdRelease {
+                ofd_id: OfdId(23), file_type: FileType::Regular, host_handle: 27,
+                pipe_ref_kind: None, prime_bo_id: None,
+            });
+            queue.reclaim_empty();
+            assert_eq!(queue.records.len(), 1);
+            assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, old);
+            assert_eq!(queue.records.pop().unwrap().ofd_id, OfdId(23));
+            queue.reclaim_empty();
+        }
+        assert_eq!(queue.records.capacity(), 0);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+        queue.reserve().unwrap();
+        queue.reserved -= 1;
+        queue.reclaim_empty();
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
 
     fn test_ancillary_fd(id: u64) -> InFlightFd {
         InFlightFd::new(
@@ -1925,6 +2223,30 @@ mod tests {
             table.reset_tcp_connection(recv, send, token + 1),
             Err(Errno::ENOTCONN)
         );
+    }
+
+    #[test]
+    fn fragmented_reuse_preserves_live_indices_and_adjacent_pair_capacity() {
+        let mut table = PipeTable::new();
+        for _ in 0..6 { table.alloc(PipeBuffer::new(8)); }
+        for index in [1, 3, 4] { table.discard_unclaimed(index); }
+        let capacity = table.pipes.capacity();
+        let first = PipeBuffer::new(8);
+        let second = PipeBuffer::new(8);
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(baseline);
+            assert_eq!(table.alloc_pair(first, second), (3, 4));
+            assert_eq!(table.pipes.capacity(), capacity);
+            assert_eq!(table.pipes.len(), 6);
+            assert_eq!(table.get(5).unwrap().pipe_idx, 5);
+            table.discard_unclaimed(3);
+            table.discard_unclaimed(4);
+        }
+        assert_eq!(table.alloc(PipeBuffer::new(8)), 1);
+        assert_eq!(table.get(0).unwrap().pipe_idx, 0);
+        assert_eq!(table.get(2).unwrap().pipe_idx, 2);
+        assert_eq!(table.get(5).unwrap().pipe_idx, 5);
     }
 
     #[test]
@@ -2018,6 +2340,35 @@ mod tests {
     }
 
     #[test]
+    fn ancillary_admission_precedes_carrier_publication_and_peek_copy() {
+        let mut pipe = PipeBuffer::new(8);
+        let mut fds = AncillaryFds::try_with_capacity(1).unwrap();
+        fds.push(test_ancillary_fd(19));
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert_eq!(pipe.write_with_ancillary(b"Q", fds), Err(Errno::ENOMEM));
+            assert_eq!(pipe.available(), 0);
+            assert!(!pipe.has_ancillary());
+        }
+        assert_eq!(pipe.write_with_ancillary(b"R", vec![test_ancillary_fd(20)]), Ok(1));
+        let held = crate::io_buffer::IO_MEMORY.usage().0;
+        let mut byte = [0x55];
+        {
+            let _limit = crate::io_buffer::test_budget(held);
+            assert!(matches!(pipe.recv_message(&mut byte, true), Err(Errno::ENOMEM)));
+            assert_eq!(byte, [0x55]);
+            assert_eq!(pipe.available(), 1);
+            assert!(pipe.has_ancillary());
+            let consumed = pipe.recv_message(&mut byte, false).unwrap();
+            assert_eq!(consumed.bytes_read, 1);
+            assert_eq!(byte, [b'R']);
+            assert_eq!(consumed.ancillary_fds.unwrap()[0].ofd_id, OfdId(20));
+            assert!(!pipe.has_ancillary());
+        }
+    }
+
+    #[test]
     fn stream_ancillary_peek_is_repeatable_and_non_consuming() {
         let mut pipe = PipeBuffer::new(8);
         assert_eq!(
@@ -2083,9 +2434,194 @@ mod tests {
     }
 
     #[test]
+    fn inactive_fifo_has_no_resident_data_buffer() {
+        let pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
+        assert_eq!(pipe.capacity(), DEFAULT_PIPE_CAPACITY);
+        assert_eq!(pipe.free_space(), DEFAULT_PIPE_CAPACITY);
+        assert_eq!(pipe.buf.capacity(), 0);
+        assert_eq!(pipe.available(), 0);
+    }
+
+    #[test]
+    fn fifo_buffer_admission_is_fallible_and_releases_after_the_last_io_endpoint() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(256);
+        let mut pipe = PipeBuffer::new_fifo(128, fifo_metadata());
+        BUDGET.set_limit(255).unwrap();
+        assert_eq!(pipe.prepare_fifo_io_with_budget(&BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        assert_eq!(pipe.resident_buffer_bytes(), 0);
+        assert!(!pipe.has_readers());
+        assert!(!pipe.is_write_end_open());
+        BUDGET.set_limit(256).unwrap();
+        pipe.fail_next_fifo_buffer_allocation();
+        assert_eq!(pipe.prepare_fifo_io_with_budget(&BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        pipe.prepare_fifo_io_with_budget(&BUDGET).unwrap();
+        assert_eq!(BUDGET.usage().0, 2 * pipe.resident_buffer_bytes());
+        assert_eq!(pipe.resident_buffer_bytes(), 128);
+        pipe.prepare_fifo_io_with_budget(&BUDGET).unwrap();
+        pipe.add_reference(InFlightPipeRefKind::ReadWrite);
+        pipe.add_reference(InFlightPipeRefKind::Path);
+        assert_eq!(pipe.write(b"old"), 3);
+        pipe.close_read_end();
+        assert_eq!(BUDGET.usage().0, 256);
+        pipe.close_write_end();
+        assert_eq!(BUDGET.usage().0, 0);
+        assert_eq!(pipe.capacity(), 128);
+        assert_eq!(pipe.resident_buffer_bytes(), 0);
+        assert!(!pipe.is_fully_closed());
+        pipe.prepare_fifo_io_with_budget(&BUDGET).unwrap();
+        pipe.add_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(pipe.available(), 0);
+        assert_eq!(pipe.write(b"new"), 3);
+        let mut bytes = [0; 3];
+        assert_eq!(pipe.read(&mut bytes), 3);
+        assert_eq!(&bytes, b"new");
+        pipe.close_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn fifo_buffer_ownership_follows_inherited_and_in_flight_endpoints() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(128);
+        let mut pipe = PipeBuffer::new_fifo(64, fifo_metadata());
+        pipe.prepare_fifo_io_with_budget(&BUDGET).unwrap();
+        pipe.add_reference(InFlightPipeRefKind::ReadWrite);
+        pipe.add_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(pipe.write(b"held"), 4);
+        pipe.close_reference(InFlightPipeRefKind::ReadWrite);
+        pipe.retain_in_flight_reference(InFlightPipeRefKind::ReadWrite);
+        pipe.close_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(BUDGET.usage().0, 128);
+        assert_eq!(pipe.available(), 4);
+        pipe.adopt_in_flight_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(BUDGET.usage().0, 128);
+        let mut bytes = [0; 4];
+        assert_eq!(pipe.read(&mut bytes), 4);
+        assert_eq!(&bytes, b"held");
+        pipe.close_reference(InFlightPipeRefKind::ReadWrite);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn fifo_waiter_admission_and_node_failure_leave_endpoints_unchanged() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        let reservation = PreparedEntry::<u64, FifoOpenWaiter>::reserve_in(&BUDGET, 0).unwrap();
+        let node_bytes = reservation.bytes();
+        drop(reservation);
+        let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
+        BUDGET.set_limit(node_bytes).unwrap();
+        crate::prepared_map::fail_after_allocations(0);
+        assert_eq!(pipe.reserve_fifo_open_with_budget(1, FifoOpenSide::Reader, b"/tmp/fifo", 7, 1, 3, &BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        assert!(!pipe.has_readers());
+        assert!(!pipe.has_fifo_open_waiter(1));
+        BUDGET.set_limit(4096).unwrap();
+        assert_eq!(pipe.reserve_fifo_open_with_budget(1, FifoOpenSide::Reader, b"/tmp/fifo", 7, 1, 3, &BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        assert!(!pipe.has_readers());
+        assert!(!pipe.has_fifo_open_waiter(1));
+        pipe.reserve_fifo_open_with_budget(1, FifoOpenSide::Reader, b"/tmp/fifo", 7, 1, 3, &BUDGET).unwrap();
+        let bytes = BUDGET.usage().0;
+        assert_eq!(bytes, node_bytes + 2 * b"/tmp/fifo".len());
+        assert_eq!(pipe.reserve_fifo_open_with_budget(1, FifoOpenSide::Writer, b"/other", 0, 0, 4, &BUDGET), Err(Errno::EIO));
+        assert_eq!(BUDGET.usage().0, bytes);
+        assert!(!pipe.is_write_end_open());
+        assert!(pipe.take_ready_fifo_open(1).is_none());
+        drop(pipe);
+        assert_eq!(BUDGET.usage().0, 0);
+    }
+
+    #[test]
+    fn fifo_waiter_credits_follow_ready_and_cancelled_path_ownership() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
+        for owner in [1, 2] {
+            pipe.reserve_fifo_open_with_budget(owner, FifoOpenSide::Reader, b"/tmp/fifo", 7, 1, owner as i32 + 3, &BUDGET).unwrap();
+        }
+        let bytes = BUDGET.usage().0;
+        pipe.add_fifo_endpoint_ref(FifoOpenSide::Writer);
+        pipe.publish_fifo_open(FifoOpenSide::Writer);
+        pipe.close_write_end();
+        let cancelled = pipe.cancel_fifo_open(1).unwrap();
+        assert!(pipe.has_readers());
+        let ready = pipe.take_ready_fifo_open(2).unwrap();
+        assert!(pipe.fifo_open_waiters.is_empty());
+        assert_eq!(BUDGET.usage().0, bytes);
+        assert_eq!(ready.path, b"/tmp/fifo");
+        assert_eq!(ready.status_flags, 7);
+        assert_eq!(ready.fd_flags, 1);
+        assert_eq!(ready.reserved_fd, 5);
+        assert_eq!(cancelled.reserved_fd, 4);
+        drop(cancelled);
+        assert_eq!(BUDGET.usage().0, bytes / 2);
+        pipe.publish_fifo_open(FifoOpenSide::Reader);
+        assert!(pipe.read_end_has_hangup());
+        drop(ready);
+        assert_eq!(BUDGET.usage().0, 0);
+        pipe.close_fifo_read_only();
+    }
+
+    #[test]
+    fn fifo_process_cancellation_needs_no_new_waiter_storage() {
+        static BUDGET: MetadataBudget = MetadataBudget::new(4096);
+        let mut table = PipeTable::new();
+        for index in 0..2 {
+            let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
+            for pid in [0, 42, u32::MAX] {
+                let owner = ((pid as u64) << 32) | (index + 1) as u64;
+                pipe.reserve_fifo_open_with_budget(owner, FifoOpenSide::Reader, b"/tmp/fifo", 0, 0, index + 3, &BUDGET).unwrap();
+            }
+            table.alloc(pipe);
+        }
+        let bytes = BUDGET.usage().0;
+        BUDGET.set_limit(bytes).unwrap();
+        crate::prepared_map::fail_after_allocations(0);
+        for (index, pid) in [42, u32::MAX, 0].into_iter().enumerate() {
+            let mut descriptors = [0; 2];
+            let mut count = 0;
+            table.cancel_fifo_opens_for_process(pid, |waiter| {
+                descriptors[count] = waiter.reserved_fd;
+                count += 1;
+            });
+            assert_eq!(count, 2);
+            assert_eq!(descriptors, [3, 4]);
+            assert_eq!(BUDGET.usage().0, bytes - (index + 1) * (bytes / 3));
+        }
+        for pipe in table.pipes.iter().flatten() {
+            assert!(!pipe.has_readers());
+            assert!(pipe.fifo_open_waiters.is_empty());
+        }
+        assert_eq!(BUDGET.usage().0, 0);
+        assert_eq!(table.get_mut(0).unwrap().reserve_fifo_open_with_budget(1, FifoOpenSide::Reader, b"/tmp/fifo", 0, 0, 3, &BUDGET), Err(Errno::ENOMEM));
+        assert_eq!(BUDGET.usage().0, 0);
+        BUDGET.set_limit(4096).unwrap();
+    }
+
+    #[test]
+    fn fifo_waiters_use_ordinary_io_not_journal_or_writeback_credit() {
+        let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+        let writeback = crate::io_buffer::WRITEBACK_MEMORY.usage();
+        let journal = crate::prepared_map::JOURNAL_STATE_MEMORY.usage();
+        let reserve = crate::prepared_map::JOURNAL_WRITEBACK_MEMORY.reserve(1).unwrap();
+        let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
+        pipe.reserve_fifo_open(1, FifoOpenSide::Reader, b"/tmp/fifo", 0, 0, 3).unwrap();
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 > baseline);
+        {
+            let _budget = crate::io_buffer::test_budget(crate::io_buffer::IO_MEMORY.usage().0);
+            assert_eq!(pipe.reserve_fifo_open(2, FifoOpenSide::Reader, b"/tmp/fifo", 0, 0, 4), Err(Errno::ENOMEM));
+        }
+        assert_eq!(crate::io_buffer::WRITEBACK_MEMORY.usage(), writeback);
+        assert_eq!(crate::prepared_map::JOURNAL_STATE_MEMORY.usage(), journal);
+        drop(pipe);
+        drop(reserve);
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline);
+    }
+
+    #[test]
     fn fifo_reader_observes_writer_close_before_open_resumes() {
         let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
-        assert!(pipe.reserve_fifo_open(1, FifoOpenSide::Reader, b"/tmp/fifo".to_vec(), 0, 0, 3,));
+        pipe.reserve_fifo_open(1, FifoOpenSide::Reader, b"/tmp/fifo", 0, 0, 3).unwrap();
 
         pipe.add_fifo_endpoint_ref(FifoOpenSide::Writer);
         pipe.publish_fifo_open(FifoOpenSide::Writer);
@@ -2107,14 +2643,14 @@ mod tests {
     fn fifo_cancel_preserves_writer_history_for_other_ready_reader() {
         let mut pipe = PipeBuffer::new_fifo(DEFAULT_PIPE_CAPACITY, fifo_metadata());
         for owner in [1, 2] {
-            assert!(pipe.reserve_fifo_open(
+            pipe.reserve_fifo_open(
                 owner,
                 FifoOpenSide::Reader,
-                b"/tmp/fifo".to_vec(),
+                b"/tmp/fifo",
                 0,
                 0,
                 owner as i32 + 3,
-            ));
+            ).unwrap();
         }
 
         pipe.add_fifo_endpoint_ref(FifoOpenSide::Writer);

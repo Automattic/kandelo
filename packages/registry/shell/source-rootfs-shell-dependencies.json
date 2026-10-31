@@ -92,6 +92,11 @@
       "role": "lazy-file"
     },
     {
+      "name": "wasm-fork-instrument",
+      "version": "0.1.0",
+      "role": "lazy-file"
+    },
+    {
       "name": "php",
       "version": "8.5.12",
       "role": "lazy-file"

@@ -28,6 +28,7 @@ import {
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   resolveDirectProgramPackageArtifact,
+  resolveProgramOriginalWasmArtifact,
   resolveLazyAssetPath,
   resolveLazyAssetPaths,
   setBundledProgramPackageIndexPathForTests,
@@ -309,6 +310,7 @@ interface FixtureProjectionMember {
   mirrorPath: string;
   outputName?: string;
   forkInstrumentation?: "auto" | "disabled";
+  originalWasm?: string;
   guestPath?: string;
   mode?: number;
 }
@@ -543,6 +545,58 @@ describe("program package source freshness boundary", () => {
         delete process.env[envName];
       }
     }
+  });
+
+  it.each(["source-only-v1", "default"])("resolves a direct original under %s without needing an aggregate", (policy) => {
+    const fixture = createScalarOutputFixture("disabled");
+    const originalArtifact = "originals/nested/input.wasm";
+    const manifestPath = join(fixturePackageDirectory(fixture.name), "package.toml");
+    writeFileSync(manifestPath, `${readFileSync(manifestPath, "utf8")}\noriginal_wasm = "${originalArtifact}"\n`);
+    writeFixturePackageProjection(fixture.name, [{ kind: "output", sourceArtifact: fixture.sourceArtifact,
+      mirrorPath: basename(fixture.relPath), outputName: basename(fixture.relPath, ".wasm"), forkInstrumentation: "disabled", originalWasm: originalArtifact }]);
+    const root = fixtureCanonicalRoot(fixture.name);
+    const executable = writeCanonicalMember(root, fixture.sourceArtifact, executableWasmWithAbi(ABI_VERSION));
+    const originalBytes = Buffer.from("\0asm\x01\0\0\0");
+    const original = writeCanonicalMember(root, originalArtifact, originalBytes);
+    chmodSync(original, 0o444);
+    process.env.WASM_POSIX_RESOLUTION_POLICY = policy;
+    delete process.env.WASM_POSIX_SOURCE_ONLY_BINARY_ROOT;
+    const result = resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, root)!;
+    expect(result.path).toBe(realpathSync(original));
+    expect(result.size).toBe(originalBytes.length);
+    expect(result.sha256).toBe(createHash("sha256").update(originalBytes).digest("hex"));
+    expect(result.relPath).toBe(`programs/wasm32/.originals/${fixture.name}/${fixtureCacheKey(fixture.name)}/${originalArtifact}`);
+    expect(result.mode).toBe(0o444);
+    if (policy === "default") {
+      const mirror = join(binariesDir(), fixture.relPath);
+      mkdirSync(dirname(mirror), { recursive: true });
+      symlinkSync(executable, mirror);
+      expect(resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable)).toEqual(result);
+      expect(programOutputClosureRelPaths(fixture.relPath)).toEqual([fixture.relPath, result.relPath]);
+      expect(resolveBinary(result.relPath)).toBe(realpathSync(original));
+      expect(resolveLazyAssetPath(`kandelo-lazy:${result.relPath}`)).toBe(realpathSync(original));
+      expect(tryResolveBinaries([fixture.relPath, result.relPath])).toEqual([realpathSync(executable), realpathSync(original)]);
+      expect(tryResolveBinarySet([fixture.relPath, result.relPath])).toEqual([realpathSync(executable), realpathSync(original)]);
+      expect(programOutputClosureRelPaths(result.relPath)).toEqual([fixture.relPath, result.relPath]);
+      expect(() => programWasmArtifactPolicy(result.relPath)).toThrow(/not a declared executable/);
+      expect(() => resolveBinary(result.relPath.replace(fixtureCacheKey(fixture.name), "b".repeat(64)))).toThrow(/selected package generation/);
+      expect(() => resolveBinary(`${result.relPath}/extra`)).toThrow(/selected package generation/);
+      expect(() => resolveBinary(result.relPath.replace("/nested/", "/../"))).toThrow(/normalized portable relative path/);
+      rmSync(mirror);
+      const literal = writeCandidate(binariesDir(), result.relPath, originalBytes);
+      chmodSync(literal, 0o444);
+      cleanupDirs.add(join(binariesDir(), "programs/wasm32/.originals", fixture.name));
+      const url = `binaries/${result.relPath}`;
+      expect(() => resolveLazyAssetPath(url)).toThrow(/failed to resolve/);
+      expect(resolveLazyAssetPaths([url]).get(url)).toHaveProperty("error");
+    }
+    const unrelated = writeCanonicalMember(root, "unrelated.wasm", executableWasmWithAbi(ABI_VERSION));
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, unrelated, root)).toThrow(/does not match/);
+    const wrongRoot = fixtureCanonicalRoot(fixture.name, "wasm32", "f".repeat(64));
+    writeCanonicalMember(wrongRoot, fixture.sourceArtifact, executableWasmWithAbi(ABI_VERSION));
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, wrongRoot)).toThrow(/selected immutable package generation/);
+    chmodSync(original, 0o644);
+    expect(() => resolveProgramOriginalWasmArtifact(fixture.relPath, fixture.name, executable, root)).toThrow(/read-only/);
   });
 
   it("rejects a direct dependency whose projected package closure is incomplete", () => {

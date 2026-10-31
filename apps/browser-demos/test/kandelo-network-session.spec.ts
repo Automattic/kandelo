@@ -1,9 +1,10 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
+import { configureNewComputer, currentComputerMetadata } from "./support/computer-library";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { encodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
+import { decodeSessionInvitation, encodeSessionInvitation } from "../../../web-libs/kandelo-session/src/session-invitation";
 import type { SessionOffer } from "../../../web-libs/kandelo-session/src/package-sessions";
 
 // Network sessions in the normal Kandelo app: one computer hosts, others
@@ -46,7 +47,7 @@ async function terminalLines(page: Page): Promise<string> {
   await page.getByRole("button", { name: "Terminal", exact: true }).click();
   const text = await page.locator(".xterm-rows").first().evaluate((node) => [...node.children].map((row) => row.textContent).join("\n"));
   // With no program on the display the Demo view is unavailable.
-  const demo = page.getByRole("button", { name: "Demo", exact: true });
+  const demo = page.getByRole("button", { name: "Graphics", exact: true });
   if (await demo.isEnabled()) await demo.click();
   return text;
 }
@@ -91,7 +92,7 @@ test("package activity invitations join before starting termchat in a fresh term
   const offer = page.getByRole("form", { name: "Host activity" });
   await offer.getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
   await offer.getByLabel("Your name").fill("alice");
-  await offer.getByRole("button", { name: "Start and invite", exact: true }).click();
+  await offer.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 60_000 });
   const link = (await page.locator("[data-network-link]").getAttribute("data-network-link"))!;
   await closePanel(page);
@@ -137,7 +138,7 @@ test("an already-running termchat can be offered without restarting it", async (
   await form.getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
   await form.getByLabel("Your name").fill("alice");
   await form.getByRole("checkbox").check();
-  await form.getByRole("button", { name: "Share running activity", exact: true }).click();
+  await form.getByRole("button", { name: "Show join link", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 60_000 });
   const link = (await page.locator("[data-network-link]").getAttribute("data-network-link"))!;
   await closePanel(page);
@@ -170,7 +171,7 @@ async function host(page: Page, name: string, profile = "shell"): Promise<string
   await running(page);
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   await page.getByLabel("Session name").fill(name);
-  await page.getByRole("button", { name: "Create invite", exact: true }).click();
+  await page.getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(page.getByRole("button", { name: "Network session: connected", exact: true })).toBeAttached({ timeout: 30_000 });
   const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
   expect(link).toBeTruthy();
@@ -198,7 +199,7 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
   test.setTimeout(480_000);
   await gotoMachine(page, "shell");
   await running(page);
-  expect((await runTerminalCommand(page, "test ! -f /doom1.wad && test ! -f /tmp/kandelo-doom.wad")).exitCode).toBe(0);
+  expect((await runTerminalCommand(page, "test ! -f /usr/share/doom/doom1.wad && test ! -f /tmp/kandelo-doom.wad")).exitCode).toBe(0);
   await page.getByRole("button", { name: "Network session: not connected", exact: true }).click();
   const form = page.getByRole("form", { name: "Host activity" });
   await form.getByLabel("Activity", { exact: true }).selectOption("fbdoom/game");
@@ -206,8 +207,12 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
   await form.getByLabel("Game type").selectOption("deathmatch");
   await form.getByLabel("Starting level", { exact: true }).selectOption("E1M2");
   await page.screenshot({ path: "../../.context/package-session-doom-offer.png", animations: "disabled" });
-  await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 60_000 });
+  await expect.poll(async () => {
+    const link = await page.locator("[data-network-link]").getAttribute("data-network-link");
+    return link ? decodeSessionInvitation(new URL(link).hash)?.package : null;
+  }, { timeout: 60_000 }).toBe("fbdoom");
   const link = (await page.locator("[data-network-link]").getAttribute("data-network-link"))!;
   await closePanel(page);
   const context = await browser.newContext(localIceContextOptions);
@@ -232,10 +237,10 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
     await join.getByRole("button", { name: "Join and play Doom", exact: true }).click();
     await expect.poll(() => activeTerminal(page), { timeout: 90_000 }).toContain("player 1 of 2 (2 nodes)");
     await expect.poll(() => activeTerminal(guest), { timeout: 60_000 }).toContain("player 2 of 2 (2 nodes)");
-    await expect(page.getByRole("button", { name: "Demo", exact: true })).toBeEnabled({ timeout: 30_000 });
-    await expect(guest.getByRole("button", { name: "Demo", exact: true })).toBeEnabled({ timeout: 30_000 });
-    await page.getByRole("button", { name: "Demo", exact: true }).click();
-    await guest.getByRole("button", { name: "Demo", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Graphics", exact: true })).toBeEnabled({ timeout: 30_000 });
+    await expect(guest.getByRole("button", { name: "Graphics", exact: true })).toBeEnabled({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Graphics", exact: true }).click();
+    await guest.getByRole("button", { name: "Graphics", exact: true }).click();
     await expect(page.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
     await expect(guest.locator(".kdemo-surface-title", { hasText: "/DEV/FB0" })).toContainText(/pid \d+/, { timeout: 30_000 });
     expect(guestDownloads).toBe(0);
@@ -247,7 +252,7 @@ test("Doom's package offer acquires a WAD from bare shell and sends it to the pl
     await page.getByRole("button", { name: "Change activity", exact: true }).click();
     const another = page.getByRole("form", { name: "Host activity" });
     await another.getByLabel("Activity", { exact: true }).selectOption("fbdoom/game");
-    await expect(another.getByRole("button", { name: "Start and invite", exact: true })).toBeEnabled();
+    await expect(another.getByRole("button", { name: "Start activity", exact: true })).toBeEnabled();
     await page.getByRole("button", { name: "Back to active session", exact: true }).click();
   } finally { await context.close(); }
 });
@@ -369,10 +374,9 @@ test("a joiner can pick a different computer before joining", async ({ browser, 
     await running(joiner);
     await closePanel(joiner);
     // Launch another computer from the gallery; the unjoined invitation stays.
-    await joiner.getByRole("button", { name: "New", exact: true }).click();
-    await joiner.locator(".kgal-row", { has: joiner.locator(".kgal-machine-title", { hasText: /^Node\.js$/ }) })
-      .getByRole("button", { name: "Launch" }).click();
-    await expect.poll(() => new URL(joiner.url()).searchParams.get("profile"), { timeout: 120_000 }).toBe("node");
+    await configureNewComputer(joiner, "node");
+    await joiner.getByRole("button", { name: "Create and boot", exact: true }).click();
+    await expect.poll(async () => (await currentComputerMetadata(joiner)).profileId, { timeout: 120_000 }).toBe("node");
     await running(joiner);
     await joiner.getByRole("button", { name: "Network session: not connected", exact: true }).click();
     await joiner.getByRole("button", { name: "Join session", exact: true }).click();
@@ -390,7 +394,7 @@ test("an invitation can be dismissed without joining", async ({ page }) => {
   expect(new URL(page.url()).searchParams.has("network")).toBe(false);
   await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.getByRole("button", { name: "Join session", exact: true })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Create invite", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start network session", exact: true })).toBeVisible();
 });
 
 test("the Doom machine's LAN menu starts a two-player game across the session", async ({ browser, page, browserName }) => {
@@ -438,7 +442,7 @@ test("a Doom host starts a LAN game before every player has joined", async ({ br
     await expect.poll(() => terminalLines(joiner), { timeout: 30_000 }).toContain("NET_WaitForLaunch: cancelled.");
     await expect.poll(() => terminalLines(page), { timeout: 60_000 }).toMatch(/1 of 4 players have joined\.\s*$/);
     // Quitting Doom leaves the shell; the player starts it again there.
-    await typeAtPrompt(joiner, "/usr/local/bin/fbdoom -iwad /doom1.wad -autojoin");
+    await typeAtPrompt(joiner, "/usr/local/bin/fbdoom -iwad /usr/share/doom/doom1.wad -autojoin");
     await expect.poll(() => terminalLines(page), { timeout: 90_000 }).toMatch(/2 of 4 players have joined\.\s*$/);
     // The waiting room starts the game with Space, as chocolate-doom's does.
     await pressKeys(page, ["Space"]);
@@ -489,7 +493,7 @@ test("one invitation form creates a plain invite, preserves or replaces the room
   await expect(page.getByRole("button", { name: "Create session", exact: true })).toHaveCount(0);
   await expect(form.getByLabel("Activity", { exact: true })).toHaveValue("");
   await form.getByLabel("Session name").fill("First room");
-  await form.getByRole("button", { name: "Create invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start network session", exact: true }).click();
   const link = page.locator("[data-network-link]");
   await expect(link).toHaveAttribute("data-network-link", /networkName=First/);
   const first = (await link.getAttribute("data-network-link"))!;
@@ -498,26 +502,27 @@ test("one invitation form creates a plain invite, preserves or replaces the room
   await expect(form.getByLabel("Session", { exact: true })).toHaveValue("keep");
   await form.getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
   await form.getByLabel("Your name").fill("host");
-  await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start activity", exact: true }).click();
   await expect(link).toHaveAttribute("data-network-link", /#ks1=/);
   expect(new URL((await link.getAttribute("data-network-link"))!).searchParams.get("network")).toBe(new URL(first).searchParams.get("network"));
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form.getByLabel("Activity", { exact: true }).selectOption("");
-  await form.getByRole("button", { name: "Create invite", exact: true }).click();
+  await form.getByRole("button", { name: "Start network session", exact: true }).click();
   await expect(link).toHaveAttribute("data-network-link", first);
   await page.getByRole("button", { name: "Change activity", exact: true }).click();
   await form.getByLabel("Session", { exact: true }).selectOption("replace");
+  page.once("dialog", dialog => dialog.accept());
   await form.getByLabel("Session name").fill("Replacement room");
   await form.getByLabel("Activity", { exact: true }).selectOption("termchat/chat");
   await form.getByRole("checkbox").check();
-  await form.getByRole("button", { name: "Share running activity", exact: true }).click();
+  await form.getByRole("button", { name: "Show join link", exact: true }).click();
   await expect(link).toHaveAttribute("data-network-link", /networkName=Replacement/);
   expect(new URL((await link.getAttribute("data-network-link"))!).searchParams.get("network")).not.toBe(new URL(first).searchParams.get("network"));
   await page.getByRole("button", { name: "Leave session", exact: true }).click();
   await expect(page.locator(".knetwork-status")).toHaveAttribute("data-phase", "offline");
   await expect(link).toHaveCount(0);
   await form.getByLabel("Activity", { exact: true }).selectOption("");
-  await expect(form.getByRole("button", { name: "Create invite", exact: true })).toBeEnabled();
+  await expect(form.getByRole("button", { name: "Start network session", exact: true })).toBeEnabled();
   await page.screenshot({ path: "../../.context/invitation-ux-optional-activity.png", animations: "disabled" });
 });
 
@@ -538,7 +543,7 @@ for (const dependencyMode of ["known hint", "uploaded hint", "uploaded peer"] as
       await form.getByLabel("File for Game WAD", { exact: true }).setInputFiles({ name: "my-doom.wad", mimeType: "application/octet-stream", buffer: file });
     }
     await form.getByLabel("Guest data", { exact: true }).selectOption(dependencyMode.endsWith("peer") ? "peer" : "hint");
-    await form.getByRole("button", { name: "Start and invite", exact: true }).click();
+    await form.getByRole("button", { name: "Start activity", exact: true }).click();
     await expect(page.locator("[data-network-link]")).toHaveAttribute("data-network-link", /#ks1=/, { timeout: 120_000 });
     const link = (await page.locator("[data-network-link]").getAttribute("data-network-link"))!;
     await closePanel(page);

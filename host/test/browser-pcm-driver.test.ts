@@ -5,6 +5,7 @@ import {
   PcmSampleFormat,
   PcmStreamState,
   PcmTransportFlag,
+  hasPcmFatalError,
   pcmControlWords,
   readEffectiveConsumerPosition,
   readProducerPosition,
@@ -61,10 +62,10 @@ function browserAudioMocks() {
   };
   const port = {
     onmessage: null as ((event: MessageEvent) => void) | null,
-    close: vi.fn(),
     postMessage: vi.fn((message: { type: string }) => {
-      if (message.type === "release") queueMicrotask(() => port.onmessage?.({ data: { type: "released" } } as MessageEvent));
+      if (message.type === "detach") queueMicrotask(() => port.onmessage?.({ data: { type: "detached" } } as MessageEvent));
     }),
+    close: vi.fn(),
   };
   const node = {
     port,
@@ -115,7 +116,439 @@ describe("BrowserPcmDriver", () => {
     expect(driver.getState()).toBe("error");
     expect(onFatalError).toHaveBeenCalledOnce();
     await driver.close();
-    expect(mocks.node.port.postMessage).toHaveBeenCalledWith({ type: "release" });
+    expect(mocks.node.port.postMessage).toHaveBeenCalledWith({ type: "detach" });
+  });
+
+  it("rejects repeated attachment after a primed context fails and marks transport failure", async () => {
+    const mocks = browserAudioMocks();
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    driver.prepareContext();
+    mocks.context.dispatchEvent(new Event("error"));
+    const transport = createPcmTransport();
+    await expect(driver.prepare(transport)).rejects.toThrow("failed");
+    expect(hasPcmFatalError(pcmControlWords(transport))).toBe(true);
+    await expect(driver.prepare(transport)).rejects.toThrow("failed");
+    expect(mocks.createNode).not.toHaveBeenCalled();
+    await driver.close();
+  });
+
+  it("bounds pending module preparation and refuses late transport binding after close", async () => {
+    vi.useFakeTimers();
+    try {
+      const mocks = browserAudioMocks();
+      let loaded!: () => void;
+      mocks.addModule.mockImplementationOnce(() => new Promise<void>(resolve => { loaded = resolve; }));
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      const prepared = driver.prepare(createPcmTransport());
+      const closed = driver.close().catch(error => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await closed).message).toContain("preparation did not settle");
+      expect(driver.getState()).toBe("closed");
+      expect(mocks.context.close).toHaveBeenCalledOnce();
+      expect(mocks.createNode).not.toHaveBeenCalled();
+      loaded();
+      await prepared;
+      expect(driver.getState()).toBe("closed");
+      expect(mocks.createNode).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("activates and closes a context without exposing a transport to a worklet", async () => {
+    const mocks = browserAudioMocks();
+    const createContext = vi.fn(() => mocks.context as unknown as AudioContext);
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js", createContext,
+      createNode: mocks.createNode });
+    driver.prepareContext();
+    const resumed = driver.resume();
+    expect(mocks.context.resume).toHaveBeenCalledOnce();
+    await resumed;
+    expect(driver.getState()).toBe("running");
+    expect(mocks.addModule).not.toHaveBeenCalled();
+    expect(mocks.createNode).not.toHaveBeenCalled();
+    await driver.close();
+    expect(createContext).toHaveBeenCalledOnce();
+    expect(mocks.context.suspend).toHaveBeenCalledOnce();
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+    expect(mocks.node.port.postMessage).not.toHaveBeenCalled();
+    expect(driver.getState()).toBe("closed");
+    expect(() => driver.prepareContext()).toThrow("closed");
+  });
+
+  it("binds later demand to the same already activated context", async () => {
+    const mocks = browserAudioMocks();
+    const createContext = vi.fn(() => mocks.context as unknown as AudioContext);
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js", createContext,
+      createNode: mocks.createNode });
+    driver.prepareContext();
+    await driver.resume();
+    const transport = createPcmTransport();
+    await driver.prepare(transport);
+    expect(createContext).toHaveBeenCalledOnce();
+    expect(mocks.addModule).toHaveBeenCalledOnce();
+    expect(mocks.createNode).toHaveBeenCalledOnce();
+    expect(mocks.nodeOptions?.processorOptions).toMatchObject(transport);
+    expect(driver.getState()).toBe("running");
+    await driver.close();
+    expect(mocks.node.port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "detach" });
+  });
+
+  it("retains bounded native processor diagnostics when memory detach fails", async () => {
+    vi.useFakeTimers();
+    const report = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const mocks = browserAudioMocks();
+      mocks.node.port.postMessage.mockImplementation(() => {});
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      (mocks.node.onprocessorerror as ((event: { message: string }) => void) | null)?.({ message: "native failure" });
+      const closed = driver.close().catch(error => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      const failure = await closed;
+      expect(failure.message).toContain("did not acknowledge transport detach");
+      expect(failure.message).toContain("context=suspended; sink=error; processor=native failure");
+      expect(report).toHaveBeenCalledOnce();
+    } finally {
+      report.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("invokes native resume synchronously while worklet loading still owns preparation", async () => {
+    const mocks = browserAudioMocks();
+    let loaded!: () => void;
+    mocks.addModule.mockImplementationOnce(() => new Promise<void>(resolve => { loaded = resolve; }));
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    const prepared = driver.prepare(createPcmTransport());
+    const resumed = driver.resume();
+    expect(mocks.context.resume).toHaveBeenCalledOnce();
+    expect(mocks.createNode).not.toHaveBeenCalled();
+    loaded();
+    await Promise.all([prepared, resumed]);
+    expect(mocks.createNode).toHaveBeenCalledOnce();
+    expect(driver.getState()).toBe("running");
+    await driver.close();
+  });
+
+  it("publishes preparation ownership before a context factory reenters close", async () => {
+    const mocks = browserAudioMocks();
+    let closing!: Promise<void>;
+    let driver!: BrowserPcmDriver;
+    driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => {
+        closing = driver.close();
+        return mocks.context as unknown as AudioContext;
+      }, createNode: mocks.createNode });
+    await driver.prepare(createPcmTransport());
+    await closing;
+    expect(mocks.createNode).not.toHaveBeenCalled();
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+    expect(driver.getState()).toBe("closed");
+  });
+
+  it.each(["resume", "suspend"] as const)("publishes %s ownership before synchronous close reentry", async operation => {
+    const mocks = browserAudioMocks();
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    await driver.prepare(createPcmTransport());
+    let closing!: Promise<void>;
+    mocks.context[operation].mockImplementationOnce(() => {
+      closing = driver.close();
+      mocks.context.state = operation === "resume" ? "running" : "suspended";
+      return Promise.resolve();
+    });
+    await expect(driver[operation]()).rejects.toThrow("PCM output is closed");
+    await closing;
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+    expect(driver.getState()).toBe("closed");
+  });
+
+  it("publishes close ownership before a node callback reenters it", async () => {
+    const mocks = browserAudioMocks();
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    await driver.prepare(createPcmTransport());
+    let reentered!: Promise<void>;
+    mocks.node.port.postMessage.mockImplementationOnce(() => {
+      reentered = driver.close();
+      queueMicrotask(() => mocks.node.port.onmessage?.({ data: { type: "detached" } } as MessageEvent));
+    });
+    const closing = driver.close();
+    expect(reentered).toBe(closing);
+    await closing;
+    expect(mocks.node.port.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it("keeps closed terminal even when a stale native callback arrives", async () => {
+    const mocks = browserAudioMocks();
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    await driver.prepare(createPcmTransport());
+    const stateChanged = mocks.context.onstatechange;
+    const processorFailed = mocks.node.onprocessorerror;
+    await driver.close();
+    stateChanged?.();
+    (processorFailed as (() => void) | null)?.();
+    expect(driver.getState()).toBe("closed");
+  });
+
+  it("retains and detaches a node whose connection fails", async () => {
+    const mocks = browserAudioMocks();
+    const failure = new Error("connect failed");
+    mocks.node.connect.mockImplementationOnce(() => { throw failure; });
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    await expect(driver.prepare(createPcmTransport())).rejects.toBe(failure);
+    expect(mocks.node.port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "detach" });
+    expect(mocks.node.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.node.port.close).toHaveBeenCalledOnce();
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+    await driver.close();
+    expect(mocks.node.port.postMessage).toHaveBeenCalledOnce();
+  });
+
+  it("contains state observers without losing the prepared worklet owner", async () => {
+    const mocks = browserAudioMocks();
+    const report = vi.spyOn(console, "error").mockImplementation(() => {});
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    try {
+      driver.subscribe(() => { throw new Error("observer failed"); });
+      await driver.prepare(createPcmTransport());
+      expect(driver.getState()).toBe("suspended");
+      await driver.close();
+      expect(mocks.node.port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "detach" });
+      expect(mocks.node.disconnect).toHaveBeenCalledOnce();
+      expect(report).toHaveBeenCalled();
+    } finally { report.mockRestore(); }
+  });
+
+  it("preserves preparation and detach failures together", async () => {
+    vi.useFakeTimers();
+    try {
+      const mocks = browserAudioMocks();
+      const original = new Error("connect failed");
+      mocks.node.connect.mockImplementationOnce(() => { throw original; });
+      mocks.node.port.postMessage.mockImplementation(() => {});
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      const failure = driver.prepare(createPcmTransport()).catch(error => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      const error = await failure;
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.errors[0]).toBe(original);
+      expect(error.errors[1].message).toContain("did not acknowledge transport detach");
+      expect(mocks.node.port.close).toHaveBeenCalledOnce();
+      expect(mocks.context.close).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("does not construct a worklet when module loading finishes after close admission", async () => {
+    const mocks = browserAudioMocks();
+    let loaded!: () => void;
+    mocks.addModule.mockImplementationOnce(() => new Promise<void>(resolve => { loaded = resolve; }));
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    const preparing = driver.prepare(createPcmTransport());
+    const closing = driver.close();
+    loaded();
+    await Promise.all([preparing, closing]);
+    expect(mocks.createNode).not.toHaveBeenCalled();
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+    expect(driver.getState()).toBe("closed");
+  });
+
+  it.each(["resume", "suspend"] as const)("bounds and coalesces pending %s without reopening a closed driver", async operation => {
+    vi.useFakeTimers();
+    try {
+      const mocks = browserAudioMocks();
+      let complete!: () => void;
+      mocks.context[operation].mockImplementationOnce(() => new Promise<void>(resolve => {
+        complete = () => { mocks.context.state = operation === "resume" ? "running" : "suspended"; resolve(); };
+      }));
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      const transition = driver[operation]();
+      expect(driver[operation]()).toBe(transition);
+      const refused = expect(transition).rejects.toThrow("PCM output is closed");
+      const closed = expect(driver.close()).rejects.toThrow("context transition did not settle");
+      await vi.advanceTimersByTimeAsync(1000);
+      await closed;
+      expect(driver.getState()).toBe("closed");
+      complete();
+      await refused;
+      expect(driver.getState()).toBe("closed");
+      await expect(driver.resume()).rejects.toThrow("PCM output is closed");
+      await expect(driver.suspend()).rejects.toThrow("PCM output is closed");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("detaches before suspending the physical tail and closes control admission immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      const mocks = browserAudioMocks();
+      mocks.node.port.postMessage.mockImplementation(() => {});
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      await driver.resume();
+      const closing = driver.close();
+      expect(mocks.context.suspend).not.toHaveBeenCalled();
+      await expect(driver.resume()).rejects.toThrow("PCM output is closed");
+      await expect(driver.suspend()).rejects.toThrow("PCM output is closed");
+      mocks.node.port.onmessage?.({ data: { type: "detached" } } as MessageEvent);
+      await vi.advanceTimersByTimeAsync(33);
+      await closing;
+      expect(mocks.context.suspend).toHaveBeenCalledOnce();
+      expect(mocks.node.disconnect).toHaveBeenCalledOnce();
+      expect(mocks.context.close).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("keeps shared context replacement quarantined after a late resume", async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    try {
+      const { BrowserPcmDriver: SharedDriver, assertBrowserPcmTransportRetired,
+        isPcmContextFailureWithRetiredTransport } = await import("../src/audio/browser-pcm-driver");
+      const mocks = browserAudioMocks();
+      const createContext = vi.fn(function () { return mocks.context; });
+      vi.stubGlobal("AudioContext", createContext);
+      let complete!: () => void;
+      mocks.context.resume.mockImplementationOnce(() => new Promise<void>(resolve => {
+        complete = () => { mocks.context.state = "running"; resolve(); };
+      }));
+      const driver = new SharedDriver({ workletUrl: "/worklet.js", createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      const resumed = expect(driver.resume()).rejects.toThrow("PCM output is closed");
+      const closed = driver.close().catch(error => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      const failure = await closed;
+      expect(failure.message).toContain("transport memory is detached");
+      expect(isPcmContextFailureWithRetiredTransport(failure)).toBe(true);
+      expect(isPcmContextFailureWithRetiredTransport(new Error(failure.message))).toBe(false);
+      expect(assertBrowserPcmTransportRetired).not.toThrow();
+      const successor = new SharedDriver({ workletUrl: "/worklet.js", createNode: mocks.createNode });
+      await expect(successor.prepare(createPcmTransport())).rejects.toThrow("context is quarantined");
+      complete();
+      await resumed;
+      expect(driver.getState()).toBe("closed");
+      await expect(successor.prepare(createPcmTransport())).rejects.toThrow("context is quarantined");
+      expect(createContext).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+      vi.useRealTimers();
+    }
+  });
+
+  it("quarantines a shared context whose shutdown suspension remains pending", async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    try {
+      const { BrowserPcmDriver: SharedDriver, assertBrowserPcmTransportRetired,
+        isPcmContextFailureWithRetiredTransport } = await import("../src/audio/browser-pcm-driver");
+      const mocks = browserAudioMocks();
+      const createContext = vi.fn(function () { return mocks.context; });
+      vi.stubGlobal("AudioContext", createContext);
+      const driver = new SharedDriver({ workletUrl: "/worklet.js", createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      await driver.resume();
+      let complete!: () => void;
+      mocks.context.suspend.mockImplementationOnce(() => new Promise<void>(resolve => {
+        complete = () => { mocks.context.state = "suspended"; resolve(); };
+      }));
+      const closed = driver.close().catch(error => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(isPcmContextFailureWithRetiredTransport(await closed)).toBe(true);
+      expect(assertBrowserPcmTransportRetired).not.toThrow();
+      expect(mocks.node.port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: "detach" });
+      const successor = new SharedDriver({ workletUrl: "/worklet.js", createNode: mocks.createNode });
+      await expect(successor.prepare(createPcmTransport())).rejects.toThrow("context is quarantined");
+      complete();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(driver.getState()).toBe("closed");
+      await expect(successor.prepare(createPcmTransport())).rejects.toThrow("context is quarantined");
+      expect(createContext).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+      vi.useRealTimers();
+    }
+  });
+
+  it("never downgrades missing memory detach to an audio-only quarantine", async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    try {
+      const { BrowserPcmDriver: SharedDriver, assertBrowserPcmTransportRetired,
+        isPcmContextFailureWithRetiredTransport } = await import("../src/audio/browser-pcm-driver");
+      const mocks = browserAudioMocks();
+      vi.stubGlobal("AudioContext", vi.fn(function () { return mocks.context; }));
+      let complete!: () => void;
+      mocks.context.resume.mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+      mocks.node.port.postMessage.mockImplementation(() => {});
+      const driver = new SharedDriver({ workletUrl: "/worklet.js", createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      const resume = driver.resume().catch(error => error);
+      const closed = driver.close().catch(error => error);
+      await vi.advanceTimersByTimeAsync(2000);
+      const failure = await closed;
+      expect(failure).toBeInstanceOf(AggregateError);
+      expect(failure.errors).toHaveLength(2);
+      expect(isPcmContextFailureWithRetiredTransport(failure)).toBe(false);
+      expect(assertBrowserPcmTransportRetired).toThrow("retirement is unconfirmed");
+      complete();
+      await resume;
+      expect(assertBrowserPcmTransportRetired).toThrow("retirement is unconfirmed");
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for terminal detach and shares the same close operation", async () => {
+    const mocks = browserAudioMocks();
+    mocks.node.port.postMessage.mockImplementation(() => {});
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    const transport = createPcmTransport();
+    await driver.prepare(transport);
+    const closed = driver.close();
+    expect(driver.close()).toBe(closed);
+    expect(mocks.node.disconnect).not.toHaveBeenCalled();
+    expect(mocks.node.port.close).not.toHaveBeenCalled();
+    expect(mocks.context.close).not.toHaveBeenCalled();
+    await expect(driver.prepare(transport)).rejects.toThrow("PCM output is closed");
+    mocks.node.port.onmessage?.({ data: { type: "unrelated" } } as MessageEvent);
+    expect(mocks.node.disconnect).not.toHaveBeenCalled();
+    mocks.node.port.onmessage?.({ data: { type: "detached" } } as MessageEvent);
+    await closed;
+    expect(mocks.node.disconnect).toHaveBeenCalledOnce();
+    expect(mocks.node.port.close).toHaveBeenCalledOnce();
+    expect(mocks.context.close).toHaveBeenCalledOnce();
+  });
+
+  it("reports a missing detach acknowledgement without hanging shutdown", async () => {
+    vi.useFakeTimers();
+    try {
+      const mocks = browserAudioMocks();
+      mocks.node.port.postMessage.mockImplementation(() => {});
+      const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+        createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+      await driver.prepare(createPcmTransport());
+      const closed = expect(driver.close()).rejects.toThrow("did not acknowledge transport detach");
+      await vi.advanceTimersByTimeAsync(1000);
+      await closed;
+      expect(mocks.node.disconnect).toHaveBeenCalledOnce();
+      expect(mocks.node.port.close).toHaveBeenCalledOnce();
+      expect(driver.getState()).toBe("closed");
+    } finally { vi.useRealTimers(); }
   });
 
   it("loads the packaged worklet with the generated PCM-only transport contract", async () => {
@@ -160,6 +593,7 @@ describe("BrowserPcmDriver", () => {
     await driver.suspend();
     expect(driver.getState()).toBe("suspended");
     await driver.close();
+    expect(mocks.node.port.postMessage).toHaveBeenCalledWith({ type: "detach" });
     expect(mocks.node.disconnect).toHaveBeenCalledOnce();
     expect(mocks.node.port.close).toHaveBeenCalledOnce();
     expect(mocks.context.close).toHaveBeenCalledOnce();
@@ -244,7 +678,7 @@ describe("BrowserPcmDriver", () => {
     await driver.close();
   });
 
-  it("bounds settlement when AudioContext suspension never resolves", async () => {
+  it("reports bounded settlement failure when AudioContext suspension never resolves", async () => {
     vi.useFakeTimers();
     try {
       const mocks = browserAudioMocks();
@@ -260,7 +694,7 @@ describe("BrowserPcmDriver", () => {
       await driver.resume();
 
       let settled = false;
-      const settlement = driver.settleOutputPipeline().then(() => {
+      const settlement = expect(driver.settleOutputPipeline()).rejects.toThrow("output suspension did not settle").then(() => {
         settled = true;
       });
       await vi.advanceTimersByTimeAsync(999);
@@ -269,7 +703,9 @@ describe("BrowserPcmDriver", () => {
       await settlement;
       expect(settled).toBe(true);
 
-      await driver.close();
+      const closing = expect(driver.close()).rejects.toThrow("PCM output shutdown failed");
+      await vi.runAllTimersAsync();
+      await closing;
     } finally {
       vi.useRealTimers();
     }

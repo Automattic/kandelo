@@ -20,3 +20,4 @@ script_path = "packages/registry/login/build-login.sh"
 [[outputs]]
 name = "login"
 wasm = "login.wasm"
+fork_instrumentation = "disabled"

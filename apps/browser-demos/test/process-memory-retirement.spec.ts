@@ -29,7 +29,8 @@ const execChildWasmPath = resolve(
   "local-binaries/programs/wasm32/exec-child.wasm",
 );
 const CHURN_ITERATIONS = 100;
-test("browser retires exact-fenced process memory across repeated fork and exec", async ({
+for (const maximumPages of [4096, 16384]) {
+test(`browser retires exact-fenced process memory across repeated fork and exec with ${maximumPages} pages`, async ({
   page,
   baseURL,
 }) => {
@@ -51,6 +52,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
   const result = await page.evaluate(
     async ({
       churnIterations,
+      maximumPages,
       browserKernelUrl,
       imageFsModuleUrl,
       imageModuleBytes,
@@ -69,6 +71,8 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       const diagnostics: Array<{ source: string; message: string }> = [];
       const kernel = new BrowserKernel({
         maxWorkers: 4,
+        maxPages: maximumPages,
+        kernelMaxPages: maximumPages === 4096 ? 12288 : 16384,
         // The SDK's fallback brk base makes each fixture address space about
         // 17 MiB. This budget fits the legitimate concurrent parent,
         // pre-exec child, and replacement, but not twelve quarantined exec
@@ -115,6 +119,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
     },
     {
       churnIterations: CHURN_ITERATIONS,
+      maximumPages,
       browserKernelUrl: new URL(
         `/@fs/${browserKernelModulePath}`,
         baseURL,
@@ -136,3 +141,4 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
   expect(result.diagnostics).toEqual([]);
   expect(runtimeErrors).toEqual([]);
 });
+}
