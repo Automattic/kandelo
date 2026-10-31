@@ -2,7 +2,7 @@
 import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from "./image-storage.js";
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
-import { knownTextureUnitLimit } from "./limits.js";
+import { knownTextureUnitLimit, knownVertexAttributeLimit, maxVertexAttributes } from "./limits.js";
 import { checkedGlSequence } from "./program-objects.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
@@ -33,6 +33,10 @@ export class GlMuxer {
   private framebufferSelectorsDirty = false;
   private errorOwner: GlErrorState | null = null;
   private textureUnitCount = 32;
+  // Only a scalar survives invalidation, never a former owner or its values.
+  // Unchecked guest indices are clamped to an accepted native limit BEFORE
+  // any replay loop; an unavailable limit refuses entry rather than guessing.
+  private vertexAttribCount = 0;
 
   constructor(private gl: WebGL2RenderingContext) {}
 
@@ -71,9 +75,16 @@ export class GlMuxer {
     // A thrown full replay must not leave the old owner's identity accepted
     // after an arbitrary native prefix changed its state.
     this.forgetCurrent();
+    this.rememberVertexAttributes(target);
     try {
       const s = target.shadow;
       const gl = this.gl;
+      let attributes = this.vertexAttribCount;
+      if (attributes) {
+        const limit = knownVertexAttributeLimit(gl) || maxVertexAttributes({gl,errors:[]});
+        if (!limit) throw new Error("Native vertex attribute limit is unavailable");
+        attributes = this.vertexAttribCount = Math.min(attributes,limit);
+      }
 
       if (s.vao === null && s.defaultVao === null) s.defaultVao = gl.createVertexArray();
       gl.bindVertexArray(s.vao ?? s.defaultVao);
@@ -127,11 +138,7 @@ export class GlMuxer {
 
       gl.useProgram(s.currentProgram);
 
-      const indices = new Set([
-        ...s.vertexAttribValues.keys(),
-        ...(previous?.shadow.vertexAttribValues.keys() ?? []),
-      ]);
-      for (const index of indices) {
+      for (let index = 0; index < attributes; index++) {
         const value = s.vertexAttribValues.get(index) ?? [0, 0, 0, 1];
         gl.vertexAttrib4f(index, value[0], value[1], value[2], value[3]);
       }
@@ -177,10 +184,13 @@ export class GlMuxer {
 
   /** Deferred cleanup must leave an unread peer error owned and retryable.
    * Unlike unconditional teardown, refusal performs no native cleanup. */
-  prepareRetirement(): boolean {
+  prepareRetirement(unknownVertexAttributes = false): boolean {
     try { this.captureCurrentErrors(); }
     catch { return false; }
     this.errorOwner = null;
+    // A generic native writer can touch constants absent every guest shadow.
+    // The sentinel is clamped to a checked native limit before any replay.
+    if (unknownVertexAttributes) this.vertexAttribCount = Infinity;
     this.forgetCurrent();
     return true;
   }
@@ -196,12 +206,21 @@ export class GlMuxer {
     this.forgetCurrent();
   }
 
+  private rememberVertexAttributes(owner: GlMuxerOwner | null): void {
+    const limit = knownVertexAttributeLimit(this.gl);
+    for (const index of owner?.shadow.vertexAttribValues.keys() ?? []) {
+      if (Number.isInteger(index) && index >= 0 && index <= 0xffff_ffff)
+        this.vertexAttribCount = Math.max(this.vertexAttribCount,limit ? Math.min(index+1,limit) : index+1);
+    }
+  }
+
   private forgetCurrent(): void {
     // Commands can grow the selected owner's shadow between switches.
     // Invalidation loses its identity, but must retain the clearing range.
     this.textureUnitCount = Math.max(this.textureUnitCount,
       this.current?.shadow.textureUnits.length ?? 0,
       this.current?.shadow.cubeTextureUnits.length ?? 0);
+    this.rememberVertexAttributes(this.current);
     this.current = null;
     this.framebufferSelectorsDirty = false;
   }

@@ -12,7 +12,7 @@ function renderer() {
   const state = new Map<number, unknown>([
     [0x8caa, read], [0x8ca6, draw], [0x88ed, pack], [0x0c11, true],
     [0x0d05, 8], [0x0d02, 19], [0x0d04, 3], [0x0d03, 5],
-    [0x84e0, 0x84c0], [0x8069, null], [0x8ca7, null],
+    [0x84e0, 0x84c0], [0x8069, null], [0x8ca7, null], [0x8869, 8],
     [0x0c23, [true, false, true, false]], [0x0c22, [0.25, 0.5, 0.75, 0.125]],
   ]);
   const initial = new Map(state), calls: unknown[][] = [];
@@ -750,4 +750,38 @@ it("fully invalidates if an otherwise pure drawable commit throws before its cha
   surface.users.add=()=>{throw Error("membership allocation refused");};
   expect(r.makeCurrent()).toBe(-5);expect(Reflect.get(r.muxer,"current")).toBeNull();
   surface.users.add=add;expect(r.submit()).toBe(0);expect(r.selections()).toBe(r.before+1);
+});
+
+it("resets every native constant after a generic callback writes an index absent guest shadows",()=>{
+  const r=selectedDrawable(),values=new Map<number,number[]>();r.state.set(0x8869,8);
+  r.gl.vertexAttrib4f=(index,...value)=>{values.set(index,value);};
+  getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl,()=>r.gl.vertexAttrib4f(6,2,3,4,5));
+  expect(values.get(6)).toEqual([2,3,4,5]);expect(r.binding.shadow.vertexAttribValues.size).toBe(0);
+  expect(r.submit()).toBe(0);
+  expect([...values.keys()]).toEqual([6,0,1,2,3,4,5,7]);
+  expect([...values.values()].every(value=>value.join(",")==="0,0,0,1")).toBe(true);
+});
+
+it("fences generic callback constants before reentrant work and retains coverage after callback and replay failures",()=>{
+  const r=selectedDrawable(),values=new Map<number,number[]>();r.state.set(0x8869,8);
+  let reject=false;
+  r.gl.vertexAttrib4f=(index,...value)=>{values.set(index,value);if(reject&&index===7)throw Error("constant replay refused");};
+  expect(()=>getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl,()=>{
+    r.gl.vertexAttrib4f(6,2,3,4,5);
+    expect(r.submit()).toBe(0);expect(values.get(6)).toEqual([0,0,0,1]);
+    r.gl.vertexAttrib4f(7,5,4,3,2);throw Error("generic callback refused");
+  })).toThrow("generic callback refused");
+  reject=true;expect(r.submit()).toBe(-5);expect(Reflect.get(r.muxer,"current")).toBeNull();
+  reject=false;expect(r.submit()).toBe(0);
+  expect([...values.values()].every(value=>value.join(",")==="0,0,0,1")).toBe(true);
+});
+
+it("retries a generic callback's full constant reset after native limit admission refuses",()=>{
+  const r=selectedDrawable(),values=new Map<number,number[]>();r.state.set(0x8869,0);
+  r.gl.vertexAttrib4f=(index,...value)=>{values.set(index,value);};r.setError(0x501);
+  getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl,()=>r.gl.vertexAttrib4f(6,2,3,4,5));
+  expect(r.binding.errors).toEqual([0x501]);expect(r.submit()).toBe(-5);
+  expect(Reflect.get(r.muxer,"current")).toBeNull();expect(values.get(6)).toEqual([2,3,4,5]);
+  r.state.set(0x8869,8);expect(r.submit()).toBe(0);expect(values.get(6)).toEqual([0,0,0,1]);
+  expect(values.size).toBe(8);expect(r.binding.errors).toEqual([0x501]);
 });

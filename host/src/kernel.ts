@@ -1044,7 +1044,8 @@ export class WasmPosixKernel {
 
   private withGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
     const muxer = this.glMuxerFor(gl);
-    if (!muxer.prepareRetirement() || !this.gl.retryExecutionRetirements(gl) || !repairNativeState(gl))
+    // Generic native work may write constants absent every guest shadow.
+    if (!muxer.prepareRetirement(true) || !this.gl.retryExecutionRetirements(gl) || !repairNativeState(gl))
       throw new Error("Native graphics state is not ready for device presentation");
     try {
       const result = work();

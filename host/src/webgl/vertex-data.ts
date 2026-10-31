@@ -24,8 +24,8 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   const gl = b.gl!, width = componentBytes(a.type);
   if (!width) { recordGlError(b,0x500); return false; }
   if (a.size < 1 || a.size > 4 || a.stride < 0) { recordGlError(b,0x501); return false; }
-  let limit = 0;
-  if (!checkedGlCall(b, () => { limit = maxVertexAttributes(gl); })) return false;
+  const limit = maxVertexAttributes(b);
+  if (limit === null) return false;
   if (!limit) { recordGlError(b,0x502); return false; }
   if (index >= limit) { recordGlError(b,0x501); return false; }
   if (a.offset < 0 || a.offset % width || a.stride % width || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }

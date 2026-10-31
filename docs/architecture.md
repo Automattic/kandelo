@@ -4563,7 +4563,20 @@ keeps original width/height separately from padded stride, so accepted
 kernel retargets retain actual geometry.
 The multiplexer restores masks, stencil operations, clear values, dither,
 constant vertex attributes, independent 2D/cube texture bindings and pixel
-storage state when switching guest contexts. Synchronous native-state queries
+storage state when switching guest contexts. A scalar constant-attribute
+clearing range survives full invalidation and retirement; incoming indices
+enter that range before the first fallible native replay prefix. Replay
+bounds it by a checked native attribute limit, restoring incoming constants
+or the default `(0,0,0,1)` even after former owner metadata is discarded.
+Only accepted vertex-attribute limit queries populate that immutable native
+limit cache; unavailable or rejected queries refuse entry and can retry. Generic native
+callbacks mark all attribute constants unknown before callback effects, so
+restoration covers the entire accepted native range, including indices absent
+all guest shadows. No guest bindings, attribute values or sparse key sets are
+retained by that clearing range. Full replay still has its existing unchecked
+native-error behavior; this change closes lost reset coverage, not acceptance
+checking for every state replay. Invalid-index constant shadow publication
+also remains a separate validation gap. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
 
 The host now has a retained native-fence owner as a prerequisite for EGL

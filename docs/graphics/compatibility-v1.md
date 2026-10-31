@@ -14361,3 +14361,26 @@ open.
 
 Evidence: `.context/drawable-boundary-response-r2/`; independent offline review
 is recorded separately in `.context/drawable-boundary-response-analysis-r2/`.
+
+
+### Constant-attribute reset coverage after invalidation, 2026-10-31
+
+A follow-up source repair closes the lost constant-attribute
+reset-index coverage identified in the prior muxer review. It retains a scalar
+clearing range before discarding selected/incoming owner identity, bounds
+replay by checked native MAX_VERTEX_ATTRIBS, and restores incoming constants or
+(0,0,0,1). A generic native callback marks all constants unknown before its
+effects; no guest binding, value or sparse key Set is retained. Only an accepted
+vertex-limit query enters the cache; rejected/unavailable queries refuse and
+retry. Four corrected before-controls reproduce stale constants; all32 source
+WebGL files pass846/846 with0skips in the declared shell. Exact evidence is
+.context/focus-constant-attrib-candidate-r1/. Standalone typecheck retains
+byte-identical prior failing diagnostics. No browser/build/ABI change or
+responsiveness measurement is performed for this delta. The wider 0..n reset
+range is not claimed performance-neutral. Full-replay unchecked native errors
+and OP_VERTEX_ATTRIB_4FV invalid-index shadow publication remain ordinary open
+gaps; source control success is not normal distribution/conformance acceptance.
+
+Independent source review finds no new blocker; reviewed seven-file identities
+match the tested source. Evidence: `.context/focus-constant-attrib-review-r1/`.
+This repair is not present in either frozen5679/b6 or5680/ce7 preview.
