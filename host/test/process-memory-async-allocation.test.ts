@@ -1,3 +1,4 @@
+import { lookupComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { describe, expect, it } from "vitest";
 import {
   ProcessMemoryAllocator,
@@ -42,6 +43,7 @@ describe("asynchronous process memory admission", () => {
     expect(calls).toBe(1);
     pending.resolve(memory());
     const lease = await first;
+    expect(lookupComparisonMemoryShape(lease.memory)).toBeUndefined();
     expect(allocator.getRetirementStats()).toMatchObject({
       liveMemories: 1, chargedMemories: 1, chargedBytes: WASM_PAGE_SIZE,
     });

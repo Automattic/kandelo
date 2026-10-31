@@ -2391,8 +2391,10 @@ The same unpublished host3 contract also includes the required read-only
 `host_proc_compare_bytes(pid: i32, addr: i64, snapshot: i32, len: i32) -> i32`
 import used by file-mapping publication. The snapshot pointer names an
 initialized Rust slice lent only for that synchronous comparison. Results
-are exactly0 for equal,1 for different, or negative errno; all views remain
-inside the host call. Both hosts must implement it. Earlier development
+are exactly0 for equal,1 for different,2 for unavailable native comparison,
+or negative errno. A result of2 triggers the normal separately validated
+owned-copy read; it never means equality. All native authority remains
+inside the synchronous host call. Both hosts must implement it. Earlier development
 host3 kernels and hosts are not interchangeable with this regenerated
 contract; rebuild them together. This completes the already-reserved
 successor to main's host2 rather than allocating another development ABI.

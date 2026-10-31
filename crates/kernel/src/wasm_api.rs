@@ -1402,9 +1402,11 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         };
         match compared {
             0 => Ok(None),
-            1 => self.read_process_owned(pid, addr, len).map(Some),
+            // 2 means the host lacks the optional native comparator; it is
+            // not equality. Revalidate and copy through the ordinary path.
+            1 | 2 => self.read_process_owned(pid, addr, len).map(Some),
             other => {
-                // The compare protocol admits exactly 0/1, not every
+                // The compare protocol admits exactly 0/1/2, not every
                 // nonnegative value accepted by other host imports.
                 i32_to_result(other)?;
                 Err(Errno::EIO)

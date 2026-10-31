@@ -578,10 +578,24 @@ For file mappings, the Wasm backend first compares the live process range
 against the existing initialized Rust snapshot through the synchronous
 `host_proc_compare_bytes` import. The host validates both complete ranges,
 rechecks the exact kernel Memory and generation after process lookup, and
-keeps all read-only views inside that call. Equal bytes retain the old
+keeps all read-only native authority inside that call. Equal bytes retain the old
 snapshot without allocating or copying a new full range. Different bytes
 use the ordinary separately validated owned-copy path. Exactly zero means
-equal, one means different, and errors never publish partial bytes.
+equal, one means different, and two requests that same owned-copy path when
+the optional native comparator is unavailable. Errors never publish partial
+bytes. The fixed read-only Wasm helper imports the two existing memories,
+allocates no linear memory, writes nothing, and never retains an Instance
+or exported function beyond the synchronous borrow. Only compiled modules
+and frozen scalar constructor descriptors are cached. Trusted constructor
+sites record actual address width, sharing and maximum; unknown externally
+supplied memory descriptors retain the owned-copy path. SIMD is preferred
+when supported, with a scalar Wasm variant and finally owned-copy fallback.
+Native instance churn, browser-memory and application performance validation
+are required before accepting this experimental implementation. The normal
+host build checks all32 fixed generated variants against their WAT template
+and generator using the declared WABT tools. Regenerate with
+`scripts/dev-shell.sh npm --prefix host run generate:snapshot-comparator`;
+`check:snapshot-comparator` verifies without updating the checked-in bytes.
 This comparison is one observation, not a persistent no-writer epoch:
 every mapping still participates in the authoritative backing-refresh
 phase, including stale readers, descriptor writes and earlier aliases of

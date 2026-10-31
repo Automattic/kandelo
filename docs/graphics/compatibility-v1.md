@@ -10841,3 +10841,41 @@ Derived analysis is `.context/snapshot-compare-cpu-analysis.json` and
 identities, raw hashes and phase boundaries are retained. Instrumented
 elapsed times are not compared with uninstrumented desktop observations.
 No Wasm function identity is borrowed from the earlier kernel binary.
+
+
+### Native comparison replacement in progress (2026-10-30)
+
+The JavaScript scan is replaced in source with fixed read-only two-memory
+Wasm helpers: SIMD when available, scalar Wasm otherwise, then an explicit
+status2 requesting the ordinary checked owned read. Actual constructor
+sites record weak-keyed scalar descriptors; generic external factories
+retain fallback. Instances and exports are synchronous and uncached;
+this does not prove prompt native reclamation. Whole-span proof and
+backing refresh are preserved. The ABI numbers remain56/3/17/21 within
+the unpublished cohort; normal kernel/host artifacts must be regenerated
+and rebuilt together.
+
+First focused job `native-snapshot-host-focused-1030-233224-129c`
+finishes1 in5m19s:96 passing,2 failing,0 skipped/unloaded. All runtime
+comparison cases pass, including all native width/sharing/mode pairs.
+Failures are a WAT structural assertion counting a type signature as a
+function and the source audit reporting eight new exact authority sites.
+The assertion now counts actual function definitions; narrow reviewed
+read-only authority entries replace the removed JavaScript view entries.
+No audit scope is removed. Follow-up adds capability fallback, browser
+constructor-descriptor capture and unknown external-factory controls.
+The original failed log remains in the managed job registry. New source
+has not yet passed its complete focused rerun, real consumers, native
+churn/browser-memory, desktop timing or broad performance/POSIX gates.
+
+
+Expanded job `native-snapshot-host-r2-1030-233953-a33e` finishes1 in5m00s.
+Normal host build (including declaration output and deterministic32-variant
+check) passes. Runtime/generator/capability/constructor controls pass115;
+none skip or fail loading. The full authority audit exceeds its180s
+watchdog at205.2s under load22.7–30.1 on18 CPUs; the original timeout is
+retained. Its finite limit becomes300s without removing any source or
+assertion. The later Rust stage does not run because the script correctly
+stops on failure. A new real-kernel fallback case is added for the normal
+rebuild phase, and host build input hashing includes the generator/template
+so an outdated generated output cannot evade the build's check.

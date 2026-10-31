@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape } from "./process-snapshot-comparator";
 import {
   CH_TOTAL_SIZE,
   DEFAULT_MAX_PAGES,
@@ -303,19 +304,20 @@ export function createProcessMemory(
   ptrWidth: 4 | 8,
   layout: ProcessMemoryLayout,
 ): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(layout.initialPages) as any,
-      maximum: BigInt(layout.maximumPages) as any,
-      shared: true,
-      address: "i64",
-    } as any);
-  }
-  return new WebAssembly.Memory({
-    initial: layout.initialPages,
-    maximum: layout.maximumPages,
-    shared: true,
-  });
+  const memory = ptrWidth === 8
+    ? new WebAssembly.Memory({
+        initial: BigInt(layout.initialPages),
+        maximum: BigInt(layout.maximumPages),
+        shared: true,
+        address: "i64",
+      } as unknown as WebAssembly.MemoryDescriptor)
+    : new WebAssembly.Memory({
+        initial: layout.initialPages,
+        maximum: layout.maximumPages,
+        shared: true,
+      });
+  recordComparisonMemoryShape(memory, ptrWidth, true, layout.maximumPages);
+  return memory;
 }
 
 export interface ProcessMemoryAllocationRequest {
@@ -1244,19 +1246,20 @@ export class ProcessMemoryAllocator {
   private createMemory(
     request: ProcessMemoryAllocationRequest,
   ): WebAssembly.Memory {
-    if (request.ptrWidth === 8) {
-      return new WebAssembly.Memory({
-        initial: BigInt(request.initialPages) as any,
-        maximum: BigInt(request.maximumPages) as any,
-        shared: true,
-        address: "i64",
-      } as any);
-    }
-    return new WebAssembly.Memory({
-      initial: request.initialPages,
-      maximum: request.maximumPages,
-      shared: true,
-    });
+    const memory = request.ptrWidth === 8
+      ? new WebAssembly.Memory({
+          initial: BigInt(request.initialPages),
+          maximum: BigInt(request.maximumPages),
+          shared: true,
+          address: "i64",
+        } as unknown as WebAssembly.MemoryDescriptor)
+      : new WebAssembly.Memory({
+          initial: request.initialPages,
+          maximum: request.maximumPages,
+          shared: true,
+        });
+    recordComparisonMemoryShape(memory, request.ptrWidth, true, request.maximumPages);
+    return memory;
   }
 
   private refreshOwnedBytes(): void {

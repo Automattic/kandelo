@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -192,7 +193,7 @@ const intrinsicTypedArrayByteLength = Object.getOwnPropertyDescriptor(
   "byteLength",
 )!.get!;
 const IntrinsicUint8Array = Uint8Array;
-const IntrinsicUint32Array = Uint32Array;
+const IntrinsicWasmInstance = WebAssembly.Instance;
 const IntrinsicInt32Array = Int32Array;
 const IntrinsicDataView = DataView;
 const IntrinsicWasmMemory = WebAssembly.Memory;
@@ -1692,22 +1693,21 @@ export class WasmPosixKernel {
     if (!Number.isSafeInteger(maximumPages) || maximumPages < 24) {
       throw new Error(`invalid kernel maximum pages: ${maximumPages}`);
     }
-    if (pointerWidth === 8) {
-      return new IntrinsicWasmMemory({
-        initial: 24n,
-        maximum: BigInt(maximumPages),
-        shared: true,
-        address: "i64",
-      } as unknown as WebAssembly.MemoryDescriptor);
-    }
-    return new IntrinsicWasmMemory({
-      // 24 pages = 1.5 MiB of initial address space. This must remain above
-      // the kernel Wasm's linker-derived minimum and leaves headroom for
-      // future static data without re-tuning host construction each time.
-      initial: 24,
-      maximum: maximumPages,
-      shared: true,
-    });
+    const memory = pointerWidth === 8
+      ? new IntrinsicWasmMemory({
+          initial: 24n,
+          maximum: intrinsicBigInt(maximumPages),
+          shared: true,
+          address: "i64",
+        } as unknown as WebAssembly.MemoryDescriptor)
+      : new IntrinsicWasmMemory({
+          // The linker minimum is 24 pages; the ceiling remains the host budget.
+          initial: 24,
+          maximum: maximumPages,
+          shared: true,
+        });
+    recordComparisonMemoryShape(memory, pointerWidth, true, maximumPages);
+    return memory;
   }
 
   /**
@@ -3493,8 +3493,8 @@ export class WasmPosixKernel {
   }
 
   /** Compare a Rust-lent initialized snapshot without copying either side.
-   * Exact 0/1 is equal/different; invalid ranges return negative EFAULT.
-   * All views stay inside this synchronous method and are never published. */
+   * Exact 0/1 is equal/different; 2 requests a separately checked owned read.
+   * Invalid ranges return EFAULT. All native authority stays synchronous. */
   #compareProcessSnapshot(
     pid: number,
     addr: bigint,
@@ -3525,29 +3525,25 @@ export class WasmPosixKernel {
         memory, snapshot.pointer, snapshot.length, this.#kernelPtrWidth,
         "host_proc_compare_bytes live Rust snapshot",
       );
-      const processBuffer = wasmMemoryBuffer(processMemory);
-      const snapshotBuffer = wasmMemoryBuffer(memory);
-      const current = new IntrinsicUint8Array(processBuffer, process.pointer, process.length);
-      const baseline = new IntrinsicUint8Array(snapshotBuffer, liveSnapshot.pointer, liveSnapshot.length);
-      let i = 0;
-      // Alignment and the remainder are proved before constructing word
-      // views. No caller-overridable math, constructors or methods run here.
-      if (process.pointer % 4 === liveSnapshot.pointer % 4) {
-        let lead = (4 - process.pointer % 4) % 4;
-        if (lead > process.length) lead = process.length;
-        for (; i < lead; i++) if (current[i] !== baseline[i]) return 1;
-        const remaining = process.length - lead;
-        const words = (remaining - remaining % 4) / 4;
-        if (words > 0) {
-          const currentWords = new IntrinsicUint32Array(processBuffer, process.pointer + lead, words);
-          const baselineWords = new IntrinsicUint32Array(snapshotBuffer, liveSnapshot.pointer + lead, words);
-          for (let word = 0; word < words; word++)
-            if (currentWords[word] !== baselineWords[word]) return 1;
-        }
-        i = lead + words * 4;
-      }
-      for (; i < process.length; i++) if (current[i] !== baseline[i]) return 1;
-      return 0;
+      if (process.length === 0) return 0;
+      const module = getSnapshotComparatorModule(
+        lookupComparisonMemoryShape(memory),
+        lookupComparisonMemoryShape(processMemory),
+      );
+      // Unknown constructor metadata or unavailable native capability uses
+      // Rust's separately checked owned read, never a partial comparison.
+      if (!module) return 2;
+      // WHY: only fixed read-only code borrows these two existing memories.
+      // Keep the Instance and export synchronous and uncached: no JS reference
+      // escapes this Rust borrow. Native reclamation needs separate evidence.
+      const instance = new IntrinsicWasmInstance(module, {
+        env: { kernel: memory, process: processMemory },
+      });
+      const exports = intrinsicApply(intrinsicWasmInstanceExports, instance, []) as WebAssembly.Exports;
+      const result = intrinsicApply(exports.compare as Function, undefined, [
+        intrinsicBigInt(liveSnapshot.pointer), intrinsicBigInt(process.pointer), process.length,
+      ]);
+      return result === 0 || result === 1 ? result : -5;
     } catch {
       return -14;
     }

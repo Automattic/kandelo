@@ -1,3 +1,4 @@
+import { recordComparisonMemoryShape } from "../src/process-snapshot-comparator";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -37,6 +38,7 @@ function kernelHarness(
   memory: WebAssembly.Memory;
 } {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  recordComparisonMemoryShape(memory, 4, false, 2);
   const kernel = createWasmPosixKernelTestHarness({
     io: io as any,
     callbacks: callbacks as any,
@@ -69,6 +71,7 @@ function fullKernelHarness(
 } {
   const memory = suppliedMemory
     ?? new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  if (!suppliedMemory) recordComparisonMemoryShape(memory, 4, false, 2);
   const kernel = createWasmPosixKernelTestHarness({
     io: io as any,
     callbacks: callbacks as any,
@@ -85,8 +88,27 @@ function fullKernelHarness(
 }
 
 describe("Rust-lent process snapshot comparisons", () => {
+  it("requests an owned read for unknown metadata only after validating both full ranges", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 64)).toBe(2);
+    expect(imports.env.host_proc_compare_bytes(7, 65535n, 4096, 64)).toBe(-14);
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 131071, 64)).toBe(-14);
+  });
+
+  it("does not turn an authenticated descriptor/import mismatch into capability fallback", () => {
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    // Deliberately lie at the trusted constructor boundary to force LinkError.
+    recordComparisonMemoryShape(processMemory, 8, false, 2);
+    const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
+    expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 64)).toBe(-14);
+  });
+
   it.each([4, 8] as const)("compares exact aligned, unaligned and tail ranges at kernel width %i", width => {
     const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2, shared: true });
+    recordComparisonMemoryShape(processMemory, 4, true, 2);
     const { kernel, memory } = kernelHarness({}, width, {}, { getProcessMemory: () => processMemory });
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
     const compare = imports.env.host_proc_compare_bytes;
@@ -120,7 +142,8 @@ describe("Rust-lent process snapshot comparisons", () => {
   });
 
   it("refuses invalid full process ranges before returning an early difference", () => {
-    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
     const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
     new Uint8Array(memory.buffer)[4096] = 91;
@@ -129,9 +152,11 @@ describe("Rust-lent process snapshot comparisons", () => {
     expect(new Uint8Array(memory.buffer)[4096]).toBe(91);
   });
 
-  it("recreates exact source views after a provider grows unshared kernel memory", () => {
+  it("revalidates the native borrow after a provider grows unshared kernel memory", () => {
     const memory = new WebAssembly.Memory({ initial: 2, maximum: 3 });
-    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    recordComparisonMemoryShape(memory, 4, false, 3);
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
     const bytes = Uint8Array.from([1, 2, 3, 4]);
     new Uint8Array(memory.buffer, 4096, 4).set(bytes);
     new Uint8Array(processMemory.buffer, 0, 4).set(bytes);
@@ -156,6 +181,7 @@ describe("Rust-lent process snapshot comparisons", () => {
 
   it("uses the current process buffer when the provider grows it", () => {
     const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
     const { kernel, memory } = kernelHarness({}, 4, {}, {
       getProcessMemory: () => { processMemory.grow(1); return processMemory; },
     });
@@ -169,13 +195,17 @@ describe("Rust-lent process snapshot comparisons", () => {
   });
 
   it("ignores forged buffer properties and replaced view constructors", () => {
-    const processMemory = new WebAssembly.Memory({ initial: 1 });
+    const processMemory = new WebAssembly.Memory({ initial: 1, maximum: 2 });
+    recordComparisonMemoryShape(processMemory, 4, false, 2);
     const { kernel, memory } = kernelHarness({}, 4, {}, { getProcessMemory: () => processMemory });
     const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => number> };
     const current = new Uint8Array(processMemory.buffer, 0, 257), baseline = new Uint8Array(memory.buffer, 4096, 257);
     current.fill(91); baseline.fill(91);
     Object.defineProperty(memory, "buffer", { configurable: true, get: () => { throw new Error("forged kernel buffer"); } });
     Object.defineProperty(processMemory, "buffer", { configurable: true, get: () => { throw new Error("forged process buffer"); } });
+    const originalModule = WebAssembly.Module, originalInstance = WebAssembly.Instance;
+    WebAssembly.Module = function () { throw new Error("replaced module constructor"); } as any;
+    WebAssembly.Instance = function () { throw new Error("replaced instance constructor"); } as any;
     vi.stubGlobal("Uint8Array", function () { throw new Error("replaced byte constructor"); });
     vi.stubGlobal("Uint32Array", function () { throw new Error("replaced word constructor"); });
     try {
@@ -184,6 +214,7 @@ describe("Rust-lent process snapshot comparisons", () => {
       expect(imports.env.host_proc_compare_bytes(7, 0n, 4096, 257)).toBe(1);
     } finally {
       vi.unstubAllGlobals();
+      WebAssembly.Module = originalModule; WebAssembly.Instance = originalInstance;
       delete (memory as any).buffer; delete (processMemory as any).buffer;
     }
     expect(baseline[256]).toBe(91); expect(current[256]).toBe(73);
