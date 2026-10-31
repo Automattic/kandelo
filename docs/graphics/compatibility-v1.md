@@ -12243,3 +12243,181 @@ is uninitialized (`libc/musl/Makefile` is absent). Preserve
 boundary or a passing host build. Initialize the pinned submodule and
 continue through the normal own-SDK/artifact checkpoint. No ABI increment
 is required for this internal, synchronous error-check sequencing change.
+
+### Inverse normal checkpoint provisioning (2026-10-31)
+
+Runtime/test commit `32dc0d1a69` and evidence commit
+`e3031609dff91db5e241f5e3e38c306f638612dd` are pushed to draft PR #1601.
+The source checkout at e303 is frozen for its next normal checkpoint;
+preview 5674 remains unchanged at DAD during provisioning.
+
+Producer `inverse-sequence-normal-products-1031-055604-106e` returns 1
+in 5m03s: its own xtask succeeds, then normal products fail because
+`sdk/rust/libc-upstream` is uninitialized. The normal executor drains
+independent work and preserves cached/successful products; kandelo-cc,
+termchat and librsvg fail at the same missing pinned source, blocking
+other dependent outputs. This is not a new graphics regression or a
+passing aggregate build. Preserve `.context/normal-products-r1/` in the
+frozen source checkout.
+
+After that producer ends, initialize Rust libc at its pinned
+`71d5bfcc1bda05da1783666fc2cd7d9669c9c4c8` commit. Musl is already at
+`0784374d561435f7c787a555aeab8ede699ed298`; both submodules match the
+parent gitlinks and the source checkout remains clean. Fresh producer
+`inverse-sequence-normal-products-r2-1031-060220-7e1f` writes separately
+to `.context/normal-products-r2/`. It must complete the same six stages
+and its own SDK/kernel/host/93-owner provenance checks before serving.
+No old successful receipt or cache key is restamped for the failed run.
+
+Producer `inverse-sequence-normal-products-r2-1031-060220-7e1f`
+finishes with exit 1 after 9m42s. Own xtask, normal products (including
+host), host stamping and freshness all return 0. The identity collector
+then honestly rejects absent 64-bit SDK graphics stamps; normal package
+preparation provisioned the core but not those final graphics libraries.
+This failed aggregate is retained in `.context/normal-products-r2/`,
+and no preview receipt is issued for it.
+
+Fresh producer `inverse-sequence-normal-products-r3-1031-061533-6f7e`
+first runs the normal `build-musl.sh --ensure --arch wasm64posix` path,
+then repeats products and provenance checks in a separate output directory.
+The complete-SDK stage returns 0; final aggregate/serving acceptance is
+pending. This is ordinary provisioning, not a hard platform boundary.
+The single-terminal application performance result remains unproven.
+
+The R3 producer completes all seven stages with exit 0 in 1m50s.
+Own complete SDK32/64, kernel, normal programs/images/host, freshness,
+93 owners / 245 members and kernel ABI are recorded without weakening
+the collector. Strict preview **http://127.0.0.1:5675/pages/kandelo/**
+now serves clean frozen e303, including inverse sequencing. Server
+`inverse-sequence-preview5675-1031-061728-e383` preserves earlier
+previews. Availability was announced immediately after successful
+HTTP/COOP/COEP proof; desktop performance remains unvalidated. An early
+HTTP proof attempt raced the still-running collector and failed before
+the receipt existed; the second attempt succeeds after it exists.
+
+Normal owners SHA256 `15ad123ad38f4766f975a1feb57583229efa56fa77519aa8e106ad9892e7c8f1`.
+Kernel SHA256 `10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`.
+Serving receipt SHA256 `5cad5d36efb8be559e4ce8c3aa227be9f3305280787b5b0c79b8ff09cd4b913c`.
+HTTP proof SHA256 `50fc7bb90260b70e1d6d35fc1c3956ce3d6794d8faf09bd6e79ca432b121d65c`.
+
+Fresh `.context/candidate-inverse-trace-r9/` controls pass 17/17,
+including all actual served rendering/input module seams. The named
+`inverse-input-read-trace-r9-1031-061817-f3ad` run begins against
+these exact normal artifacts with four-stage prompt review and unchanged
+numbered output workload. Other workspace Node/browser jobs are running;
+this is explicitly NONQUIET scalar/count evidence, not a timing benchmark.
+No single-terminal improvement is established.
+
+R9 ends workload 1 / collector 0 / guard 0 after 28s, before the
+numbered workload: initial body-color calibration throws while the
+retained screenshot shows downloads still in progress and no Foot body.
+This exposes an observation bug: the callback throws before its existing
+90s readiness poll can wait. No desktop regression or count result is
+inferred. Preserve all R9 outputs.
+
+Fresh `.context/candidate-inverse-trace-r10/` returns explicit pending
+for absent initial body palette; the process/body/title requirements and
+90s deadline remain unchanged. A new control checks that blank canvas
+stays pending and a neutral body without prompt/title ink still fails
+readiness. Its first run fails 17/18 due to a wrong TypeScript dependency
+path in that new control; the corrected existing host dependency yields
+18/18 passing controls. Both logs remain. No production/artifact behavior
+changes. Fresh named R10 run is
+`inverse-input-read-trace-r10-1031-062005-1709`.
+
+R10 fails workload 1 / collector 0 / guard 0 after 3m20s. Its one-,
+three- and five-terminal stages are complete with actual root prompt
+reviews (samples 20, 14 and 14), but the first attempted close removes
+the original Foot, violating the retained lifetime assertion. The fixture
+clicks the rightmost body then immediately issues Close without observing
+compositor focus. This does not establish whether the cause is platform
+input ordering or missing fixture focus synchronization; recovery is
+unrun. No aggregate desktop pass is claimed.
+
+Fresh `.context/candidate-inverse-trace-r11/` observes the uniquely focused
+painted title before typing and closing. It calibrates the actual dominant
+blue title background from the initial lone Foot and requires the same
+color, at least 60% title-strip fill and exact target rectangle, with no
+second focused title. The original-Foot lifetime assertion remains. This
+adds no focus IPC, input reorder, fixed synchronization delay or runtime
+change. Controls pass 18/18, including wrong-target, ambiguous-title,
+missing-calibration and low-fill negatives. Job
+`inverse-input-read-trace-r11-1031-062541-fb5d` is a fresh NONQUIET
+headless diagnostic against unchanged normal preview e303.
+
+R11 ends workload 1 / collector 0 / guard 0 in 1m14s before typing.
+The new exact focus check rejects stale pre-menu body geometry: the
+initial observed body height is 1564, whereas completed panel reservation
+shrinks it to 1488. Root views the retained pre-menu screenshot, which
+still shows downloads/panel startup. This is not proof of a focus defect.
+Fresh R12 refreshes actual process/body readiness after menu setup and
+before active output, keeping the focus and original-Foot checks.
+Controls pass 18/18; job
+`inverse-input-read-trace-r12-1031-062801-4d36` starts against the same
+unchanged normal preview. These observation repairs need no rebuild.
+
+### Normal inverse desktop trace and remaining work (2026-10-31)
+
+R12 completes in 4m35s: workload / collector / guard all return 0.
+One persistent headless Chromium machine reaches one, three, five and
+recovered one actual Foot process/window, cold/warm painted Start menus,
+and all four numbered-output/natural-prompt reviews. Root inspects exact
+retained screenshots at samples 16, 16, 17 and 22; the original Foot
+survives every observed-focus-before-close transition. All normal source,
+SDK, kernel, host-dist and 93-owner/245-member identities remain equal
+before/after. This validates the bounded diagnostic, not application speed
+or the full merge acceptance surface.
+
+All four input captures retain 424 keyboard and 17 pointer records matching
+the complete injected vectors at the selected detached read outputs; no
+unclassified reads, descriptor invalidations or overflow are observed.
+Open-file-description continuity, downstream libinput/Wayland receipt,
+command exit/drain and observer-generated Escape limitations still apply.
+No platform input-ordering fix is claimed by these fixture repairs.
+
+Eight complete active intervals contain eight selected guest draws,
+98 primary presentations, 98 cursor readbacks and 1,508 comparison
+requests. Whole captures contain 16 accepted/restored private draws;
+these are separate scopes. Independent ancestry accounting confirms:
+
+| Native error-query calls per operation | Before inverse change (R6/R8) | Normal inverse candidate (R12) |
+|---|---:|---:|
+| Primary presentation, including enclosing checks | 23 | 19 |
+| Cursor readback, including enclosing checks | 25 | 20 |
+| Primary restoration alone | 10 | 6 |
+| Cursor restoration alone | 12 | 7 |
+
+These are exact operation counts on recorded normal artifacts, not matched
+application timings. Different schedules produce different numbers of
+presentations; aggregate call totals cannot establish an improvement.
+The single-terminal application result remains unproven.
+
+Same-worker synchronous elapsed diagnostics are also retained, separately
+from counts. In the eight instrumented NONQUIET intervals, the synchronous
+Sway shared-mapping export has 62–105 calls per interval, with summed
+observed duration 45.3–93.7 ms. Native `getError` sums are 15.8–83.2 ms
+per interval; native cursor `readPixels` sums are 0.61–2.77 ms. These
+include diagnostic overhead, scheduling and native synchronization; they
+are not CPU shares, GPU completion, calibrated fine-grained benchmarks
+or before/after measurements. Nested buckets must not be summed.
+
+Both Sway and SFWBar continue comparing 4,190,208-byte and
+16,760,832-byte writable regions with equal results throughout these
+captures. This supports further investigation of synchronization frequency
+and authoritative writer tracking. Equal results, repeated presentations
+and cursor allocation identity alone still do not authorize skipping
+comparisons or reusing GPU pixels. The next platform improvement must
+preserve all-writer, loss, aliasing and lifecycle correctness. No content
+cache or synchronization-elision optimization is implemented here.
+
+candidate-accounting.json SHA256 `99a345c2020b60bb64864a25f66d06d9adc33aa6faf2e8d720f77c17feb78708`.
+candidate-accounting-verification.json SHA256 `83c83424249c955828596a137f4993da6b230d41ce1a7549104963fe6453b3bc`.
+query-attribution.json SHA256 `ba89d8898a41d32091d21635c79b5bddc2bd8c8ed9d15b5bc7d183ac514072c2`.
+elapsed-diagnostics.json SHA256 `1d654e76847fc17339caada84cc129481262b03169d2a805993c533e92c0d848`.
+
+The three failed R9–R11 workloads and all provisioning/control failures
+remain retained. R12's private observers need no additional SDK, kernel
+or program rebuild. Latest available preview remains normal e303 at
+http://127.0.0.1:5675/pages/kandelo/; acceptance of the broader desktop,
+combined graphics, memory, conformance and performance inventory remains
+open.
