@@ -129,7 +129,7 @@ complete TLS handshake lifetime behavior.
 
 ## Current evidence and limits
 
-- All 69 source/harness tests pass under the exact native Node 26.13.0
+- All 83 source/harness tests pass under the exact native Node 26.13.0
   reference, including execution of the assembled bootstrap and
   adversarial fixture-cache integrity checks.
 
@@ -139,15 +139,17 @@ complete TLS handshake lifetime behavior.
   3-to-10-case resumption; a changed deadline is rejected without
   changing results.
 
-- The rebuilt normal shell product passes eleven Node-host core cases
-  and the complete shared contract on Chromium, Firefox and WebKit. This
+- The preceding module-entry product passed thirteen Node-host core cases
+  and all thirteen shared commands on Chromium, Firefox and WebKit. This
   covers the URL/Buffer/exit review findings, assertion brands and
   mismatches, positioned I/O, streaming stdin decoding, Response/Blob
   bodies and the existing process/stream checks.
 
 - The resident-filesystem and IPv6 endpoint corrections pass 3,241 Rust
-  workspace tests and doctests, the ABI snapshot check, and three
-  unchanged Sortix C cases on both Node and Chromium under SourceOnly.
+  workspace tests and doctests and the ABI snapshot check. Positioned I/O
+  passed three unchanged Sortix C cases on Node and Chromium; the later
+  networking fix passed seven unchanged networking C cases on both hosts
+  under SourceOnly.
   The kernel keeps ABI 55. A full product rebuild, broad POSIX suites
   and performance comparisons have not run.
 
@@ -237,21 +239,198 @@ scripts/run-nodejs-library-tests.sh --host node --all \
 Use separate output directories for `chromium`, `firefox` and `webkit`.
 The wrapper enters the declared dev shell and never compiles products.
 
-The networking defaults and real connection attempts are implemented in
-follow-up draft PR 1612. Eight unchanged affected networking files pass
-under the pinned native reference; every guest host records eight failures
-at the next shared prerequisite: leaked SpiderMonkey shell globals. These
-results belong to `.context/node26-network-targeted-HOST/` at
-`60c3ce9b540b73723fccdf15318f94b2df1e7b93`, separate from the initial
-baseline. The shared Node namespace is being corrected before further
-networking runs. No 500-case post-networking batch ran.
+## Networking-only follow-up (2026-10-31)
 
-Further coverage selects networking modules, followed by fixing exposed
-failures and persistent loader identity/import parsing and EventEmitter
-failures. It does not repeat an arbitrary alphabetical inventory prefix.
-Assertion diagnostics/native key support and the partial APIs listed in
-`packages/registry/node-compat/README.md` remain gaps. The other 37 upstream
-categories still need configuration and fixture review.
+The next collection selected every `net` and `dns` filename family in the
+pinned parallel/sequential inventory: 174 TCP and 32 DNS files. It ran at
+`f0eaf9086765e269dd7257c327e7e11e2a03c5af`, after the connection-policy,
+public-global and native module-entry fixes. This is a module selection,
+not a random sample or an alphabetical prefix. Other networking modules
+and the other upstream categories remain outside this collection.
+
+| Host | Pass | Fail | Upstream skip | Unsupported | Timeout | Harness error | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node | 17 | 159 | 4 | 25 | 1 | 0 | 0 |
+| Chromium | 17 | 160 | 4 | 25 | 0 | 0 | 0 |
+| Firefox | 17 | 159 | 4 | 25 | 1 | 0 | 0 |
+| WebKit | 17 | 158 | 4 | 25 | 1 | 1 | 0 |
+
+Every host finalized all 206 cases. WebKit lost its execution context at
+`sequential/test-net-response-size.js`; the harness-error row remains.
+Resumption on matching inputs completed its three pending cases. The two
+cross-host outcome differences involve that case and
+`sequential/test-net-GH-5504.js`, which timed out on Node, Firefox and
+WebKit and failed on Chromium. Its logs show missing Readable.setEncoding
+before shutdown waits on spawned work. These anomalies are not passing
+results or evidence of an outside-runtime defect. A separate fresh-page
+WebKit replay of `test-net-response-size.js` used matching frozen image,
+kernel and asset hashes and produced a guest connection-refusal failure;
+the original context-loss row remains unchanged. Its replay is recorded at
+`.context/node-webkit-response-frozen-rerun.json`.
+
+All four reports retain the same 17 passing filenames. A callback-only
+file such as `test-net-reuseport.js` can pass against the pre-existing
+listening-server stub; it does not prove actual bind/listen or port
+sharing. Real TCP client behavior is separately checked by the C-peer
+fixture through SDK/POSIX sockets on all four hosts. The four upstream
+skips result from crypto and IPv6 capability checks. IPv6 loopback works
+in the real peer test; incomplete runtime capability metadata remains a
+fixable gap. Unsupported launcher flags are separate from passing files.
+
+The original eight affected files now have six passes and two failures
+on each host. Public shell-global leakage and buffer Base64 export
+identity no longer block their exit checks. Their two server-dependent
+files expose missing `util.getCallSites()` and actual server behavior.
+
+The Node report contains 40 failed files whose logs mention the missing
+call-site API, sometimes alongside real connection errors. Further
+clusters include connection refusal at the stub's port zero, missing
+`dgram`/Resolver/lookupService APIs, socket option validation, Unix sockets
+and stream/worker semantics. The next fixes should implement these in
+their owning runtime modules and native bindings; diagnostic groups are
+not independent root-cause counts.
+
+Reports live at `.context/node26-net-dns-entrypoints-HOST/`; the combined
+audit is `.context/node26-net-dns-entrypoints-audit.json`. Earlier failed
+eight-case runs remain at `.context/node26-network-targeted-HOST/` and
+`.context/node26-global-network-HOST/`. They are not merged with this
+collection or the original full baseline. No 500-case post-networking
+batch ran.
+
+To reproduce the complete TCP/DNS filename selection with a fresh report,
+prepare/list the pin and pass the unchanged filenames to the normal
+runner. Substitute each guest host for `node`:
+
+```sh
+scripts/run-nodejs-library-tests.sh --list \
+  --out .context/node26-network-inventory > .context/node26-network-list.log
+python3 - node <<'PY'
+import json, re, subprocess, sys
+host = sys.argv[1]
+inventory = json.load(open('.context/node26-network-inventory/inventory.json'))
+names = [t['name'] for t in inventory['inventory']
+         if re.match(r'^test-(net|dns)(-|\.m?js$)', t['name'].split('/')[-1])]
+raise SystemExit(subprocess.call([
+    'scripts/run-nodejs-library-tests.sh', '--host', host, '--timeout', '30',
+    '--out', '.context/node26-network-new-' + host, *names]))
+PY
+```
+
+Select SourceOnly and its prepared output root as shown in the real TCP
+regression section when testing local SourceOnly products. Neither
+listing nor running this selection compiles packages.
+
+## Failure-selected call-site follow-up (2026-10-31)
+
+At `1df09ffc03d615095a459467d88430bfe6e4b7cc`, the runtime implements
+`util.getCallSites()` through actual engine saved frames. Compilation
+preserves CommonJS user lines and public ESM source URLs. The next
+selection contains every one of the 40 Node-host failures mentioning the
+missing API, the original eight networking controls, and the upstream
+stack-formatting-hook test. Two controls overlap the failures, producing
+47 unique files. This is a failure-derived selection, not sampling.
+
+| Host | Pass | Fail | Upstream skip | Unsupported | Timeout | Harness error | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node | 16 | 30 | 1 | 0 | 0 | 0 | 0 |
+| Chromium | 16 | 30 | 1 | 0 | 0 | 0 | 0 |
+| Firefox | 16 | 30 | 1 | 0 | 0 | 0 | 0 |
+| WebKit | 16 | 30 | 1 | 0 | 0 | 0 | 0 |
+
+The audit found no cross-host status/exit-code differences and matching
+runtime and source identities. None of these logs retains the missing
+call-site diagnostic. Nine networking files changed from failure to pass;
+`sequential/test-net-server-address.js` now reaches an upstream capability
+skip. The added stack-hook test passes. Server-stub and callback-only
+passes still do not establish real listening-server conformance.
+
+Reports remain separate at `.context/node26-call-sites-affected-HOST/`,
+with `.context/node26-call-sites-affected-audit.json` recording the exact
+selection, identities and status changes. They do not refresh unselected
+cases in the 206-file collection or the original 5,147-file baseline.
+
+The exact failure-derived filenames are checked in at
+`tests/nodejs/selections/network-call-sites.json`, without expected
+outcomes or allowances. Reproduce them through the normal runner:
+
+```sh
+python3 - node <<'PY'
+import json, subprocess, sys
+host = sys.argv[1]
+selection = json.load(open('tests/nodejs/selections/network-call-sites.json'))
+raise SystemExit(subprocess.call([
+    'scripts/run-nodejs-library-tests.sh', '--host', host, '--timeout', '30',
+    '--out', '.context/node26-call-sites-new-' + host, *selection['tests']]))
+PY
+```
+
+All three upstream `test-util-getcallsites` files were also collected in
+separate reports. The exact native reference passed all three. Every
+guest host recorded one pass, one failure and one upstream skip, with no
+unsupported cases, timeouts, harness errors or pending files. The
+stack-formatting-hook test passes; source-map remapping fails explicitly;
+the general API file skips because it requires Amaro. That skip does not
+establish the unexecuted assertions. Permanent native/guest CJS, ESM and
+eval fixtures separately check record shape, source coordinates and
+validation.
+
+These reports are `.context/node26-call-sites-api-HOST/`, except the
+completed Node report is `.context/node26-call-sites-api-node-r2/`.
+`.context/node26-call-sites-api-audit.json` binds their identities. The
+first Node attempt failed during image writing with host ENOSPC before
+preflight or any test case; its `run-error.json` remains separate. The
+retry used a fresh output directory. Reproduce the API collection with:
+
+```sh
+scripts/run-nodejs-library-tests.sh --host node --timeout 30 \
+  --out .context/node26-call-sites-api-new-node \
+  parallel/test-util-getcallsites.js \
+  parallel/test-util-getcallsites-sourcemap.js \
+  parallel/test-util-getcallsites-preparestacktrace.js
+```
+
+The current product passed 14 Node-host core cases and all fourteen
+commands on Chromium and WebKit. Firefox completed the new call-site
+command, then timed out in the existing combined exit-code fixture in
+both the three-project run and a separate single-project recheck. The
+recheck progressed further through the fixture before the same
+120-second deadline. Both observations remain failures; their cause is
+unresolved, concurrent build load was present, and no timeout was raised.
+Reports are `.context/node-browser-prepared-reports/playwright.IAOJHS/`
+and `playwright.jPIKF8/`. Diagnose this lifecycle/timing anomaly before
+claiming a clean current four-host core run.
+
+The next priorities are real TCP bind/listen/accept and server lifetime,
+DNS/Resolver APIs and accurate capability metadata, socket/stream controls
+including Readable.setEncoding, and fatal shutdown with spawned work.
+Persistent EventEmitter listener defaults/warnings and assertion
+diagnostics/native key comparisons remain confirmed gaps. Call-site
+source-map remapping and the other partial APIs in
+`packages/registry/node-compat/README.md` also remain incomplete. The
+other 37 upstream categories need configuration and fixture review.
+
+## Draft delivery stack
+
+The changes remain in focused draft PRs. None has been merged or deployed.
+The complete product rebuild, broad POSIX and application-switching
+memory gate, and performance comparisons remain deferred. The separate
+Claude/npm/Bun remainder is preserved outside this stack.
+
+| Scope | Draft PR |
+| --- | --- |
+| Four confirmed review findings | [#1595](https://github.com/Automattic/kandelo/pull/1595) |
+| LTS target and restored upstream harness | [#1604](https://github.com/Automattic/kandelo/pull/1604) |
+| Streaming text decoding | [#1605](https://github.com/Automattic/kandelo/pull/1605) |
+| Assertion semantics | [#1606](https://github.com/Automattic/kandelo/pull/1606) |
+| Eval shutdown and natural exit | [#1607](https://github.com/Automattic/kandelo/pull/1607) |
+| Positioned filesystem I/O | [#1608](https://github.com/Automattic/kandelo/pull/1608) |
+| Response/Blob body state | [#1609](https://github.com/Automattic/kandelo/pull/1609) |
+| Wide filesystem offset validation | [#1610](https://github.com/Automattic/kandelo/pull/1610) |
+| Complete upstream source fixtures and baseline | [#1611](https://github.com/Automattic/kandelo/pull/1611) |
+| Real TCP connection-attempt policy | [#1612](https://github.com/Automattic/kandelo/pull/1612) |
+| Public globals and private embedding utilities | [#1613](https://github.com/Automattic/kandelo/pull/1613) |
+| Native module graphs and file entrypoints | [#1614](https://github.com/Automattic/kandelo/pull/1614) |
+| Engine call-site records and selected reruns | [#1615](https://github.com/Automattic/kandelo/pull/1615) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

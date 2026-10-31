@@ -12,6 +12,7 @@ import { nodeUrlCommand } from "../../../host/test/fixtures/node-url";
 import { nodeWebStreamsCommand } from "../../../host/test/fixtures/node-web-streams";
 import { nodeGlobalScopeCommand } from "../../../host/test/fixtures/node-global-scope";
 import { nodeModuleEntryCommand } from "../../../host/test/fixtures/node-module-entrypoints";
+import { nodeCallSiteCommand } from "../../../host/test/fixtures/node-call-sites";
 import { gotoMachine } from "./support/kandelo-machine";
 import { runTerminalCommand } from "./support/terminal-command";
 
@@ -21,6 +22,7 @@ test("base shell implements Node filesystem, process, URL, streams and encoding 
   await expect.poll(() => page.locator(".xterm-rows").first().textContent(),
     { timeout: 120_000 }).toContain("kandelo$");
   const cases: Array<[string, readonly string[]]> = [
+    [nodeCallSiteCommand, ["node-call-sites-cjs-ok", "node-call-sites-esm-ok", "node-call-sites-eval-ok"]],
     [nodeGlobalScopeCommand, ["node-global-scope-ok", "node-global-eval-ok"]],
     [nodeModuleEntryCommand, ["node-cjs-entry-ok", "node-esm-entry-ok", "node-module-entry-status-ok", "node-standalone-shell-ok"]],
     [`set -eu\ncat > /tmp/buffer-core.cjs <<'JS'\nconst {isUtf8,isAscii}=require('buffer');\n${bufferValidationSource}\nJS\nnode /tmp/buffer-core.cjs`, ["buffer-validation-ok"]],

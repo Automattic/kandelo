@@ -2599,10 +2599,48 @@ const util = (() => {
         return log;
     }
 
+    const _callSiteIntrinsics = {
+        TypeError, RangeError, Error, isInteger: Number.isInteger, isArray: Array.isArray,
+    };
+    function getCallSites(frameCount = 10, options) {
+        function invalid(name, expected) {
+            const error = new _callSiteIntrinsics.TypeError(`The "${name}" argument must be ${expected}`);
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        function validateOptions(value) {
+            if (value === null || typeof value !== 'object' || _callSiteIntrinsics.isArray(value)) {
+                invalid('options', 'an object');
+            }
+            if (value.sourceMap !== undefined && typeof value.sourceMap !== 'boolean') {
+                invalid('options.sourceMap', 'a boolean');
+            }
+        }
+        if (options === undefined) {
+            if (typeof frameCount === 'object') {
+                options = frameCount;
+                validateOptions(options);
+                frameCount = 10;
+            } else options = {};
+        } else validateOptions(options);
+        if (typeof frameCount !== 'number') invalid('frameCount', 'a number');
+        if (!_callSiteIntrinsics.isInteger(frameCount) || frameCount < 1 || frameCount > 200) {
+            const error = new _callSiteIntrinsics.RangeError('The "frameCount" argument must be an integer between 1 and 200');
+            error.code = 'ERR_OUT_OF_RANGE';
+            throw error;
+        }
+        if (options.sourceMap === true) {
+            const error = new _callSiteIntrinsics.Error('Source-map call sites are not implemented');
+            error.code = 'ERR_NOT_IMPLEMENTED';
+            throw error;
+        }
+        return _nodeNative.captureCallSites(frameCount);
+    }
+
     return {
         format, formatWithOptions, inspect, inherits, deprecate, promisify, callbackify,
         isDeepStrictEqual, types,
-        debuglog, debug: debuglog,
+        debuglog, debug: debuglog, getCallSites,
         TextDecoder, TextEncoder,
         // Deprecated but widely used
         isArray: Array.isArray,
@@ -5986,7 +6024,9 @@ function _makeRequire(filename, entry = false) {
             '(function (exports, require, module, __filename, __dirname) {\n' +
                 source +
                 '\n})',
-            resolved
+            resolved,
+            // The wrapper occupies line zero; the first user line remains 1.
+            0,
         );
 
         const childRequire = _makeRequire(resolved);

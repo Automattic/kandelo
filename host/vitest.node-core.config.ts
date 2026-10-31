@@ -16,6 +16,7 @@ export default {
       'test/node-response-body.test.ts',
       'test/node-network-attempts.test.ts',
       'test/node-module-entrypoints.test.ts',
+      'test/node-call-sites.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

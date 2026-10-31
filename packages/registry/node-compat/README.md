@@ -69,6 +69,16 @@ particular:
   `.js` format detection, static CommonJS named-export discovery, complete
   URL/query identities and package exports/conditions remain partial.
 
+- `util.getCallSites()` reads the engine's saved-frame records, retaining
+  actual source identities, function names and source coordinates. It
+  validates the 1-to-200 frame limit and options, returns mutable records
+  with null prototypes, and ignores Error stack formatting hooks and
+  stackTraceLimit. CommonJS wrapper origins preserve original user lines;
+  ESM source names use module URLs. scriptId contains a SpiderMonkey source
+  ID; Inspector/CDP integration remains unavailable. Source-map remapping
+  reports an explicit unimplemented error. Complete validation error text
+  and source-map support remain gaps.
+
 - Assertion and deep-comparison source uses the pinned Node algorithms,
   including error matchers, strict aliases, Maps/Sets and cycle
   detection. Source differentials and rebuilt four-host brand/mismatch
