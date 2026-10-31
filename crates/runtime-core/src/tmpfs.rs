@@ -915,10 +915,11 @@ pub fn read(handle: i64, offset: i64, buf: &mut [u8], source_read: &mut SourceRe
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
             InodeKind::Regular(data) => {
-                let start = offset as usize;
-                if start >= data.len() {
+                // Compare before narrowing: wasm32 offsets can exceed usize.
+                if offset as u64 >= data.len() as u64 {
                     return Ok(Err(0));
                 }
+                let start = offset as usize;
                 let n = core::cmp::min(buf.len(), data.len() - start);
                 buf[..n].copy_from_slice(&data[start..start + n]);
                 Ok(Err(n))
@@ -1135,14 +1136,15 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
         return Err(Errno::EINVAL);
     }
     TMPFS.with(|state| {
-        let (st_dev, growth) = {
+        let (st_dev, growth, start) = {
             let inode = state.get(idx).ok_or(Errno::EBADF)?;
-            let end = (offset as usize).checked_add(buf.len()).ok_or(Errno::EFBIG)?;
+            let start = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
+            let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             let current = match &inode.kind {
                 InodeKind::Regular(data) => data.len(),
                 _ => end,
             };
-            (inode.st_dev, end.saturating_sub(current) as u64)
+            (inode.st_dev, end.saturating_sub(current) as u64, start)
         };
         if !state.get(idx).ok_or(Errno::EBADF)?.frozen {
             state.charge(st_dev, growth)?;
@@ -1157,7 +1159,6 @@ pub fn write(handle: i64, offset: i64, buf: &[u8]) -> Result<usize, Errno> {
                 InodeKind::HostBacked { .. } => return Err(Errno::EPERM),
                 _ => return Err(Errno::EISDIR),
             };
-            let start = offset as usize;
             let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             if end > data.len() {
                 if let Err(error) = grow_file_bytes(data, end, Errno::ENOSPC) {
@@ -2062,6 +2063,26 @@ mod tests {
     use super::*;
 
     const O_RDWR: u32 = 0o2;
+
+    #[test]
+    fn wide_offsets_preserve_eof_and_file_contents() {
+        let path = b"/tmp/wide_offsets";
+        write_file_at(path, 0, b"original", 0o600, true).unwrap();
+        let h = open(path, O_RDWR, 0, 0, 0).unwrap();
+        let mut buf = [0xa5; 8];
+        for offset in [1i64 << 32, (1i64 << 53) + 1, i64::MAX] {
+            assert_eq!(read(h, offset, &mut buf, &mut no_source), Ok(0));
+            assert_eq!(buf, [0xa5; 8]);
+        }
+        // This range cannot fit a Vec on either pointer width. It must fail
+        // before allocating or wrapping the position back into existing data.
+        assert!(matches!(write(h, i64::MAX, b"XX"), Err(Errno::EFBIG | Errno::ENOSPC)));
+        assert_eq!(fstat(h).unwrap().st_size, 8);
+        assert_eq!(read(h, 0, &mut buf, &mut no_source), Ok(8));
+        assert_eq!(&buf, b"original");
+        assert!(release_handle(h));
+        unlink(path).unwrap();
+    }
 
     // These tests run against the process-global TMPFS. Each test uses a unique
     // path subtree so they remain independent even when run in one binary.
