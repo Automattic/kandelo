@@ -14533,3 +14533,37 @@ attempted native operation must retain its acceptance/error check and inverse;
 no cached pixels, guest-shadow guess or arbitrary synchronization skip is
 licensed by these observations. Implementation and application benefit are
 pending at this checkpoint.
+
+
+### Checked native selector deltas in fixed KMS helpers, 2026-10-31
+
+Fixed primary scanout and GPU cursor/readback helpers retain their checked
+native preimage queries, then write/restore only selectors that actually need
+changing. No logical-shadow or cross-call cache authorizes omission. Inverses
+for every attempted selector are reserved before effects; every attempted
+native operation keeps its checked postcondition. Independent inverse failure,
+context loss, repair fences, final publication and live pixels remain intact.
+Primary blit and RGB-masked opaque-alpha clear still run. Clear alpha changes
+only when needed, retaining captured RGB. Readback keeps captured legal pack
+alignment when it divides the tightly packed RGBA row, including8 at even
+widths; odd-width alignment8 temporarily changes to4. Owned output length stays
+width*height*4, with row length/skips/PACK buffer handled independently.
+
+Two executed before controls fail on the exact previous helper. The candidate
+passes924/924 source WebGL tests across33files,0skips; KMS has157cases. New
+coverage includes all-matching/sparse selectors, even/odd pack alignments,
+pre/post-effect native errors/throws at each real attempted step, and every
+changed inverse's refusal/repair. A test that formerly injected a failure into
+an equal FBO now creates an actual distinct native preimage; its defensive
+repair/full-selection assertions remain. Initial private path/virtual-source
+fixture failures remain recorded. Independent two-file source review finds no
+new blocker and matches tested file hashes. With all captured selectors already
+suitable, readback performs4 and primary5 error checks with no selector writes
+or inverses. This is a bounded operation result, not application performance.
+
+Evidence: `.context/kms-selector-delta-candidate-r1/` and
+`.context/kms-selector-delta-source-review-r1/`. Native three-engine validation,
+normal host bundle/declarations, fresh preview responsiveness, browser-memory,
+conformance and broad benchmarks are pending. No ABI, SDK, package or image
+contract changes. Existing5679/5680 previews remain frozen and exclude this
+candidate until a separate URL is announced.

@@ -4584,6 +4584,27 @@ update without a Map clone; new indices reserve only valid native slots before
 publication, rather than copying historical invalid entries. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
 
+Fixed GPU KMS presentation helpers capture the actual native read/draw FBO,
+pack-buffer/layout, scissor, color mask and clear-color selectors through a
+checked native query before each synchronous operation. They compare that
+snapshot with the selectors needed by that operation and reserve inverse
+records only for writes that will actually be attempted. A write whose value
+already matches is omitted along with its redundant inverse. Every attempted
+native operation still receives its checked post-call error capture, and a
+failed inverse retains the existing physical-context repair fence.
+
+Owned RGBA/UNSIGNED_BYTE readback uses zero pack row length and skips. It
+retains captured PACK_ALIGNMENT 1/2/4/8 when that alignment divides width*4;
+otherwise it selects alignment4. Thus alignment8 is retained for even widths
+and temporarily changed for odd widths. Primary scanout still blits then
+clears alpha to1 with RGB masked off. Its alpha-only clear retains the captured
+clear RGB; when captured clear alpha is already1, no clear-color write or
+inverse is needed. This is per-operation native-state admission, without a
+persistent selector cache, pixel cache or presentation/frame elision. Storage
+ownership, context-loss gates, operation order, alpha semantics and final
+restoration/repair requirements are unchanged.
+
+
 The host now has a retained native-fence owner as a prerequisite for EGL
 sync support. Creation reserves a private candidate and deletion receipt
 before inserting the native fence; publication is separate from acceptance.

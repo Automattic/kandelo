@@ -53,7 +53,7 @@ function renderer() {
       expect(mask).toBe(0x4000);
       expect(state.get(0x8ca6)).toBeNull();
       expect(state.get(0x0c23)).toEqual([false, false, false, true]);
-      expect(state.get(0x0c22)).toEqual([0, 0, 0, 1]);
+      expect((state.get(0x0c22) as number[])[3]).toBe(1);
       calls.push(["opaque primary"]);
     },
     blitFramebuffer(...args: unknown[]) {
@@ -66,8 +66,11 @@ function renderer() {
       _format: number, _type: number, pixels: Uint8Array) {
       expect(state.get(0x8caa)).toBe(fbo);
       expect(state.get(0x88ed)).toBeNull();
-      expect([0x0d05, 0x0d02, 0x0d04, 0x0d03].map(name => state.get(name)))
-        .toEqual([1, 0, 0, 0]);
+      const alignment = state.get(0x0d05) as number;
+      expect([1, 2, 4, 8]).toContain(alignment);
+      expect((_w * 4) % alignment).toBe(0);
+      expect([0x0d02, 0x0d04, 0x0d03].map(name => state.get(name))).toEqual([0, 0, 0]);
+      expect(pixels.byteLength).toBe(_w * _h * 4);
       if (rejectRead) { error = 0x502; return; }
       pixels.set(content);
       afterRead();
@@ -368,9 +371,9 @@ it("still invalidates generic device callbacks that do not promise a checked inv
 });
 
 const drawSteps = ["disable", "bindFramebuffer:36008", "bindFramebuffer:36009", "blitFramebuffer", "colorMask", "clearColor", "clear"];
-const readSteps = ["bindFramebuffer:36008", "bindBuffer", "pixelStorei:3333", "pixelStorei:3330", "pixelStorei:3332", "pixelStorei:3331", "readPixels"];
+const readSteps = ["bindFramebuffer:36008", "bindBuffer", "pixelStorei:3330", "pixelStorei:3332", "pixelStorei:3331", "readPixels"];
 
-function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "throw") {
+function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "throw", afterEffect = false) {
   const r = renderer(), forward: string[] = [], pending: number[] = [];
   const originalError = r.gl.getError.bind(r.gl);
   r.gl.getError = () => pending.shift() ?? originalError();
@@ -387,6 +390,7 @@ function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "
         forward.push(name === "bindFramebuffer" || name === "pixelStorei" ? `${name}:${args[0]}` : name);
         if (!rejected && forward.length - 1 === index) {
           rejected = true;
+          if (afterEffect) Reflect.apply(original, r.gl, args);
           if (fault === "throw") throw Error("native operation refused");
           pending.push(0x502); return;
         }
@@ -397,10 +401,10 @@ function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "
   return { ...r, forward };
 }
 
-for (const kind of ["draw", "read"] as const) for (let index = 0; index < 7; index++)
-  for (const fault of ["native", "throw"] as const)
-    it(`restores KMS ${kind} after ${fault} step ${index} and never executes its dependent suffix`, () => {
-      const r = sequenceFault(kind, index, fault);
+for (const kind of ["draw", "read"] as const) for (let index = 0; index < (kind === "draw" ? drawSteps : readSteps).length; index++)
+  for (const fault of ["native", "throw"] as const) for (const afterEffect of [false, true])
+    it(`restores KMS ${kind} after ${afterEffect ? "post-effect" : "pre-effect"} ${fault} step ${index} and never executes its dependent suffix`, () => {
+      const r = sequenceFault(kind, index, fault, afterEffect);
       expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2)).toBe(kind === "draw" ? false : null);
       expect(r.forward).toEqual((kind === "draw" ? drawSteps : readSteps).slice(0, index + 1));
       expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
@@ -420,7 +424,7 @@ for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-c
   const r = renderer(), originalError = r.gl.getError.bind(r.gl); let reads = 0;
   r.gl.getError = () => { reads++; return originalError(); };
   expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2) !== null).toBe(true);
-  expect(reads).toBe(kind === "draw" ? 16 : 17);
+  expect(reads).toBe(kind === "draw" ? 16 : 15);
   expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
 });
 
@@ -687,6 +691,9 @@ it("keeps the dirty drawable witness through a fixed KMS helper's exact native i
 
 it("uses full selection after pending native repair during a drawable transition",()=>{
   const r=selectedDrawable();r.failRead();
+  // A real native selector delta is required to exercise its failed inverse;
+  // an already-selected read FBO now needs neither a write nor restoration.
+  r.state.set(0x8caa,{});
   const bind=r.gl.bindFramebuffer.bind(r.gl);let reads=0,reject=true;
   r.gl.bindFramebuffer=(which,value)=>{
     if(which===0x8ca8&&++reads>1&&reject){r.setError(0x502);return;}
@@ -784,4 +791,151 @@ it("retries a generic callback's full constant reset after native limit admissio
   expect(Reflect.get(r.muxer,"current")).toBeNull();expect(values.get(6)).toEqual([2,3,4,5]);
   r.state.set(0x8869,8);expect(r.submit()).toBe(0);expect(values.get(6)).toEqual([0,0,0,1]);
   expect(values.size).toBe(8);expect(r.binding.errors).toEqual([0x501]);
+});
+
+
+/** Selector deltas come from checked native captures, not logical shadows. */
+function observeSelectorWrites(r: ReturnType<typeof renderer>) {
+  const writes: unknown[][] = [];
+  for (const name of ["bindFramebuffer", "bindBuffer", "pixelStorei", "disable", "enable", "colorMask", "clearColor"] as const) {
+    const original = r.gl[name];
+    (r.gl as any)[name] = (...args: unknown[]) => { writes.push([name, ...args]); return Reflect.apply(original, r.gl, args); };
+  }
+  let checks = 0;
+  const getError = r.gl.getError.bind(r.gl);
+  r.gl.getError = () => { checks++; return getError(); };
+  return {writes, checks: () => checks};
+}
+
+it("omits every unchanged native read selector and its inverse while still checking actual readback", () => {
+  const r = renderer();
+  r.state.set(0x8caa,r.storage.fbo); r.state.set(0x88ed,null);
+  for (const p of [0x0d02,0x0d04,0x0d03]) r.state.set(p,0);
+  const before = new Map(r.state), observed = observeSelectorWrites(r);
+  expect(readGpuScanout(r.storage,2,2)).not.toBeNull();
+  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(4);
+  expect(r.state).toEqual(before); expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+it("omits every unchanged native primary selector and inverse while retaining blit and opaque clear", () => {
+  const r = renderer();
+  r.state.set(0x8caa,r.storage.fbo); r.state.set(0x8ca6,null); r.state.set(0x0c11,false);
+  r.state.set(0x0c23,[false,false,false,true]); r.state.set(0x0c22,[0,0,0,1]);
+  const before = new Map(r.state), observed = observeSelectorWrites(r);
+  expect(drawGpuScanout(r.storage,2,2)).toBe(true);
+  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(5);
+  expect(r.calls).toEqual([[0,0,2,2,0,2,2,0,0x4000,0x2600],["opaque primary"]]);
+  expect(r.state).toEqual(before); expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+for (const width of [1,2]) for (const alignment of [1,2,4,8])
+  it(`keeps tight RGBA rows for width${width} with captured alignment${alignment}`, () => {
+    const r = renderer();r.state.set(0x0d05,alignment);
+    r.state.set(0x8caa,r.storage.fbo);r.state.set(0x88ed,null);
+    for (const p of [0x0d02,0x0d04,0x0d03]) r.state.set(p,0);
+    const data = Array.from({length:width*2*4},(_,i)=>i+1);r.setPixels(data);
+    const before = new Map(r.state), observed = observeSelectorWrites(r);
+    expect(Array.from(readGpuScanout(r.storage,width,2)!)).toEqual(data);
+    expect(observed.writes).toEqual(width===1&&alignment===8
+      ? [["pixelStorei",0x0d05,4],["pixelStorei",0x0d05,8]] : []);
+    expect(r.state).toEqual(before);expect(hasNativeRepair(r.gl)).toBe(false);
+  });
+
+for (const fault of ["native","throw"] as const) for (const afterEffect of [false,true])
+  it(`restores the changed odd-width alignment after ${afterEffect?"post":"pre"}-effect ${fault}`,()=>{
+    const r=renderer(),original=r.gl.pixelStorei.bind(r.gl);let failed=false;
+    r.gl.pixelStorei=(p,v)=>{
+      if(!failed&&p===0x0d05&&v===4){failed=true;if(afterEffect)original(p,v);if(fault==="throw")throw Error("alignment refused");r.setError(0x502);return;}
+      original(p,v);
+    };
+    expect(readGpuScanout(r.storage,1,2)).toBeNull();expect(failed).toBe(true);
+    expect(r.state).toEqual(r.initial);expect(hasNativeRepair(r.gl)).toBe(false);
+  });
+
+for (const field of [0x0d05,0x0d02,0x0d04,0x0d03])
+  it(`retains a late failed read layout inverse${field} until repair without replaying readback`,()=>{
+    const r=renderer(),original=r.gl.pixelStorei.bind(r.gl);let restoring=false,reject=true,reads=0;
+    r.onRead(()=>{restoring=true;reads++;});
+    r.gl.pixelStorei=(p,v)=>{
+      if(restoring&&reject&&p===field&&v===r.initial.get(p)){original(p,v);r.setError(0x502);return;}
+      original(p,v);
+    };
+    expect(readGpuScanout(r.storage,1,2)).toBeNull();expect(reads).toBe(1);expect(hasNativeRepair(r.gl)).toBe(true);
+    // The pending inverse fences a second presentation before it reaches pixels.
+    expect(readGpuScanout(r.storage,1,2)).toBeNull();expect(reads).toBe(1);
+    reject=false;expect(repairNativeState(r.gl)).toBe(true);expect(r.state).toEqual(r.initial);
+    expect(hasNativeRepair(r.gl)).toBe(false);expect(reads).toBe(1);
+  });
+
+for (const selector of ["read", "draw", "scissor", "mask", "clear"] as const)
+  it(`changes and restores only the mismatched primary ${selector} selector`,()=>{
+    const r=renderer();
+    r.state.set(0x8caa,r.storage.fbo);r.state.set(0x8ca6,null);r.state.set(0x0c11,false);
+    r.state.set(0x0c23,[false,false,false,true]);r.state.set(0x0c22,[0,0,0,1]);
+    const desired=new Map(r.state);
+    const key={read:0x8caa,draw:0x8ca6,scissor:0x0c11,mask:0x0c23,clear:0x0c22}[selector];
+    r.state.set(key,r.initial.get(key));const before=new Map(r.state),o=observeSelectorWrites(r);
+    expect(drawGpuScanout(r.storage,2,2)).toBe(true);expect(r.state).toEqual(before);
+    const expected:Record<typeof selector,unknown[][]>={
+      read:[["bindFramebuffer",0x8ca8,desired.get(0x8caa)],["bindFramebuffer",0x8ca8,before.get(0x8caa)]],
+      draw:[["bindFramebuffer",0x8ca9,null],["bindFramebuffer",0x8ca9,before.get(0x8ca6)]],
+      scissor:[["disable",0x0c11],["enable",0x0c11]],
+      mask:[["colorMask",false,false,false,true],["colorMask",...(before.get(0x0c23)as boolean[])]],
+      clear:[["clearColor",...(before.get(0x0c22)as number[]).slice(0,3),1],["clearColor",...(before.get(0x0c22)as number[])]],
+    };
+    expect(o.writes).toEqual(expected[selector]);expect(hasNativeRepair(r.gl)).toBe(false);
+  });
+
+for (const selector of ["read","pack","row","pixels","rows"] as const)
+  it(`changes and restores only the mismatched readback ${selector} selector`,()=>{
+    const r=renderer();r.state.set(0x8caa,r.storage.fbo);r.state.set(0x88ed,null);
+    for(const p of [0x0d02,0x0d04,0x0d03])r.state.set(p,0);
+    const key={read:0x8caa,pack:0x88ed,row:0x0d02,pixels:0x0d04,rows:0x0d03}[selector];
+    r.state.set(key,r.initial.get(key));const before=new Map(r.state),o=observeSelectorWrites(r);
+    expect(readGpuScanout(r.storage,2,2)).not.toBeNull();expect(r.state).toEqual(before);
+    expect(o.writes).toEqual(selector==="read"
+      ? [["bindFramebuffer",0x8ca8,r.storage.fbo],["bindFramebuffer",0x8ca8,before.get(key)]]
+      :selector==="pack"?[["bindBuffer",0x88eb,null],["bindBuffer",0x88eb,before.get(key)]]
+      :[["pixelStorei",key,0],["pixelStorei",key,before.get(key)]]);
+    expect(hasNativeRepair(r.gl)).toBe(false);
+  });
+
+for (const selector of ["draw","read","scissor","mask","clear"] as const)
+  for(const fault of ["native","throw"]as const)
+    it(`fences a post-effect late primary ${selector} inverse ${fault} without repeating pixels`,()=>{
+      const r=renderer();let restoring=false,reject=true;
+      const clear=r.gl.clear.bind(r.gl);r.gl.clear=(bits)=>{clear(bits);restoring=true;};
+      const method={draw:"bindFramebuffer",read:"bindFramebuffer",scissor:"enable",mask:"colorMask",clear:"clearColor"}[selector]as"bindFramebuffer"|"enable"|"colorMask"|"clearColor";
+      const original=r.gl[method];
+      (r.gl as any)[method]=(...args:unknown[])=>{
+        const chosen=restoring&&reject&&(selector==="draw"?args[0]===0x8ca9&&args[1]===r.initial.get(0x8ca6)
+          :selector==="read"?args[0]===0x8ca8&&args[1]===r.initial.get(0x8caa)
+          :selector==="scissor"?args[0]===0x0c11:true);
+        const value=Reflect.apply(original,r.gl,args);
+        if(chosen){if(fault==="throw")throw Error("inverse after effect");r.setError(0x502);}
+        return value;
+      };
+      expect(drawGpuScanout(r.storage,2,2)).toBe(false);expect(hasNativeRepair(r.gl)).toBe(true);
+      const completed=r.calls.length;expect(drawGpuScanout(r.storage,2,2)).toBe(false);expect(r.calls.length).toBe(completed);
+      reject=false;expect(repairNativeState(r.gl)).toBe(true);expect(r.state).toEqual(r.initial);
+      expect(r.calls.length).toBe(completed);expect(hasNativeRepair(r.gl)).toBe(false);
+    });
+
+it("preserves readback failure reporting when every captured selector already matches",()=>{
+  const r=renderer();r.state.set(0x8caa,r.storage.fbo);r.state.set(0x88ed,null);
+  for(const p of [0x0d02,0x0d04,0x0d03])r.state.set(p,0);
+  const before=new Map(r.state),o=observeSelectorWrites(r);r.failRead();
+  expect(readGpuScanout(r.storage,2,2)).toBeNull();expect(o.writes).toEqual([]);
+  expect(r.state).toEqual(before);expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+
+it("preserves arbitrary captured clear RGB and omits alpha1 writes while the checked mask keeps primary output opaque",()=>{
+  const r=renderer();r.state.set(0x0c22,[0.25,0.5,0.75,1]);
+  const before=new Map(r.state),o=observeSelectorWrites(r);
+  expect(drawGpuScanout(r.storage,2,2)).toBe(true);
+  // renderer.clear asserts the RGB-off/alpha-on mask and alpha1 at execution.
+  expect(r.calls.at(-1)).toEqual(["opaque primary"]);
+  expect(o.writes.filter(call=>call[0]==="clearColor")).toEqual([]);
+  expect(r.state).toEqual(before);expect(hasNativeRepair(r.gl)).toBe(false);
 });
