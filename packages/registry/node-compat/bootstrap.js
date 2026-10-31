@@ -806,10 +806,11 @@ const process = (() => {
         },
 
         exit(code) {
-            if (code !== undefined) proc.exitCode = code;
-            const status = proc.exitCode === undefined ? 0 : proc.exitCode;
-            proc._exiting = true;
-            proc.emit('exit', status);
+            if (arguments.length !== 0) proc.exitCode = code;
+            if (!proc._exiting) {
+                proc._exiting = true;
+                proc.emit('exit', proc.exitCode === undefined ? 0 : proc.exitCode);
+            }
             // Exit listeners can still assign the final status.
             std.exit(proc.exitCode === undefined ? 0 : proc.exitCode);
         },
@@ -892,6 +893,31 @@ const process = (() => {
         // to detect glibc-vs-musl when /usr/bin/ldd is unavailable.
         report: {
             getReport() { return { sharedObjects: ['/lib/ld-musl-wasm32.so.1'] }; },
+        },
+    });
+
+    // Node stores a validated integer in its native int32 exit-info field.
+    // Clearing with null or undefined restores absence, rather than storing
+    // either value as the status passed to exit listeners.
+    let exitCode;
+    Object.defineProperty(proc, 'exitCode', {
+        enumerable: true,
+        configurable: false,
+        get() { return exitCode; },
+        set(code) {
+            if (code === null || code === undefined) { exitCode = undefined; return; }
+            let value = code;
+            if (typeof code === 'string' && code !== '') value = Number(code);
+            let error;
+            if (typeof value !== 'number' || (typeof code === 'string' && Number.isNaN(value))) {
+                error = new TypeError('The code argument must be a number');
+                error.code = 'ERR_INVALID_ARG_TYPE';
+            } else if (!Number.isSafeInteger(value)) {
+                error = new RangeError('The code argument must be a safe integer');
+                error.code = 'ERR_OUT_OF_RANGE';
+            }
+            if (error) throw error;
+            exitCode = value | 0;
         },
     });
 
@@ -1338,10 +1364,22 @@ const fs = (() => {
     }
 
     function _pathToString(p) {
-        if (typeof p === 'string') return p;
-        if (p instanceof URL) return p.pathname;
-        if (Buffer.isBuffer(p)) return p.toString();
-        throw new TypeError('path must be a string, Buffer, or URL');
+        let result;
+        if (typeof p === 'string') result = p;
+        else if (p instanceof URL) result = url.fileURLToPath(p);
+        else if (Buffer.isBuffer(p)) result = p.toString();
+        else {
+            const error = new TypeError('path must be a string, Buffer, or URL');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        // Do not let a decoded %00 truncate a pathname at the C bridge.
+        if (result.indexOf('\0') !== -1) {
+            const error = new TypeError('The path argument must not contain null bytes');
+            error.code = 'ERR_INVALID_ARG_VALUE';
+            throw error;
+        }
+        return result;
     }
 
     function _flagsToMode(flags) {
@@ -2685,7 +2723,41 @@ const url = (() => {
         return result;
     }
 
-    function format(urlObj) {
+    function format(urlObj, options) {
+        if (urlObj instanceof URLClass) {
+            if (options && (typeof options !== 'object' || Array.isArray(options))) {
+                const error = new TypeError('The options argument must be an object');
+                error.code = 'ERR_INVALID_ARG_TYPE';
+                throw error;
+            }
+            // Work on a copy: formatting must not mutate the input URL or its
+            // live searchParams. Preserve default serialization, including
+            // opaque paths and empty query/fragment delimiters.
+            const copy = new URLClass(urlObj.href);
+            if (options) {
+                if (options.auth != null && !options.auth) { copy.username = ''; copy.password = ''; }
+                if (options.fragment != null && !options.fragment) copy.hash = '';
+                if (options.search != null && !options.search) copy.search = '';
+                if (options.unicode) {
+                    const hostname = copy.hostname;
+                    if (hostname && !hostname.startsWith('[')) {
+                        const decoded = _nodeWebPlatform.domainToUnicode(hostname);
+                        const href = copy.href;
+                        const authorityStart = href.indexOf('//') + 2;
+                        const hostStart = authorityStart + (copy.username || copy.password
+                            ? (copy.username + (copy.password ? ':' + copy.password : '') + '@').length : 0);
+                        return href.slice(0, hostStart) + decoded.domain + href.slice(hostStart + hostname.length);
+                    }
+                }
+            }
+            return copy.href;
+        }
+        if (typeof urlObj === 'string') urlObj = parse(urlObj);
+        if (!urlObj || typeof urlObj !== 'object') {
+            const error = new TypeError('The urlObject argument must be an object or string');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
         let result = '';
         if (urlObj.protocol) result += urlObj.protocol + '//';
         if (urlObj.auth) result += urlObj.auth + '@';
@@ -2720,25 +2792,45 @@ const url = (() => {
     // canParse must reject the same invalid input as the constructor.
     const { URL: URLClass, URLSearchParams: SearchParamsClass } = _nodeWebPlatform;
     function fileURLToPath(u) {
-        // Accept URL instance or string. Strip "file://", decode %XX.
-        const s = typeof u === 'string' ? u : (u && u.href);
-        if (typeof s !== 'string') {
-            throw new TypeError('fileURLToPath: expected URL or string');
+        if (typeof u === 'string') u = new URLClass(u);
+        if (!(u instanceof URLClass)) {
+            const error = new TypeError('The path argument must be a string or URL');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
         }
-        if (!s.startsWith('file://')) {
-            throw new TypeError('fileURLToPath: only file: URLs supported');
+        if (u.protocol !== 'file:') {
+            const error = new TypeError('The URL must be of scheme file');
+            error.code = 'ERR_INVALID_URL_SCHEME';
+            throw error;
         }
-        let p = s.slice('file://'.length);
-        // Optional host segment is dropped; only the path portion is kept.
-        const slash = p.indexOf('/');
-        if (slash > 0) p = p.slice(slash);
-        else if (slash !== 0) p = '/' + p;
-        return decodeURIComponent(p);
+        if (u.hostname !== '') {
+            const error = new TypeError('File URL host must be localhost or empty on POSIX');
+            error.code = 'ERR_INVALID_FILE_URL_HOST';
+            throw error;
+        }
+        if (/%2f/i.test(u.pathname)) {
+            const error = new TypeError('File URL path must not include encoded / characters');
+            error.code = 'ERR_INVALID_FILE_URL_PATH';
+            throw error;
+        }
+        return decodeURIComponent(u.pathname);
     }
     function pathToFileURL(p) {
-        if (typeof p !== 'string') p = String(p);
-        if (!p.startsWith('/')) p = '/' + p;
-        return new URLClass('file://' + encodeURI(p));
+        if (typeof p !== 'string') {
+            const error = new TypeError('The path argument must be a string');
+            error.code = 'ERR_INVALID_ARG_TYPE';
+            throw error;
+        }
+        const trailingSlash = p.endsWith('/');
+        p = path.resolve(p);
+        if (trailingSlash && !p.endsWith('/')) p += '/';
+        const result = new URLClass('file:///');
+        // pathname's setter percent-encodes Unicode and spaces, but leaves
+        // percent escapes and URL delimiters alone. Encode those literally.
+        result.pathname = p.replace(/%/g, '%25').replace(/\\/g, '%5C')
+            .replace(/\n/g, '%0A').replace(/\r/g, '%0D').replace(/\t/g, '%09')
+            .replace(/\?/g, '%3F').replace(/#/g, '%23');
+        return result;
     }
     return {
         parse, format, resolve,
@@ -4325,7 +4417,9 @@ function _bufferInputBytes(input) {
         Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
     // The intrinsic brand getter excludes DataView, including across realms.
     if (typedArrayName.call(input) !== undefined) {
-        return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+        const proto = Object.getPrototypeOf(Uint8Array.prototype);
+        const get = name => Object.getOwnPropertyDescriptor(proto, name).get.call(input);
+        return new Uint8Array(get('buffer'), get('byteOffset'), get('byteLength'));
     }
     for (const constructor of [ArrayBuffer,
         typeof SharedArrayBuffer === 'function' ? SharedArrayBuffer : null]) {
@@ -5328,11 +5422,22 @@ function _rewriteStaticEsmImports(source) {
     );
 }
 
+// Natural shutdown retains the pre-event status if a listener clears the
+// assignment. Explicit process.exit() instead defaults an unset status to 0.
+function _runNaturalExit() {
+    const status = process.exitCode === undefined ? 0 : process.exitCode;
+    if (!process._exiting) {
+        process._exiting = true;
+        process.emit('exit', status);
+    }
+    std.exit(process.exitCode === undefined ? status : process.exitCode);
+}
+
 function _runCommonJsMain(filename) {
     const mainRequire = _makeRequire(filename);
     mainRequire(filename);
     if (typeof drainJobQueue === 'function') drainJobQueue();
-    process.exit();
+    _runNaturalExit();
 }
 
 function _formatThrownFailure(failure) {
@@ -5382,7 +5487,7 @@ function _runEsmMain(filename, source) {
         console.error(_formatThrownFailure(failure));
         process.exitCode = process.exitCode || 1;
     }
-    process.exit();
+    _runNaturalExit();
 }
 
 function _runMainScriptIfPresent() {

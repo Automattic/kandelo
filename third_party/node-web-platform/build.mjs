@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('.', import.meta.url));
 const result = await build({
-  stdin: { contents: 'module.exports = { ...require("whatwg-url"), streams: require("web-streams-polyfill") };', resolveDir: root },
+  stdin: { contents: 'module.exports = { ...require("whatwg-url"), domainToUnicode: require("tr46").toUnicode, streams: require("web-streams-polyfill") };', resolveDir: root },
   bundle: true, write: false, format: 'cjs', platform: 'neutral', target: 'es2022',
   legalComments: 'inline', charset: 'utf8', mainFields: ['main'],
 });

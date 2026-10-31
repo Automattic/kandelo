@@ -42,6 +42,27 @@ The recorded main ABI-50 comparison fails 10 of 12 cases in every
 configuration. The complete upstream suite was not run. See
 [the libevent port](libevent.md) for scope, reproduction, and provenance.
 
+## Node core review follow-up (2026-10-31)
+
+PR #1595 now includes source fixes and permanent regressions for decoded
+filesystem file URLs, WHATWG `url.format` credentials/options, validated
+exit-code assignments and natural/explicit exit statuses, and intrinsic
+Buffer input storage/bounds. File URL conversion rejects foreign hosts,
+encoded slashes and NUL filesystem paths. POSIX backslashes remain valid.
+Windows file URL options and complete legacy URL helpers remain gaps.
+
+The source-only tests `host/test/node-url-exit-contracts.test.ts` and
+`host/test/node-buffer-encoding.test.ts` passed 9/9 against the exact native
+Node 26.13.0 reference. Expanded shell fixtures also passed on that native
+reference. These tests exercise actual shared functions in isolated
+contexts; they do not establish that rebuilt guest products pass.
+
+A full package rebuild is deferred at the user's request. The updated
+base-shell Node and three-engine browser integration tests remain pending
+that rebuild. Earlier passing guest results predate these fixes. The full
+upstream Node counts in the table above are historical, not coverage of
+these changes or Node 26.
+
 ## 2026-06-16 PHP PHPT Node Source-PR Full Run
 
 php-src discovery finds **19,017** `.phpt` files from PHP **8.3.15**. The

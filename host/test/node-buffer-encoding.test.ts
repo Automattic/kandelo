@@ -43,6 +43,27 @@ describe("Node buffer encoding validation", () => {
     }
   });
 
+  it("uses intrinsic typed-array storage and bounds even for subclasses", () => {
+    const types = [Uint8Array, class extends Uint8Array {},
+      runInNewContext('class Bytes extends Uint8Array {}; Bytes')];
+    for (const Type of types) {
+      for (const property of ["buffer", "byteOffset", "byteLength"]) {
+        const input = new Type([0xff, 0x61]);
+        Object.defineProperty(input, property, { get() { throw Error("shadow getter"); } });
+        expect(validators.isAscii(input)).toBe(isAscii(input));
+        expect(validators.isUtf8(input)).toBe(isUtf8(input));
+      }
+    }
+    const buffer = new ArrayBuffer(4, { maxByteLength: 8 });
+    const input = new Uint8Array(buffer, 2, 2);
+    input[0] = 0xff;
+    for (const length of [4, 1, 8]) {
+      buffer.resize(length);
+      expect(validators.isAscii(input)).toBe(isAscii(input));
+      expect(validators.isUtf8(input)).toBe(isUtf8(input));
+    }
+  });
+
   it("respects view bounds and rejects invalid and detached inputs", () => {
     const bytes = Uint8Array.of(0xff, 0x61, 0xff);
     for (const value of [new ArrayBuffer(0), bytes.buffer, bytes.subarray(1, 2), new SharedArrayBuffer(4), runInNewContext('new ArrayBuffer(4)'), runInNewContext('new SharedArrayBuffer(4)'), runInNewContext('new Uint8Array([97])')]) {

@@ -5795,7 +5795,7 @@ var require_ponyfill = __commonJS({
 });
 
 // <stdin>
-module.exports = { ...require_whatwg_url(), streams: require_ponyfill() };
+module.exports = { ...require_whatwg_url(), domainToUnicode: require_tr46().toUnicode, streams: require_ponyfill() };
 
 return module.exports;
 }

@@ -19,5 +19,16 @@ for (const value of [null, undefined, '', 42, [], {}, new DataView(backing.buffe
     if (!threw) throw Error('input type');
   }
 }
+class ByteSubclass extends Uint8Array {}
+for (const Type of [Uint8Array, ByteSubclass]) {
+  for (const key of ['buffer', 'byteOffset', 'byteLength']) {
+    const value = new Type([0xff, 0x61]);
+    Object.defineProperty(value, key, { get() { throw Error('shadow getter accessed: ' + key); } });
+    if (isAscii(value) || isUtf8(value)) throw Error('shadowed byte validation: ' + key);
+  }
+  const value = new Type([0xff]);
+  Object.defineProperty(value, 'buffer', { value: new ArrayBuffer(1) });
+  if (isAscii(value) || isUtf8(value)) throw Error('substitute buffer accepted');
+}
 console.log('buffer-validation-ok');
 `;

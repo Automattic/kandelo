@@ -4,6 +4,7 @@
   "type": "module",
   "dependencies": {
     "whatwg-url": "14.2.0",
+    "tr46": "5.1.1",
     "web-streams-polyfill": "4.3.0"
   },
   "devDependencies": {

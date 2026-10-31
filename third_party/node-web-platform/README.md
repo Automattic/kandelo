@@ -22,5 +22,8 @@ scripts/dev-shell.sh node third_party/node-web-platform/build.mjs --check
 
 Upstream: <https://github.com/jsdom/whatwg-url/tree/v14.2.0>.
 Streams upstream: <https://github.com/MattiasBuelens/web-streams-polyfill/tree/v4.3.0>.
+The bundle also exports its pinned `tr46` 5.1.1 dependency for Unicode
+hostname formatting by `url.format`.
+
 This supplies `URL`, `URLSearchParams`, and the `stream/web` classes. The separate legacy `url.parse`,
 `url.format`, and `url.resolve` APIs remain Kandelo's compatibility code.
