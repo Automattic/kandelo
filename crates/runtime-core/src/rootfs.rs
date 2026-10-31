@@ -2711,7 +2711,7 @@ where
             let InodeKind::Regular(data) = &mut inode.kind else {
                 return Err(Errno::EISDIR);
             };
-            let start = offset as usize;
+            let start = usize::try_from(offset).map_err(|_| Errno::EFBIG)?;
             let end = start.checked_add(buf.len()).ok_or(Errno::EFBIG)?;
             if end > data.len() {
                 grow_file_bytes(data, end, Errno::ENOSPC)?;
@@ -2843,10 +2843,11 @@ where
         let inode = state.get(idx).ok_or(Errno::EBADF)?;
         match &inode.kind {
             InodeKind::Regular(data) => {
-                let start = offset as usize;
-                if start >= data.len() {
+                // A large file offset must remain EOF, not wrap on wasm32.
+                if offset as u64 >= data.len() as u64 {
                     return Ok(Plan::Done(0));
                 }
+                let start = offset as usize;
                 let n = core::cmp::min(buf.len(), data.len() - start);
                 buf[..n].copy_from_slice(&data[start..start + n]);
                 Ok(Plan::Done(n))
@@ -3932,16 +3933,16 @@ pub fn export_tree_read(offset: i64, out: &mut [u8]) -> Result<usize, Errno> {
     if offset < 0 {
         return Err(Errno::EINVAL);
     }
-    let offset = offset as usize;
     EXPORT_CACHE.with(|cache| {
         if offset == 0 {
             *cache = export_tree();
         }
-        if offset >= cache.len() {
+        if offset as u64 >= cache.len() as u64 {
             cache.clear();
             cache.shrink_to_fit();
             return Ok(0);
         }
+        let offset = offset as usize;
         let n = core::cmp::min(out.len(), cache.len() - offset);
         out[..n].copy_from_slice(&cache[offset..offset + n]);
         Ok(n)
@@ -5506,6 +5507,25 @@ mod tests {
     }
 
     #[test]
+    fn wide_offsets_preserve_eof_and_overlay_contents() {
+        let _g = TestGuard::acquire();
+        build_sample_tree();
+        let (mut source, _) = make_byte_source(alloc::vec![(42, b"hello world".to_vec())], Vec::new());
+        let h = open(b"/usr/bin/hello", 2, 0, 0, 0).unwrap();
+        write(h, 0, b"H", &mut source).unwrap();
+        let mut buf = [0xa5; 11];
+        for offset in [1i64 << 32, (1i64 << 53) + 1, i64::MAX] {
+            assert_eq!(read(h, offset, &mut buf, &mut source), Ok(0));
+            assert_eq!(buf, [0xa5; 11]);
+        }
+        assert!(matches!(write(h, i64::MAX, b"XX", &mut source), Err(Errno::EFBIG | Errno::ENOSPC)));
+        assert_eq!(lstat(b"/usr/bin/hello").unwrap().st_size, 11);
+        assert_eq!(read(h, 0, &mut buf, &mut source), Ok(11));
+        assert_eq!(&buf, b"Hello world");
+        assert!(release_handle(h));
+    }
+
+    #[test]
     fn write_clears_setuid_bit() {
         let _g = TestGuard::acquire();
         insert_base_dir(b"/", 0o755, 0, 0, 1).unwrap();
@@ -6700,6 +6720,11 @@ mod tests {
             offset += n as i64;
         }
         assert_eq!(reassembled, whole);
+        let mut chunk = [0xa5; 7];
+        assert_eq!(export_tree_read(0, &mut chunk), Ok(7));
+        chunk.fill(0xa5);
+        assert_eq!(export_tree_read(1i64 << 32, &mut chunk), Ok(0));
+        assert_eq!(chunk, [0xa5; 7]);
     }
 
     #[test]

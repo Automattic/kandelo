@@ -37,6 +37,29 @@ async function main() {
     catch (failure) { error = failure; }
     check(error && error.code === 'ERR_INVALID_ARG_TYPE', 'callback validation must throw');
   } finally { fs.closeSync(fd); }
+  // Exercise both tmpfs and the resident rootfs overlay in the guest. Native
+  // Node may create a sparse file; a memory-backed filesystem may reject it,
+  // but neither may wrap the write onto the beginning of the existing file.
+  for (const widePath of ['/tmp/node-wide-offset-' + process.pid, process.cwd() + '/node-wide-offset-' + process.pid]) {
+    fs.writeFileSync(widePath, 'original');
+    const wideFd = fs.openSync(widePath, 'r+');
+    try {
+      const b = Buffer.alloc(8, 0xa5);
+      for (const position of [4294967296, 9007199254740993n]) {
+        check(fs.readSync(wideFd, b, 0, 1, position) === 0, 'wide EOF ' + widePath);
+        check(b[0] === 0xa5, 'wide read changed buffer');
+      }
+      try {
+        check(fs.writeSync(wideFd, Buffer.from('X'), 0, 1, 4294967296) === 1, 'wide write count');
+        check(fs.fstatSync(wideFd).size === 4294967297, 'wide write size wrapped');
+      } catch (error) {
+        if (!['EFBIG', 'ENOSPC'].includes(error.code)) throw error;
+        check(fs.fstatSync(wideFd).size === 8, 'failed wide write grew file');
+      }
+      check(next(wideFd) === 'o', 'wide I/O changed cursor');
+      check(fs.readSync(wideFd, b, 0, 8, 0) === 8 && b.toString() === 'original', 'wide write corrupted bytes');
+    } finally { fs.closeSync(wideFd); fs.unlinkSync(widePath); }
+  }
   const handle = await fs.promises.open(path, 'r+');
   try {
     const buffer = Buffer.alloc(2);
