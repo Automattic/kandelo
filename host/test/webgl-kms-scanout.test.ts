@@ -599,7 +599,7 @@ it.each([false,true])("restores only framebuffer selectors after same-owner curr
   if(release)expect(r.release()).toBe(0);
   expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
   expect(r.selections()).toBe(before);
-  expect(r.binds).toEqual([[0x8ca9,r.binding.shadow.fbo],[0x8ca8,r.binding.shadow.readFbo]]);
+  expect(r.binds).toEqual(release?[[0x8ca9,r.binding.shadow.fbo],[0x8ca8,r.binding.shadow.readFbo]]:[]);
   expect(r.binding.shadow.viewport).toEqual([3,4,5,6]);expect(r.binding.shadow.scissor.rect).toEqual([1,2,3,4]);
   expect(r.binding.errors).toEqual([0x501]);expect(r.owner.errors).toEqual([]);
 });
@@ -651,7 +651,7 @@ for(const target of [0x8ca9,0x8ca8])for(const fault of ["native","throw"]as cons
     r.gl.clear=()=>{draws++;};
     const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);view.setUint16(0,OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
     r.binding.cmdbufView=bytes;r.binding.cmdbufLen=8;
-    expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
+    expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
     r.gl.bindFramebuffer=(which,value)=>{if(!rejected&&which===target){rejected=true;if(fault==="throw")throw Error("selector refused");r.setError(0x502);return;}bind(which,value);};
     expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-5);expect(draws).toBe(0);
     expect(r.binding.errors).toEqual([]);
@@ -702,16 +702,52 @@ it("refuses a dirty drawable after context loss before dependent guest work",()=
   const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);
   view.setUint16(0,OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
   r.binding.cmdbufView=bytes;r.binding.cmdbufLen=8;
-  expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
+  expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
   r.gl.bindFramebuffer=(which,value)=>{bind(which,value);r.loseContext();};
   expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-5);expect(draws).toBe(0);
   expect(Reflect.get(r.muxer,"current")).toBeNull();
 });
 
 it("does not reuse a dirty drawable witness for a replacement context with the same numeric identity",()=>{
-  const r=selectedDrawable();expect(r.makeCurrent()).toBe(0);
+  const r=selectedDrawable();expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);
   r.imports.host_gl_destroy_context(8,22);
   const replacement=r.kernel.gl.get(8,12)!;replacement.gl=r.gl;replacement.contextId=22;
   replacement.cmdbufView=new Uint8Array(0);replacement.hasBeenCurrent=true;
   expect(r.imports.host_gl_submit(8,0,0,12)).toBe(0);expect(r.selections()).toBe(r.before+1);
+});
+
+it.each([false,true])("adds no selector/error work for clean surfaceless current (release: %s)",release=>{
+  const r=selectedDrawable(),create=r.gl.createFramebuffer;
+  r.gl.createFramebuffer=()=>({});
+  expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);expect(r.submit()).toBe(0);
+  r.gl.createFramebuffer=create;const before=r.selections();r.binds.length=0;
+  const getError=r.gl.getError;let errorReads=0;
+  r.gl.getError=()=>{errorReads++;return getError();};
+  expect(r.submit()).toBe(0);const ordinaryEntryReads=errorReads;errorReads=0;
+  r.setError(0x501);
+  if(release)expect(r.release()).toBe(0);
+  expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);
+  expect(errorReads).toBe(0);expect(r.binds).toEqual([]);
+  expect(r.submit()).toBe(0);
+  // One extra read consumes the actual queued guest flag, independently of
+  // the ordinary entry's terminal clean read. No private selector checks.
+  expect(errorReads).toBe(ordinaryEntryReads+1);
+  expect(r.binds).toEqual([]);expect(r.selections()).toBe(before);
+  expect(r.binding.errors).toEqual([0x501]);expect(r.owner.errors).toEqual([]);
+});
+
+it("never launders a prior dirty drawable through an unchanged logical bind",()=>{
+  const r=selectedDrawable();expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);
+  // This bind's before/after refs match, but the earlier release/rebind left
+  // the physical selectors unknown. The pending check must remain required.
+  expect(r.makeCurrent()).toBe(0);r.binds.length=0;expect(r.submit()).toBe(0);
+  expect(r.binds).toEqual([[0x8ca9,r.binding.shadow.fbo],[0x8ca8,r.binding.shadow.readFbo]]);
+  expect(r.selections()).toBe(r.before);
+});
+
+it("fully invalidates if an otherwise pure drawable commit throws before its changed-selector mark",()=>{
+  const r=selectedDrawable(),surface=r.binding.surface,add=surface.users.add;
+  surface.users.add=()=>{throw Error("membership allocation refused");};
+  expect(r.makeCurrent()).toBe(-5);expect(Reflect.get(r.muxer,"current")).toBeNull();
+  surface.users.add=add;expect(r.submit()).toBe(0);expect(r.selections()).toBe(r.before+1);
 });

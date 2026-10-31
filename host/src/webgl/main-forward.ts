@@ -216,7 +216,8 @@ export function setupMainForward(
           if (!glForwardRequestPending(msg.mailbox)) return;
           const selected = muxer(b.gl);
           // All fallible capture/cleanup fencing precedes acknowledgement.
-          // Only the nonthrowing drawable mark waits for accepted commit.
+          // A changed-selector mark follows only an accepted pure commit.
+          const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
           const drawableOnly = prepareDrawableTransition(b,selected,reg.hasExecutionRetirements(b.gl),msg.drawable);
           if (!reg.retryExecutionRetirements(b.gl)) {
             selected.invalidateCurrent();
@@ -230,8 +231,8 @@ export function setupMainForward(
           }
           try {
             if (completeGlForwardQuery(msg.mailbox, 0, new Uint8Array())) {
-              if (drawableOnly) selected.invalidateFramebuffers(b);
               prepared.commit();
+              if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) selected.invalidateFramebuffers(b);
             }
           } catch (error) { selected.invalidateCurrent(); throw error; }
           finally { prepared.cancel(); }

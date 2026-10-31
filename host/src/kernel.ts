@@ -2967,11 +2967,11 @@ export class WasmPosixKernel {
             // observe their old drawable; a new bind is acknowledged in order.
             try {
               if (b) {
-                if (b.gl) {
-                  const muxer = this.glMuxerFor(b.gl);
-                  if (prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl))) muxer.invalidateFramebuffers(b);
-                }
+                const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+                const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+                const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!));
                 releaseSurfaceResources(b); b.currentDrawable = null;
+                if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
               }
               return 0;
             } catch { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
@@ -2997,14 +2997,14 @@ export class WasmPosixKernel {
             } catch { return -5; }
           }
           try {
-            if (b.gl) {
-              const muxer = this.glMuxerFor(b.gl);
-              if (prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl),drawable)) muxer.invalidateFramebuffers(b);
-            }
+            const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
+            const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+            const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!),drawable);
             if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
-              if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent();
+              muxer?.invalidateCurrent();
               return -12;
             }
+            if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
           } catch { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           return 0;
         },

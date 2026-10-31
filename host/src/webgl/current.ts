@@ -46,8 +46,9 @@ export function prepareDrawableTransition(b: GlBinding, muxer: GlMuxer,
   const cleanup = executionRetirementPending || hasNativeRepair(muxer.context);
   if (b.hasBeenCurrent && !collect && !allocation && !cleanup &&
       !b.clientArrayEndRequested && !muxer.context.isContextLost?.()) {
-    // The caller marks only immediately before the logical commit, after
-    // any forwarded mailbox acknowledgement has accepted it.
+    // No native work/callout occurs in the reviewed logical commit. Mark
+    // afterward only if its FBO refs changed; never clear an older dirty bit.
+    // Forwarded callers still require acknowledgement before committing.
     return true;
   }
   muxer.invalidateCurrent();

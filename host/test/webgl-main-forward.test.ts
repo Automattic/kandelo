@@ -586,6 +586,6 @@ it.each(["late","completion race"] as const)("does not dirty an already-selected
   expect(stub.log.filter(([name])=>name==="clear")).toHaveLength(1);
   expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
   refuse=false;expect(next.onMakeCurrent!(drawable)).toBe(0);next.onSubmit(clearCmdbuf());
-  expect(selections).toBe(before);expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toHaveLength(2);
+  expect(selections).toBe(before);expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
   dispose();
 });

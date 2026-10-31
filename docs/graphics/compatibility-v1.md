@@ -14222,3 +14222,53 @@ and its source control incorrectly substituted Map. This is an observer defect,
 not a rendering defect. The next fresh observer uses the actual WeakMap and a
 source declaration assertion, while keeping the failed capture immutable.
 No complete ordered focus claim follows from R2. Preview5679 stays unchanged.
+
+### Complete observed focus ordering and unchanged-selector refinement, 2026-10-31
+
+`desktop-boundary-ordered-r3-1031-132701-3bc8` completes workload/collector/guard
+0/0/0 in48s. Twelve source controls, actual19-module HTTP composition and69
+sealed inputs precede the run. The corrected observer uses the actual WeakMap
+and records bounded helper-error codes; the original R1/R2 failures remain.
+Normalc775 plus exacta196 production selection source is still the frozen
+runtime, with private observations only in this headless Chromium page.
+Both96nativepx responses, original client identity, normal replacement and
+normal93-owner/245-member/dual-SDK/kernel/host guards pass. These are instrumented
+1s operation observations, not CPU time, physical frames or an improvement.
+
+| Observed3-Foot move | Ordered rows | Dropped/internal errors | Complete internal latch intervals | Make-current calls |
+|---|---:|---:|---:|---:|
+|Within one terminal|27,429|0 / 0|2|7|
+|Across the boundary|75,008|0 / 0|8|44|
+
+All51 observed make-current calls return0 with complete before/after records:
+PID101/session2/context3, the same exact weak binding/native-context identities,
+and zero draw/read surface arguments. Each call preserves its shadow FBO pair
+and viewport values/identity. Crossing includes4binds with a different FBO pair
+established by other GL work **between** calls; per-call equality must not erase
+previously outstanding selector dirtiness. Both traces retain edge censors,
+actual stop lateness and raw30s-complete=false separately from accepted1s
+ordered completeness. The scope is the selected19 boundaries/native calls,
+not an exhaustive guest execution log or physical GPU completion.
+
+The next refinement compares only two local pre-commit FBO references around
+an eligible, reviewed native-free synchronous logical transition. Successful
+commit adds selector dirtiness only when those references changed. It never
+clears an existing dirty bit. Exceptions invalidate, conservative fences still
+precede native preparation/collection, and forwarded marking follows accepted
+ACK plus successful commit. No previous-native-handle cache, generation,
+persistent receipt or additional allocation is introduced. In source controls,
+unchanged surfaceless repeated binding and release/rebind add no FBO/error/texture
+replay; previously dirty unchanged transitions still require checked restoration.
+This corrects avoidable checks introduced by the first selector candidate.
+
+Focused source validation passes267/267 across10files with0skips. Before controls
+against59 reproduce unnecessary error reads in the two clean surfaceless cases;
+changed-selector failure controls explicitly create real dirtiness and retain
+all rejection assertions. Full typecheck still fails with byte-identical
+existing diagnostics. Independent source review finds no new blocker.
+Application responsiveness, combined normal build, browser-memory, conformance
+and broad benchmarks remain unproven. No change is made to preview5679 or ABI.
+
+Evidence: `.context/desktop-boundary-ordered-r3/`,
+`.context/desktop-boundary-ordered-analysis-r3/` (independent audit in progress),
+and `.context/focus-drawable-noop-candidate-r1/`.
