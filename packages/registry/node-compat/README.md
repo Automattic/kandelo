@@ -58,9 +58,12 @@ particular:
   sockets. Server closure waits for accepted descriptors; Socket.end uses
   actual write-half shutdown. Native watch reference state drives listener
   and socket lifetime. Five focused cases pass on each host, including an
-  independent C client over IPv4 and IPv6. Callable constructors, complete
-  listen overloads/descriptors, IPC/fd listeners, connection limits,
-  BlockList, socket controls and full stream behavior remain gaps.
+  independent C client over IPv4 and IPv6. The accept path compares live
+  connection counts with maxConnections before constructing a Socket. It
+  drops excess descriptors, including at zero capacity, with real endpoint
+  records. Cluster distribution and dropMaxConnection are not supplied.
+  Callable constructors, complete listen overloads/descriptors, IPC/fd
+  listeners, BlockList, socket controls and full stream behavior remain gaps.
 
 - Streams, Fetch networking and process lifecycle need broader upstream
   coverage. Shared natural exit now has a shell teardown hook for files and eval,

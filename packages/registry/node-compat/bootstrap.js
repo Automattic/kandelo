@@ -4309,14 +4309,25 @@ const net = (() => {
             if (!this._referenced) nat.socketRef(this._fd, false);
             pending.then(fd => {
                 if (this._fd < 0 || this._generation !== generation) { nat.socketClose(fd); return; }
+                // Keep accepting while the listener is open, including when
+                // a full server drops this connection instead of publishing it.
+                this._accept(generation);
+                if (this.maxConnections != null && this._connections >= this.maxConnections) {
+                    try {
+                        const local = nat.socketAddress(fd), remote = nat.socketAddress(fd, true);
+                        this.emit('drop', { __proto__: null,
+                            localAddress: local.address, localPort: local.port, localFamily: local.family,
+                            remoteAddress: remote.address, remotePort: remote.port, remoteFamily: remote.family,
+                        });
+                    } finally { nat.socketClose(fd); }
+                    return;
+                }
                 const socket = new Socket({ allowHalfOpen: this.allowHalfOpen });
                 try { socket._adoptFd(fd); }
                 catch (error) { socket.destroy(); this.emit('error', error); return; }
                 socket.server = this;
                 this._connections++;
                 socket._onServerSocketClose = () => { this._connections--; this._maybeClose(); };
-                // Arm the next accept before user callbacks can close/relisten.
-                this._accept(generation);
                 this.emit('connection', socket);
                 if (!this.pauseOnConnect) socket._scheduleRead();
             }, reason => {
