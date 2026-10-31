@@ -10685,3 +10685,34 @@ six shared-mapping inheritance-entry cases. Its normal fixture setup
 rebuilds stale fixtures; no selected built kernel execution is claimed
 from these mocked boundary cases. Exact tested source bytes are unchanged
 through implementation commit6bf002e64deb124995e40683722b93b430236df7.
+
+
+Actual Node candidate job
+`snapshot-compare-node-semantics-r3-1030-225208-4329` passes15/15 across
+five files, without skips/load failures, after normal own kernel/rootfs/
+host preparation. It exercises kernel-owned file mappings across opens,
+fork and descriptor I/O, departed SysV peers, wasm32/64 DRI mapping
+inheritance, eight imported-storage retirement cases and three cursor
+ioctl/exec/spawn cases. The intentional trapped owner emits the expected
+worker diagnostic. Selected normal kernel is1835531 bytes, SHA256
+`5c011b2db9349812268f4814077e69f96eba9302380047789d0636e9586171a5`,
+unchanged before/after at support commit a7d05f63035a. This is actual Wasm
+execution on Node, not browser rendering or the full POSIX gate.
+
+The first attempt60d2 completes normal preparation but stops before tests
+because its guard expects the standalone ABI-check kernel's raw hash
+(a014...). The normal selected artifact has the new comparison import,
+passes selected-kernel `dump-abi --check` and `verify-fresh`, and carries
+the current program-contract digest. Offline section/string evidence also
+shows isolated package-build Cargo registry source paths and resolver
+stamps; raw and selected code sections are not asserted byte-identical.
+The initial exact-byte-prefix hypothesis fails and is not used as proof.
+A later auxiliary Python WAT comparison is cancelled after consuming CPU;
+its inputs and partial diagnostic history are retained. The accidental
+r2 launch bf60 exits127 before tests because its preparatory assertion
+prevented script creation. A fresh validated r3 script uses the reviewed
+normal artifact hash, repeats normal preparation and produces the15/15
+result above. Neither earlier attempt is represented as a test run.
+Original commands, hashes and evidence remain in
+`.context/process-snapshot-compare-validation/` and the fresh
+`process-snapshot-compare-validation-r3/` directory.
