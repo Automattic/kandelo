@@ -11165,9 +11165,9 @@ export class CentralizedKernelWorker {
         return;
       }
       console.error(`[handleSyscall] UNCAUGHT ERROR pid=${channel.pid}:`, err);
-      // Complete with EIO without re-entering the coherence path that just
-      // failed. Retrying a persistently unreadable backing here would throw a
-      // second time and leave the guest channel parked forever.
+      // Raw completion makes one contained coherence retry while materializing
+      // the EIO result. Its materializer catches an ordinary retry failure;
+      // neither that retry nor publication replays the rejected syscall.
       this.completeChannelRawAndRelisten(channel, -EIO, EIO, entry);
     }
   }
@@ -24055,8 +24055,13 @@ export class CentralizedKernelWorker {
     // mappings. The kernel returns immediately for one that holds none, but
     // the call itself would otherwise be paid at every boundary of every
     // process.
-    if (ownsKernelSharedMappings) {
-      this.#syncKernelSharedMappingsForProcess(process.pid, false, entry);
+    if (
+      ownsKernelSharedMappings
+      && !this.#syncKernelSharedMappingsForProcess(process.pid, false, entry)
+    ) {
+      throw new Error(
+        `Cannot synchronize kernel shared mappings for pid=${process.pid}`,
+      );
     }
   }
 

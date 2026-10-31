@@ -15153,3 +15153,26 @@ preclude latency/comparable-speed claims; differing R2/R3 counts are different
 instrumented runs. Root analysis: `.context/hot-shared-mapping-analysis-r3/`.
 Final metadata SHA256:
 `5208148cc145fd6019ed2c686b141975b4d89ef30c7754a11a2a4c52dea4f5d1`.
+
+
+### Preserve shared-mapping synchronization failure, 2026-10-31
+
+The source audit found that the ordinary boundary discarded a valid negative
+kernel synchronization result. It now rejects that result through existing
+recoverable EIO handling. Entry failure prevents syscall dispatch; completion
+failure retains already-applied output bytes and reports EIO without replay.
+Raw error completion makes one contained synchronization retry. Explicit
+fork/exec boolean checks, best-effort teardown and fatal classification remain.
+No dirty flag, clean lease, scan omission or ABI change is introduced.
+
+Three negative-return regression cases fail against exact818f708 baseline;
+seven new cases and the related existing mapping tests pass80/80 across two
+source-host files, with no skips. They use the installed genuine Wasm export
+fixture and production entry/completion methods: persistent entry failure
+proves two sync attempts, zero dispatch and one completed EIO; completion
+proves output visibility inside the export and no reapplication on a second
+materialization. Positive malformed-result and success controls remain.
+These fixtures are not normal guest, three-engine, browser-memory or POSIX
+acceptance. R3 observed no such runtime failure, and no speed claim follows.
+Evidence in the mutable checkout:
+`.context/shared-mapping-boundary-failure-candidate-r1/HANDOFF.md`.

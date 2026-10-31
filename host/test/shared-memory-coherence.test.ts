@@ -9,6 +9,7 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
 } from "../src/generated/abi";
 import {
   createCentralizedKernelWorkerTestDouble,
@@ -451,6 +452,133 @@ function sysvHarness(options: SysvMirrorStubOptions = {}) {
     writeChunk,
   };
 }
+
+describe("kernel-owned shared-mapping boundary failures", () => {
+  function pendingChannel(h: ReturnType<typeof sysvHarness>) {
+    const channel = (h.kw as any).processes.get(h.pids[0]).channels[0];
+    channel.i32View = new Int32Array(channel.memory.buffer, 0, 1);
+    channel.consecutiveSyscalls = 0;
+    Object.assign(h.kw as any, {
+      config: {},
+      syscallRing: new Map(),
+      syscallTraceEnabled: false,
+      pendingCancels: new Set(),
+    });
+    writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
+    Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+    return channel;
+  }
+
+  it.each([-5, 1])("rejects boundary export result %i before dispatch and completes EIO once", (result) => {
+    const h = sysvHarness({
+      fail: { kernel_shared_mapping_sync_process: result },
+    });
+    const channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      (h.kw as any).handleSyscall(channel);
+      const view = new DataView(channel.memory.buffer);
+      expect(h.handleChannel).not.toHaveBeenCalled();
+      // Raw error completion contains one further synchronization attempt;
+      // it catches that failure rather than replaying the syscall.
+      expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
+        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+      ]);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(-5n);
+      expect(view.getUint32(CH_ERRNO, true)).toBe(5);
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+    } finally { error.mockRestore(); }
+  });
+
+  it("dispatches and completes normally when the real sync export succeeds", () => {
+    const h = sysvHarness();
+    const channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    (h.kw as any).handleSyscall(channel);
+    const view = new DataView(channel.memory.buffer);
+    expect(h.handleChannel).toHaveBeenCalledTimes(1);
+    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toHaveLength(2);
+    expect(view.getBigInt64(CH_RETURN, true)).toBe(0n);
+    expect(view.getUint32(CH_ERRNO, true)).toBe(0);
+    expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+    expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+  });
+
+  it.each([-5, 0])("completes a detached output with sync result %i without hiding its effects", (result) => {
+    let channel: ReturnType<typeof pendingChannel>;
+    const ptr = 0x5000;
+    const observed: number[] = [];
+    const h = sysvHarness({ fail: {
+      get kernel_shared_mapping_sync_process() {
+        observed.push(new Uint8Array(channel.memory.buffer)[ptr]);
+        return result;
+      },
+    } });
+    channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      (h.kw as any).completeChannel(
+        channel, ABI_SYSCALLS.Read, [0, ptr, 1], undefined, 1, 0,
+        [{ ptr, bytes: new Uint8Array([0x6d]) }],
+      );
+      expect(observed).toEqual([0x6d]);
+      expect(new Uint8Array(channel.memory.buffer)[ptr]).toBe(0x6d);
+      const view = new DataView(channel.memory.buffer);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(BigInt(result < 0 ? -5 : 1));
+      expect(view.getUint32(CH_ERRNO, true)).toBe(result < 0 ? 5 : 0);
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+      expect(h.handleChannel).not.toHaveBeenCalled();
+    } finally { error.mockRestore(); }
+  });
+
+  it.each([-5, 0])("materializes outputs before sync result %i without replaying effects", (result) => {
+    let channel: ReturnType<typeof pendingChannel>;
+    const ptr = 0x5000;
+    const observed: number[] = [];
+    const h = sysvHarness({ fail: {
+      get kernel_shared_mapping_sync_process() {
+        observed.push(new Uint8Array(channel.memory.buffer)[ptr]);
+        return result;
+      },
+    } });
+    channel = pendingChannel(h);
+    const relisten = vi.fn();
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: relisten });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prepared = {
+      kind: "marshalled", outputWrites: [{ ptr, bytes: new Uint8Array([0x6d]) }],
+      retVal: 1, errVal: 0, materialized: false, relistenRequested: true,
+    };
+    try {
+      // Exercise the actual completion materializer with an independently
+      // owned output. No boundary hook replaces the real export call.
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      expect(observed).toEqual([0x6d]);
+      expect(prepared.outputWrites).toEqual([]);
+      expect(prepared.retVal).toBe(result < 0 ? -5 : 1);
+      expect(prepared.errVal).toBe(result < 0 ? 5 : 0);
+      expect(prepared.materialized).toBe(true);
+      new Uint8Array(channel.memory.buffer)[ptr] = 0x7e;
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      expect(observed).toEqual([0x6d]);
+      expect(new Uint8Array(channel.memory.buffer)[ptr]).toBe(0x7e);
+      (h.kw as any).publishOrParkChannelCompletion(channel, prepared);
+      const view = new DataView(channel.memory.buffer);
+      expect(view.getBigInt64(CH_RETURN, true)).toBe(BigInt(result < 0 ? -5 : 1));
+      expect(view.getUint32(CH_ERRNO, true)).toBe(result < 0 ? 5 : 0);
+      expect(Atomics.load(channel.i32View, CH_STATUS / 4)).toBe(CHANNEL_STATUS_COMPLETE);
+      expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
+    } finally { error.mockRestore(); }
+  });
+});
 
 describe("SysV SHM coherence and lifecycle", () => {
   // The publish/refresh byte protocol itself -- disjoint-run merging, version

@@ -2121,6 +2121,13 @@ cache policy: the kernel pins the inode for its mappings, observes
 descriptor writes through a content generation its filesystem advances on
 every write and truncation, and writes each publication through to the file.
 
+A failed kernel-owned synchronization is not successful boundary completion.
+Entry failure prevents syscall dispatch and follows the existing recoverable
+`EIO` completion path. If synchronization fails after completion output bytes
+were applied, those effects remain visible and the channel reports `EIO`;
+there is no rollback or syscall replay. Raw error completion makes one contained
+synchronization retry, whose ordinary failure is caught before publication.
+
 Host-file mappings add a backend-qualified stable identity and retain the
 original fd's host handle for the mapping lifetime. Identity is derived and
 revalidated through that live handle, never by reopening its remembered path.
