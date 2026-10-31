@@ -11125,3 +11125,68 @@ fixtures and does not rebuild SDK/kernel/packages/images. Log:
 `.context/perf-lab-browser-r2/source-contract-and-focused.log`.
 No full normal acceptance or broader WebKit runtime claim is carried
 forward from this focused pass.
+
+
+### Native comparison: remaining desktop CPU costs (2026-10-31)
+
+Profiling the existing immutable5669 preview requires no rebuild. Managed
+job `native-snapshot-new-native2x-terminal-cp-1031-003557-ac09` completes0
+in2m37s: all nine CPU phases at1/3/5 real Foot windows, profile start/stop
+acknowledgements, calibration, worker coverage, observer disposal and
+normal93-owner245-member before/after checks pass. The runtime remains
+e660/edb881f9. Raw report SHA256
+`4db2b02d48d1ce6d2692fe5a7dbda69935e1b89db02ec03909ec6d7a4b95381e`
+is under `.context/native-snapshot-cpu-r1/`. The new private helper manifest
+is `111079812f2a4c6986014de4dd64658f025a165b0245623473aa6043323e6a00`;
+job manifest `daf59d9f69ceed1aab4e4b9ece74d94ffd08c57a64b1db8396477a56a8c3113f`.
+
+| Motion phase, definite calibrated kernel samples | Total | Comparison inclusive | Native comparison leaf under that call | Native getError self |
+|---|---:|---:|---:|---:|
+| 1 terminal | 3397 | 1757 | 1738 | 609 |
+| 3 terminals | 3385 | 1978 | 1947 | 879 |
+| 5 terminals | 3331 | 1674 | 1630 | 1111 |
+
+These are sampled stacks inside marker brackets, not call/byte counts,
+CPU utilization or uninstrumented input latency. Motion has no late or
+unprofiled qualified related workers; browser main, GPU, audio and whole
+system work remain outside this observer. Each Wasm frame retains its
+actual module URL/index; no old kernel index identity is borrowed. The
+native comparison leaf is selected by its actual comparison ancestor.
+Read-only calibrated analysis is in
+`.context/native-snapshot-cpu-analysis.json` and its adjacent script/report.
+
+Mapping comparison still accounts for roughly half of these sampled
+kernel stacks. Native error queries rise from18% to33% of motion self
+samples, with substantial drawGpuScanout/readGpuScanout ancestry. The next
+bounded candidate drains pending native errors once per private synchronous
+seven-operation KMS sequence, preserving the check immediately after every
+operation and stopping the dependent suffix on the first rejection. Its
+state capture, inverse groups, retry journal, entry/exit owner and loss
+checks remain unchanged. No clean assumption persists between sequences.
+The extra seven-callback array is an explicit allocation cost to measure.
+Direct actual-GL measurements, application effect and acceptance are pending.
+
+Cross-tick cursor caching remains invalid: cursor observer/position
+versions are not storage epochs, image revisions omit arbitrary rendering,
+and retained CPU/native aliases can update pixels without a new ioctl or
+commit. Existing live-pixel and context-loss controls remain required.
+
+Candidate source validation passes126/126 across six files,0 skips/unloaded,
+in38.01s. This includes thirteen error-sequence controls, all38 KMS tests
+with each of seven draw/read steps rejected by native error and by throw,
+failed-inverse retry, live cursor writes/loss, GL muxer ownership, GBM front
+copy, native GPU storage and retained surface-storage lifetime checks.
+The new source-only test is added to the CI evidence-class inventory.
+This uses existing fixtures through normal index/stamp preparation; no
+SDK, kernel, package or image rebuild runs. Actual native timing and normal
+combined application/memory/conformance acceptance remain pending.
+
+The evidence-class check initially fails on two prior native-comparison
+test files omitted from the registry. Their reviewed classes are now
+added: comparator source-only, real selected-kernel fallback prepared-product
+(it imports the binary resolver). The new GL sequence file is source-only.
+Original registry failure is retained alongside the rerun; no test is
+excluded or reclassified to hide a product dependency.
+
+The complete evidence-class rerun passes:636 files, registry and live Vitest
+inventory agree. No source-only/prepared-product mismatch is waived.

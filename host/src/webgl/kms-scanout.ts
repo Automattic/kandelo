@@ -1,4 +1,4 @@
-import { checkedGlCall } from "./program-objects.js";
+import { checkedGlCall, checkedGlSequence } from "./program-objects.js";
 import { applyNativeChanges, nativeInverse } from "./native-recovery.js";
 
 export type GpuScanoutStorage = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
@@ -20,16 +20,17 @@ export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height
     [[scissor ? "enable" : "disable", 0x0c11]],
     [["colorMask", mask[0], mask[1], mask[2], mask[3]]],
     [["clearColor", clear[0], clear[1], clear[2], clear[3]]]);
-  return applyNativeChanges({ ...owner, shadow: {} }, [{ restore, apply: () =>
-    checkedGlCall(owner, () => gl.disable(0x0c11)) &&
-    checkedGlCall(owner, () => gl.bindFramebuffer(0x8ca8, storage.fbo)) &&
-    checkedGlCall(owner, () => gl.bindFramebuffer(0x8ca9, null)) &&
-    checkedGlCall(owner, () => gl.blitFramebuffer(0, 0, width, height, 0, height, width, 0, 0x4000, 0x2600)) &&
+  return applyNativeChanges({ ...owner, shadow: {} }, [{ restore, apply: () => checkedGlSequence(owner, [
+    () => gl.disable(0x0c11),
+    () => gl.bindFramebuffer(0x8ca8, storage.fbo),
+    () => gl.bindFramebuffer(0x8ca9, null),
+    () => gl.blitFramebuffer(0, 0, width, height, 0, height, width, 0, 0x4000, 0x2600),
     // The primary KMS plane is opaque. Preserve alpha in the BO for image
     // siblings, but do not expose the page background through scanout.
-    checkedGlCall(owner, () => gl.colorMask(false, false, false, true)) &&
-    checkedGlCall(owner, () => gl.clearColor(0, 0, 0, 1)) &&
-    checkedGlCall(owner, () => gl.clear(0x4000)),
+    () => gl.colorMask(false, false, false, true),
+    () => gl.clearColor(0, 0, 0, 1),
+    () => gl.clear(0x4000),
+  ]),
   }], { shared: true, finalizer: restore });
 }
 
@@ -52,13 +53,14 @@ export function readGpuScanout(storage: GpuScanoutStorage, width: number, height
   const restore = nativeInverse(owner,
     [["bindFramebuffer", 0x8ca8, read]], [["bindBuffer", 0x88eb, pack]],
     fields.map((field, index) => ["pixelStorei", field, values[index]]));
-  const accepted = applyNativeChanges({ ...owner, shadow: {} }, [{ restore, apply: () => {
-    if (!checkedGlCall(owner, () => gl.bindFramebuffer(0x8ca8, storage.fbo)) ||
-        !checkedGlCall(owner, () => gl.bindBuffer(0x88eb, null))) return false;
-    for (let i = 0; i < fields.length; i++) {
-      if (!checkedGlCall(owner, () => gl.pixelStorei(fields[i], i === 0 ? 1 : 0))) return false;
-    }
-    return checkedGlCall(owner, () => gl.readPixels(0, 0, width, height, 0x1908, 0x1401, pixels));
-  } }], { shared: true, finalizer: restore });
+  const accepted = applyNativeChanges({ ...owner, shadow: {} }, [{ restore, apply: () => checkedGlSequence(owner, [
+    () => gl.bindFramebuffer(0x8ca8, storage.fbo),
+    () => gl.bindBuffer(0x88eb, null),
+    () => gl.pixelStorei(fields[0], 1),
+    () => gl.pixelStorei(fields[1], 0),
+    () => gl.pixelStorei(fields[2], 0),
+    () => gl.pixelStorei(fields[3], 0),
+    () => gl.readPixels(0, 0, width, height, 0x1908, 0x1401, pixels),
+  ]) }], { shared: true, finalizer: restore });
   return accepted ? pixels : null;
 }

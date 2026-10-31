@@ -197,3 +197,60 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
   expect(reads()).toBe(3);
   expect(r.state).toEqual(r.initial);
 });
+
+const drawSteps = ["disable", "bindFramebuffer:36008", "bindFramebuffer:36009", "blitFramebuffer", "colorMask", "clearColor", "clear"];
+const readSteps = ["bindFramebuffer:36008", "bindBuffer", "pixelStorei:3333", "pixelStorei:3330", "pixelStorei:3332", "pixelStorei:3331", "readPixels"];
+
+function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "throw") {
+  const r = renderer(), forward: string[] = [], pending: number[] = [];
+  const originalError = r.gl.getError.bind(r.gl);
+  r.gl.getError = () => pending.shift() ?? originalError();
+  let restoring = false, rejected = false;
+  for (const name of ["disable", "enable", "bindFramebuffer", "blitFramebuffer", "colorMask", "clearColor", "clear", "bindBuffer", "pixelStorei", "readPixels"] as const) {
+    const original = r.gl[name];
+    (r.gl as any)[name] = (...args: unknown[]) => {
+      // The existing inverse starts with the old draw/read selector. Calls
+      // before that anchor must be exactly the accepted/rejected prefix.
+      if (name === "bindFramebuffer" && (kind === "draw"
+        ? args[0] === 0x8ca9 && args[1] === r.initial.get(0x8ca6)
+        : args[0] === 0x8ca8 && args[1] === r.initial.get(0x8caa))) restoring = true;
+      if (!restoring) {
+        forward.push(name === "bindFramebuffer" || name === "pixelStorei" ? `${name}:${args[0]}` : name);
+        if (!rejected && forward.length - 1 === index) {
+          rejected = true;
+          if (fault === "throw") throw Error("native operation refused");
+          pending.push(0x502); return;
+        }
+      }
+      return Reflect.apply(original, r.gl, args);
+    };
+  }
+  return { ...r, forward };
+}
+
+for (const kind of ["draw", "read"] as const) for (let index = 0; index < 7; index++)
+  for (const fault of ["native", "throw"] as const)
+    it(`restores KMS ${kind} after ${fault} step ${index} and never executes its dependent suffix`, () => {
+      const r = sequenceFault(kind, index, fault);
+      expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2)).toBe(kind === "draw" ? false : null);
+      expect(r.forward).toEqual((kind === "draw" ? drawSteps : readSteps).slice(0, index + 1));
+      expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
+    });
+
+it("keeps a rejected inverse after an early KMS selector failure and repairs independent state", () => {
+  const r = sequenceFault("read", 1, "native"); r.failRestore();
+  expect(readGpuScanout(r.storage, 2, 2)).toBeNull(); expect(hasNativeRepair(r.gl)).toBe(true);
+  expect(r.state.get(0x88ed)).toBe(r.initial.get(0x88ed));
+  expect([0x0d05, 0x0d02, 0x0d04, 0x0d03].map(p => r.state.get(p)))
+    .toEqual([0x0d05, 0x0d02, 0x0d04, 0x0d03].map(p => r.initial.get(p)));
+  r.allowRestore(); expect(repairNativeState(r.gl)).toBe(true);
+  expect(hasNativeRepair(r.gl)).toBe(false); expect(r.state).toEqual(r.initial);
+});
+
+for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-check and inverse with one sequence entry`, () => {
+  const r = renderer(), originalError = r.gl.getError.bind(r.gl); let reads = 0;
+  r.gl.getError = () => { reads++; return originalError(); };
+  expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2) !== null).toBe(true);
+  expect(reads).toBe(kind === "draw" ? 20 : 22);
+  expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
+});

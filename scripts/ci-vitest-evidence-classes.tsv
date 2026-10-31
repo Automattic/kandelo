@@ -219,6 +219,7 @@ host/test/kernel-initialization-lifetime.test.ts	source-only
 host/test/kernel-ipc-shmat-entry.test.ts	source-only
 host/test/kernel-large-transfer-protocol.test.ts	source-only
 host/test/kernel-late-channel.test.ts	prepared-product
+host/test/kernel-native-comparison-fallback.test.ts	prepared-product
 host/test/kernel-network-cleanup-entry.test.ts	source-only
 host/test/kernel-process-registration-entry.test.ts	source-only
 host/test/kernel-public-entry-roots.test.ts	source-only
@@ -332,6 +333,7 @@ host/test/process-memory-reclamation-rss.test.ts	prepared-product
 host/test/process-memory-retained-wrapper.test.ts	source-only
 host/test/process-memory.test.ts	source-only
 host/test/process-native-layout.test.ts	prepared-product
+host/test/process-snapshot-comparator.test.ts	source-only
 host/test/process-table-replication.test.ts	source-only
 host/test/process-view-teardown.test.ts	source-only
 host/test/process-wait-lifecycle.test.ts	source-only
@@ -475,6 +477,7 @@ host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
 host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-cpu-image-storage.test.ts	source-only
+host/test/webgl-error-sequence.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
