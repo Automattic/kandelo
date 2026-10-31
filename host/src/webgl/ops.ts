@@ -70,6 +70,12 @@ export const OP_ENABLE_VERTEX_ATTRIB_ARRAY  = 0x0500;
 export const OP_DISABLE_VERTEX_ATTRIB_ARRAY = 0x0501;
 export const OP_VERTEX_ATTRIB_POINTER       = 0x0502;
 export const OP_DRAW_ARRAYS                 = 0x0503;
+/** Owned packed client attributes and one nonindexed draw; u16-bounded payload. */
+export const OP_DRAW_CLIENT_ARRAYS          = 0x0506;
+export const INLINE_DRAW_HEADER_BYTES = 16;
+export const INLINE_DRAW_ATTRIBUTE_BYTES = 20;
+export const INLINE_DRAW_MAX_BYTES = 65535;
+export const INLINE_DRAW_MAX_ATTRIBUTES = 16;
 export const OP_DRAW_ELEMENTS               = 0x0504;
 /** `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
  *  attribute. ScummVM's shader pipeline feeds the per-draw color

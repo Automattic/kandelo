@@ -1040,6 +1040,82 @@ failed:
     return -1;
 }
 
+/* A whole small nonindexed draw owns one record. Source layout stays in the
+ * encoder; the device receives packed referenced elements without public names
+ * or ARRAY mutations. Return zero only before admission for the legacy path. */
+static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (count <= 0 || state->current_vertex_array->name)
+        return 0;
+    if (state->array_capture.active) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return -1;
+    }
+    _Static_assert(WPK_GL_MAX_ATTRIBS == WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES,
+                   "inline client attribute limit matches encoder state");
+    struct inline_client_attribute {
+        const struct wpk_client_attrib *attribute;
+        const uint8_t *source;
+        uint32_t index, element, stride, bytes;
+    } plan[WPK_GL_MAX_ATTRIBS];
+    uint32_t clients = 0;
+    uint64_t payload = WPK_GL_INLINE_DRAW_HEADER_BYTES;
+    for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+        const struct wpk_client_attrib *a = &g_attribs[i];
+        if (!a->client || !a->enabled) continue;
+        const uint32_t width = attrib_type_size(a->type);
+        if (!width || a->size < 1 || a->size > 4 || !a->pointer) {
+            raise_client_error(GL_INVALID_OPERATION);
+            return -1;
+        }
+        const uint32_t element = width * (uint32_t)a->size;
+        const uint32_t stride = a->stride ? (uint32_t)a->stride : element;
+        const uint64_t end = (uint64_t)(uint32_t)first + (uint32_t)count;
+        const uint64_t source_offset = (uint64_t)(uint32_t)first * stride;
+        const uint64_t source_end = (end - 1) * stride + element;
+        const uint64_t bytes = (uint64_t)(uint32_t)count * element;
+        if (end * element > INT32_MAX || source_end > UINTPTR_MAX ||
+            (uintptr_t)a->pointer > UINTPTR_MAX - (uintptr_t)source_end) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return -1;
+        }
+        plan[clients++] = (struct inline_client_attribute){a,
+            (const uint8_t *)((uintptr_t)a->pointer + (uintptr_t)source_offset),
+            i, element, stride, (uint32_t)bytes};
+        payload += WPK_GL_INLINE_DRAW_ATTRIBUTE_BYTES + bytes;
+    }
+    if (!clients || payload > WPK_GL_INLINE_DRAW_MAX_BYTES)
+        return 0;
+    uint8_t *cursor = reserve(4 + (size_t)payload);
+    if (!cursor) return -1;
+    w_u16(&cursor, OP_DRAW_CLIENT_ARRAYS);
+    w_u16(&cursor, (uint16_t)payload);
+    w_u32(&cursor, mode);
+    w_i32(&cursor, first);
+    w_i32(&cursor, count);
+    w_u32(&cursor, clients);
+    for (uint32_t i = 0; i < clients; i++) {
+        const struct inline_client_attribute *p = &plan[i];
+        const struct wpk_client_attrib *a = p->attribute;
+        w_u32(&cursor, p->index);
+        w_u32(&cursor, (uint32_t)a->size);
+        w_u32(&cursor, a->type);
+        w_u32(&cursor, a->normalized ? 1u : 0u);
+        w_u32(&cursor, p->bytes);
+        if (p->stride == p->element) {
+            memcpy(cursor, p->source, p->bytes);
+            cursor += p->bytes;
+        } else {
+            for (uint32_t vertex = 0; vertex < (uint32_t)count; vertex++) {
+                memcpy(cursor, p->source + (size_t)vertex * p->stride, p->element);
+                cursor += p->element;
+            }
+        }
+    }
+    g_cursor = cursor;
+    return 1;
+}
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!_wpk_gl_current_encoder()) return;
     if (mode > GL_TRIANGLE_FAN) {
@@ -1050,6 +1126,8 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
         if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_VALUE;
         return;
     }
+    if (emit_inline_client_arrays(mode, first, count) != 0)
+        return;
     GLuint staged[WPK_GL_MAX_ATTRIBS];
     int n = stage_client_attribs(first, count, staged,NULL);
     if (n < 0)

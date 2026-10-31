@@ -2661,6 +2661,16 @@ process-expected globals, the `env` imports programs link against, and
 the fork-instrumentation artifact contract (`wpk_fork_*` exports,
 save-buffer and frame formats).
 
+The `gl_inline_client_draw` program section also binds the owned client-array
+draw record emitted by libGLESv2: opcode, header and attribute layouts,
+component types, size limits and original vertex-index interpretation.
+Programs emit these bytes even though the host decodes them, so this is a
+program contract. Adding the section changes the program digest and rebuilds
+programs, libraries and images through the normal build graph. The unpublished
+combined graphics effort keeps its reserved program 56 / host 3 / GL table 17 /
+fork 21 numbers across increments at the user's request; that does not permit
+artifacts with an older contract digest to run against a newer candidate.
+
 The sections under `abi_surfaces.kernel_host` are not in it: kernel
 exports, kernel imports (`env.host_*`), host-adapter metadata, the
 export filter policy, and the wire formats only the kernel and host

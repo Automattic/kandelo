@@ -11720,3 +11720,100 @@ Cause-analysis SHA256:
 Earlier retained-trace attribution/design review is in
 `.context/synchronization-cause-review-r1.md`. Neither single-terminal
 improvement nor overall desktop performance is established.
+
+### Bounded private client draw candidate (2026-10-31)
+
+The next candidate replaces public buffer-name staging for small positive
+nonindexed default-VAO client draws with one owned `OP_DRAW_CLIENT_ARRAYS`
+record. This is a shared C encoder / host platform change; no application
+name, compositor or cursor special case is involved. Source preflight
+precedes reads and reservation. The host validates the complete record,
+copies only referenced packed bytes and retains checked native inverses
+and retirement receipts. A failed restoration fences dependent work;
+cleanup never replays pixels. Mixed VBO attributes retain their normal
+preparation. Indexed, oversized, zero-count and named-VAO draws keep their
+existing path. General chunked private/indexed transport is not implemented.
+
+The new `gl_inline_client_draw` snapshot section is Program surface:
+already-built programs emit this wire format. Its changed digest requires
+normal libraries/programs/images to rebuild even though the reserved
+program 56 / host 3 / GL 17 / fork 21 numbers stay unchanged. Own kernel
+build and snapshot regeneration finish 0. This candidate is not yet in
+the available 5673 preview, which remains frozen at `71a283c2d290`.
+
+Source and native checks:
+
+- The explicit source-only GL selection passes 737 tests in 31 files,
+  including 48 new private-draw controls. Tests cover malformed whole
+  batches, original offsets/strides, FIXED, mixed VBOs, allocation/upload/
+  pointer/draw failures, failed inverses and retryable cleanup without
+  replay. These are source/mock checks, not normal guest acceptance.
+- Native C graphics controls pass 220/220 with UBSan. The old encoder
+  against the new controls gives 211 passes / 9 failures, retained as a
+  counterfactual. The first candidate run's old staging assumptions are
+  retained separately. Optional ASan validation did not complete: three
+  cases reached 30-second timeouts without a sanitizer memory diagnosis;
+  the cause remains uninvestigated. This is neither a pass nor an outside
+  runtime defect claim.
+- A separate native C export emits an actual 88-byte record, SHA256
+  `fb1681fd0b15d52a4a1ee975e88cc622281856695fe0a38bf7c411cdbe38782c`.
+  The ordinary host decoder consumes those exact bytes and renders red
+  pixels in headless Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6.
+  Each engine passes nine native controls, including mixed VBO colors,
+  first-index handling, actual post-effect drawing and failed-inverse
+  repair. The three-engine selection finishes 0 (3/3, 4.9 seconds).
+- Full Rust workspace tests excluding xtask finish 0. The first full
+  xtask run passes 817/820; three import-audit tests fail because this
+  candidate's SDK is unstamped. Preparing SDK32 leaves 819/820 passing,
+  with the remaining test requiring SDK64. Both normal SDK bootstraps
+  then finish 0, and the third full xtask run passes all 820 unit and
+  eight integration tests. The full ABI script finishes 0, including
+  native-layout checks, own kernel and snapshot/classification; it
+  explicitly reports that the changed program digest requires every
+  program to rebuild. These were provisioning failures, not a platform
+  boundary. The normal host
+  bundle/declarations, standalone resolver rebuild/test and 637-file
+  Vitest evidence registry check finish 0. An ad hoc raw `tsc6 --noEmit`
+  run has unresolved project-configuration/type diagnostics; it is not
+  the normal passing bundle/declaration build.
+
+The real C record / full JavaScript decoder diagnostic measures these
+native calls per draw in every engine:
+
+| Native operation | Previous staging | Private record |
+|---|---:|---:|
+| Error queries | 26 | 18 |
+| ARRAY binds | 6 | 3 |
+| Data allocations/uploads | 1 | 1 |
+| Subdata uploads | 1 | 0 |
+| Attribute pointers | 2 | 2 |
+| Buffer creations / deletions | 1 / 1 | 1 / 1 |
+| Draws | 1 | 1 |
+
+Four alternating-order rounds of 128 draws after 16 warmups give the
+following worker-wall medians in the same nonquiet diagnostic:
+
+| Engine | Previous ms/draw | Private-record ms/draw |
+|---|---:|---:|
+| Chromium | 0.87852 | 0.59375 |
+| Firefox | 0.62500 | 0.41016 |
+| WebKit | 0.17188 | 0.10938 |
+
+These tiny 16x16-canvas measurements include JavaScript packing, owned
+input copies, validation, native upload, checks, restoration and retirement.
+They exclude C encoder CPU, guest/kernel/shared-memory reconciliation and
+application timing; browser timer resolution and concurrent work limit
+interpretation. They do not establish GPU completion, desktop speedup or
+single-terminal improvement. Full normal products, actual guest desktop
+traces with matched active work, browser-memory, application acceptance,
+destination-main cross-host benchmarks and conformance remain open.
+
+Evidence: candidate `.context/pure-inline-broad-r1.log`,
+`.context/private-client-libc-final.log` (SHA256
+`3503281bcc73647515a0900f823ff442d27ee9d104799ec50c307cbdfd9b15c6`),
+counterfactual/first/ASan logs, `.context/inline-rust-workspace-r1.log`,
+`.context/inline-xtask-r{1,2,3}.log`, `.context/sdk{,64}-bootstrap-r1.log`,
+`.context/inline-abi-check-r1.log`, normal host/resolver/evidence logs;
+primary `.context/private-client-native-r3/` retains all engine reports,
+worker/spec/config and summary. Its source-manifest SHA256 is
+`c43e80914f928f5ef260290efb3cbf58775eb83e9b912a96006e9110ec4a4c6e`.

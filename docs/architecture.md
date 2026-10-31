@@ -4781,8 +4781,9 @@ last reference; BO-owned textures retain their separate canonical owner.
 Deleted buffer names likewise retain native objects referenced by other
 contexts or unbound VAOs. Array bindings stay context-local; element bindings
 and attribute definitions belong to each VAO. Caller deletion clears only its
-active VAO references, using a private empty native buffer to clear attribute
-references without deleting shared storage. Retirement scans every group
+active VAO references, using the legal native null-buffer attribute definition
+to clear references without allocating scratch storage or deleting shared
+storage. Logical offsets and strides remain intact. Retirement scans every group
 member and container. The C encoder mirrors VAO ownership, reserves buffer
 names and distinguishes reused-name generations; failed client staging drops
 temporary names and suppresses the draw. Logical buffer stores track size,
@@ -4797,7 +4798,22 @@ Raw source updates invalidate them; conversion uses bounded independent
 source/output chunks and preserves native copy bindings. Logical VAOs retain
 GLES formats, strides and offsets while native pointers use packed data.
 Disabled/unbound attributes retain views; replacement and container teardown
-release unused views. Client staging likewise packs only referenced elements,
+release unused views. Small positive nonindexed client-array draws on the
+default VAO use one owned `OP_DRAW_CLIENT_ARRAYS` record (0x0506). Its
+16-byte header and sorted 20-byte attribute descriptors carry only packed
+referenced elements, with a total payload at most 65535 bytes and at most
+16 attributes. The encoder validates every source layout and overflow before
+reservation or source reads. No public buffer names or logical ARRAY bindings
+change. The host validates the whole record before effects, copies bounded
+independent upload bytes, converts FIXED values and reserves retirement
+receipts before acquiring private native buffers. Checked pointer inverses
+restore the exact prior null definitions and ARRAY selector. Failed inverses
+fence subsequent work and retain backing until repair; cleanup retries never
+replay a submitted draw. Mixed public VBO attributes retain their normal
+storage preparation. Indexed, larger, zero-count and named-VAO draws retain
+the existing path. Normal guest/desktop acceptance of this new record is
+pending; isolated C and native-browser evidence is in the compatibility ledger.
+Client staging likewise packs only referenced elements,
 avoiding unreadable prefixes, stride gaps and sparse-index holes, with bounded
 scratch/masks and signed size checks. Indexed draws widen byte/short values into private native index buffers,
 using bounded chunks and one draw to preserve complete primitive topology.
