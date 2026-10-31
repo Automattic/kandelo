@@ -10481,3 +10481,26 @@ All nine Node/browser benchmark suites with destination-baseline
 comparison, relevant POSIX conformance, browser-memory across all three
 engines, full desktop menu/focus/launch/lifecycle acceptance and the wider
 graphics inventory remain open. This candidate is not merge-validated.
+
+Offline disassembly of the exact served1c16 kernel further identifies
+profile frame4847 as file-mapping reconciliation. The binary has84
+function imports: exported `kernel_shared_mapping_sync_process` index605
+is disassembler definition521, whose force0 branch directly calls
+definition4763 (index4847). Its paired force1 flush and subsequent SysV
+call match the source export at1c16. Profile column1532448 exactly equals
+index4847's code-body offset; the first instruction is1532463. Wrapper
+index395 calls import0, `host_proc_read_bytes`. No symbol names from a
+different artifact are used. An independent source review agrees with
+this attribution. Private binary-section evidence and extracted bodies
+are in `.context/terminal-count-kernel1c-function-audit.json` and the
+corresponding `terminal-count-kernel1c-function*.wat` files.
+
+This identifies the enclosing operation, not the sampled instruction,
+copy count, byte volume, allocation cost or individual mapping. The next
+diagnostic should count actual full reads and requested/completed bytes
+separately at entry, completion and retry, with bounded scalar records.
+There is no existing complete no-writer epoch: even a same-entry kernel
+wait completion can wake a sibling before the host drains its completion
+record. Caller-blocked state and backing versions cannot authorize
+omitting local publication. No further production behavior is changed by
+this source/disassembly audit.
