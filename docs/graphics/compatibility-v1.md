@@ -10552,3 +10552,71 @@ now advertises primary and cursor planes, while the native mock without
 cursor support still correctly exposes one. The fixture expectation is
 updated to two; no runtime plane behavior is changed. The original c0bb
 failure remains evidence and the corrected real consumers require rerun.
+
+
+### BO copy candidate: normal artifacts and desktop observation (2026-10-30)
+
+The corrected actual Node run
+`bo-publication-node-semantics-r2-1030-221825-8b33` passes13/13 cases,
+without skips/load failures, after normal kernel/rootfs/host preparation.
+Its selected kernel retains the f65de9 hash above before/after. This
+includes mapping inheritance on both pointer widths, imported-storage
+retirement, and KMS cursor/exec/spawn consumers. The intentional trapped
+owner case emits its expected worker trap diagnostic; this is not a claim
+that every runtime log is empty. The original11/13 result is preserved.
+
+Runtime commit a53f739d8f120a11b8000ac9d1713f9d1a47e45e is built normally in
+an immutable detached checkout by
+`preview5667-bo-copy-a53f739d8f-build-1030-220959-d390`: all seven stages
+pass in13m28s, including own SDK/kernel/rootfs/host, wasm64 SDK, image
+refresh, freshness and complete identity. The inventory has93 owners and
+245 members. Actual root/gallery HTTP200 and COOP/COEP are verified for
+http://127.0.0.1:5667/pages/kandelo/. Program56/host3/GL17/fork21 and
+kernel f65de9 are unchanged. Compared with the preceding5666 inventory,
+only Nethack Wasm, its browser bundle and shell.vfs.zst differ; kernel,
+Sway, Foot, SFWBar and Labwc are byte-identical. Private producer and HTTP
+receipts stay with `.context/bo-publication-preview`; package differences
+are in `.context/bo-publication-package-comparison.json`.
+
+The initial desktop job5be9 refuses a wrong expected helper-manifest
+format before browser startup. The sealed producer is correct; a fresh
+r2 probe corrects that assertion to the actual own-coherence helper
+format and passes complete read-only preflight. No old probe, producer or
+acceptance is overwritten. Actual headless Chromium job
+`bo-publication-new-native2x-terminals-bo-1030-222927-e62e` then passes
+workload, after-collector and after-guard in4m31s at support commit e41df397497c.
+It uses one page/context/machine, native2880x1620/DPR2, ordinary terminal
+open/close shortcuts, independent painted terminal bodies/title ink and
+actual process snapshots. There are1653 trusted events,1351 pointermoves,
+no console/errors/finalization errors, and unchanged source/artifact
+identity. Each stage has10s idle and200 issued moves over about10s; the
+following flip deltas use only the first-to-last sampled counter window
+(about9.9s), not the whole phase or measured frame/input rate.
+
+| Terminal stage | Idle sampled flip delta | Motion sampled flip delta | Early / late Start observation (ms) |
+|---|---|---|---|
+| count-1 | 11 | 56 | 15377 / 2997 |
+| count-2 | 10 | 31 | 3765 / 2977 |
+| count-3 | 10 | 15 | 3692 / 2995 |
+| count-4 | 10 | 22 | 3739 / 4320 |
+| count-5 | 9 | 9 | 4462 / 4543 |
+| recovered-1 | 9 | 66 | 2946 / 2952 |
+
+Menu values include screenshot/poll observation overhead. This is a
+NONQUIET functional diagnostic: another workspace's test and uncontrolled
+user CPU/GPU activity prevent isolated speed/no-regression claims. It
+still reproduces poor first-menu response and declining presentation
+activity with more terminals, recovering after closing them. Removing
+one redundant BO baseline copy has not established acceptable desktop
+responsiveness. PID presence and independent painted bodies do not prove
+all prompts are ready or a PID-to-window association. Full menu/focus/
+application-launch acceptance remains open.
+
+Raw report:
+`.context/bo-publication-desktop-probe-r2/cohorts/new-native2x-terminals-bo-copy-r2/chromium/sway/report.json`,
+SHA256 `066973c3a6fa335475ac17dd2ead572c56e7b75f5f86bea52d936e2002853797`.
+Full Node/browser benchmarks against the destination, broader POSIX,
+three-engine browser-memory and graphics inventory remain unrun for this
+candidate. The next implementation targets the separately profiled
+file-mapping full-read/compare path while preserving both publication
+and authoritative backing-refresh phases.
