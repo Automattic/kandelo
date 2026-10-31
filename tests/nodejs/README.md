@@ -97,8 +97,9 @@ version and the pinned reference are separate identities.
 
 ## Current evidence and limits
 
-- Fifteen source/harness tests pass under the exact native Node 26.13.0
-  reference: nine URL/exit/Buffer contracts and six harness tests.
+- Twenty-six source/harness tests pass under the exact native Node 26.13.0
+  reference: nine URL/exit/Buffer contracts, six harness tests and eleven
+  codec tests.
 - Native harness controls verify real flags/environments, assertion and
   exit-listener failures, skips, deadlines, process termination and spawn
   errors. Bootstrap generation is checked without compiling the engine.
@@ -107,13 +108,18 @@ version and the pinned reference are separate identities.
 - Existing products boot through this runner on Node, Chromium, Firefox
   and WebKit and are correctly rejected at the old Node 22 identity. No
   upstream passing counts are produced from those stale products.
+- Eleven unchanged upstream codec files passed against isolated codec
+  source hosted on native Node 26.13.0. Only the codec subjects were
+  replaced; assertions, fixtures, helpers and other core APIs stayed native.
+  This is source conformance evidence, not a Kandelo guest baseline.
 - The complete 5,147-case native baseline has not run. Guest baselines and
   three-engine integration remain unrun on updated products. The user
   deferred a full rebuild; existing products predate the new target.
 - Existing guest `assert` false positives must be fixed before its
   readiness check can pass. Other known gaps include positioned descriptor
-  offsets, response consumption and streaming UTF-8. These are runtime
-  work, not harness shims.
+  offsets and response consumption. Streaming text codec source fixes and
+  real-pipe guest regressions are prepared; rebuilt guest validation is
+  still deferred. These are runtime work, not harness shims.
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

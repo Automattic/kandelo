@@ -280,6 +280,7 @@ host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
+host/test/node-text-decoder.test.ts	source-only
 host/test/node-url-exit-contracts.test.ts	source-only
 host/test/node-worker-adapter.test.ts	prepared-product
 host/test/non-pty-stdio.test.ts	prepared-product
