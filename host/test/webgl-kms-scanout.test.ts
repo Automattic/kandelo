@@ -247,10 +247,10 @@ it("keeps a rejected inverse after an early KMS selector failure and repairs ind
   expect(hasNativeRepair(r.gl)).toBe(false); expect(r.state).toEqual(r.initial);
 });
 
-for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-check and inverse with one sequence entry`, () => {
+for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-check and inverse with local forward and inverse entries`, () => {
   const r = renderer(), originalError = r.gl.getError.bind(r.gl); let reads = 0;
   r.gl.getError = () => { reads++; return originalError(); };
   expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2) !== null).toBe(true);
-  expect(reads).toBe(kind === "draw" ? 20 : 22);
+  expect(reads).toBe(kind === "draw" ? 16 : 17);
   expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
 });

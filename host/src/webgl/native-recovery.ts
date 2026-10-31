@@ -47,11 +47,38 @@ export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): 
 }
 
 /** A selector must accept before dependent calls run; independent groups
- * (such as read/draw restoration) are attempted even after another fails. */
+ * (such as read/draw restoration) are attempted even after another fails.
+ * This native-only synchronous inverse has one error owner. A clean post-check
+ * is the next call's clean entry; failure revokes it before the next group.
+ * No clean-entry evidence survives this invocation. */
 function restoreInverse(inverse: NativeInverse): boolean {
   let accepted = true;
+  // Evidence belongs only to this synchronous inverse and error owner.
+  let cleanEntry = false;
   for (const group of inverse.groups) for (const call of group) {
-    const acceptedCall = checkedGlCall(inverse.owner, () => { invokeNativeCall(inverse.owner.gl!,call); });
+    let acceptedCall = false;
+    const gl = inverse.owner.gl;
+    let cleared = cleanEntry;
+    // A throw or rejected post-check cannot authorize the next group.
+    cleanEntry = false;
+    try {
+      if (gl) {
+        if (!cleared) for (let i = 0; i < 32; i++) {
+          const error = gl.getError();
+          if (error === 0) { cleared = true; break; }
+          recordGlError(inverse.owner, error);
+        }
+        if (cleared) {
+          invokeNativeCall(gl, call);
+          const error = gl.getError();
+          recordGlError(inverse.owner, error);
+          acceptedCall = error === 0;
+          cleanEntry = acceptedCall;
+        }
+      }
+    } catch {
+      recordGlError(inverse.owner, 0x502);
+    }
     if (acceptedCall) continue;
     accepted = false; break;
   }
