@@ -3774,10 +3774,16 @@ VITE_BASE=/candidate-b/ npm --prefix apps/browser-demos run build -- \
 ```
 
 Vite authenticates and copies the complete group beneath the owning output as
-`vfs-groups/release-1/`: manifest, every registered image, and every lazy
-asset those images reference. The private map is not published. Changing the public group path
-requires regenerating the complete manifest/images/assets handoff, updating
-the private map to its new manifest path, and rebuilding the distribution.
+`vfs-groups/sha256-<manifest digest>/`: manifest, every registered image, and
+every lazy asset those images reference. The address names the manifest's
+SHA-256, and the manifest names every image and asset by digest, so one URL
+never serves two sets of bytes; a rebuilt group gets a new address (see
+[Deployment updates](#deployment-updates)). The private map is not published,
+and the build refuses a map whose group directory is not named
+`sha256-<its manifest digest>`. A deployment may nest that directory deeper;
+changing the public group path requires regenerating the complete
+manifest/images/assets handoff, updating the private map to its new manifest
+path, and rebuilding the distribution.
 Never move a group within an already completed build. Its complete group must
 remain beneath the owning prefix; moving only an image or asset also breaks
 the authenticated inventory.
@@ -3889,6 +3895,75 @@ Other pathname resolver APIs validate the named file and artifact policy
 against one stable descriptor read, but the returned path remains a
 point-in-time result; callers that retain a path across producer runs must
 resolve it again.
+
+### Deployment updates
+
+Replacing a deployment with a new build must not break the first reload of a
+tab that was running the old one. That reload is answered by the old
+deployment's service worker: the browser fetches the new `service-worker.js`
+while the navigation runs, and the new worker takes control of the page only
+after it installs and activates. Three rules keep the new page correct in
+that window, on every host.
+
+- **Content-addressed VFS groups.** A group lives at
+  `vfs-groups/sha256-<manifest digest>/` (above). Whichever worker answers a
+  group request, from its cache or the network, the bytes are the ones the
+  URL names. Under the former fixed `vfs-groups/release-1/`, the old worker
+  answered the new page's manifest request from its own cache (a worker's
+  cache ignores the page's `cache: "no-store"`), and the boot failed its
+  integrity check with "content-length differs".
+- **The page waits for its own build's worker.** Every HTML entry carries
+  `<meta name="kandelo-build-id">`, and `service-worker.js` carries the same
+  id, a digest of the build's output (`apps/browser-demos/vite/build-id.ts`).
+  Before boot starts any worker, the page asks its controller for its id by
+  fetching `<scope>__kandelo_build_id`, which only the controlling worker
+  answers. If the ids differ it asks the browser to update (unless the
+  browser's own navigation check already brought a new worker) and waits up
+  to 15 s for a worker with its id to take control. A page therefore never starts its kernel or composer workers
+  under another deployment's worker, whose kernel-worker script paths (the
+  credential gate's) and caches belong to a different build. If no matching
+  worker arrives, the page reloads once; a second mismatch for the same pair
+  of builds shows an error naming both. Only one reload is ever attempted per
+  pair, recorded in the scope's `sessionStorage`, so a cache that keeps
+  serving the two builds apart cannot cause a reload loop. A worker deployed
+  before build ids reports none; the error says so.
+- **One update request per navigation.** The browser already checks for a
+  new `service-worker.js` on every navigation, so the bootstrap script no
+  longer calls `registration.update()` as well. In Chromium, that second
+  request racing the navigation's own left the new worker "installed" and
+  never activating for as long as the page stayed open (the outgoing worker
+  was restarted and kept busy), so the first reload after a deploy never
+  booted. That engine behaviour is suspected, not reduced to a standalone
+  reproduction.
+- **Boot workers have a start deadline.** The image composer must post its
+  `started` message within 30 s of creation, or the boot fails with "The
+  image composer worker did not start". In Chromium, a composer created while
+  a new service worker took control of the page was observed never to run,
+  leaving the boot at "Loading" with no error. That engine behaviour is
+  suspected, not reduced to a standalone reproduction; with the build-id wait
+  the page no longer creates workers during a takeover. The kernel worker has
+  no start deadline yet: its initialization has no separate start signal.
+
+Hosts must let browsers revalidate `service-worker.js` and every HTML entry
+point: serve them with `Cache-Control: no-cache` (or `no-store`), and do not
+let an edge cache answer them from an old copy. Content-hashed files under
+`assets/` and the content-addressed `vfs-groups/` may be cached for as long as
+the host likes. The Spacefast packager writes these rules into `_headers`.
+Other hosts, including WP Cloud, must be configured to send them; an edge
+that keeps an old `service-worker.js` holds every visitor on the old
+deployment's worker for that copy's lifetime, which the build-id check turns
+into the visible mismatch error after one reload. Measured on 2026-10-30,
+`kandelo.dev` served `service-worker.js` with
+`cache-control: max-age=31536000`, and its edge answered from cache even for
+requests sent with `Cache-Control: no-cache`; that host does not yet meet
+this rule.
+
+A deployment that replaces the whole site removes the previous group. A tab
+that kept the old page open is taken over by the new worker, and its next
+lazy download asks for the old group's address and fails with a visible
+`404`. To let such tabs finish, publish the new build beside the previous
+`vfs-groups/sha256-*` directory and remove that directory after a grace
+period.
 
 ## Known Limitations
 

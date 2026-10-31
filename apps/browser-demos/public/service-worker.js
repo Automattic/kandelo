@@ -102,9 +102,16 @@ if (typeof window !== "undefined") {
         })
         .then(waitForBootstrapController)
         .then(function (registration) {
-          if (window.crossOriginIsolated) {
-            return registration.update();
-          }
+          // A controlled, isolated page needs nothing more here. The browser
+          // checks for a new service-worker.js on every navigation, and a
+          // page that boots Kandelo asks for an update itself when its build
+          // and its worker's differ (lib/init/service-worker-bridge.ts).
+          // WHY no update() here: a second update request racing the
+          // navigation's own left the new worker "installed" and never
+          // activating in Chromium for as long as the page stayed open, so
+          // the first reload after a deploy never booted (suspected engine
+          // behaviour; no standalone reproduction).
+          if (window.crossOriginIsolated) return registration;
           window.location.reload();
         })
         .catch(function (err) {
@@ -189,6 +196,19 @@ if (typeof window !== "undefined") {
   // names still open the viewer shell, which explains they no longer work.
   var MACHINE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}-[a-z2-7]{20}$/;
   var LEGACY_MACHINE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/;
+
+  // The build this worker belongs to. A production build replaces the
+  // placeholder with the id it also writes into every page
+  // (vite/build-id.ts); development keeps the placeholder on both sides.
+  var KANDELO_BUILD_ID = "__KANDELO_BUILD_ID__";
+
+  // A page asks which build answers its requests before it boots, so it
+  // never starts its workers under another deployment's worker (see
+  // lib/init/service-worker-bridge.ts). It asks with a fetch, which reaches
+  // exactly the worker that controls it; without a worker the request
+  // reaches the server, which has no such file. The answer names the build
+  // only.
+  var BUILD_ID_PATH = SCOPE_PATH + "__kandelo_build_id";
 
   // --- Lifecycle ---
   self.addEventListener("install", function () {
@@ -1188,6 +1208,23 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
+    if (
+      !isCrossOrigin(url) && url.pathname === BUILD_ID_PATH &&
+      event.request.method === "GET"
+    ) {
+      event.respondWith(new Response(
+        JSON.stringify({ type: "kandelo-build-id", buildId: KANDELO_BUILD_ID }),
+        {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json",
+            "Cross-Origin-Resource-Policy": "same-origin",
+          },
+        },
+      ));
+      return;
+    }
+
     // A kernel worker's answer to the credential gate (see credentialGate).
     if (!isCrossOrigin(url) && isCredentialGateReply(url)) {
       event.respondWith(answerCredentialGateReply(event));
@@ -1220,8 +1257,10 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // Group assets have an immutable deployment-local identity. Cache only
-    // their complete native responses before bridge/proxy/header rewriting.
+    // Group assets live at content addresses (vfs-groups/sha256-<manifest
+    // digest>/...), so a cached entry is the bytes its URL names whichever
+    // deployment's page asks for it. Cache only complete native responses,
+    // before bridge/proxy/header rewriting.
     if (isScopedLazyVfsRequest(event.request, url)) {
       event.respondWith(fetchScopedLazyVfsRequest(event));
       return;

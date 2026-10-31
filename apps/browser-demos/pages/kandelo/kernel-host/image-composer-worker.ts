@@ -42,3 +42,8 @@ self.onmessage = (event: MessageEvent<MainToComposerMessage>) => {
       });
     });
 };
+
+// The page gives this worker a deadline to start (image-composer-client.ts):
+// a worker the browser created but never ran must become a boot error, not an
+// endless "Loading".
+post({ type: "started" });

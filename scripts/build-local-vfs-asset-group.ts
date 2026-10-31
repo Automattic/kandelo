@@ -37,6 +37,7 @@ import {
 } from "../web-libs/kandelo-session/src/vfs-asset-group.ts";
 import {
   loadVfsProductDeploymentMap,
+  vfsAssetGroupManifestPath,
   vfsProductDeploymentPath,
   type VfsProductDeploymentMapV1,
 } from "./vfs-product-deployment.ts";
@@ -259,10 +260,11 @@ export async function buildLocalVfsAssetGroup(
     validateVfsAssetGroupManifest(manifest);
     const manifestBytes = Buffer.from(canonicalJson(manifest));
     writeExactFile(join(stagedGroup, "manifest.json"), manifestBytes);
+    const manifestDigest = sha256(manifestBytes);
     const manifestIdentity = {
       bytes: manifestBytes.byteLength,
-      path: "vfs-groups/release-1/manifest.json",
-      sha256: sha256(manifestBytes),
+      path: vfsAssetGroupManifestPath(manifestDigest),
+      sha256: manifestDigest,
     };
     const map: VfsProductDeploymentMapV1 = {
       kind: "kandelo-pages-private-product-map",

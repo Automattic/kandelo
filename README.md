@@ -297,7 +297,12 @@ To build the deployable static site, run:
 It runs the local build, produces the authenticated VFS asset group, runs the
 production Vite build, and checks the result. Upload the contents of the
 output directory (default `apps/browser-demos/dist/`) so it is served at
-exactly the chosen base.
+exactly the chosen base. Serve `service-worker.js` and the HTML pages with
+`Cache-Control: no-cache`, and keep any edge cache from answering them from
+an old copy; otherwise visitors' first reload after an update can stay on
+the previous deployment (see
+[deployment updates](docs/browser-support.md#deployment-updates)). The
+Spacefast packager sets this; on WP Cloud, configure it for the site.
 
 Guest web previews (WordPress, nginx, any server inside a machine) run on
 a second origin so their scripts cannot reach the Kandelo page. Add

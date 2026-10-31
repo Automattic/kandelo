@@ -19,7 +19,11 @@ import {
 import {
   experimentalTerminalSessionPolicy,
 } from "../../../../../web-libs/kandelo-session/src/experimental-terminal-session";
-import { ensureServiceWorkerReady } from "../../../lib/init/service-worker-bridge";
+import {
+  ensureServiceWorkerReady,
+  pageBuildId,
+  ServiceWorkerBuildMismatchError,
+} from "../../../lib/init/service-worker-bridge";
 import { openMachinePreview } from "./machine-preview";
 import { configuredPreviewOrigin } from "../../../lib/preview/config";
 import { PreviewRelay } from "../../../lib/preview/preview-relay";
@@ -104,6 +108,7 @@ import {
   deploymentScopeFromServiceWorkerUrl,
 } from "../../../../../web-libs/kandelo-session/src/deployment-scope";
 import { createCoiReloadSessionState } from "./coi-reload-session-state";
+import { createBuildReloadSessionState } from "./build-reload-session-state";
 import { DinitBootStatusTracker } from "./dinit-boot-status";
 
 import kernelWasmUrl from "@kernel-wasm?url";
@@ -512,6 +517,10 @@ const COI_RELOAD_SESSION_STATE = createCoiReloadSessionState(
   SW_SCOPE,
   sessionStorage,
 );
+const BUILD_RELOAD_SESSION_STATE = createBuildReloadSessionState(
+  SW_SCOPE,
+  sessionStorage,
+);
 /**
  * Read the `?memoryProfile=` dev override from the page URL. Passed through to
  * `BrowserKernel` (which otherwise auto-detects) and used for app-side sizing
@@ -673,8 +682,42 @@ export async function createLiveHost(
   ): Promise<ServiceWorker> => {
     if (!serviceWorkerReady) {
       tick?.("preparing service worker...");
-      serviceWorkerReady = ensureServiceWorkerReady(SW_URL, SW_SCOPE)
+      const buildId = pageBuildId(document);
+      serviceWorkerReady = ensureServiceWorkerReady(SW_URL, SW_SCOPE, {
+        buildId,
+        onBuildMismatch: () =>
+          tick?.("waiting for this deployment's service worker..."),
+      })
+        .catch((err: unknown): Promise<never> => {
+          if (!(err instanceof ServiceWorkerBuildMismatchError)) throw err;
+          // One reload per (page, worker) build pair: a fresh navigation can
+          // bring both from the same deployment. The same pair again means
+          // something in front of the site keeps them apart; reloading again
+          // would loop, so show both builds instead.
+          if (BUILD_RELOAD_SESSION_STATE.wasAttempted(err.pageBuildId, err.workerBuildId)) {
+            BUILD_RELOAD_SESSION_STATE.clear();
+            throw new Error(
+              `${err.message}. Kandelo reloaded once and the site still serves ` +
+                "this page and its service worker from different deployments; a cache " +
+                "in front of the site may hold an old service-worker.js or page. " +
+                "Reload later; if this persists, the site's Cache-Control for " +
+                "service-worker.js and its pages needs fixing (see " +
+                "docs/browser-support.md, \"Deployment updates\").",
+            );
+          }
+          BUILD_RELOAD_SESSION_STATE.markAttempted(err.pageBuildId, err.workerBuildId);
+          tick?.("reloading to load one deployment's page and service worker...");
+          window.location.reload();
+          return new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              reject(new Error(
+                `${err.message}. Kandelo requested a reload, but the page did not unload.`,
+              ));
+            }, 5_000);
+          });
+        })
         .then(async (controller): Promise<ServiceWorker> => {
+          BUILD_RELOAD_SESSION_STATE.clear();
           if (window.crossOriginIsolated) {
             COI_RELOAD_SESSION_STATE.clear();
             return controller;

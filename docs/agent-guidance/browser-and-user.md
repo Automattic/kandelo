@@ -190,6 +190,17 @@ package-name conditionals. If metadata for an existing package-backed image
 changes, bump the relevant package/build revision so the image is rebuilt
 through the normal package path.
 
+A deployment update must not break the first reload of an open tab (see
+`docs/browser-support.md`, "Deployment updates"). Keep VFS groups at their
+content address (`vfs-groups/sha256-<manifest digest>/`), never a fixed
+path whose bytes change between builds; keep the build-id check that makes
+a page wait for its own build's service worker before boot starts any
+worker; keep its automatic reload to one per (page build, worker build)
+pair; and do not add another `registration.update()` call to a page that
+the navigation already updates. `apps/browser-demos/test/deployment-update.spec.ts`
+(real production builds, run with `KANDELO_SCOPED_DEPLOYMENT_SOURCE_ONLY_ROOT`)
+covers a changed group and an app-only change on all three engines.
+
 User-visible failures should reveal real platform failures. Missing binaries,
 failed VFS image fetches, ABI mismatches, service startup failures, worker
 crashes, service-worker failures, and blocked processes should surface as
