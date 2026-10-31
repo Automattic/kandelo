@@ -49,9 +49,24 @@ per kind/count). These are25ms-polled, NONQUIET observations, not an isolated
 epoll benefit or a matched comparison against main. The focus stall remains
 open. The separate accepted operation trace records substantially more Sway
 queries, submissions, draws and shared-memory comparisons during crossing,
-while cursor readback counts stay nearly constant. Complete ordered operation
-capture and checked-query transport/state invalidation investigations are the
-next discriminators; no focus workaround or synchronization skip is justified.
+while cursor readback counts stay nearly constant. A complete bounded ordered capture now identifies repeated make-current
+invalidation:24 full replays of145 native calls during the one-second crossing
+window. These are observed operations, not CPU shares or a projected speedup.
+Checked-query transport and remaining synchronization amplification stay open.
+
+The latest experimental preview is available at
+http://127.0.0.1:5680/pages/kandelo/ . It serves the exact five committed host
+modules at `ce7a86c8bafe` through the normal Vite compiler/configuration over
+its own compatible frozen normalb6 SDK/kernel/program/image artifacts. It adds
+checked drawable-selector preservation and the separate front-export repair;
+no frame tracer, profiler or application-specific runtime path is installed.
+The selected source comes from immutable git objects, so later source work does
+not retarget the preview. Normal5679 remains unchanged. This is an incremental
+host experiment, not a fresh combined normal distribution. The first fresh unprofiled headless pair completes all24responses on both
+sides but shows no clear responsiveness improvement; boundary crossing remains
+about130ms versus66–69ms within a terminal. Availability does not require
+waiting for completed validation. Server receipt SHA256:
+`ccf1f481dc40f7950c004866171160e08cc7de0efbede2f679c05253afd64258`.
 
 The earlier selected-context candidate remains available, without tracing, at
 http://127.0.0.1:5678/pages/kandelo/ . This experimental local source proxy
@@ -14270,5 +14285,79 @@ Application responsiveness, combined normal build, browser-memory, conformance
 and broad benchmarks remain unproven. No change is made to preview5679 or ABI.
 
 Evidence: `.context/desktop-boundary-ordered-r3/`,
-`.context/desktop-boundary-ordered-analysis-r3/` (independent audit in progress),
+`.context/desktop-boundary-ordered-analysis-r3/` (81,362 independent offline
+checks pass; initial void-return sentinel classification failure retained),
 and `.context/focus-drawable-noop-candidate-r1/`.
+
+
+### Frozen host-source preview and first response admission, 2026-10-31
+
+Experimental5680 serves whole committed sourcece7 over normalb6 artifacts using
+normal Vite8.3.1 configuration/plugins with an isolated private cache. All five
+modified modules are frozen from git objects before listening; only existing
+host runtime modules may differ. ABI/generated/protocol/SDK/Rust/package/app
+changes, extra paths and mutable source reads are refused. All93owners/245members,
+both SDKs, kernel, host distribution, freshness and selected-kernel ABI checks
+pass before startup. Actual five compiled HTTP module bodies and isolation
+headers match the receipt. No SDK/package rebuild is needed for this host-only
+screen. Those preflight fetches do not establish browser execution or a speedup.
+
+The first fresh baseline response job
+`drawable-boundary-baseline-r1-1031-134311-985b` finishes **FAILED**:
+workload1/collector0/guard0 in1m32s. All24 equal96nativepx moves at3/5Foot,
+original-terminal recovery, normal same-page replacement, unchanged identities
+and actual four consumed module hashes pass. It fails the final fixture's
+requirement that main-forward.ts be loaded: this worker-rendering path does
+not consume that module. No fake import/fetch is added to manufacture coverage.
+The failed sealed run remains immutable, and its candidate side is not run.
+A fresh fixture will require all four executed modules, retain all five source
+and compiled-HTTP admission checks, and validate forwarded bytes if that module
+is actually consumed. Forwarded source tests remain separate from real browser
+path acceptance. No responsiveness improvement follows from this failed pair.
+
+Evidence: `.context/host-source-preview-r1/` and
+`.context/drawable-boundary-response-r1/`. Normal combined distribution,
+Node/browser rendering, browser-memory, conformance, destination-main benchmarks
+and the ordinary API inventory remain open.
+
+
+### Unprofiled drawable response pair, 2026-10-31
+
+The fresh corrected cohort keeps the exact24move ABBA workload and all normal
+ownership/ABI/freshness checks. Twelve receipt and nine actual coverage controls
+pass before release. Browser consumption requires the four actual worker-path
+modules; every response is hash/size/status checked against its side's admitted
+compiled HTTP bytes. All five changed modules retain source/HTTP preflight.
+main-forward.ts is not loaded on either side, so forwarded browser execution
+is explicitly unvalidated rather than forced into the page.
+
+`drawable-boundary-baseline-r2-1031-134714-865d` completes workload/collector/guard
+0/0/0 in1m46s; `drawable-boundary-candidate-r2-1031-134907-89b9` completes0/0/0
+in1m27s. Baseline is normal5679/b6; candidate is experimental5680/ce7, using the
+same own normalb6 kernel/SDK/program/image tuple. Both use canonical headless
+Chromium153.0.8010.12, native2880x1620/DPR2, equal96nativepx moves at nominal3s
+cadence, with six observations per kind/count. All24responses, original client/
+compositor/bar identity, recovery to one terminal, same-page normal replacement,
+actual consumed modules and before/after93/245/dual-SDK/kernel/host guards pass.
+No page/console/module errors occur. Root reviews the candidate five-terminal
+crossing image with the actual second title highlighted and normal bar/windows.
+
+| Foot windows | Normal within cursor median ms | Experimental within cursor median ms | Normal crossing cursor median ms | Experimental crossing cursor median ms |
+|---|---:|---:|---:|---:|
+|3|67.0|68.9|139.3|130.0|
+|5|66.4|66.3|127.6|131.0|
+
+These are request-to-observed-public-pixel upper brackets from25ms polling,
+including input dispatch, scheduling and observation. One ordered baseline then
+candidate pair on a NONQUIET machine is not a causal comparison, independent
+main baseline, broad benchmark or physical latency measure. The mixed small
+results establish **no clear responsiveness gain**; crossing remains materially
+slower than within-window movement. Single-terminal benefit is still unproven.
+The candidate needs an ordered operation capture to establish that the intended
+replay reduction executes and identify remaining focus-change work. The failed
+R1 coverage assertion remains retained. Normal distribution, Node/three-engine,
+browser-memory, conformance and destination-main performance acceptance stay
+open.
+
+Evidence: `.context/drawable-boundary-response-r2/`; independent offline review
+is recorded separately in `.context/drawable-boundary-response-analysis-r2/`.
