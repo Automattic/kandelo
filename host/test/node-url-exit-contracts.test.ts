@@ -32,7 +32,7 @@ function guestProcess() {
     std: { getenv: () => undefined, exit: (code: number) => { status = code; } },
   };
   const proc = runInNewContext(`${section("const process = (() => {", "const _startTime")};process`, context);
-  const naturalExit = runInNewContext(`${section("function _runNaturalExit()", "function _runCommonJsMain(")};_runNaturalExit`,
+  const naturalExit = runInNewContext(`${section("function _runNaturalExit(", "function _runCommonJsMain(")};_runNaturalExit`,
     { process: proc, std: context.std });
   return { proc, naturalExit, status: () => status };
 }
@@ -98,5 +98,17 @@ describe("shared Node URL and exit contracts", () => {
     proc.exitCode = 7;
     proc.exit(undefined);
     expect(status()).toBe(0);
+  });
+
+  it("returns eval shutdown status after exit listeners and normalizes fatal failures", () => {
+    const { proc, naturalExit, status } = guestProcess();
+    proc.exitCode = 7;
+    const emitted: unknown[] = [];
+    proc.on('exit', (code: number) => { emitted.push([code, proc.exitCode]); proc.exitCode = undefined; });
+    expect(naturalExit(1, true)).toBe(1);
+    expect(emitted).toEqual([[1, 1]]);
+    expect(status()).toBeUndefined(); // Shell receives the return value.
+    expect(naturalExit(0, true)).toBe(0);
+    expect(emitted).toEqual([[1, 1]]);
   });
 });

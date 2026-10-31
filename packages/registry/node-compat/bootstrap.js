@@ -5648,13 +5648,16 @@ function _rewriteStaticEsmImports(source) {
 
 // Natural shutdown retains the pre-event status if a listener clears the
 // assignment. Explicit process.exit() instead defaults an unset status to 0.
-function _runNaturalExit() {
+function _runNaturalExit(failureStatus = 0, returnStatus = false) {
+    if (failureStatus) process.exitCode = failureStatus;
     const status = process.exitCode === undefined ? 0 : process.exitCode;
     if (!process._exiting) {
         process._exiting = true;
         process.emit('exit', status);
     }
-    std.exit(process.exitCode === undefined ? status : process.exitCode);
+    const finalStatus = process.exitCode === undefined ? status : process.exitCode;
+    if (returnStatus) return finalStatus;
+    std.exit(finalStatus);
 }
 
 function _runCommonJsMain(filename) {
@@ -5694,22 +5697,24 @@ function _runEsmMain(filename, source) {
         filename,
     );
     let settled = false;
+    let failed = false;
     let failure = null;
     Promise.resolve(wrappedFn(require)).then(
         () => { settled = true; },
-        (err) => { failure = err; settled = true; },
+        (err) => { failure = err; failed = true; settled = true; },
     );
     let spins = 0;
     while (!settled && typeof drainJobQueue === 'function') {
         drainJobQueue();
         if (++spins > 100000) {
             failure = new Error('ES module main did not settle after draining the SpiderMonkey job queue');
+            failed = true;
             settled = true;
         }
     }
-    if (failure) {
+    if (failed) {
         console.error(_formatThrownFailure(failure));
-        process.exitCode = process.exitCode || 1;
+        process.exitCode = 1;
     }
     _runNaturalExit();
 }
@@ -6500,5 +6505,12 @@ if (!console.group) {
 
 // Export for the C entry point to detect successful bootstrap
 globalThis.__nodeBootstrapReady = true;
+
+// The shell owns eval/print/stdin completion. It calls this only after its
+// normal job/timer/I/O loop and rejection reporting, before tearing down the
+// realm. File mains and explicit process.exit() have already finalized.
+Object.defineProperty(globalThis, '__kandeloNodeFinalize', {
+    value: failureStatus => _runNaturalExit(failureStatus, true),
+});
 
 _runMainScriptIfPresent();
