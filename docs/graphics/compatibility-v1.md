@@ -15707,7 +15707,8 @@ Program digest changes under the same numeric 56/3/17/21 family, so the
 canonical checker correctly requires all programs to rebuild.
 
 The normal six-package GObject cohort publishes seven architecture nodes,
-including GLib 8, its real test package 4, libffi and the exact current kernel.
+including GLib 2.84.4 recipe revision 8, its real test package revision 4,
+libffi and the exact current kernel.
 The new guest assertion passes through the centralized Node runtime in
 514 ms, with normal 2.84.4 library output, all C assertions and cleanup,
 exit 0 and no host diagnostics. This is one selected case; its other 84
@@ -15727,9 +15728,33 @@ Exact new guest binary: 799,181 bytes, SHA256
 `31e628ae06c0460047f3a9e416abdc1d6dd202f9e4e8d453ce4a600780340f47`.
 Selected cohort kernel: 1,839,996 bytes, SHA256
 `f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
-The separate upstream selection is started as
-`compatibility-gobject-upstream-r1-1031-192713-1eed`; its result is pending
-and is not folded into the 75-case pass. Browser menu, ScummVM rendering,
+The separate upstream selection runs as
+`compatibility-gobject-upstream-r1-1031-192713-1eed` and exits 1: four targets
+pass and six fail. This result is not folded into the 75-case pass.
+Browser menu, ScummVM rendering,
 three-engine/lifecycle/memory acceptance and the broader graphics baseline
 remain open. Custom-marshaller representation/body/hint semantics remain
 an ordinary compatibility gap despite the passing standard routes.
+
+The six upstream failures retain original assertions and are not allowances:
+`basic-signals`, `closure`, `defaultiface`, `dynamictype` and `accumulator`
+exit 132; `signals` exits 134 with libffi signature key
+`87964688318624` outside the generated dispatch. Decoding the actual key
+using the current implementation yields void return, twenty arguments,
+including one float, one double and two int64 arguments. This exceeds the
+mixed-argument generation family; it is an ordinary implementation gap,
+not a browser boundary. The same target names in older evidence do not
+establish identical causes.
+
+A separate diagnostic-only rerun through the same default dedicated-worker
+`runCentralizedProgram` path copies returned stdout, stderr, exit codes and
+host diagnostics for all six targets. All five exit-132 cases report a
+null-function-or-signature-mismatch trap. Actual Wasm stacks and exact
+binary hashes are saved in primary
+`.context/compatibility-gobject-upstream-r1/*-diagnostic.json` and
+`diagnostic-symbols.json`. The stripped binaries do not name the failing
+library functions; a stack index alone is not a root-cause attribution.
+The diagnostic collector completing six captures is not six passing
+upstream tests. Its first launch fails before loading tests because its
+private configuration inherits a relative reporter path; the corrected
+absolute reporter path completes capture without changing guest code.
