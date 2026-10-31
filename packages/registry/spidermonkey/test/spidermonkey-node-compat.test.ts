@@ -342,7 +342,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     );
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("hello wasm32 linux v22.0.0");
+    expect(result.stdout.trim()).toBe("hello wasm32 kandelo v26.13.0");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("prints the Node compatibility version", async () => {
@@ -353,7 +353,7 @@ describe.skipIf(!nodeWasm)("SpiderMonkey Node compatibility runtime", () => {
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe("v22.0.0");
+    expect(result.stdout.trim()).toBe("v26.13.0");
   }, DEFAULT_TEST_TIMEOUT);
 
   it("carries the complete fork instrumentation required by package policy", () => {

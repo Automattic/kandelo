@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "version": "26.13.0",
+  "lts": "Lithium",
+  "verifiedOn": "2026-10-31",
+  "releaseIndex": "https://nodejs.org/dist/index.json",
+  "source": {
+    "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+    "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+    "tag": "v26.13.0",
+    "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+  },
+  "references": {
+    "darwin-arm64": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+      "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+    },
+    "darwin-x64": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+      "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+    },
+    "linux-arm64": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+      "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+    },
+    "linux-x64": {
+      "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+      "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+    }
+  }
+}
