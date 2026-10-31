@@ -13272,3 +13272,92 @@ explicitly omitted; these checks require no guest artifacts. This is a
 baseline correctness control for the proposed loop experiment, not evidence
 of a production optimization or application gain. Private log:
 `.context/inverse-evidence-documentation/.context/snapshot-comparator-source-tests-r1.log`.
+
+### Four-vector comparison candidate, 2026-10-31
+
+Rather than omit a coherence boundary, a no-rebuild screen compares the
+current16-byte SIMD loop with2/4/8/16-vector blocks. Each block checks its full
+remaining length before any load, ORs vector XOR differences, and then retains
+the existing16/8/1-byte tails. OR is essential: equal difference bits in two
+vectors must not cancel. All memories, instances and views stay in disposable
+workers; the production lifetime/borrow protocol is not changed by the screen.
+
+Named job `snapshot-comparator-unroll-screen-r1-1031-093721-1050` finishes0
+in14s on Node and canonical headless Chromium/Firefox/WebKit. It builds five
+small private WAT modules, not an SDK/kernel/program/image. Factor1 is exactly
+the current04f production binary. Across four hosts,1,020rows,12,240repeated
+blocks and3,060separate initial observations reconcile with the sealed matrix.
+Each host passes3,885equal spans,501,165single-byte mismatch controls,
+10,360outside-span sentinels,180equal out-of-bounds traps and five duplicate-bit
+controls. Each worker declares32MiB across two memories;76,415instances stay
+within the finite131,072cap. Runtime and owned cleanup errors are zero.
+
+For large equal spans (two sizes × three alignments × four alternating rounds),
+the four-vector candidate's paired whole-fresh-call observations are:
+
+| Host | Median candidate/baseline elapsed ratio | Lower candidate rounds |
+|---|---:|---:|
+| Node | 0.678 | 24/24 |
+| Chromium | 0.729 | 22/24 |
+| Firefox | 0.644 | 24/24 |
+| WebKit | 0.647 | 23/24 |
+
+All these blocks exceed ten observed positive timer ticks;93/96pairs are lower,
+not all of them. The aligned16,760,832-byte Chromium medians are0.717500ms
+baseline/0.678333ms candidate, a less decisive case that remains in the record.
+Eight/sixteen-vector blocks show mixed extra gains over four across hosts and
+alignments; four is a measured near-plateau candidate, not a proven optimum.
+Middle/last differences also favor it in most paired rounds. Browser small,
+first-difference and setup summaries are unresolved at the retained clock
+precision. Node first-difference ratios range0.636–2.146. No small-input or
+early-exit no-regression claim follows. Zeros, initial observations and every
+round remain recorded; setup is never subtracted to invent a loop time.
+
+The screen is NONQUIET, synthetic and narrower than the full Kernel provider/
+range/Rust publication path. Private factor dispatch adds measurement overhead.
+Its reused parent processes are not independent cold launches. Counts from
+the earlier read trace cannot be multiplied by these different-cohort timings
+to predict seconds saved. It establishes neither CPU time nor desktop benefit.
+Raw report SHA256
+`39b79e9b81e8a618a654fc41e090d07e667b6bf51b1a87c98dc3d18ba4cf0f49`;
+independent accounting SHA256
+`ef583f30221a1e82f08b167607a3288e692e6a70d210457ceb1afa5c3c252d3f`.
+Full source/hash/cleanup verification and raw first/repeated tables are under
+`.context/snapshot-comparator-unroll-analysis-r1/`. An initial offline assertion
+incorrectly required Chromium CDP metadata on Firefox/WebKit; its failed log
+is retained. The corrected audit preserves their actual CDP-unavailable status
+and engine/configuration facts. No raw runtime result was altered.
+
+The shared production generator now emits the selected64-byte block ahead of
+its original tails. All32modules regenerate and `--check` passes;16scalar
+variants stay byte-identical. Representative shared32/shared32 SIMD bytes are
+exactly the screened factor4 module,378bytes, SHA256
+`90a97d1e7444dcbcbcbc6d9652f42be8e31e4c89153dbfa3c70aa6c332ee9d9c`.
+No native-instance cache, mapping shortcut, selector/admission rule, memory
+ceiling or ABI family changes. Full requested ranges still validate before
+native entry. On an invalid range an early mismatch may precede a later fault
+in the old loop but not in an accumulated block; arbitrary invalid raw calls
+are not claimed equivalent. Such calls are outside Kernel admission.
+
+Declared-shell Node source validation passes101tests in three files: all fixed
+width/sharing/SIMD/scalar variants, exhaustive byte/tail/adjacent-span and
+duplicate-bit controls, public scratch borrow/provider failures and the static
+memory-authority audit. Fixture-producing global setup is explicitly omitted;
+no guest tests are inferred. Normal host bundling/declarations also pass.
+Logs and exact sources are retained in the mutable evidence checkout's
+`.context/comparator-four-vector-*` and `snapshot-comparator-source-tests-r2.log`.
+All32native browser variants, actual desktop effect, normal combined products,
+browser-memory and destination-main Node/browser benchmark acceptance remain
+open. Published04f preview5676 remains unchanged.
+
+The separate active1/3/5/recovered1 diagnostic
+`import-metadata-active-os-cpu-r1-1031-094024-4867` finishes1/0/0 in7m33s.
+Actual1/3/5terminal stages have root-viewed numbered output through63 and
+natural prompts, preserving original Foot. The parent misses the final
+recovery review deadline: its later viewed sample63 does show the real prompt,
+but no approval is written after failure and the run remains red. Earlier
+five-terminal sample7 and recovery sample4 lacked a prompt and were correctly
+unapproved. Four bounded frame/CPU captures precede these review gates; their
+analysis remains diagnostic only. Normal same-page Bare-shell replacement and
+source/SDK/kernel/host/own93/245 final guards complete without cleanup errors.
+No complete four-stage pass or responsiveness gain follows from this attempt.

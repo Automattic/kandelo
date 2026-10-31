@@ -143,6 +143,12 @@ describe("fixed read-only process snapshot comparator", () => {
                 throw Error(`Missed comparison byte: ${key} len=${n} a=${a} b=${b} offset=${at}`);
               right[b + at] = 0x39;
             }
+            if (n > 16) {
+              // Combining vectors must retain identical difference bits.
+              right[b] = right[b + 16] = 0x93;
+              expect(compare(BigInt(a), BigInt(b), n), `${key} cancelled differences`).toBe(1);
+              right[b] = right[b + 16] = 0x39;
+            }
             expect(left.subarray(a, a + n).every(value => value === 0x39), `${key} modified snapshot`).toBe(true);
             expect(right.subarray(b, b + n).every(value => value === 0x39), `${key} modified source`).toBe(true);
           }

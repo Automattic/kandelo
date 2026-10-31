@@ -23,7 +23,7 @@ const address = (width, base) => {
   const wide = `(i64.add (local.get $${base}) (local.get $offset))`;
   return width === 4 ? `(i32.wrap_i64 ${wide})` : wide;
 };
-const simdLoop = `
+const vectorLoop = `
     (block $vectors_done
       (loop $vectors
         (br_if $vectors_done
@@ -37,6 +37,36 @@ const simdLoop = `
           (then (return (i32.const 1))))
         (local.set $offset (i64.add (local.get $offset) (i64.const 16)))
         (br $vectors)))`;
+// WHY: large unchanged mappings pay one branch per vector in the tail loop.
+// Combine four vector differences before testing, with the entire 64-byte
+// block proved present first. OR preserves duplicate differences; XOR would
+// cancel them. The original vector/word/byte tails still handle short spans.
+const simdLoop = `
+    (block $blocks_done
+      (loop $blocks
+        (br_if $blocks_done
+          (i64.lt_u
+            (i64.sub (local.get $length) (local.get $offset))
+            (i64.const 64)))
+        (if (v128.any_true
+              (v128.or
+                (v128.or
+                  (v128.xor
+                    (v128.load $kernel offset=0 align=1 @KERNEL_ADDRESS@)
+                    (v128.load $process offset=0 align=1 @PROCESS_ADDRESS@))
+                  (v128.xor
+                    (v128.load $kernel offset=16 align=1 @KERNEL_ADDRESS@)
+                    (v128.load $process offset=16 align=1 @PROCESS_ADDRESS@)))
+                (v128.or
+                  (v128.xor
+                    (v128.load $kernel offset=32 align=1 @KERNEL_ADDRESS@)
+                    (v128.load $process offset=32 align=1 @PROCESS_ADDRESS@))
+                  (v128.xor
+                    (v128.load $kernel offset=48 align=1 @KERNEL_ADDRESS@)
+                    (v128.load $process offset=48 align=1 @PROCESS_ADDRESS@)))))
+          (then (return (i32.const 1))))
+        (local.set $offset (i64.add (local.get $offset) (i64.const 64)))
+        (br $blocks)))` + vectorLoop;
 const variants = [];
 const directory = await mkdtemp(join(tmpdir(), "kandelo-snapshot-comparator-"));
 try {
