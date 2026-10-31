@@ -52,6 +52,27 @@ test("site packager preserves the built app and emits a compiled file-router han
   assert.equal(unconfigured.status, 503);
 });
 
+test("site packager makes browsers revalidate the service worker and pages, not hashed assets", async t => {
+  // The first reload after a deploy only reaches the new deployment if
+  // service-worker.js and the HTML entry points are revalidated; an edge
+  // that keeps an old copy serves the old deployment for its lifetime.
+  const root = await fixture(); t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "pages", "kandelo"), { recursive: true });
+  await writeFile(join(root, "pages", "kandelo", "index.html"), "<h1>Kandelo</h1>");
+  await mkdir(join(root, "assets"));
+  await writeFile(join(root, "assets", "main-AbCd1234.js"), "// hashed chunk");
+  const { stdout } = await execute(process.execPath, [builder, root]);
+  const output = stdout.trim(); t.after(() => rm(output, { recursive: true, force: true }));
+  const blocks = new Map((await readFile(join(output, "_headers"), "utf8")).split(/\n(?=\/)/)
+    .map(block => { const [path, ...lines] = block.trim().split("\n"); return [path, lines.map(line => line.trim())]; }));
+  for (const path of ["/service-worker.js", "/", "/index.html", "/index", "/pages/kandelo/", "/pages/kandelo/index.html"]) {
+    assert.ok(blocks.get(path)?.includes("Cache-Control: no-cache"), `${path} must be revalidated`);
+  }
+  assert.ok(blocks.has("/assets/main-AbCd1234.js"));
+  assert.ok(!blocks.get("/assets/main-AbCd1234.js").some(line => line.startsWith("Cache-Control:")),
+    "a content-hashed chunk keeps the host's caching");
+});
+
 test("site packager rejects private build inputs and symlinks", async t => {
   for (const forbidden of [".env.local", "pages-vfs-products.private.json", ".git", ".spacefast", "node_modules",
     "functions", "handler.ts", "handler.js", "handler.mjs", ".open-next"]) {

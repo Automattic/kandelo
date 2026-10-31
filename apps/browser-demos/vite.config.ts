@@ -51,6 +51,11 @@ import {
 } from "./vite/kernel-worker-scripts";
 import { previewOriginPlugin } from "./vite/preview-origin";
 import { restartConvergencePlugin } from "./vite/restart-convergence";
+import {
+  buildIdPlugin,
+  builtWorkerBuildId,
+  injectWorkerBuildId,
+} from "./vite/build-id";
 import type { CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
@@ -956,17 +961,22 @@ function injectCorsProxyConfig(): Plugin {
       .map((name) => `${normalizeDeploymentBase(base)}${assetsDir}/${name}`);
   }
 
-  function serviceWorkerSource(kernelWorkerScriptPaths: readonly string[]): string {
-    return injectCorsProxyConfigPlaceholder(
+  function serviceWorkerSource(
+    kernelWorkerScriptPaths: readonly string[],
+    buildId: string | null,
+  ): string {
+    const source = injectCorsProxyConfigPlaceholder(
       fs.readFileSync(sourceSwPath, "utf-8"),
       servedCorsProxyConfig,
       kernelWorkerScriptPaths,
     );
+    return buildId === null ? source : injectWorkerBuildId(source, buildId);
   }
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
     kernelWorkerScriptPaths: () => readonly string[],
+    buildId: () => string | null = () => null,
   ): void {
     const serviceWorkerPath = serviceWorkerPathForBase(base);
     middlewares.use((req, res, next) => {
@@ -982,7 +992,7 @@ function injectCorsProxyConfig(): Plugin {
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "no-store");
-      res.end(serviceWorkerSource(kernelWorkerScriptPaths()));
+      res.end(serviceWorkerSource(kernelWorkerScriptPaths(), buildId()));
     });
   }
 
@@ -1009,7 +1019,13 @@ function injectCorsProxyConfig(): Plugin {
       servedCorsProxyConfig = browserCorsProxyConfig(
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
       );
-      attachMiddleware(server.middlewares, builtKernelWorkerScriptPaths);
+      // The built pages carry the build's id; the worker served here must
+      // report the same one (vite/build-id.ts).
+      attachMiddleware(
+        server.middlewares,
+        builtKernelWorkerScriptPaths,
+        () => builtWorkerBuildId(outputRoot),
+      );
     },
     writeBundle(_options, bundle) {
       // service-worker.js is in public/ and Vite copies it to the resolved outDir.
@@ -1192,6 +1208,9 @@ export default defineConfig(() => {
       devSignallingServer(repoRoot),
       // The same PHP as the development signalling server.
       previewOriginPlugin({ findPhp: () => findSignallingPhp(repoRoot) }),
+      // Last: the id covers the emitted service worker after the plugins
+      // above rewrote it.
+      buildIdPlugin(),
     ],
     server: {
       host: "127.0.0.1",

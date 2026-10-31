@@ -26,6 +26,13 @@ export interface ScopedStaticServer {
   close(): Promise<void>;
   replaceRoot(deployment: ScopedDeployment, root: string): Promise<void>;
   requests(): readonly ScopedStaticRequest[];
+  /**
+   * Delay the browser's own service-worker update fetches (requests carrying
+   * `Service-Worker: script`) by `ms`, modelling the network time to an
+   * edge. Page requests, including the bootstrap `<script>` load of the same
+   * file, are not delayed.
+   */
+  setServiceWorkerUpdateDelay(ms: number): void;
   setSymlinkRejection(enabled: boolean): void;
 }
 
@@ -39,6 +46,7 @@ export async function startScopedStaticServer(options: {
   };
   const requests: ScopedStaticRequest[] = [];
   let rejectSymlinks = true;
+  let serviceWorkerUpdateDelayMs = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const record: ScopedStaticRequest = {
@@ -54,6 +62,9 @@ export async function startScopedStaticServer(options: {
         return send(response, record, 405);
       }
       if (record.deployment === null) return send(response, record, 404);
+      if (serviceWorkerUpdateDelayMs > 0 && request.headers["service-worker"] === "script") {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, serviceWorkerUpdateDelayMs));
+      }
       const file = await requestedFile(
         roots[record.deployment],
         url.pathname,
@@ -108,6 +119,7 @@ export async function startScopedStaticServer(options: {
     close: async () => { await Promise.all([close(server), close(preview)]); },
     replaceRoot: (deployment, root) => replaceRoot(roots, deployment, root),
     requests: () => requests.slice(),
+    setServiceWorkerUpdateDelay: (ms) => { serviceWorkerUpdateDelayMs = ms; },
     setSymlinkRejection: (enabled) => { rejectSymlinks = enabled; },
   };
 }

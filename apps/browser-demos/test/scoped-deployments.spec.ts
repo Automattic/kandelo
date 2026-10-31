@@ -101,9 +101,11 @@ test.describe.serial("real scoped production deployments", () => {
       const relocatedGroup = join(fixtureRoot, "relocated-group");
       const relocatedMap = join(fixtureRoot, "relocated.private.json");
       await cp(group, relocatedGroup, { recursive: true, dereference: true });
-      await writeRelocatedMap(map, relocatedMap, "nested/release-2/manifest.json");
+      // A deployment may nest its group deeper; the directory must still be
+      // the manifest's content address.
+      await writeRelocatedMap(map, relocatedMap, `nested/sha256-${assetGroupSha256}/manifest.json`);
       await buildVite("/a/", join(fixtureRoot, "a-relocated"), relocatedMap, relocatedGroup);
-      await writeRelocatedMap(map, join(fixtureRoot, "outside.private.json"), "../outside/manifest.json");
+      await writeRelocatedMap(map, join(fixtureRoot, "outside.private.json"), `../sha256-${assetGroupSha256}/manifest.json`);
       await expect(
         buildVite("/a/", join(fixtureRoot, "a-outside"), join(fixtureRoot, "outside.private.json"), relocatedGroup),
       ).rejects.toThrow();
@@ -302,7 +304,7 @@ test.describe.serial("real scoped production deployments", () => {
       await runVimVersion(relocated);
       expect(server.requests().filter((request) => request.pathname.includes("manifest.json") || request.pathname.includes("vim.zip")))
         .toEqual(expect.arrayContaining([
-          expect.objectContaining({ pathname: expect.stringMatching(/^\/a\/nested\/release-2\//) }),
+          expect.objectContaining({ pathname: expect.stringMatching(/^\/a\/nested\/sha256-[0-9a-f]{64}\//) }),
         ]));
     } finally {
       await context.close();
