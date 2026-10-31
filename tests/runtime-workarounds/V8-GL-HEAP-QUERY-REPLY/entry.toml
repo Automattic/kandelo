@@ -1,0 +1,6 @@
+id = "V8-GL-HEAP-QUERY-REPLY"
+kind = "bug"
+status = "suspected"
+runtimes = ["chromium"]
+summary = "Suspected historical GL query reply visibility failure with stack destinations; retain heap-owned replies pending reduction"
+reports = "human-only"

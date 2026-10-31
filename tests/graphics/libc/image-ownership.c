@@ -247,6 +247,7 @@ static unsigned pending_device;
 static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
+static unsigned compound_batches, compound_failure;
 static unsigned array_captures, array_restores;
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
@@ -752,6 +753,25 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         attrs->context_id = slot->context = next_backend_context++;
         egl_trace(2, fd, attrs, sizeof *attrs);
+    } else if (request == GLIO_SUBMIT_QUERY) {
+        struct gl_submit_query_info *packet = arg;
+        compound_batches++;
+        assert(packet->submit.length && !packet->submit.offset);
+        struct gl_submit_info submit = packet->submit;
+        struct gl_query_info query = packet->query;
+        struct gl_submit_query_result result = { .completed_phase = WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT,
+            .result_magic = WPK_GL_SUBMIT_QUERY_REPLY_MAGIC };
+        unsigned failure = compound_failure; compound_failure = 0;
+        if (graphics_ioctl(fd,GLIO_SUBMIT,&submit) != 0) result.submit_rc = -errno;
+        else {
+            if (failure == 1) { errno=EIO; return -1; } // Lost reply after accepted prefix.
+            result.completed_phase = WPK_GL_SUBMIT_QUERY_PHASE_QUERY;
+            if (graphics_ioctl(fd,GLIO_QUERY,&query) != 0) result.query_rc = -errno;
+        }
+        if (failure == 2) result.result_magic = 0;
+        if (failure == 3) result.completed_phase = 99;
+        if (failure == 4) { errno=EIO; return -1; } // Query may already have accepted.
+        packet->result = result;
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
         const char *session_trace = getenv("KANDELO_GRAPHICS_SESSION_TRACE");
@@ -2925,6 +2945,63 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,fresh) && eglReleaseThread() && eglTerminate(dpy));
         assert(destroyed_contexts == 2 && object_closes == 2 && display_closes == 2);
         printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "compound-query-success")) {
+        GLuint texture; glGenTextures(1,&texture);
+        unsigned batches=submit_batches, compounds=compound_batches;
+        glBindTexture(GL_TEXTURE_2D,texture);
+        assert(compound_batches == compounds+1 && submit_batches == batches+1);
+        assert(glGetError() == GL_NO_ERROR);
+        glBindTexture(GL_TEXTURE_2D,0);assert(compound_batches==compounds+1);
+        glDeleteTextures(1,&texture);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS compound-query-success"); return 0;
+    }
+    if (!strcmp(argv[1], "compound-framebuffer-success")) {
+        GLuint framebuffer;glGenFramebuffers(1,&framebuffer);
+        unsigned batches=submit_batches,compounds=compound_batches;
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+        assert(compound_batches==compounds+1 && submit_batches==batches+1);
+        assert(glGetError()==GL_NO_ERROR);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);assert(compound_batches==compounds+1);
+        glDeleteFramebuffers(1,&framebuffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS compound-framebuffer-success");return 0;
+    }
+    if (!strncmp(argv[1], "compound-query-",15)) {
+        binding_model=1;binding_query_kind=GL_TEXTURE_BINDING_2D;
+        glBindTexture(GL_TEXTURE_2D,17);
+        GLuint texture;glGenTextures(1,&texture);
+        unsigned batches=submit_batches,compounds=compound_batches,queries=bind_queries;
+        GLenum expected=GL_INVALID_OPERATION;
+        int oom=!strcmp(argv[1],"compound-query-heap-oom");
+        if (!strcmp(argv[1],"compound-query-submit-reject")) fail_submit=1;
+        else if (!strcmp(argv[1],"compound-query-query-reject")) {bind_failure=2;expected=GL_OUT_OF_MEMORY;}
+        else if (!strcmp(argv[1],"compound-query-query-error")) bind_failure=1;
+        else if (!strcmp(argv[1],"compound-query-inner-malformed")) bind_failure=4;
+        else if (!strcmp(argv[1],"compound-query-outer-unknown")) compound_failure=1;
+        else if (!strcmp(argv[1],"compound-query-result-malformed")) compound_failure=2;
+        else if (!strcmp(argv[1],"compound-query-phase-malformed")) compound_failure=3;
+        else if (!strcmp(argv[1],"compound-query-query-unknown")) compound_failure=4;
+        else if (oom) {malloc_before_failure=1;expected=GL_OUT_OF_MEMORY;}
+        else assert(!"unknown compound control");
+        glBindTexture(GL_TEXTURE_2D,texture);
+        malloc_before_failure=-1;fail_submit=0;
+        assert(submit_batches==batches+1);
+        assert(compound_batches==compounds+(oom?0:1));
+        if (oom || !strcmp(argv[1],"compound-query-submit-reject") ||
+            !strcmp(argv[1],"compound-query-outer-unknown")) assert(bind_queries==queries);
+        else assert(bind_queries==queries+1);
+        assert(glGetError()==expected && glGetError()==GL_NO_ERROR);
+        // Reading errors and an explicit empty flush must never resubmit an
+        // accepted, rejected or unacknowledged prefix.
+        glFlush();assert(submit_batches==batches+1);
+        if (!strcmp(argv[1],"compound-query-query-reject")) {
+            GLint bound=-1;glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);assert(bound==17);
+        }
+        glDeleteTextures(1,&texture);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strcmp(argv[1], "encoder-submit-failure")) {
         void (*get)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetBufferParameteriv"); assert(get);

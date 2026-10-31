@@ -4361,6 +4361,16 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
+    s.add(Program, "gl_submit_query", json!({
+        "request": shared::gl::GLIO_SUBMIT_QUERY,
+        "phase_submit": shared::gl::SUBMIT_QUERY_PHASE_SUBMIT,
+        "phase_query": shared::gl::SUBMIT_QUERY_PHASE_QUERY,
+        "reply_magic": shared::gl::SUBMIT_QUERY_REPLY_MAGIC,
+        "nonempty_prefix": true,
+        "negative_phase_rc": "errno",
+        "outer_success": "phase-receipt-only",
+        "retry": "none",
+    }));
 
     s.add(Program, "channel_header", channel_header());
     s.add(Program, "channel_request_flags", channel_request_flags());
@@ -5614,7 +5624,7 @@ fn marshalled_structs() -> Value {
         WpkDrmModeFbCmd, WpkDrmModeSetPlane,
     };
     use shared::fbdev::{FbBitfield, FbFixScreenInfo, FbVarScreenInfo};
-    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
+    use shared::gl::{GlContextAttrs, GlInitInfo, GlMakeCurrent, GlQueryInfo, GlQueryInfo64, GlSubmitInfo, GlSubmitQueryResult, GlSubmitQueryInfo, GlSubmitQueryInfo64, GlSurfaceAttrs, GlSurfaceFrontCopyInfo};
     use shared::oss::{AudioBufInfo, CountInfo};
     use shared::pcm::PcmSharedControl;
     use shared::{
@@ -5857,6 +5867,11 @@ fn marshalled_structs() -> Value {
         "GlSubmitInfo".into(),
         struct_layout!(GlSubmitInfo { offset, length }),
     );
+    structs.insert("GlSubmitQueryResult".into(), struct_layout!(GlSubmitQueryResult {
+        completed_phase, submit_rc, query_rc, result_magic
+    }));
+    structs.insert("GlSubmitQueryInfo".into(), struct_layout!(GlSubmitQueryInfo { submit, query, result }));
+    structs.insert("GlSubmitQueryInfo64".into(), struct_layout!(GlSubmitQueryInfo64 { submit, query, result }));
     structs.insert(
         "GlMakeCurrent".into(),
         struct_layout!(GlMakeCurrent { context_id, draw_surface_id, read_surface_id }),

@@ -14785,11 +14785,127 @@ this failed diagnostic as a passing desktop test. Exact evidence is in
 `.context/desktop-sustained-pointer-prep-r2/`;41-input helper seal SHA256:
 `af86a7136046683f995e8b25230ea33446e988e15b3312d03bf4925e059a7d82`.
 
-The user now reports latest5681 feels worse; their reference preview is not yet
-identified. This supersedes any inference of a reliable benefit from the sparse
+The user now reports latest5681 feels worse; they recall the earlier preview
+reported as better but not its number. Saved checkpoints associate that feedback
+with5680; this is a provisional comparison, not a newly confirmed user port.
+This supersedes any inference of a reliable benefit from the sparse
 pair, while retaining its raw measurements. Existing previews remain immutable.
 A fresh exact606 operation capture is being prepared to identify any added
 recurring work relative to ce7; its results remain pending. The private-bitmap
 alternative is source preparation only, not executed or adopted. Generic
 compound transport implementation is in progress, without a normal artifact or
 desktop benefit claim. Broad acceptance remains open.
+
+### Exact606 regression operation capture, 2026-10-31
+
+The first ordered attempt `selector-regression-ordered-r1-1031-145921-989d`
+finishes workload1/collector0/guard0 before arming. Its77 retained calibration
+observations show normal cursor shape changing from arrow to I-beam; the fixed
+shape assumption refuses, despite moved pixels and correct title. Fresh R2
+`selector-regression-ordered-r2-1031-150604-9776` also finishes1/0/0 before arm:
+its replacement calibration accidentally removes the real focus-enter prelude.
+The cursor reaches the requested point, but keyboard focus remains in the third
+window. Both are diagnostic defects, not demonstrated platform regressions.
+Their original inputs/results remain unchanged; neither supplies a trace.
+
+R3 restores the actual cross-enter/title transition and retains all observations,
+then proves a stable full-plane96px pair while allowing recorded prelude style
+changes. The original measured blocks and recorder remain byte-identical. Root
+controls pass20 Node and12 Python groups, source/syntax/composition checks and
+all19 observed/all10 production module HTTP admission. Job
+`selector-regression-ordered-r3-1031-151234-9fc2` completes0/0/0 in37s with actual
+three-Foot within/cross windows, original-client recovery and normal same-page
+replacement. The94-input seal is
+`1f4f6af879c50b49fa113fff25285c0739c4c97ec5a03fd9f4a4391521f15a56`.
+
+The two1s captures retain18,009/54,594 rows and1/6 complete internal logical
+intervals. No rows drop; overflow, unknowns, internal/helper errors and native
+throws are zero. All17/132 muxer selections are same-owner and native-free;
+no invalidation or constant-attribute setter executes. All closed native errors
+are zero. Seven within-window right-edge span censors remain explicit; one
+getError has no invented return. Native selector queries remain exactly five
+per primary scanout and six per cursor read. Cursor work is20 native calls/nine
+error checks per read, versus40/19 in the separately scoped ce7 capture. This
+does not explain or disprove the user regression report.
+
+Crossing still records62 guest draws,81 checked queries and1,068 equal full
+comparisons totaling4,475,142,144 requested bytes. Instrumented exclusive elapsed
+partitions include201.510ms in getError,87.895ms in shared comparisons and71.925ms
+in DRI flush work. Despite fewer error checks than older ce7, their elapsed sum
+is slightly higher than its197.830ms. Different source/load/window work prevents
+a causal timing/CPU claim. This is neither sustained nor single-client evidence;
+unobserved time is not proven idle. The observer itself has cost.
+
+Independent audit passes59,902 validity/identity checks and55,704 explicit-
+censor cost-accounting checks. All24 source snapshots,19 observed responses,
+10 HTTP authorities/nine actual production consumers,93-owner/245-member and
+dual-SDK/kernel/host guards match. Its first closed-only cost audit refuses the
+real edge censors; that failure is retained before corrected clipped accounting.
+Evidence: `.context/selector-regression-ordered-r3/` and
+`.context/selector-regression-ordered-analysis-r3/HANDOFF.md`, SHA256
+`b85f884ad955ec784c7e60ec7228944cc38bc66e716f4d9282bde1e44f798021`.
+
+### Ordered submit/query transport source checkpoint, 2026-10-31
+
+New GLIO_SUBMIT_QUERY0x4B combines a nonempty queued prefix and its checked query
+under one synchronous request, sharing the existing validated Rust submit/query
+bodies. It captures the native header, OFD/session/TID once; query input is read
+after prefix execution and its whole destination capacity is probed before
+query effects. Submit failure suppresses query; later query failure leaves an
+accepted prefix consumed. Native GL checks, CPU-image hooks and existing host
+forwarding phases remain. The48/64-byte InOut phase result is not GL acceptance
+or retry authority. C commits only through the unchanged inner checked reply,
+consumes the prefix on every return and never retries/falls back after uncertain
+entry. Empty queues retain the ordinary query. One heap allocation keeps reply
+at its base and aligned phase header after it; OOM performs the old ordinary
+flush before reporting failure. This is a platform transport change.
+
+Executed before controls fail: two native Rust cases return ENOSYS and one C
+case observes missing compound dispatch. Candidate focused native Rust passes
+76 GL and87 shared cases; the actual C/device-double UBSan suite passes233
+unique cases, including11 compound success/failure/OOM/no-replay cases and
+explicit GenFramebuffer-to-bind ordering. Independent source review finds no
+blocker. These are not normal guest/channel/browser acceptance results.
+
+The own focused kernel build, standard xtask ABI generation/check, standalone
+resolver reproducibility/check and workaround registry check pass. The complete
+ABI wrapper refuses its preliminary absent-own-SDK layout prerequisite; its
+exit1 remains retained. Do not call the whole layout gate passed. Numeric
+program56/host3/GL17/fork21 remains unchanged. Program digest changes from
+`c0878412780c9f36cb56527f49ade53bdd0ac3fd5d47d75e3a32a15e1984fc2d` to
+`019c0d77c97c672aa4e62db0cefe792761dfaf90ebe3a3e7ca33d41c9ade7241`.
+Only the new program transport/struct/descriptor entries change; existing
+entries and kernel-host/fork metadata remain. Normal own SDK32/64, linked
+programs/libraries/images, actual channel InOut copyback, Node/browser consumers,
+memory/conformance and application performance need fresh coherent validation.
+Published5679/5680/5681 remain frozen and exclude this transport.
+
+The historical V8 heap-reply claim is now a registered suspected workaround,
+with code tag and browser-support link, preserving behavior without asserting
+an unreproduced engine defect. Registry check covers12 entries/39 sites.
+Source/generated evidence is in mutable checkout
+`.context/compound-gl-transport-candidate-r1/`, release-manifest SHA256
+`ed12b0dd3f2f913f664715ea0594b745bcc627aa192210140259a10ab8572f41`.
+Independent review: `.context/compound-gl-transport-review-r1/HANDOFF.md`, SHA256
+`636d042626a8fdd8c398a782f28a563916962071fc01eae4699c32629ae94efe`.
+No desktop gain or baseline completion follows from this source checkpoint.
+
+### Consumer-driven shared-file publication alternative, 2026-10-31
+
+Source review rejects simply deferring completion publication when canonical
+generation is unchanged: a sibling can write a process alias after entry, while
+peer refresh and kernel-file reads consume canonical backing without flushing
+that producer. Same-Memory duplicate aliases also need refresh before direct
+guest loads. A general read/pread hook would recurse because publication itself
+reads through the same mutable mapping table. No scan is omitted.
+
+A possible alternative centralizes all backing access behind mandatory keyed
+read/write barriers and private internal read authority, restricts eligibility
+to one alias per physical memory/backing and keeps existing behavior elsewhere.
+It would publish when bytes are actually consumed rather than on unrelated
+operations. Complete reader/writer/lifetime coverage and executable causal
+controls remain required; this is not implemented or proven smaller/faster.
+The source inventory includes exec, exchange/export, remap/fork and direct
+storage reads. Evidence: `.context/shared-completion-deferred-publication-review-r1/`.
+The standalone consumer-model screen is preparation only. Full graphics and
+POSIX completion remain open; ordinary gaps are not platform boundaries.

@@ -21,6 +21,7 @@
       "clipboard_device_abi",
       "custom_sections",
       "gl_inline_client_draw",
+      "gl_submit_query",
       "host_env_imports",
       "host_intercepted_syscalls",
       "io_multiplexing",
@@ -1404,6 +1405,16 @@
     "opcode": 1286,
     "public_buffer_names": false
   },
+  "gl_submit_query": {
+    "negative_phase_rc": "errno",
+    "nonempty_prefix": true,
+    "outer_success": "phase-receipt-only",
+    "phase_query": 2,
+    "phase_submit": 1,
+    "reply_magic": 1196642609,
+    "request": 75,
+    "retry": "none"
+  },
   "host_adapter": {
     "kernel_export_lifecycles": [
       {
@@ -2582,6 +2593,12 @@
       "direction": "in",
       "wasm32Size": 32,
       "wasm64Size": 32
+    },
+    "75": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 48,
+      "wasm64Size": 64
     }
   },
   "ioctl_request_families": [
@@ -4965,6 +4982,71 @@
         }
       ],
       "size": 8
+    },
+    "GlSubmitQueryInfo": {
+      "fields": [
+        {
+          "name": "submit",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "query",
+          "offset": 8,
+          "span": 24
+        },
+        {
+          "name": "result",
+          "offset": 32,
+          "span": 16
+        }
+      ],
+      "size": 48
+    },
+    "GlSubmitQueryInfo64": {
+      "fields": [
+        {
+          "name": "submit",
+          "offset": 0,
+          "span": 8
+        },
+        {
+          "name": "query",
+          "offset": 8,
+          "span": 40
+        },
+        {
+          "name": "result",
+          "offset": 48,
+          "span": 16
+        }
+      ],
+      "size": 64
+    },
+    "GlSubmitQueryResult": {
+      "fields": [
+        {
+          "name": "completed_phase",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "submit_rc",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "query_rc",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "result_magic",
+          "offset": 12,
+          "span": 4
+        }
+      ],
+      "size": 16
     },
     "GlSurfaceAttrs": {
       "fields": [

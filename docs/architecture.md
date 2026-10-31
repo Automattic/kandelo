@@ -4271,6 +4271,27 @@ a successful short reply leaves the unused destination tail untouched.
 The host-memory bridge still permits address zero as an ordinary byte;
 the query ioctl owns its null-pointer semantics.
 
+`GLIO_SUBMIT_QUERY` adds one synchronous ordered request for a nonempty
+command prefix followed by a checked query. Its native-width `InOut` header
+is 48 bytes for wasm32 or 64 for wasm64. The kernel captures the descriptor,
+open file description, session and caller TID once, executes the existing
+submit path, then reads input and validates output for the existing query
+path. Submit failure prevents query execution; query failure leaves the
+already-consumed prefix intact. Both phases retain their native checks,
+CPU-image publication and error ownership. Ordinary submit/query requests
+keep their existing contract.
+
+The outer ioctl returns success to acknowledge a complete phase result,
+including negative per-phase errno values. It does not accept a GL mutation:
+only the nested checked reply can commit C binding or reference state. The
+client consumes the prefix on every compound return and never retries or
+falls back after uncertain execution. Reply and phase data remain heap-owned;
+allocation failure takes the original ordinary-flush path before reporting
+OOM. Empty command queues keep the ordinary query. This is not rollback,
+persistent replay authority or deferred server ordering. The program-surface
+digest includes the new transport; normal SDK and product artifacts need a
+coherent rebuild. Validation status remains in the compatibility inventory.
+
 The combined graphics branch uses ABI 56, one version above current main's
 ABI 55, with kernel-host version 3. It joins main's kernel-owned waits,
 executable admission and lifecycle contracts with the graphics interfaces

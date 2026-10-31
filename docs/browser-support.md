@@ -2834,6 +2834,15 @@ resolve it again.
 
 ## Known Limitations
 
+### Historical GL query reply storage
+
+GL query replies remain heap-owned before copying to caller destinations on
+all hosts. The historical claim of V8 stack-reply visibility failure is
+[suspected and unreduced](../tests/runtime-workarounds/V8-GL-HEAP-QUERY-REPLY/entry.md),
+not a confirmed engine defect. The ordered submit/query transport preserves
+this behavior; it does not establish the cause or a performance benefit.
+
+
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
 

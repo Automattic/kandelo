@@ -1146,32 +1146,74 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
 
 /* ----- sync queries ------------------------------------------------- */
 
-/* GLIO_QUERY response buffers MUST be heap-allocated, not stack-local.
- * The kernel writes the result via Uint8Array.set on the shared memory,
- * but V8's wasm engine fails to surface that write to a subsequent
- * stack-local i32.load at the same address — even with volatile or
- * __atomic_load_n. Heap pointers from malloc evade whatever store-
- * forwarding heuristic suppresses the cross-thread invalidation, so a
- * tiny heap round-trip + memcpy into the caller's destination is the
- * only pattern observed to work in practice. */
+/* [RUNTIME-WORKAROUND: V8-GL-HEAP-QUERY-REPLY] Retain heap-owned
+ * replies while the historical stack-reply visibility failure remains
+ * unreduced. The engine cause is suspected, not established; see registry.
+ * The compound phase result also stays in this heap allocation. */
 static int _wpk_gl_query_into(uint32_t op,
                               const void *in, uint32_t in_len,
                               void *dst, uint32_t dst_len) {
-    if (_wpk_gl_cmdbuf_base() == NULL) return -1;
+    uint8_t *base = _wpk_gl_cmdbuf_base();
+    if (base == NULL) return -1;
     int fd = _wpk_gl_fd();
     if (fd < 0) return -1;
-    if (flush_commands() != 0) return -1;
-    void *heap = malloc(dst_len ? dst_len : 1);
-    if (!heap) { if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY; return -1; }
+    uint32_t prefix = g_cursor && g_cursor != base ? (uint32_t)(g_cursor-base) : 0;
+    size_t reply_bytes = dst_len ? dst_len : 1;
+    const size_t alignment = _Alignof(struct gl_submit_query_info);
+    size_t header_offset = 0, bytes = reply_bytes;
+    if (prefix) {
+        if (reply_bytes > SIZE_MAX-(alignment-1)-sizeof(struct gl_submit_query_info)) {
+            if (flush_commands() != 0) return -1;
+            raise_client_error(GL_OUT_OF_MEMORY); return -1;
+        }
+        header_offset = (reply_bytes+alignment-1) & ~(alignment-1);
+        bytes = header_offset + sizeof(struct gl_submit_query_info);
+    }
+    void *heap = malloc(bytes);
+    if (!heap) {
+        // The old helper submitted before allocating its reply. Preserve
+        // that ordering on OOM, including the submit failure's GL flag.
+        if (prefix && flush_commands() != 0) return -1;
+        raise_client_error(GL_OUT_OF_MEMORY); return -1;
+    }
     if (dst_len) memset(heap, 0, dst_len);
     struct gl_query_info qi = {
         .op = op,
-        .in_buf_ptr  = (uintptr_t)in,   .in_buf_len  = in_len,
+        .in_buf_ptr = (uintptr_t)in, .in_buf_len = in_len,
         .out_buf_ptr = (uintptr_t)heap, .out_buf_len = dst_len,
         .reserved = 0,
     };
-    int rc = ioctl(fd, GLIO_QUERY, &qi);
-    if (rc == 0 && dst_len) memcpy(dst, heap, dst_len);
+    int rc;
+    if (prefix) {
+        struct gl_submit_query_info *packet = (void *)((uint8_t *)heap+header_offset);
+        memset(packet,0,sizeof *packet);
+        packet->submit.length = prefix;
+        packet->query = qi;
+        rc = ioctl(fd,GLIO_SUBMIT_QUERY,packet);
+        // Once entered, the prefix may have executed even without a reply.
+        // Match flush_commands: consume on every return, never replay/fallback.
+        g_cursor = base;
+        if (rc != 0) {
+            raise_client_error(GL_INVALID_OPERATION);
+        } else {
+            struct gl_submit_query_result result = packet->result;
+            int valid = result.result_magic == WPK_GL_SUBMIT_QUERY_REPLY_MAGIC &&
+                ((result.completed_phase == WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT &&
+                  result.submit_rc < 0 && result.submit_rc >= -4095 && result.query_rc == 0) ||
+                 (result.completed_phase == WPK_GL_SUBMIT_QUERY_PHASE_QUERY &&
+                  result.submit_rc == 0 && result.query_rc <= 0 && result.query_rc >= -4095));
+            if (!valid) {
+                errno = EIO; rc = -1; raise_client_error(GL_INVALID_OPERATION);
+            } else if (result.submit_rc < 0) {
+                errno = -result.submit_rc; rc = -1; raise_client_error(GL_INVALID_OPERATION);
+            } else if (result.query_rc < 0) {
+                errno = -result.query_rc; rc = -1;
+            }
+        }
+    } else {
+        rc = ioctl(fd,GLIO_QUERY,&qi);
+    }
+    if (rc == 0 && dst_len) memcpy(dst,heap,dst_len);
     free(heap);
     return rc;
 }

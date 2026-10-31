@@ -4004,6 +4004,12 @@ pub mod gl {
     pub const GLIO_PRESENT: u32 = 0x48;
     pub const GLIO_QUERY: u32 = 0x49;
     pub const GLIO_UPDATE_SURFACE: u32 = 0x4A;
+    /// Ordered nonempty submit prefix followed by one checked query. Phase
+    /// errors are returned in-band; ioctl success alone is not GL acceptance.
+    pub const GLIO_SUBMIT_QUERY: u32 = 0x4B;
+    pub const SUBMIT_QUERY_PHASE_SUBMIT: u32 = 1;
+    pub const SUBMIT_QUERY_PHASE_QUERY: u32 = 2;
+    pub const SUBMIT_QUERY_REPLY_MAGIC: u32 = 0x4753_5131;
 
     pub const SESSION_DISPLAY: u32 = 1;
     pub const SESSION_OBJECTS: u32 = 2;
@@ -4385,6 +4391,34 @@ pub mod gl {
         pub out_buf_ptr: u64,
         pub out_buf_len: u32,
         pub reserved: u32,
+    }
+
+    /// Phase receipt for one synchronous invocation, not a retry token.
+    /// Inputs are zero. Negative rc values are errno; unattempted query_rc is
+    /// zero. Only the nested checked-query reply can accept a GL mutation.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryResult {
+        pub completed_phase: u32,
+        pub submit_rc: i32,
+        pub query_rc: i32,
+        pub result_magic: u32,
+    }
+    /// wasm32 ordered submit/query argument, 48 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo,
+        pub result: GlSubmitQueryResult,
+    }
+    /// wasm64 ordered submit/query argument, 64 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo64 {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo64,
+        pub result: GlSubmitQueryResult,
     }
 
 }
@@ -5953,6 +5987,13 @@ mod gl_tests {
         assert_eq!(core::mem::offset_of!(GlSurfaceFrontCopyInfo, copy_target_bo),20);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
         assert_eq!(size_of::<GlQueryInfo64>(), 40);
+        assert_eq!(size_of::<GlSubmitQueryResult>(),16);
+        assert_eq!(size_of::<GlSubmitQueryInfo>(),48);
+        assert_eq!(size_of::<GlSubmitQueryInfo64>(),64);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,result),32);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,result),48);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_ptr), 8);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_len), 16);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, out_buf_ptr), 24);

@@ -867,10 +867,14 @@ fn gl_session_id(proc: &Process, ofd_idx: usize) -> Result<u32, Errno> {
 }
 
 fn require_gl_current(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
+    require_gl_current_for_tid(proc, ofd_idx, current_tid_for_process(proc))
+}
+
+fn require_gl_current_for_tid(proc: &Process, ofd_idx: usize, tid: u32) -> Result<(), Errno> {
     let gl = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
     if gl
         .current
-        .is_some_and(|binding| binding.owner_tid == current_tid_for_process(proc))
+        .is_some_and(|binding| binding.owner_tid == tid)
     {
         Ok(())
     } else {
@@ -1511,6 +1515,130 @@ fn write_dri_properties(
     write_dri_u64s(host, pid, values_pointer, &values)
 }
 
+// Both legacy and compound operations use these exact validation/effect paths.
+fn submit_gl_prefix(proc: &mut Process, host: &mut dyn HostIO, ofd_idx: usize,
+    info: wasm_posix_shared::gl::GlSubmitInfo, session: u32, tid: u32) -> Result<(), Errno> {
+    let pid = proc.pid as i32;
+    let (offset, length);
+    {
+        let dri = dri_state_mut(proc, ofd_idx)?;
+        let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+        let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+        let end = (info.offset as usize)
+            .checked_add(info.length as usize)
+            .ok_or(Errno::EINVAL)?;
+        if end > cmdbuf.len {
+            return Err(Errno::EINVAL);
+        }
+        offset = info.offset as usize;
+        length = info.length as usize;
+    }
+    require_gl_current_for_tid(proc, ofd_idx, tid)?;
+    let submit_rc = host.gl_submit(pid, offset, length, session);
+    if submit_rc < 0 {
+        return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
+    }
+    let dri = dri_state_mut(proc, ofd_idx)?;
+    let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
+    let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
+    cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
+    Ok(())
+}
+
+fn query_gl_checked(proc: &mut Process, host: &mut dyn HostIO, ofd_idx: usize,
+    info: wasm_posix_shared::gl::GlQueryInfo64, session: u32, tid: u32) -> Result<(), Errno> {
+    use wasm_posix_shared::gl;
+    let pid = proc.pid as i32;
+    if info.in_buf_len > gl::MAX_QUERY_IN_LEN
+        || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
+        || info.reserved != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    {
+        let dri = dri_state(proc, ofd_idx)?;
+        let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+        if !gls.initialized {
+            return Err(Errno::EINVAL);
+        }
+    }
+    let fence_query = matches!(info.op, gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE);
+    if fence_query {
+        if info.in_buf_len != 4 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
+        let dri = dri_state(proc, ofd_idx)?;
+        let state = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+        if state.role != gl::SESSION_OBJECTS || state.owner_pid != pid
+            || !dri.gl_resources.borrow().owner.is_some_and(|owner| {
+                owner.pid == pid && owner.session_id == state.session_id
+                    && owner.role == gl::SESSION_OBJECTS && owner.native_live
+                    && owner.cmdbuf_range.is_some()
+            })
+        {
+            return Err(Errno::EACCES);
+        }
+        // Creation needs current-thread and live-display authority.
+        // A retained waiter may poll/release its session's fences after
+        // the creator and display root retire; neither creates work.
+        if info.op == gl::QOP_CREATE_FENCE {
+            require_gl_display_live(proc, ofd_idx)?;
+            require_gl_current_for_tid(proc, ofd_idx, tid)?;
+        }
+    } else if info.op == gl::QOP_SURFACE_CAPABILITIES {
+        // Immutable limits do not expose context-local state and must
+        // be available to EGL configuration queries before MakeCurrent.
+        require_gl_display_live(proc, ofd_idx)?;
+        if dri_state(proc, ofd_idx)?
+            .gl_resources
+            .borrow()
+            .owner
+            .is_none_or(|owner| owner.cmdbuf_range.is_none())
+        {
+            return Err(Errno::EINVAL);
+        }
+        if info.in_buf_len != 0 || info.out_buf_len != 16 {
+            return Err(Errno::EINVAL);
+        }
+    } else {
+        require_gl_current_for_tid(proc, ofd_idx, tid)?;
+    }
+    // A query can consume errors or mutate renderer ownership. Prove
+    // the entire destination capacity before dispatch, even when a
+    // particular reply might contain no bytes. Zero-length buffers
+    // carry no pointer authority and must not inspect their address.
+    if info.out_buf_len != 0 {
+        probe_dri_process_pointer(
+            host, pid, u64::from(info.out_buf_ptr), info.out_buf_len as usize,
+        )?;
+    }
+    // Copy input from process memory through the host bridge,
+    // forward to host.gl_query, then copy the result back. The
+    // kernel never decodes the bytes — `op` is the only thing
+    // the host needs to dispatch.
+    let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
+    if info.in_buf_len > 0 {
+        if info.in_buf_ptr == 0 {
+            return Err(Errno::EFAULT);
+        }
+        let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
+        if rc < 0 {
+            return Err(Errno::EFAULT);
+        }
+    }
+    if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
+    let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, session);
+    // A host reply outside the advertised capacity is a failed
+    // protocol completion, not a short successful reply. Keep guest
+    // bytes intact instead of publishing a truncated result.
+    if written < 0 || written as usize > out_buf.len() {
+        return Err(Errno::EIO);
+    }
+    write_dri_bytes(host, pid, u64::from(info.out_buf_ptr), &out_buf[..written as usize])?;
+    Ok(())
+}
+
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
 /// quartet (CREATE / MAP / DESTROY / GEM_CLOSE), PRIME export/import, and
 /// GLES2 session ioctls. Unknown requests return `ENOSYS` so libdrm
@@ -1527,7 +1655,7 @@ fn handle_dri_ioctl(
     let pid = proc.pid as i32;
     // GEM/PRIME descriptions can cross process boundaries; a renderer and
     // its command memory belong to their creator's address-space generation.
-    if (gl::GLIO_INIT..=gl::GLIO_UPDATE_SURFACE).contains(&request)
+    if (gl::GLIO_INIT..=gl::GLIO_SUBMIT_QUERY).contains(&request)
         || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
         || request == DRM_IOCTL_WPK_IMPORT_IMAGE
     {
@@ -2422,35 +2550,10 @@ fn handle_dri_ioctl(
         }
 
         gl::GLIO_SUBMIT => {
-            if buf.len() < core::mem::size_of::<gl::GlSubmitInfo>() {
-                return Err(Errno::EINVAL);
-            }
-            let info: gl::GlSubmitInfo =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let (offset, length);
-            {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-                let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
-                let end = (info.offset as usize)
-                    .checked_add(info.length as usize)
-                    .ok_or(Errno::EINVAL)?;
-                if end > cmdbuf.len {
-                    return Err(Errno::EINVAL);
-                }
-                offset = info.offset as usize;
-                length = info.length as usize;
-            }
-            require_gl_current(proc, ofd_idx)?;
-            let submit_rc = host.gl_submit(pid, offset, length, gl_session_id(proc, ofd_idx)?);
-            if submit_rc < 0 {
-                return Err(Errno::from_u32((-submit_rc) as u32).unwrap_or(Errno::EIO));
-            }
-            let dri = dri_state_mut(proc, ofd_idx)?;
-            let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
-            let cmdbuf = gls.cmdbuf.as_mut().ok_or(Errno::EINVAL)?;
-            cmdbuf.submit_seq = cmdbuf.submit_seq.wrapping_add(1);
-            Ok(())
+            if buf.len() < core::mem::size_of::<gl::GlSubmitInfo>() { return Err(Errno::EINVAL); }
+            let info = unsafe { core::ptr::read_unaligned(buf.as_ptr().cast()) };
+            let session = gl_session_id(proc, ofd_idx)?;
+            submit_gl_prefix(proc, host, ofd_idx, info, session, current_tid_for_process(proc))
         }
         gl::GLIO_PRESENT => {
             {
@@ -2482,93 +2585,48 @@ fn handle_dri_ioctl(
                 },
                 _ => return Err(Errno::EINVAL),
             };
-            if info.in_buf_len > gl::MAX_QUERY_IN_LEN
-                || info.out_buf_len > gl::MAX_QUERY_OUT_LEN
-                || info.reserved != 0
-            {
-                return Err(Errno::EINVAL);
-            }
-            {
-                let dri = dri_state(proc, ofd_idx)?;
-                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
-                if !gls.initialized {
-                    return Err(Errno::EINVAL);
+            let session = gl_session_id(proc, ofd_idx)?;
+            query_gl_checked(proc, host, ofd_idx, info, session, current_tid_for_process(proc))
+        }
+        gl::GLIO_SUBMIT_QUERY => {
+            // Read the complete header once. No host call may reselect numeric
+            // fd/current ownership between phases; this borrowed Process/OFD,
+            // exact caller TID and session remain the authority throughout.
+            let (submit, query, input_result, result_offset) = match proc.pointer_width {
+                4 if buf.len() >= core::mem::size_of::<gl::GlSubmitQueryInfo>() => {
+                    let info: gl::GlSubmitQueryInfo = unsafe { core::ptr::read_unaligned(buf.as_ptr().cast()) };
+                    (info.submit, gl::GlQueryInfo64 { op: info.query.op,
+                        in_buf_ptr: u64::from(info.query.in_buf_ptr), in_buf_len: info.query.in_buf_len,
+                        out_buf_ptr: u64::from(info.query.out_buf_ptr), out_buf_len: info.query.out_buf_len,
+                        reserved: info.query.reserved, ..Default::default() }, info.result,
+                        core::mem::offset_of!(gl::GlSubmitQueryInfo,result))
+                }
+                8 if buf.len() >= core::mem::size_of::<gl::GlSubmitQueryInfo64>() => {
+                    let info: gl::GlSubmitQueryInfo64 = unsafe { core::ptr::read_unaligned(buf.as_ptr().cast()) };
+                    (info.submit, info.query, info.result, core::mem::offset_of!(gl::GlSubmitQueryInfo64,result))
+                }
+                _ => return Err(Errno::EINVAL),
+            };
+            if submit.length == 0 || input_result.completed_phase != 0 || input_result.submit_rc != 0
+                || input_result.query_rc != 0 || input_result.result_magic != 0 { return Err(Errno::EINVAL); }
+            let session = gl_session_id(proc, ofd_idx)?;
+            let tid = current_tid_for_process(proc);
+            let mut result = gl::GlSubmitQueryResult { completed_phase: gl::SUBMIT_QUERY_PHASE_SUBMIT,
+                result_magic: gl::SUBMIT_QUERY_REPLY_MAGIC, ..Default::default() };
+            match submit_gl_prefix(proc, host, ofd_idx, submit, session, tid) {
+                Err(error) => result.submit_rc = -(error as i32),
+                Ok(()) => {
+                    result.completed_phase = gl::SUBMIT_QUERY_PHASE_QUERY;
+                    // Query input is copied only now, after prefix publication.
+                    // Output probing still precedes all query effects.
+                    if let Err(error) = query_gl_checked(proc, host, ofd_idx, query, session, tid) {
+                        result.query_rc = -(error as i32);
+                    }
                 }
             }
-            let fence_query = matches!(info.op, gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE);
-            if fence_query {
-                if info.in_buf_len != 4 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
-                let dri = dri_state(proc, ofd_idx)?;
-                let state = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
-                if state.role != gl::SESSION_OBJECTS || state.owner_pid != pid
-                    || !dri.gl_resources.borrow().owner.is_some_and(|owner| {
-                        owner.pid == pid && owner.session_id == state.session_id
-                            && owner.role == gl::SESSION_OBJECTS && owner.native_live
-                            && owner.cmdbuf_range.is_some()
-                    })
-                {
-                    return Err(Errno::EACCES);
-                }
-                // Creation needs current-thread and live-display authority.
-                // A retained waiter may poll/release its session's fences after
-                // the creator and display root retire; neither creates work.
-                if info.op == gl::QOP_CREATE_FENCE {
-                    require_gl_display_live(proc, ofd_idx)?;
-                    require_gl_current(proc, ofd_idx)?;
-                }
-            } else if info.op == gl::QOP_SURFACE_CAPABILITIES {
-                // Immutable limits do not expose context-local state and must
-                // be available to EGL configuration queries before MakeCurrent.
-                require_gl_display_live(proc, ofd_idx)?;
-                if dri_state(proc, ofd_idx)?
-                    .gl_resources
-                    .borrow()
-                    .owner
-                    .is_none_or(|owner| owner.cmdbuf_range.is_none())
-                {
-                    return Err(Errno::EINVAL);
-                }
-                if info.in_buf_len != 0 || info.out_buf_len != 16 {
-                    return Err(Errno::EINVAL);
-                }
-            } else {
-                require_gl_current(proc, ofd_idx)?;
-            }
-            // A query can consume errors or mutate renderer ownership. Prove
-            // the entire destination capacity before dispatch, even when a
-            // particular reply might contain no bytes. Zero-length buffers
-            // carry no pointer authority and must not inspect their address.
-            if info.out_buf_len != 0 {
-                probe_dri_process_pointer(
-                    host, pid, u64::from(info.out_buf_ptr), info.out_buf_len as usize,
-                )?;
-            }
-            // Copy input from process memory through the host bridge,
-            // forward to host.gl_query, then copy the result back. The
-            // kernel never decodes the bytes — `op` is the only thing
-            // the host needs to dispatch.
-            let mut in_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.in_buf_len as usize];
-            if info.in_buf_len > 0 {
-                if info.in_buf_ptr == 0 {
-                    return Err(Errno::EFAULT);
-                }
-                let rc = host.proc_read_bytes(pid, u64::from(info.in_buf_ptr), &mut in_buf);
-                if rc < 0 {
-                    return Err(Errno::EFAULT);
-                }
-            }
-            if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
-                return Err(Errno::EINVAL);
-            }
-            let mut out_buf: alloc::vec::Vec<u8> = alloc::vec![0u8; info.out_buf_len as usize];
-            let written = host.gl_query(pid, info.op, &in_buf, &mut out_buf, gl_session_id(proc, ofd_idx)?);
-            // A host reply outside the advertised capacity is a failed
-            // protocol completion, not a short successful reply. Keep guest
-            // bytes intact instead of publishing a truncated result.
-            if written < 0 || written as usize > out_buf.len() {
-                return Err(Errno::EIO);
-            }
-            write_dri_bytes(host, pid, u64::from(info.out_buf_ptr), &out_buf[..written as usize])?;
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr().add(result_offset).cast(), result); }
+            // Phase failures travel through the ordinary successful InOut
+            // copyback. This outer success never accepts a GL mutation.
             Ok(())
         }
         _ => Err(Errno::ENOSYS),
@@ -25000,6 +25058,8 @@ mod tests {
         gl_unbind_calls: Vec<i32>,
         gl_unbind_sessions: Vec<u32>,
         gl_submit_sessions: Vec<u32>,
+        gl_transport_events: Vec<&'static str>,
+        gl_submit_write: Option<(usize, Vec<u8>)>,
         gl_query_sessions: Vec<u32>,
         gl_query_inputs: Vec<(u32, Vec<u8>, usize)>,
         gl_query_result: Option<i32>,
@@ -25174,6 +25234,8 @@ mod tests {
                 gl_unbind_calls: Vec::new(),
                 gl_unbind_sessions: Vec::new(),
                 gl_submit_sessions: Vec::new(),
+                gl_transport_events: Vec::new(),
+                gl_submit_write: None,
                 gl_query_sessions: Vec::new(),
                 gl_query_inputs: Vec::new(),
                 gl_query_result: None,
@@ -26070,10 +26132,15 @@ mod tests {
         }
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
             self.gl_submit_sessions.push(session_id);
+            self.gl_transport_events.push("submit");
+            if let Some((offset, bytes)) = self.gl_submit_write.take() {
+                self.proc_memory[offset..offset+bytes.len()].copy_from_slice(&bytes);
+            }
             self.gl_submit_rc
         }
         fn gl_query(&mut self, _pid: i32, op: u32, input: &[u8], out: &mut [u8], session_id: u32) -> i32 {
             self.gl_query_sessions.push(session_id);
+            self.gl_transport_events.push("query");
             self.gl_query_inputs.push((op, input.to_vec(), out.len()));
             out.fill(0);
             self.gl_query_result.unwrap_or(out.len() as i32)
@@ -58266,6 +58333,152 @@ impl HostIO for RelSymlinkMock {
         let mut bytes = [0u8; core::mem::size_of::<wasm_posix_shared::gl::GlQueryInfo>()];
         unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr().cast(), info); }
         bytes
+    }
+
+    // The literal request/layout also runs against the preceding implementation:
+    // genuine before controls must fail at dispatch, not at compilation.
+    fn compound_gl_bytes(query: wasm_posix_shared::gl::GlQueryInfo) -> [u8; 48] {
+        let mut bytes = [0u8; 48];
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        bytes[8..32].copy_from_slice(&glio_query_bytes(query));
+        bytes
+    }
+
+    #[test]
+    fn glio_compound_ordered_submit_then_query_one_protocol_result() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.gl_query_result = Some(12);
+        let mut bytes = compound_gl_bytes(gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr: 32, in_buf_len: 8, out_buf_ptr: 64, out_buf_len: 12,
+            ..Default::default() });
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,0x4b,&mut bytes),Ok(()));
+        assert_eq!(host.gl_submit_sessions,host.gl_query_sessions);
+        assert_eq!(host.gl_submit_sessions.len(),1);
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()),2);
+        assert_eq!(&bytes[36..44],&[0;8]);
+    }
+
+    #[test]
+    fn glio_compound_submit_failure_has_phase_reply_and_never_queries() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.gl_submit_rc = -(Errno::ENOMEM as i32);
+        let mut bytes = compound_gl_bytes(gl::GlQueryInfo { op: gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr: 32, in_buf_len: 8, out_buf_ptr: 64, out_buf_len: 12,
+            ..Default::default() });
+        let before=host.proc_memory.clone();
+        assert_eq!(sys_ioctl(&mut proc,&mut host,fd,0x4b,&mut bytes),Ok(()));
+        assert_eq!(host.gl_submit_sessions.len(),1);assert!(host.gl_query_sessions.is_empty());
+        assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()),1);
+        assert_eq!(i32::from_le_bytes(bytes[36..40].try_into().unwrap()),-(Errno::ENOMEM as i32));
+        assert_eq!(host.proc_memory,before);
+    }
+
+    #[test]
+    fn glio_compound_reads_query_input_only_after_prefix_and_same_session() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.gl_submit_write=Some((32,vec![1,2,3,4,5,6,7,8]));
+        let mut bytes=compound_gl_bytes(gl::GlQueryInfo { op:gl::QOP_BIND_FRAMEBUFFER,
+            in_buf_ptr:32,in_buf_len:8,out_buf_ptr:64,out_buf_len:12,..Default::default() });
+        sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes).unwrap();
+        assert_eq!(host.gl_transport_events,vec!["submit","query"]);
+        assert_eq!(host.gl_query_inputs[0].1,vec![1,2,3,4,5,6,7,8]);
+        assert_eq!(host.gl_submit_sessions,host.gl_query_sessions);
+        assert_eq!(u32::from_le_bytes(bytes[44..48].try_into().unwrap()),gl::SUBMIT_QUERY_REPLY_MAGIC);
+    }
+
+    #[test]
+    fn glio_compound_query_validation_and_host_failure_preserve_one_consumed_prefix() {
+        use wasm_posix_shared::gl;
+        for failure in 0..6 {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();
+            let mut query=gl::GlQueryInfo { op:gl::QOP_BIND_FRAMEBUFFER,
+                in_buf_ptr:32,in_buf_len:8,out_buf_ptr:64,out_buf_len:12,..Default::default() };
+            let error=match failure {
+                0=>{query.reserved=1;Errno::EINVAL},
+                1=>{query.out_buf_ptr=host.proc_memory.len() as u32-4;Errno::EFAULT},
+                2=>{query.in_buf_ptr=host.proc_memory.len() as u32-4;Errno::EFAULT},
+                3=>{query.out_buf_len=gl::MAX_QUERY_OUT_LEN+1;Errno::EINVAL},
+                4=>{host.gl_query_result=Some(-12);Errno::EIO},
+                _=>{host.gl_query_result=Some(13);Errno::EIO},
+            };
+            let before=host.proc_memory.clone();let mut bytes=compound_gl_bytes(query);
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes).unwrap();
+            assert_eq!(host.gl_submit_sessions.len(),1);
+            assert_eq!(host.gl_query_sessions.len(),if failure>=4 {1}else{0});
+            assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()),gl::SUBMIT_QUERY_PHASE_QUERY);
+            assert_eq!(i32::from_le_bytes(bytes[40..44].try_into().unwrap()),-(error as i32));
+            assert_eq!(host.proc_memory,before);
+            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert_eq!(dri_state(&proc,ofd).unwrap().gl.as_ref().unwrap().cmdbuf.unwrap().submit_seq,1);
+        }
+    }
+
+    #[test]
+    fn glio_compound_prefix_range_and_exact_current_tid_refuse_without_query() {
+        use wasm_posix_shared::gl;
+        for wrong_tid in [false,true] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();
+            let mut bytes=compound_gl_bytes(gl::GlQueryInfo {op:gl::QOP_GET_ERROR,
+                out_buf_ptr:64,out_buf_len:4,..Default::default()});
+            let error=if wrong_tid {
+                proc.add_thread(crate::process::ThreadInfo::new(2,0,0,0));
+                proc.blocked_retries.bind_task(2);Errno::EACCES
+            } else {bytes[..4].copy_from_slice(&u32::MAX.to_le_bytes());Errno::EINVAL};
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes).unwrap();
+            assert!(host.gl_submit_sessions.is_empty()&&host.gl_query_sessions.is_empty());
+            assert_eq!(u32::from_le_bytes(bytes[32..36].try_into().unwrap()),gl::SUBMIT_QUERY_PHASE_SUBMIT);
+            assert_eq!(i32::from_le_bytes(bytes[36..40].try_into().unwrap()),-(error as i32));
+        }
+    }
+
+    #[test]
+    fn glio_compound_rejects_short_empty_or_reused_header_before_effects() {
+        use wasm_posix_shared::gl;
+        for failure in 0..4 {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();
+            let mut bytes=compound_gl_bytes(gl::GlQueryInfo::default());
+            let size=if failure==0 {47}else{48};
+            if failure==1 {bytes[4..8].fill(0);}
+            if failure==2 {bytes[32..36].copy_from_slice(&1u32.to_le_bytes());}
+            if failure==3 {bytes[44..48].copy_from_slice(&gl::SUBMIT_QUERY_REPLY_MAGIC.to_le_bytes());}
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes[..size]),Err(Errno::EINVAL));
+            assert!(host.gl_transport_events.is_empty());
+        }
+    }
+
+    #[test]
+    fn glio_compound_wasm64_preserves_high_addresses_and_native_phase_offset() {
+        use wasm_posix_shared::gl;
+        for high in [0,1,2] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=8;
+            let mut info=gl::GlSubmitQueryInfo64 {submit:gl::GlSubmitInfo {offset:0,length:8},
+                query:gl::GlQueryInfo64 {op:gl::QOP_BIND_FRAMEBUFFER,in_buf_ptr:32,in_buf_len:8,
+                    out_buf_ptr:64,out_buf_len:12,..Default::default()},..Default::default()};
+            if high==1 {info.query.in_buf_ptr=0x1_0000_0020;}
+            if high==2 {info.query.out_buf_ptr=0x1_0000_0040;}
+            let mut bytes=[0u8;64];unsafe {core::ptr::write_unaligned(bytes.as_mut_ptr().cast(),info);}
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes).unwrap();
+            assert_eq!(host.gl_submit_sessions.len(),1);
+            assert_eq!(host.gl_query_sessions.len(),if high==0 {1}else{0});
+            assert_eq!(u32::from_le_bytes(bytes[48..52].try_into().unwrap()),gl::SUBMIT_QUERY_PHASE_QUERY);
+            assert_eq!(i32::from_le_bytes(bytes[56..60].try_into().unwrap()),if high==0 {0}else{-(Errno::EFAULT as i32)});
+            assert_eq!(u32::from_le_bytes(bytes[60..64].try_into().unwrap()),gl::SUBMIT_QUERY_REPLY_MAGIC);
+        }
+    }
+
+    #[test]
+    fn glio_compound_zero_query_spans_keep_no_pointer_authority() {
+        use wasm_posix_shared::gl;
+        let (mut proc,mut host,fd)=glio_query_preflight_fixture();
+        let mut bytes=compound_gl_bytes(gl::GlQueryInfo {op:gl::QOP_FINISH,
+            in_buf_ptr:u32::MAX,out_buf_ptr:u32::MAX,..Default::default()});
+        sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut bytes).unwrap();
+        assert_eq!(host.gl_transport_events,vec!["submit","query"]);
+        assert!(host.proc_write_calls.is_empty());
+        assert_eq!(&bytes[36..44],&[0;8]);
     }
 
     #[test]
