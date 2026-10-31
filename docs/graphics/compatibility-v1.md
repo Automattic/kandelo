@@ -10284,3 +10284,80 @@ test load is released after26b6; the other workspace's build remains
 active. Actual Brave feedback, full GUI/Start/focus/lifecycle acceptance,
 all-engine browser-memory, POSIX, benchmarks and the graphics inventory
 remain open.
+
+### Same-session terminal-count reproduction (2026-10-30)
+
+The user's Brave recording shows one Sway desktop growing from one Foot
+window to five and a Start menu appearing late. The recording lasts
+34.485s at2818x1580; sampled frames cannot establish the exact click time.
+The earlier six-minute fixed-one-client observations did not exercise
+this workload. Single-terminal responsiveness also remains a user report
+requiring repair, independently of scaling with client count.
+
+Headless Chromium diagnostic
+`terminal-count-new-native2x-terminals-te-1030-201938-7be5` completes in
+4m23s on unchanged normal1c16/5665, support2deb, at2880x1620/DPR2.
+One page/context/machine adds ordinary Foot clients with Ctrl+Return,
+then closes the extras with Ctrl+Shift+q. Actual process records and
+separate painted bodies/title ink establish counts1/2/3/4/5/1; they do
+not join rectangles to process IDs or prove every shell prompt ready.
+Sway101, SFWBar109 and original Foot110 survive. All1653 recorded DOM
+pointer events are trusted, with no overflow or recorded runtime errors.
+Both artifact collectors and guards pass: source, kernel, SDKs and all
+93 package owners/245 members remain unchanged.
+
+| Live Foot clients | Motion duration, seconds | Accepted-flip counter increase | Idle counter increase |
+| --- | --- | --- | --- |
+| 1 | 10.128 | 60 | 10 |
+| 2 | 10.165 | 31 | 11 |
+| 3 | 10.152 | 12 | 10 |
+| 4 | 10.151 | 20 | 10 |
+| 5 | 10.157 | 10 | 10 |
+| 1 after closing extras | 10.168 | 66 | 11 |
+
+Each motion phase offers200 ordinary pointer moves over10s. These are
+coarse accepted PAGE_FLIP observations, not frames per second or an
+input-to-pixel measurement. Recovery with the original client is evidence
+for investigating live workload cost; it does not disprove retention.
+The first menu is observed14.141s after mouse-down issuance; the later
+one-terminal click takes2.963s, and recovered-client observations take
+2.232/2.968s. Screenshot/poll/classifier overhead is included. Peer
+browser tests and user CPU/GPU activity make this explicitly nonquiet;
+there is no isolated performance or before/after improvement claim.
+
+Original attempts81a0/e53a remain failures. The first stops before a
+click because Start is not yet painted. The second rejects visible
+Start: its native height76 exceeds the copied DPR1 classifier's75
+limit. Fresh r3 scales only Start/menu geometric bounds with density,
+retaining native pixels and unchanged palette/glyph tests. Actual saved
+negative/positive screenshots pass calibration. A downsampling control
+fails glyph discrimination and is rejected. No product behavior changes.
+Raw evidence is under `.context/terminal-count-probe-r3/`, with original
+r1/r2 evidence preserved in their own directories.
+
+Separate CPU-only diagnostic
+`terminal-count-cpu-new-native2x-terminal-1030-202615-6608` completes in
+2m55s: workload, observer cleanup, after-collector and after-guard pass.
+It profiles actual1/3/5 clients with intermediate2/4 checks, using only
+owned target metadata, CPU profiling and scalar clock calibration.
+Selected workers require start/stop acknowledgements and successfully
+written/processed raw profiles. Eight workers arrive during the first
+Start phase, so selected-worker coverage does not establish whole-system
+coverage there. Worker-to-guest process attribution remains unavailable.
+Raw profile duration includes worker-count-dependent setup guard bands;
+whole-profile sample growth is not equal-workload CPU growth.
+Calibrated kernel stacks repeatedly include shared-mapping reconciliation
+and process-byte copying. This identifies a hot subsystem, not yet the
+cause of client-count scaling or an accepted performance repair.
+Raw profiles are in `.context/terminal-count-profile/`; read-only analysis
+is `.context/terminal-count-cpu-analysis.json` and its Markdown companion.
+
+CPU-image counter attempt b07f refuses before browser launch after an
+external workspace starts a new test. Fresh34e9 passes artifact checks
+but fails before installing a hook because worker resource entries omit
+the static module URL. Neither result establishes zero CPU-image usage.
+A subsequent diagnostic records external concurrent workload instead of
+requiring a static global job roster, while retaining exact source and
+artifact checks and refusing unknown jobs in the measured checkouts.
+Module discovery repair and actual counters remain unvalidated. No ABI,
+production implementation or package change is included in these probes.
