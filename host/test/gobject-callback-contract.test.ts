@@ -48,6 +48,17 @@ describe("actual GObject/libffi callback ABI boundaries",()=>{
  },30_000);
 });
 
+describe("actual GObject direct class-handler lifecycle",()=>{
+ it("preserves enum, int64 and double handlers, chained overrides and closure cleanup",async()=>{
+  const result=await runCentralizedProgram({programPath:program("class-handler-contract"),
+   argv:["/bin/gobject-class-handler-contract"],env:[],useDefaultRootfs:false,timeout:20_000});
+  expect(result.exitCode,`${result.stdout}\n${result.stderr}`).toBe(0);
+  expect(result.stdout).toContain("actual GObject 2.84.4:");
+  expect(result.stdout).toContain("chained defaults, ordinary userdata and six cleanup notifications pass");
+  expect(result.hostDiagnostics).toEqual([]);
+ },30_000);
+});
+
 describe("actual GObject property-binding lifecycle",()=>{
  for(const family of ["oneway","bidi","full","closures"])
   for(const teardown of ["unbind","source","target"]){

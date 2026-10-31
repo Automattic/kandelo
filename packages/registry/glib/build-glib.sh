@@ -78,6 +78,8 @@ if [ ! -d "$SRC_DIR" ]; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-dispatch-contract.patch"
     # Closure/weak cleanup retains the public two-argument notifier contract.
     patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-closure-notifier-contract.patch"
+    # Direct class handlers have signal parameters but no connected-userdata.
+    patch --fuzz=0 -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-class-handler-contract.patch"
 fi
 
 # Fresh build + install each run — stale objects would shadow config

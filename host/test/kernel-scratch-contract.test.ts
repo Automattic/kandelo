@@ -659,10 +659,6 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::queryToken(channel.pid, this.guestTidForChannel(channel))",
   ),
-  // Exact task/lease/deadline authority only; no process or kernel pointer.
-  reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleEpollPwait::kernel-export-direct-use::probe(channel.pid, this.guestTidForChannel(channel), waitToken, deadlineHandle ?? 0n)",
-  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#completeSuccessfulSpawnWithinKernelEntry::kernel-export-direct-use::publishSpawnChild(parentPid, childPid)",
   ),
@@ -1329,6 +1325,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This standalone Node source-control runner instantiates only its private interface-init fixture with an empty import object, so it receives no kernel or process Memory. check-interface-init-contract.sh links the callback, registration, invocation and source-extracted thunk translation units freestanding with --no-entry and only run_case/calls exports; it admits no unresolved imports. The instance owns only fixture-local storage and is never published to the host runtime.",
+  },
+  {
+    key: "packages/registry/glib/tests/class-handler/run.mjs::<module>::wasm-instance-authority::new WebAssembly.Instance(module,{})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone source-isolated callback control accepts only private import-free fixture modules, explicitly checks WebAssembly.Module.imports is empty, and instantiates each with an empty import object. The separate-TU freestanding build exports only run_case and provides no host, kernel or process Memory. Every instance and its fixture-local storage stay inside this Node control; normal real-library guest execution is tested separately.",
   },
   {
     key: "packages/registry/gtk3/tests/run-application-default-vfuncs.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(bytes, {})",

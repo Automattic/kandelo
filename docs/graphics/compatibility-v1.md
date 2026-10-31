@@ -47,8 +47,9 @@ The latest normal Sway Start-menu reproduction reaches painted categories,
 then SFWBar traps with a function-signature mismatch and exits 132 during
 Home/Right navigation, before ScummVM activation. The exact normal binary,
 process events, screenshots and stack are preserved in
-`.context/scummvm-start-repro-r1/`. Focused repair is investigating shared
-GLib class-handler dispatch. This does not yet explain ScummVM's separately
+`.context/scummvm-start-repro-r1/`. A shared GLib class-handler dispatch candidate is implemented with focused
+controls; normal rebuilt acceptance remains pending. This does not yet
+explain ScummVM's separately
 reported blank client or prove a working Start-menu launch. Normal rebuilt
 application acceptance, browser-memory, full CTS and the remaining inventory
 remain open.
@@ -15614,3 +15615,82 @@ The captured cleanup-window filesystem readings increase free space from
 readings are not summed with cache or directory size reports. Numeric ABI
 remains 56/3/17/21. Retired binaries require normal rematerialization or
 rebuilding before any new integration acceptance.
+
+
+### 2026-10-31: direct GLib class-handler dispatch candidate
+
+The preserved normal 8b menu trap maps to the enum signal-marshaler path.
+Pinned GLib 2.84.4 routes both `g_signal_new_class_handler()` and
+`g_signal_override_class_handler()` through an ordinary C closure, whose
+marshaler appends userdata. Direct class handlers have the instance and signal
+parameters without that trailing argument. The existing Kandelo exact-arity
+class/interface offset-vtable repair does not cover these two APIs. GTK Menu's
+`move-scroll` registration uses the direct class-handler API. This is a
+source-confirmed shared contract defect and a candidate explanation for the
+menu trap; its actual runtime indirect target was not captured.
+
+GLib revision 8 adds a private class-handler closure constructor which preserves
+GCClosure callback storage and ownership, and reuses the existing GValue and
+varargs exact-arity libffi dispatch. Ordinary connected closures and public
+signatures remain unchanged; no ABI increment or application bypass is added.
+Strict `--fuzz=0` application reproduces all three complete affected source
+files byte-for-byte. Both full patched pinned GObject translation units compile
+to Wasm objects using the retained normal sysroot; this is not library linking
+or package publication.
+
+Focused separate-TU source-extracted controls pass at `-O0` and `-O2`: 24 old
+class-handler calls produce specifically indirect-call signature mismatches,
+10 old ordinary/NULL cases pass, and all 34 repaired cases pass. New and
+override APIs cover enum, int64 and double returns through value/varargs routes.
+Their registry, GValue and exact-arity engine are explicit test doubles, not a
+real-library Wasm run. A separate real native GObject 2.86.3 reference passes
+12 emissions with chained overrides, ordinary userdata, six exactly-once
+closure cleanups and two weak notifications. Earlier fixture-only missing
+`guintptr`/`gint` declarations remain retained failed attempts, corrected before
+the passing runs; neither was a runtime defect.
+
+Evidence: mutable `.context/glib-class-handler-candidate-r1/proof.json`,
+`abi-control-r4.log`, `check-tus-r1.log` and `final-patch-check.log`. Custom
+C-marshaller representation conversion, body side effects and invocation-hint
+semantics remain an ordinary open GLib compatibility gap: this candidate uses
+signal GTypes, matching the existing vtable route, and does not establish
+arbitrary custom marshaller equivalence. Normal rebuilt GLib/upstream tests,
+guest lifecycle, browser memory and original menu acceptance remain unrun.
+No ScummVM or responsiveness improvement is established.
+
+
+### Root integration of the direct class-handler candidate, 2026-10-31
+
+The normal GObject test package now stages all seven GLib patches in recipe
+order and declares the new patch as an input. Revision 4 adds
+`gobject-class-handler-contract.wasm`, compiling the same real GObject
+reference C source against normal installed GLib/libffi. A prepared-product
+host test runs it through the centralized Node kernel and checks actual
+2.84.4 output, successful assertions, exit and diagnostics. It covers both
+class-handler APIs, enum/int64/double returns, emit/emitv, chained overrides,
+ordinary userdata, weak notifications and connected-closure cleanup. No
+upstream target is removed. This new normal guest case remains unrun until
+its normal package cohort is produced.
+
+Root's final standalone rerun retains all 24 specific old signature traps,
+ten compatible old cases and 34 repaired cases, plus the actual native
+GObject 2.86.3 reference. The runner now binds each fixture instance to an
+explicit local owner before extracting exports. Its narrowly reviewed
+ownership classification admits only the import-free standalone fixture.
+The first full repository ownership audit fails on that destructured owner
+and an obsolete epoll direct-export allowance. The latter call already uses
+`retryEntry.instance.exports` inside the existing kernel-entry gate; the
+unused allowance is removed, without changing runtime code or the audit.
+The final whole-graph ownership check passes in 96.0 seconds. This is one
+selected assertion with nine other file assertions intentionally unrun;
+raw first-failure and final JSON/console reports remain under primary
+`.context/main-merge-validation-r1/class-handler-audit-r{1,2}/`.
+Current evidence-class registry validation passes all 641 entries.
+
+Current-main normal host bundle/declarations and primary core SDK32/64
+builds also pass. Core SDK evidence is in
+`.context/compatibility-core-sdk-r1/`; these are not complete graphics SDK
+or combined consumer/conformance acceptance. The next normal producer is
+prepared in `.context/compatibility-normal-r1/`, with a six-package real
+GObject cohort and its new guest assertion before the larger desktop build.
+No new preview or normal guest/menu/rendering pass is yet claimed.

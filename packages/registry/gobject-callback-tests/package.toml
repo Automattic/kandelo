@@ -39,6 +39,11 @@ wasm = "gobject-binding-lifecycle.wasm"
 fork_instrumentation = "auto"
 
 [[outputs]]
+name = "gobject-class-handler-contract"
+wasm = "gobject-class-handler-contract.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
 name = "gobject-type"
 wasm = "gobject-type.wasm"
 fork_instrumentation = "auto"

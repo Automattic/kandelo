@@ -19,7 +19,7 @@ SRC_DIR="$WORK_DIR/source"
 kandelo_package_stage_primary_source gobject-callback-tests "$SRC_DIR" "$WORK_DIR"
 # Compile tests from the same patched source contract as the installed library.
 # Do not rebuild GLib or alter any assertions, skip list or test selection.
-for patch_name in giomodule-no-dbus-builtins wasm-callback-signatures wasm-credentials wasm-interface-init-contract wasm-closure-dispatch-contract wasm-closure-notifier-contract; do
+for patch_name in giomodule-no-dbus-builtins wasm-callback-signatures wasm-credentials wasm-interface-init-contract wasm-closure-dispatch-contract wasm-closure-notifier-contract wasm-class-handler-contract; do
     patch --fuzz=0 --batch -d "$SRC_DIR" -p1 < "$REPO_ROOT/packages/registry/glib/src/$patch_name.patch"
 done
 TEST_DIR="$SRC_DIR/gobject/tests"
@@ -53,6 +53,12 @@ done
 "${ARCH}posix-cc" -pthread "$WORK_DIR/binding-contract.o" "$WORK_DIR/binding-callbacks.o" \
     "${libs[@]}" -o "$WORK_DIR/gobject-binding-lifecycle.wasm"
 install_local_binary gobject-callback-tests "$WORK_DIR/gobject-binding-lifecycle.wasm" gobject-binding-lifecycle.wasm
+# The same reference case also runs against Kandelo's real installed GLib:
+# direct class handlers, chained overrides, ordinary userdata and cleanup.
+"${ARCH}posix-cc" "${cc_flags[@]}" \
+    "$REPO_ROOT/packages/registry/glib/tests/class-handler/native-gobject.c" \
+    "${libs[@]}" -o "$WORK_DIR/gobject-class-handler-contract.wasm"
+install_local_binary gobject-callback-tests "$WORK_DIR/gobject-class-handler-contract.wasm" gobject-class-handler-contract.wasm
 for name in type basic-signals signals closure defaultiface dynamictype accumulator object references signal-handler; do
     sources=("$TEST_DIR/$name.c")
     case "$name" in
