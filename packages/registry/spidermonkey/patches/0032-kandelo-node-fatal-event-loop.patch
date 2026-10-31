@@ -1,0 +1,78 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -3882,6 +3882,8 @@
+ // wheel had no caller, so any setTimeout(fn, ms>0) never fired. Returns the
+ // number of timers that fired this pass; *nextDelayMs is the ms until the next
+ // pending timer (-1 when none pending).
++static bool IsKandeloNodeMode();
++
+ static int KandeloRunDueTimers(JSContext* cx, int64_t* nextDelayMs) {
+   *nextDelayMs = -1;
+   RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
+@@ -3899,6 +3901,12 @@
+       if (rval.isNumber()) {
+         fired = int(rval.toNumber());
+       }
++    } else if (IsKandeloNodeMode()) {
++      // A thrown timer callback is an uncaught exception, not a completed
++      // callback. Report it before leaving the Node event loop.
++      AutoReportException report(cx);
++      GetShellContext(cx)->exitCode = EXIT_FAILURE;
++      return fired;
+     } else {
+       JS_ClearPendingException(cx);
+     }
+@@ -3916,12 +3924,17 @@
+           *nextDelayMs = int64_t(d);
+         }
+       }
++    } else if (IsKandeloNodeMode()) {
++      AutoReportException report(cx);
++      GetShellContext(cx)->exitCode = EXIT_FAILURE;
+     } else {
+       JS_ClearPendingException(cx);
+     }
+   }
+   return fired;
+ }
++
++[[nodiscard]] static bool ReportUnhandledRejections(JSContext* cx);
+ 
+ static void RunShellJobs(JSContext* cx) {
+   ShellContext* sc = GetShellContext(cx);
+@@ -3935,6 +3948,13 @@
+     if (sc->quitting) {
+       return;
+     }
++    if (IsKandeloNodeMode()) {
++      // Check at the microtask checkpoint, after same-turn rejection handlers
++      // have run. Waiting until every handle/timer drains can wait forever.
++      AutoReportException report(cx);
++      if (!ReportUnhandledRejections(cx)) sc->exitCode = EXIT_FAILURE;
++      if (sc->exitCode) return;
++    }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).
+     bool ranTasks = MaybeRunFinalizationRegistryCleanupTasks(cx);
+@@ -3945,7 +3965,7 @@
+     int64_t nextTimerDelay = -1;
+     int ranTimers = KandeloRunDueTimers(cx, &nextTimerDelay);
+     bool timersPending = nextTimerDelay >= 0;
+-    if (sc->quitting) {
++    if (sc->quitting || (IsKandeloNodeMode() && sc->exitCode)) {
+       return;
+     }
+ 
+@@ -14722,7 +14742,11 @@
+      * tasks before the main thread JSRuntime is torn down. Drain after
+      * uncaught exceptions have been reported since draining runs callbacks.
+      */
+-    RunShellJobs(cx);
++    // SpiderMonkey's standalone shell drains after a script failure. Node's
++    // default uncaught-exception path exits immediately, including when user
++    // timers, I/O or subprocess watches remain. Use the existing Node
++    // finalizer below to deliver exit once with the failure status.
++    if (!IsKandeloNodeMode() || (!result && !sc->exitCode)) RunShellJobs(cx);
+ 
+     // Only if there's no other error, report unhandled rejections.
+     if (!result && !sc->exitCode) {

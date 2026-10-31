@@ -55,3 +55,8 @@ fixes should be considered for upstreaming.
   the compilation origin of a wrapped script, keeping its first user line
   at line one, and uses the existing Node module metadata for ESM source
   URLs. Module registry keys retain their underlying filesystem paths.
+
+- `0032-kandelo-node-fatal-event-loop.patch`: exits Node's default fatal
+  path without draining active timers or I/O, checks unhandled rejections
+  after each microtask checkpoint, and reports timer callback exceptions.
+  The standalone engine shell keeps its existing drain policy.

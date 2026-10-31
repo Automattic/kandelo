@@ -57,8 +57,12 @@ particular:
 - Streams, Fetch networking and process lifecycle need broader upstream
   coverage. Shared natural exit now has a shell teardown hook for files and eval,
   including queued work and fatal status. File/eval/ESM regressions pass
-  on the Node host and all three browser engines. beforeExit,
-  uncaughtException and complete unhandled-rejection policy remain gaps.
+  on the Node host and all three browser engines. Default fatal exceptions
+  now stop live timer/I/O work, unhandled rejections are checked after the
+  microtask checkpoint, and timer/ESM failures retain their thrown values.
+  Ten-program rebuilt regressions pass on all four hosts, including live
+  child I/O and nonfatal controls. beforeExit, custom uncaughtException
+  and unhandledRejection policy, and complete timer ordering remain gaps.
 
 - CommonJS entries publish their module identity before children execute.
   Explicit ESM entries use the native parser/linker and module graph, with

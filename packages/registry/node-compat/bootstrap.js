@@ -6129,8 +6129,10 @@ function _runEsmMain(filename) {
         () => { _esmMainPending = false; },
         failure => {
             _esmMainPending = false;
-            console.error(_formatThrownFailure(failure));
-            process.exitCode = 1;
+            // A failed entry graph is fatal even with live timers or I/O.
+            // Preserve the thrown value for the engine's rejection checkpoint;
+            // merely assigning exitCode would wait for all handles to drain.
+            throw failure;
         },
     );
 }
