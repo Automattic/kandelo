@@ -28,6 +28,38 @@ follow-up; no missing API is reclassified as a platform boundary.
 
 ## Latest desktop checkpoint, 2026-10-31
 
+The active goal now prioritizes complete graphics/desktop compatibility.
+Start-menu ScummVM launch/rendering and SFWBar failures come first;
+standalone performance experiments are deferred, with their evidence
+preserved. Reviewable progress is on draft
+[PR #1601](https://github.com/Automattic/kandelo/pull/1601). Numeric program
+ABI remains 56, host 3 / GL table 17 / fork 21.
+
+All 25 prior preview servers, including 5682, are intentionally retired at
+the user's request. There is **no currently available preview**. Old build
+products are deleted; sources and recorded evidence remain. The captured
+cleanup window recovers 182.9 GiB of filesystem free space, leaving about
+219 GiB. The supported cache collector separately reports 31.3 GiB removed;
+these measurements are not added together. One current SDK/toolchain is
+retained. Exact cleanup evidence is under `.context/build-retirement-r1/`.
+
+The latest normal Sway Start-menu reproduction reaches painted categories,
+then SFWBar traps with a function-signature mismatch and exits 132 during
+Home/Right navigation, before ScummVM activation. The exact normal binary,
+process events, screenshots and stack are preserved in
+`.context/scummvm-start-repro-r1/`. Focused repair is investigating shared
+GLib class-handler dispatch. This does not yet explain ScummVM's separately
+reported blank client or prove a working Start-menu launch. Normal rebuilt
+application acceptance, browser-memory, full CTS and the remaining inventory
+remain open.
+
+Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` has been fetched.
+Integration is prepared but not yet performed. The paragraphs below and
+subsequent dated entries preserve historical checkpoints, artifact identities
+and their originally observed availability; none reinstates a retired URL.
+
+### Historical performance checkpoint, 2026-10-31
+
 The desktop work remains in draft
 [PR #1601](https://github.com/Automattic/kandelo/pull/1601), stacked on the
 cage/sway landing. The current frozen normal preview is
