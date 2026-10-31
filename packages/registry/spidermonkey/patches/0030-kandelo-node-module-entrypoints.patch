@@ -1,6 +1,6 @@
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -2065,10 +2065,17 @@
+@@ -2065,10 +2065,18 @@
                     strlen(source.get()), JS::SourceOwnership::Borrowed)) {
      return false;
    }
@@ -8,7 +8,8 @@
 +  if (!script) return false;
 +  // A filename in CompileOptions alone does not register a referring script.
 +  // The native module loader uses this private record for relative import().
-+  RootedString path(cx, NewStringCopyUTF8(cx, filename.get()));
++  RootedString path(cx, JS_NewStringCopyUTF8N(
++      cx, JS::UTF8Chars(filename.get(), strlen(filename.get()))));
 +  if (!path) return false;
 +  RootedObject info(cx, js::CreateScriptPrivate(cx, path));
 +  if (!info) return false;
@@ -21,7 +22,7 @@
    args.rval().set(rval);
    return true;
  }
-@@ -14329,8 +14336,12 @@
+@@ -14329,8 +14337,12 @@
      return false;
    }
  
@@ -36,7 +37,7 @@
    }
  
    MultiStringRange filePaths = op->getMultiStringOption('f');
-@@ -14731,9 +14742,9 @@
+@@ -14731,9 +14743,9 @@
        }
      }
  
