@@ -1100,9 +1100,14 @@ const auditAllowances: AuditAllowance[] = [
     why: "The module captures only the native buffer getter for genuine Memory authentication; no Memory instance or view is retained here.",
   },
   {
-    key: "host/src/process-snapshot-comparator.ts::currentBufferShape::kernel-buffer-escape::intrinsicApply(intrinsicSharedBufferByteLength, buffer, [])",
+    key: "host/src/process-snapshot-comparator.ts::currentBufferShape::kernel-view::new IntrinsicUint8Array(buffer)",
     disposition: "kernel-read",
-    why: "The captured native byteLength getter observes only the buffer brand and scalar committed size. This synchronous helper returns scalar metadata, never the buffer.",
+    why: "The captured native Memory getter authenticates this backing before the ephemeral base-class view is constructed. The view only measures the native shared span, is never cached or returned, and performs no copy or write.",
+  },
+  {
+    key: "host/src/process-snapshot-comparator.ts::currentBufferShape::kernel-view-escape::intrinsicApply(intrinsicTypedArrayByteLength, view, [])",
+    disposition: "kernel-read",
+    why: "Only the captured native typed-array length getter observes this synchronous local view. The helper returns scalar shape metadata without retaining the view, buffer or Memory, including when no global SharedArrayBuffer constructor exists.",
   },
   {
     key: "host/src/process-snapshot-comparator.ts::lookupComparisonMemoryShape::kernel-memory-escape::intrinsicApply(intrinsicWeakMapGet, memoryShapes, [memory])",

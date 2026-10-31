@@ -11056,3 +11056,72 @@ all prior32 variant assertions. The first expanded fixture attempted an
 own property on non-extensible native backing and failed before exercising
 the repair; its original log remains. The corrected fixture poisons the
 prototype length accessor instead and preserves the intended assertion.
+
+
+### Zero-build follow-up: repaired helper in three engines (2026-10-31)
+
+Committed helper `e63a86dd5d8a99d4b4fbbc7ebfe6dd6856855d04` is served by a
+short-lived minimal Vite source server on5670, separate from the immutable
+user preview. It has no application plugins or dependency crawl and loads
+no kernel, program, package or image. The same16 cases and per-invocation
+costs run serially in fresh headless Chromium153.0.8010.12, Firefox155.0
+and WebKit26.6. Each worker completes all16 checked cases with native
+comparison available. WebKit records the SharedArrayBuffer global as
+undefined while actual native shared memories and comparisons succeed.
+No guest buffers or views cross to the page; only bounded scalar reports do.
+The temporary server is stopped with exit0 before further source edits.
+
+| Equal aligned18.7MB scan/invocation, median ms/call | Previous exact JS fragment | Current native invocation |
+|---|---:|---:|
+| Chromium | 1.96 | 0.53 |
+| Firefox | 2.17 | 0.55 |
+| WebKit | 2.50 | 0.63 |
+
+These are NONQUIET operation observations, with all native per-call
+lookup/instance/export costs included. They exclude common range/provider
+proof, changed-case copying/backing refresh and native reclamation, and
+remain separate from application and destination comparisons. Clock probes
+observe minimum positive ticks of0.005ms in Chromium and0.020ms in Firefox;
+WebKit's4096 probes observe no positive tick, and its batched timings are
+coarse. No safe small-buffer crossover threshold is inferred from this run.
+
+Original reports remain under `.context/perf-lab-browser-r2/results-r1/`:
+Chromium `5940fbe727a4c0a6ad1984baf00a09e895bc8ed927a8abb1c288959d22c9e791`,
+Firefox `8b26985e8482c475576c065782d1a89482602cfaebdccf9e5ff3a3f0f0674a90`,
+WebKit `fe2cb25d668f4e8d11c5b3d7303c05337f5bd2bf5272fbcc356c3f4b15e60fd5`.
+Before/after source/input records match byte-for-byte at SHA256
+`a60f3b85f3b1262bf42e15e513357d164da1ab7ec115786bfbb51bc879f78271`.
+Raw canonical browser launch argv, observed transformed-module response
+identities and all round results remain adjacent. This command performs no
+SDK/kernel/program/image build; ordinary Vite TypeScript transformation is
+part of the diagnostic source server.
+
+The aggregate command still exits1 because removing the owned Firefox
+home fails with ENOTEMPTY, even after bounded filesystem retries. A later
+explicit cleanup attempt records EACCES on its Downloads directory; both
+owned residual directories and errors remain visible. All browser context
+and process close acknowledgements are successful, and no browser remains
+running. No green aggregate or browser-memory/lifecycle acceptance is
+claimed from these operation observations. The initial wrapper invocation
+also exits2 before launching anything because Nix does not propagate its
+private release environment variable; the corrected command supplies it
+through `scripts/dev-shell.sh env`, without changing browser flags or test
+cases. The original r1 WebKit failure remains preserved.
+
+Current helper correctness is supported by the complete5-case native test
+file and these48 browser scan cases. Broader normal-kernel, source-authority,
+three-engine memory, conformance and destination performance gates remain
+separate requirements. Other buffer authentication helpers still require
+normal WebKit runtime coverage; this result proves only this helper repair.
+
+Follow-up source/runtime validation completes in132.06s: all100 cases
+across the comparator, public scratch and static contract files pass,
+with0 skips and0 unloaded files. The full repository memory-authority
+walk itself takes111.926s. Its removed shared-buffer-getter allowance is
+replaced by two exact reviewed sites for the ephemeral read-only view and
+captured scalar length read; inventory, source scope and assertions remain
+unchanged. This runs from source against already prepared compatible
+fixtures and does not rebuild SDK/kernel/packages/images. Log:
+`.context/perf-lab-browser-r2/source-contract-and-focused.log`.
+No full normal acceptance or broader WebKit runtime claim is carried
+forward from this focused pass.
