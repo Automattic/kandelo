@@ -15416,3 +15416,57 @@ target Wasm, normal artifacts and published preview inputs remain retained;
 Cargo file-length reports are not additional physical-reclamation totals.
 The corrected frozen 8b normal producer is still running; no port 5682
 availability or combined acceptance is claimed by these diagnostics.
+
+### Matched alias-count screen and authenticated caller, 2026-10-31
+
+Four new normal C processes use one freshly compiled binary and unchanged b6
+SDK/kernel. All first allocate two identical writable shared aliases and verify
+both directions and full contents. Solo cases then normally unmap the second
+alias before the body; dual cases keep both. Both modes therefore reach the
+same peak Wasm allocation. Every body uses untouched default stdio buffering,
+the same seeded 8 MiB file and exactly the same observed source requests.
+
+| Fixed execution order | Live aliases | Effective buffer | Read / Readv requests | Instrumented body ms |
+| --- | ---: | ---: | ---: | ---: |
+| Solo 1 | 1 | 1,024 | 8,191 / 2 | 273.935 |
+| Dual 1 | 2 | 1,024 | 8,191 / 2 | 4,235.414 |
+| Dual 2 | 2 | 1,024 | 8,191 / 2 | 4,214.687 |
+| Solo 2 | 1 | 1,024 | 8,191 / 2 | 348.252 |
+
+All four return exactly 8 MiB with the same checked bytes, records, checksum,
+EOF, live alias contents and zero cleanup errors. Raw logs show the second
+mapping's successful unmap before the first source read only in solo cases.
+Normal host destruction and exact worker termination complete in each case.
+Source supports the existing single-current-observer skip after unmapping;
+dual remains eligible for comparisons. These instrumented NONQUIET observations
+isolate a substantial shared-mapping mechanism with matched file IO, but do not
+measure comparator CPU/calls/bytes, quiet performance or application benefit.
+No scan policy changes. Program SHA256
+`cd68c045926fab572bd25aadbc0b5b7800ad1477f6d5252681842cc66b801c6d`;
+report `.context/stdio-shared-scan-mechanism-r1/results-r1/report.json`, SHA256
+`1d239ff6b8764c8579625f811efa8042e35a41c2052a2c7d40701e5edb837197`.
+Targeted sixteen normal inputs and four frozen helpers remain unchanged;
+this screen does not constitute a fresh whole-product collector run.
+
+The third headless caller diagnostic now captures one exact pending SFWBar
+Read1024 before boundary synchronization. Its trusted process/thread join,
+actual channel and request identify PID/TID 109 and numeric fd 14. The paused
+guest's observed WebAssembly script yields 35,599,255 static bytes whose SHA256
+exactly equals the normal SFWBar owner:
+`7f0e50a3c8e12527e9337b9ff394c5135fb789d603d5e3a3b07cc5b8ba76cde6`.
+The chain includes __stdio_read, __uflow, getdelim, getline, xcursor_load_theme,
+wl_cursor_theme_load and GDK cursor scaling. This confirms one libc-buffered
+cursor-theme read; it does not attribute the full read population, identify
+the open file description or establish that all reads use fread.
+
+R1's actual worker-query rejection and R2's empty-frame-URL misclassification
+remain preserved. R3 joins frame script IDs to observed script language instead
+of inferring language from a URL. Sixteen source controls, exact unqueried and
+worker-query HTTP admission, actual workload, fresh whole 93-owner/245-member
+artifact collection and after-guard pass. Guest then kernel resume ACKs, painted
+menu and same-page normal Bare shell replacement complete without errors.
+Named job `stdio-read-caller-r3-1031-182808-825a` ends 0; report SHA256
+`390fea75a7a4d2cdfb2d41b6647d497d8f307bb29809b2f9f4c0b6fbf82b7974`,
+`.context/stdio-read-caller-capture-r3/cohorts/candidate-stdio-read-caller-capture-r3/chromium/sway/report.json`.
+The intrusive pauses are caller evidence, never latency or CPU-rate evidence.
+Production sources, published preview and numeric ABI 56 remain unchanged.
