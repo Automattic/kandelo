@@ -29,3 +29,13 @@ hostname formatting by `url.format`.
 
 This supplies `URL`, `URLSearchParams`, and the `stream/web` classes. The separate legacy `url.parse`,
 `url.format`, and `url.resolve` APIs remain Kandelo's compatibility code.
+
+`stream-state.cjs` is the Fetch embedding's access to this pinned stream
+implementation's real disturbance/lock/controller state. It uses captured
+intrinsic brand getters and checks the live `_disturbed` slot's layout;
+there is no second consumption flag in Response. These helpers are not
+exported by the public `stream/web` module. Regeneration rejects a stream
+version change until this boundary and its state/cancellation/BYOB tests
+are reviewed together. Public default-stream tee shares object chunks;
+Fetch composes it with the engine graph clone before either branch can
+expose a chunk. Byte-stream tee uses the library's native byte-copy path.

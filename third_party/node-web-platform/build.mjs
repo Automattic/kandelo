@@ -3,8 +3,12 @@ import { build } from 'esbuild';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('.', import.meta.url));
+// stream-state.cjs reads this implementation's actual internal slots. Upgrade
+// it and the disturbance/byte-stream contract tests together with the package.
+const streamVersion = JSON.parse(readFileSync(new URL('node_modules/web-streams-polyfill/package.json', import.meta.url), 'utf8')).version;
+if (streamVersion !== '4.3.0') throw Error('Review the stream-state boundary before upgrading Web Streams');
 const result = await build({
-  stdin: { contents: 'module.exports = { ...require("whatwg-url"), domainToUnicode: require("tr46").toUnicode, streams: require("web-streams-polyfill") };', resolveDir: root },
+  stdin: { contents: 'module.exports = { ...require("whatwg-url"), domainToUnicode: require("tr46").toUnicode, streams: require("web-streams-polyfill"), streamState: require("./stream-state.cjs") };', resolveDir: root },
   bundle: true, write: false, format: 'cjs', platform: 'neutral', target: 'es2022',
   legalComments: 'inline', charset: 'utf8', mainFields: ['main'],
 });

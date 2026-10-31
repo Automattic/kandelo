@@ -5794,8 +5794,48 @@ var require_ponyfill = __commonJS({
   }
 });
 
+// third_party/node-web-platform/stream-state.cjs
+var require_stream_state = __commonJS({
+  "third_party/node-web-platform/stream-state.cjs"(exports2, module2) {
+    var { ReadableStream, ReadableByteStreamController } = require_ponyfill();
+    var call = Function.prototype.call.bind(Function.prototype.call);
+    var descriptor = Object.getOwnPropertyDescriptor;
+    var lockedGetter = descriptor(ReadableStream.prototype, "locked").get;
+    var byteSizeGetter = descriptor(ReadableByteStreamController.prototype, "desiredSize").get;
+    function isReadable(value) {
+      try {
+        call(lockedGetter, value);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    function isLocked(value) {
+      return call(lockedGetter, value);
+    }
+    function isDisturbed(value) {
+      call(lockedGetter, value);
+      const state = descriptor(value, "_disturbed");
+      if (!state || typeof state.value !== "boolean") {
+        throw new TypeError("Unsupported readable stream disturbance layout");
+      }
+      return state.value;
+    }
+    function isByteStream(value) {
+      call(lockedGetter, value);
+      try {
+        call(byteSizeGetter, value._readableStreamController);
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    module2.exports = { isReadable, isLocked, isDisturbed, isByteStream };
+  }
+});
+
 // <stdin>
-module.exports = { ...require_whatwg_url(), domainToUnicode: require_tr46().toUnicode, streams: require_ponyfill() };
+module.exports = { ...require_whatwg_url(), domainToUnicode: require_tr46().toUnicode, streams: require_ponyfill(), streamState: require_stream_state() };
 
 return module.exports;
 }

@@ -280,6 +280,7 @@ host/test/node-pcm-driver.test.ts	source-only
 host/test/node-platform-io-uid-gid.test.ts	source-only
 host/test/node-positioned-io.test.ts	source-only
 host/test/node-process-teardown-ordering.test.ts	source-only
+host/test/node-response-body.test.ts	source-only
 host/test/node-rootfs-export.test.ts	prepared-product
 host/test/node-rootfs-lazy-cohort.test.ts	prepared-product
 host/test/node-text-decoder.test.ts	source-only

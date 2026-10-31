@@ -6036,7 +6036,130 @@ if (typeof globalThis.ByteLengthQueuingStrategy === 'undefined')
     globalThis.ByteLengthQueuingStrategy = _streamWeb.ByteLengthQueuingStrategy;
 if (typeof globalThis.CountQueuingStrategy === 'undefined')
     globalThis.CountQueuingStrategy = _streamWeb.CountQueuingStrategy;
-if (typeof globalThis.Blob === 'undefined') globalThis.Blob = class Blob {};
+// Shared byte ownership for Blob and Fetch bodies. Byte inputs are copied at
+// construction; reading a returned ArrayBuffer never exposes stored bytes.
+const _nodeBodyData = (() => {
+    const Bytes = Uint8Array;
+    const proto = Object.getPrototypeOf(Bytes.prototype);
+    const get = (object, name) => Function.prototype.call.bind(Object.getOwnPropertyDescriptor(object, name).get);
+    const typedName = get(proto, Symbol.toStringTag), typedBuffer = get(proto, 'buffer');
+    const typedOffset = get(proto, 'byteOffset'), typedLength = get(proto, 'byteLength');
+    const dataBuffer = get(DataView.prototype, 'buffer'), dataOffset = get(DataView.prototype, 'byteOffset');
+    const dataLength = get(DataView.prototype, 'byteLength'), abLength = get(ArrayBuffer.prototype, 'byteLength');
+    const isView = ArrayBuffer.isView, slice = Function.prototype.call.bind(Bytes.prototype.slice);
+    const blobs = new WeakMap();
+    function blobError(message, code = 'ERR_INVALID_ARG_TYPE') {
+        const error = new TypeError(message); error.code = code; throw error;
+    }
+    function copyBytes(value) {
+        if (isView(value)) {
+            const typed = typedName(value) !== undefined;
+            return slice(new Bytes(typed ? typedBuffer(value) : dataBuffer(value),
+                typed ? typedOffset(value) : dataOffset(value), typed ? typedLength(value) : dataLength(value)));
+        }
+        let buffer = false;
+        try { abLength(value); buffer = true; } catch (_) { /* Not an ArrayBuffer. */ }
+        return buffer ? slice(new Bytes(value)) : null;
+    }
+    function byteChunk(value) {
+        if (typedName(value) !== 'Uint8Array') throw new TypeError('Body stream chunk must be a Uint8Array');
+        return new Bytes(typedBuffer(value), typedOffset(value), typedLength(value));
+    }
+    function stringBytes(value, nativeEndings = false) {
+        if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+        const text = String(value);
+        return new TextEncoder().encode(nativeEndings ? text.replace(/\r\n|\r/g, '\n') : text);
+    }
+    function options(value) {
+        if (value == null) return {};
+        if (typeof value !== 'object' && typeof value !== 'function') throw new TypeError('Options must be an object');
+        return value;
+    }
+    function type(value) {
+        if (typeof value === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+        const result = String(value);
+        return /[^\x20-\x7e]/.test(result) ? '' : result.toLowerCase();
+    }
+    function stream(bytes) {
+        let offset = 0;
+        return new _nodeWebPlatform.streams.ReadableStream({ type: 'bytes', pull(controller) {
+            const end = Math.min(offset + 65536, bytes.byteLength);
+            if (end > offset) controller.enqueue(slice(bytes, offset, end));
+            offset = end;
+            if (offset === bytes.byteLength) {
+                controller.close();
+                if (controller.byobRequest) controller.byobRequest.respond(0);
+            }
+        } });
+    }
+    function data(blob) {
+        const result = blobs.get(blob);
+        if (!result) blobError('Illegal Blob receiver', 'ERR_INVALID_THIS');
+        return result;
+    }
+    class Blob {
+        constructor(parts = [], init) {
+            if (init != null && typeof init !== 'object' && typeof init !== 'function') blobError('Blob options must be an object');
+            init = options(init);
+            let endings = init.endings;
+            if (typeof endings === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+            endings = endings === undefined ? 'transparent' : String(endings);
+            if (endings !== 'transparent' && endings !== 'native') blobError('Invalid Blob endings', 'ERR_INVALID_ARG_VALUE');
+            if (parts == null || (typeof parts !== 'object' && typeof parts !== 'function')) blobError('Blob parts must be a sequence');
+            const iterator = parts[Symbol.iterator];
+            if (typeof iterator !== 'function') blobError('Blob parts must be iterable');
+            const values = [];
+            let total = 0;
+            for (const part of { [Symbol.iterator]: () => iterator.call(parts) }) {
+                const blob = blobs.get(part);
+                const bytes = blob ? blob.bytes : copyBytes(part) ?? stringBytes(part, endings === 'native');
+                values.push(bytes); total += bytes.byteLength;
+            }
+            const bytes = new Bytes(total);
+            let offset = 0;
+            for (const part of values) { bytes.set(part, offset); offset += part.byteLength; }
+            blobs.set(this, { bytes, type: init.type === undefined ? '' : type(init.type) });
+        }
+        get size() { return data(this).bytes.byteLength; }
+        get type() { return data(this).type; }
+        async arrayBuffer() { return slice(data(this).bytes).buffer; }
+        async bytes() { return slice(data(this).bytes); }
+        async text() { return new TextDecoder().decode(data(this).bytes); }
+        stream() { return stream(data(this).bytes); }
+        textStream() {
+            const decoder = new TextDecoder();
+            return stream(data(this).bytes).pipeThrough(new _nodeWebPlatform.streams.TransformStream({
+                transform(bytes, controller) {
+                    const text = decoder.decode(bytes, { stream: true });
+                    if (text) controller.enqueue(text);
+                },
+                flush(controller) { const text = decoder.decode(); if (text) controller.enqueue(text); },
+            }));
+        }
+        slice(start = 0, end = undefined, contentType = '') {
+            const bytes = data(this).bytes, size = bytes.byteLength;
+            const index = value => {
+                if (typeof value === 'bigint') throw new TypeError('Cannot convert a BigInt to a number');
+                let n = Number(value);
+                if (Number.isNaN(n)) n = 0;
+                n = Math.max(-(2 ** 63), Math.min(2 ** 63 - 1, n));
+                // [Clamp] long long uses ties-to-even, not truncation.
+                const floor = Math.floor(n), fraction = n - floor;
+                n = fraction > 0.5 || (fraction === 0.5 && floor % 2 !== 0) ? floor + 1 : floor;
+                return n < 0 ? Math.max(size + n, 0) : Math.min(n, size);
+            };
+            return new Blob([bytes.subarray(index(start), end === undefined ? size : index(end))], { type: contentType });
+        }
+        get [Symbol.toStringTag]() { return 'Blob'; }
+    }
+    Object.defineProperty(Blob.prototype, Symbol.toStringTag, { value: 'Blob', configurable: true });
+    for (const name of ['size', 'type', 'slice', 'stream', 'textStream', 'text', 'arrayBuffer', 'bytes']) {
+        Object.defineProperty(Blob.prototype, name, { enumerable: true });
+    }
+    return { Blob, copyBytes, byteChunk, stringBytes, stream, options, blob: value => blobs.get(value) };
+})();
+if (typeof globalThis.Blob === 'undefined') globalThis.Blob = _nodeBodyData.Blob;
+_builtinModules['buffer'].Blob = globalThis.Blob;
 if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
 if (typeof globalThis.FormData === 'undefined') globalThis.FormData = class FormData {};
 if (typeof globalThis.Headers === 'undefined') globalThis.Headers = class Headers {};
@@ -6067,10 +6190,9 @@ if (typeof globalThis.crypto === 'undefined') {
     };
 }
 
-// structuredClone — Node 17+ global. Settings managers and other helpers
-// use it to deep-copy plain config objects. Falls back to JSON for the
-// JSON-safe values these consumers actually pass; will visibly fail on
-// non-JSON types (Date, Map, etc.) which we'd rather not silently mangle.
+// Legacy JSON-only fallback. Graphs and non-JSON types remain a compatibility
+// gap here. Response cloning uses the separate engine graph-clone boundary;
+// the global API still needs Web-object and transfer-list handling.
 if (typeof globalThis.structuredClone === 'undefined') {
     globalThis.structuredClone = function structuredClone(value) {
         return JSON.parse(JSON.stringify(value));
@@ -6322,8 +6444,7 @@ if (!console.group) {
 // WHATWG fetch + Headers/Response/Request/ReadableStream
 // ============================================================
 //
-// Modern HTTP SDKs (undici, @anthropic-ai/sdk,
-// the AWS SDK, etc.) call `fetch(url, { method:'POST', body, headers })`
+// HTTP clients call `fetch(url, { method:'POST', body, headers })`
 // and read the response via `await res.json()` or `res.body.getReader()`
 // (for streaming SSE). The transport uses the existing http/https modules;
 // response bodies use the same Web Streams classes as consumer-created streams.
@@ -6334,8 +6455,14 @@ if (!console.group) {
             this._map = new Map();
             if (init instanceof FetchHeaders) {
                 for (const [k, v] of init._map) this._map.set(k, v);
-            } else if (Array.isArray(init)) {
-                for (const [k, v] of init) this.append(k, v);
+            } else if (init != null && typeof init[Symbol.iterator] === 'function') {
+                for (const entry of init) {
+                    if (entry == null || (typeof entry !== 'object' && typeof entry !== 'function') ||
+                        typeof entry[Symbol.iterator] !== 'function') throw new TypeError('Header pair must be a sequence');
+                    const pair = Array.from(entry);
+                    if (pair.length !== 2) throw new TypeError('Header pair must contain two items');
+                    this.append(pair[0], pair[1]);
+                }
             } else if (init && typeof init === 'object') {
                 for (const k of Object.keys(init)) this.append(k, init[k]);
             }
@@ -6362,97 +6489,176 @@ if (!console.group) {
     // HTTP bodies and consumer-created streams must use the same class.
     // A start-only shim strands clients that wrap a body with a pull source.
     const WebReadableStream = _nodeWebPlatform.streams.ReadableStream;
+    const FormDataBody = globalThis.FormData;
 
-    class FetchResponse {
-        constructor(body, init = {}) {
-            this.status = init.status !== undefined ? init.status : 200;
-            this.statusText = init.statusText || '';
-            this.ok = this.status >= 200 && this.status < 300;
-            this.headers = init.headers instanceof FetchHeaders
-                ? init.headers : new FetchHeaders(init.headers);
-            this.url = init.url || '';
-            this.redirected = !!init.redirected;
-            this.type = init.type || 'basic';
-            this._bodyUsed = false;
-            this._buffered = null;     // Uint8Array, if body was given as bytes/string
-            this._stream = null;       // WebReadableStream, if body was given as a stream
-            if (body == null) {
-                /* empty */
-            } else if (body instanceof WebReadableStream) {
-                this._stream = body;
-            } else if (body instanceof Uint8Array) {
-                this._buffered = body;
-            } else if (body instanceof ArrayBuffer) {
-                this._buffered = new Uint8Array(body);
-            } else if (typeof body === 'string') {
-                this._buffered = new TextEncoder().encode(body);
-            } else {
-                this._buffered = new TextEncoder().encode(String(body));
-            }
-        }
-        get bodyUsed() { return this._bodyUsed; }
-        get body() {
-            if (this._stream) return this._stream;
-            if (this._buffered) {
-                const bytes = this._buffered;
-                this._stream = new WebReadableStream({
-                    start(c) { c.enqueue(bytes); c.close(); },
-                });
-                this._buffered = null;
-                return this._stream;
-            }
-            return null;
-        }
-        async arrayBuffer() {
-            if (this._bodyUsed) throw new TypeError('Body already used');
-            this._bodyUsed = true;
-            if (this._buffered) {
-                const b = this._buffered;
-                return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
-            }
-            if (this._stream) {
-                const reader = this._stream.getReader();
-                const parts = [];
-                let total = 0;
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    const u8 = value instanceof Uint8Array ? value : new Uint8Array(value);
-                    parts.push(u8);
-                    total += u8.byteLength;
+    const streamState = _nodeWebPlatform.streamState;
+    const streamPrototype = WebReadableStream.prototype;
+    const getReader = Function.prototype.call.bind(streamPrototype.getReader);
+    const tee = Function.prototype.call.bind(streamPrototype.tee);
+
+    // Fetch clones byte chunks before either tee branch can expose them. The
+    // standard public default-stream tee shares objects, so pair each chunk
+    // with its engine clone before teeing, then select one value per branch.
+    // Native byte-stream tee already copies buffers and preserves BYOB readers.
+    function cloneBody(stream) {
+        if (streamState.isByteStream(stream)) return tee(stream);
+        const reader = getReader(stream);
+        let controller;
+        const paired = new WebReadableStream({
+            start(value) { controller = value; },
+            async pull() {
+                const { value, done } = await reader.read();
+                if (done) { controller.close(); return; }
+                let copy;
+                try { copy = _nodeNative.cloneValue(value); }
+                catch (error) {
+                    controller.error(error);
+                    reader.cancel(error).catch(() => {});
+                    return;
                 }
-                const out = new Uint8Array(total);
-                let off = 0;
-                for (const p of parts) { out.set(p, off); off += p.byteLength; }
-                return out.buffer;
+                controller.enqueue([value, copy]);
+            },
+            cancel(reason) { return reader.cancel(reason); },
+        });
+        // A tee owns its original reader even after EOF/cancellation. Keeping
+        // this reader also forwards a source error to both branches promptly.
+        reader.closed.catch(error => controller.error(error));
+        return tee(paired).map((branch, index) => {
+            const branchReader = getReader(branch);
+            let branchController;
+            const selected = new WebReadableStream({
+                start(value) { branchController = value; },
+                async pull() {
+                    const { value, done } = await branchReader.read();
+                    if (done) branchController.close();
+                    else branchController.enqueue(value[index]);
+                },
+                cancel(reason) { return branchReader.cancel(reason); },
+            });
+            branchReader.closed.catch(error => branchController.error(error));
+            return selected;
+        });
+    }
+    const responseStates = new WeakMap();
+    function responseState(response) {
+        const state = responseStates.get(response);
+        if (!state) throw new TypeError('Illegal Response receiver');
+        return state;
+    }
+    function responseBody(response) { return responseState(response).body; }
+    function unusable(stream) {
+        return stream !== null && (streamState.isLocked(stream) || streamState.isDisturbed(stream));
+    }
+    async function consume(response) {
+        const stream = responseBody(response);
+        if (unusable(stream)) throw new TypeError('Body is unusable');
+        if (stream === null) return new Uint8Array(0);
+        const reader = getReader(stream);
+        const parts = [];
+        let total = 0;
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const bytes = _nodeBodyData.byteChunk(value);
+            parts.push(bytes);
+            total += bytes.byteLength;
+        }
+        const bytes = new Uint8Array(total);
+        let offset = 0;
+        for (const part of parts) { bytes.set(part, offset); offset += part.byteLength; }
+        return bytes;
+    }
+    class FetchResponse {
+        constructor(body = null, init = {}) {
+            init = _nodeBodyData.options(init);
+            let status = init.status;
+            if (status === undefined) status = 200;
+            status = Math.trunc(Number(status)) & 0xffff;
+            if (status < 200 || status > 599) throw new RangeError('Response status must be between 200 and 599');
+            if (body != null && (status === 204 || status === 205 || status === 304)) {
+                throw new TypeError('Response status cannot have a body');
             }
-            return new ArrayBuffer(0);
+            let statusText = init.statusText;
+            if (statusText === undefined) statusText = '';
+            if (typeof statusText === 'symbol') throw new TypeError('Cannot convert a Symbol value to a string');
+            statusText = String(statusText);
+            if (/[^\t\x20-\x7e\x80-\xff]/.test(statusText)) throw new TypeError('Invalid response status text');
+            const headers = new FetchHeaders(init.headers);
+            let stream = null, contentType = null;
+            if (body != null) {
+                if (streamState.isReadable(body)) {
+                    if (unusable(body)) throw new TypeError('Response body is disturbed or locked');
+                    stream = body;
+                } else {
+                    const blob = _nodeBodyData.blob(body);
+                    let bytes;
+                    if (blob) { bytes = blob.bytes; contentType = blob.type || null; }
+                    else {
+                        bytes = _nodeBodyData.copyBytes(body);
+                        if (bytes === null) {
+                            if (typeof FormDataBody === 'function' && body instanceof FormDataBody) {
+                                throw new TypeError('FormData body support is not implemented');
+                            }
+                            if (body instanceof _nodeWebPlatform.URLSearchParams) {
+                                bytes = _nodeBodyData.stringBytes(body.toString());
+                                contentType = 'application/x-www-form-urlencoded;charset=UTF-8';
+                            } else {
+                                bytes = _nodeBodyData.stringBytes(body);
+                                contentType = 'text/plain;charset=UTF-8';
+                            }
+                        }
+                    }
+                    stream = _nodeBodyData.stream(bytes);
+                }
+            }
+            if (contentType !== null && !headers.has('content-type')) headers.set('content-type', contentType);
+            responseStates.set(this, { body: stream, status, statusText, headers, url: '', redirected: false, type: 'default' });
         }
-        async text() {
-            const ab = await this.arrayBuffer();
-            return new TextDecoder('utf-8').decode(ab);
+        get status() { return responseState(this).status; }
+        get statusText() { return responseState(this).statusText; }
+        get ok() { const status = responseState(this).status; return status >= 200 && status < 300; }
+        get headers() { return responseState(this).headers; }
+        get url() { return responseState(this).url; }
+        get redirected() { return responseState(this).redirected; }
+        get type() { return responseState(this).type; }
+        get bodyUsed() {
+            const stream = responseBody(this);
+            return stream !== null && streamState.isDisturbed(stream);
         }
-        async json() {
-            const t = await this.text();
-            return JSON.parse(t);
-        }
-        async bytes() { return new Uint8Array(await this.arrayBuffer()); }
+        get body() { return responseBody(this); }
+        async arrayBuffer() { return (await consume(this)).buffer; }
+        async bytes() { return consume(this); }
+        async text() { return new TextDecoder('utf-8').decode(await consume(this)); }
+        async json() { return JSON.parse(new TextDecoder('utf-8').decode(await consume(this))); }
         async blob() {
-            const ab = await this.arrayBuffer();
-            return { size: ab.byteLength, type: this.headers.get('content-type') || '',
-                     arrayBuffer: async () => ab, text: async () => new TextDecoder().decode(ab) };
+            const bytes = await consume(this);
+            // Full MIME parsing remains separate from body ownership. Reject
+            // a missing/invalid media type instead of inventing a Blob type.
+            let type = responseState(this).headers.get('content-type') || '';
+            if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+\/[!#$%&'*+.^_`|~0-9A-Za-z-]+(?:\s*;[^\r\n]*)?$/.test(type)) type = '';
+            return new _nodeBodyData.Blob([bytes], { type });
         }
         clone() {
-            // Only safe when body is still buffered. After a stream has been
-            // consumed there's nothing left to clone — anthropic-sdk clones
-            // before reading the body, so this is OK in practice.
-            if (this._stream) throw new TypeError('Cannot clone Response whose body is a stream');
-            const init = {
-                status: this.status, statusText: this.statusText, url: this.url,
-                headers: new FetchHeaders(this.headers),
-            };
-            return new FetchResponse(this._buffered ? this._buffered.slice() : null, init);
+            const body = responseBody(this);
+            if (unusable(body)) throw new TypeError('Body is unusable');
+            const state = responseState(this);
+            const clone = new FetchResponse(null, { status: state.status, statusText: state.statusText, headers: state.headers });
+            const clonedState = responseState(clone);
+            clonedState.url = state.url; clonedState.redirected = state.redirected; clonedState.type = state.type;
+            if (body !== null) {
+                const [left, right] = cloneBody(body);
+                state.body = left;
+                clonedState.body = right;
+            }
+            return clone;
         }
+        get [Symbol.toStringTag]() { return 'Response'; }
+    }
+    Object.defineProperty(FetchResponse, 'name', { value: 'Response', configurable: true });
+    Object.defineProperty(FetchResponse.prototype, Symbol.toStringTag, { value: 'Response', configurable: true });
+    for (const name of ['body', 'bodyUsed', 'status', 'statusText', 'ok', 'headers', 'url', 'redirected', 'type',
+        'arrayBuffer', 'bytes', 'text', 'json', 'blob', 'clone']) {
+        Object.defineProperty(FetchResponse.prototype, name, { enumerable: true });
     }
 
     class FetchRequest {
@@ -6557,12 +6763,15 @@ if (!console.group) {
                     if (Array.isArray(v)) for (const x of v) respHeaders.append(k, x);
                     else if (v !== undefined) respHeaders.set(k, v);
                 }
-                resolve(new FetchResponse(resStream, {
+                const hasBody = method !== 'HEAD' && ![204, 205, 304].includes(res.statusCode);
+                const response = new FetchResponse(hasBody ? resStream : null, {
                     status: res.statusCode || 0,
                     statusText: res.statusMessage || '',
                     headers: respHeaders,
-                    url: urlStr,
-                }));
+                });
+                const state = responseState(response);
+                state.url = urlStr; state.type = 'basic';
+                resolve(response);
             });
 
             req.on('error', (e) => {
