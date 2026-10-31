@@ -55,18 +55,26 @@ window. These are observed operations, not CPU shares or a projected speedup.
 Checked-query transport and remaining synchronization amplification stay open.
 
 The latest experimental preview is available at
-http://127.0.0.1:5680/pages/kandelo/ . It serves the exact five committed host
-modules at `ce7a86c8bafe` through the normal Vite compiler/configuration over
-its own compatible frozen normalb6 SDK/kernel/program/image artifacts. It adds
-checked drawable-selector preservation and the separate front-export repair;
-no frame tracer, profiler or application-specific runtime path is installed.
-The selected source comes from immutable git objects, so later source work does
-not retarget the preview. Normal5679 remains unchanged. This is an incremental
-host experiment, not a fresh combined normal distribution. The first fresh unprofiled headless pair completes all24responses on both
-sides but shows no clear responsiveness improvement; boundary crossing remains
-about130ms versus66–69ms within a terminal. Availability does not require
-waiting for completed validation. Server receipt SHA256:
-`ccf1f481dc40f7950c004866171160e08cc7de0efbede2f679c05253afd64258`.
+http://127.0.0.1:5681/pages/kandelo/ . It serves ten exact whole committed host
+modules at `606a5e9aa79e` through normal Vite over own compatible frozen normalb6
+SDK/kernel/program/image artifacts. It includes drawable-selector preservation,
+constant-attribute correctness and native-preimage selector deltas for fixed
+primary/cursor helpers. There is no tracing or profiling. Startup all-ten HTTP
+and isolation/normal artifact checks pass; actual consumer coverage and desktop
+response are measured separately. Receipt SHA256:
+`481ec64daee34be960e32e373b951785a7fcb846cf2a3ccc60dd992c9089b5e6`.
+The incremental normal host bundle/declarations pass in7s. A separate bounded
+native fixture passes15 assertion groups in each canonical headless Chromium,
+Firefox and WebKit; it is synthetic scratch-kernel correctness, not actual
+desktop, normal compiled Rust, memory or performance acceptance. Fresh Sway
+response comparison is in progress. Availability was announced before its
+validation completed, and frozen5679/5680 remain unchanged.
+
+Previous experimental5680 at `ce7a86c8bafe` remains available with its separately
+recorded five-module receipt. Its first small unprofiled comparison with normal
+5679 shows no clear responsiveness gain; the user nevertheless reports better
+cross-terminal movement while still finding performance unacceptable. Those
+observations remain distinct. No main/individual-change gain is established.
 
 The earlier selected-context candidate remains available, without tracing, at
 http://127.0.0.1:5678/pages/kandelo/ . This experimental local source proxy
@@ -14567,3 +14575,53 @@ normal host bundle/declarations, fresh preview responsiveness, browser-memory,
 conformance and broad benchmarks are pending. No ABI, SDK, package or image
 contract changes. Existing5679/5680 previews remain frozen and exclude this
 candidate until a separate URL is announced.
+
+
+### Selector preview availability and native source checkpoint, 2026-10-31
+
+Experimental5681 is available at exact source606 with ten frozen host modules,
+normal Vite8.3.1 configuration/plugins and its own cache over the unchanged
+normalb6 artifact tuple. Server job is
+`host-source-preview-r2-retry-1031-142459-392c`. All startup normal93/245/dual-SDK/
+kernel/host/freshness/selected-ABI guards and actual module HTTP/isolation
+checks pass. Published source uses immutable git bytes, not mutable checkout
+HEAD/dirt. Availability receipt is written after listening and HTTP proof.
+The first root attempt `host-source-preview-r2-1031-142423-73c1` fails before
+collector/server: root misreads SHA/size manifest objects as hash strings and
+its shell incorrectly continues after that failed check. The server's pending
+configuration guard refuses startup. Original pending inputs/failure remain in
+`.context/host-source-preview-r2-root-admission-failure-r1/`; corrected exact
+metadata validation and fail-fast sequencing precede the successful retry.
+This is an admission mistake, not a runtime or native test failure.
+
+Own incremental host job `kms-selector-host-build-r1-1031-142516-de10` completes0
+in7s at clean606, emitting normal bundles and type declarations. Its85 recorded
+output files are retained. This is host-only build evidence, not a new normal
+SDK/kernel/program/image producer or freshness stamp. The earlier standalone
+raw typecheck failures are not relabeled as green by this distinct build.
+
+`kms-selector-delta-native-r1-1031-142627-27d9` completes0 in6s. Fifteen source/
+launcher controls, an exact62-input archived committed source closure, bundle
+reproduction and canonical launcher preflight precede three serial headless
+engine launches. Each engine completes the same15 native assertion groups
+(45total): actual RGBA pixels, odd3x2 alignment8→4 restoration, even4x2 legal
+alignments, distinct FBO/PACK state, zero-selector paths, injected inverse
+refusal/no publication/real repair, live sameBO writes, public errors/replay,
+resize, deleted FBO and real context loss. A synthetic2-page private scratch
+kernel and six at-most8x8 BOs are used; no normal guest Rust is run.
+
+Independent offline audit passes870 checks,84 helper seals,61 committed606
+source files plus the private entry and actual launcher/package/argv/cleanup
+identities. Result/page/protocol error arrays are empty; raw Chromium display-
+link warnings and Firefox sandbox/Juggler diagnostics remain retained despite
+successful reports/exit0. Worker/BO/observer and browser cleanup acknowledgments
+pass. This does not establish physical memory reclamation. The native desired-
+primary case starts with source alpha1; a separate half-alpha→opaque-primary
+assertion is being added in fresh R2, preserving R1. Source unit alpha-clear
+coverage is separate. No app responsiveness gain follows from these tests.
+
+Evidence: `.context/host-source-preview-r2/`,
+`.context/kms-selector-host-build-r1/`, `.context/kms-selector-delta-native-r1/`,
+`.context/kms-selector-delta-native-results-r1/`, and
+`.context/kms-selector-delta-native-analysis-r1/`. Fresh sparse response and
+sustained-motion investigation remain separate from native correctness.
