@@ -12788,3 +12788,45 @@ classified. Original failed check logs remain retained. `git diff --check`
 passes. There is no SDK/kernel/program/image rebuild for this isolated screen;
 normal candidate-preview provisioning remains next. Available preview5675
 continues serving frozen e303, without this new metadata change.
+
+### Shared comparator follow-up: native scan and per-export multiplicity
+
+Read-only `.context/shared-comparator-review-r2/` audits the current frozen
+e303 file-mapping path. Large kernel-file comparisons already use the
+generated native multi-memory Wasm helper, SIMD-first with scalar-Wasm
+fallback. The helper imports the existing kernel and process Memories and
+reads the exact Rust-owned snapshot against the process range. It defines
+no memory, start, data, stores or growth. The shared Kernel validates both
+ranges and rechecks its exact Memory/generation after the process provider
+callback. Unknown constructor metadata or unavailable variants return the
+existing unavailable status; Rust then performs its independently checked
+owned read and comparison. This particular path no longer has a JS full-byte
+loop. Host-owned anonymous/file mapping mirrors have separate JS comparison
+paths; do not conflate them with the observed kernel-owned cursor memfd.
+
+Compiled comparator Modules are cached, but each actual comparison creates
+a fresh Instance/import graph, obtains the export and invokes it within the
+synchronous Rust borrow. A persistent Memory/Instance cache would introduce
+an ownership policy and is not implemented. Even reuse bounded to one sync
+export would require exact generation, reentry, exception and scope-lifetime
+proofs, while retaining every individual pointer/range validation.
+
+Offline derivation from the same hash-verified raw evidence behind the earlier
+phase-accounting report finds exactly one 4,190,208-byte comparison in every
+observed sync export: 150/150/292 exports at one/three/five terminals, with
+zero unparented comparisons and zero extra comparisons within an export.
+The 73/73/144 potential entry/completion pairs belong to separate exports;
+they are not an opportunity for reuse within one export. These are earlier
+71a captures with different preludes, not a new e303 capture or comparable
+scaling curve. No all-writer cleanliness or scan-elision eligibility follows.
+
+Next isolate fresh setup versus the actual native load loop at the measured
+length, retaining early/middle/late changes, alignments, exact bounds/tails,
+all 32 shape variants and unavailable/scalar behavior. Bounded SIMD unrolling
+can be screened if loop work dominates; it must still read every required
+byte and preserve failure behavior. No comparator optimization, persistent
+instance reuse, writer epoch, synchronization skip or application speedup
+is implemented or established by this audit.
+
+Audit SHA256 `7afad8488086ac06d1cc2195b1fca3eeabcb59c340995037cdabb50c646299c6`.
+Per-sync count derivation SHA256 `e2ec912208f18785f74c31f9d490b5f67400dcd6b59c898e1f6b2bf3a6cb12eb`.
