@@ -12018,3 +12018,228 @@ paths account for 3,792 of 5,431 recorded getError calls in the eight
 intervals above (69.8%); that is a bounded call count, not CPU share or
 proof those presentations saw unchanged pixels. No cache or write epoch
 is implemented by this evidence update.
+
+### Normal inline-draw preview and first-input trace (2026-10-31)
+
+The single-terminal improvement remains **unproven**, as does improvement
+with multiple terminals. The user explicitly withdrew the tentative
+single-terminal impression. Preserve that distinction when interpreting
+all operation counts and isolated native measurements above.
+
+Normal producer `inline-client-normal-products-1031-032816-ff66` finishes
+successfully in 1h46m at frozen source
+`dadea383b2fc41c891fbdffe1dcb153ebc3db5fa`. All six stages return zero:
+its own xtask, normal products, normal host stamp, freshness, identities,
+and selected-kernel ABI check. Its own 93 owners/245 members, SDK, kernel,
+normal host and source identities match the serving collection. Server
+`inline-client-preview5674-1031-051508-18ba` serves
+`http://127.0.0.1:5674/pages/kandelo/`; bounded HTTP checks of `/` and the
+app return 200 with the required COOP/COEP headers. Availability was
+announced immediately after these checks. This is availability of the
+normal client-draw candidate, not completed desktop validation.
+
+Candidate normal owner-manifest SHA256:
+`232592e012569c4ff5df6864594218ebd1fcfafeb6b519c46bf3415a14294b49`;
+selected kernel SHA256:
+`10cf2ab2e37153fde8ea711d8d16d0f14199eb14abd672b03e5bdcd6ad05b2dd`;
+serving receipt SHA256:
+`a36c959be3899b86ccd7f0dd61538c7f8a37bc6c66a3a344d9e04061d2aa86e6`;
+HTTP proof SHA256:
+`3d721140d15a9e49d4a05fbfbea30b180f5d06db9d43cf40d7810684b27d04d5`.
+Evidence is in the candidate's `.context/normal-products-r1/` and
+`.context/preview-serving-r1/`. Published sources and artifacts stay frozen.
+
+The revised 886-byte numbered-output workload is attempted on the normal
+71a baseline, not yet accepted as a matched comparison. R4 loses the
+first `i` from `i=0`; the actual command starts `=0` and reports shell
+errors. Root rejects the visual review and the workload returns 1;
+collector and final guards return zero. Its scalar live-GPU allocation
+observations do not turn that error output into the intended workload.
+
+Fresh R5 adds bounded private response overlays for DOM capture, the
+existing input gate, source delivery, host batches and the actual kernel
+input export calls. All original operations remain in place. Sixteen
+pure/served-module controls pass through the declared shell. The first
+launch fails at preflight because the helper manifest is missing; no
+browser runs from that attempt. A corrected sealed launch,
+`active-input-trace-r5-retry-1031-051809-6bbc`, reproduces the missing first
+character and returns workload/collector/guard 1/0/0 in 62 seconds.
+
+R5 retains 1,290 main-realm and 882 kernel-realm scalar rows without
+overflow. The complete 441-record host-batch vector matches all 441
+kernel-before-export and all 441 kernel-after-export vectors in order.
+The keyboard source-delivery vector also matches the keyboard host
+vector. The initial `KeyI` DOM event has no modifier flags, passes the
+existing gate, and reaches the kernel export as code 23/value 1 after the
+Control+U releases. The actual before-Enter image still starts `=0`.
+This narrows the missing character to a later stage; a void kernel
+export returning does not prove OFD fanout, no overflow, guest read,
+Wayland focus or terminal receipt. Clocks are not calibrated between
+realms. This failed workload remains excluded from performance acceptance.
+
+All 17 distinct rendering modules and three input modules are observed;
+the KMS registry module is requested twice. Normal before/after source,
+SDK, kernel, host and all 93/245 artifact identities remain equal. Offline
+analysis first incorrectly assumes adjacent key records despite an
+intervening pointer SYN; its original failure is retained, then the
+correct per-device sequence check passes. A verification attempt also
+incorrectly expects 17 requests rather than 17 distinct modules; the
+corrected inventory preserves the duplicate request instead of hiding it.
+
+R5's rejected error-output capture also observes 29 original cursor
+readbacks of a live 64x64 allocation. Thirteen have a prior observation
+of the same exact allocation/context/dimensions and no intervening
+observed native call outside the reviewed device paths. Every
+`reuseEligible` result remains false: loss generation and complete
+raw/extension/native writer coverage are unknown. No readback is skipped,
+no cache is implemented, and these observations are not a valid ordinary
+output workload or desktop improvement.
+
+Raw evidence is under `.context/active-baseline-trace-r4/` and
+`.context/active-input-trace-r5/`; independent accounting and verification
+are under `.context/first-key-propagation-analysis-r1/`. Input-accounting
+SHA256 `d3425bd368ba8ac4d491072b3a1d8208cdad4a3eaa769f2ff9f03a75c3615a1c`;
+live-allocation screen SHA256:
+`21cb1fe67fe050c02df3f923f1efd66e2e21cde3082960e6f1019b2ff6bbb64f`.
+No rebuild is needed for these diagnostics. First-input focus/dispatch
+and safe content-authority tracking remain ordinary platform work.
+
+Fresh baseline R6 (`active-input-read-trace-r6-1031-052710-6c40`) completes
+all four stages at 1/3/5/recovered-one terminals in 5m09s with
+workload/collector/guard 0/0/0. Root reviews numbered output through 63
+and the natural prompt in each actual screenshot before stage advance.
+Seventeen pure/served-module controls pass. All original rendering and
+input operations execute. This is one instrumented NONQUIET functional
+run, not a timing comparison or single-terminal improvement.
+
+The additional private read seam projects at most 256 evdev records
+from original detached syscall output copies inside the disposable kernel
+worker. No extra guest-memory read, pointer, output bytes/view or guest
+Memory crosses realms. Normal VFS `/proc/101/fd` symlinks sample pointer
+FD 37 and keyboard FD 38 before capture. Every stage has 424 keyboard and
+17 pointer input records; the per-device read-output vector matches each
+injected vector exactly, with no decode-unknown or observed descriptor
+invalidation. The successful first stage returns pointer records before
+keyboard records. The failed R5 lacks these read observations, so no
+cross-device/focus cause is established.
+
+These are **prepared output observations**, not proof of successful
+publication or libinput receipt. A sampled FD path does not pin an OFD;
+the metadata-to-arm gap and incomplete host/descriptor mutation coverage
+leave continuity unproved. The probe conservatively stops decoding on
+observed selected-number close/replacement and process transitions, but
+that partial guard does not establish a complete lifetime proof. Pinned
+libinput/wlroots/Foot source review documents cross-device dispatch and
+held-key focus-entry behavior as a plausible explanation, not a proven
+epoll, compositor or terminal defect. See the private source audit
+`.context/first-key-downstream-source-review-r1.md`.
+
+R6's eight complete logical active intervals contain ten selected guest
+draws, 72 primary scanouts and 72 cursor readbacks, with 1,708 shared-memory
+comparison requests. Geometry and interleaving vary by stage; these
+counts are not a scaling curve, physical FPS, scanned bus traffic or safe
+skip authority. All normal source/SDK/kernel/host and 93/245 artifacts
+remain unchanged before/after. Raw evidence is under
+`.context/active-input-read-trace-r6/`; independent analysis is under
+`.context/active-input-read-analysis-r1/`. Baseline accounting SHA256:
+`043f0eaeedfc5803b40e375760612f1588c689f28a71c06c43dc43b68fb7ade0`;
+verification SHA256:
+`05cd1d72adee39c246e292ff29ab4bcdb2950c733daa87c1506ca7bf814e81c0`.
+
+The first normal candidate trace R7 renders the one- and three-terminal
+output, but Root misses the three-terminal manual review deadline while
+examining another path. Job
+`candidate-input-read-trace-r7-1031-053234-359f` returns 1/0/0 in 3m03s;
+its later stages are unrun. A late screenshot review does not retroactively
+pass that workload. Fresh R8 uses unchanged rendering/input code and the
+same deadline/admission criteria. It inherits R7's NONQUIET load-inventory
+sample, which is not proof of quiet execution.
+
+R8 (`candidate-input-read-trace-r8-1031-053613-305b`) completes all four
+stages and returns workload/collector/guard 0/0/0 in 5m09s. All 18 distinct
+rendering modules, including the private client-draw implementation, and
+three input modules are observed. Its eight complete logical active
+intervals contain ten selected guest draws, 75 primary scanouts, 75 cursor
+readbacks and 1,542 comparison requests. Seventeen private client-draw
+results across the complete captures are accepted/restored. This verifies
+use of the new path by normal guest programs; differing interleaving and
+pass counts prevent interpreting aggregate differences as an improvement.
+All four per-device input vectors match 424 keyboard/17 pointer records;
+normal source/SDK/kernel/host and 93/245 artifacts remain unchanged.
+
+R8 raw evidence is under `.context/candidate-input-read-trace-r8/`;
+accounting SHA256:
+`9c5150c4f73f295751563dcda407d4616f46af1914174ac308d5695923f4fbf6`.
+Both valid runs retain the input/OFD/publication limits above. Settling
+process snapshots use ordinary UI navigation that sends Escape to leave
+pointer lock; screenshots show `^[` during some still-running output,
+after the bounded active trace window. That is observer-generated input,
+not a platform defect or exact 886-byte stdout proof. It is another reason
+to separate this diagnostic from uninstrumented workload timing and to
+leave the earlier missing-character cause unresolved.
+
+Disjoint native-query attribution in
+`.context/active-input-read-analysis-r1/query-attribution.json` verifies
+23 getError calls per primary scanout and 25 per cursor readback on both
+sources. Baseline intervals contain 1,656 primary/1,800 cursor queries;
+candidate intervals contain 1,725/1,875. Restoration alone accounts for
+ten queries per primary and twelve per cursor operation. These are call
+counts, not active CPU shares. Synchronization remains mandatory without
+authoritative writer/dirty-state tracking.
+
+### Local inverse error-sequence candidate (2026-10-31)
+
+Native restoration now keeps clean-entry evidence local to one synchronous
+inverse and one physical error owner. A successful post-check supplies the
+next native call's clean entry. Every attempted operation still has its
+post-check; any rejection or throw revokes that evidence, stops dependent
+calls in its group and freshly drains before independent cleanup. No
+clean stamp survives the inverse, and repair, retirement and completion
+ownership remain unchanged. Empty groups still perform no GL queries.
+This does not introduce GPU pixel caching or skip shared-memory work.
+
+The private source screen first passes 51, then 53 controls using actual
+frozen modules, preserving both logs. Its first separate sealing helper
+has a Python-parenthesis error; that helper failure is retained and fixed,
+with no tested-source change. Source/control/patch receipt SHA256:
+`34cc8bd9f9e5b059174898b39c2eb34921b4d40b4642f8fdbf19ec11bf45d716`
+under `.context/native-inverse-sequence-candidate-r1/`.
+
+A no-rebuild native screen under `.context/native-inverse-native-r1/`
+loads the four actual source modules in fresh disposable worker contexts
+on headless Chromium, Firefox and WebKit. Only the candidate inverse body
+changes. Both variants preserve the tested primary/cursor pixels and
+selector, pack-layout, color and scissor state; normal native helper
+query counts are primary 20→16 and cursor 22→17 on all engines. Eight
+alternating bounded helper batches per operation are retained separately
+from untimed count wrappers. They exclude guest/syscall/coherence costs;
+WebKit samples are near timer resolution. They do not establish a desktop
+or single-terminal benefit. Context/browser close reports no errors;
+this ad hoc harness does not record the temporary Firefox-home path for
+scoped directory removal and makes no full resource-reclamation claim.
+
+Production source integration adds 37 public-API regression cases for
+pending flags, fresh owners/inverses, every inverse fault position before
+and after effects, getter/post-check throws, independent cleanup, drain
+limits, loss, empty groups and inverse-only repair without a repeated
+forward operation. The complete pure WebGL selection passes 774/774 tests
+in 32 files through the declared shell, with zero unloads/skips. Its
+explicit configuration omits unrelated C-fixture global setup because
+these tests use source/mocked native resources; it is not guest, browser
+memory, POSIX or combined distribution acceptance. Published preview
+5674 remains frozen at DAD and does not yet include this inverse change.
+
+Native screen verification SHA256:
+`4b1a22c4229975da3a6fe909480305667763607cee7557b6ac86acea3be01d21`.
+R8 accounting verification SHA256:
+`0d1ec6e5a5aca9084449c2d1d82f0d952463323ba7da13d338b4813e6f1ba38b`;
+valid-workload native-query attribution SHA256:
+`11ed43e84cb39db01543314c035e29a36eace582d8671920e21f817dc1fa8148`.
+
+The first normal host build in the mutable documentation checkout stops
+before host compilation because its musl submodule directory exists but
+is uninitialized (`libc/musl/Makefile` is absent). Preserve
+`.context/inverse-host-build-r1.log`; this is provisioning, not a platform
+boundary or a passing host build. Initialize the pinned submodule and
+continue through the normal own-SDK/artifact checkpoint. No ABI increment
+is required for this internal, synchronous error-check sequencing change.
