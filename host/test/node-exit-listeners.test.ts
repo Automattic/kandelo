@@ -10,7 +10,7 @@ describe.skipIf(process.versions.node !== target.version)('exact native throwing
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(c.status);
       expect(result.stdout.trim()).toBe(c.marker);
-      expect(result.stderr.includes('Error: exit-listener-secondary')).toBe(c.secondary);
+      expect(result.stderr.includes(c.secondaryNeedle)).toBe(c.secondary);
       if (!c.secondary) expect(result.stderr).toContain('main-primary');
     });
   }

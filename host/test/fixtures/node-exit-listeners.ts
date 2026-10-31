@@ -5,21 +5,27 @@ const rows = [
   ['assigned', 7, '', '', 7, 7, true],
   ['cleared', 7, 'process.exitCode = undefined;', '', 7, 1, true],
   ['explicit', undefined, '', 'process.exit(9);', 9, 9, true],
+  ['explicit-zero', undefined, '', 'process.exit(0);', 0, 0, true],
+  ['explicit-cleared', undefined, 'process.exitCode = undefined;', 'process.exit(9);', 9, 1, true],
+  ['explicit-changed', undefined, 'process.exitCode = 8;', 'process.exit(9);', 9, 8, true],
+  ['natural-changed', 7, 'process.exitCode = 8;', '', 7, 8, true],
+  ['primitive', undefined, '', '', 0, 1, true, 'false'],
   ['fatal-sync', 7, '', "setInterval(() => {}, 1000);\nthrow Error('main-primary');", 1, 1, false],
   ['fatal-promise', 7, '', "setInterval(() => {}, 1000);\nPromise.resolve().then(() => { throw Error('main-primary'); });", 1, 1, false],
   ['fatal-timer', 7, '', "setInterval(() => {}, 1000);\nsetTimeout(() => { throw Error('main-primary'); }, 1);", 1, 1, false],
   ['fatal-changed', 7, 'process.exitCode = 8;', "throw Error('main-primary');", 1, 8, false],
   ['fatal-cleared', 7, 'process.exitCode = undefined;', "throw Error('main-primary');", 1, 1, false],
 ] as const;
-export const nodeExitListenerCases = rows.map(([name, assigned, listener, body, eventStatus, status, secondary]) => ({
+export const nodeExitListenerCases = rows.map(([name, assigned, listener, body, eventStatus, status, secondary, thrown = "Error('exit-listener-secondary')"]) => ({
   name, status, secondary,
+  secondaryNeedle: thrown === 'false' ? 'false' : 'Error: exit-listener-secondary',
   marker: `node-exit-listener-${name}:${eventStatus}`,
   source: `
 ${assigned === undefined ? '' : `process.exitCode = ${assigned};`}
 process.on('exit', code => {
   console.log('node-exit-listener-${name}:' + code);
   ${listener}
-  throw Error('exit-listener-secondary');
+  throw ${thrown};
 });
 process.on('exit', () => console.log('unexpected-second-exit'));
 ${body}
@@ -34,7 +40,7 @@ mkdir -p /tmp/node-exit-listeners
 if node ${quote(file)} >/tmp/node-exit-listener.out 2>/tmp/node-exit-listener.err; then status=0; else status=$?; fi
 if test "$status" -ne ${c.status}; then cat /tmp/node-exit-listener.out; cat /tmp/node-exit-listener.err >&2; exit 1; fi
 test "$(cat /tmp/node-exit-listener.out)" = ${quote(c.marker)}
-${c.secondary ? '' : '! '}grep -q 'Error: exit-listener-secondary' /tmp/node-exit-listener.err
+${c.secondary ? '' : '! '}grep -q ${quote(c.secondaryNeedle)} /tmp/node-exit-listener.err
 ${c.secondary ? '' : "grep -q 'main-primary' /tmp/node-exit-listener.err"}
 printf '%s\\n' ${quote(c.marker)}
 `;

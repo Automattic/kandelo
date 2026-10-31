@@ -1,13 +1,13 @@
 --- a/js/src/shell/js.cpp
 +++ b/js/src/shell/js.cpp
-@@ -129,6 +129,7 @@
- #include "js/Array.h"        // JS::NewArrayObject
- #include "js/ArrayBuffer.h"  // JS::{CreateMappedArrayBufferContents,NewMappedArrayBufferWithContents,IsArrayBufferObject,GetArrayBufferLengthAndData}
- #include "js/BuildId.h"      // JS::BuildIdCharVector, JS::SetProcessBuildIdOp
-+#include "js/ValueArray.h"  // JS::RootedValueArray
- #include "js/CallAndConstruct.h"  // JS::Call, JS::IsCallable, JS_CallFunction, JS_CallFunctionValue
- #include "js/CharacterEncoding.h"  // JS::StringIsASCII
- #include "js/CompilationAndEvaluation.h"
+@@ -179,6 +179,7 @@
+ #include "js/StructuredClone.h"
+ #include "js/SweepingAPI.h"
+ #include "js/Transcoding.h"  // JS::TranscodeBuffer, JS::TranscodeRange, JS::IsTranscodeFailureResult
++#include "js/ValueArray.h"    // JS::RootedValueArray
+ #include "js/Warnings.h"      // JS::SetWarningReporter
+ #include "js/WasmFeatures.h"  // JS_FOR_WASM_FEATURES
+ #include "js/WasmModule.h"    // JS::WasmModule
 @@ -14902,6 +14903,8 @@
      // Finish Node file and eval entry points after jobs, native watches,
      // timers and rejection reporting. Explicit process.exit() already quit

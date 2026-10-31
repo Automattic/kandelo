@@ -6213,7 +6213,7 @@ function _looksLikeEsmMain(filename, source) {
 // assignment. Explicit process.exit() instead defaults an unset status to 0.
 function _runNaturalExit(failureStatus = 0, returnStatus = false) {
     if (failureStatus && !process._exiting) process.exitCode = failureStatus;
-    const status = process.exitCode === undefined ? 0 : process.exitCode;
+    const status = process.exitCode === undefined ? failureStatus : process.exitCode;
     if (!process._exiting) {
         process._exiting = true;
         if (failureStatus === 1) {
