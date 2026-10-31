@@ -1571,6 +1571,18 @@ impl SharedMappingStat {
 pub trait SharedMappingIo {
     /// Copy `dst.len()` bytes out of process `pid`'s linear memory at `addr`.
     fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno>;
+    /// Return an independent, fully initialized snapshot of `len` process bytes.
+    /// The default preserves safe initialized-slice implementations. A trusted
+    /// synchronous full-write backend may override this without first zeroing
+    /// the allocation; an error must never publish partial bytes.
+    fn read_process_owned(&mut self, pid: u32, addr: u64, len: usize) -> Result<Vec<u8>, Errno> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let mut bytes = vec![0u8; len];
+        self.read_process(pid, addr, &mut bytes)?;
+        Ok(bytes)
+    }
     /// Copy `src` into process `pid`'s linear memory at `addr`.
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno>;
     /// Current size of process `pid`'s linear memory, or `None` if it is gone.
@@ -2537,8 +2549,7 @@ impl SharedMappingTable {
         if map_addr.saturating_add(len as u64) > mem_len {
             return Ok(());
         }
-        let mut initial = vec![0u8; len];
-        io.read_process(pid, map_addr, &mut initial)?;
+        let initial = io.read_process_owned(pid, map_addr, len)?;
 
         let key = alloc::format!("anon:{}:{}:{}", pid, map_addr, self.next_anon_id);
         self.next_anon_id += 1;
@@ -2610,11 +2621,13 @@ impl SharedMappingTable {
             }
 
             let snapshot = mapping.snapshot.take().expect("checked above");
-            let mut current = vec![0u8; mapping.len];
-            if let Err(err) = io.read_process(pid, *map_addr, &mut current) {
-                mapping.snapshot = Some(snapshot);
-                return Err(err);
-            }
+            let current = match io.read_process_owned(pid, *map_addr, mapping.len) {
+                Ok(current) => current,
+                Err(err) => {
+                    mapping.snapshot = Some(snapshot);
+                    return Err(err);
+                }
+            };
 
             let mut changed = false;
             if mapping.writable {
@@ -2912,11 +2925,13 @@ impl SharedMappingTable {
             let Some(snapshot) = mapping.snapshot.take() else {
                 continue;
             };
-            let mut current = vec![0u8; mapping.len];
-            if let Err(err) = io.read_process(pid, *map_addr, &mut current) {
-                mapping.snapshot = Some(snapshot);
-                return Err(err);
-            }
+            let current = match io.read_process_owned(pid, *map_addr, mapping.len) {
+                Ok(current) => current,
+                Err(err) => {
+                    mapping.snapshot = Some(snapshot);
+                    return Err(err);
+                }
+            };
             let mut changed = false;
             let mut failure = None;
             for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
@@ -3188,10 +3203,10 @@ impl SharedMappingTable {
         let seen_version = mapping.seen_version;
         let current_version = self.sysv_segment_version(seg_id);
 
-        let mut current = vec![0u8; size];
-        if io.read_process(pid, map_addr, &mut current).is_err() {
-            return false;
-        }
+        let current = match io.read_process_owned(pid, map_addr, size) {
+            Ok(current) => current,
+            Err(_) => return false,
+        };
         let locally_changed = {
             let mapping = self.sysv.get(&pid).and_then(|m| m.get(&map_addr)).expect("checked");
             !read_only && range_differs_from_snapshot(&current, &mapping.snapshot)
@@ -3709,11 +3724,11 @@ impl SharedMappingTable {
                             // rather than publishing zeros over them.
                             if new_len > mapping.len {
                                 let extra = new_len - mapping.len;
-                                let mut tail = vec![0u8; extra];
-                                if io
-                                    .read_process(pid, new_addr + mapping.len as u64, &mut tail)
-                                    .is_ok()
-                                {
+                                if let Ok(tail) = io.read_process_owned(
+                                    pid,
+                                    new_addr + mapping.len as u64,
+                                    extra,
+                                ) {
                                     let base = mapping.file_offset as usize + mapping.len;
                                     let end = (base + extra).min(backing.bytes.len());
                                     if base < end {
@@ -3957,13 +3972,11 @@ impl SharedMappingTable {
         // commit can put the child's address space back as it was.
         let mut originals: Vec<(u64, Vec<u8>)> = Vec::new();
         for (map_addr, mapping, _) in &staged {
-            let mut bytes = vec![0u8; mapping.len];
-            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            let bytes = io.read_process_owned(child_pid, *map_addr, mapping.len)?;
             originals.push((*map_addr, bytes));
         }
         for (map_addr, mapping, _) in &staged_sysv {
-            let mut bytes = vec![0u8; mapping.size];
-            io.read_process(child_pid, *map_addr, &mut bytes)?;
+            let bytes = io.read_process_owned(child_pid, *map_addr, mapping.size)?;
             originals.push((*map_addr, bytes));
         }
 
@@ -4068,6 +4081,7 @@ mod shared_mapping_tests {
         losses: Vec<(u32, u64, String)>,
         fail_pwrite: bool,
         fail_write_process_at: Option<u64>,
+        fail_read_process_at: Option<(u32, u64)>,
     }
 
     impl MockIo {
@@ -4083,6 +4097,7 @@ mod shared_mapping_tests {
                 losses: Vec::new(),
                 fail_pwrite: false,
                 fail_write_process_at: None,
+                fail_read_process_at: None,
             }
         }
 
@@ -4153,6 +4168,14 @@ mod shared_mapping_tests {
             let mem = self.procs.get(&pid).ok_or(Errno::ESRCH)?;
             let at = addr as usize;
             if at + dst.len() > mem.len() {
+                return Err(Errno::EFAULT);
+            }
+            if self.fail_read_process_at == Some((pid, addr)) {
+                // A failed full read may have initialized only a prefix. The
+                // owned-read API must not return or publish that partial data.
+                if let Some(first) = dst.first_mut() {
+                    *first = 0xd7;
+                }
                 return Err(Errno::EFAULT);
             }
             dst.copy_from_slice(&mem[at..at + dst.len()]);
@@ -4343,6 +4366,89 @@ mod shared_mapping_tests {
         assert_eq!(&backing, b"XXXXBBBB");
         assert!(merge_changed_byte_runs(b"....YYYY", &snapshot, &mut backing, 0));
         assert_eq!(&backing, b"XXXXYYYY");
+    }
+
+    #[test]
+    fn owned_process_snapshot_default_preserves_full_read_and_error_contract() {
+        let mut io = MockIo::new().with_process(1, 8);
+        io.poke(1, 0, b"ABCDEFGH");
+        assert_eq!(io.read_process_owned(1, 2, 4).unwrap(), b"CDEF".to_vec());
+        assert_eq!(io.read_process_owned(99, u64::MAX, 0).unwrap(), Vec::<u8>::new());
+        assert_eq!(io.read_process_owned(99, 0, 1), Err(Errno::ESRCH));
+        assert_eq!(io.read_process_owned(1, 7, 2), Err(Errno::EFAULT));
+        io.fail_read_process_at = Some((1, 2));
+        assert_eq!(io.read_process_owned(1, 2, 4), Err(Errno::EFAULT));
+        assert_eq!(io.peek(1, 0, 8), b"ABCDEFGH".to_vec());
+        io.fail_read_process_at = None;
+        assert_eq!(io.read_process_owned(1, 2, 4).unwrap(), b"CDEF".to_vec());
+    }
+
+    #[test]
+    fn owned_snapshot_error_restores_anonymous_snapshot_without_publication() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+        let (mut table, key) = anon_table_with_two_observers(&mut io);
+        let snapshot = table.mapping(1, 0).unwrap().snapshot.clone();
+        let version = table.anon_backing(&key).unwrap().version;
+        io.poke(1, 0, b"AAAA\0\0\0\0");
+        io.fail_read_process_at = Some((1, 0));
+        assert_eq!(table.sync_anonymous_from_process(1, false, &mut io), Err(Errno::EFAULT));
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot, snapshot);
+        assert_eq!(table.anon_backing(&key).unwrap().version, version);
+        assert_eq!(table.anon_backing(&key).unwrap().bytes, vec![0u8; 8]);
+        assert_eq!(io.peek(2, 0, 8), vec![0u8; 8]);
+        io.fail_read_process_at = None;
+        table.sync_anonymous_from_process(1, false, &mut io).unwrap();
+        table.sync_anonymous_from_process(2, false, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"AAAA\0\0\0\0".to_vec());
+    }
+
+    #[test]
+    fn owned_snapshot_error_restores_file_alias_before_any_writeback() {
+        let mut io = MockIo::new().with_process(1, 64).with_process(2, 64)
+            .with_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        let snapshot = table.mapping(1, 0).unwrap().snapshot.clone();
+        let version = table.file_backing(&key).unwrap().version;
+        io.poke(1, 0, b"AAAA....");
+        io.fail_read_process_at = Some((1, 0));
+        assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EFAULT));
+        assert_eq!(table.mapping(1, 0).unwrap().snapshot, snapshot);
+        assert_eq!(table.file_backing(&key).unwrap().version, version);
+        assert_eq!(io.files[&10], b"........".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"........".to_vec());
+        io.fail_read_process_at = None;
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"AAAA....".to_vec());
+    }
+
+    #[test]
+    fn owned_child_snapshot_error_does_not_commit_inherited_aliases() {
+        for sysv in [false, true] {
+            let mut io = MockIo::new().with_process(1, 64).with_process(2, 64);
+            let mut table = SharedMappingTable::new();
+            if sysv {
+                io.shm.insert(7, b"PARENTAL".to_vec());
+                table.track_sysv_mapping(1, 0, 7, 8, false, &mut io).unwrap();
+            } else {
+                io.poke(1, 0, b"PARENTAL");
+                table.track_anonymous_mapping(1, 0, 8, true, &mut io).unwrap();
+            }
+            io.poke(2, 0, b"ORIGINAL");
+            io.fail_read_process_at = Some((2, 0));
+            assert_eq!(table.inherit_process_mappings(1, 2, &mut io), Err(Errno::EFAULT));
+            assert_eq!(io.peek(2, 0, 8), b"ORIGINAL".to_vec());
+            assert!(table.mapping(2, 0).is_none());
+            assert!(table.sysv_mapping(2, 0).is_none());
+            if !sysv {
+                let key = table.mapping(1, 0).unwrap().backing_key.as_ref().unwrap();
+                assert_eq!(table.anon_backing(key).unwrap().ref_count, 1);
+            }
+            io.fail_read_process_at = None;
+            table.inherit_process_mappings(1, 2, &mut io).unwrap();
+            assert_eq!(io.peek(2, 0, 8), b"PARENTAL".to_vec());
+        }
     }
 
     // -- anonymous MAP_SHARED --------------------------------------------

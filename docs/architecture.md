@@ -565,6 +565,14 @@ within the synchronous import. It retains neither an intermediate full-range
 JavaScript snapshot nor a process-memory view after that call. The destination
 still rechecks allocation capacity, memory identity and generation before its
 one-use publication, including after memory growth during process lookup.
+Full process snapshots for shared-mapping reconciliation use a Rust-owned
+allocation whose length remains zero until that import reports exact full-copy
+success. Only then does Rust expose its initialized bytes. Errors discard the
+unpublished allocation, including any partially written prefix; unexpected
+positive import results are errors. This avoids initializing a buffer before
+the trusted host fills it, while retaining the same boundary synchronization,
+alias ordering and snapshot comparisons. Other mapping backends retain the
+safe initialized-slice implementation.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit

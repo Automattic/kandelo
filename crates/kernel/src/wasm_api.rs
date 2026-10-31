@@ -1348,6 +1348,33 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         i32_to_result(result)
     }
 
+    fn read_process_owned(&mut self, pid: u32, addr: u64, len: usize) -> Result<Vec<u8>, Errno> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let host_len = checked_host_buffer_len(len)?;
+        let mut bytes = Vec::<u8>::with_capacity(len);
+        // SAFETY: this allocation lends `len` writable bytes to the existing
+        // trusted synchronous import. No Rust slice is formed, and no byte is
+        // read before the import writes it. The host proves the full process
+        // source and allocator-lent destination ranges, then copies all bytes;
+        // only return value 0 guarantees the entire range is initialized.
+        let result = unsafe {
+            host_proc_read_bytes(pid as i32, addr, bytes.as_mut_ptr(), host_len)
+        };
+        i32_to_result(result)?;
+        if result != 0 {
+            // i32_to_result accepts positive values for other imports; they
+            // are not a full-write acknowledgement for this byte-copy import.
+            return Err(Errno::EIO);
+        }
+        // SAFETY: exact success above initialized every byte in 0..len and
+        // capacity is at least len. On errors the Vec retains length 0, so a
+        // partially initialized allocation is dropped without exposing bytes.
+        unsafe { bytes.set_len(len) };
+        Ok(bytes)
+    }
+
     fn write_process(&mut self, pid: u32, addr: u64, src: &[u8]) -> Result<(), Errno> {
         if src.is_empty() {
             return Ok(());

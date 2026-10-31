@@ -10361,3 +10361,39 @@ requiring a static global job roster, while retaining exact source and
 artifact checks and refusing unknown jobs in the measured checkouts.
 Module discovery repair and actual counters remain unvalidated. No ABI,
 production implementation or package change is included in these probes.
+
+### Owned full-read staging candidate (2026-10-30)
+
+The first follow-up candidate removes eager zero initialization before an
+existing synchronous process-to-kernel copy. `SharedMappingIo` has an
+owned full-read operation with a safe initialized-slice default. The
+Wasm implementation lends allocated capacity directly to the existing
+host import and exposes the vector length only after exact return0.
+Negative errors and unexpected positive results discard the unpublished
+allocation. No new import/export, retained scratch buffer, ABI version,
+synchronization boundary, alias merge or snapshot comparison is added or
+removed. Seven existing full-read sites use the operation, including
+inheritance rollback staging; file short-read handling is unchanged.
+Both Node and browser use this same kernel and host byte-copy contract.
+
+Focused native shared-mapping Rust tests pass75/75, including four new
+controls for full/empty/error reads, anonymous/file snapshot restoration,
+and inherited anonymous/SysV state after a failed child snapshot read.
+These exercise the safe default and coherence model, not the Wasm
+uninitialized-allocation override. Host transfer-authority, file mapping
+and inheritance-entry controls pass137/137 across three files, with no
+skips/load failures; the real rebuilt Wasm override remains to be run.
+Normal artifacts, actual desktop comparison, browser-memory, relevant
+POSIX and broad Node/browser benchmark gates remain pending. Performance
+is unmeasured, and this candidate does not yet establish a repair for the
+reported single-client or multi-client slowdown.
+
+The revised request-metadata CPU-image probe9b10 also fails before hook
+installation: context request events do not provide the required module
+URL. Artifact coherence passes. No CPU-image absence proof or successful
+counter result is claimed; raw attempt9b10 is retained under
+`.context/terminal-count-counters-r3/`. Six pure wrapper controls pass,
+which establishes wrapper mechanics only. The successful CPU profiles
+instead support prioritizing process-copy/coherence work; sampled
+readPixels stacks belong to cursor readback, and CPU-image storage has
+only two definite-workload samples across all nine captured phases.
