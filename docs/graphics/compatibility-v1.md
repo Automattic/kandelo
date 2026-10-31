@@ -15123,3 +15123,33 @@ The all-product build already in progress remains frozen at8b. No desktop
 speed or syscall-count reduction is claimed from the focused source tests.
 Evidence: `.context/framebuffer-authority-candidate-r1/` and the mutable
 checkout's `.context/framebuffer-authority-generation-r1/` stage logs.
+
+
+### Distinct captured requests on the hot memfd, 2026-10-31
+
+Fresh metadata capture R3 retains the same normal workload and exact frozen606
+preview/artifact guards, adding weak frozen-request identity counts and copied
+host-captured syscall numbers. All20 recorder controls pass; five new controls
+fail against preserved R2. Actual HTTP composition, canonical collection and
+job `hot-shared-mapping-r3-1031-163933-8c70` finish0; workload/collector/guard
+all0 in36s. There are485 buckets with no overflow. Menu painting, three actual
+Foot windows, original recovery, observer stop and normal replacement complete.
+
+SFWBar's cold Start hot range has13,951 entry-method comparisons. The copied
+syscall buckets contain13,705 distinct known frozen-request identities and
+10 unknown-identity calls: Read8394/8394distinct, Open1280/1280,
+Llseek1117/1117 and Readv1006/1006. Munmap has472comparisons for236 captured
+requests; a method can compare twice within one request. Completion has13,694
+comparisons with missing active identity, explicitly unknown. All these rows
+are equal. Captured request objects do not prove guest resumes or a held lease;
+counts across other phases/ranges cannot be summed as global distinct requests.
+
+Most entry comparisons here accompany distinct captured requests, so eliminating
+method retries alone does not address most of this observed work. Large fresh-
+entry reductions need complete dirty-write evidence; an actual binary-rewriting
+prototype is being investigated separately. No syscall skip list or production
+scan omission follows. Concurrent Clang/desktop load and observer overhead
+preclude latency/comparable-speed claims; differing R2/R3 counts are different
+instrumented runs. Root analysis: `.context/hot-shared-mapping-analysis-r3/`.
+Final metadata SHA256:
+`5208148cc145fd6019ed2c686b141975b4d89ef30c7754a11a2a4c52dea4f5d1`.
