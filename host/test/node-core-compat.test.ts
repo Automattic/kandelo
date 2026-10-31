@@ -14,6 +14,7 @@ import { nodeStdinDecodingCommand } from "./fixtures/node-stdin-decoding";
 import { nodeStdinCommand } from "./fixtures/node-stdin";
 import { nodeUrlCommand } from "./fixtures/node-url";
 import { nodeWebStreamsCommand } from "./fixtures/node-web-streams";
+import { nodeGlobalScopeCommand } from "./fixtures/node-global-scope";
 
 async function runShell(command: string) {
   let stdout = "", stderr = "";
@@ -44,6 +45,7 @@ async function runShell(command: string) {
 }
 
 const cases: Array<[string, string, readonly string[]]> = [
+  ["public global namespace and private embedding utilities", nodeGlobalScopeCommand, ["node-global-scope-ok", "node-global-eval-ok"]],
   ["assertion matchers and deep comparisons", nodeAssertionCommand, ["node-assertion-semantics-ok"]],
   ["positioned filesystem I/O", nodePositionedCommand, ["node-positioned-io-ok"]],
   ["Response consumption, cloning and Blob data", nodeResponseBodyCommand, ["node-response-body-ok"]],

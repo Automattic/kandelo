@@ -88,6 +88,14 @@ particular:
   supplying invented DNS answers in the harness. Other DNS record APIs
   remain incomplete or placeholders.
 
+- Node-mode initialization removes the embedding's shell utilities after
+  capturing the private functions used for I/O, workers and shutdown.
+  Public globals use the pinned Node bootstrap's enumerability and
+  replacement descriptors. File-module bindings stay in their wrappers;
+  eval retains its global bindings. Module-loader and event-loop bridges
+  remain non-enumerable embedding properties. This does not establish
+  identical own-property inventories or complete Web API behavior.
+
 - Several DNS, crypto/TLS, worker, performance and browser globals
   remain partial or placeholders. They must not be treated as supported
   solely because the names export. The DNS record-resolution placeholders,

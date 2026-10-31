@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { collectNodejsLibraryTests, parseNodejsTestMetadata, nodejsTarget, repoRoot, ensureSourceModuleBoundary, sourceFiles, sourceEntries, sourceTreeHash, preparePinnedArchive, fileHash } from '../../scripts/nodejs-source-helper';
 import { classifyNodejsResult } from '../../scripts/nodejs-test-results';
 import { runNativeNodejsCase } from '../../scripts/nodejs-native-runner';
+import { nodeGlobalScopeSource } from '../../host/test/fixtures/node-global-scope';
 
 const directory = mkdtempSync(join(tmpdir(), 'kandelo-nodejs-harness-'));
 mkdirSync(join(directory, 'test/parallel'), { recursive: true });
@@ -139,14 +140,41 @@ describe('pinned Node upstream harness', () => {
     // Execute the assembled sources too: isolated module tests cannot catch
     // an eager dependency reading another module's uninitialized binding.
     // No shell OS is provided; this checks initialization, not guest I/O.
-    const realm = runInNewContext(readFileSync(output, 'utf8') + '\nglobalThis;', {}, { timeout: 5000 });
+    const disposal = function DisposableStack() {};
+    const embedding = { print() {}, quit() {}, options() {}, shellDebugHelper() {}, DisposableStack: disposal };
+    const realm = runInNewContext(readFileSync(output, 'utf8') + '\nglobalThis;', embedding, { timeout: 5000 });
     expect(realm.__nodeBootstrapReady).toBe(true);
     expect(realm.process.version).toBe(`v${nodejsTarget.version}`);
     expect(realm.require('url').URL).toBe(realm.URL);
     expect(realm.require('stream/web').ReadableStream).toBe(realm.ReadableStream);
+    expect(realm.require('buffer').atob).toBe(realm.atob);
+    expect(realm.require('buffer').btoa).toBe(realm.btoa);
+    expect(realm.DisposableStack).toBe(disposal);
+    for (const name of ['print','quit','options','shellDebugHelper']) {
+      expect(Object.hasOwn(realm, name), name).toBe(false);
+    }
+    for (const name of ['process','Buffer','URL','AbortController','TextDecoder','Blob']) {
+      const descriptor = Object.getOwnPropertyDescriptor(realm, name)!;
+      const expected = Object.getOwnPropertyDescriptor(globalThis, name)!;
+      expect(descriptor.enumerable, name).toBe(expected.enumerable);
+      expect(descriptor.configurable, name).toBe(expected.configurable);
+      expect(descriptor.writable, name).toBe(expected.writable);
+      expect(typeof descriptor.get, name).toBe(typeof expected.get);
+      expect(typeof descriptor.set, name).toBe(typeof expected.set);
+    }
+    expect(realm.setTimeout).toBeTypeOf('function');
+    expect(Object.keys(realm)).toContain('setTimeout');
+    expect(Object.keys(realm)).not.toContain('__kandeloRunDueTimers');
     expect(readFileSync(header, 'utf8')).toContain(`#define KANDELO_NODE_COMPAT_VERSION "v${nodejsTarget.version}"`);
     expect(readFileSync(output, 'utf8')).toContain(`"version": "${nodejsTarget.version}"`);
     expect(readFileSync(join(repoRoot, 'packages/registry/spidermonkey/patches/0012-kandelo-node-compat-shell-entry.patch'), 'utf8'))
       .toContain('puts(KANDELO_NODE_COMPAT_VERSION)');
+  });
+
+  it.skipIf(process.versions.node !== nodejsTarget.version)('checks the guest global fixture against the exact native target', () => {
+    const path = join(directory, 'global-scope.cjs');
+    writeFileSync(path, nodeGlobalScopeSource);
+    expect(execFileSync(process.execPath, [path], { encoding: 'utf8' }))
+      .toContain('node-global-scope-ok');
   });
 });

@@ -5133,6 +5133,8 @@ const _builtinModules = {
     'events': events,
     'buffer': {
         Buffer,
+        atob: globalThis.atob,
+        btoa: globalThis.btoa,
         isAscii: _bufferIsAscii,
         isUtf8: _bufferIsUtf8,
         // Node's buffer.constants (64-bit values).
@@ -6347,7 +6349,6 @@ globalThis.__kandeloModuleMeta = function (resolvedPath) {
 globalThis.process = process;
 globalThis.Buffer = Buffer;
 globalThis.global = globalThis;
-globalThis.GLOBAL = globalThis; // deprecated alias
 
 // Timer globals — overwrite the js_std_add_helpers stubs that return a
 // raw int64 with the wrapped-id objects from `timers` above.
@@ -7164,5 +7165,68 @@ globalThis.__nodeBootstrapReady = true;
 Object.defineProperty(globalThis, '__kandeloNodeFinalize', {
     value: failureStatus => _runNaturalExit(failureStatus, true),
 });
+
+// Public Node globals are a different namespace from an engine's command-line
+// shell. Match the target's bootstrap descriptors before executing user code.
+// Missing interfaces remain missing; this does not manufacture implementations.
+function _installNodeGlobalScope() {
+    const operations = [
+        'global', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+        'setImmediate', 'clearImmediate', 'queueMicrotask', 'structuredClone',
+        'atob', 'btoa', 'fetch',
+    ];
+    const interfaces = [
+        'console', 'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder',
+        'ReadableStream', 'WritableStream', 'TransformStream',
+        'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'Blob', 'File',
+        'FormData', 'Headers', 'Request', 'Response', 'MessagePort',
+        'MessageChannel', 'BroadcastChannel', 'Event', 'EventTarget',
+        'MessageEvent', 'CloseEvent', 'ErrorEvent', 'CustomEvent', 'DOMException',
+        'AbortSignal', 'AbortController',
+    ];
+    const attributes = ['process', 'Buffer', 'crypto', 'performance'];
+    const publicNames = operations.concat(interfaces, attributes);
+    if (typeof _nodeNative.prepareGlobalScope === 'function') {
+        _nodeNative.prepareGlobalScope(publicNames);
+    }
+    for (const name of operations.concat(interfaces)) {
+        if (Object.prototype.hasOwnProperty.call(globalThis, name)) {
+            Object.defineProperty(globalThis, name, {
+                value: globalThis[name], writable: true, configurable: true,
+                enumerable: operations.includes(name),
+            });
+        }
+    }
+    for (const name of attributes) {
+        if (!Object.prototype.hasOwnProperty.call(globalThis, name)) continue;
+        let value = globalThis[name];
+        Object.defineProperty(globalThis, name, {
+            get() { return value; },
+            set: name === 'crypto' ? undefined : function (replacement) { value = replacement; },
+            enumerable: name === 'crypto' || name === 'performance',
+            configurable: true,
+        });
+    }
+    Object.defineProperty(globalThis, Symbol.toStringTag, {
+        value: 'global', writable: false, enumerable: false, configurable: true,
+    });
+    // C++ module loading and the event loop still use these private bridges.
+    for (const name of ['__kandeloRunDueTimers', '__kandeloNextTimerDelay',
+        '__kandeloCreateWorkerThreads', '__kandeloBareModules',
+        '__kandeloBareSources', '__kandeloResolveBare', '__kandeloModuleMeta',
+        '__nodeBootstrapReady']) {
+        if (Object.prototype.hasOwnProperty.call(globalThis, name)) {
+            Object.defineProperty(globalThis, name, { enumerable: false });
+        }
+    }
+    // File modules receive these as lexical wrapper arguments. Eval/REPL
+    // entry points deliberately retain their corresponding global bindings.
+    if (_mainScriptPath) {
+        for (const name of ['require', 'module', 'exports', '__filename', '__dirname']) {
+            delete globalThis[name];
+        }
+    }
+}
+_installNodeGlobalScope();
 
 _runMainScriptIfPresent();
