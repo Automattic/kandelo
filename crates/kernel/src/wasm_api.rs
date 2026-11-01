@@ -4185,6 +4185,8 @@ pub extern "C" fn kernel_dequeue_signal(
                 // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK
                 // (EINTR); its resolved target must not outlive the call.
                 crate::dri::forget_vblank_waits(proc, tid);
+                // Likewise a parked sync-object wait's fence snapshot.
+                crate::dri::syncobj::forget_task(proc.pid, tid);
                 // ppoll, pselect, and sigsuspend keep their replacement mask
                 // installed until the logical wait finally completes. Form
                 // the handler mask from that current mask and place the same
@@ -16915,6 +16917,61 @@ pub extern "C" fn kernel_vblank() -> u32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_take_vblank_wake() -> u32 {
     u32::from(crate::dri::take_vblank_wake())
+}
+
+// ---------------------------------------------------------------------------
+// Explicit synchronization: fences (crate::dri::fence)
+// ---------------------------------------------------------------------------
+
+/// Host work for GL fences on separate native contexts: write up to
+/// `out_len / 8` records of `[export_id u32, request u32]` and return the
+/// count (or a negative errno). Request 2 (release): the kernel dropped its
+/// last reference, so the host may delete the native fence it retained.
+/// Request 1 (poll): a waiter is waiting on this pending fence, so the host
+/// must observe its native status and report a signal through
+/// [`kernel_dri_fence_host_signal`]. Fences nobody waits on are never
+/// listed, so a host with no listed fence does no fence work at all. The
+/// kernel announces new work with the `IDX_FENCE_HOST_WORK` wake event; a
+/// host calls this only after seeing it (or while it is still polling).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_dri_fence_host_requests(out_ptr: *mut u8, out_len: u32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    if out_ptr.is_null() {
+        return -(Errno::EINVAL as i32);
+    }
+    let requests = crate::dri::fence::host_requests();
+    let capacity = (out_len / 8) as usize;
+    if requests.len() > capacity {
+        // The releases were consumed with this call; a short buffer would
+        // lose them. A host must size its buffer for every exported fence.
+        panic!("kernel_dri_fence_host_requests: {} requests exceed the host buffer of {}",
+            requests.len(), capacity);
+    }
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, requests.len() * 8) };
+    for (i, (export_id, request)) in requests.iter().enumerate() {
+        out[i * 8..i * 8 + 4].copy_from_slice(&export_id.to_le_bytes());
+        out[i * 8 + 4..i * 8 + 8].copy_from_slice(&request.to_le_bytes());
+    }
+    requests.len() as i32
+}
+
+/// The host observed GL fence export `export_id` signal (`error` 0, or a
+/// negative errno if its context was lost). Returns 0 when a pending fence
+/// signaled, 1 when the fence was already released, and `-EINVAL` for an id
+/// the kernel never issued (a host fault).
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_dri_fence_host_signal(export_id: u32, error: i32) -> i32 {
+    let _gkl = GklGuard::acquire();
+    let mut host = WasmHostIO;
+    let now = match crate::dri::sync_file::monotonic_now(&mut host) {
+        Ok(now) => now,
+        Err(errno) => return -(errno as i32),
+    };
+    match crate::dri::fence::host_signaled(export_id, error, now) {
+        Ok(crate::dri::fence::HostSignal::Signaled) => 0,
+        Ok(crate::dri::fence::HostSignal::Released) => 1,
+        Err(errno) => -(errno as i32),
+    }
 }
 
 // ---------------------------------------------------------------------------

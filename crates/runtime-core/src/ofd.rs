@@ -270,6 +270,17 @@ pub struct PrimeBoState {
 /// -200 was the first procfs buffer handle; it was safe only because every
 /// procfs dispatch happened to check the file type first.
 pub const PRIME_FD_HOST_HANDLE: i64 = -195;
+/// `host_handle` sentinel for `sync_file` fds (see `crate::dri::sync_file`).
+pub const SYNC_FILE_FD_HOST_HANDLE: i64 = -196;
+/// `host_handle` sentinel for DRM syncobj fds (`DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD`).
+pub const SYNCOBJ_FD_HOST_HANDLE: i64 = -197;
+const _: () = assert!(
+    SYNC_FILE_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
+        && SYNCOBJ_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
+        && SYNC_FILE_FD_HOST_HANDLE < crate::sysfs::SYSFS_DIR_HANDLE
+        && SYNCOBJ_FD_HOST_HANDLE < SYNC_FILE_FD_HOST_HANDLE
+        && SYNC_FILE_FD_HOST_HANDLE < PRIME_FD_HOST_HANDLE
+);
 const _: () = assert!(
     PRIME_FD_HOST_HANDLE > -crate::procfs::PROCFS_BUF_BASE
         && PRIME_FD_HOST_HANDLE != crate::procfs::PROCFS_DIR_HANDLE
@@ -412,6 +423,9 @@ pub struct DriFdState {
     /// last close / exec.
     pub gl: Option<GlState>,
     pub gl_resources: SharedGlResources,
+    /// DRM sync-object handles (`drm_file.syncobj_idr`): per open file
+    /// description, shared by its aliases like the GEM namespace.
+    pub syncobjs: crate::dri::syncobj::SharedSyncobjs,
 }
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
@@ -595,6 +609,30 @@ pub enum DriOfdState {
     RenderNode(DriFdState),
     /// fd from `open("/dev/dri/card0")`.
     Card { dri: DriFdState, kms: SharedKmsFile },
+    /// A `sync_file` fd (`SYNC_FILE_FD_HOST_HANDLE`).
+    SyncFile(crate::dri::sync_file::SyncFile),
+    /// A DRM syncobj fd (`SYNCOBJ_FD_HOST_HANDLE`).
+    Syncobj(crate::dri::syncobj::Syncobj),
+}
+
+impl DriOfdState {
+    /// The `host_handle` sentinel an OFD carrying this sidecar must have, for
+    /// the descriptor kinds that are not device opens.
+    pub fn sentinel(&self) -> Option<i64> {
+        match self {
+            DriOfdState::PrimeBo(_) => Some(PRIME_FD_HOST_HANDLE),
+            DriOfdState::SyncFile(_) => Some(SYNC_FILE_FD_HOST_HANDLE),
+            DriOfdState::Syncobj(_) => Some(SYNCOBJ_FD_HOST_HANDLE),
+            DriOfdState::RenderNode(_) | DriOfdState::Card { .. } => None,
+        }
+    }
+
+    /// Whether this is a `sync_file` or syncobj fd sidecar. Both are
+    /// reference-counted kernel objects: cloning the sidecar shares the
+    /// object, so dup/fork/spawn/SCM_RIGHTS need no explicit accounting.
+    pub fn is_sync_object(&self) -> bool {
+        matches!(self, DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_))
+    }
 }
 
 /// Non-owning reconstruction metadata for a DRM description in SCM_RIGHTS.
@@ -605,16 +643,20 @@ pub struct DriTransferSnapshot {
     gem: Weak<RefCell<GemNamespace>>,
     resources: Weak<RefCell<GlResources>>,
     kms: Option<Weak<RefCell<KmsFdState>>>,
+    syncobjs: crate::dri::syncobj::WeakSyncobjs,
 }
 impl DriTransferSnapshot {
     pub fn from_state(identity: OfdId, state: &DriOfdState) -> Option<Self> {
         let (dri, kms) = match state {
             DriOfdState::RenderNode(dri) => (dri, None),
             DriOfdState::Card { dri, kms } => (dri, Some(Rc::downgrade(&kms.0))),
-            DriOfdState::PrimeBo(_) => return None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => {
+                return None;
+            }
         };
         Some(Self { identity, gem: Rc::downgrade(&dri.gem.0),
-            resources: Rc::downgrade(&dri.gl_resources.0), kms })
+            resources: Rc::downgrade(&dri.gl_resources.0), kms,
+            syncobjs: dri.syncobjs.downgrade() })
     }
     pub fn identity(&self) -> OfdId { self.identity }
     pub fn is_card(&self) -> bool { self.kms.is_some() }
@@ -624,8 +666,9 @@ impl DriTransferSnapshot {
         let kms = self.kms.as_ref().map(|kms| kms.upgrade().ok_or(Errno::EBADF)).transpose()?;
         // File resources are shared; command addresses/current-thread authority
         // belong to the sending process and must never cross this boundary.
+        let syncobjs = self.syncobjs.upgrade().ok_or(Errno::EBADF)?;
         let dri = DriFdState { gem: SharedGemNamespace(gem), gl: None,
-            gl_resources: SharedGlResources(resources) };
+            gl_resources: SharedGlResources(resources), syncobjs };
         Ok(Box::new(match kms {
             Some(kms) => DriOfdState::Card { dri, kms: SharedKmsFile(kms) },
             None => DriOfdState::RenderNode(dri),
@@ -989,15 +1032,28 @@ impl OpenFileDesc {
     pub fn dri(&self) -> Option<&DriFdState> {
         match self.dri_state.as_deref()? {
             DriOfdState::RenderNode(d) | DriOfdState::Card { dri: d, .. } => Some(d),
-            DriOfdState::PrimeBo(_) => None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => None,
         }
     }
 
     pub fn dri_mut(&mut self) -> Option<&mut DriFdState> {
         match self.dri_state.as_deref_mut()? {
             DriOfdState::RenderNode(d) | DriOfdState::Card { dri: d, .. } => Some(d),
-            DriOfdState::PrimeBo(_) => None,
+            DriOfdState::PrimeBo(_) | DriOfdState::SyncFile(_) | DriOfdState::Syncobj(_) => None,
         }
+    }
+
+    /// The `sync_file` behind a sync_file fd.
+    pub fn sync_file(&self) -> Option<&crate::dri::sync_file::SyncFile> {
+        match self.dri_state.as_deref()? {
+            DriOfdState::SyncFile(file) => Some(file),
+            _ => None,
+        }
+    }
+
+    /// Whether this OFD is a `sync_file` or syncobj fd.
+    pub fn is_sync_object(&self) -> bool {
+        self.dri_state.as_deref().is_some_and(DriOfdState::is_sync_object)
     }
 
     pub fn prime_bo(&self) -> Option<&PrimeBoState> {
@@ -1354,6 +1410,9 @@ impl OfdTable {
                     child_dri.gem = source_dri.gem.clone();
                 }
                 child_dri.gl_resources = source_dri.gl_resources.clone();
+                // Sync-object handles are not on the fork wire; the child's
+                // description is the parent's, so it shares their namespace.
+                child_dri.syncobjs = source_dri.syncobjs.clone();
             }
             if let (Some(DriOfdState::Card { kms: child, .. }),
                     Some(DriOfdState::Card { kms: parent, .. })) =

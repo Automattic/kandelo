@@ -169,6 +169,35 @@ pub fn push(idx: u32, wake_type: u8) {
     events.push(WakeupEvent { idx, wake_type });
 }
 
+/// A fence signaled, a DRM sync object gained a fence, or a sync-object
+/// eventfd fired: parked waiters on those objects must retry. Carried as a
+/// `TYPE_READABLE` record whose reserved index names no pipe, so it has none
+/// of a pipe event's side effects and hosts apply only their broad retry.
+pub fn push_fence_ready() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
+}
+
+/// The host has GL-fence work to collect (`kernel_dri_fence_host_requests`).
+pub fn push_fence_host_work() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_HOST_WORK, WAKE_READABLE);
+}
+
+/// Append one record unless an identical one is already queued. Safe from
+/// destructors that run while a test thread's storage is torn down.
+fn append_coalesced(idx: u32, wake_type: u8) {
+    let add = |events: &mut Vec<WakeupEvent>| {
+        if !events.iter().any(|e| e.idx == idx && e.wake_type == wake_type) {
+            events.push(WakeupEvent { idx, wake_type });
+        }
+    };
+    #[cfg(test)]
+    {
+        let _ = TEST_WAKEUP_EVENTS.try_with(|events| add(&mut events.borrow_mut()));
+    }
+    #[cfg(not(test))]
+    add(unsafe { &mut *WAKEUP_BUFFER.events.get() });
+}
+
 /// Push an accept-readiness event for a listening socket.
 pub fn push_accept(accept_idx: u32) {
     push(accept_idx, WAKE_ACCEPT);

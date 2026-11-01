@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import type { GlFenceCandidate } from "./fences.js";
+import type { GlFenceCandidate, GlFenceLease } from "./fences.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 
@@ -92,12 +92,34 @@ export const SERVER_WAIT_CLIENT_SIGNAL = 1;
 export function runServerWait(destination: GlBinding, source: GlBinding | undefined,
   input: Uint8Array, out: Uint8Array,
   captureErrors: (gl: WebGL2RenderingContext) => void,
-  selectCurrent: () => void): number {
+  selectCurrent: () => void,
+  exported?: GlFenceLease | null): number {
   if (input.byteLength !== 8 || out.byteLength !== SERVER_WAIT_REPLY_BYTES) return -22;
-  const token = new DataView(input.buffer, input.byteOffset, 8).getUint32(4, true);
+  const view = new DataView(input.buffer, input.byteOffset, 8);
+  const token = view.getUint32(4, true);
   if (!token) return -22;
   const gl = destination.gl;
   if (!gl || destination.contextId === null) return -1;
+  if (view.getUint32(0, true) === 0) {
+    // Session 0: an imported sync_file whose one pending fence is a GL fence
+    // this host retained for the kernel under export id `token`. The kernel
+    // forwards only live exports, so a missing one is a host fault (-EIO).
+    // The guest named the file by fd with token 0, which the reply echoes.
+    if (!exported) return -5;
+    let disposition = SERVER_WAIT_CLIENT_SIGNAL;
+    if (exported.context === gl) {
+      captureErrors(gl);
+      selectCurrent();
+      if (exported.enqueueNativeWait(gl, null) !== true) return -5;
+      disposition = SERVER_WAIT_ORDERED;
+    }
+    const reply = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    reply.setUint32(0, 0, true);
+    reply.setUint32(4, 0, true);
+    reply.setUint32(8, disposition, true);
+    reply.setUint32(12, REPLY_MAGIC, true);
+    return SERVER_WAIT_REPLY_BYTES;
+  }
   let status = 0, disposition = SERVER_WAIT_ORDERED;
   if (!source || !source.fences.has(token)) status = 2;
   else {
@@ -119,4 +141,45 @@ export function runServerWait(destination: GlBinding, source: GlBinding | undefi
   reply.setUint32(8, disposition, true);
   reply.setUint32(12, REPLY_MAGIC, true);
   return SERVER_WAIT_REPLY_BYTES;
+}
+
+/** Reply word 2 of an export: the fence is on the shared native context, so
+ * every later consumer is already ordered behind it (decision D-17). */
+export const EXPORT_FENCE_ORDERED = 0;
+/** Reply word 2: the fence is on a separate native context; the host retains
+ * it under the export id and observes its native status for the kernel. */
+export const EXPORT_FENCE_RETAINED = 1;
+
+/** DRM_IOCTL_WPK_EXPORT_FENCE (eglDupNativeFenceFDANDROID).
+ *
+ * in: [fence token, kernel export id]; out: [status, token, disposition,
+ * magic]. Status 2 = unknown fence. A fence on `sharedContext` needs no
+ * retention: submission order already completes it for every consumer. A
+ * fence elsewhere is retained (an independent native pin, surviving the EGL
+ * sync's destruction) until the kernel releases the export. */
+export function runExportFence(b: GlBinding, input: Uint8Array, out: Uint8Array,
+  sharedContext: WebGL2RenderingContext | null,
+  captureErrors: (gl: WebGL2RenderingContext) => void,
+  retain: (exportId: number, lease: GlFenceLease) => boolean): number {
+  if (input.byteLength !== 8 || out.byteLength !== FENCE_REPLY_BYTES) return -22;
+  const view = new DataView(input.buffer, input.byteOffset, 8);
+  const token = view.getUint32(0, true), exportId = view.getUint32(4, true);
+  if (!token || !exportId) return -22;
+  let status = 0, disposition = EXPORT_FENCE_ORDERED;
+  if (!b.fences.has(token)) status = 2;
+  else {
+    const lease = b.fences.acquire(token);
+    if (!lease) return -5;
+    if (sharedContext !== null && lease.context === sharedContext) {
+      captureErrors(lease.context);
+      lease.release();
+    } else if (retain(exportId, lease)) disposition = EXPORT_FENCE_RETAINED;
+    else { captureErrors(lease.context); lease.release(); return -5; }
+  }
+  const reply = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  reply.setUint32(0, status, true);
+  reply.setUint32(4, token, true);
+  reply.setUint32(8, disposition, true);
+  reply.setUint32(12, REPLY_MAGIC, true);
+  return FENCE_REPLY_BYTES;
 }

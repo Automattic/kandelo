@@ -2,6 +2,7 @@
 
 pub mod channel_record;
 pub mod channel_scalar;
+pub mod dri_sync;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
@@ -194,6 +195,19 @@ pub mod wakeup_event_wire {
     /// `kernel_drain_wait_completions` when it sees this bit, so a machine
     /// with no kernel-parked task pays no extra export call per syscall.
     pub const TYPE_WAIT_COMPLETE: u8 = 128;
+
+    /// `idx` of a [`TYPE_READABLE`] record that names no pipe: a fence
+    /// signaled, a DRM sync object gained a fence, or a sync-object eventfd
+    /// fired. Parked waits on sync objects, `sync_file`/dma-buf/eventfd
+    /// readiness may now finish, so hosts apply their broad retry. Pipe
+    /// indices never reach the reserved top of the `u32` range.
+    pub const IDX_FENCE_READY: u32 = u32::MAX;
+    /// `idx` of a [`TYPE_READABLE`] record: the kernel has GL-fence work for
+    /// the host (a waiter enabled a separate-context fence the host must
+    /// poll, or the kernel released one); the host collects it with
+    /// `kernel_dri_fence_host_requests`. Raised only on those changes, so a
+    /// host never asks while nothing is pending.
+    pub const IDX_FENCE_HOST_WORK: u32 = u32::MAX - 1;
 }
 
 /// Checked outcome of one DRI/GL cleanup effect the kernel asks the host to
@@ -894,6 +908,8 @@ pub enum Errno {
     ENOMSG = 42,
     EIDRM = 43,
     ENODATA = 61,
+    /// `ETIME`: a DRM sync-object wait reached its timeout.
+    ETIME = 62,
     EPROTO = 71,
     EOVERFLOW = 75,
     EBADFD = 77,
@@ -971,6 +987,7 @@ impl Errno {
             42 => Some(Errno::ENOMSG),
             43 => Some(Errno::EIDRM),
             61 => Some(Errno::ENODATA),
+            62 => Some(Errno::ETIME),
             71 => Some(Errno::EPROTO),
             75 => Some(Errno::EOVERFLOW),
             77 => Some(Errno::EBADFD),
@@ -4352,6 +4369,23 @@ pub mod gl {
     /// CHUNK(action2,token,offset,count)=16; RELEASE(action3,token)=8.
     /// Checked reply: status,token,count,chunk bytes,QUERY_REPLY_MAGIC.
     pub const QOP_SERVER_WAIT: u32 = 0x0035;
+    /// Server-wait reply word 2: the destination may proceed at once (a
+    /// native wait was enqueued on its context, or nothing is pending).
+    pub const SERVER_WAIT_ORDERED: u32 = 0;
+    /// Server-wait reply word 2: the caller must observe the signal before it
+    /// issues later commands (no shared native command stream).
+    pub const SERVER_WAIT_CLIENT_SIGNAL: u32 = 1;
+    /// Publish one fence of this object session for a `sync_file`
+    /// (`DRM_IOCTL_WPK_EXPORT_FENCE`). Kernel-issued only; the guest never
+    /// sends it. in: [fence token, kernel export id] (8 bytes); out: the
+    /// 16-byte fence reply `[status, token, disposition, magic]`, where
+    /// disposition [`EXPORT_FENCE_ORDERED`] means the fence is on the shared
+    /// native context (complete in submission order) and
+    /// [`EXPORT_FENCE_RETAINED`] means the host retained it under the export
+    /// id for polling, because it is on a separate native context.
+    pub const QOP_EXPORT_FENCE: u32 = 0x0036;
+    pub const EXPORT_FENCE_ORDERED: u32 = 0;
+    pub const EXPORT_FENCE_RETAINED: u32 = 1;
     pub const QOP_OBJECT_CAPTURE: u32 = 0x0034;
     pub const QOP_READBACK_CAPTURE: u32 = 0x0033;
 
@@ -6541,6 +6575,7 @@ mod gl_tests {
             QOP_FLUSH,
             QOP_COMPRESSED_UPLOAD,
             QOP_SERVER_WAIT,
+            QOP_EXPORT_FENCE,
             QOP_OBJECT_CAPTURE,
             QOP_READBACK_CAPTURE,
         ];

@@ -237,6 +237,8 @@
  * continue; CLIENT_SIGNAL means the fence is on another physical renderer and
  * the caller must observe its signal before issuing later commands. */
 #define QOP_SERVER_WAIT 0x0035u
+/* Kernel-issued only (DRM_IOCTL_WPK_EXPORT_FENCE); the guest never sends it. */
+#define QOP_EXPORT_FENCE 0x0036u
 #define WPK_SERVER_WAIT_ORDERED 0u
 #define WPK_SERVER_WAIT_CLIENT_SIGNAL 1u
 #define QOP_OBJECT_CAPTURE 0x0034u
@@ -387,6 +389,27 @@ struct wpk_drm_export_image {
     uint32_t reserved[2];
 };
 _Static_assert(sizeof(struct wpk_drm_export_image) == 48, "export image layout");
+/* DRM_IOCTL_WPK_EXPORT_FENCE mirrors shared::dri_sync::WpkDrmExportFence:
+ * on an EGL object session's fd, publish that session's fence `token` as a
+ * new sync_file descriptor (eglDupNativeFenceFDANDROID). `flags` accepts
+ * only O_CLOEXEC. */
+#define WPK_DRM_IOCTL_EXPORT_FENCE 0xc01064e4u
+struct wpk_drm_export_fence {
+    uint32_t token, flags;
+    int32_t fd;
+    uint32_t pad;
+};
+_Static_assert(sizeof(struct wpk_drm_export_fence) == 16, "export fence layout");
+/* sync_file's SYNC_IOC_FILE_INFO (include/uapi/linux/sync_file.h); with
+ * num_fences 0 it only reports the file's status and fence count. */
+#define WPK_SYNC_IOC_FILE_INFO 0xc0383e04u
+struct wpk_sync_file_info {
+    char name[32];
+    int32_t status;
+    uint32_t flags, num_fences, pad;
+    uint64_t sync_fence_info;
+};
+_Static_assert(sizeof(struct wpk_sync_file_info) == 56, "sync_file_info layout");
 /* Source object admission for an exported image, in the exporting context's
  * share group. kind 1 = texture of `object_target` (GL_TEXTURE_2D or
  * GL_TEXTURE_CUBE_MAP), 2 = renderbuffer. */

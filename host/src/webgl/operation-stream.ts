@@ -1,4 +1,4 @@
-import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
+import { QOP_CREATE_FENCE, QOP_EXPORT_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 
 /** The ordering owner is one kernel-authorized GL session, independent of a
@@ -101,6 +101,7 @@ export class GlOperationStream {
 }
 
 export function queryOperationKind(op: number): "query" | "fence-create" | "fence-status" | "fence-release" {
-  return op === QOP_CREATE_FENCE ? "fence-create" : op === QOP_FENCE_STATUS ? "fence-status"
+  return op === QOP_CREATE_FENCE ? "fence-create"
+    : op === QOP_FENCE_STATUS || op === QOP_EXPORT_FENCE ? "fence-status"
     : op === QOP_RELEASE_FENCE ? "fence-release" : "query";
 }

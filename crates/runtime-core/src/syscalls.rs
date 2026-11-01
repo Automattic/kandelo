@@ -1092,7 +1092,8 @@ pub fn collect_owned_gl_image_release_effects(
 ) -> Vec<DriReleaseEffect> {
     let dri = match state {
         crate::ofd::DriOfdState::RenderNode(dri) | crate::ofd::DriOfdState::Card { dri, .. } => dri,
-        crate::ofd::DriOfdState::PrimeBo(_) => return Vec::new(),
+        crate::ofd::DriOfdState::PrimeBo(_) | crate::ofd::DriOfdState::SyncFile(_)
+        | crate::ofd::DriOfdState::Syncobj(_) => return Vec::new(),
     };
     collect_gl_resource_releases(take_owned_gl_resources(dri, pid, true))
 }
@@ -1393,7 +1394,8 @@ fn release_dri_handle(
 /// The driver identity `DRM_IOCTL_VERSION` reports; the name matches the
 /// sysfs `DRIVER=` of the platform device. Linux drivers report date "0"
 /// since driver dates were removed (6.14).
-const DRM_DRIVER_NAME: &[u8] = b"kandelo-drm";
+const DRM_DRIVER_NAME_STR: &str = "kandelo-drm";
+const DRM_DRIVER_NAME: &[u8] = DRM_DRIVER_NAME_STR.as_bytes();
 const DRM_DRIVER_DATE: &[u8] = b"0";
 const DRM_DRIVER_DESC: &[u8] = b"Kandelo virtual display";
 
@@ -1655,12 +1657,49 @@ fn capture_gl_query_info(
     if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
         return Err(Errno::EINVAL);
     }
-    if info.op == gl::QOP_SERVER_WAIT {
+    let mut kernel_reply = None;
+    if info.op == gl::QOP_SERVER_WAIT && u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 {
+        // EGL_ANDROID_native_fence_sync import: [sync_file fd, 0]. The kernel
+        // owns the fence, so it decides the disposition: nothing pending
+        // needs no wait; exactly one pending host GL fence may be a native
+        // wait on the destination's context (the host decides, by the export
+        // id it retains); anything else -- several fences, or a software or
+        // KMS fence -- has no native command stream to wait in, so the caller
+        // observes the signal before its later commands (CLIENT_SIGNAL).
+        let source_fd = i32::from_le_bytes(in_buf[..4].try_into().unwrap());
+        let file = crate::dri::sync_file::from_fd(proc, source_fd).ok_or(Errno::EINVAL)?;
+        let mut leaves = alloc::vec::Vec::new();
+        file.fence().unwrap_into(&mut leaves);
+        leaves.retain(|leaf| !leaf.is_signaled());
+        let export = match leaves.as_slice() {
+            [only] => only.host_export_id(),
+            _ => None,
+        };
+        match export {
+            Some(export_id) => {
+                // Session 0 names a kernel-exported fence, never a session.
+                in_buf[..4].copy_from_slice(&0u32.to_le_bytes());
+                in_buf[4..8].copy_from_slice(&export_id.to_le_bytes());
+            }
+            None => {
+                let disposition = if leaves.is_empty() {
+                    gl::SERVER_WAIT_ORDERED
+                } else {
+                    for leaf in &leaves { leaf.enable_signaling(); }
+                    gl::SERVER_WAIT_CLIENT_SIGNAL
+                };
+                let mut reply = alloc::vec::Vec::new();
+                for word in [0u32, 0, disposition, gl::QUERY_REPLY_MAGIC] {
+                    reply.extend_from_slice(&word.to_le_bytes());
+                }
+                kernel_reply = Some(reply);
+            }
+        }
+    } else if info.op == gl::QOP_SERVER_WAIT {
         // The guest names the fence's session by its own fd. The host must
         // never interpret a guest fd number, so replace it with the session
         // identity of an object session this process owns. The host completes
         // the wait synchronously, so no reference outlives this request.
-        if u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 { return Err(Errno::EINVAL); }
         let source_fd = i32::from_le_bytes(in_buf[..4].try_into().unwrap());
         let source_idx = proc.fd_table.get(source_fd).map_err(|_| Errno::EBADF)?.ofd_ref.0;
         let source = dri_state(proc, source_idx)?;
@@ -1686,9 +1725,81 @@ fn capture_gl_query_info(
         read_surface_id: state.current.map(|current| current.read_surface_id),
         pointer_width: proc.pointer_width,
     };
+    if let Some(reply) = kernel_reply {
+        return Ok(crate::gl_query_request::GlQueryRequest::answered(owner, info.op,
+            info.out_buf_ptr, reply));
+    }
     let request = crate::gl_query_request::GlQueryRequest::new(owner,
         info.op, in_buf, info.out_buf_ptr, info.out_buf_len as usize)?;
     Ok(request)
+}
+
+/// `DRM_IOCTL_WPK_EXPORT_FENCE`: `eglDupNativeFenceFDANDROID` for a fence
+/// this object session created. The caller has the same authority the fence
+/// queries require. The fence's dma_fence context is its session (tokens are
+/// monotonic per session), so merging two of a session's fences keeps the
+/// later one, as merging two points of one GPU timeline does on Linux.
+fn export_gl_fence(proc: &mut Process, host: &mut dyn HostIO, _fd: i32, ofd_idx: usize,
+    buf: &mut [u8]) -> Result<(), Errno> {
+    use wasm_posix_shared::dri_sync::WpkDrmExportFence;
+    use wasm_posix_shared::gl;
+    let mut req: WpkDrmExportFence = crate::dri::ioctl_kms::read_dri_struct(buf)?;
+    if req.token == 0 || req.pad != 0
+        || req.flags & !wasm_posix_shared::flags::O_CLOEXEC != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    let pid = proc.pid as i32;
+    let session_id = {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        if ofd.is_path_only() { return Err(Errno::EBADF); }
+        let dri = dri_state(proc, ofd_idx)?;
+        let state = dri.gl.as_ref().ok_or(Errno::EACCES)?;
+        if state.role != gl::SESSION_OBJECTS || state.owner_pid != pid
+            || !dri.gl_resources.borrow().owner.is_some_and(|owner| {
+                owner.pid == pid && owner.session_id == state.session_id
+                    && owner.role == gl::SESSION_OBJECTS && owner.native_live
+                    && owner.cmdbuf_range.is_some()
+            })
+        {
+            return Err(Errno::EACCES);
+        }
+        state.session_id
+    };
+    let export_id = crate::dri::fence::allocate_export_id()?;
+    let mut input = [0u8; 8];
+    input[..4].copy_from_slice(&req.token.to_le_bytes());
+    input[4..].copy_from_slice(&export_id.to_le_bytes());
+    let mut reply = [0u8; 16];
+    let rc = host.gl_query(pid, gl::QOP_EXPORT_FENCE, &input, &mut reply, session_id);
+    if rc < 0 {
+        return Err(Errno::from_u32((-rc) as u32).unwrap_or(Errno::EIO));
+    }
+    let word = |i: usize| u32::from_le_bytes(reply[i * 4..i * 4 + 4].try_into().unwrap());
+    assert!(rc == 16 && word(1) == req.token && word(3) == gl::QUERY_REPLY_MAGIC
+        && word(0) <= 2 && word(2) <= gl::EXPORT_FENCE_RETAINED,
+        "host QOP_EXPORT_FENCE reply violates its contract");
+    if word(0) != 0 {
+        // No such fence on this session.
+        return Err(Errno::EINVAL);
+    }
+    let context = crate::dri::fence::GL_SESSION_CONTEXT_BASE | u64::from(session_id);
+    let timeline = crate::dri::fence::Timeline::Static("gles");
+    let fence = if word(2) == gl::EXPORT_FENCE_ORDERED {
+        // D-17: the shared native context executes in submission order, so
+        // every later consumer is already ordered behind this fence.
+        let now = crate::dri::sync_file::monotonic_now(host)?;
+        crate::dri::fence::Fence::signaled(context, u64::from(req.token), DRM_DRIVER_NAME_STR,
+            timeline, now)
+    } else {
+        crate::dri::fence::Fence::pending(context, u64::from(req.token), DRM_DRIVER_NAME_STR,
+            timeline, crate::dri::fence::Source::HostGl { export_id })
+    };
+    let cloexec = req.flags & wasm_posix_shared::flags::O_CLOEXEC != 0;
+    req.fd = crate::dri::sync_file::install_fd(proc, crate::dri::sync_file::SyncFile::new(fence),
+        cloexec)?;
+    crate::dri::ioctl_kms::write_dri_struct(buf, req);
+    Ok(())
 }
 
 fn query_gl_checked(proc: &mut Process, host: &mut dyn HostIO, fd: i32, ofd_idx: usize,
@@ -1696,6 +1807,54 @@ fn query_gl_checked(proc: &mut Process, host: &mut dyn HostIO, fd: i32, ofd_idx:
     let mut request = capture_gl_query_info(proc, host, fd, ofd_idx, info, session, tid)?;
     request.execute_immediate(host)?;
     request.publish_immediate(host)
+}
+
+/// `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` / `IMPORT_SYNC_FILE` on a PRIME fd:
+/// move fences between a `sync_file` and the buffer's implicit fences
+/// (`dma_buf_export_sync_file` / `dma_buf_import_sync_file`). Export for a
+/// read waits for writers; export for a write waits for every fence; an
+/// import adds the file's fences as writers or readers.
+fn handle_dma_buf_sync_ioctl(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    bo_id: crate::dri::BoId,
+    request: u32,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri_sync::*;
+    let mut args: DmaBufSyncFile = crate::dri::ioctl_kms::read_dri_struct(buf)?;
+    if args.flags & !DMA_BUF_SYNC_RW != 0 || args.flags & DMA_BUF_SYNC_RW == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let write = args.flags & DMA_BUF_SYNC_WRITE != 0;
+    if request == DMA_BUF_IOCTL_EXPORT_SYNC_FILE {
+        let now = crate::dri::sync_file::monotonic_now(host)?;
+        let fence = crate::dri::with_registry(|r| {
+            r.get_mut(bo_id).map(|bo| bo.reservation.singleton(write, now))
+        }).ok_or(Errno::EBADF)?;
+        args.fd = crate::dri::sync_file::install_fd(proc,
+            crate::dri::sync_file::SyncFile::new(fence), true)?;
+        crate::dri::ioctl_kms::write_dri_struct(buf, args);
+        Ok(())
+    } else {
+        let file = crate::dri::sync_file::from_fd(proc, args.fd).ok_or(Errno::EINVAL)?;
+        let usage = if write { crate::dri::fence::Usage::Write } else { crate::dri::fence::Usage::Read };
+        crate::dri::with_registry(|r| {
+            r.get_mut(bo_id).map(|bo| bo.reservation.add(file.fence(), usage))
+        }).ok_or(Errno::EBADF)
+    }
+}
+
+/// `dma_buf_poll` readiness of a PRIME fd: readable once its writers have
+/// signaled, writable once every fence has. A poller is a waiter.
+fn dma_buf_poll_ready(bo_id: crate::dri::BoId) -> (bool, bool) {
+    let sets = crate::dri::with_registry(|r| r.get_mut(bo_id)
+        .map(|bo| (bo.reservation.wait_set(false), bo.reservation.wait_set(true))));
+    let Some((readers_wait, writers_wait)) = sets else { return (false, false) };
+    for fence in readers_wait.iter().chain(&writers_wait) {
+        fence.enable_signaling();
+    }
+    (readers_wait.is_empty(), writers_wait.is_empty())
 }
 
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
@@ -1727,6 +1886,13 @@ pub(crate) fn handle_dri_ioctl(
             return Err(Errno::EACCES);
         }
     }
+    if crate::dri::syncobj::is_syncobj_request(request) {
+        let ns = dri_state(proc, ofd_idx)?.syncobjs.clone();
+        return crate::dri::syncobj::ioctl(proc, host, &ns, request, buf);
+    }
+    if request == wasm_posix_shared::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE {
+        return export_gl_fence(proc, host, fd, ofd_idx, buf);
+    }
     match request {
         DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(host, pid, request, buf),
         DRM_IOCTL_GET_CAP => {
@@ -1749,9 +1915,9 @@ pub(crate) fn handle_dri_ioctl(
                 | DRM_CAP_ASYNC_PAGE_FLIP
                 | DRM_CAP_ADDFB2_MODIFIERS
                 | DRM_CAP_PAGE_FLIP_TARGET
-                | DRM_CAP_SYNCOBJ
-                | DRM_CAP_SYNCOBJ_TIMELINE
                 | DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP => 0,
+                // Binary and timeline sync objects (crate::dri::syncobj).
+                DRM_CAP_SYNCOBJ | DRM_CAP_SYNCOBJ_TIMELINE => 1,
                 _ => return Err(Errno::EINVAL),
             };
             unsafe {
@@ -3107,6 +3273,8 @@ pub fn collect_dri_release_effects(
         crate::ofd::DriOfdState::PrimeBo(p) => {
             release_bo(&mut effects, p.bo_id);
         }
+        // Dropping the sidecar drops this description's object reference.
+        crate::ofd::DriOfdState::SyncFile(_) | crate::ofd::DriOfdState::Syncobj(_) => {}
         crate::ofd::DriOfdState::RenderNode(dri) => {
             if let Some(resources) = dri.gl_resources.into_last() {
                 effects.extend(collect_gl_resource_releases(resources));
@@ -5387,6 +5555,14 @@ pub fn validate_scm_rights_transfer_metadata(
         )
         .then_some(())
         .ok_or(Errno::EOPNOTSUPP),
+        FileType::CharDevice
+            if host_handle == crate::ofd::SYNC_FILE_FD_HOST_HANDLE
+                || host_handle == crate::ofd::SYNCOBJ_FD_HOST_HANDLE =>
+        {
+            // The sidecar carries the shared kernel object itself; presence
+            // is enforced by validate_scm_rights_in_flight_fd.
+            Ok(())
+        }
         FileType::CharDevice if host_handle == crate::ofd::PRIME_FD_HOST_HANDLE => {
             // Prime-bo fds are reconstructible: the sidecar carries the
             // machine-wide (bo_id, cookie) pair. Sidecar presence is enforced
@@ -5483,6 +5659,8 @@ pub fn snapshot_scm_rights_fd(
     }
     in_flight.prime_bo = prime_bo;
     in_flight.dri_snapshot = dri_snapshot;
+    in_flight.sync_state = ofd.dri_state.as_deref()
+        .filter(|state| state.is_sync_object()).cloned();
     validate_scm_rights_in_flight_fd(&in_flight)?;
 
     Ok(in_flight)
@@ -5521,6 +5699,13 @@ pub fn validate_scm_rights_in_flight_fd(
     let is_prime = entry.file_type == FileType::CharDevice
         && entry.host_handle == crate::ofd::PRIME_FD_HOST_HANDLE;
     if is_prime != entry.prime_bo.is_some() {
+        return Err(Errno::EOPNOTSUPP);
+    }
+    let sync_sentinel = (entry.file_type == FileType::CharDevice)
+        .then_some(entry.host_handle)
+        .filter(|&h| h == crate::ofd::SYNC_FILE_FD_HOST_HANDLE
+            || h == crate::ofd::SYNCOBJ_FD_HOST_HANDLE);
+    if sync_sentinel != entry.sync_state.as_ref().and_then(crate::ofd::DriOfdState::sentinel) {
         return Err(Errno::EOPNOTSUPP);
     }
     let expected_dri = if entry.file_type == FileType::CharDevice {
@@ -5589,6 +5774,10 @@ pub fn install_scm_rights_fds_with_flags(
             Ok(new_fd) => {
                 if let Some(state) = entry.take_dri_state() {
                     proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(state);
+                }
+                if let Some(state) = entry.sync_state.clone() {
+                    proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+                        Some(alloc::boxed::Box::new(state));
                 }
                 // Take a bo refcount for the receiver's new fd; its close
                 // drops it (dri_release_ofd_state). The queued entry holds
@@ -6743,6 +6932,11 @@ pub fn sys_read(
         return Err(Errno::EBADF);
     }
 
+    // sync_file and syncobj fds have no read operation (vfs_read: EINVAL).
+    if ofd.is_sync_object() {
+        return Err(Errno::EINVAL);
+    }
+
     // A zero-byte read still validates the descriptor and access mode, but it
     // must not consult a pipe, socket, timer, terminal, or host backing that
     // could report EAGAIN or otherwise consume state.
@@ -7709,6 +7903,11 @@ pub fn sys_lseek(
     let ofd_idx = entry.ofd_ref.0;
 
     let ofd = proc.ofd_table.get_mut(ofd_idx).ok_or(Errno::EBADF)?;
+
+    // sync_file and syncobj fds are anonymous inodes without llseek.
+    if ofd.is_sync_object() {
+        return Err(Errno::ESPIPE);
+    }
 
     // A prime-bo fd seeks like a Linux dma-buf (dma_buf_llseek): only
     // offset 0 with SEEK_SET or SEEK_END, and SEEK_END reports the buffer's
@@ -9106,6 +9305,32 @@ pub fn sys_fstat(proc: &Process, host: &mut dyn HostIO, fd: i32) -> Result<WasmS
                 proc.effective_uid(),
                 proc.effective_gid(),
             ));
+        }
+        // sync_file and syncobj fds are anonymous inodes too: no file type
+        // bits, no size.
+        let sync_object = match ofd.dri_state.as_deref() {
+            Some(crate::ofd::DriOfdState::SyncFile(file)) => Some(0x5359_4E00_0000 + file.id()),
+            Some(crate::ofd::DriOfdState::Syncobj(obj)) => Some(0x534F_4200_0000 + obj.id()),
+            _ => None,
+        };
+        if let Some(st_ino) = sync_object {
+            return Ok(WasmStat {
+                st_dev: 0,
+                st_ino, // "SYN" / "SOB" + object id
+                st_mode: 0o600,
+                st_nlink: 1,
+                st_uid: proc.effective_uid(),
+                st_gid: proc.effective_gid(),
+                st_size: 0,
+                st_atime_sec: 0,
+                st_atime_nsec: 0,
+                st_mtime_sec: 0,
+                st_mtime_nsec: 0,
+                st_ctime_sec: 0,
+                st_ctime_nsec: 0,
+                _pad: 0,
+                st_rdev: 0,
+            });
         }
         // A PRIME fd is a dma-buf: Linux backs it with an anonymous inode,
         // which has no file type bits, and reports the buffer size.
@@ -17461,7 +17686,24 @@ fn poll_check_depth(
                 // — readiness here mirrors what sys_read returns. Without
                 // this special case, poll() would spin because the
                 // generic char-device branch reports always-ready.
-                if ofd.file_type == FileType::CharDevice
+                if let Some(file) = ofd.sync_file() {
+                    // sync_file_poll: readable once the fence signaled.
+                    if pollfd.events & POLLIN != 0 && file.poll_readable() {
+                        revents |= POLLIN;
+                    }
+                } else if let Some(prime) = ofd.prime_bo() {
+                    // dma_buf_poll: the buffer's implicit fences.
+                    let bo_id = prime.bo_id;
+                    if pollfd.events & (POLLIN | POLLOUT) != 0 {
+                        let (readable, writable) = dma_buf_poll_ready(bo_id);
+                        if pollfd.events & POLLIN != 0 && readable {
+                            revents |= POLLIN;
+                        }
+                        if pollfd.events & POLLOUT != 0 && writable {
+                            revents |= POLLOUT;
+                        }
+                    }
+                } else if ofd.file_type == FileType::CharDevice
                     && VirtualDevice::from_host_handle(ofd.host_handle) == Some(VirtualDevice::Mice)
                 {
                     if pollfd.events & POLLIN != 0 && crate::mouse::has_data() {
@@ -19033,6 +19275,27 @@ pub(crate) fn sys_ioctl_local(
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
         if ofd.file_type == FileType::PcmPlayback {
             return handle_dsp_ioctl(proc, ofd_idx, request, buf);
+        }
+    }
+
+    // --- sync_file, syncobj and dma-buf (PRIME) fds ---
+    {
+        let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+        match ofd.dri_state.as_deref() {
+            Some(crate::ofd::DriOfdState::SyncFile(file)) => {
+                let file = file.clone();
+                return crate::dri::sync_file::ioctl(proc, host, file, request, buf);
+            }
+            // drm_syncobj_file_fops has no ioctl.
+            Some(crate::ofd::DriOfdState::Syncobj(_)) => return Err(Errno::ENOTTY),
+            Some(crate::ofd::DriOfdState::PrimeBo(prime))
+                if request == wasm_posix_shared::dri_sync::DMA_BUF_IOCTL_EXPORT_SYNC_FILE
+                    || request == wasm_posix_shared::dri_sync::DMA_BUF_IOCTL_IMPORT_SYNC_FILE =>
+            {
+                let bo_id = prime.bo_id;
+                return handle_dma_buf_sync_ioctl(proc, host, bo_id, request, buf);
+            }
+            _ => {}
         }
     }
 
@@ -51492,7 +51755,8 @@ impl HostIO for RelSymlinkMock {
             (DRM_CAP_CRTC_IN_VBLANK_EVENT, 1),
             (DRM_CAP_TIMESTAMP_MONOTONIC, 1),
             (DRM_CAP_ADDFB2_MODIFIERS, 0),
-            (DRM_CAP_SYNCOBJ_TIMELINE, 0),
+            (DRM_CAP_SYNCOBJ, 1),
+            (DRM_CAP_SYNCOBJ_TIMELINE, 1),
             (DRM_CAP_CURSOR_WIDTH, 64),
             (DRM_CAP_DUMB_PREFERRED_DEPTH, 24),
         ] {
@@ -63910,6 +64174,12 @@ impl HostIO for RelSymlinkMock {
                 Err(Errno::ENOTSUP)
             );
         }
+    }
+
+    // Explicit-synchronization tests live beside their modules but share
+    // this module's MockHostIO.
+    mod dri_sync_tests {
+        include!("dri/sync_tests.rs");
     }
 
     mod exchange_devices {

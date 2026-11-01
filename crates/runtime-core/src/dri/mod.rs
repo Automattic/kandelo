@@ -9,10 +9,13 @@ pub mod atomic;
 pub mod bo;
 pub mod cursor;
 pub mod edid;
+pub mod fence;
 pub mod ioctl_kms;
 pub mod kms;
 pub mod master;
 pub mod modes;
+pub mod sync_file;
+pub mod syncobj;
 
 pub use bo::{BoId, BoRegistry, BoTier, GbmBo, PrimeCookie, with_registry};
 

@@ -368,7 +368,10 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETTRIGGER, In, 4),
     pointer!(TIOCSPTLCK, In, 4),
     pointer!(crate::dri::DRM_IOCTL_AUTH_MAGIC, In, 4),
+    // dma-buf implicit-fence import: flags + sync_file fd in.
+    pointer!(crate::dri_sync::DMA_BUF_IOCTL_IMPORT_SYNC_FILE, In, 8),
     pointer!(crate::dri::DRM_IOCTL_GEM_CLOSE, In, 8),
+    pointer!(crate::dri_sync::SYNC_IOC_SET_DEADLINE, In, 16),
     pointer!(crate::dri::DRM_IOCTL_SET_CLIENT_CAP, In, 16),
     pointer!(crate::input::EVIOCGVERSION, Out, 4),
     pointer!(crate::oss::SOUND_PCM_READ_RATE, Out, 4),
@@ -403,8 +406,14 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_RMFB, In, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_DESTROY_DUMB, In, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_DESTROYPROPBLOB, In, 4),
+    pointer!(crate::dri_sync::DMA_BUF_IOCTL_EXPORT_SYNC_FILE, InOut, 8),
     // `struct drm_unique` is `(size_t, char *)`: one request per width.
     pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE, InOut, wasm32 8),
+    // DRM sync objects (drm_syncobj.c). Every pointer member is a __u64,
+    // so one size serves both widths; nested handle/point arrays are
+    // reached by the kernel through HostIO, like GETRESOURCES' arrays.
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_CREATE, InOut, 8),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_DESTROY, InOut, 8),
     pointer!(crate::dri::DRM_IOCTL_MODE_CLOSEFB, In, 8),
     // handle and claimed fourcc in; the result is the errno alone.
     pointer!(crate::dri::DRM_IOCTL_WPK_CHECK_BO_FORMAT, In, 8),
@@ -420,6 +429,10 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANERESOURCES, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATEPROPBLOB, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD_V1, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE_V1, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_RESET, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_SIGNAL, InOut, 16),
     // width / height / format / usage in; handle and stride out in the
     // format/usage slots (WpkDrmGpuBoCreate). Without an entry
     // the host stages a zero-length buffer and the kernel handler rejects
@@ -430,12 +443,18 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // handler rejects every call with EINVAL, so GPU compositing can
     // never succeed from a real guest.
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
+    pointer!(crate::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK_WASM64, InOut, wasm64 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_DIRTYFB, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY, In, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_LEASE, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_QUERY, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, InOut, 24),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_EVENTFD, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETFB, InOut, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB, InOut, 28),
@@ -444,14 +463,21 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANE, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES, InOut, 32),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_WAIT_V1, InOut, 32),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TRANSFER, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_WPK_IMPORT_IMAGE, InOut, 32),
     // Linux encodes pointer-sized fields into DRM_IOCTL_VERSION itself.
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_WAIT, InOut, 40),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT_V1, InOut, 40),
+    pointer!(crate::dri_sync::SYNC_IOC_MERGE, InOut, 48),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETPLANE, In, 48),
+    pointer!(crate::dri_sync::DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, InOut, 48),
     // EGL image export: ctx/target/name/level in; bo handle, extent,
     // internal format and sibling identity out (WpkDrmExportImage).
     pointer!(crate::dri::DRM_IOCTL_WPK_EXPORT_IMAGE, InOut, 48),
+    pointer!(crate::dri_sync::SYNC_IOC_FILE_INFO, InOut, 56),
     pointer!(crate::dri::DRM_IOCTL_MODE_ATOMIC, InOut, 56),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),

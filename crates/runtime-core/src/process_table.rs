@@ -476,6 +476,8 @@ fn bump_inherited_dri_bos(child: &Process) {
             }
             crate::ofd::DriOfdState::RenderNode(_) => {}
             crate::ofd::DriOfdState::Card { .. } => {}
+            // Shared kernel objects: the cloned sidecar is the reference.
+            crate::ofd::DriOfdState::SyncFile(_) | crate::ofd::DriOfdState::Syncobj(_) => {}
         });
     }
 }

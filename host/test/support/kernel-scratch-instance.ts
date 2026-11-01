@@ -64,6 +64,10 @@ function signatures(
       parameters: [pointer, i32, i32],
       result: i32,
     },
+    kernel_dri_fence_host_requests: {
+      parameters: [pointer, i32],
+      result: i32,
+    },
     kernel_take_pty_readiness_changed: {
       parameters: [],
       result: i32,

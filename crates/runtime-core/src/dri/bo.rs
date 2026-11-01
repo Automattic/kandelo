@@ -57,6 +57,10 @@ pub struct GbmBo {
     /// CPU-tier bo, whose bytes any format may describe, or an exported
     /// image no DRM format describes.
     pub format: u32,
+    /// The buffer's implicit fences (`dma_buf.resv`), set and read through
+    /// `DMA_BUF_IOCTL_{IMPORT,EXPORT}_SYNC_FILE` and observed by dma-buf
+    /// `poll`. They live and die with the buffer.
+    pub reservation: crate::dri::fence::Reservation,
 }
 
 pub struct BoRegistry {
@@ -107,6 +111,7 @@ impl BoRegistry {
             prime_cookie: None,
             tier,
             format: 0,
+            reservation: Default::default(),
         };
         self.map.insert(id, bo);
         Some(self.map.get_mut(&id).unwrap())
@@ -134,6 +139,10 @@ impl BoRegistry {
 
     pub fn get(&self, id: BoId) -> Option<&GbmBo> {
         self.map.get(&id)
+    }
+
+    pub fn get_mut(&mut self, id: BoId) -> Option<&mut GbmBo> {
+        self.map.get_mut(&id)
     }
 
     pub fn incref(&mut self, id: BoId) -> Option<u32> {

@@ -151,9 +151,12 @@ pub(crate) fn drm_ioctl_flags(request: u32) -> Option<u8> {
         // dumb-buffer API (Kandelo has no driver-private allocation ioctl),
         // so these stay render-allowed, unlike Linux.
         DRM_IOCTL_MODE_CREATE_DUMB | DRM_IOCTL_MODE_MAP_DUMB | DRM_IOCTL_MODE_DESTROY_DUMB => R,
-        // Kandelo's private 0xE0+ requests (GPU BOs, image import/export)
-        // serve the render node by design; their handlers own validation.
+        // Kandelo's private 0xE0+ requests (GPU BOs, image import/export,
+        // fence export) serve the render node by design; their handlers own
+        // validation.
         _ if request & 0xff >= 0xe0 => R,
+        // drm_ioctls[]: every sync-object ioctl is DRM_RENDER_ALLOW.
+        _ if crate::dri::syncobj::is_syncobj_request(request) => R,
         DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_SETPLANE | DRM_IOCTL_MODE_CURSOR
         | DRM_IOCTL_MODE_CURSOR2 | DRM_IOCTL_MODE_SETGAMMA | DRM_IOCTL_MODE_SETPROPERTY
         | DRM_IOCTL_MODE_OBJ_SETPROPERTY | DRM_IOCTL_MODE_PAGE_FLIP | DRM_IOCTL_MODE_DIRTYFB

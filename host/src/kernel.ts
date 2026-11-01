@@ -10,7 +10,7 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -52,7 +52,8 @@ import type { GlSurfaceResources } from "./webgl/surface-resources.js";
 import { prepareDrawableTransition, applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
-import { isFenceQuery, validFenceQuery, prepareFenceQuery, runServerWait, type PreparedFenceQuery } from "./webgl/fence-query";
+import { isFenceQuery, validFenceQuery, prepareFenceQuery, runServerWait, runExportFence, type PreparedFenceQuery } from "./webgl/fence-query";
+import type { GlFenceLease } from "./webgl/fences";
 import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
@@ -1043,6 +1044,40 @@ export class WasmPosixKernel {
   // Physical GPU resource ownership is device-wide, independent of DRM master
   // and of the first process that happens to create an EGL context.
   #deviceGl: WebGL2RenderingContext | null = null;
+  // GL fences on a separate native context that the kernel exported as
+  // sync_files, by kernel export id. Each lease pins its native fence until
+  // the kernel releases the export (its last sync_file/syncobj reference).
+  #exportedFences = new Map<number, GlFenceLease>();
+
+  /** Exported separate-context GL fences the host retains for the kernel. */
+  exportedFenceCount(): number { return this.#exportedFences.size; }
+
+  /** The kernel dropped its last reference to export `id`. An id this host
+   * never retained is a kernel/host protocol fault. */
+  releaseExportedFence(id: number): void {
+    const lease = this.#exportedFences.get(id);
+    if (!lease) throw new Error(`kernel released unknown GL fence export ${id}`);
+    this.#exportedFences.delete(id);
+    this.gl_muxers.get(lease.context)?.captureCurrentErrors();
+    lease.release();
+  }
+
+  /** Observe export `id`'s native status for a kernel waiter: true when
+   * signaled, false while pending, "lost" when its context was lost (the
+   * fence can then never signal; the kernel completes it with an error). A
+   * failed observation on a live context is a host fault. */
+  pollExportedFence(id: number): boolean | "lost" {
+    const lease = this.#exportedFences.get(id);
+    if (!lease) throw new Error(`kernel polled unknown GL fence export ${id}`);
+    if (lease.context.isContextLost()) return "lost";
+    this.gl_muxers.get(lease.context)?.captureCurrentErrors();
+    const signaled = lease.poll(null);
+    if (signaled === null) {
+      if (lease.context.isContextLost()) return "lost";
+      throw new Error(`GL fence export ${id} status could not be observed`);
+    }
+    return signaled;
+  }
 
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
@@ -3416,7 +3451,8 @@ export class WasmPosixKernel {
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
           const b = this.gl.get(pid, sessionId);
-          if (!b || (!b.gl && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
+          if (!b || (!b.gl && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op)
+            && op !== QOP_EXPORT_FENCE)) return -1;
           if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
           const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
           if (!operation) return -5;
@@ -3469,12 +3505,24 @@ export class WasmPosixKernel {
                 () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
               written = preparedFence.rc;
             } else if (op === QOP_SERVER_WAIT) {
-              const source = inBuf.byteLength === 8
-                ? this.gl.get(pid, new DataView(inBuf.buffer, inBuf.byteOffset, 8).getUint32(0, true))
-                : undefined;
+              const view = inBuf.byteLength === 8
+                ? new DataView(inBuf.buffer, inBuf.byteOffset, 8) : null;
+              // Session 0 names a kernel-exported fence by its export id.
+              const exported = view && view.getUint32(0, true) === 0
+                ? this.#exportedFences.get(view.getUint32(4, true)) ?? null : undefined;
+              const source = view && exported === undefined
+                ? this.gl.get(pid, view.getUint32(0, true)) : undefined;
               written = runServerWait(b, source, inBuf, outBuf,
                 gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
-                () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
+                () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); }, exported);
+            } else if (op === QOP_EXPORT_FENCE) {
+              written = runExportFence(b, inBuf, outBuf, this.#sharedGlContext(),
+                gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
+                (exportId, lease) => {
+                  if (this.#exportedFences.has(exportId)) return false;
+                  this.#exportedFences.set(exportId, lease);
+                  return true;
+                });
             } else if (op === QOP_SURFACE_CAPABILITIES) {
               let canvas = b.canvas;
               if (!canvas && this.#isMasterGlBinding(b)) {

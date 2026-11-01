@@ -243,3 +243,8 @@ export const QOP_OBJECT_CAPTURE = 0x0034;
 
 // Destination server ordering on a kernel-resolved source fence OFD.
 export const QOP_SERVER_WAIT = 0x0035;
+
+// Kernel-issued only (DRM_IOCTL_WPK_EXPORT_FENCE): publish one of this
+// session's fences for a sync_file, retaining it when it is on a separate
+// native context.
+export const QOP_EXPORT_FENCE = 0x0036;

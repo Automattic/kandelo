@@ -2764,7 +2764,12 @@ fn render_ts_module() -> String {
             field.name, field.offset, field.size, field.ty
         ));
     }
-    out.push_str("} as const;\n\n");
+    out.push_str("} as const;\n");
+    out.push_str(&format!(
+        "export const WAKEUP_EVENT_RESERVED_INDICES = {{\n  fenceReady: {},\n  fenceHostWork: {},\n}} as const;\n\n",
+        shared::wakeup_event_wire::IDX_FENCE_READY,
+        shared::wakeup_event_wire::IDX_FENCE_HOST_WORK
+    ));
     out.push_str(&render_ts_wait_completion_wire());
     out.push_str("export const POLL_EVENTS = {\n");
     for (name, value) in poll_events() {
@@ -4409,7 +4414,30 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
         "admission": "retain-exact-source-fence-and-destination-operation-ticket",
         "completion": "native-same-context-wait-or-foreign-source-signaled",
-        "result_cancel": "accepted-server-command-survives-result-cancellation"
+        "result_cancel": "accepted-server-command-survives-result-cancellation",
+        "sync_file_form": {
+            "request": "source_fd-is-a-sync_file-and-source_fence_token-is-zero",
+            "reply_token": 0,
+            "kernel_answers": "ordered-when-nothing-pending-client-signal-unless-one-pending-host-fence",
+            "host_request": ["session_zero", "export_id"],
+        },
+        "dispositions": {"ordered": shared::gl::SERVER_WAIT_ORDERED,
+            "client_signal": shared::gl::SERVER_WAIT_CLIENT_SIGNAL},
+    }));
+    s.add(Program, "gl_export_fence", json!({
+        "ioctl": shared::dri_sync::DRM_IOCTL_WPK_EXPORT_FENCE,
+        "ioctl_bytes": core::mem::size_of::<shared::dri_sync::WpkDrmExportFence>(),
+        "ioctl_fields": ["token", "flags", "fd", "pad"],
+        "opcode": shared::gl::QOP_EXPORT_FENCE,
+        "issuer": "kernel-only",
+        "request_bytes": 8, "request_fields": ["fence_token", "export_id"],
+        "reply_bytes": 16, "reply_fields": ["status", "fence_token", "disposition", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "dispositions": {"ordered": shared::gl::EXPORT_FENCE_ORDERED,
+            "retained": shared::gl::EXPORT_FENCE_RETAINED},
+        "host_requests": {"record_bytes": 8, "fields": ["export_id", "request"],
+            "poll": runtime_core::dri::fence::HOST_REQUEST_POLL,
+            "release": runtime_core::dri::fence::HOST_REQUEST_RELEASE},
     }));
     s.add(Program, "gl_object_capture", json!({
         "opcode": shared::gl::QOP_OBJECT_CAPTURE,
@@ -4770,6 +4798,10 @@ fn wakeup_event_wire() -> Value {
         "record_size": shared::wakeup_event_wire::RECORD_BYTES,
         "fields": fields,
         "types": types,
+        "reserved_indices": {
+            "fenceReady": shared::wakeup_event_wire::IDX_FENCE_READY,
+            "fenceHostWork": shared::wakeup_event_wire::IDX_FENCE_HOST_WORK,
+        },
     })
 }
 

@@ -27,6 +27,8 @@ pub struct GlQueryOwner {
 #[derive(Debug)]
 enum Completion {
     Captured,
+    /// The kernel decided the reply itself (no host state was needed).
+    Answered(usize),
     Executed(usize),
     Published,
     Failed,
@@ -72,6 +74,19 @@ impl GlQueryRequest {
         })
     }
 
+    /// A request whose reply the kernel already knows: execution publishes
+    /// `reply` without consulting the host.
+    pub fn answered(
+        owner: GlQueryOwner,
+        op: u32,
+        output_address: u64,
+        reply: Vec<u8>,
+    ) -> Self {
+        let len = reply.len();
+        Self { owner, op, input: Vec::new(), output_address, output: reply,
+            completion: Completion::Answered(len) }
+    }
+
     pub(crate) fn is_captured(&self) -> bool {
         matches!(self.completion, Completion::Captured)
     }
@@ -80,6 +95,10 @@ impl GlQueryRequest {
     /// negative result, including EAGAIN, remains EIO; it does not authorize
     /// retaining a host destination or replaying a potentially mutating query.
     pub fn execute_immediate(&mut self, host: &mut dyn HostIO) -> Result<(), Errno> {
+        if let Completion::Answered(len) = self.completion {
+            self.completion = Completion::Executed(len);
+            return Ok(());
+        }
         if !self.is_captured() {
             return Err(Errno::EBUSY);
         }

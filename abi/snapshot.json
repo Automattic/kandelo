@@ -23,6 +23,7 @@
       "clipboard_device_abi",
       "custom_sections",
       "gl_compressed_upload",
+      "gl_export_fence",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
@@ -1436,6 +1437,44 @@
     ],
     "unknown_commit": "no-replay-abort-drops-staging-only"
   },
+  "gl_export_fence": {
+    "dispositions": {
+      "ordered": 0,
+      "retained": 1
+    },
+    "host_requests": {
+      "fields": [
+        "export_id",
+        "request"
+      ],
+      "poll": 1,
+      "record_bytes": 8,
+      "release": 2
+    },
+    "ioctl": 3222299876,
+    "ioctl_bytes": 16,
+    "ioctl_fields": [
+      "token",
+      "flags",
+      "fd",
+      "pad"
+    ],
+    "issuer": "kernel-only",
+    "opcode": 54,
+    "reply_bytes": 16,
+    "reply_fields": [
+      "status",
+      "fence_token",
+      "disposition",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_bytes": 8,
+    "request_fields": [
+      "fence_token",
+      "export_id"
+    ]
+  },
   "gl_image_container_receipts": {
     "accepted_payload": 1,
     "attachment": {
@@ -1609,6 +1648,10 @@
     "byte_order": "little-endian",
     "completion": "native-same-context-wait-or-foreign-source-signaled",
     "destination": "ioctl-open-file-description",
+    "dispositions": {
+      "client_signal": 1,
+      "ordered": 0
+    },
     "opcode": 53,
     "reply_bytes": 16,
     "reply_fields": [
@@ -1624,7 +1667,16 @@
       "source_fence_token"
     ],
     "result_cancel": "accepted-server-command-survives-result-cancellation",
-    "source": "capture-and-pin-original-source-ofd-once-before-admission"
+    "source": "capture-and-pin-original-source-ofd-once-before-admission",
+    "sync_file_form": {
+      "host_request": [
+        "session_zero",
+        "export_id"
+      ],
+      "kernel_answers": "ordered-when-nothing-pending-client-signal-unless-one-pending-host-fence",
+      "reply_token": 0,
+      "request": "source_fd-is-a-sync_file-and-source_fence_token-is-zero"
+    }
   },
   "gl_submit_query": {
     "negative_phase_rc": "errno",
@@ -2126,11 +2178,23 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "1074291203": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
     "1074291721": {
       "argKind": "pointer",
       "direction": "in",
       "wasm32Size": 8,
       "wasm64Size": 8
+    },
+    "1074806277": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
     },
     "1074816013": {
       "argKind": "pointer",
@@ -2516,11 +2580,29 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "3221774850": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
     "3221775361": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 8,
       "wasm64Size": null
+    },
+    "3221775551": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
+    "3221775552": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 8,
+      "wasm64Size": 8
     },
     "3221775568": {
       "argKind": "pointer",
@@ -2594,6 +2676,30 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299841": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299842": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299844": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299845": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222299872": {
       "argKind": "pointer",
       "direction": "inout",
@@ -2601,6 +2707,12 @@
       "wasm64Size": 16
     },
     "3222299873": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299876": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 16,
@@ -2636,7 +2748,37 @@
       "wasm32Size": 24,
       "wasm64Size": 24
     },
+    "3222824129": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824130": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
     "3222824134": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824139": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824141": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3222824143": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 24,
@@ -2690,6 +2832,18 @@
       "wasm32Size": 32,
       "wasm64Size": 32
     },
+    "3223348419": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348428": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
     "3223348450": {
       "argKind": "pointer",
       "direction": "inout",
@@ -2708,9 +2862,33 @@
       "wasm32Size": 36,
       "wasm64Size": 36
     },
+    "3223872707": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 40,
+      "wasm64Size": 40
+    },
+    "3223872714": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 40,
+      "wasm64Size": 40
+    },
+    "3224387075": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 48,
+      "wasm64Size": 48
+    },
     "3224396983": {
       "argKind": "pointer",
       "direction": "in",
+      "wasm32Size": 48,
+      "wasm64Size": 48
+    },
+    "3224397002": {
+      "argKind": "pointer",
+      "direction": "inout",
       "wasm32Size": 48,
       "wasm64Size": 48
     },
@@ -2719,6 +2897,12 @@
       "direction": "inout",
       "wasm32Size": 48,
       "wasm64Size": 48
+    },
+    "3224911364": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 56,
+      "wasm64Size": 56
     },
     "3224921276": {
       "argKind": "pointer",
@@ -3091,6 +3275,16 @@
       "kind": "func",
       "name": "kernel_drain_wakeup_events",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dri_fence_host_requests",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_dri_fence_host_signal",
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -12510,6 +12704,10 @@
       }
     ],
     "record_size": 5,
+    "reserved_indices": {
+      "fenceHostWork": 4294967294,
+      "fenceReady": 4294967295
+    },
     "types": [
       {
         "bit": 1,

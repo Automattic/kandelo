@@ -714,6 +714,12 @@ const DRI_TAG_NONE: u8 = 0;
 const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
+// sync_file and syncobj fds name reference-counted kernel objects that live
+// as long as any description holds them, so the wire carries only the
+// object's identity and deserialization shares the live object. Additive
+// tags: no earlier stream contains them.
+const DRI_TAG_SYNC_FILE: u8 = 4;
+const DRI_TAG_SYNCOBJ: u8 = 5;
 
 const INPUT_TAG_NONE: u8 = 0;
 const INPUT_TAG_SOME: u8 = 1;
@@ -782,6 +788,14 @@ fn write_dri_state(
             w.write_u32(p.bo_id)?;
             w.write_u64(p.cookie)
         }
+        Some(DriOfdState::SyncFile(file)) => {
+            w.write_u8(DRI_TAG_SYNC_FILE)?;
+            w.write_u64(file.id())
+        }
+        Some(DriOfdState::Syncobj(obj)) => {
+            w.write_u8(DRI_TAG_SYNCOBJ)?;
+            w.write_u64(obj.id())
+        }
     }
 }
 
@@ -846,6 +860,7 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
         gem: crate::ofd::SharedGemNamespace::new(crate::ofd::GemNamespace { handles, next_handle }),
         gl: None,
         gl_resources: crate::ofd::SharedGlResources::default(),
+        syncobjs: Default::default(),
     })
 }
 
@@ -954,6 +969,16 @@ fn read_dri_state(
                 bo_id,
                 cookie,
             })))
+        }
+        DRI_TAG_SYNC_FILE => {
+            let file = crate::dri::sync_file::SyncFile::lookup(r.read_u64()?)
+                .ok_or(Errno::EINVAL)?;
+            Some(alloc::boxed::Box::new(DriOfdState::SyncFile(file)))
+        }
+        DRI_TAG_SYNCOBJ => {
+            let obj = crate::dri::syncobj::Syncobj::lookup(r.read_u64()?)
+                .ok_or(Errno::EINVAL)?;
+            Some(alloc::boxed::Box::new(DriOfdState::Syncobj(obj)))
         }
         _ => return Err(Errno::EINVAL),
     })

@@ -217,6 +217,7 @@ import {
   WASM_POLL_FD_REVENTS_OFFSET,
   WAKEUP_EVENT_FIELDS,
   WAKEUP_EVENT_RECORD_BYTES,
+  WAKEUP_EVENT_RESERVED_INDICES,
   WAKEUP_EVENT_TYPES,
   KERNEL_WAIT_PARKED_ERRNO,
   WAIT_COMPLETION_FIELDS,
@@ -16194,8 +16195,19 @@ export class CentralizedKernelWorker {
     let needDatagramWriterWake = false;
     let needSignalSafeDeferredWake = false;
     let needWaitCompletionDrain = false;
+    let needHostFencePass = false;
 
     for (const { wakeIdx, wakeType } of events) {
+      // A reserved index names no pipe. fenceHostWork asks the host to
+      // collect GL-fence work; fenceReady (a fence signaled) falls through
+      // as a readable record, whose only effect is the broad retry.
+      if (
+        wakeType & WAKEUP_EVENT_TYPES.readable
+        && wakeIdx === WAKEUP_EVENT_RESERVED_INDICES.fenceHostWork
+      ) {
+        needHostFencePass = true;
+        continue;
+      }
       if (wakeType & WAKEUP_EVENT_TYPES.waitComplete) {
         needWaitCompletionDrain = true;
       }
@@ -16324,6 +16336,9 @@ export class CentralizedKernelWorker {
     // reader/writer and non-signal-safe poll wakes above run synchronously
     // (not via this deferred path). Only matching signal-safe ppoll entries
     // remain parked for the grace period.
+    if (needHostFencePass && this.#runHostFencePassWithinKernelEntry(entry)) {
+      needBroadWake = true;
+    }
     if (needWaitCompletionDrain) {
       this.#settleKernelWaitsWithinKernelEntry(entry);
     }
@@ -16340,6 +16355,82 @@ export class CentralizedKernelWorker {
         this.scheduleWakeBlockedRetries(entry);
       }
     }
+  }
+
+  #hostFencePollTimer: ReturnType<typeof setTimeout> | undefined;
+
+  /**
+   * GL fences on a separate native context that the kernel exported as
+   * sync_files (decision D-17). The kernel lists the ones a waiter waits on
+   * and the ones it released; the host releases those, observes the others'
+   * native status and reports each signal. Runs only after the kernel's
+   * fenceHostWork wake event or while a listed fence is still pending, so a
+   * machine with no waited separate-context fence does no fence work.
+   * Returns whether any fence signaled (parked waiters must retry).
+   */
+  #runHostFencePassWithinKernelEntry(entry: KernelWorkerEntryContext): boolean {
+    const retained = this.#kernel.exportedFenceCount();
+    if (retained === 0) return false;
+    const bytes = retained * 8;
+    const records = this.#requireMainScratchRegion().withLease((lease) => {
+      const count = this.#invokeEntryScratchExport(
+        entry, lease, "kernel_dri_fence_host_requests",
+        [lease.exportPointer(0, bytes), bytes],
+      );
+      // Every request names a fence this host retains, so it fits.
+      if (!Number.isSafeInteger(count) || count < 0 || count > retained) {
+        throw new KernelScratchError(
+          `kernel GL fence requests returned invalid count ${count}`,
+          EIO,
+        );
+      }
+      return count > 0 ? lease.copyOut(0, count * 8) : new Uint8Array(0);
+    });
+    const signal = this.#kernelInstanceForEntry(entry).exports
+      .kernel_dri_fence_host_signal as (id: number, error: number) => number;
+    const view = new DataView(records.buffer, records.byteOffset, records.byteLength);
+    let pending = false;
+    let signaled = false;
+    for (let offset = 0; offset < records.byteLength; offset += 8) {
+      const id = view.getUint32(offset, true);
+      const request = view.getUint32(offset + 4, true);
+      if (request === 2) {
+        this.#kernel.releaseExportedFence(id);
+        continue;
+      }
+      if (request !== 1) {
+        throw new Error(`kernel GL fence request ${request} for export ${id} is unknown`);
+      }
+      const status = this.#kernel.pollExportedFence(id);
+      if (status === false) {
+        pending = true;
+        continue;
+      }
+      // A lost context can never complete the fence: it signals with EIO,
+      // as a device loss completes Linux fences with an error.
+      const rc = signal(id, status === true ? 0 : -EIO);
+      if (rc !== 0 && rc !== 1) {
+        throw new Error(`kernel rejected the signal of GL fence export ${id}: ${rc}`);
+      }
+      signaled = true;
+    }
+    if (pending) this.#armHostFencePoll();
+    return signaled;
+  }
+
+  /** WebGL reports a sync's status only as of the last completed task, so
+   * one poll per worker turn is the finest useful cadence. */
+  #armHostFencePoll(): void {
+    if (this.#hostFencePollTimer !== undefined) return;
+    this.#hostFencePollTimer = this.#registerTimeout(() => {
+      this.#hostFencePollTimer = undefined;
+      this.#runOrDeferKernelEntry("GL fence poll", (entry) => {
+        if (this.#runHostFencePassWithinKernelEntry(entry)) {
+          this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+        }
+        return undefined;
+      });
+    }, 0);
   }
 
   /** STOPPED/CONTINUED are waitable even when SA_NOCLDSTOP suppresses SIGCHLD. */
