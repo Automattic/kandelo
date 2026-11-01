@@ -1,0 +1,439 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -957,6 +957,30 @@
+ #ifdef SIGWINCH
+     case SIGWINCH: return "SIGWINCH";
+ #endif
++#ifdef SIGURG
++    case SIGURG: return "SIGURG";
++#endif
++#ifdef SIGXCPU
++    case SIGXCPU: return "SIGXCPU";
++#endif
++#ifdef SIGXFSZ
++    case SIGXFSZ: return "SIGXFSZ";
++#endif
++#ifdef SIGVTALRM
++    case SIGVTALRM: return "SIGVTALRM";
++#endif
++#ifdef SIGPROF
++    case SIGPROF: return "SIGPROF";
++#endif
++#ifdef SIGIO
++    case SIGIO: return "SIGIO";
++#endif
++#ifdef SIGPWR
++    case SIGPWR: return "SIGPWR";
++#endif
++#ifdef SIGSYS
++    case SIGSYS: return "SIGSYS";
++#endif
+     default: return "SIG";
+   }
+ }
+@@ -1475,6 +1499,10 @@
+     case ELOOP: return "ELOOP";
+     case ENAMETOOLONG: return "ENAMETOOLONG";
+     case ETXTBSY: return "ETXTBSY";
++    case ECHILD: return "ECHILD";
++    case EPIPE: return "EPIPE";
++    case ENOBUFS: return "ENOBUFS";
++    case ETIMEDOUT: return "ETIMEDOUT";
+     default: return nullptr;
+   }
+ }
+@@ -1500,9 +1528,14 @@
+   JS_SetPendingException(cx, exc);
+ }
+ 
+-// __kandeloPipe() -> [readFd, writeFd], both ends O_NONBLOCK.
++// Only the parent's endpoint is nonblocking. The child's blocking endpoint
++// must retain ordinary POSIX pipe semantics when its buffer fills.
+ static bool KandeloNativePipe(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 2 || !args[0].isBoolean() || !args[1].isInt32() || args[1].toInt32() < 3) {
++    JS_ReportErrorASCII(cx, "pipe requires the parent read direction");
++    return false;
++  }
+   int fds[2];
+   if (pipe(fds) != 0) {
+     int err = errno;
+@@ -1510,21 +1543,41 @@
+     KandeloDecoratePendingError(cx, err);
+     return false;
+   }
+-  KandeloSetNonblocking(fds[0]);
+-  KandeloSetNonblocking(fds[1]);
++  auto cleanup = MakeScopeExit([&] { close(fds[0]); close(fds[1]); });
++  for (int i = 0; i < 2; i++) {
++    // Keep temporary endpoints away from stdio targets, including when the
++    // parent started with a closed stdin/stdout/stderr descriptor.
++    if (fds[i] < args[1].toInt32()) {
++      int replacement = fcntl(fds[i], F_DUPFD_CLOEXEC, args[1].toInt32());
++      if (replacement < 0) {
++        int err = errno;
++        JS_ReportErrorUTF8(cx, "pipe descriptor: %s", strerror(err));
++        KandeloDecoratePendingError(cx, err);
++        return false;
++      }
++      close(fds[i]);
++      fds[i] = replacement;
++    } else if (fcntl(fds[i], F_SETFD, FD_CLOEXEC) < 0) {
++      int err = errno;
++      JS_ReportErrorUTF8(cx, "pipe close-on-exec: %s", strerror(err));
++      KandeloDecoratePendingError(cx, err);
++      return false;
++    }
++  }
++  if (KandeloSetNonblocking(fds[args[0].toBoolean() ? 0 : 1]) < 0) {
++    int err = errno;
++    JS_ReportErrorUTF8(cx, "pipe nonblocking: %s", strerror(err));
++    KandeloDecoratePendingError(cx, err);
++    return false;
++  }
+   RootedObject arr(cx, JS::NewArrayObject(cx, 2));
+-  if (!arr) {
+-    close(fds[0]);
+-    close(fds[1]);
+-    return false;
+-  }
++  if (!arr) return false;
+   RootedValue readVal(cx, Int32Value(fds[0]));
+   RootedValue writeVal(cx, Int32Value(fds[1]));
+   if (!JS_SetElement(cx, arr, 0, readVal) ||
+-      !JS_SetElement(cx, arr, 1, writeVal)) {
+-    return false;
+-  }
++      !JS_SetElement(cx, arr, 1, writeVal)) return false;
+   args.rval().setObject(*arr);
++  cleanup.release();
+   return true;
+ }
+ 
+@@ -1760,9 +1813,15 @@
+     RootedObject attrs(cx, &args[4].toObject());
+     RootedValue flagsVal(cx);
+     int32_t flags = 0;
+-    if (JS_GetProperty(cx, attrs, "flags", &flagsVal) &&
+-        !flagsVal.isUndefined() && JS::ToInt32(cx, flagsVal, &flags) &&
+-        flags != 0) {
++    RootedValue detached(cx);
++    if (!JS_GetProperty(cx, attrs, "detached", &detached) ||
++        !JS_GetProperty(cx, attrs, "flags", &flagsVal) ||
++        (!flagsVal.isUndefined() && !JS::ToInt32(cx, flagsVal, &flags))) {
++      ok = false;
++      actionErr = "invalid spawn attributes";
++    }
++    if (detached.isBoolean() && detached.toBoolean()) flags |= POSIX_SPAWN_SETSID;
++    if (ok && flags != 0) {
+       posix_spawnattr_setflags(&at, short(flags));
+       if (flags & POSIX_SPAWN_SETPGROUP) {
+         RootedValue pgVal(cx);
+@@ -1832,10 +1891,235 @@
+ 
+ // Scheduling uses the engine's monotonic clock, independently of wall time
+ // and user replacements of Date.now(). The epoch is private to this process.
++static double KandeloMonotonicMilliseconds() {
++  static const TimeStamp origin = TimeStamp::Now();
++  return (TimeStamp::Now() - origin).ToMilliseconds();
++}
++
+ static bool KandeloNativeMonotonicTime(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+-  static const TimeStamp origin = TimeStamp::Now();
+-  args.rval().setDouble((TimeStamp::Now() - origin).ToMilliseconds());
++  args.rval().setDouble(KandeloMonotonicMilliseconds());
++  return true;
++}
++
++struct KandeloSyncPipe {
++  int fd = -1;
++  bool captured = false;
++  mozilla::Vector<uint8_t, 0, js::SystemAllocPolicy> bytes;
++  void closeFd() {
++    if (fd >= 0) { close(fd); fd = -1; }
++  }
++};
++
++// Own every resource even when allocating the JS result fails. No JS jobs run
++// here: a synchronous subprocess must not reenter the parent's JS event loop.
++struct KandeloSyncChild {
++  pid_t pid;
++  bool reaped = false;
++  mozilla::Vector<KandeloSyncPipe, 3, js::SystemAllocPolicy> pipes;
++  explicit KandeloSyncChild(pid_t child) : pid(child) {}
++  ~KandeloSyncChild() {
++    for (auto& pipe : pipes) pipe.closeFd();
++    if (!reaped) {
++      kill(pid, SIGKILL);
++      int status;
++      while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
++    }
++  }
++};
++
++// (pid, owned parent fds, input bytes, absolute monotonic deadline,
++// maxBuffer, killSignal) -> actual status/signal and binary output.
++static bool KandeloNativeRunChildSync(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  if (args.length() != 6 || !args[0].isInt32() || args[0].toInt32() <= 0 ||
++      !args[1].isObject() || !args[5].isInt32()) {
++    JS_ReportErrorASCII(cx, "invalid synchronous child controller arguments");
++    return false;
++  }
++  KandeloSyncChild child(args[0].toInt32());
++  RootedObject legs(cx, &args[1].toObject());
++  uint32_t count;
++  if (!JS::GetArrayLength(cx, legs, &count)) return false;
++  if (!child.pipes.resize(count)) { JS_ReportOutOfMemory(cx); return false; }
++  for (uint32_t i = 0; i < count; i++) {
++    RootedValue fd(cx);
++    if (!JS_GetElement(cx, legs, i, &fd)) return false;
++    if (!fd.isInt32() || fd.toInt32() < -1) {
++      JS_ReportErrorASCII(cx, "invalid synchronous pipe descriptor");
++      return false;
++    }
++    child.pipes[i].captured = i != 0 && fd.toInt32() >= 0;
++    // Transfer ownership slot by slot; JS closes only unadopted descriptors
++    // in its finally block if parsing/allocation fails midway.
++    RootedValue adopted(cx, Int32Value(-1));
++    if (!JS_SetElement(cx, legs, i, adopted)) return false;
++    child.pipes[i].fd = fd.toInt32();
++  }
++  mozilla::Vector<uint8_t, 0, js::SystemAllocPolicy> input;
++  if (!args[2].isObject() || !JS_IsArrayBufferViewObject(&args[2].toObject())) {
++    JS_ReportErrorASCII(cx, "synchronous input must be a private byte view");
++    return false;
++  }
++  {
++    RootedObject view(cx, &args[2].toObject());
++    bool shared;
++    JS::AutoCheckCannotGC nogc;
++    auto* data = static_cast<uint8_t*>(JS_GetArrayBufferViewData(view, &shared, nogc));
++    if (shared) {
++      JS_ReportErrorASCII(cx, "synchronous input must be copied from shared memory");
++      return false;
++    }
++    if (!input.append(data, JS_GetArrayBufferViewByteLength(view))) {
++      JS_ReportOutOfMemory(cx);
++      return false;
++    }
++  }
++  double deadline, maxBuffer;
++  if (!JS::ToNumber(cx, args[3], &deadline) ||
++      !JS::ToNumber(cx, args[4], &maxBuffer)) return false;
++  int killSignal = args[5].toInt32();
++  mozilla::Vector<struct pollfd, 3, js::SystemAllocPolicy> polls;
++  if (!polls.resize(count)) { JS_ReportOutOfMemory(cx); return false; }
++  size_t inputOffset = 0, buffered = 0;
++  int status = 0, error = 0, pipeError = 0;
++  bool killed = false, haveStatus = false;
++  auto terminate = [&](int reason) {
++    if (!error) error = reason;
++    if (killed) return;
++    killed = true;
++    if (!child.reaped && kill(child.pid, killSignal) < 0 && errno != ESRCH) {
++      if (!error) error = errno;
++      kill(child.pid, SIGKILL);
++    }
++    for (auto& pipe : child.pipes) pipe.closeFd();
++  };
++  if (count && input.empty()) child.pipes[0].closeFd();
++  while (true) {
++    if (!child.reaped) {
++      pid_t result;
++      do { result = waitpid(child.pid, &status, WNOHANG); }
++      while (result < 0 && errno == EINTR);
++      if (result == child.pid) { child.reaped = true; haveStatus = true; }
++      else if (result < 0) {
++        int err = errno;
++        // ECHILD is a real failure, never a successful exit status.
++        if (err == ECHILD) child.reaped = true;
++        terminate(err);
++      }
++    }
++    size_t active = 0;
++    for (uint32_t i = 0; i < count; i++) {
++      polls[i].fd = child.pipes[i].fd;
++      polls[i].events = i == 0 ? POLLOUT : POLLIN;
++      polls[i].revents = 0;
++      if (polls[i].fd >= 0) active++;
++    }
++    if (child.reaped && !active) break;
++    if (!killed && deadline > 0 && KandeloMonotonicMilliseconds() >= deadline) {
++      terminate(ETIMEDOUT);
++      continue;
++    }
++    if (!active && (killed || deadline <= 0)) {
++      pid_t result;
++      do { result = waitpid(child.pid, &status, 0); }
++      while (result < 0 && errno == EINTR);
++      if (result == child.pid) { child.reaped = true; haveStatus = true; }
++      else { if (!error) error = errno; child.reaped = errno == ECHILD; }
++      break;
++    }
++    // waitpid has no pollable fd on this POSIX seam. Bound the wait so a
++    // reaped child is noticed even when a descendant still holds a pipe.
++    int waitMs = 20;
++    if (!killed && deadline > 0) {
++      double remaining = deadline - KandeloMonotonicMilliseconds();
++      if (remaining < waitMs) waitMs = remaining > 1 ? int(remaining) : 1;
++    }
++    int ready = poll(polls.begin(), count, waitMs);
++    if (ready < 0) {
++      if (errno != EINTR) terminate(errno);
++      continue;
++    }
++    for (uint32_t i = 0; i < count && !killed; i++) {
++      auto& pipe = child.pipes[i];
++      if (pipe.fd < 0 || !polls[i].revents) continue;
++      if (i == 0) {
++        ssize_t written = write(pipe.fd, input.begin() + inputOffset,
++                                input.length() - inputOffset);
++        if (written > 0) inputOffset += size_t(written);
++        else if (written < 0 && errno != EAGAIN && errno != EINTR) {
++          if (!pipeError) pipeError = errno;
++          pipe.closeFd();
++        }
++        if (inputOffset == input.length()) pipe.closeFd();
++      } else {
++        uint8_t bytes[65536];
++        ssize_t length = read(pipe.fd, bytes, sizeof(bytes));
++        if (length > 0) {
++          if (!pipe.bytes.append(bytes, size_t(length))) {
++            JS_ReportOutOfMemory(cx);
++            return false;
++          }
++          buffered += size_t(length);
++          if (maxBuffer > 0 && double(buffered) > maxBuffer) terminate(ENOBUFS);
++        } else if (length == 0) pipe.closeFd();
++        else if (errno != EAGAIN && errno != EINTR) {
++          if (!pipeError) pipeError = errno;
++          pipe.closeFd();
++        }
++      }
++    }
++  }
++  if (!error) error = pipeError;
++  RootedObject result(cx, JS_NewPlainObject(cx));
++  RootedObject output(cx, JS::NewArrayObject(cx, count));
++  if (!result || !output) return false;
++  for (uint32_t i = 0; i < count; i++) {
++    RootedValue value(cx, NullValue());
++    if (child.pipes[i].captured) {
++      auto& bytes = child.pipes[i].bytes;
++      RootedObject array(cx, KandeloNewUint8ArrayCopy(cx, bytes.begin(), bytes.length()));
++      if (!array) return false;
++      value.setObject(*array);
++    }
++    if (!JS_SetElement(cx, output, i, value)) return false;
++  }
++  RootedValue outputValue(cx, ObjectValue(*output));
++  RootedValue statusValue(cx, NullValue()), signalValue(cx, NullValue());
++  if (haveStatus && WIFEXITED(status)) statusValue.setInt32(WEXITSTATUS(status));
++  if (haveStatus && WIFSIGNALED(status)) {
++    RootedString name(cx, JS_NewStringCopyZ(cx, KandeloSignalName(WTERMSIG(status))));
++    if (!name) return false;
++    signalValue.setString(name);
++  }
++  RootedValue errnoValue(cx, Int32Value(error ? -error : 0));
++  RootedString code(cx, JS_NewStringCopyZ(cx, error ?
++      (KandeloErrnoCode(error) ? KandeloErrnoCode(error) : "UNKNOWN") : ""));
++  if (!code) return false;
++  RootedValue codeValue(cx, StringValue(code));
++  if (!JS_SetProperty(cx, result, "output", outputValue) ||
++      !JS_SetProperty(cx, result, "status", statusValue) ||
++      !JS_SetProperty(cx, result, "signal", signalValue) ||
++      !JS_SetProperty(cx, result, "errno", errnoValue) ||
++      !JS_SetProperty(cx, result, "code", codeValue)) return false;
++  args.rval().setObject(*result);
++  return true;
++}
++
++// Read credentials from libc/kernel state rather than environment metadata.
++static bool KandeloNativeCredentials(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  RootedObject result(cx, JS_NewPlainObject(cx));
++  if (!result) return false;
++  RootedValue uid(cx, NumberValue(double(getuid())));
++  RootedValue euid(cx, NumberValue(double(geteuid())));
++  RootedValue gid(cx, NumberValue(double(getgid())));
++  RootedValue egid(cx, NumberValue(double(getegid())));
++  if (!JS_SetProperty(cx, result, "uid", uid) ||
++      !JS_SetProperty(cx, result, "euid", euid) ||
++      !JS_SetProperty(cx, result, "gid", gid) ||
++      !JS_SetProperty(cx, result, "egid", egid)) return false;
++  args.rval().setObject(*result);
+   return true;
+ }
+ 
+@@ -2846,14 +3130,16 @@
+       JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),
+       JS_FN("tlsWrite", KandeloNativeTlsWrite, 2, 0),
+       JS_FN("tlsClose", KandeloNativeTlsClose, 1, 0),
+-      JS_FN("__kandeloPipe", KandeloNativePipe, 0, 0),
++      JS_FN("__kandeloPipe", KandeloNativePipe, 2, 0),
+       JS_FN("__kandeloSpawn", KandeloNativeSpawn, 5, 0),
+       JS_FN("__kandeloFdRead", KandeloNativeFdRead, 2, 0),
+       JS_FN("__kandeloFdReadControl", KandeloNativeFdReadControl, 2, 0),
+       JS_FN("__kandeloFdWrite", KandeloNativeFdWrite, 2, 0),
+       JS_FN("__kandeloFdClose", KandeloNativeFdClose, 1, 0),
+       JS_FN("__kandeloWaitPid", KandeloNativeWaitPid, 1, 0),
++      JS_FN("__kandeloRunChildSync", KandeloNativeRunChildSync, 6, 0),
+       JS_FN("__kandeloKill", KandeloNativeKill, 2, 0),
++      JS_FN("credentials", KandeloNativeCredentials, 0, 0),
+       JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
+       JS_FS_END,
+   };
+@@ -14459,6 +14745,9 @@
+ static bool BindScriptArgs(JSContext* cx, OptionParser* op) {
+   AutoReportException are(cx);
+ 
++  // With -e, the parser's positional "script" is the first user argument,
++  // not an entry file. Bind it into scriptArgs and leave scriptPath empty.
++  const bool nodeEval = IsKandeloNodeMode() && !op->getMultiStringOption('e').empty();
+   MultiStringRange msr = op->getMultiStringArg("scriptArgs");
+   RootedObject scriptArgs(cx);
+   scriptArgs = JS::NewArrayObject(cx, 0);
+@@ -14470,7 +14759,13 @@
+     return false;
+   }
+ 
+-  for (size_t i = 0; !msr.empty(); msr.popFront(), ++i) {
++  size_t i = 0;
++  if (nodeEval && op->getStringArg("script")) {
++    UniqueChars first = JS::EncodeNarrowToUtf8(cx, op->getStringArg("script"));
++    RootedString str(cx, first ? NewStringCopyUTF8(cx, first.get()) : nullptr);
++    if (!str || !JS_DefineElement(cx, scriptArgs, i++, str, JSPROP_ENUMERATE)) return false;
++  }
++  for (; !msr.empty(); msr.popFront(), ++i) {
+     const char* scriptArg = msr.front();
+     UniqueChars scriptArgUtf8 = JS::EncodeNarrowToUtf8(cx, scriptArg);
+     if (!scriptArgUtf8) {
+@@ -14483,7 +14778,7 @@
+   }
+ 
+   RootedValue scriptPathValue(cx);
+-  if (const char* scriptPath = op->getStringArg("script")) {
++  if (const char* scriptPath = nodeEval ? nullptr : op->getStringArg("script")) {
+     UniqueChars scriptPathUtf8 = JS::EncodeNarrowToUtf8(cx, scriptPath);
+     if (!scriptPathUtf8) {
+       return false;
+@@ -14535,7 +14830,7 @@
+     // The bootstrap submitted the file to the Node module loader. Return to
+     // the normal job/I/O/timer loop rather than evaluating it again as a raw
+     // shell script. Eval and interactive entry points still use the shell.
+-    if (op->getStringArg("script")) return true;
++    if (op->getStringArg("script") && op->getMultiStringOption('e').empty()) return true;
+   }
+ 
+   MultiStringRange filePaths = op->getMultiStringOption('f');
+@@ -14657,7 +14952,7 @@
+   }
+ 
+   /* The |script| argument is processed after all options. */
+-  if (const char* path = op->getStringArg("script")) {
++  if (const char* path = IsKandeloNodeMode() && !op->getMultiStringOption('e').empty() ? nullptr : op->getStringArg("script")) {
+     UniqueChars pathUtf8 = JS::EncodeNarrowToUtf8(cx, path);
+     if (!pathUtf8) {
+       return false;

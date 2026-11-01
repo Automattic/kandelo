@@ -349,11 +349,11 @@ const _DOT = '.';
 function _errnoToCode(errno) {
     const map = {
         1: 'EPERM', 2: 'ENOENT', 3: 'ESRCH', 4: 'EINTR',
-        5: 'EIO', 9: 'EBADF', 11: 'EAGAIN', 12: 'ENOMEM',
+        5: 'EIO', 7: 'E2BIG', 8: 'ENOEXEC', 9: 'EBADF', 10: 'ECHILD', 11: 'EAGAIN', 12: 'ENOMEM',
         13: 'EACCES', 17: 'EEXIST', 20: 'ENOTDIR', 21: 'EISDIR',
         22: 'EINVAL', 23: 'ENFILE', 24: 'EMFILE', 27: 'EFBIG', 28: 'ENOSPC', 29: 'ESPIPE',
         30: 'EROFS', 31: 'EMLINK', 32: 'EPIPE', 36: 'ENAMETOOLONG',
-        39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 75: 'EOVERFLOW', 95: 'ENOTSUP',
+        38: 'ENOSYS', 39: 'ENOTEMPTY', 40: 'ELOOP', 61: 'ENODATA', 75: 'EOVERFLOW', 95: 'ENOTSUP',
         88: 'ENOTSOCK', 89: 'EDESTADDRREQ', 90: 'EMSGSIZE', 93: 'EPROTONOSUPPORT',
         97: 'EAFNOSUPPORT', 100: 'ENETDOWN', 103: 'ECONNABORTED', 105: 'ENOBUFS',
         108: 'ESHUTDOWN', 113: 'EHOSTUNREACH', 114: 'EALREADY', 115: 'EINPROGRESS', 125: 'ECANCELED',
@@ -995,25 +995,37 @@ const process = (() => {
             std.exit(134); // SIGABRT
         },
 
-        kill(pid, signal) {
-            signal = signal || 'SIGTERM';
-            let signum;
-            if (typeof signal === 'number') {
-                signum = signal;
-            } else {
-                // Resolve against the Node os.constants.signals table (defined
-                // on `nodeOs` below — the bare `os` symbol in this file is the
-                // qjs:os primitives module imported at the top, which has no
-                // `.constants.signals`). A bare-minimum inline fallback used
-                // to silently map unknown names like 'SIGWINCH' to SIGTERM,
-                // which the default-signal handler then translated into a
-                // Terminate action (exit 143). Anything not in the table now
-                // throws, matching Node's behaviour.
-                const _sigs = nodeOs && nodeOs.constants && nodeOs.constants.signals;
-                signum = (_sigs && _sigs[signal]) | 0;
-                if (!signum) throw new Error("Unknown signal: " + signal);
+        getuid() { return _nodeNative.credentials().uid; },
+        geteuid() { return _nodeNative.credentials().euid; },
+        getgid() { return _nodeNative.credentials().gid; },
+        getegid() { return _nodeNative.credentials().egid; },
+        _kill(pid, signum) {
+            try { _nodeNative.__kandeloKill(pid, signum); return 0; }
+            catch (error) {
+                if (typeof error.errno !== 'number') throw error;
+                return -Math.abs(error.errno);
             }
-            os.kill(pid, signum);
+        },
+        kill(pid, signal) {
+            // Node accepts values equal to their int32 conversion (including
+            // numeric strings), and numeric zero is a probe, never SIGTERM.
+            if (pid != (pid | 0)) {
+                const error = new TypeError('The "pid" argument must be an int32');
+                error.code = 'ERR_INVALID_ARG_TYPE'; throw error;
+            }
+            let signum;
+            if (signal === (signal | 0)) signum = signal;
+            else {
+                signal = signal || 'SIGTERM';
+                signum = nodeOs.constants.signals[signal];
+                if (typeof signum !== 'number') {
+                    const error = new TypeError('Unknown signal: ' + String(signal));
+                    error.code = 'ERR_UNKNOWN_SIGNAL'; throw error;
+                }
+            }
+            const error = proc._kill(pid | 0, signum);
+            if (error) _throwErrno(-error, 'kill');
+            return true;
         },
 
         hrtime: Object.assign(function hrtime(prev) {
@@ -2708,12 +2720,16 @@ util.stripVTControlCharacters = function (s) {
     return String(s).replace(/\x1b\[[0-9;]*[A-Za-z]/g, '');
 };
 util.getSystemErrorName = function (err) {
-    const e = Math.abs(err | 0);
-    try {
-        const t = (nodeOs.constants && nodeOs.constants.errno) || {};
-        for (const k in t) if (Math.abs(t[k]) === e) return k;
-    } catch (_) { /* fall through to generic name */ }
-    return 'Unknown system error ' + err;
+    if (typeof err !== 'number') {
+        const error = new TypeError('The "err" argument must be of type number');
+        error.code = 'ERR_INVALID_ARG_TYPE'; throw error;
+    }
+    if (err >= 0 || !Number.isSafeInteger(err)) {
+        const error = new RangeError('The "err" argument must be a negative integer');
+        error.code = 'ERR_OUT_OF_RANGE'; throw error;
+    }
+    const name = _errnoToCode(err);
+    return /^E[0-9]+$/.test(name) ? 'Unknown system error ' + err : name;
 };
 
 // ============================================================
@@ -3514,69 +3530,188 @@ const timersPromises = (() => {
 // ============================================================
 
 const child_process = (() => {
-    function execSync(command, options) {
-        const opts = options || {};
-        // Real Node's spawn{,Sync}/exec{,Sync} default to stdio:'pipe', which
-        // captures the child's stderr into result.stderr instead of letting
-        // it leak to the parent's terminal. popen("…", "r") inherits stderr,
-        // so dash's "command not found" messages from probes like
-        // commandExists('fd') used to render right in the user's terminal.
-        // We don't actually capture stderr (our result.stderr is always
-        // empty), but at minimum we must not leak it. Only inherit when the
-        // caller explicitly asked for it.
-        const inheritStderr = opts.stdio === 'inherit'
-            || (Array.isArray(opts.stdio) && opts.stdio[2] === 'inherit');
-        const popenCmd = inheritStderr ? command : command + ' 2>/dev/null';
-        const f = std.popen(popenCmd, 'r');
-        if (!f) throw new Error(`execSync failed: ${command}`);
-        let output = '';
-        let line;
-        while ((line = f.getline()) !== null) {
-            output += line + '\n';
-        }
-        const status = f.close();
-        if (status !== 0 && !opts.stdio) {
-            const err = new Error(`Command failed: ${command}`);
-            err.status = status;
-            err.output = [null, output, ''];
-            err.stdout = output;
-            err.stderr = '';
-            throw err;
-        }
-        if (opts.encoding === 'buffer' || !opts.encoding) {
-            return Buffer.from(output);
-        }
-        return output;
+    function syncError(code, message, range = false) {
+        const error = range ? new RangeError(message) : new TypeError(message);
+        error.code = code; return error;
     }
-
-    function execFileSync(file, args, options) {
-        const cmd = file + ' ' + (args || []).map(a => `'${a}'`).join(' ');
-        return execSync(cmd, options);
+    function syncString(value, name, nonempty = false) {
+        if (typeof value !== 'string') throw syncError('ERR_INVALID_ARG_TYPE', `The "${name}" argument must be of type string`);
+        if (value.includes('\0') || (nonempty && !value.length)) throw syncError('ERR_INVALID_ARG_VALUE', `The "${name}" argument must be a nonempty string without null bytes`);
+        return value;
     }
-
+    function syncOptions(options) {
+        if (options === undefined) return {};
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) throw syncError('ERR_INVALID_ARG_TYPE', 'The "options" argument must be of type object');
+        return {...options};
+    }
+    function syncFailure(error, file, args) {
+        const code = error.code || 'UNKNOWN';
+        const result = new Error(`spawnSync ${file} ${code}`);
+        result.code = code;
+        result.errno = -Math.abs(error.errno || 0);
+        result.syscall = 'spawnSync ' + file; result.path = file; result.spawnargs = args.slice(1);
+        return result;
+    }
+    let emittedSyncShellWarning = false;
     function spawnSync(command, args, options) {
-        const cmd = command + ' ' + (args || []).map(a => `'${a}'`).join(' ');
-        try {
-            const stdout = execSync(cmd, { ...options, encoding: 'buffer' });
-            return { status: 0, stdout, stderr: Buffer.alloc(0), output: [null, stdout, Buffer.alloc(0)], pid: 0, signal: null, error: null };
-        } catch (e) {
-            return { status: e.status || 1, stdout: Buffer.from(e.stdout || ''), stderr: Buffer.from(e.stderr || ''), output: [null, Buffer.from(e.stdout || ''), Buffer.from(e.stderr || '')], pid: 0, signal: null, error: e };
+        syncString(command, 'file', true);
+        if (Array.isArray(args)) args = args.slice();
+        else if (args == null) args = [];
+        else if (typeof args === 'object') { options = args; args = []; }
+        else throw syncError('ERR_INVALID_ARG_TYPE', 'The "args" argument must be of type object');
+        options = syncOptions(options);
+        for (let i = 0; i < args.length; i++) {
+            if (typeof args[i] === 'string' && args[i].includes('\0')) throw syncError('ERR_INVALID_ARG_VALUE', `args[${i}] must not contain null bytes`);
+            args[i] = String(args[i]);
         }
+        let cwd = options.cwd;
+        if (cwd != null) {
+            if (cwd instanceof URL) cwd = url.fileURLToPath(cwd);
+            else if (Buffer.isBuffer(cwd)) cwd = cwd.toString();
+            syncString(cwd, 'options.cwd');
+        }
+        for (const name of ['detached', 'windowsHide', 'windowsVerbatimArguments']) {
+            if (options[name] != null && typeof options[name] !== 'boolean') throw syncError('ERR_INVALID_ARG_TYPE', `options.${name} must be a boolean`);
+        }
+        for (const name of ['uid', 'gid']) {
+            if (options[name] != null && typeof options[name] !== 'number') throw syncError('ERR_INVALID_ARG_TYPE', `options.${name} must be a number`);
+            if (options[name] != null && (!Number.isInteger(options[name]) || options[name] < -2147483648 || options[name] > 2147483647)) throw syncError('ERR_OUT_OF_RANGE', `options.${name} must be an int32`, true);
+        }
+        if (options.shell != null && typeof options.shell !== 'boolean' && typeof options.shell !== 'string') throw syncError('ERR_INVALID_ARG_TYPE', 'options.shell must be a boolean or string');
+        if (typeof options.shell === 'string') syncString(options.shell, 'options.shell');
+        if (options.argv0 != null) syncString(options.argv0, 'options.argv0');
+        const timeout = options.timeout;
+        if (timeout != null && typeof timeout !== 'number') throw syncError('ERR_INVALID_ARG_TYPE', 'timeout must be a number');
+        if (timeout != null && (!Number.isSafeInteger(timeout) || timeout < 0)) throw syncError('ERR_OUT_OF_RANGE', 'timeout must be a nonnegative safe integer', true);
+        const maxBuffer = options.maxBuffer === undefined ? 1024 * 1024 : options.maxBuffer;
+        if (maxBuffer != null && typeof maxBuffer !== 'number') throw syncError('ERR_INVALID_ARG_TYPE', 'maxBuffer must be a number');
+        if (maxBuffer != null && !(maxBuffer >= 0)) throw syncError('ERR_OUT_OF_RANGE', 'maxBuffer must be nonnegative', true);
+        let killSignal = options.killSignal == null ? nodeOs.constants.signals.SIGTERM : options.killSignal;
+        if (typeof killSignal === 'string') {
+            const signal = killSignal.toUpperCase(); killSignal = nodeOs.constants.signals[signal];
+            if (killSignal === undefined) throw syncError('ERR_UNKNOWN_SIGNAL', 'Unknown signal: ' + options.killSignal);
+        } else if (typeof killSignal !== 'number') throw syncError('ERR_INVALID_ARG_TYPE', 'killSignal must be a string or number');
+        if (!Number.isInteger(killSignal) || !Object.values(nodeOs.constants.signals).includes(killSignal)) throw syncError('ERR_UNKNOWN_SIGNAL', 'Unknown signal: ' + killSignal);
+        let file = command;
+        if (options.shell) {
+            if (args.length && !emittedSyncShellWarning) {
+                emittedSyncShellWarning = true;
+                process.emitWarning('Passing args to a child process with shell option true can lead to security vulnerabilities, as the arguments are not escaped, only concatenated.', 'DeprecationWarning', 'DEP0190');
+            }
+            const script = [file].concat(args).join(' ');
+            file = typeof options.shell === 'string' ? options.shell : '/bin/sh';
+            args = ['-c', script];
+        }
+        const argv = [options.argv0 == null ? file : options.argv0].concat(args);
+        const env = [];
+        const values = options.env || process.env;
+        for (const key in values) {
+            if (values[key] === undefined) continue;
+            const value = String(values[key]);
+            if (key.includes('\0') || value.includes('\0')) throw syncError('ERR_INVALID_ARG_VALUE', 'Environment must not contain null bytes');
+            env.push(key + '=' + value);
+        }
+        let stdio = options.stdio || 'pipe';
+        if (typeof stdio === 'string') {
+            if (!['pipe', 'overlapped', 'ignore', 'inherit'].includes(stdio)) throw syncError('ERR_INVALID_ARG_VALUE', 'Invalid stdio: ' + stdio);
+            stdio = [stdio, stdio, stdio];
+        } else if (Array.isArray(stdio)) stdio = Array.from(stdio);
+        else throw syncError('ERR_INVALID_ARG_VALUE', 'Invalid stdio');
+        while (stdio.length < 3) stdio.push(undefined);
+        stdio = Array.from(stdio, (value, i) => {
+            if (value == null) return i < 3 ? 'pipe' : 'ignore';
+            if (value === 'overlapped' || (typeof value === 'number' && value < 0)) return 'pipe';
+            if (value === 'ipc') throw syncError('ERR_IPC_SYNC_FORK', 'IPC cannot be used with synchronous forks');
+            if (value && typeof value === 'object' && typeof value.fd === 'number') value = value.fd;
+            if (['pipe', 'ignore', 'inherit'].includes(value)) return value;
+            if (Number.isInteger(value) && value >= 0) return value;
+            throw syncError('ERR_INVALID_ARG_VALUE', `Invalid stdio[${i}]`);
+        });
+        let input = options.input;
+        if (!input) input = Buffer.alloc(0);
+        else if (typeof input === 'string') input = Buffer.from(input, options.encoding);
+        else if (ArrayBuffer.isView(input)) input = new Uint8Array(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
+        else throw syncError('ERR_INVALID_ARG_TYPE', 'options.input must be a string, Buffer, TypedArray, or DataView');
+        if (typeof _nn.__kandeloRunChildSync !== 'function') throw new Error('native synchronous child controller is unavailable');
+        const result = {status: null, signal: null, output: null, pid: 0, stdout: undefined, stderr: undefined};
+        // Setting uid/gid is not implemented by the native spawn seam.
+        // Return ENOSYS rather than running with the wrong credentials.
+        if (options.uid != null || options.gid != null) {
+            result.error = syncFailure({code:'ENOSYS', errno:38}, file, argv); return result;
+        }
+        const deadline = timeout > 0 ? os.timerNow() + timeout : 0;
+        const actions = [], childEnds = [], legs = Array(stdio.length).fill(-1);
+        let pid;
+        try {
+            // Validate inherited descriptors before opening temporary pipes:
+            // a closed numeric fd must not become valid by aliasing a new pipe.
+            for (const mode of stdio) if (typeof mode === 'number') fs.fstatSync(mode);
+            for (let i = 0; i < stdio.length; i++) {
+                const mode = stdio[i];
+                if (mode === 'pipe') {
+                    const [r, w] = _nn.__kandeloPipe(i !== 0, stdio.length);
+                    legs[i] = i === 0 ? w : r;
+                    const childEnd = i === 0 ? r : w; childEnds.push(childEnd);
+                    actions.push({op:'dup2', from:childEnd, to:i}, {op:'close', fd:r}, {op:'close', fd:w});
+                } else if (mode === 'ignore') actions.push({op:'open', fd:i, path:'/dev/null', flags:i === 0 ? 0 : 1, mode:0});
+                else actions.push({op:'dup2', from:mode === 'inherit' ? i : mode, to:i});
+            }
+            if (cwd != null) actions.push({op:'chdir', path:cwd});
+            pid = _spawnWithPath(file, argv, env, actions, cwd, {detached:!!options.detached});
+            result.pid = pid;
+        } catch (error) {
+            // Allocation failures and protocol defects are not OS errno zero.
+            // Preserve the exception; finally still closes every owned fd.
+            if (!error || typeof error.errno !== 'number') throw error;
+            result.error = syncFailure(error, file, argv);
+        } finally {
+            for (const fd of childEnds) { try { _nn.__kandeloFdClose(fd); } catch (_) {} }
+            if (!pid) for (const fd of legs) if (fd >= 0) { try { _nn.__kandeloFdClose(fd); } catch (_) {} }
+        }
+        if (!pid) return result;
+        let nativeResult;
+        try { nativeResult = _nn.__kandeloRunChildSync(pid, legs, input, deadline, maxBuffer || 0, killSignal); }
+        finally { for (const fd of legs) if (fd >= 0) { try { _nn.__kandeloFdClose(fd); } catch (_) {} } }
+        result.status = nativeResult.status; result.signal = nativeResult.signal;
+        result.output = nativeResult.output.map(value => {
+            if (value === null) return null;
+            const bytes = Buffer.from(value);
+            return options.encoding && options.encoding !== 'buffer' ? bytes.toString(options.encoding) : bytes;
+        });
+        result.stdout = result.output[1]; result.stderr = result.output[2];
+        if (nativeResult.errno) result.error = syncFailure(nativeResult, file, argv);
+        return result;
+    }
+    function checkSyncResult(result, command, options) {
+        if (!options.stdio && result.stderr) process.stderr.write(result.stderr);
+        if (result.error) throw Object.assign(result.error, result);
+        if (result.status !== 0) {
+            const detail = result.stderr && result.stderr.length ? '\n' + result.stderr.toString() : '';
+            throw Object.assign(new Error('Command failed: ' + command + detail), result);
+        }
+        return result.stdout;
+    }
+    function execSync(command, options) {
+        syncString(command, 'command');
+        options = syncOptions(options == null ? undefined : options);
+        options.shell = typeof options.shell === 'string' ? options.shell : true;
+        return checkSyncResult(spawnSync(command, [], options), command, options);
+    }
+    function execFileSync(file, args, options) {
+        if (args && !Array.isArray(args) && typeof args === 'object') { options = args; args = []; }
+        options = syncOptions(options == null ? undefined : options);
+        args = args == null ? [] : args;
+        return checkSyncResult(spawnSync(file, args, options), [options.argv0 || file].concat(args).join(' '), options);
     }
 
-    // ------------------------------------------------------------------
-    // Real async spawn on the Task-1 POSIX seam (posix_spawn + async pipe
-    // fds). execSync/execFileSync/spawnSync above stay popen-based (a
-    // follow-up); spawn/exec/execFile below are real streaming subprocesses.
-    // ------------------------------------------------------------------
     const _nn = _nodeNative;
-    function _spawnWithPath(file, argv, env, actions, cwd) {
+    function _spawnWithPath(file, argv, env, actions, cwd, attrs = {}) {
         // Anchor without lexical normalization: the kernel must still walk
         // symlinks and '..' in order. The exact-path native seam receives the
         // same target regardless of its preflight's parent working directory.
         const childCwd = cwd ? (cwd.startsWith('/') ? cwd : process.cwd() + '/' + cwd) : process.cwd();
         const absolute = path => path.startsWith('/') ? path : childCwd + '/' + path;
-        if (file.includes('/')) return _nn.__kandeloSpawn(absolute(file), argv, env, actions, {});
+        if (file.includes('/')) return _nn.__kandeloSpawn(absolute(file), argv, env, actions, attrs);
 
         // Node searches the CHILD environment's PATH. posix_spawn takes an
         // exact path, and posix_spawnp would search the parent's environment,
@@ -3588,7 +3723,7 @@ const child_process = (() => {
         let missing, denied;
         for (const directory of searchPath.split(':')) {
             const candidate = directory ? directory + '/' + file : file;
-            try { return _nn.__kandeloSpawn(absolute(candidate), argv, env, actions, {}); }
+            try { return _nn.__kandeloSpawn(absolute(candidate), argv, env, actions, attrs); }
             catch (err) {
                 if (err.code === 'EACCES') denied = err;
                 else if (err.code === 'ENOENT' || err.code === 'ENOTDIR') missing = err;
@@ -3623,7 +3758,7 @@ const child_process = (() => {
         for (let i = 0; i < 3; i++) {
             const s = stdio[i];
             if (s === 'pipe') {
-                const [r, w] = _nn.__kandeloPipe();
+                const [r, w] = _nn.__kandeloPipe(i !== 0, 3);
                 // fd 0: child reads r, parent writes w. fds 1/2: child writes w, parent reads r.
                 const childEnd = (i === 0) ? r : w;
                 const parentEnd = (i === 0) ? w : r;
@@ -3647,7 +3782,7 @@ const child_process = (() => {
         child.killed = false;
 
         let pid;
-        try { pid = _spawnWithPath(file, argv, env, actions, options.cwd && String(options.cwd)); }
+        try { pid = _spawnWithPath(file, argv, env, actions, options.cwd && String(options.cwd), {detached:!!options.detached}); }
         catch (err) {
             // Close every pipe fd already created for this (failed) spawn — both
             // the child ends (parentClose) and the parent ends (legs). Without
@@ -6496,9 +6631,7 @@ if (typeof execArgv !== 'undefined') {
 // per-file require semantics. For -e/-p/REPL (no script in argv), basedir
 // falls back to cwd.
 globalThis.require = _makeRequire(
-    (process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/')
-        ? process.argv[1]
-        : process.cwd() + '/repl'
+    _nodeNative.mainScriptPath || process.cwd() + '/repl'
 );
 
 // --- Native ESM bare-specifier bridge ---------------------------------------
@@ -7024,10 +7157,7 @@ if (typeof globalThis.Intl === 'undefined') {
 }
 
 // __dirname and __filename for the main module (set when running a file)
-const _mainScriptArg =
-    process.argv && process.argv.length > 1 && process.argv[1] && process.argv[1][0] === '/'
-        ? process.argv[1]
-        : '';
+const _mainScriptArg = _nodeNative.mainScriptPath || '';
 const _mainScriptPath = _mainScriptArg ? _moduleRealpath(_mainScriptArg) : '';
 globalThis.__filename = _mainScriptPath;
 globalThis.__dirname = _mainScriptPath ? path.dirname(_mainScriptPath) : '';

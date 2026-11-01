@@ -741,11 +741,11 @@ Remaining failures involve AsyncLocalStorage propagation, legacy domain,
 custom exception hooks, beforeExit and synchronous child-process output.
 The timeout exposes missing socket inactivity timers. The 15 unsupported
 requirements retain their exact flag/reporter reasons; they are not
-passing compatibility. In particular, spawnSync ignores the caller's
-encoding. Its older popen path returns PID zero, mishandles status/options
-and suppresses stderr.
-Fix the general synchronous process controller rather than changing the
-warning tests that expose it. Timer argument/descriptor matrices,
+passing compatibility. At this revision-38 checkpoint, spawnSync ignored
+the caller's encoding. Its older popen path returned PID zero, mishandled
+status/options and suppressed stderr. The later synchronous process
+checkpoint below replaces that implementation; it does not refresh this
+64-file historical report. Timer argument/descriptor matrices,
 nextTick/I/O phases, async context, abort-listener resistance, warning
 CLI/diagnostics and primordial resilience still need conformance work.
 
@@ -817,3 +817,82 @@ Claude/npm/Bun remainder is preserved outside this stack.
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
 current LTS compatibility.
+
+
+### Synchronous process checkpoint (Node 26.13.0)
+
+Production source: `e4d6edc21ce8b290f70d35adfffa87b32b0bf584`.
+The normal revision-41 targeted build replaces the popen wrappers with
+real POSIX spawn and interleaved pipe I/O. It preserves exact arguments,
+binary stdout/stderr, encoding, input, cwd/environment and actual process
+results. Timeout and output limits signal and reap the child without
+pumping parent JavaScript jobs. Eval arguments, signal-zero probes,
+credential getters, detached sessions and guest errno names are covered
+by the same controls.
+
+The public controls passed on all four hosts. An independent compiled C
+peer verifies actual PID, credentials, process group and session state
+for synchronous and asynchronous children. The audit checks identical
+source, image, runtime and peer inputs.
+
+| Check | Result |
+|---|---|
+| Source and pinned-native controls | 158 passed, 0 skipped |
+| Prepared Node core controls | 18 passed, 0 skipped |
+| Runtime controls on each host | 8 passed, no other outcomes |
+| Browser UI controls across three engines | 9 passed, 0 skipped/retried/flaky |
+| TCP controls on each host | 8 passed, no timeouts or harness errors |
+| ABI snapshot | 55, unchanged and in sync |
+| Test evidence registry | 618 files, inventory matched |
+
+Unchanged source selection: `selections/child-process-sync.json`.
+
+| Runner | Pass | Fail | Skip | Unsupported | Timeout | Harness error | Pending |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Native Node 26.13.0 | 13 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Node host | 12 | 0 | 0 | 1 | 0 | 0 | 0 |
+| Chromium | 12 | 0 | 0 | 1 | 0 | 0 | 0 |
+| Firefox | 12 | 0 | 0 | 1 | 0 | 0 | 0 |
+| WebKit | 12 | 0 | 0 | 1 | 0 | 0 | 0 |
+
+Per-case statuses and exit codes match across guest hosts. The unsupported
+shell test requires `--expose-internals`, which has no verified guest
+mapping. It is not passing compatibility. The runner correctly exits 2
+for that incomplete coverage; the overall validation batch retained that
+status. Both unchanged timer warning regressions now pass on every host.
+These 13 selected files do not refresh the older 64-file timer selection,
+206-file network selection or full 5,147-file baseline.
+
+`coverage/child_process.json` reviews only the three synchronous function
+headings. Every row remains partial. Changing child uid/gid returns
+`ENOSYS`, Node executable mode still depends on argv[0], and full option,
+stdio, encoding, descriptor and signal matrices remain incomplete. Async
+spawn also still coerces detached instead of validating its type. These
+are implementation gaps, not established platform limits. Other core
+modules and the original broader WebKit ENOMEM observation remain open.
+
+The checked-in coverage review preserves all 65 per-case outcomes across
+native and guest runners, input identities, report hashes and control
+counts. Raw reports remain in `.context/node26-sync-runtime-HOST/`,
+`.context/node26-sync-upstream-r3-HOST/`,
+`.context/node26-sync-tcp-HOST/`,
+`.context/node-prepared-reports/vitest.xlhXLA/` and
+`.context/node26-sync-browser-reports/playwright.L2XDQ7/`.
+Frozen inputs are in `.context/node26-sync-runtime-inputs/manifest.json`.
+The Node archive hash is `ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e`.
+The revision-39/40 inputs, intermediate failures and exception-control
+red run remain separate. The full product rebuild and broad POSIX,
+browser memory and performance gates remain deferred.
+
+To collect the independent runtime controls with a fresh report directory:
+
+```sh
+scripts/dev-shell.sh bash
+export WASM_POSIX_RESOLUTION_POLICY=source-only-v1
+export WASM_POSIX_SOURCE_ONLY_BINARY_ROOT="$PWD/local-binaries/source-only-v1"
+host/node_modules/.bin/tsx scripts/run-nodejs-sync-process-tests.ts HOST FRESH_OUT
+```
+
+`HOST` is `node`, `chromium`, `firefox` or `webkit`. The runner uses the
+normal package image and SDK-built, ABI-stamped C peer. It refuses to
+overwrite a finished report.

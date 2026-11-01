@@ -21,6 +21,7 @@ export default {
       'test/node-exit-listeners.test.ts',
       'test/node-tcp-server.test.ts',
       'test/node-timers.test.ts',
+      'test/node-sync-processes.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

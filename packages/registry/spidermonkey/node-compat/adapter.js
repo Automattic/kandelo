@@ -556,7 +556,10 @@
         socketRead(fd, length) { return native.socketRead(fd, length); },
         socketWrite(fd, bytes) { return native.socketWrite(fd, bytes); },
         socketClose(fd) { return native.socketClose(fd); },
-        __kandeloPipe() { return native.__kandeloPipe(); },
+        __kandeloPipe(parentReads, minimumFd) { return native.__kandeloPipe(parentReads, minimumFd); },
+        __kandeloRunChildSync: typeof native.__kandeloRunChildSync === 'function'
+            ? function (pid, fds, input, deadline, maxBuffer, signal) { return native.__kandeloRunChildSync(pid, fds, input, deadline, maxBuffer, signal); }
+            : undefined,
         __kandeloSpawn(file, argv, env, actions, attrs) { return native.__kandeloSpawn(file, argv, env, actions, attrs); },
         __kandeloFdRead(fd, max, nonblocking) {
             return nonblocking === true ? native.__kandeloFdRead(fd, max, true) : native.__kandeloFdRead(fd, max);
@@ -567,6 +570,7 @@
         __kandeloFdWrite(fd, bytes) { return native.__kandeloFdWrite(fd, bytes); },
         __kandeloFdClose(fd) { return native.__kandeloFdClose(fd); },
         __kandeloWaitPid(pid) { return native.__kandeloWaitPid(pid); },
+        credentials() { return native.credentials(); },
         __kandeloKill(pid, sig) { return native.__kandeloKill(pid, sig); },
         tlsConnect(fd, servername, options) { return native.tlsConnect(fd, servername, options); },
         tlsRead(handle, length) { return native.tlsRead(handle, length); },
@@ -576,5 +580,6 @@
 
     const entryPath = typeof scriptPath === 'string' && scriptPath ? scriptPath : '';
     const args = typeof scriptArgs !== 'undefined' ? Array.from(scriptArgs) : [];
+    _nodeNative.mainScriptPath = entryPath;
     const argv0 = 'node';
     const execArgv = entryPath ? ['node', entryPath, ...args] : ['node', ...args];

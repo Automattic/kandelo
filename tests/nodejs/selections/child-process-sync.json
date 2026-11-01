@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Unchanged public synchronous child-process test families plus the two timer warning regressions that exposed broken output encoding. This focused selection is not complete module coverage.",
+  "tests": [
+    "parallel/test-child-process-execfilesync-maxbuf.js",
+    "parallel/test-child-process-execsync-maxbuf.js",
+    "parallel/test-child-process-spawnsync-args.js",
+    "parallel/test-child-process-spawnsync-env.js",
+    "parallel/test-child-process-spawnsync-input.js",
+    "parallel/test-child-process-spawnsync-maxbuf.js",
+    "parallel/test-child-process-spawnsync-non-string-args.js",
+    "parallel/test-child-process-spawnsync-shell.js",
+    "parallel/test-child-process-spawnsync-timeout.js",
+    "parallel/test-child-process-spawnsync-validation-errors.js",
+    "parallel/test-child-process-spawnsync.js",
+    "parallel/test-timers-nan-duration-warning.js",
+    "parallel/test-timers-negative-duration-warning.js"
+  ]
+}
