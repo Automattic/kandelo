@@ -197,6 +197,14 @@ package files and retained old files, then atomically restores the old
 names/inventory and rolled-back authority. It does not roll back user data
 or database schemas.
 
+Journal publication prepares all fallible state before storage writes and
+serializes through at most 64 KiB of scratch. This removes the whole-frame
+encoding copy without changing the journal format or its current 1 MiB
+transaction bound. Recovery still validates the complete transaction before
+applying records. A failed write or uncertain flush poisons the writer; it
+does not publish an in-memory partial activation or retry against uncertain
+storage.
+
 Reopen requires the installed inventory to match the phase's complete set.
 Unknown versions, malformed receipts and mismatching inventories are
 refused, not treated as permission to select another set. Missing status

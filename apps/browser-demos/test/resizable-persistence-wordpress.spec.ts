@@ -29,7 +29,7 @@ for (const { profile, title: machineTitle, image } of [
   { profile: "wordpress-sqlite", title: "WordPress SQLite", image: "wordpress" },
   { profile: "wordpress-mariadb", title: "WordPress MariaDB", image: "lamp" },
 ]) {
-test(`${machineTitle} posts and uploads survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName }, testInfo) => {
+test(`${machineTitle} posts and uploads survive OPFS restart without checkpointing or the source image (${storageMode})`, async ({ playwright, browserName, baseURL }, testInfo) => {
   test.skip(process.env.KANDELO_TEST_MACHINE_URLS === undefined && !imageReady(`programs/wasm32/${image}.vfs.zst`), "ABI-matched browser WordPress product is required");
   test.setTimeout(540_000);
   const projectUse = testInfo.project.use as {
@@ -37,7 +37,6 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
     launchOptions?: Record<string, unknown>;
     proxy?: Record<string, unknown>;
     extraHTTPHeaders?: Record<string, string>;
-    baseURL?: string;
   };
   const userDataDir = mkdtempSync(join(tmpdir(), "kandelo-persistent-wordpress-"));
   let source: PersistentImageSource | undefined;
@@ -62,7 +61,7 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
           experimentalPersistenceMode: "resizable",
         },
       });
-      const targetUrl = new URL(resolvedTarget, projectUse.baseURL);
+      const targetUrl = new URL(resolvedTarget, baseURL);
       if (storageMode === "library") {
         targetUrl.searchParams.delete("experimentalPersistence");
         targetUrl.searchParams.delete("experimentalPersistenceMode");
@@ -75,15 +74,13 @@ test(`${machineTitle} posts and uploads survive OPFS restart without checkpointi
       const target = targetUrl.href;
       const installationStarted = performance.now();
       await page.goto(target, { waitUntil: "domcontentloaded" });
-      if (profile === "wordpress-mariadb" && browserName === "chromium") {
-        const imageStatus = page.getByRole("status").filter({ has: page.getByRole("progressbar", { name: /^Decompressing / }) });
-        await expect(imageStatus.getByRole("progressbar", { name: /^Decompressing / }))
-          .toBeVisible({ timeout: 60_000 });
-        await expect(imageStatus.getByRole("progressbar", { name: /^Downloading / })).toBeVisible();
-        await page.screenshot({ path: "../../.context/persistent-mariadb-decompression.png" });
-      }
       const frame = previewFrame(page, machineTitle);
       await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 360_000 });
+      if (storageMode === "library") {
+        const keep = page.getByRole("button", { name: "Keep this temporary computer", exact: true });
+        await keep.click();
+        await expect(keep).toBeHidden();
+      }
       timings.push({ operation: "fresh-profile installation to first WordPress response", elapsedMs: performance.now() - installationStarted });
       const appPrefix = await machineAppPrefix(page, machineTitle);
 

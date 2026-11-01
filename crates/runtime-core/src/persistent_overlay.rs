@@ -28,6 +28,7 @@ const HEADER_BYTES: usize = 72;
 const TRANSACTION_HEADER_BYTES: usize = 24;
 const TRANSACTION_TRAILER_BYTES: usize = 36;
 const MAX_TRANSACTION_BYTES: usize = 1024 * 1024;
+const TRANSACTION_WRITE_BYTES: usize = 64 * 1024;
 pub(crate) const FILE_BLOCK_BYTES: usize = 4096;
 pub(crate) const MAX_INODE_RECORD_BYTES: usize = 192 * 1024;
 pub(crate) const CACHE_BLOCKS: usize = 64;
@@ -1511,19 +1512,22 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             return Ok(());
         }
         let following_sequence = self.next_sequence.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-        let transaction = encode_transaction_in(self.next_sequence, mutations, writeback)?;
+        let length = transaction_encoded_length(mutations)?;
         let following_end = self
             .end
-            .checked_add(transaction.len() as u64)
+            .checked_add(length as u64)
             .ok_or(Errno::EOVERFLOW)?;
+        let mut buffer = IoBuffer::allocate(length.min(TRANSACTION_WRITE_BYTES), writeback,
+            |bytes| reserve_transaction_bytes(bytes, length.min(TRANSACTION_WRITE_BYTES)))?;
         let mut prepared = IoBuffer::new();
         if self.track_committed_state || self.retain_compacted_metadata {
-            let records = decode_mutations(&transaction
-                [TRANSACTION_HEADER_BYTES..transaction.len() - TRANSACTION_TRAILER_BYTES])?;
-            prepared = IoBuffer::allocate(records.len(), writeback, |entries| {
-                entries.try_reserve_exact(records.len()).map_err(|_| Errno::ENOMEM)
+            prepared = IoBuffer::allocate(mutations.len(), writeback, |entries| {
+                entries.try_reserve_exact(mutations.len()).map_err(|_| Errno::ENOMEM)
             })?;
-            for record in records {
+            let mut consumed = 0;
+            for mutation in mutations {
+                let record = DecodedMutation::borrow(mutation, consumed);
+                consumed += 23 + record.name.len() + record.value.map_or(0, <[u8]>::len);
                 if !self.track_committed_state && record.is_block() {
                     continue;
                 }
@@ -1538,10 +1542,8 @@ impl<S: OverlayStorage> OverlayJournal<S> {
             }
             self.needs_tail_repair = false;
         }
-        if let Err(error) = self
-            .storage
-            .write_all_at(self.end, &transaction)
-            .and_then(|()| self.storage.flush())
+        if let Err(error) = write_transaction(&mut self.storage, self.end, self.next_sequence,
+            length, mutations, &mut buffer).and_then(|()| self.storage.flush())
         {
             self.failure = Some(error);
             return Err(error);
@@ -3304,6 +3306,7 @@ fn validate_mutation(mutation: &Mutation) -> Result<(), Errno> {
     }
 }
 
+#[cfg(test)]
 fn encode_key(out: &mut IoBuffer<u8>, key: &OverlayKey) {
     match key {
         OverlayKey::Inode(inode) => {
@@ -3441,41 +3444,65 @@ fn replay_transactions<S: OverlayStorage>(
     Ok((end, next_sequence))
 }
 
+#[cfg(test)]
 fn encode_transaction(sequence: u64, mutations: &[Mutation]) -> Result<IoBuffer<u8>, Errno> {
-    encode_transaction_in(sequence, mutations, false)
+    let length = transaction_encoded_length(mutations)?;
+    let mut out = IoBuffer::allocate(length, false, |bytes| reserve_transaction_bytes(bytes, length))?;
+    transaction_parts(sequence, length, mutations, |bytes| {
+        out.extend_from_slice(bytes);
+        Ok(())
+    })?;
+    Ok(out)
 }
 
-fn encode_transaction_in(sequence: u64, mutations: &[Mutation], writeback: bool) -> Result<IoBuffer<u8>, Errno> {
-    let count = u32::try_from(mutations.len()).map_err(|_| Errno::EFBIG)?;
-    let length = transaction_encoded_length(mutations)?;
-    let mut out = IoBuffer::allocate(length, writeback, |bytes| reserve_transaction_bytes(bytes, length))?;
-    out.extend_from_slice(TRANSACTION_MAGIC);
-    out.extend_from_slice(&0u32.to_le_bytes());
-    out.extend_from_slice(&sequence.to_le_bytes());
-    out.extend_from_slice(&count.to_le_bytes());
-    out.extend_from_slice(&0u32.to_le_bytes());
+fn transaction_parts(sequence: u64, length: usize, mutations: &[Mutation], mut visit: impl FnMut(&[u8]) -> Result<(), Errno>) -> Result<(), Errno> {
+    let mut digest = Sha256::new();
+    let mut emit = |bytes: &[u8]| {
+        digest.update(bytes);
+        visit(bytes)
+    };
+    let mut header = [0; TRANSACTION_HEADER_BYTES];
+    header[..4].copy_from_slice(TRANSACTION_MAGIC);
+    header[4..8].copy_from_slice(&(length as u32).to_le_bytes());
+    header[8..16].copy_from_slice(&sequence.to_le_bytes());
+    header[16..20].copy_from_slice(&(mutations.len() as u32).to_le_bytes());
+    header[20..24].copy_from_slice(&(!(length as u32)).to_le_bytes());
+    emit(&header)?;
     for mutation in mutations {
-        match mutation {
-            Mutation::Put { key, value } => {
-                out.push(1);
-                encode_key(&mut out, key);
-                out.extend_from_slice(&(value.len() as u32).to_le_bytes());
-                out.extend_from_slice(value);
-            }
-            Mutation::Delete { key } => {
-                out.push(2);
-                encode_key(&mut out, key);
-                out.extend_from_slice(&0u32.to_le_bytes());
+        let record = DecodedMutation::borrow(mutation, 0);
+        let mut fields = [0; 23 + 255];
+        fields[0] = if record.value.is_some() { 1 } else { 2 };
+        fields[1] = record.kind;
+        fields[2..10].copy_from_slice(&record.inode.to_le_bytes());
+        fields[10..18].copy_from_slice(&record.block.to_le_bytes());
+        fields[18] = record.name.len() as u8;
+        fields[19..19 + record.name.len()].copy_from_slice(record.name);
+        fields[19 + record.name.len()..23 + record.name.len()]
+            .copy_from_slice(&(record.value.map_or(0, <[u8]>::len) as u32).to_le_bytes());
+        emit(&fields[..23 + record.name.len()])?;
+        if let Some(value) = record.value { emit(value)?; }
+    }
+    visit(&digest.finalize())?;
+    visit(COMMIT_MAGIC)
+}
+
+fn write_transaction<S: OverlayStorage>(storage: &mut S, mut offset: u64, sequence: u64, length: usize, mutations: &[Mutation], buffer: &mut IoBuffer<u8>) -> Result<(), Errno> {
+    let limit = buffer.capacity().min(TRANSACTION_WRITE_BYTES);
+    transaction_parts(sequence, length, mutations, |mut bytes| {
+        while !bytes.is_empty() {
+            let count = bytes.len().min(limit - buffer.len());
+            buffer.extend_from_slice(&bytes[..count]);
+            bytes = &bytes[count..];
+            if buffer.len() == limit {
+                storage.write_all_at(offset, buffer)?;
+                offset += buffer.len() as u64;
+                buffer.clear();
             }
         }
-    }
-    debug_assert_eq!(out.len() + TRANSACTION_TRAILER_BYTES, length);
-    out[4..8].copy_from_slice(&(length as u32).to_le_bytes());
-    out[20..24].copy_from_slice(&(!(length as u32)).to_le_bytes());
-    let digest = Sha256::digest(&out);
-    out.extend_from_slice(&digest);
-    out.extend_from_slice(COMMIT_MAGIC);
-    Ok(out)
+        Ok(())
+    })?;
+    if !buffer.is_empty() { storage.write_all_at(offset, buffer)?; }
+    Ok(())
 }
 
 pub(crate) fn transaction_encoded_length(mutations: &[Mutation]) -> Result<usize, Errno> {
@@ -3556,7 +3583,20 @@ struct DecodedMutation<'a> {
     value_offset: Option<u64>,
 }
 
-impl DecodedMutation<'_> {
+impl<'a> DecodedMutation<'a> {
+    fn borrow(mutation: &'a Mutation, consumed: usize) -> Self {
+        let (kind, inode, block, name) = match mutation_key(mutation) {
+            OverlayKey::Inode(inode) => (1, *inode, 0, &[][..]),
+            OverlayKey::FileBlock { inode, block } => (2, *inode, *block, &[][..]),
+            OverlayKey::Dirent { parent, name } => (3, *parent, 0, name.as_slice()),
+            OverlayKey::FileSize(inode) => (4, *inode, 0, &[][..]),
+            OverlayKey::FileZeroFrom(inode) => (5, *inode, 0, &[][..]),
+        };
+        let value = match mutation { Mutation::Put { value, .. } => Some(value.as_slice()), Mutation::Delete { .. } => None };
+        Self { kind, inode, block, name, value,
+            value_offset: value.map(|_| (consumed + 23 + name.len()) as u64) }
+    }
+
     fn is_block(&self) -> bool { self.kind == 2 }
 
     fn owned_key(&self) -> Result<OverlayKey, Errno> {
@@ -3675,6 +3715,7 @@ mod tests {
         fail_errno: Option<Errno>,
         fail_after_flushes: Option<usize>,
         fail_write_after_bytes: Option<usize>,
+        max_write_bytes: usize,
         read_bytes: Option<Arc<AtomicU64>>,
         io_peak: Option<Arc<AtomicU64>>,
         fail_map_allocation_after_flush: bool,
@@ -3703,11 +3744,13 @@ mod tests {
 
         fn write_all_at(&mut self, offset: u64, src: &[u8]) -> Result<(), Errno> {
             self.observe_io();
+            self.max_write_bytes = self.max_write_bytes.max(src.len());
             let start = usize::try_from(offset).map_err(|_| Errno::EIO)?;
             let written = self
                 .fail_write_after_bytes
                 .unwrap_or(src.len())
                 .min(src.len());
+            if let Some(remaining) = &mut self.fail_write_after_bytes { *remaining -= written; }
             let end = start.checked_add(written).ok_or(Errno::EIO)?;
             if end > self.bytes.len() {
                 self.bytes.resize(end, 0);
@@ -4450,6 +4493,111 @@ mod tests {
         assert_eq!(journal.state.lookup(&inode_key()), Some(Some(&b"committed"[..])));
         let reopened = OverlayJournal::open(journal.into_storage(), [80; 32]).unwrap();
         assert_eq!(reopened.state.lookup(&inode_key()), Some(Some(&b"committed"[..])));
+    }
+
+    #[test]
+    fn streamed_transactions_preserve_the_existing_frame_encoding() {
+        let mutations = [
+            Mutation::Put { key: inode_key(), value: vec![3; 4096] },
+            Mutation::Put { key: OverlayKey::FileSize(7), value: 9000u64.to_le_bytes().to_vec() },
+            Mutation::Put { key: OverlayKey::FileZeroFrom(7), value: 1u64.to_le_bytes().to_vec() },
+            Mutation::Put { key: OverlayKey::FileBlock { inode: 7, block: 9 }, value: vec![8; FILE_BLOCK_BYTES] },
+            Mutation::Put { key: directory_key(&[b'n'; 255]), value: 7u64.to_le_bytes().to_vec() },
+            Mutation::Delete { key: inode_key() },
+            Mutation::Delete { key: OverlayKey::FileSize(7) },
+            Mutation::Delete { key: OverlayKey::FileBlock { inode: 7, block: 8 } },
+            Mutation::Delete { key: directory_key(b"removed") },
+        ];
+        let length = transaction_encoded_length(&mutations).unwrap();
+        let mut expected = IoBuffer::try_with_capacity(length).unwrap();
+        expected.extend_from_slice(TRANSACTION_MAGIC);
+        expected.extend_from_slice(&(length as u32).to_le_bytes());
+        expected.extend_from_slice(&17u64.to_le_bytes());
+        expected.extend_from_slice(&(mutations.len() as u32).to_le_bytes());
+        expected.extend_from_slice(&(!(length as u32)).to_le_bytes());
+        for mutation in &mutations {
+            expected.push(if matches!(mutation, Mutation::Put { .. }) { 1 } else { 2 });
+            encode_key(&mut expected, mutation_key(mutation));
+            let value = match mutation { Mutation::Put { value, .. } => value.as_slice(), Mutation::Delete { .. } => &[] };
+            expected.extend_from_slice(&(value.len() as u32).to_le_bytes());
+            expected.extend_from_slice(value);
+        }
+        let digest = Sha256::digest(expected.as_slice());
+        expected.extend_from_slice(&digest);
+        expected.extend_from_slice(COMMIT_MAGIC);
+        for capacity in [1, 23, 64, TRANSACTION_WRITE_BYTES] {
+            let mut scratch = IoBuffer::try_with_capacity(capacity).unwrap();
+            let mut storage = MemoryStorage::default();
+            write_transaction(&mut storage, 0, 17, length, &mutations, &mut scratch).unwrap();
+            assert_eq!(storage.bytes, expected.as_slice());
+            assert!(storage.max_write_bytes <= capacity);
+        }
+    }
+
+    #[test]
+    fn large_transaction_commit_uses_bounded_encoding_scratch_and_exact_value_offsets() {
+        let digest = [113; 32];
+        let peak = Arc::new(AtomicU64::new(0));
+        let mut journal = OverlayJournal::open(MemoryStorage {
+            io_peak: Some(peak.clone()), ..MemoryStorage::default()
+        }, digest).unwrap();
+        let mut mutations = (0..128).map(|block| Mutation::Put {
+            key: OverlayKey::FileBlock { inode: 7, block }, value: vec![block as u8; FILE_BLOCK_BYTES],
+        }).collect::<Vec<_>>();
+        mutations.insert(0, Mutation::Put { key: directory_key(b"variable-length-prefix"), value: 7u64.to_le_bytes().to_vec() });
+        let used = crate::io_buffer::IO_MEMORY.usage().0;
+        let allowance = 2 * (TRANSACTION_WRITE_BYTES + mutations.len() * core::mem::size_of::<PreparedOverlayMutation>());
+        {
+            let _quota = crate::io_buffer::test_budget(used + allowance);
+            journal.commit(&mutations).unwrap();
+            assert!(peak.load(Ordering::Relaxed) as usize <= used + allowance);
+        }
+        assert_eq!(journal.storage.max_write_bytes, TRANSACTION_WRITE_BYTES);
+        for block in [0, 15, 16, 31, 127] {
+            let mut actual = [0; FILE_BLOCK_BYTES];
+            assert_eq!(journal.read_file_at(7, (128 * FILE_BLOCK_BYTES) as u64,
+                block * FILE_BLOCK_BYTES as u64, &mut actual, |_, _| panic!("live journal must contain block")), Ok(FILE_BLOCK_BYTES));
+            assert_eq!(actual, [block as u8; FILE_BLOCK_BYTES]);
+        }
+        let mut reopened = OverlayJournal::open(journal.into_storage(), digest).unwrap();
+        for block in [0, 15, 16, 31, 127] {
+            let mut actual = [0; FILE_BLOCK_BYTES];
+            assert_eq!(reopened.read_file_at(7, (128 * FILE_BLOCK_BYTES) as u64,
+                block * FILE_BLOCK_BYTES as u64, &mut actual, |_, _| panic!("journal must contain block")), Ok(FILE_BLOCK_BYTES));
+            assert_eq!(actual, [block as u8; FILE_BLOCK_BYTES]);
+        }
+    }
+
+    #[test]
+    fn streamed_commit_torn_chunks_never_publish_a_partial_transaction() {
+        let digest = [114; 32];
+        let mut initial = OverlayJournal::open(MemoryStorage::default(), digest).unwrap();
+        initial.commit(&[Mutation::Put { key: inode_key(), value: b"old".to_vec() }]).unwrap();
+        let durable = initial.into_storage().bytes;
+        let mutations = [Mutation::Put { key: inode_key(), value: vec![7; MAX_INODE_RECORD_BYTES] }];
+        let length = transaction_encoded_length(&mutations).unwrap();
+        for cut in [0, 23, TRANSACTION_WRITE_BYTES - 1, TRANSACTION_WRITE_BYTES,
+            TRANSACTION_WRITE_BYTES + 1, 2 * TRANSACTION_WRITE_BYTES, length - 36, length - 1] {
+            let mut journal = OverlayJournal::open(MemoryStorage { bytes: durable.clone(),
+                ..MemoryStorage::default() }, digest).unwrap();
+            journal.storage.fail_write_after_bytes = Some(cut);
+            assert_eq!(journal.commit(&mutations), Err(Errno::EIO));
+            assert_eq!(journal.state.lookup(&inode_key()), Some(Some(&b"old"[..])));
+            assert_eq!(journal.commit(&mutations), Err(Errno::EIO));
+            let mut storage = journal.into_storage();
+            storage.fail_write_after_bytes = None;
+            let reopened = OverlayJournal::open(storage, digest).unwrap();
+            assert_eq!(reopened.state.lookup(&inode_key()), Some(Some(&b"old"[..])));
+        }
+        let mut journal = OverlayJournal::open(MemoryStorage { bytes: durable,
+            ..MemoryStorage::default() }, digest).unwrap();
+        journal.storage.fail_flush = true;
+        assert_eq!(journal.commit(&mutations), Err(Errno::EIO));
+        assert_eq!(journal.state.lookup(&inode_key()), Some(Some(&b"old"[..])));
+        let mut storage = journal.into_storage();
+        storage.fail_flush = false;
+        let reopened = OverlayJournal::open(storage, digest).unwrap();
+        assert_eq!(reopened.state.lookup(&inode_key()), Some(Some(vec![7; MAX_INODE_RECORD_BYTES].as_slice())));
     }
 
     #[test]
