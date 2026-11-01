@@ -748,7 +748,8 @@ fn write_kms_fd_state(
     // Retired cursor slot: the cursor plane, and its BO reference, are
     // device state, so no DRM file carries one across fork or exec.
     w.write_u32(0)?;
-    w.write_u8(kms.universal_planes as u8)?;
+    // One byte of client caps: bit 0 universal planes, bit 1 atomic.
+    w.write_u8(u8::from(kms.universal_planes) | (u8::from(kms.atomic) << 1))?;
     w.write_u32(kms.magic)?;
     w.write_u32(kms.pending_flips.len() as u32)?;
     for flip in &kms.pending_flips {
@@ -854,7 +855,11 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     if r.read_u32()? != 0 {
         return Err(Errno::EINVAL);
     }
-    let universal_planes = r.read_u8()? != 0;
+    let caps = r.read_u8()?;
+    if caps & !3 != 0 {
+        return Err(Errno::EINVAL);
+    }
+    let (universal_planes, atomic) = (caps & 1 != 0, caps & 2 != 0);
     let magic = r.read_u32()?;
     let pending_count = r.read_u32()? as usize;
     if pending_count > 65536 {
@@ -875,6 +880,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         master_identity: None,
         holds_master,
         universal_planes,
+        atomic,
         magic,
         fbs: crate::ofd::SharedKmsFbs::default(),
         pending_flips,

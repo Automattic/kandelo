@@ -242,6 +242,7 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0xC02464BBu, 2u, 1u, 36u, 36u },
     { 0xC03064B7u, 2u, 1u, 48u, 48u },
     { 0xC03064E3u, 2u, 3u, 48u, 48u },
+    { 0xC03864BCu, 2u, 3u, 56u, 56u },
     { 0xC0406400u, 2u, 3u, 4294967295u, 64u },
     { 0xC04064A0u, 2u, 3u, 64u, 64u },
     { 0xC04064AAu, 2u, 3u, 64u, 64u },
@@ -252,7 +253,7 @@ static const struct kandelo_ioctl_contract kandelo_ioctl_contracts[] = {
     { 0xC06864CEu, 2u, 3u, 104u, 104u },
 };
 
-#define KANDELO_IOCTL_CONTRACT_COUNT 133u
+#define KANDELO_IOCTL_CONTRACT_COUNT 134u
 
 static const struct kandelo_marshal_arg kandelo_marshal_args_1[] = {
     { 0u, 4u, 0u, 0u, 4096u, 0u, 0u },

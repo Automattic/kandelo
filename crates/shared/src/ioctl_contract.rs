@@ -452,6 +452,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // EGL image export: ctx/target/name/level in; bo handle, extent,
     // internal format and sibling identity out (WpkDrmExportImage).
     pointer!(crate::dri::DRM_IOCTL_WPK_EXPORT_IMAGE, InOut, 48),
+    pointer!(crate::dri::DRM_IOCTL_MODE_ATOMIC, InOut, 56),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPERTY, InOut, 64),
@@ -624,6 +625,7 @@ mod tests {
             crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES,
             crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY,
             crate::dri::DRM_IOCTL_MODE_CREATE_LEASE,
+            crate::dri::DRM_IOCTL_MODE_ATOMIC,
         ] {
             let contract = request_contract(request).expect("KMS ioctl must have a contract");
             let encoded = (request >> 16) & 0x3fff;

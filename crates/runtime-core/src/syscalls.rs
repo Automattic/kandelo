@@ -51653,6 +51653,28 @@ impl HostIO for RelSymlinkMock {
         (fb.fb_id, dumb.handle, bo)
     }
 
+    /// Light the CRTC with the connector's 640x480 mode on a framebuffer
+    /// created through `fd`, so planes are scanned out (a dark CRTC shows
+    /// no cursor). Returns the primary framebuffer.
+    fn kms_light_crtc(proc: &mut Process, host: &mut MockHostIO, fd: i32) -> u32 {
+        use wasm_posix_shared::dri::*;
+        let dumb = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 640, height: 480, bpp: 32, ..Default::default() }).unwrap();
+        let mut fb = WpkDrmModeFbCmd2 { width: 640, height: 480,
+            pixel_format: DRM_FORMAT_XRGB8888, ..Default::default() };
+        fb.handles[0] = dumb.handle;
+        fb.pitches[0] = dumb.pitch;
+        let fb = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, fb).unwrap().fb_id;
+        let request = kms_modeset(host, fb);
+        kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETCRTC, request).unwrap();
+        fb
+    }
+
+    // The IGT-mirroring atomic KMS tests, kept beside the atomic engine.
+    mod kms_atomic_tests {
+        include!("dri/kms_atomic_tests.rs");
+    }
+
     fn kms_cursor_plane(proc: &mut Process, host: &mut MockHostIO, fd: i32)
         -> wasm_posix_shared::dri::WpkDrmModeGetPlane {
         use wasm_posix_shared::dri::*;
@@ -51754,8 +51776,9 @@ impl HostIO for RelSymlinkMock {
         let plane = WpkDrmModeSetPlane { plane_id: kms::CURSOR_PLANE_ID,
             crtc_id: kms::CRTC_ID, fb_id: fb.fb_id, crtc_w: 64, crtc_h: 64,
             src_w: 64 << 16, src_h: 64 << 16, ..Default::default() };
+        // A source outside the fb: drm_atomic_plane_check's ENOSPC.
         assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE,
-            WpkDrmModeSetPlane { src_x: 1, ..plane }).map(|_| ()), Err(Errno::EINVAL));
+            WpkDrmModeSetPlane { src_x: 1, ..plane }).map(|_| ()), Err(Errno::ENOSPC));
         assert_eq!(bo_refcount(bo), Some(4));
         kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, plane).unwrap();
         for handle in [created.format, acquired.handle] {
@@ -51855,17 +51878,20 @@ impl HostIO for RelSymlinkMock {
         kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, set).unwrap();
         // An offset view cannot exist: ADDFB2 refuses a nonzero offset the
         // host scanout cannot honor.
+        // drm_atomic_plane_check refuses a source outside the fb (ENOSPC),
+        // the no-scaling helper a scaled plane (ERANGE), and the cursor
+        // presenter's own limits a padded image (EINVAL).
         let mut invalid = alloc::vec![
-            WpkDrmModeSetPlane { src_x: 1, ..set },
-            WpkDrmModeSetPlane { src_w: 63 << 16, ..set },
-            WpkDrmModeSetPlane { crtc_w: 63, ..set },
+            (WpkDrmModeSetPlane { src_x: 1, ..set }, Errno::ENOSPC),
+            (WpkDrmModeSetPlane { src_w: 63 << 16, ..set }, Errno::ERANGE),
+            (WpkDrmModeSetPlane { crtc_w: 63, ..set }, Errno::ERANGE),
         ];
         let (padded, _, padded_bo) = kms_cursor_fb(&mut proc, &mut host, fd, 60, 63, 0);
-        invalid.push(WpkDrmModeSetPlane { fb_id: padded, crtc_w: 60, crtc_h: 63,
-            src_w: 60 << 16, src_h: 63 << 16, ..set });
+        invalid.push((WpkDrmModeSetPlane { fb_id: padded, crtc_w: 60, crtc_h: 63,
+            src_w: 60 << 16, src_h: 63 << 16, ..set }, Errno::EINVAL));
         let effects = host.cursor_calls.len();
-        for request in invalid {
-            assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, request).map(|_| ()), Err(Errno::EINVAL));
+        for (request, errno) in invalid {
+            assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, request).map(|_| ()), Err(errno));
             assert_eq!(host.cursor_calls.len(), effects);
             assert_eq!(kms_cursor_plane(&mut proc, &mut host, fd).fb_id, valid);
             assert_eq!(bo_refcount(bo), Some(3));
@@ -51883,6 +51909,7 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(1); let mut host = MockHostIO::new();
         host.cursor_supported = true;
         let fd = kms_master_card0(&mut proc, &mut host);
+        kms_light_crtc(&mut proc, &mut host, fd);
         let (first, handle, bo) = kms_cursor_fb(&mut proc, &mut host, fd, 64, 64, 0);
         let mut fb = WpkDrmModeFbCmd2 { width: 64, height: 64,
             pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
@@ -52219,10 +52246,11 @@ impl HostIO for RelSymlinkMock {
             kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, req).map(|_| ())
         };
         assert_eq!(set(&mut proc, &mut host, plain, dpms(DRM_MODE_DPMS_STANDBY)), Err(Errno::EACCES));
+        // drm_atomic_connector_commit_dpms: Standby and Suspend are Off.
         assert_eq!(set(&mut proc, &mut host, fd, dpms(DRM_MODE_DPMS_STANDBY)), Ok(()));
-        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_STANDBY);
+        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_OFF);
         assert_eq!(set(&mut proc, &mut host, fd, dpms(9)), Err(Errno::EINVAL));
-        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_STANDBY);
+        assert_eq!(kms::property_value(kms::PROP_DPMS), DRM_MODE_DPMS_OFF);
 
         let cursor2 = |proc: &mut Process, host: &mut MockHostIO, req: WpkDrmModeCursor| {
             let mut buf = [0u8; 36];
@@ -55214,6 +55242,17 @@ impl HostIO for RelSymlinkMock {
             kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_CLIENT_CAP,
                 WpkDrmSetClientCap { capability: DRM_CLIENT_CAP_UNIVERSAL_PLANES, value: 1 }).unwrap();
         }
+        // The scanout belongs to the file that stays open, so the CRTC stays
+        // lit (and the cursor shown) when the installing file closes.
+        let scanout = kms_ioctl(&mut proc, &mut host, second, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 640, height: 480, bpp: 32, ..Default::default() }).unwrap();
+        let mut scanout_fb = WpkDrmModeFbCmd2 { width: 640, height: 480,
+            pixel_format: DRM_FORMAT_XRGB8888, ..Default::default() };
+        scanout_fb.handles[0] = scanout.handle;
+        scanout_fb.pitches[0] = scanout.pitch;
+        let scanout_fb = kms_ioctl(&mut proc, &mut host, second, DRM_IOCTL_MODE_ADDFB2, scanout_fb).unwrap().fb_id;
+        let request = kms_modeset(&mut host, scanout_fb);
+        kms_ioctl(&mut proc, &mut host, first, DRM_IOCTL_MODE_SETCRTC, request).unwrap();
         let image = kms_ioctl(&mut proc, &mut host, first, DRM_IOCTL_MODE_CREATE_DUMB,
             WpkDrmModeCreateDumb { width: 64, height: 64, bpp: 32, ..Default::default() }).unwrap();
         let bo = crate::dri::bo::next_id_for_test() - 1;
@@ -55289,8 +55328,8 @@ impl HostIO for RelSymlinkMock {
         }
         // CRTC color properties: GAMMA_LUT (blob, 0 = no LUT) and the
         // immutable GAMMA_LUT_SIZE.
-        assert_eq!(kms::object_properties(kms::CRTC_ID, DRM_MODE_OBJECT_CRTC),
-            Ok(&[kms::PROP_GAMMA_LUT, kms::PROP_GAMMA_LUT_SIZE][..]));
+        assert_eq!(kms::listed_properties(kms::object_properties(kms::CRTC_ID, DRM_MODE_OBJECT_CRTC).unwrap(), false),
+            &[kms::PROP_GAMMA_LUT, kms::PROP_GAMMA_LUT_SIZE][..]);
         assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT_SIZE), 256);
         assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT), 0);
         assert_eq!(kms::object_type(kms::PROP_GAMMA_LUT), Some(DRM_MODE_OBJECT_PROPERTY));

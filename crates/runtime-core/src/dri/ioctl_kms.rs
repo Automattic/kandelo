@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use wasm_posix_shared::Errno;
 
+use crate::dri::atomic::{self, Commit, CommitContext, CommitKind, CursorRequest};
 use crate::dri::kms;
 use crate::process::{HostIO, Process};
 use crate::syscalls::{
@@ -34,13 +35,6 @@ pub(crate) fn kms_file_is_current_master(proc: &Process, ofd_idx: usize) -> Resu
     let kms = file.kms().ok_or(Errno::EBADF)?;
     Ok(kms.master_identity == Some(file.ofd_id)
         && crate::dri::master::current().is_some_and(|grant| grant.ofd_id == file.ofd_id))
-}
-
-/// Hand the host the LUT the CRTC output now passes through (`GAMMA_LUT`),
-/// or `None` when colors pass through unchanged.
-pub(crate) fn publish_kms_gamma(host: &mut dyn HostIO) {
-    let lut = kms::effective_gamma_lut();
-    host.kms_set_gamma(kms::CRTC_ID, lut.as_deref());
 }
 
 pub(crate) fn write_dri_u32s(host: &mut dyn HostIO, pid: i32, pointer: u64, values: &[u32]) -> Result<(), Errno> {
@@ -92,65 +86,14 @@ pub(crate) fn release_kms_fb(host: &mut dyn HostIO, pid: i32, fb_id: u32, bo_id:
 
 /// Linux disables the CRTC that scans out a removed fb.
 pub(crate) fn disable_crtc_scanning(fb_id: u32) {
-    if kms::crtc_fb() != fb_id {
-        return;
-    }
-    kms::set_crtc_fb(0);
-    kms::set_crtc_mode(None);
-    kms::set_crtc_offset((0, 0));
+    kms::disable_crtc_scanning(fb_id);
 }
 
-/// Put `fb_id` on the CRTC. An fb that `CLOSEFB` left on the CRTC is no
-/// longer referenced once another fb replaces it.
-pub(crate) fn latch_crtc_fb(host: &mut dyn HostIO, pid: i32, crtc_id: u32, fb_id: u32) {
-    // The CRTC scans its mode's active area at the panning offset; the host
-    // presents exactly that region of the framebuffer.
-    let viewport = match (fb_id, kms::crtc_mode()) {
-        (0, _) | (_, None) => [0; 4],
-        (_, Some(mode)) => {
-            let (x, y) = kms::crtc_offset();
-            [x, y, u32::from(mode.hdisplay), u32::from(mode.vdisplay)]
-        }
-    };
-    host.kms_set_fb(pid, crtc_id, fb_id, viewport);
-    kms::set_crtc_fb(fb_id);
-    if let Some(closed) = kms::replace_closed_scanout(None) {
-        release_kms_fb(host, closed.pid, closed.fb_id, closed.fb.bo_id);
-    }
-}
-
-/// Install `next` as the cursor plane state. A new image moves the plane's
-/// BO reference: the new BO gains one, and the previous image's is dropped
-/// after the host has been told about the replacement.
-pub(crate) fn apply_kms_cursor(
-    proc: &mut Process, host: &mut dyn HostIO,
-    flags: u32, mut next: kms::CursorPlaneState,
-) -> Result<(), Errno> {
-    use wasm_posix_shared::dri::DRM_MODE_CURSOR_BO;
-    let old = if flags & DRM_MODE_CURSOR_BO != 0 {
-        let bo = next.fb.map(|fb| fb.bo_id);
-        if let Some(bo) = bo {
-            crate::dri::with_registry(|r| {
-                let current = r.get(bo).ok_or(Errno::ENOENT)?;
-                current.refcount.checked_add(1).ok_or(Errno::EOVERFLOW)?;
-                r.incref(bo);
-                Ok(())
-            })?;
-        }
-        core::mem::replace(&mut next.bo, bo)
-    } else { None };
-    let fb = next.fb;
-    let (x, y, hot_x, hot_y) = (next.x, next.y, next.hot_x, next.hot_y);
-    let fb_id = next.fb_id;
-    kms::set_cursor_plane(next);
-    host.kms_cursor(proc.pid as i32, kms::CRTC_ID, flags,
-        fb.map_or(0, |fb| fb.bo_id), fb.map_or(0, |fb| fb.width),
-        fb.map_or(0, |fb| fb.height), x, y, hot_x, hot_y, fb_id);
-    if let Some(old) = old {
-        if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
-            apply_dri_release_effect(proc.pid as i32, DriReleaseEffect::DestroyBo(old), host);
-        }
-    }
+/// Check `commit` and, when it passes, apply it as a legacy update: it takes
+/// effect now and leaves no commit pending.
+fn legacy_commit(host: &mut dyn HostIO, pid: i32, commit: Commit) -> Result<(), Errno> {
+    commit.check(host, false)?;
+    commit.apply(&mut CommitContext { host, pid }, CommitKind::Legacy, None);
     Ok(())
 }
 
@@ -163,8 +106,12 @@ pub(crate) fn collect_cursor_framebuffer_release(fb_id: u32) -> Result<Vec<DriRe
     };
     let mut effects = Vec::with_capacity(2);
     let bo = state.bo.take().ok_or(Errno::EIO)?;
+    // atomic_remove_fb disables the plane that scans the framebuffer.
     state.fb = None;
     state.fb_id = 0;
+    state.src = [0; 4];
+    state.crtc_w = 0;
+    state.crtc_h = 0;
     effects.push(DriReleaseEffect::HideCursor { fb_id });
     kms::set_cursor_plane(state);
     if crate::dri::with_registry(|r| r.decref(bo)) == Some(0) {
@@ -210,7 +157,7 @@ pub(crate) fn drm_ioctl_flags(request: u32) -> Option<u8> {
         DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_SETPLANE | DRM_IOCTL_MODE_CURSOR
         | DRM_IOCTL_MODE_CURSOR2 | DRM_IOCTL_MODE_SETGAMMA | DRM_IOCTL_MODE_SETPROPERTY
         | DRM_IOCTL_MODE_OBJ_SETPROPERTY | DRM_IOCTL_MODE_PAGE_FLIP | DRM_IOCTL_MODE_DIRTYFB
-        | DRM_IOCTL_AUTH_MAGIC | DRM_IOCTL_MODE_CREATE_LEASE => M,
+        | DRM_IOCTL_AUTH_MAGIC | DRM_IOCTL_MODE_CREATE_LEASE | DRM_IOCTL_MODE_ATOMIC => M,
         DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER | DRM_IOCTL_GET_MAGIC
         | DRM_IOCTL_GET_UNIQUE | DRM_IOCTL_GET_UNIQUE_WASM64 | DRM_IOCTL_SET_CLIENT_CAP
         | DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_WAIT_VBLANK_WASM64
@@ -396,7 +343,9 @@ pub(crate) fn handle_dri_card_ioctl(
             if req.connector_id != kms::CONNECTOR_ID {
                 return Err(Errno::ENOENT);
             }
-            let props = kms::object_properties(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR)?;
+            let props = kms::listed_properties(
+                kms::object_properties(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR)?,
+                kms_state(proc, ofd_idx)?.atomic);
             let modes = crate::dri::modes::connector_modes(host.kms_mode_info(1));
             let mode_count = modes.len() as u32;
             // Linux reports the available count on both calls, but copies
@@ -574,32 +523,31 @@ pub(crate) fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             if !kms_file_is_current_master(proc, ofd_idx)? { return Err(Errno::EACCES); }
-            let mut next = kms::cursor_plane().unwrap_or_default();
+            // __setplane_atomic: an atomic update of the cursor plane alone.
+            let mut commit = Commit::current();
+            commit.touch_plane(kms::CURSOR_PLANE_ID);
+            commit.cursor_hot = (0, 0);
+            commit.cursor_request = Some(CursorRequest { flags: DRM_MODE_CURSOR_BO | DRM_MODE_CURSOR_MOVE });
             if req.fb_id == 0 {
-                // Linux ignores CRTC and geometry when disabling a plane.
-                next.fb_id = 0;
-                next.fb = None;
+                // __drm_atomic_helper_disable_plane: no CRTC, no fb, zero
+                // geometry; Linux ignores the request's CRTC and geometry.
+                commit.cursor = atomic::StagedPlane::default();
             } else {
                 let fb = kms::framebuffer(req.fb_id).ok_or(Errno::ENOENT)?;
                 if req.crtc_id != kms::CRTC_ID { return Err(Errno::ENOENT); }
-                // The implemented cursor hardware consumes a packed linear
-                // ARGB prefix. Unsupported crop/scale/offset/pitch is rejected
-                // before replacing any actual image, name or reference.
-                if fb.width == 0 || fb.height == 0 || fb.width > 64 || fb.height > 64
-                    || fb.pixel_format != DRM_FORMAT_ARGB8888 || fb.offset != 0
-                    || fb.stride != fb.width * 4
-                    || req.crtc_w != fb.width || req.crtc_h != fb.height
-                    || req.src_x != 0 || req.src_y != 0
-                    || req.src_w != fb.width << 16 || req.src_h != fb.height << 16
-                { return Err(Errno::EINVAL); }
-                next.fb_id = req.fb_id;
-                next.fb = Some(fb);
-                next.x = req.crtc_x;
-                next.y = req.crtc_y;
-                next.hot_x = 0;
-                next.hot_y = 0;
+                commit.cursor = atomic::StagedPlane {
+                    crtc: true,
+                    fb_id: req.fb_id,
+                    fb: Some(fb),
+                    geometry: kms::PlaneGeometry {
+                        src_x: req.src_x, src_y: req.src_y, src_w: req.src_w, src_h: req.src_h,
+                        crtc_x: req.crtc_x, crtc_y: req.crtc_y, crtc_w: req.crtc_w, crtc_h: req.crtc_h,
+                    },
+                    damage_blob: 0,
+                };
+                commit.crtc_in = true;
             }
-            apply_kms_cursor(proc, host, DRM_MODE_CURSOR_BO | DRM_MODE_CURSOR_MOVE, next)
+            legacy_commit(host, pid, commit)
         }
         DRM_IOCTL_MODE_CURSOR | DRM_IOCTL_MODE_CURSOR2 => {
             let size = if request == DRM_IOCTL_MODE_CURSOR2 { 36 } else { 28 };
@@ -612,7 +560,12 @@ pub(crate) fn handle_dri_card_ioctl(
             // No cursor plane and no legacy cursor hook: ENXIO, as
             // drm_mode_cursor_common reports it.
             if !host.kms_cursor_supported() { return Err(Errno::ENXIO); }
-            let mut next = kms::cursor_plane().unwrap_or_default();
+            // drm_mode_cursor_universal: an atomic update of the cursor plane
+            // with a framebuffer wrapped around the handle.
+            let mut commit = Commit::current();
+            commit.touch_plane(kms::CURSOR_PLANE_ID);
+            commit.cursor_request = Some(CursorRequest { flags });
+            let mut next = commit.cursor;
             if flags & DRM_MODE_CURSOR_BO != 0 {
                 let (width, height, handle) = (word(4), word(5), word(6));
                 next.fb = if handle != 0 {
@@ -630,14 +583,25 @@ pub(crate) fn handle_dri_card_ioctl(
                         pixel_format: DRM_FORMAT_ARGB8888, stride: width * 4, offset: 0, flags: 0 })
                 } else { None };
                 next.fb_id = if next.fb.is_some() { kms::allocate_fb_id()? } else { 0 };
-                next.hot_x = if size == 36 { word(7) as i32 } else { 0 };
-                next.hot_y = if size == 36 { word(8) as i32 } else { 0 };
+                next.crtc = next.fb.is_some();
+                let (w, h) = next.fb.map_or((0, 0), |fb| (fb.width, fb.height));
+                next.geometry.crtc_w = w;
+                next.geometry.crtc_h = h;
+                next.geometry.src_x = 0;
+                next.geometry.src_y = 0;
+                next.geometry.src_w = w << 16;
+                next.geometry.src_h = h << 16;
+                commit.cursor_hot = if size == 36 { (word(7) as i32, word(8) as i32) } else { (0, 0) };
             }
             if flags & DRM_MODE_CURSOR_MOVE != 0 {
-                next.x = word(2) as i32;
-                next.y = word(3) as i32;
+                next.geometry.crtc_x = word(2) as i32;
+                next.geometry.crtc_y = word(3) as i32;
             }
-            apply_kms_cursor(proc, host, flags, next)
+            if next.crtc {
+                commit.crtc_in = true;
+            }
+            commit.cursor = next;
+            legacy_commit(host, pid, commit)
         }
         DRM_IOCTL_MODE_SETCRTC => {
             let req: WpkDrmModeGetCrtc = read_dri_struct(buf)?;
@@ -653,6 +617,7 @@ pub(crate) fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             let mode_set = req.mode_valid != 0;
+            let mut fb_found = None;
             let fb_id = if mode_set {
                 // fb_id -1 keeps the currently bound framebuffer. Others
                 // resolve device-wide; only RMFB/CLOSEFB are creator-only.
@@ -672,6 +637,7 @@ pub(crate) fn handle_dri_card_ioctl(
                 // The panned viewport must lie inside the fb; the host then
                 // presents exactly that region (host_kms_set_fb).
                 check_crtc_viewport(&req.mode, req.x, req.y, &fb)?;
+                fb_found = Some(fb);
                 fb_id
             } else {
                 // Linux ignores the fb of a SETCRTC without a mode: it
@@ -695,18 +661,47 @@ pub(crate) fn handle_dri_card_ioctl(
                     return Err(Errno::ENOENT);
                 }
             }
-            if mode_set && !kms::crtc_active() {
-                // Enabling the CRTC starts its vblank counter at a real time.
-                if let Ok((sec, nsec)) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
-                    crate::dri::stamp_vblank_if_unset(sec as u32, (nsec / 1000) as u32);
+            // drm_atomic_helper_set_config: one commit of the CRTC, its
+            // connector and its primary plane. A mode lights the CRTC with
+            // the primary covering it from the panning offset; no mode turns
+            // all three off (GETCRTC then reports 0/0, as on Linux).
+            let mut commit = Commit::current();
+            commit.crtc_in = true;
+            commit.touch_connector();
+            commit.touch_plane(kms::PRIMARY_PLANE_ID);
+            let mut new_blob = None;
+            if mode_set {
+                let mode = req.mode;
+                if !atomic::modes_equal(commit.crtc.mode.as_ref(), Some(&mode)) {
+                    let id = kms::create_device_blob(atomic::mode_bytes(&mode))?;
+                    new_blob = Some(id);
+                    commit.crtc.mode_blob = id;
+                }
+                commit.crtc.mode = Some(mode);
+                commit.crtc.active = true;
+                commit.connector_crtc = true;
+                commit.primary = atomic::StagedPlane {
+                    crtc: true,
+                    fb_id,
+                    fb: fb_found,
+                    geometry: kms::PlaneGeometry::full_screen(req.x, req.y,
+                        u32::from(mode.hdisplay), u32::from(mode.vdisplay)),
+                    damage_blob: 0,
+                };
+            } else {
+                commit.crtc.mode = None;
+                commit.crtc.mode_blob = 0;
+                commit.crtc.active = false;
+                commit.connector_crtc = false;
+                commit.primary = atomic::StagedPlane::default();
+            }
+            let result = legacy_commit(host, pid, commit);
+            if result.is_err() {
+                if let Some(id) = new_blob {
+                    kms::discard_unused_blob(id);
                 }
             }
-            kms::set_crtc_mode(mode_set.then_some(req.mode));
-            // A disabled CRTC has no primary plane source, so GETCRTC
-            // reports 0/0 as Linux does.
-            kms::set_crtc_offset(if mode_set { (req.x, req.y) } else { (0, 0) });
-            latch_crtc_fb(host, pid, req.crtc_id, fb_id);
-            Ok(())
+            result
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
             let req: WpkDrmModeCrtcPageFlip = read_dri_struct(buf)?;
@@ -745,50 +740,29 @@ pub(crate) fn handle_dri_card_ioctl(
             {
                 return Err(Errno::ENOMEM);
             }
-            // drm_atomic_crtc_check: an event cannot be requested while the
-            // CRTC stays off (DPMS not On).
-            if wants_event && !kms::crtc_active() {
-                return Err(Errno::EINVAL);
-            }
+            // drm_atomic_helper_page_flip: a nonblocking commit of the
+            // primary plane's framebuffer. The check refuses an event while
+            // the CRTC stays off (DPMS not On).
+            let mut commit = Commit::current();
+            commit.touch_plane(kms::PRIMARY_PLANE_ID);
+            commit.primary.fb_id = req.fb_id;
+            commit.primary.fb = Some(fb);
+            commit.check(host, wants_event)?;
             // The previous flip's commit completes at the next vblank; until
             // then the CRTC is busy whichever file queued it.
-            if kms::flip_pending() {
+            if commit.busy() {
                 return Err(Errno::EBUSY);
             }
-            // Best-effort commit stats: a clock-read failure leaves
-            // the flip queued and just skips the per-crtc counter
-            // bump. The host reads the running totals via the
-            // kernel_kms_* exports.
-            if let Ok((sec, nsec)) = host.host_clock_gettime(
-                wasm_posix_shared::clock::CLOCK_MONOTONIC,
-            ) {
-                let now_us = (sec as u64).wrapping_mul(1_000_000)
-                    + (nsec as u64) / 1000;
-                crate::dri::record_kms_commit(req.crtc_id, now_us);
-            }
-            // Latch the new scanout fb NOW. The fb is fully painted
-            // before the flip ioctl, and the client only reuses the
-            // old bo after the flip completes (next vblank), so an
-            // immediate latch is race-free. Without this the host
-            // keeps blitting the fb from the initial SETCRTC forever —
-            // for a double-buffered compositor that's the BACK buffer
-            // half the time, so the 60 Hz pump samples frames
-            // mid-composite (wallpaper painted, windows not yet) and
-            // the desktop flickers randomly.
-            latch_crtc_fb(host, pid, req.crtc_id, req.fb_id);
-            kms::set_flip_pending();
-            // The flip completes at the next host vblank
+            // The new scanout fb is latched now (the client paints it before
+            // the ioctl and reuses the old one only after the flip event),
+            // and the flip completes at the next host vblank
             // (`dri::retire_vblank`), which also sends the
             // DRM_EVENT_FLIP_COMPLETE when, and only when, the caller asked
             // for one. libdrm's `drmModePageFlip → poll → drmHandleEvent`
             // loop therefore runs at refresh rate, not ioctl rate.
-            if wants_event {
-                kms_state_mut(proc, ofd_idx)?.pending_flips.push(crate::ofd::PendingFlip {
-                    crtc_id: req.crtc_id,
-                    fb_id: req.fb_id,
-                    user_data: req.user_data,
-                });
-            }
+            let mut kms_file = kms_state_mut(proc, ofd_idx)?;
+            let event = wants_event.then_some((&mut *kms_file, req.user_data));
+            commit.apply(&mut CommitContext { host, pid }, CommitKind::Flip, event);
             Ok(())
         }
         DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_WAIT_VBLANK_WASM64 => {
@@ -803,6 +777,14 @@ pub(crate) fn handle_dri_card_ioctl(
                     Ok(())
                 }
                 DRM_CLIENT_CAP_ATOMIC => Err(Errno::EOPNOTSUPP),
+                // Writeback connectors need the atomic cap; there are none
+                // to list, so accepting the cap changes no listing.
+                DRM_CLIENT_CAP_WRITEBACK_CONNECTORS => {
+                    if !kms_state(proc, ofd_idx)?.atomic || req.value > 1 {
+                        return Err(Errno::EINVAL);
+                    }
+                    Ok(())
+                }
                 DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT => Err(Errno::EOPNOTSUPP),
                 _ => Err(Errno::EINVAL),
             }
@@ -849,7 +831,8 @@ pub(crate) fn handle_dri_card_ioctl(
             if req.obj_id == kms::CURSOR_PLANE_ID && !host.kms_cursor_supported() {
                 return Err(Errno::ENOENT);
             }
-            let props = kms::object_properties(req.obj_id, req.obj_type)?;
+            let props = kms::listed_properties(kms::object_properties(req.obj_id, req.obj_type)?,
+                kms_state(proc, ofd_idx)?.atomic);
             if req.count_props > 0 && !props.is_empty() {
                 let ids = req.props_ptr;
                 let values = req.prop_values_ptr;
@@ -894,7 +877,8 @@ pub(crate) fn handle_dri_card_ioctl(
                     req.count_enum_blobs = entries.len() as u32;
                 }
                 kms::PropertyKind::Blob => req.count_enum_blobs = 0,
-                kms::PropertyKind::Range(..) => {}
+                kms::PropertyKind::Range(..) | kms::PropertyKind::SignedRange(..)
+                | kms::PropertyKind::Object(_) => {}
             }
             req.flags = prop.flags();
             req.name = dri_property_name(prop.name);
@@ -979,9 +963,17 @@ pub(crate) fn handle_dri_card_ioctl(
                     u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]])
                 }));
             }
-            kms::commit_legacy_gamma()?;
-            publish_kms_gamma(host);
-            Ok(())
+            // drm_atomic_helper_legacy_gamma_set: commit the ramp as a new
+            // GAMMA_LUT blob.
+            let id = kms::legacy_gamma_blob()?;
+            let mut commit = Commit::current();
+            commit.crtc_in = true;
+            commit.crtc.gamma_lut = id;
+            let result = legacy_commit(host, pid, commit);
+            if result.is_err() {
+                kms::discard_unused_blob(id);
+            }
+            result
         }
         DRM_IOCTL_MODE_DIRTYFB => {
             // drm_mode_dirtyfb_ioctl. The host samples the scanout every
@@ -1027,17 +1019,14 @@ pub(crate) fn handle_dri_card_ioctl(
             if req.obj_id == kms::CURSOR_PLANE_ID && !host.kms_cursor_supported() {
                 return Err(Errno::ENOENT);
             }
-            if kms::set_property(req.obj_id, req.obj_type, req.prop_id, req.value)? == kms::PropertyEffect::Gamma {
-                publish_kms_gamma(host);
-            }
-            Ok(())
+            set_property_legacy(host, pid, req.obj_id, req.obj_type, req.prop_id, req.value)
         }
         DRM_IOCTL_MODE_SETPROPERTY => {
             let req: WpkDrmModeConnectorSetProperty = read_dri_struct(buf)?;
             if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
-            kms::set_property(req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value).map(|_| ())
+            set_property_legacy(host, pid, req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
         }
         DRM_IOCTL_GET_MAGIC => {
             let mut kms = kms_state_mut(proc, ofd_idx)?;
@@ -1060,6 +1049,7 @@ pub(crate) fn handle_dri_card_ioctl(
             kms::authenticate_magic(master_object, magic)
         }
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
+        DRM_IOCTL_MODE_ATOMIC => atomic::atomic_ioctl(proc, host, ofd_idx, buf),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
     }
 }
@@ -1205,39 +1195,63 @@ pub(crate) fn validate_kms_mode(
     host: &mut dyn HostIO,
     mode: &wasm_posix_shared::dri::WpkDrmModeModeinfo,
 ) -> Result<(), Errno> {
-    use wasm_posix_shared::dri::*;
-    if mode.clock > i32::MAX as u32 || mode.vrefresh > i32::MAX as u32 {
-        return Err(Errno::ERANGE);
-    }
-    let flags = mode.flags & !DRM_MODE_FLAG_PIC_AR_MASK;
-    if mode.flags & DRM_MODE_FLAG_PIC_AR_MASK > DRM_MODE_FLAG_PIC_AR_MAX
-        || mode.mode_type & !DRM_MODE_TYPE_ALL != 0
-        || flags & !DRM_MODE_FLAG_ALL != 0
-        || flags & DRM_MODE_FLAG_3D_MASK > DRM_MODE_FLAG_3D_MAX
-        || mode.clock == 0
-        || mode.hdisplay == 0
-        || mode.hsync_start < mode.hdisplay
-        || mode.hsync_end < mode.hsync_start
-        || mode.htotal < mode.hsync_end
-        || mode.vdisplay == 0
-        || mode.vsync_start < mode.vdisplay
-        || mode.vsync_end < mode.vsync_start
-        || mode.vtotal < mode.vsync_end
-    {
+    atomic::umode_valid(mode)?;
+    atomic::connector_mode_valid(host, mode)
+}
+
+/// `OBJ_SETPROPERTY` / `SETPROPERTY` on an atomic driver
+/// (`set_property_atomic`): DPMS has its own commit
+/// (`drm_atomic_connector_commit_dpms`); any other property attached to the
+/// object becomes a one-property commit, so the atomic check applies to it.
+fn set_property_legacy(
+    host: &mut dyn HostIO,
+    pid: i32,
+    obj_id: u32,
+    obj_type: u32,
+    prop_id: u32,
+    value: u64,
+) -> Result<(), Errno> {
+    let props = kms::object_properties(obj_id, obj_type)?;
+    if !props.contains(&prop_id) {
         return Err(Errno::EINVAL);
     }
-    let timing = |m: &WpkDrmModeModeinfo| (
-        m.clock, m.hdisplay, m.hsync_start, m.hsync_end, m.htotal, m.hskew,
-        m.vdisplay, m.vsync_start, m.vsync_end, m.vtotal, m.vscan,
-        m.flags & !DRM_MODE_FLAG_PIC_AR_MASK,
-    );
-    let wanted = timing(mode);
-    if !crate::dri::modes::connector_modes(host.kms_mode_info(kms::CONNECTOR_ID))
-        .iter().any(|m| timing(m) == wanted)
-    {
+    use wasm_posix_shared::dri::{DRM_MODE_DPMS_OFF, DRM_MODE_DPMS_ON, DRM_MODE_OBJECT_CONNECTOR};
+    let prop = kms::property(prop_id).ok_or(Errno::EINVAL)?;
+    if !prop.accepts(value) {
         return Err(Errno::EINVAL);
     }
-    Ok(())
+    let obj_id = obj_id;
+    if prop_id == kms::PROP_DPMS {
+        if kms::find_object(obj_id, obj_type)? != DRM_MODE_OBJECT_CONNECTOR {
+            return Err(Errno::EINVAL);
+        }
+        // Standby and Suspend are Off on an atomic driver.
+        let mode = if value == DRM_MODE_DPMS_ON { DRM_MODE_DPMS_ON } else { DRM_MODE_DPMS_OFF };
+        let old = kms::dev().dpms;
+        if old == mode {
+            return Ok(());
+        }
+        kms::dev().dpms = mode;
+        if !kms::dev().connector_crtc {
+            return Ok(());
+        }
+        let mut commit = Commit::current();
+        commit.touch_connector();
+        commit.crtc.active = mode == DRM_MODE_DPMS_ON;
+        let result = legacy_commit(host, pid, commit);
+        if result.is_err() {
+            kms::dev().dpms = old;
+        }
+        // The modeset rewrote DPMS from ACTIVE; keep the requested value.
+        if result.is_ok() {
+            kms::dev().dpms = mode;
+        }
+        return result;
+    }
+    let mut commit = Commit::current();
+    let mut ctx = CommitContext { host, pid };
+    commit.set_property(&mut ctx, obj_id, prop, value)?;
+    legacy_commit(ctx.host, pid, commit)
 }
 
 /// Primary-plane `SETPLANE`, as a legacy driver's primary-plane helper
@@ -1290,9 +1304,20 @@ pub(crate) fn kms_set_primary_plane(
     if x > 0xffff || y > 0xffff {
         return Err(Errno::ERANGE);
     }
-    kms::set_crtc_offset((x, y));
-    latch_crtc_fb(host, proc.pid as i32, kms::CRTC_ID, req.fb_id);
-    Ok(())
+    let mut commit = Commit::current();
+    commit.touch_plane(kms::PRIMARY_PLANE_ID);
+    commit.primary = atomic::StagedPlane {
+        crtc: true,
+        fb_id: req.fb_id,
+        fb: Some(fb),
+        geometry: kms::PlaneGeometry {
+            src_x: req.src_x, src_y: req.src_y, src_w: req.src_w, src_h: req.src_h,
+            crtc_x: req.crtc_x, crtc_y: req.crtc_y, crtc_w: req.crtc_w, crtc_h: req.crtc_h,
+        },
+        damage_blob: 0,
+    };
+    commit.crtc_in = true;
+    legacy_commit(host, proc.pid as i32, commit)
 }
 
 /// `drm_crtc_check_viewport`: the mode's active area placed at `(x, y)` must

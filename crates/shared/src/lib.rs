@@ -4598,6 +4598,7 @@ pub mod dri {
     pub const DRM_CLIENT_CAP_UNIVERSAL_PLANES: u64 = 2;
     pub const DRM_CLIENT_CAP_ATOMIC: u64 = 3;
     pub const DRM_CLIENT_CAP_ASPECT_RATIO: u64 = 4;
+    pub const DRM_CLIENT_CAP_WRITEBACK_CONNECTORS: u64 = 5;
     pub const DRM_CLIENT_CAP_CURSOR_PLANE_HOTSPOT: u64 = 6;
 
     // --- DRM fourcc pixel formats ----------------------------------------
@@ -4975,6 +4976,9 @@ pub mod dri {
     /// `_IOWR('d', 0xc6, drm_mode_create_lease)`.
     pub const DRM_IOCTL_MODE_CREATE_LEASE: u32 = 0xc018_64c6;
 
+    /// `_IOWR('d', 0xbc, drm_mode_atomic)` — atomic modeset/flip/test.
+    pub const DRM_IOCTL_MODE_ATOMIC: u32 = 0xc038_64bc;
+
     /// `_IOWR('d', 0xd0, drm_mode_closefb)` — drop an fb id but keep it
     /// on the CRTC that scans it out.
     pub const DRM_IOCTL_MODE_CLOSEFB: u32 = 0xc008_64d0;
@@ -5030,6 +5034,13 @@ pub mod dri {
     pub const DRM_MODE_PAGE_FLIP_FLAGS: u32 =
         DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC | DRM_MODE_PAGE_FLIP_TARGET;
 
+    // `drm_mode_atomic.flags` (include/uapi/drm/drm_mode.h).
+    pub const DRM_MODE_ATOMIC_TEST_ONLY: u32 = 0x0100;
+    pub const DRM_MODE_ATOMIC_NONBLOCK: u32 = 0x0200;
+    pub const DRM_MODE_ATOMIC_ALLOW_MODESET: u32 = 0x0400;
+    pub const DRM_MODE_ATOMIC_FLAGS: u32 = DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC
+        | DRM_MODE_ATOMIC_TEST_ONLY | DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_ATOMIC_ALLOW_MODESET;
+
     // `drm_mode_fb_cmd2.flags` and format modifiers.
     pub const DRM_MODE_FB_INTERLACED: u32 = 1 << 0;
     pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
@@ -5077,6 +5088,11 @@ pub mod dri {
     pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
     pub const DRM_MODE_PROP_ENUM: u32 = 1 << 3;
     pub const DRM_MODE_PROP_BLOB: u32 = 1 << 4;
+    /// Extended property types (`DRM_MODE_PROP_TYPE(n)`, `n << 6`).
+    pub const DRM_MODE_PROP_OBJECT: u32 = 1 << 6;
+    pub const DRM_MODE_PROP_SIGNED_RANGE: u32 = 2 << 6;
+    /// Listed only to files that enabled `DRM_CLIENT_CAP_ATOMIC`.
+    pub const DRM_MODE_PROP_ATOMIC: u32 = 0x8000_0000;
     pub const DRM_PROP_NAME_LEN: usize = 32;
 
     pub const DRM_PLANE_TYPE_OVERLAY: u64 = 0;
@@ -5378,6 +5394,22 @@ pub mod dri {
         pub length: u32,  // 4   in/out
         pub data: u64,    // 8   in
                           // total: 16
+    }
+
+    /// `struct drm_mode_atomic`. 56 bytes; the four arrays are user
+    /// pointers carried as `__u64` on every guest width.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmModeAtomic {
+        pub flags: u32,           // 0
+        pub count_objs: u32,      // 4
+        pub objs_ptr: u64,        // 8   u32[count_objs]
+        pub count_props_ptr: u64, // 16  u32[count_objs]
+        pub props_ptr: u64,       // 24  u32[sum of count_props]
+        pub prop_values_ptr: u64, // 32  u64[sum of count_props]
+        pub reserved: u64,        // 40  must be zero
+        pub user_data: u64,       // 48  echoed in DRM_EVENT_FLIP_COMPLETE
+                                  // total: 56
     }
 
     /// `struct drm_mode_cursor`. 28 bytes. `struct drm_mode_cursor2`
@@ -6268,6 +6300,10 @@ mod dri_tests {
         assert_eq!(size_of::<WpkDrmModeGetProperty>(), 64);
         assert_eq!(size_of::<WpkDrmModeGetBlob>(), 16);
         assert_eq!(size_of::<WpkDrmModeCursor>(), 28);
+        assert_eq!(size_of::<WpkDrmModeAtomic>(), 56);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, objs_ptr), 8);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, reserved), 40);
+        assert_eq!(core::mem::offset_of!(WpkDrmModeAtomic, user_data), 48);
     }
 
     #[test]
@@ -6319,6 +6355,9 @@ mod dri_tests {
         assert_eq!(DRM_IOCTL_AUTH_MAGIC, ioc(IOC_WRITE, d, 0x11, 4));
         assert_eq!(DRM_IOCTL_MODE_CREATE_LEASE, ioc(iowr, d, 0xc6, 24));
         assert_eq!(DRM_IOCTL_MODE_CLOSEFB, ioc(iowr, d, 0xd0, 8));
+        assert_eq!(DRM_IOCTL_MODE_ATOMIC,
+            ioc(iowr, d, 0xbc, size_of::<WpkDrmModeAtomic>() as u32));
+        assert_eq!(DRM_MODE_ATOMIC_FLAGS, 0x0703);
     }
 }
 

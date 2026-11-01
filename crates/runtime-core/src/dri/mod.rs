@@ -5,6 +5,7 @@
 //! and KMS card0 surfaces land in later plans (3 and 4) under their
 //! own submodules.
 
+pub mod atomic;
 pub mod bo;
 pub mod cursor;
 pub mod ioctl_kms;
@@ -107,6 +108,15 @@ pub fn queue_vblank_event_now(
     seq as u32
 }
 
+/// Queue the `DRM_EVENT_FLIP_COMPLETE` of a commit that completed at once
+/// (its CRTC is dark after it), stamped with the current count and time,
+/// as the helpers send a disabled CRTC's event without waiting.
+pub fn queue_flip_event_now(kms: &mut crate::ofd::KmsFdState, user_data: u64, crtc_id: u32) {
+    let (seq, tv_sec, tv_usec) = vblank_count_and_time();
+    write_vblank_event(&mut kms.event_ring, wasm_posix_shared::dri::DRM_EVENT_FLIP_COMPLETE,
+        user_data, crtc_id, seq as u32, tv_sec, tv_usec);
+}
+
 /// Retire everything one vblank completes on one process's card0 files:
 /// every pending page flip (a `DRM_EVENT_FLIP_COMPLETE` only for flips
 /// that asked for one), every `DRM_VBLANK_EVENT` whose target has passed,
@@ -129,7 +139,9 @@ pub fn retire_vblank_for_process(
         let Some(mut kms) = ofd.kms_mut() else { continue };
         let kms = &mut *kms;
         let before = kms.event_ring.len();
-        for flip in core::mem::take(&mut kms.pending_flips) {
+        // Drain in place: a compositor queues one flip per frame, so the
+        // vector keeps its capacity instead of reallocating every vblank.
+        for flip in kms.pending_flips.drain(..) {
             write_vblank_event(&mut kms.event_ring, DRM_EVENT_FLIP_COMPLETE,
                 flip.user_data, flip.crtc_id, seq as u32, tv_sec, tv_usec);
         }
@@ -176,8 +188,9 @@ pub fn retire_vblank_over<'a>(
     tv_usec: u32,
 ) -> u64 {
     let seq = vblank_tick(tv_sec, tv_usec);
-    kms::complete_pending_flip();
-    let mut wake = false;
+    // A completed commit releases callers parked on it: blocking atomic
+    // commits waiting for their own flip or for the previous one.
+    let mut wake = kms::complete_pending_flip();
     for proc in procs {
         wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec);
     }

@@ -17384,8 +17384,8 @@ pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 
     // Host entry serialization owns the kernel. Acquire before the transport
     // mutex: applying pending exits may itself clear this transport.
     let _gkl = GklGuard::acquire();
-    let plane = crate::dri::kms::cursor_plane();
-    let (fb, x, y) = plane.map_or((0, 0, 0), |state| (state.fb_id, state.x, state.y));
+    // The cursor the CRTC shows: none while the CRTC is dark.
+    let (fb, x, y) = crate::dri::kms::presented_cursor();
     let mut transport = CURSOR_TRANSPORT.lock();
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, wire::RECORD_BYTES) };
     match transport.read_into(fb, x, y, out) {

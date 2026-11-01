@@ -2720,6 +2720,12 @@
       "wasm32Size": 48,
       "wasm64Size": 48
     },
+    "3224921276": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 56,
+      "wasm64Size": 56
+    },
     "3225445376": {
       "argKind": "pointer",
       "direction": "inout",

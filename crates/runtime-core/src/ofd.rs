@@ -500,6 +500,9 @@ pub struct KmsFdState {
     /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor
     /// planes, not only overlays.
     pub universal_planes: bool,
+    /// `DRM_CLIENT_CAP_ATOMIC`: the fd lists atomic properties and may
+    /// issue `DRM_IOCTL_MODE_ATOMIC`.
+    pub atomic: bool,
     /// The `DRM_IOCTL_GET_MAGIC` token, issued on first request; 0 = none.
     pub magic: u32,
     pub fbs: SharedKmsFbs,
@@ -511,6 +514,10 @@ pub struct KmsFdState {
     /// Blocking `DRM_IOCTL_WAIT_VBLANK` calls parked on the host's EAGAIN
     /// retry path, one per waiting thread; see [`VblankWait`].
     pub vblank_waits: Vec<VblankWait>,
+    /// Blocking `DRM_IOCTL_MODE_ATOMIC` calls waiting, across host EAGAIN
+    /// retries, for the flip they committed; see
+    /// [`crate::dri::atomic::CommitWait`].
+    pub commit_waits: Vec<crate::dri::atomic::CommitWait>,
     pub event_ring: VecDeque<u8>,
 }
 

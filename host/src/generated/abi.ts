@@ -2191,6 +2191,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   3223610555: { argKind: "pointer", direction: "in", wasm32Size: 36, wasm64Size: 36 },
   3224396983: { argKind: "pointer", direction: "in", wasm32Size: 48, wasm64Size: 48 },
   3224397027: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 48 },
+  3224921276: { argKind: "pointer", direction: "inout", wasm32Size: 56, wasm64Size: 56 },
   3225445376: { argKind: "pointer", direction: "inout", wasm32Size: null, wasm64Size: 64 },
   3225445536: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
   3225445546: { argKind: "pointer", direction: "inout", wasm32Size: 64, wasm64Size: 64 },
