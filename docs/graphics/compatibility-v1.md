@@ -18783,3 +18783,57 @@ canonical and normal-kernel receipts, `masterless-before.log`,
 `root-host-r3.log` and `root-types-r3.log`. Numeric versions remain
 program 56 / host 3 / GL table 17 / fork 21. Old preview artifacts remain paired
 with their frozen old hosts; numeric equality does not authorize mixing them.
+
+
+### Reusable headless upstream runner and first passing state group
+
+The normal repository entry point is now
+`scripts/dev-shell.sh bash scripts/test-graphics-cts.sh --project chromium`.
+It runs seven QPA parser controls and the actual
+`apps/browser-demos/test/graphics-cts-gles2.spec.ts`. Omitting the project selects
+all three normal browser projects; only Chromium is validated at this checkpoint.
+The runner resolves admitted normal artifacts, mounts the original package ZIP
+through existing image/ZIP helpers and uses real `BrowserKernel`/WebGL2 KMS.
+It retains upstream QPA and JSON evidence attachments and requires all 31
+pinned negative-state cases exactly once. Failed, unsupported, incomplete,
+duplicate, extra or missing results refuse acceptance. It also checks worker
+closure, diagnostics and the browser memory boundary. Parser controls reject
+malformed/truncated records; parsing the retained actual failed R1 QPA preserves
+its original 25 Pass / six Fail, rather than losing failures.
+
+The candidate's normal selected rebuild
+`graphics-cts-state-normal-rebuild-r1-1031-221059-6350` exits 0 with source
+guards passing. It refreshes own SDK32/64, the seven-node kernel/CTS closure,
+image writer and host, with the canonical kernel ABI check. Supported recipes
+use explicit two-job limits; existing libcxx/zlib/libpng recipe hardware fanout
+is retained and recorded rather than falsely described as capped.
+
+Actual public-wrapper browser run
+`graphics-cts-renderer-state-r2-1031-221851-781e` exits 0. The same complete
+upstream negative-state selection now passes 31/31 in canonical full headless
+Chromium 153.0.8010.12. Guest exit is 0, no cases are omitted, and diagnostics,
+page/console/cleanup errors and memory-boundary failures are empty. Destroy
+returns, both workers close, and the owned Vite server is stopped and waited.
+This tests broader source `b746c31c64` plus the exact frozen five-file query
+candidate, not the later cursor increment or the entire graphics baseline.
+
+| Source cohort | Executed | Pass | Fail |
+| --- | ---: | ---: | ---: |
+| Earlier ports `7b9abb8c40`, normal R8 | 31 | 25 | 6 |
+| Broader `b746c31c64` plus frozen query candidate | 31 | 31 | 0 |
+
+This is combined repair evidence: the broader source already fixes string/hint
+enums; the new candidate repairs shader/program query errors and C information-
+log lengths. It is not an isolated speed or individual-patch comparison.
+Candidate program SHA256:
+`da67034a15c09a200b849171c7996a947bd4c8f5df69458174a902dadb8eedda`.
+Candidate kernel SHA256:
+`446257c9174111f4e8388d4efd22396f4ba5efc7ae90989d667125e7d3478556`.
+Actual test evidence attachment SHA256:
+`e10669b26853473971d1e3c525d5c0c175a916af05c383de0b8df328c034b1d4`.
+The mutable worktree retains normal build/artifact receipts under
+`.context/cts-negative-state-repair-r1/` and the complete Playwright/QPA evidence
+under `.context/vk-gl-cts-browser-state-r2/`. See
+[conformance testing](conformance-testing.md) for the stable command and limits.
+Full CTS, three-engine combined rendering, browser-memory and required POSIX
+acceptance remain pending. Passing 31 cases does not close the inventory.
