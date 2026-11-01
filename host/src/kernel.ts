@@ -44,7 +44,7 @@ import { checkedHostFileOffset } from "./file-offset";
 import { isHostAppendContractError } from "./append-contract";
 import { SharedPipeBuffer } from "./shared-pipe-buffer";
 import { FramebufferRegistry } from "./framebuffer/registry";
-import { GbmBoRegistry } from "./dri/registry";
+import { GbmBoRegistry, GbmMappingFault } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
 import type { GlSurfaceResources } from "./webgl/surface-resources.js";
@@ -75,8 +75,9 @@ import {
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
-  DRI_CLEANUP_COMPLETE, DRI_CLEANUP_HOST_RETAINED,
+  DRI_CLEANUP_COMPLETE,
 } from "./generated/abi";
+import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
@@ -820,6 +821,11 @@ export interface KernelCallbacks {
   /** A host-runtime failure the guest cannot observe through a syscall,
    * delivered as a host_diagnostic message by the worker entry. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
+  /** A host-internal fault that leaves host state no longer matching the
+   * kernel's (a lost final writeback, a DRI/GL release the host could not
+   * finish). The kernel worker makes this its kernel-fatal shutdown; the
+   * reporting code then throws the same error. */
+  onHostFault?: (fault: Error) => void;
   /**
    * Observe a persistent kernel-realm wrapper of process Memory for weak
    * retirement telemetry. This callback must not retain either argument.
@@ -1001,12 +1007,9 @@ export class WasmPosixKernel {
    * consumers read pixels by projecting that range onto the process
    * Memory SAB (same model as the mmap-based framebuffer binding).
    */
-  // A kernel-unmapped CPU mapping always detaches; a final writeback that
-  // could not be published is recorded on the BO and reported here.
-  readonly bos = new GbmBoRegistry({ onPublicationLost: ({ pid, bo_id, addr, len, reason }) =>
-    this.callbacks.onHostDiagnostic?.({ pid, source: "GBM buffer mapping",
-      message: `GBM BO ${bo_id}: the final writeback of the unmapped range 0x${addr.toString(16)}+${len} `
-        + `could not be published (${reason}); the buffer is missing those writes` }) });
+  // A mapping fault (a lost final writeback of a kernel-unmapped range, a
+  // mapping that cannot detach) is a fatal host fault.
+  readonly bos = new GbmBoRegistry({ onFault: fault => this.callbacks.onHostFault?.(fault) });
   readonly kms = new KmsRegistry(this.bos, (bo, width, height) => this.gpuCursor(bo, width, height));
   /**
    * Live `/dev/dri/renderD128` GLES sessions. The kernel reports
@@ -1319,26 +1322,47 @@ export class WasmPosixKernel {
   }
 
   /**
-   * Run every step of one DRI/GL cleanup effect, even after a fault: the
-   * kernel object is already retired, so each step that can still release
-   * host state must run. A kernel export failure still aborts. Returns false
-   * when any step faulted; the fault is reported as a host diagnostic and the
-   * caller's negative status makes the kernel record the loss.
+   * Run the steps of one DRI/GL release the kernel has already committed.
+   * A step that faults leaves host state the kernel can no longer release,
+   * so it is a fatal host fault (see DriCleanupFault): latched through
+   * onHostFault and thrown with the operation, object, pid and reason. A
+   * kernel export failure, or a fault a registry already reported, passes
+   * through unchanged.
    */
-  #runCleanupSteps(pid: number, operation: string, steps: readonly (() => unknown)[]): boolean {
-    let complete = true;
+  private runDriCleanup(pid: number, operation: string, object: string, steps: readonly (() => unknown)[]): void {
     for (const step of steps) {
       try { step(); }
-      catch (error) {
-        if (isKernelExportFailure(error)) throw error;
-        complete = false;
-        try {
-          this.callbacks.onHostDiagnostic?.({ pid, source: "DRI cleanup",
-            message: `${operation}: ${String((error as Error)?.message ?? error)}` });
-        } catch (callbackError) { if (isKernelExportFailure(callbackError)) throw callbackError; }
-      }
+      catch (error) { this.driCleanupFailed(error, pid, operation, object); }
     }
-    return complete;
+  }
+
+  /** Turn an error caught during a committed DRI/GL release into the fatal
+   * host fault described at runDriCleanup. */
+  private driCleanupFailed(error: unknown, pid: number, operation: string, object: string): never {
+    if (isKernelExportFailure(error) || error instanceof GbmMappingFault || error instanceof DriCleanupFault) throw error;
+    const fault = new DriCleanupFault(operation, pid, object, String((error as Error | null)?.message ?? error), error);
+    try { this.callbacks.onHostFault?.(fault); }
+    catch (callbackError) { if (isKernelExportFailure(callbackError)) throw callbackError; }
+    throw fault;
+  }
+
+  /**
+   * Retire GL sessions whose command memory is gone. Removing the session's
+   * queued frames releases every execution that holds its context unless a
+   * frame's own native cleanup was refused; a context still held after that
+   * has no guaranteed later release, so it is a fatal host fault.
+   */
+  private retireGlSessions(pid: number, sessionId: number | undefined, operation: string, object: string): void {
+    this.runDriCleanup(pid, operation, object, [
+      () => this.releaseClaimedKmsCanvas(pid, sessionId),
+      () => sessionId === undefined ? this.gl_submit_queue.removePid(pid)
+        : this.gl_submit_queue.removeSession(pid, sessionId),
+      () => this.invalidateGlRetirementContexts(pid, sessionId),
+      () => {
+        if (!(sessionId === undefined ? this.gl.unbind(pid) : this.gl.unbind(pid, sessionId)))
+          throw new Error("an accepted execution whose native cleanup failed still holds a retired context");
+      },
+    ]);
   }
 
   #kernelIdentity(value: bigint, label: string): bigint {
@@ -1470,28 +1494,26 @@ export class WasmPosixKernel {
    * where guest cleanup hooks may never run.
    */
   releaseProcessViews(pid: number, transition: "exit" | "exec" = "exit"): void {
-    this.gl_submit_queue.removePid(pid);
+    const operation = `${transition} device-view release`;
+    const object = "every GL session and GBM mapping";
     // Hand a GL-claimed CRTC back to the vblank pump BEFORE unbind, which
     // deletes the binding that holds `claimedKmsCrtc`. Afterwards the claim
     // is unreachable, `markKmsCanvasGlReleased` never fires, and both pump
     // presenters skip the CRTC — the canvas freezes on the dead process's
     // last GL frame. This backstop runs exactly when the guest-side release
-    // hooks did not: exec, traps, forced termination.
-    this.releaseClaimedKmsCanvas(pid);
-    this.invalidateGlRetirementContexts(pid);
-    this.gl.unbind(pid);
-    this.framebuffers.unbind(pid);
-    if (transition === "exec") {
-      // WHY: Rust already closed CLOEXEC descriptors. Remaining GEM handles,
-      // scanout and cursor references belong to surviving open descriptions,
-      // not to the old address space. Only their mappings retire here.
-      // Like exit below, these mappings always detach; a false result only
-      // reports lost writebacks, already recorded and diagnosed per BO.
-      this.bos.releaseProcessMappings(pid);
-    } else {
-      this.bos.releaseProcess(pid);
-      this.kms.retirePresenter(pid);
-    }
+    // hooks did not: exec, traps, forced termination. The address space is
+    // gone either way, so a release that cannot finish is a fatal host fault.
+    this.retireGlSessions(pid, undefined, operation, object);
+    this.runDriCleanup(pid, operation, object, [
+      () => this.framebuffers.unbind(pid),
+      // WHY: on exec Rust already closed CLOEXEC descriptors. Remaining GEM
+      // handles, scanout and cursor references belong to surviving open
+      // descriptions, not to the old address space. Only their mappings
+      // retire here. A mapping that cannot detach with its final writeback
+      // is a fatal GbmMappingFault, on exec as on exit.
+      () => transition === "exec" ? this.bos.releaseProcessMappings(pid) : this.bos.releaseProcess(pid),
+      () => { if (transition === "exit") this.kms.retirePresenter(pid); },
+    ]);
   }
 
   /**
@@ -2866,19 +2888,22 @@ export class WasmPosixKernel {
           // Rust's last-reference callback is the lifetime authority for
           // both tiers. GPU allocations have no CPU registry entry, so a
           // CPU mirror's destroy event cannot drive native retirement.
-          // Every step runs even if an earlier one faults: the kernel BO is
-          // already gone, so whatever can still be released must be.
-          let retired = false;
-          const complete = this.#runCleanupSteps(pid, `GBM BO ${bo_id} destroy`, [
+          // The kernel BO is already gone, so a step that cannot finish is a
+          // fatal host fault. A native view left in foreignRetirements would
+          // only be retried before later GL work, which nothing guarantees,
+          // and only a refused native deletion leaves one there: storage an
+          // accepted execution still holds is already released by that
+          // execution's lease, so retireForeignBo reports it as retired.
+          this.runDriCleanup(pid, "gbm_bo_destroy", `BO ${bo_id}`, [
             () => this.bos.destroy(pid, bo_id),
             () => { this.kms.retireCursorBo(bo_id); },
             () => { for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent(); },
-            () => { retired = this.gl.retireForeignBo(bo_id); },
+            () => {
+              if (!this.gl.retireForeignBo(bo_id))
+                throw new Error("a native GL view or allocation of the buffer could not be deleted");
+            },
           ]);
-          if (!complete) return -5; // EIO: recorded by the kernel as a device-cleanup loss.
-          // Native views still pending are journaled in foreignRetirements
-          // and retried before later GL work (prepareForeignRetirements).
-          return retired ? DRI_CLEANUP_COMPLETE : DRI_CLEANUP_HOST_RETAINED;
+          return DRI_CLEANUP_COMPLETE;
         },
         host_gbm_bo_bind: (
           pid: number,
@@ -2907,7 +2932,10 @@ export class WasmPosixKernel {
               Number(boOffset),
               Math.ceil(binding.length / WASM_PAGE_SIZE) * WASM_PAGE_SIZE,
             );
-          } catch {
+          } catch (error) {
+            // A retiring alias whose publication broke a mapping invariant
+            // is fatal, not a refused mapping.
+            if (error instanceof GbmMappingFault || isKernelExportFailure(error)) throw error;
             return -75; // EOVERFLOW
           }
         },
@@ -2917,17 +2945,15 @@ export class WasmPosixKernel {
           addr: KernelPointer,
           len: KernelPointer,
         ): number => {
-          let range: { offset: number; length: number };
-          try {
-            range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
-          } catch {
-            return -22; // EINVAL
-          }
-          // The kernel has unmapped the range, so the registry detaches it.
-          // -EIO reports a lost final writeback, which the registry also
-          // records on the BO and reports via onHostDiagnostic; the kernel
-          // records it in /proc/kandelo/writeback_losses.
-          return this.bos.unbindStatus(pid, bo_id, range.offset, range.length);
+          // The kernel has unmapped the range and will reuse it. A range that
+          // is not an address span, a binding that cannot detach, or a lost
+          // final writeback is a fatal host fault (the registry reports its
+          // own faults as GbmMappingFault).
+          this.runDriCleanup(pid, "gbm_bo_unbind", `BO ${bo_id}`, [() => {
+            const range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
+            this.bos.unbind(pid, bo_id, range.offset, range.length);
+          }]);
+          return DRI_CLEANUP_COMPLETE;
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-
@@ -2949,20 +2975,10 @@ export class WasmPosixKernel {
           });
         },
         host_gl_unbind: (pid: number, sessionId?: number): number => {
-          // The session's command memory is already gone. Each step runs even
-          // if an earlier one faults, so the binding always leaves the
-          // registry and cannot read the reused range.
-          let released = true;
-          const complete = this.#runCleanupSteps(pid, `GL session ${sessionId ?? "*"} unbind`, [
-            () => this.releaseClaimedKmsCanvas(pid, sessionId),
-            () => this.gl_submit_queue.removeSession(pid, sessionId),
-            () => this.invalidateGlRetirementContexts(pid, sessionId),
-            () => { released = this.gl.unbind(pid, sessionId); },
-          ]);
-          if (!complete) return -5; // EIO: recorded by the kernel as a device-cleanup loss.
-          // An accepted execution still holding the retired context releases
-          // its native objects when it completes.
-          return released ? DRI_CLEANUP_COMPLETE : DRI_CLEANUP_HOST_RETAINED;
+          // The session's command memory is already gone and will be reused.
+          this.retireGlSessions(pid, sessionId, "gl_unbind",
+            sessionId === undefined ? "every GL session" : `GL session ${sessionId}`);
+          return DRI_CLEANUP_COMPLETE;
         },
         host_gl_create_context: (
           pid: number, ctxId: number,
@@ -3514,17 +3530,15 @@ export class WasmPosixKernel {
           this.kms.setMaster(pid, this.#kernelIdentity(fileId, "DRM file identity"),
             this.#kernelIdentity(leaseId, "DRM master grant identity"));
         },
-        host_kms_drop_master: (_pid: number, fileId: bigint, leaseId: bigint): number => {
-          let file: bigint, lease: bigint;
-          try {
-            file = this.#kernelIdentity(fileId, "DRM release file identity");
-            lease = this.#kernelIdentity(leaseId, "DRM release grant identity");
-          } catch {
-            return -22; // EINVAL
-          }
+        host_kms_drop_master: (pid: number, fileId: bigint, leaseId: bigint): number => {
+          // The kernel never issues identity 0 or one outside u64, so such a
+          // release is a broken host/kernel contract and fatal. dropMaster's
           // false means the host already holds a newer grant, so this one is
           // retired either way.
-          this.kms.dropMaster(file, lease);
+          this.runDriCleanup(pid, "kms_drop_master", `master grant ${leaseId} (file ${fileId})`, [() => {
+            this.kms.dropMaster(this.#kernelIdentity(fileId, "DRM release file identity"),
+              this.#kernelIdentity(leaseId, "DRM release grant identity"));
+          }]);
           return DRI_CLEANUP_COMPLETE;
         },
         // `addr` is a GUEST address and arrives as a BigInt, because the
@@ -3716,8 +3730,10 @@ export class WasmPosixKernel {
           this.kms.addFb({ fb_id, bo_id, width, height, pixel_format, pitch, offset: offset >>> 0 });
           return 0;
         },
-        host_kms_rmfb: (_pid: number, fb_id: number): number => {
-          this.kms.rmFb(fb_id);
+        host_kms_rmfb: (pid: number, fb_id: number): number => {
+          // No step list here: RMFB can follow every client buffer swap.
+          try { this.kms.rmFb(fb_id); }
+          catch (error) { this.driCleanupFailed(error, pid, "kms_rmfb", `framebuffer ${fb_id}`); }
           return DRI_CLEANUP_COMPLETE;
         },
         host_kms_set_gamma: (crtc_id: number, lut_ptr: KernelPointer, entries: number): void => {

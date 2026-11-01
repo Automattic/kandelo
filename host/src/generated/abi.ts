@@ -13,7 +13,6 @@ export const KMS_CURSOR_PROTOCOL_VERSION = 4 as const;
 export const KMS_CURSOR_RECORD_BYTES = 40 as const;
 export const KMS_CURSOR_FRAMEBUFFER_OFFSET = 36 as const;
 export const DRI_CLEANUP_COMPLETE = 0 as const;
-export const DRI_CLEANUP_HOST_RETAINED = 1 as const;
 
 /* Kandelo's reference instant: the first Kandelo commit's time. Stamped
 * on image files when no time is supplied; never 0, which software

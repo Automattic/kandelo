@@ -2420,15 +2420,18 @@ The same unpublished host3 contract makes the five DRI/GL cleanup imports
 return `i32`: `host_gbm_bo_unbind`, `host_gbm_bo_destroy`,
 `host_gl_unbind`, `host_kms_rmfb` and `host_kms_drop_master`. They were
 void, so a host that failed to release a buffer, framebuffer, grant or GL
-session was indistinguishable from one that succeeded. The result is a
-`wasm_posix_shared::dri_cleanup_status` value: `0` complete, `1` host
-retained (the host's own retirement journal owns the remaining native
-deletions), `-EIO` from `host_gbm_bo_unbind` for a detached mapping whose
-final writeback was lost, or a negative errno refusal. The kernel records
-the last two in `/proc/kandelo/writeback_losses`. The `dri_cleanup_status`
-kernel-host snapshot section and generated `DRI_CLEANUP_*` TypeScript
-constants carry the values. Earlier host3 kernels and hosts are not
-interchangeable with this contract; rebuild them together.
+session was indistinguishable from one that succeeded. The only value a
+host may return is `wasm_posix_shared::dri_cleanup_status::COMPLETE`
+(`0`). A host that cannot finish reports a fatal host fault by throwing
+out of the import, which stops the kernel instance; the kernel traps on
+any other returned value. An earlier revision of this unpublished contract
+also defined `1` (host retained) and recorded negative refusals and lost
+unbind writebacks in `/proc/kandelo/writeback_losses`; both are removed,
+since a release the host cannot finish is a host-internal fault, not a
+recoverable loss. The `dri_cleanup_status` kernel-host snapshot section
+and the generated `DRI_CLEANUP_COMPLETE` TypeScript constant carry the
+contract. Earlier host3 kernels and hosts are not interchangeable with this
+contract; rebuild them together.
 
 The same contract drops the four optional kernel exports
 `kernel_gl_query_capture`, `kernel_gl_query_session`,

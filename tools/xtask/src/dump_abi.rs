@@ -1512,14 +1512,13 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!("export const {name} = {value} as const;\n"));
     }
-    // Outcomes the host_gbm_bo_*/host_gl_unbind/host_kms_* cleanup imports
-    // return (wasm_posix_shared::dri_cleanup_status).
-    for (name, value) in [
-        ("DRI_CLEANUP_COMPLETE", shared::dri_cleanup_status::COMPLETE),
-        ("DRI_CLEANUP_HOST_RETAINED", shared::dri_cleanup_status::HOST_RETAINED),
-    ] {
-        out.push_str(&format!("export const {name} = {value} as const;\n"));
-    }
+    // The only answer the host_gbm_bo_*/host_gl_unbind/host_kms_* cleanup
+    // imports may return; a host fault throws instead
+    // (wasm_posix_shared::dri_cleanup_status).
+    out.push_str(&format!(
+        "export const DRI_CLEANUP_COMPLETE = {} as const;\n",
+        shared::dri_cleanup_status::COMPLETE
+    ));
     out.push('\n');
 
     // Not an ABI value: the one fixed instant image builders use when a fixed
@@ -4557,10 +4556,8 @@ fn dri_cleanup_status() -> Value {
             "host_kms_rmfb", "host_kms_drop_master",
         ],
         "complete": status::COMPLETE,
-        "host_retained": status::HOST_RETAINED,
-        "host_retained_meaning": "host-journal-owns-remaining-native-work-kernel-does-nothing",
-        "unbind_writeback_lost": "negative-eio-from-host_gbm_bo_unbind-binding-detached",
-        "refused": "any-other-value-recorded-as-device-cleanup-loss",
+        "host_fault": "host-throws-from-the-import-and-the-kernel-instance-stops",
+        "any_other_value": "contract-violation-kernel-traps",
         "delivery": "synchronous-in-kernel-worker-no-retry-kernel-identity-never-reused",
     })
 }

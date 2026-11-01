@@ -5310,7 +5310,7 @@ describe("DRI mmap original-Memory prime admission", () => {
           expect(operation).toBe(ABI_SYSCALLS.Munmap);
           expect(view.getBigInt64(CH_ARGS,true)).toBe(BigInt(mappedAddress));
           expect(view.getBigInt64(CH_ARGS+CH_ARG_SIZE,true)).toBe(65_536n);
-          expect(bos.unbind(harness.channel.pid,72,mappedAddress,65_536)).toBe(true);
+          bos.unbind(harness.channel.pid,72,mappedAddress,65_536);
           view.setBigInt64(CH_RETURN,0n,true);
         }
         view.setUint32(CH_ERRNO,0,true);

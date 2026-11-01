@@ -200,25 +200,17 @@ pub mod wakeup_event_wire {
 /// apply (`host_gbm_bo_unbind`, `host_gbm_bo_destroy`, `host_gl_unbind`,
 /// `host_kms_rmfb`, `host_kms_drop_master`).
 ///
-/// Production GL and DRI run synchronously in the kernel worker, so every
-/// effect returns its real outcome to the kernel in the same call:
-///
-/// * [`COMPLETE`]: the host applied the effect.
-/// * [`HOST_RETAINED`]: the host applied the effect's logical part and holds
-///   native work it could not finish now (for example a GPU object deletion
-///   refused while the renderer has pending errors) in its own retirement
-///   journal, which it retries at its defined points before later GL work.
-///   Nothing remains for the kernel to do.
-/// * `-EAGAIN`: the host changed nothing and kept nothing. The kernel keeps
-///   the effect and applies it again, in order, at its next cleanup point.
-/// * `-EIO` from `host_gbm_bo_unbind`: the mapping was detached but its final
-///   writeback could not be published, so those bytes are lost. The kernel
-///   records the loss in `/proc/kandelo/writeback_losses`.
-/// * Any other value: the host refused the request. The kernel records it in
-///   the same report, because it cannot succeed on a retry.
+/// The kernel has already retired the object and will reuse the address
+/// range or identity it named, so the host must finish in the same call:
+/// detach the mapping and publish its final writeback, free the backing and
+/// every native view, retire the session, framebuffer or grant. Production
+/// GL and DRI run synchronously in the kernel worker, so the host answers
+/// [`COMPLETE`] or reports a fatal host fault (it throws out of the import
+/// with the precise reason, which stops the kernel instance). A host that
+/// returns any other value has broken this contract and the kernel stops
+/// itself (`syscalls::apply_dri_release_effect`).
 pub mod dri_cleanup_status {
     pub const COMPLETE: i32 = 0;
-    pub const HOST_RETAINED: i32 = 1;
 }
 
 /// Kernel-owned parking: the host/kernel contract for a syscall whose result

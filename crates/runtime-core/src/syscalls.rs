@@ -4412,30 +4412,24 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
 }
 
 /// Ask the host to release the host-side state of one object the kernel has
-/// already retired, and act on the host's real answer.
+/// already retired, and stop the kernel if the host could not.
 ///
 /// Production GL and DRI run synchronously in the kernel worker, so the host
-/// reports its outcome from the same call (`shared::dri_cleanup_status`).
-/// The kernel object is gone either way: the syscall that retired it
-/// (`close`, `munmap`, `exit`, `DRM_IOCTL_MODE_RMFB`, ...) has no POSIX
-/// failure for a host that cannot keep up, and the kernel id is never
-/// reused. What the kernel must not do is count a failure as success, so a
-/// lost writeback or a refused release is recorded in
-/// `/proc/kandelo/writeback_losses`.
+/// answers in the same call (`shared::dri_cleanup_status`). The kernel object
+/// is gone either way: the syscall that retired it (`close`, `munmap`,
+/// `exit`, `DRM_IOCTL_MODE_RMFB`, ...) has no POSIX failure for this, and the
+/// kernel goes on to reuse the address range or file it named. A host that
+/// did not finish still holds state the kernel can no longer reach -- a
+/// mapping that would copy a reused range into the buffer, a final writeback
+/// that never reached it, a GPU object nothing will delete. That is a
+/// host-internal fault, not a recoverable condition, so the kernel stops
+/// (a trap, surfaced as the kernel's fatal fault on every host) instead of
+/// recording the loss and continuing.
+///
+/// The production host reports its own faults by throwing out of the import
+/// with the precise reason before it can return a status, so reaching the
+/// panic here means a host answered outside the contract.
 pub fn apply_dri_release_effect(pid: i32, effect: DriReleaseEffect, host: &mut dyn HostIO) {
-    // SAFETY: the kernel services one syscall at a time; see
-    // `writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG`.
-    let log = unsafe { &mut *crate::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG.0.get() };
-    apply_dri_release_effect_with_log(log, pid, effect, host);
-}
-
-/// [`apply_dri_release_effect`] against an explicit loss log.
-pub fn apply_dri_release_effect_with_log(
-    log: &mut crate::writeback_loss::WritebackLossLog,
-    pid: i32,
-    effect: DriReleaseEffect,
-    host: &mut dyn HostIO,
-) {
     let status = match effect {
         DriReleaseEffect::UnbindBo {bo_id, addr, len} => host.gbm_bo_unbind(pid, bo_id, addr, len),
         DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
@@ -4453,53 +4447,40 @@ pub fn apply_dri_release_effect_with_log(
         DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
         DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
     };
-    record_dri_cleanup_outcome(log, pid, &effect, status);
+    if let Err(fault) = check_dri_cleanup_outcome(pid, &effect, status) {
+        panic!("{fault}");
+    }
 }
 
-/// Decide what a host cleanup status means for the kernel.
-///
-/// * `COMPLETE`: nothing to record.
-/// * `HOST_RETAINED`: the host owns the remaining native work in its own
-///   retirement journal and retries it before later GL work; nothing is lost.
-/// * `-EIO` from `UnbindBo`: the host detached the mapping but could not
-///   publish its final writeback. That is a shared-mapping writeback loss.
-/// * anything else: the host refused, and the host-side state it names is
-///   now unreachable. Recorded as a device-cleanup loss.
-pub fn record_dri_cleanup_outcome(
-    log: &mut crate::writeback_loss::WritebackLossLog,
+/// `Ok` only for `dri_cleanup_status::COMPLETE`; otherwise the fatal
+/// diagnostic, naming the operation, the object, its owner pid and the
+/// host's answer.
+pub fn check_dri_cleanup_outcome(
     pid: i32,
     effect: &DriReleaseEffect,
     status: i32,
-) {
-    use wasm_posix_shared::dri_cleanup_status::{COMPLETE, HOST_RETAINED};
-    if status == COMPLETE || status == HOST_RETAINED {
-        return;
+) -> Result<(), alloc::string::String> {
+    if status == wasm_posix_shared::dri_cleanup_status::COMPLETE {
+        return Ok(());
     }
-    if let DriReleaseEffect::UnbindBo { addr, .. } = effect {
-        if status == -(Errno::EIO as i32) {
-            log.record(pid.max(0) as u32, *addr as u64, "DRI buffer final writeback lost at unmap");
-            return;
+    let (owner, object) = match *effect {
+        DriReleaseEffect::UnbindBo { bo_id, addr, len } => {
+            (pid, alloc::format!("gbm_bo_unbind of BO {bo_id} (range {addr:#x}+{len:#x})"))
         }
-    }
-    let (owner, object, operation) = match *effect {
-        DriReleaseEffect::UnbindBo { bo_id, .. } => (pid, u64::from(bo_id), "gbm_bo_unbind"),
-        DriReleaseEffect::DestroyBo(bo) => (pid, u64::from(bo), "gbm_bo_destroy"),
-        DriReleaseEffect::RemoveFramebuffer(fb) => (pid, u64::from(fb), "kms_rmfb"),
-        DriReleaseEffect::HideCursor { fb_id } => (pid, u64::from(fb_id), "kms_cursor hide"),
-        DriReleaseEffect::DropMaster { lease_id, .. } => (pid, lease_id, "kms_drop_master"),
-        DriReleaseEffect::UnbindGl { owner_pid, session_id } => (owner_pid, u64::from(session_id), "gl_unbind"),
+        DriReleaseEffect::DestroyBo(bo) => (pid, alloc::format!("gbm_bo_destroy of BO {bo}")),
+        DriReleaseEffect::RemoveFramebuffer(fb) => (pid, alloc::format!("kms_rmfb of framebuffer {fb}")),
+        DriReleaseEffect::HideCursor { fb_id } => (pid, alloc::format!("kms_cursor hide of framebuffer {fb_id}")),
+        DriReleaseEffect::DropMaster { file_id, lease_id } => {
+            (pid, alloc::format!("kms_drop_master of master grant {lease_id} (file {file_id})"))
+        }
+        DriReleaseEffect::UnbindGl { owner_pid, session_id } => {
+            (owner_pid, alloc::format!("gl_unbind of GL session {session_id}"))
+        }
     };
-    let reason = if status < 0 {
-        alloc::format!("{operation} refused errno {}", -(status as i64))
-    } else {
-        alloc::format!("{operation} returned unknown status {status}")
-    };
-    log.record_kind(
-        crate::writeback_loss::MappingLossKind::DeviceCleanup,
-        owner.max(0) as u32,
-        object,
-        &reason,
-    );
+    Err(alloc::format!(
+        "fatal DRI cleanup fault: {object} for pid {owner}: host answered {status} instead of completing; \
+         the kernel already retired the object, so the host holds state nothing can release"
+    ))
 }
 
 /// Each live mapping owns one BO reference independently of descriptors.
@@ -27344,9 +27325,7 @@ mod tests {
 
     mod dri_cleanup_status {
         use super::*;
-        use crate::writeback_loss::{MappingLossKind, WritebackLossLog};
-        use alloc::string::String;
-        use wasm_posix_shared::dri_cleanup_status::{COMPLETE, HOST_RETAINED};
+        use wasm_posix_shared::dri_cleanup_status::COMPLETE;
 
         fn every_host_effect() -> Vec<DriReleaseEffect> {
             alloc::vec![
@@ -27358,75 +27337,78 @@ mod tests {
             ]
         }
 
-        fn apply_all(status: i32) -> (WritebackLossLog, Vec<&'static str>) {
-            let mut log = WritebackLossLog::new();
+        /// Apply one effect against a host answering `status`, returning the
+        /// panic message if the kernel stopped.
+        fn stop_message(effect: DriReleaseEffect, status: i32) -> Option<String> {
             let mut host = MockHostIO::new();
             host.dri_cleanup_status = status;
+            let outcome = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                apply_dri_release_effect(7, effect, &mut host);
+            }));
+            outcome.err().map(|payload| match payload.downcast::<String>() {
+                Ok(message) => *message,
+                Err(payload) => payload.downcast::<&str>().map(|s| String::from(*s)).unwrap_or_default(),
+            })
+        }
+
+        #[test]
+        fn completed_cleanup_lets_the_kernel_continue() {
+            let mut host = MockHostIO::new();
+            host.dri_cleanup_status = COMPLETE;
             for effect in every_host_effect() {
-                apply_dri_release_effect_with_log(&mut log, 7, effect, &mut host);
+                apply_dri_release_effect(7, effect, &mut host);
             }
-            (log, host.dri_cleanup_calls)
+            assert_eq!(host.dri_cleanup_calls, ["unbind", "destroy", "rmfb", "drop_master", "gl_unbind"]);
         }
 
-        fn reason(log: &WritebackLossLog, index: usize) -> String {
-            String::from_utf8(log.records()[index].reason.clone()).unwrap()
-        }
-
+        // The kernel has already retired the object and will reuse its
+        // address range or identity space. A host that answers anything but
+        // COMPLETE still holds state the kernel can no longer reach, which is
+        // a host-internal fault: the kernel must stop, not record and go on.
         #[test]
-        fn completed_and_host_retained_cleanup_record_nothing() {
-            for status in [COMPLETE, HOST_RETAINED] {
-                let (log, calls) = apply_all(status);
-                assert_eq!(calls, ["unbind", "destroy", "rmfb", "drop_master", "gl_unbind"]);
-                assert_eq!(log.total(), 0, "status {status}");
+        fn every_unfinished_cleanup_stops_the_kernel_naming_operation_pid_object_and_status() {
+            let expected = [
+                "gbm_bo_unbind of BO 3 (range 0x20000+0x10000) for pid 7",
+                "gbm_bo_destroy of BO 3 for pid 7",
+                "kms_rmfb of framebuffer 9 for pid 7",
+                "kms_drop_master of master grant 12 (file 4) for pid 7",
+                "gl_unbind of GL session 21 for pid 8",
+            ];
+            // 1 was the retired "host retained" answer; -EIO a lost unbind
+            // writeback; -EBUSY a binding that could not detach; -ENOSYS a
+            // host without the capability; 2 an unknown answer.
+            for status in [1, -(Errno::EIO as i32), -(Errno::EBUSY as i32), -(Errno::ENOSYS as i32), 2] {
+                for (effect, object) in every_host_effect().into_iter().zip(expected) {
+                    let message = stop_message(effect, status)
+                        .unwrap_or_else(|| panic!("status {status} for {object} let the kernel continue"));
+                    assert!(message.starts_with("fatal DRI cleanup fault: "), "{message}");
+                    assert!(message.contains(object), "{message}");
+                    assert!(message.contains(&alloc::format!("host answered {status}")), "{message}");
+                }
             }
         }
 
         #[test]
-        fn every_refused_cleanup_is_recorded_with_its_object() {
-            let (log, _) = apply_all(-(Errno::ENOSYS as i32));
-            assert_eq!(log.total(), 5);
-            let records = log.records();
-            assert!(records.iter().all(|record| record.kind == MappingLossKind::DeviceCleanup));
-            assert_eq!(records.iter().map(|record| (record.pid, record.operand)).collect::<Vec<_>>(),
-                [(7, 3), (7, 3), (7, 9), (7, 12), (8, 21)]);
-            assert_eq!(reason(&log, 0), "gbm_bo_unbind refused errno 38");
-            assert_eq!(reason(&log, 1), "gbm_bo_destroy refused errno 38");
-            assert_eq!(reason(&log, 2), "kms_rmfb refused errno 38");
-            assert_eq!(reason(&log, 3), "kms_drop_master refused errno 38");
-            assert_eq!(reason(&log, 4), "gl_unbind refused errno 38");
-        }
-
-        #[test]
-        fn lost_unbind_writeback_is_a_writeback_loss_at_the_mapping() {
-            let (log, _) = apply_all(-(Errno::EIO as i32));
-            let records = log.records();
-            assert_eq!(records[0].kind, MappingLossKind::Writeback);
-            assert_eq!((records[0].pid, records[0].operand), (7, 0x20000));
-            // EIO from any other effect is a refusal, not a writeback.
-            assert!(records[1..].iter().all(|record| record.kind == MappingLossKind::DeviceCleanup));
-            assert_eq!(reason(&log, 1), "gbm_bo_destroy refused errno 5");
-        }
-
-        #[test]
-        fn an_unknown_positive_status_is_not_success() {
-            let mut log = WritebackLossLog::new();
-            record_dri_cleanup_outcome(&mut log, 5, &DriReleaseEffect::DestroyBo(44), 2);
-            assert_eq!(log.total(), 1);
-            assert_eq!(log.records()[0].operand, 44);
-            assert_eq!(reason(&log, 0), "gbm_bo_destroy returned unknown status 2");
-            let rendered = String::from_utf8(log.render()).unwrap();
-            assert!(rendered.contains("loss kind=device-cleanup pid=5 object=0x2c reason=gbm_bo_destroy returned unknown status 2\n"),
-                "{rendered}");
-        }
-
-        #[test]
-        fn hide_cursor_has_no_host_outcome_and_records_nothing() {
-            let mut log = WritebackLossLog::new();
+        fn hide_cursor_has_no_host_outcome() {
             let mut host = MockHostIO::new();
             host.dri_cleanup_status = -(Errno::EIO as i32);
-            apply_dri_release_effect_with_log(&mut log, 7, DriReleaseEffect::HideCursor { fb_id: 0 }, &mut host);
+            apply_dri_release_effect(7, DriReleaseEffect::HideCursor { fb_id: 0 }, &mut host);
             assert!(host.dri_cleanup_calls.is_empty());
-            assert_eq!(log.total(), 0);
+        }
+
+        #[test]
+        fn a_munmap_whose_host_unbind_lost_the_writeback_stops_the_kernel() {
+            // DeviceUnmapPlan delivers munmap's cleanup through the same
+            // checked path; it must not record the loss and return success.
+            let mut proc = Process::new(1);
+            proc.dri_bindings.push(crate::process::DriBoBinding { addr: 0x20000, len: 0x10000, bo_id: 3, bo_offset: 0 });
+            let mut host = MockHostIO::new();
+            host.dri_cleanup_status = -(Errno::EIO as i32);
+            let outcome = std::panic::catch_unwind(core::panic::AssertUnwindSafe(|| {
+                DeviceUnmapPlan::prepare(&proc, 0x20000, 0x10000).unwrap().commit(&mut proc, &mut host);
+            }));
+            assert!(outcome.is_err(), "munmap recorded a lost writeback and continued");
+            assert_eq!(host.gbm_bo_unbind_calls, [(1, 3, 0x20000, 0x10000)]);
         }
     }
 

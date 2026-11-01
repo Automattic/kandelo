@@ -10,7 +10,7 @@
  * failed somewhere in a fork."
  */
 import { describe, expect, it, vi } from "vitest";
-import { GbmBoRegistry, GbmMappingRetirement } from "../src/dri/registry.js";
+import { GbmBoRegistry, GbmMappingFault, GbmMappingRetirement } from "../src/dri/registry.js";
 import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
@@ -1153,7 +1153,8 @@ describe("mapping retirement completion and rollback", () => {
     capability.watch(()=>{throw new Error("receiver notification fault");});
     const observer=registry.onChange(()=>{
       expect(registry.bind(3,81,2048,64)).toBeLessThan(0);
-      expect(registry.unbind(3,81)).toBe(false);
+      // Detaching a kernel-unmapped range cannot wait: reentry is fatal.
+      expect(()=>registry.unbind(3,81)).toThrow(GbmMappingFault);
       expect(registry.captureMappingRetirement(3,81,1024,8,memory)).toBeNull();
     });
     expect(capability.retire()).toBe(true);observer();
@@ -1219,7 +1220,7 @@ describe("exact mapping ranges include non-BO page padding",()=>{
     new Uint8Array(memory.buffer,page,page+64).fill(37);
     const whole=registry.captureMappingRetirement(1,91,page,2*page,memory)!;
     expect(whole).not.toBeNull();
-    expect(registry.unbind(1,91,page,page)).toBe(true);
+    expect(()=>registry.unbind(1,91,page,page)).not.toThrow();
     expect(whole.complete).toBe(false);
     // A fully padded child alias still has mapping custody, no canonical bytes.
     expect(registry.bind(2,91,3*page,page,2*page)).toBe(0);
@@ -1247,66 +1248,59 @@ describe("exact mapping ranges include non-BO page padding",()=>{
   });
 });
 
-// The kernel has already unmapped these ranges (munmap, exec, exit), so a
-// registered binding would let a later reuse of the address publish unrelated
-// bytes into the BO. Detachment is unconditional; a writeback that could not
-// be published is a truthful, sticky per-BO loss plus a host diagnostic.
-it("detaches a kernel-unmapped process mapping even when its final publication fails",()=>{
+// The kernel has already unmapped these ranges (munmap, exec, exit) and will
+// reuse them. A final writeback that cannot be published is lost data, and a
+// binding left registered would publish whatever the process later stores at
+// the reused address. Neither may be recorded and survived: the registry
+// reports a fatal GbmMappingFault through onFault and throws.
+it("makes a lost final writeback of a kernel-unmapped mapping a fatal fault",()=>{
   const memory=new WebAssembly.Memory({initial:1});
-  const lost:unknown[]=[];
-  const registry=new GbmBoRegistry({getProcessMemory:()=>memory,onPublicationLost:event=>lost.push(event)});
+  const faults:unknown[]=[];
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory,onFault:fault=>faults.push(fault)} as any);
   registry.create({pid:5,bo_id:93,size:64,w:4,h:4,stride:16});
   registry.bind(5,93,1024,64);registry.primeBindFromSab(5,93,memory,1024);
   new Uint8Array(memory.buffer,1024,64).fill(57);
   const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("publication failed");});
-  try {
-    expect(registry.releaseProcess(5)).toBe(false);
-  } finally {failure.mockRestore();}
-  expect(registry.get(5,93)).toBeUndefined();
-  expect(registry.publicationLost(93)).toEqual([{pid:5,addr:1024,len:64,reason:"publication failed"}]);
-  expect(lost).toEqual([{pid:5,bo_id:93,addr:1024,len:64,reason:"publication failed"}]);
-  expect(registry.pixelView(93)).toEqual(new Uint8Array(64));
-  expect(registry.releaseProcess(5)).toBe(true);
+  let thrown:unknown;
+  try { registry.releaseProcess(5); } catch (error) { thrown=error; } finally {failure.mockRestore();}
+  expect(thrown).toBeInstanceOf(GbmMappingFault);
+  expect((thrown as Error).message).toBe(
+    "GBM BO 93: the final writeback of pid 5's unmapped range 0x400+64 could not be published: publication failed");
+  expect(faults).toEqual([thrown]);
 });
 
-it("never flushes a reused address range into a BO after a failed unmap publication",()=>{
-  const writer=new WebAssembly.Memory({initial:1}), reader=new WebAssembly.Memory({initial:1});
-  const memories=new Map([[5,writer],[6,reader]]);
-  const registry=new GbmBoRegistry({getProcessMemory:pid=>memories.get(pid)});
+it("makes publication from a primed mapping that lost its address space a fatal fault",()=>{
+  // A primed mapping always keeps the Memory it was primed from; without it
+  // the writer's bytes can never reach the BO.
+  const memory=new WebAssembly.Memory({initial:1});
+  const faults:unknown[]=[];
+  const registry=new GbmBoRegistry({getProcessMemory:()=>memory,onFault:fault=>faults.push(fault)} as any);
   registry.create({pid:5,bo_id:94,size:64,w:4,h:4,stride:16});
-  registry.bind(5,94,1024,64);registry.primeBindFromSab(5,94,writer,1024);
-  new Uint8Array(writer.buffer,1024,64).fill(11);
-  const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("publication failed");});
-  try { expect(registry.unbind(5,94,1024,64)).toBe(false); } finally {failure.mockRestore();}
-  expect(registry.get(5,94)!.binding).toBeNull();
-  // The process reuses the unmapped range for unrelated data. A later
-  // reader's prime flushes every still-registered writer first.
-  new Uint8Array(writer.buffer,1024,64).fill(99);
-  registry.create({pid:6,bo_id:94,size:64,w:4,h:4,stride:16});
-  registry.bind(6,94,2048,64);
-  expect(registry.primeBindFromSab(6,94,reader,2048)).toBe(true);
-  expect(registry.pixelView(94)).toEqual(new Uint8Array(64));
-  expect(new Uint8Array(reader.buffer,2048,64)).toEqual(new Uint8Array(64));
-  expect(registry.get(6,94)!.publicationLost).toBe(true);
+  registry.bind(5,94,1024,64);registry.primeBindFromSab(5,94,memory,1024);
+  (registry as any).bos.get(94).bindingsByPid.get(5).get(1024).lineage.memory=null;
+  expect(()=>registry.syncToSab(94)).toThrow(GbmMappingFault);
+  expect(faults).toHaveLength(1);
+  expect((faults[0] as Error).message).toBe(
+    "GBM BO 94: pid 5's primed mapping 0x400+64 has no address space to publish from");
 });
 
-it("reports a lost unmap writeback through the kernel's host diagnostic callback",async()=>{
+it("reports a mapping fault through the kernel's host fault callback",async()=>{
   const { WasmPosixKernel } = await import("../src/kernel.js");
   const { VirtualPlatformIO } = await import("../src/vfs/vfs.js");
   const { NodeTimeProvider } = await import("../src/vfs/time.js");
   const { FixedTreeBackend } = await import("./support/fixed-tree-backend.js");
   const memory=new WebAssembly.Memory({initial:1});
   const io=new VirtualPlatformIO([{mountPoint:"/",backend:new FixedTreeBackend({"/":{mode:0o040755,ino:1}})}],new NodeTimeProvider());
-  const diagnostics:unknown[]=[];
+  const faults:unknown[]=[];
   const kernel=new WasmPosixKernel({maxWorkers:1,dataBufferSize:65536,useSharedMemory:true},io,
-    {getProcessMemory:()=>memory,onHostDiagnostic:diagnostic=>diagnostics.push(diagnostic)});
+    {getProcessMemory:()=>memory,onHostFault:(fault:Error)=>faults.push(fault)} as any);
   kernel.bos.setProcessMemoryResolver(()=>memory);
   kernel.bos.create({pid:7,bo_id:95,size:64,w:4,h:4,stride:16});
   kernel.bos.bind(7,95,1024,64);kernel.bos.primeBindFromSab(7,95,memory,1024);
   new Uint8Array(memory.buffer,1024,64).fill(3);
   const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("publication failed");});
-  try { expect(kernel.bos.unbind(7,95,1024,64)).toBe(false); } finally {failure.mockRestore();}
-  expect(diagnostics).toEqual([expect.objectContaining({pid:7,source:"GBM buffer mapping"})]);
-  expect((diagnostics[0] as {message:string}).message).toMatch(/GBM BO 95: .*0x400\+64.*publication failed/);
-  expect(kernel.bos.get(7,95)!.binding).toBeNull();
+  try { expect(()=>kernel.bos.unbind(7,95,1024,64)).toThrow(/GBM BO 95: .*0x400\+64.*publication failed/); }
+  finally {failure.mockRestore();}
+  expect(faults).toHaveLength(1);
+  expect((faults[0] as Error).message).toMatch(/pid 7's unmapped range 0x400\+64/);
 });

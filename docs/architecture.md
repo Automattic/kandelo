@@ -3895,24 +3895,34 @@ Kernel close-on-exec and final-reference callbacks still destroy buffers
 and release master state; trap/exit cleanup retains its process teardown
 backstop. Both Node and browser use this same path.
 
-Those kernel callbacks report their real outcome. The kernel retires a DRM
-buffer, framebuffer, master grant or GL session immediately: `close`,
-`munmap`, `_exit` and `RMFB` have no POSIX failure for a host that cannot
-release its copy, and the kernel never reuses those identities. It then
-calls `host_gbm_bo_unbind`, `host_gbm_bo_destroy`, `host_kms_rmfb`,
-`host_kms_drop_master` or `host_gl_unbind`, which run synchronously in the
-kernel worker and return a `dri_cleanup_status`: complete; host-retained,
-meaning the host already journals the remaining native GL deletions and
-retries them before later GL work (foreign texture views of a destroyed
-buffer, or a context an accepted execution still holds); `-EIO` from an
-unbind whose range detached but whose final writeback could not be
-published; or a negative errno when the host refused. Every step of a
-destroy or GL unbind still runs after an earlier step faults, and the fault
-is also reported as a `DRI cleanup` host diagnostic. The kernel records a
-lost writeback as a `writeback` loss and any refusal as a `device-cleanup`
-loss (pid, object id, operation and errno) in
-`/proc/kandelo/writeback_losses` (`syscalls::apply_dri_release_effect`), so
-a failed host cleanup is never counted as success.
+Those kernel callbacks must finish, or the kernel stops. The kernel
+retires a DRM buffer, framebuffer, master grant or GL session immediately:
+`close`, `munmap`, `_exit` and `RMFB` have no POSIX failure for a host that
+cannot release its copy, and the kernel goes on to reuse the address range
+or file the object named. It then calls `host_gbm_bo_unbind`,
+`host_gbm_bo_destroy`, `host_kms_rmfb`, `host_kms_drop_master` or
+`host_gl_unbind`, which run synchronously in the kernel worker. Each either
+completes (`dri_cleanup_status::COMPLETE`) or reports a fatal host fault:
+the unmapped range must detach and its final writeback must reach the
+buffer, the buffer's backing and every native GL view of it must be
+deleted, and no GL execution may still hold a retired context. Whatever the
+host failed to release could never be released again (a detached mapping's
+lost bytes, a binding that would copy a reused range into the buffer, a GPU
+object nothing will delete), so it is treated as the system breaking down,
+not as a loss to record. The host reports the fault through the kernel
+callback `onHostFault` with a message naming the operation, object, pid and
+reason (`DriCleanupFault`, or `GbmMappingFault` from the buffer registry),
+then throws out of the import. `CentralizedKernelWorker` turns
+`onHostFault` into the same fatal shutdown as a trapped kernel export
+(`onKernelFatal`, a `kernel fatal` diagnostic and worker termination), on
+Node and in the browser alike. A host that returned anything but `COMPLETE`
+would make the kernel trap (`syscalls::apply_dri_release_effect`). The exec
+and exit backstop (`WasmPosixKernel.releaseProcessViews`) and the buffer
+registry's own publication paths follow the same rule: a primed mapping
+that has lost its address space or baseline cannot publish, and is fatal.
+Native GL deletions are not deferred past these calls: the host's foreign
+retirement journal was only revisited before later GL work, which nothing
+guarantees, and only a refused native deletion could leave an entry there.
 
 The browser's optional image-owned `presentation.displayScale` advertises
 a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI

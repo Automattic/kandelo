@@ -1358,19 +1358,17 @@
     "wasm-posix-abi"
   ],
   "dri_cleanup_status": {
+    "any_other_value": "contract-violation-kernel-traps",
     "complete": 0,
     "delivery": "synchronous-in-kernel-worker-no-retry-kernel-identity-never-reused",
-    "host_retained": 1,
-    "host_retained_meaning": "host-journal-owns-remaining-native-work-kernel-does-nothing",
+    "host_fault": "host-throws-from-the-import-and-the-kernel-instance-stops",
     "imports": [
       "host_gbm_bo_unbind",
       "host_gbm_bo_destroy",
       "host_gl_unbind",
       "host_kms_rmfb",
       "host_kms_drop_master"
-    ],
-    "refused": "any-other-value-recorded-as-device-cleanup-loss",
-    "unbind_writeback_lost": "negative-eio-from-host_gbm_bo_unbind-binding-detached"
+    ]
   },
   "export_deny": {
     "deny_exact": [

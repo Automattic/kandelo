@@ -451,11 +451,11 @@ pub trait HostIO {
     /// (SAB for CPU-tier, `WebGLTexture`+FBO for GPU-tier). Idempotent:
     /// an unknown `bo_id` has nothing left to free and is complete.
     ///
-    /// Returns a `shared::dri_cleanup_status` outcome: `COMPLETE`,
-    /// `HOST_RETAINED` (native GL texture views of the bo are still pending
-    /// in the host's foreign-retirement journal), or a negative errno when
-    /// the host could not free the backing. The kernel reports a refusal in
-    /// `/proc/kandelo/writeback_losses`; see `syscalls::apply_dri_release_effect`.
+    /// Returns `shared::dri_cleanup_status::COMPLETE` once every host copy
+    /// and native view of the bo is gone. Anything else stops the kernel
+    /// (see `syscalls::apply_dri_release_effect`). The default answers
+    /// -ENOSYS because a host without `gbm_bo_create` never holds a bo, so
+    /// reaching it is itself a contract violation.
     #[allow(unused_variables)]
     fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
         -(Errno::ENOSYS as i32)
@@ -478,9 +478,9 @@ pub trait HostIO {
     /// The kernel has already unmapped the range, so the host must detach
     /// the binding in this call: the address range is reused afterwards and
     /// a live binding would copy unrelated bytes into the bo. Returns
-    /// `shared::dri_cleanup_status::COMPLETE`, `-EIO` when the binding
-    /// detached but its final writeback could not be published (those bytes
-    /// are lost), or another negative errno when the host refused.
+    /// `shared::dri_cleanup_status::COMPLETE` once the binding is detached
+    /// and its final writeback published. A host that cannot do both has
+    /// lost data or would corrupt the bo, so anything else stops the kernel.
     #[allow(unused_variables)]
     fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
         -(Errno::ENOSYS as i32)
@@ -496,13 +496,13 @@ pub trait HostIO {
     /// process exit, or exec). Never retire another session of `pid`.
     /// The process argument names the renderer's actual owner. Idempotent.
     ///
-    /// Returns a `shared::dri_cleanup_status` outcome: `COMPLETE`,
-    /// `HOST_RETAINED` (the session is gone but native objects it shared
-    /// remain in the host's retirement journal), or a negative errno when
-    /// the host could not retire the session's renderer state.
+    /// Returns `shared::dri_cleanup_status::COMPLETE` once the session's
+    /// renderer state is released; anything else stops the kernel. A host
+    /// without GL never bound a session (`gl_bind` is a no-op by default),
+    /// so it has nothing to release.
     #[allow(unused_variables)]
     fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
-        -(Errno::ENOSYS as i32)
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
     }
 
     /// Allocate a host-side WebGL context. `ctx_id` is a fresh kernel-issued
@@ -613,10 +613,11 @@ pub trait HostIO {
 
     /// Retire the host's copy of a DRM master grant. A grant the host has
     /// already replaced with a newer lease is retired too, so that answer is
-    /// `shared::dri_cleanup_status::COMPLETE`. Negative errno on refusal.
+    /// `shared::dri_cleanup_status::COMPLETE`; anything else stops the
+    /// kernel. The default matches `kms_set_master`, which records nothing.
     #[allow(unused_variables)]
     fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) -> i32 {
-        -(Errno::ENOSYS as i32)
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
     }
 
     /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
@@ -700,11 +701,12 @@ pub trait HostIO {
         0
     }
 
-    /// Forget the host's framebuffer record for `fb_id`.
-    /// Returns `shared::dri_cleanup_status::COMPLETE` or a negative errno.
+    /// Forget the host's framebuffer record for `fb_id`. Returns
+    /// `shared::dri_cleanup_status::COMPLETE`; anything else stops the
+    /// kernel. The default matches `kms_addfb`, which records nothing.
     #[allow(unused_variables)]
     fn kms_rmfb(&mut self, pid: i32, fb_id: u32) -> i32 {
-        -(Errno::ENOSYS as i32)
+        wasm_posix_shared::dri_cleanup_status::COMPLETE
     }
 
     #[allow(unused_variables)]

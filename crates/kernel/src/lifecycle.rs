@@ -2,9 +2,9 @@
 //!
 //! Each export validates its request against the process table and commits
 //! it in the same call. Production GL and DRI run synchronously in the kernel
-//! worker, and their cleanup reports its real outcome from inside the commit
-//! (`syscalls::apply_dri_release_effect`), so no lifecycle transition is ever
-//! left pending on host work.
+//! worker, and their cleanup either completes inside the commit or stops the
+//! kernel as a fatal host fault (`syscalls::apply_dri_release_effect`), so no
+//! lifecycle transition is ever left pending on host work.
 // The exports that construct every request live in `wasm_api`, which only
 // builds for Wasm; host-target unit tests exercise a subset.
 #![cfg_attr(not(any(target_arch = "wasm32", target_arch = "wasm64")), allow(dead_code))]

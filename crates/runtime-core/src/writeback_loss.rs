@@ -8,15 +8,6 @@
 //! and `release_all_for_process`), but the process has been told nothing, and
 //! the only honest thing a kernel can do is make that fact retrievable.
 //!
-//! The same report carries DRI/GL device-cleanup failures. When a process
-//! closes its last DRM reference, unmaps a buffer, or exits, the kernel
-//! retires the object at once (POSIX gives `close`, `munmap` and `_exit` no
-//! way to fail on it) and asks the host to release the matching host-side
-//! state. The host answers synchronously with its real outcome; a host that
-//! refused leaves state the kernel can no longer reach, so the refusal is
-//! recorded here as a [`MappingLossKind::DeviceCleanup`] record rather than
-//! counted as success.
-//!
 //! WHY THIS IS KERNEL STATE AND NOT A LOG LINE. A formatted string written to
 //! a host console would cost an entry on the host API contract to deliver a
 //! diagnostic that:
@@ -56,11 +47,10 @@ pub const WRITEBACK_LOSS_REASON_MAX: usize = 64;
 
 /// What kind of shared-mapping state was lost.
 ///
-/// Four things can go missing and none may go quietly: a writeback that could
-/// not be published, a host handle released by a backing that never took it,
-/// a live process whose mappings a publication pass skipped, and a device
-/// object (DRM buffer, framebuffer, master grant, GL session) whose host-side
-/// release the host refused. They are different losses with different
+/// Three things can go missing in the mapping layer and none may go quietly:
+/// a writeback that could not be published, a host handle released by a
+/// backing that never took it, and a live process whose mappings a
+/// publication pass skipped. They are different losses with different
 /// operands, so the record names which one it is rather than forcing a handle
 /// into a field labelled `addr` -- a field label that lied would be exactly the
 /// "appearance of correctness" the platform-values contract forbids.
@@ -77,13 +67,6 @@ pub enum MappingLossKind {
     /// holds was skipped. The pid in the record is the whole operand; this
     /// kind has no second one.
     UnseededProcess,
-    /// The host refused to release a DRI/GL object the kernel had already
-    /// retired (`gbm_bo_destroy`, `gbm_bo_unbind`, `kms_rmfb`,
-    /// `kms_drop_master`, `gl_unbind`). The kernel identity is never reused,
-    /// so the record cannot be confused with a later object; the host-side
-    /// storage it named stays allocated. Operand: the kernel object id (BO,
-    /// framebuffer, master lease, or GL session); the reason names which.
-    DeviceCleanup,
 }
 
 impl MappingLossKind {
@@ -93,7 +76,6 @@ impl MappingLossKind {
             Self::Writeback => "writeback",
             Self::UnheldHandle => "unheld-handle",
             Self::UnseededProcess => "unseeded-process",
-            Self::DeviceCleanup => "device-cleanup",
         }
     }
 
@@ -104,7 +86,6 @@ impl MappingLossKind {
             Self::UnheldHandle => "handle",
             // No operand: the pid is the loss.
             Self::UnseededProcess => "",
-            Self::DeviceCleanup => "object",
         }
     }
 }
@@ -194,7 +175,6 @@ impl WritebackLossLog {
     /// dropped 73
     /// loss kind=writeback pid=12 addr=0x10000 reason=descriptor closed
     /// loss kind=unheld-handle handle=0x29 reason=released without a retain
-    /// loss kind=device-cleanup pid=7 object=0x3 reason=gbm_bo_destroy refused errno 5
     /// ```
     ///
     /// The operand's FIELD NAME follows the kind, so a reader is never told a
@@ -210,7 +190,7 @@ impl WritebackLossLog {
         out.extend_from_slice(format!("dropped {}\n", self.dropped()).as_bytes());
         for record in &self.records {
             match record.kind {
-                MappingLossKind::Writeback | MappingLossKind::DeviceCleanup => out.extend_from_slice(
+                MappingLossKind::Writeback => out.extend_from_slice(
                     format!(
                         "loss kind={} pid={} {}={:#x} reason=",
                         record.kind.label(),

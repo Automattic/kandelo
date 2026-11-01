@@ -3428,6 +3428,14 @@ export class CentralizedKernelWorker {
       onHostDiagnostic: (diagnostic: HostDiagnostic): void => {
         this.callbacks.onHostDiagnostic?.(diagnostic);
       },
+      // A host-internal fault (for example a DRI release the host could not
+      // finish after Rust retired the object) means host state no longer
+      // matches the kernel's. Latch the same fatal shutdown a trapped export
+      // gets, before the reporter throws: a catch between the fault and the
+      // kernel boundary cannot then turn it into a recoverable result.
+      onHostFault: (fault: Error): void => {
+        this.#failKernelInstance(fault);
+      },
       // KMS scanout canvas lookup for the GL bridge's auto-attach
       // path. `host_gl_create_context` calls this when a DRM-master
       // pid has no canvas bound yet; the kernel-worker's KMS registry
