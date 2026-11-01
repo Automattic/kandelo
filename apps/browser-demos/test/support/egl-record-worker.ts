@@ -333,7 +333,7 @@ self.onmessage = async ({data}) => {
     if(data.peerDelete) {
       imports!.host_gl_unbind(7,peer);
     }
-    for(const bo of rawBos) {native!.gl.retireForeignBo(bo);if(native!.gl.hasForeignRetirements())throw new Error("raw candidate BO cleanup pending");}
+    for(const bo of rawBos) if(!native!.gl.retireForeignBo(bo))throw new Error("raw candidate BO cleanup refused");
     const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
     let pbufferState = {};
     if(data.pbuffer && gl) {

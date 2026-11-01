@@ -309,32 +309,22 @@ it("retains canonical GPU backing after rejected revocation and completes a late
   const fbo=gl.createFramebuffer()!;b.fbos.set(42,fbo);b.shadow.fbo=b.shadow.readFbo=fbo;
   gl.bindFramebuffer(0x8d40,fbo);query(b,O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,name,0]);
   control.fault="framebufferTexture2D";reg.retireForeignBo(41);
-  expect(reg.hasForeignRetirements()).toBe(true);expect(reg.groupHasForeignRetirement(b)).toBe(true);
   expect(b.textures.get(name)).toBe(object);expect(b.shadow.textureUnits[0]).toBe(object);
   expect(frames.get(fbo)!.get(0x8ce0)).toBe(gpu.tex);expect(alive.has(gpu.tex)).toBe(true);
-  expect(reg.createGpuBo(41,gl,2,2)).toBeNull();
-  reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);
+  expect(reg.retireForeignBo(41)).toBe(true);
   expect(b.textures.has(name)).toBe(false);expect(b.foreignTextureBos.size).toBe(0);expect(alive.has(gpu.tex)).toBe(false);
-});
-it("retains failed native cleanup across final context retirement without losing the old group",()=>{
-  const {reg,b,gpu,control,alive}=gpuRawSetup();bindGpuForeignTexture(b,41,gpu);const group=b.objects;
-  control.failDelete=true;reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);
-  reg.destroyContext(7,11);expect(b.objects).not.toBe(group);expect(group.foreignTextureBos.size).toBe(1);
-  expect(alive.has(gpu.tex)).toBe(true);
-  control.failDelete=false;reg.retryForeignRetirements();
-  expect(group.foreignTextureBos.size).toBe(0);expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
 });
 it("retains a rejected canonical deletion for retry after all raw views have retired",()=>{
   const {reg,gpu,control,alive}=gpuRawSetup();control.fault="deleteFramebuffer";
-  reg.retireForeignBo(41);expect(reg.hasForeignRetirements()).toBe(true);expect(alive.has(gpu.tex)).toBe(true);
-  reg.retryForeignRetirements();expect(reg.hasForeignRetirements()).toBe(false);expect(alive.has(gpu.tex)).toBe(false);
+  reg.retireForeignBo(41);expect(alive.has(gpu.tex)).toBe(true);
+  expect(reg.retireForeignBo(41)).toBe(true);expect(alive.has(gpu.tex)).toBe(false);
 });
 it("finds raw BO views in execution groups after their public context was replaced",()=>{
   const {reg,b,gl,alive}=gpuRawSetup();bindGpuForeignTexture(b,41,reg.gpuBo(41)!);
   const group=b.objects,guard={context:gl,prepareRetirement:()=>true};
   const lease=reg.retainContextExecution(7,11,guard)!;expect(lease).not.toBeNull();
   reg.destroyContext(7,11);expect(reg.get(7,11)).not.toBe(b);expect(group.foreignTextureBos.size).toBe(1);
-  reg.retireForeignBo(41);expect(group.foreignTextureBos.size).toBe(0);expect(reg.hasForeignRetirements()).toBe(false);
+  reg.retireForeignBo(41);expect(group.foreignTextureBos.size).toBe(0);
   expect(lease.release()).toBe(true);reg.unbind(7);expect(alive.size).toBe(0);
 });
 
@@ -529,9 +519,8 @@ it("retains failed raw BO attachment inverses before any query or new raw import
   block = false;
   expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
-  expect(gl.getParameter(0x8ca6)).toBe(framebuffers[0]); expect(gl.getParameter(0x8caa)).toBe(framebuffers[1]); expect(gl.getParameter(0x84e0)).toBe(0x84c2);
-  expect(reg.hasForeignRetirements()).toBe(true); expect(b.textures.get(name)).toBe(object);
-  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(gpu.tex)).toBe(false);
+  expect(gl.getParameter(0x8ca6)).toBe(framebuffers[0]); expect(gl.getParameter(0x8caa)).toBe(framebuffers[1]); expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(b.textures.get(name)).toBe(object);
+  expect(reg.retireForeignBo(41)).toBe(true); expect(alive.has(gpu.tex)).toBe(false);
   expect(b.textures.has(name)).toBe(false); expect(peer.shadow.textureUnits[1]).toBeNull();
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBeNull();
 });
@@ -554,7 +543,7 @@ it("retains failed raw BO texture-unit inverses and restores exact shared native
   for (const unit of [0,1]) { gl.activeTexture(0x84c0+unit); expect(gl.getParameter(0x8069)).toBe(native); }
   gl.activeTexture(0x84c2);
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
-  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(unrelated)).toBe(true);
+  expect(reg.retireForeignBo(41)).toBe(true); expect(alive.has(unrelated)).toBe(true);
 });
 
 it("retains native unit capture restoration before detaching any raw BO reference", () => {
@@ -570,31 +559,9 @@ it("retains native unit capture restoration before detaching any raw BO referenc
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
   block = false;
   expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
-  expect(get(0x84e0)).toBe(0x84c2); reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+  expect(get(0x84e0)).toBe(0x84c2); expect(reg.retireForeignBo(41)).toBe(true);
 });
 
-it("keeps shared raw BO repair after the submitting container retires without reviving it", () => {
-  const {reg,b,peer,gl,gpu,control,frames,framebuffers,alive} = revocationSetup();
-  const attach = gl.framebufferTexture2D.bind(gl), bindFrame = gl.bindFramebuffer.bind(gl);
-  let rejected = false, block = true, retired = false, deadBinds = 0;
-  gl.framebufferTexture2D = (target,point,imageTarget,texture,level) => {
-    const frame = gl.getParameter(0x8ca6);
-    if (rejected && block && frame === framebuffers[1] && texture === gpu.tex) {
-      control.fault = "framebufferTexture2D"; attach(target,point,imageTarget,texture,level); return;
-    }
-    attach(target,point,imageTarget,texture,level);
-    if (!rejected && frame === framebuffers[1] && !texture) { rejected = true; control.fault = "framebufferTexture2D"; attach(target,point,imageTarget,texture,level); }
-  };
-  gl.bindFramebuffer = (target,frame) => { if (retired && frame === framebuffers[0]) deadBinds++; bindFrame(target,frame); };
-  reg.retireForeignBo(41); expect(rejected).toBe(true); blockedRevocationQueries(b,peer);
-  reg.destroyContext(7,11); retired = true;
-  expect(alive.has(framebuffers[0])).toBe(false); expect(alive.has(framebuffers[1])).toBe(true); expect(alive.has(gpu.tex)).toBe(true);
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(-5);
-  block = false;
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),new Uint8Array(4))).toBe(4);
-  expect(deadBinds).toBe(0); expect(frames.get(framebuffers[1])!.get(0x8ce0)).toBe(gpu.tex);
-  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false); expect(alive.has(gpu.tex)).toBe(false);
-});
 
 for (const fault of ["draw","read","active"]) it(`retains raw BO detachment inverses after rejected ${fault} finalization`, () => {
   const {reg,b,peer,gl,gpu,control,frames,framebuffers,native,object} = revocationSetup();
@@ -615,7 +582,7 @@ for (const fault of ["draw","read","active"]) it(`retains raw BO detachment inve
   for (const selected of [0,1]) { gl.activeTexture(0x84c0+selected); expect(gl.getParameter(0x8069)).toBe(native); }
   gl.activeTexture(0x84c2);
   for (const value of framebuffers) expect(frames.get(value)!.get(0x8ce0)).toBe(gpu.tex);
-  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+  expect(reg.retireForeignBo(41)).toBe(true);
 });
 
 it("reserves raw BO mutation rollback after unit capture before detaching shared references", () => {
@@ -623,30 +590,12 @@ it("reserves raw BO mutation rollback after unit capture before detaching shared
   let reservations = 0;
   WeakMap.prototype.set = function(key,value) { if (++reservations === 2) throw new RangeError("mutation inverse reservation failed"); return set.call(this,key,value); };
   try { reg.retireForeignBo(41); } finally { WeakMap.prototype.set = set; }
-  expect(reservations).toBe(2); expect(reg.hasForeignRetirements()).toBe(true); expect(b.shadow.textureUnits[0]).toBe(object);
+  expect(reservations).toBe(2); expect(b.shadow.textureUnits[0]).toBe(object);
   for (const frame of framebuffers) expect(frames.get(frame)!.get(0x8ce0)).toBe(gpu.tex);
   expect(gl.getParameter(0x84e0)).toBe(0x84c2); expect(peer.shadow.textureUnits[1]).toBe(object);
-  reg.retryForeignRetirements(); expect(reg.hasForeignRetirements()).toBe(false);
+  expect(reg.retireForeignBo(41)).toBe(true);
 });
 
-it("completes raw BO repair and deletion after the final member retires", () => {
-  const {reg,b,peer,gl,gpu,control,framebuffers,alive,unrelated} = revocationSetup();
-  const bind = gl.bindTexture.bind(gl), frame = gl.bindFramebuffer.bind(gl); let rejected = false, block = true, retired = false, deadBinds = 0;
-  gl.bindTexture = (target,value) => {
-    const unit = gl.getParameter(0x84e0);
-    if (!rejected && !value && unit === 0x84c1) { rejected = true; control.fault = "bindTexture"; }
-    else if (rejected && block && value) control.fault = "bindTexture";
-    bind(target,value);
-  };
-  gl.bindFramebuffer = (target,value) => { if (retired && value && framebuffers.includes(value)) deadBinds++; frame(target,value); };
-  reg.retireForeignBo(41); blockedRevocationQueries(b,peer);
-  reg.destroyContext(7,11); reg.destroyContext(7,12); retired = true;
-  expect(reg.hasForeignRetirements()).toBe(true); expect(alive.has(gpu.tex)).toBe(true);
-  for (const value of framebuffers) expect(alive.has(value)).toBe(false);
-  block = false; reg.retryForeignRetirements();
-  expect(reg.hasForeignRetirements()).toBe(false); expect(deadBinds).toBe(0); expect(alive.has(gpu.tex)).toBe(false);
-  gl.deleteTexture(unrelated); expect(alive.size).toBe(0);
-});
 
 
 it("retains canonical BO containers while an unnamed native view awaits cleanup", () => {
@@ -666,12 +615,10 @@ it("retains canonical BO containers while an unnamed native view awaits cleanup"
   expect(retireNativeRetirement(cleanup)).toBe(false);
   expect(binding.foreignTextureBos.size).toBe(0);
   reg.retireForeignBo(41);
-  expect(reg.hasForeignRetirements()).toBe(true);
   expect(alive.has(allocation.fbo)).toBe(true);
   expect(alive.has(allocation.tex)).toBe(true);
   gl.deleteTexture = deleted;
-  reg.retryForeignRetirements();
-  expect(reg.hasForeignRetirements()).toBe(false);
+  expect(reg.retireForeignBo(41)).toBe(true);
   expect(alive.has(oldView)).toBe(false);
   expect(alive.has(allocation.fbo)).toBe(false);
   expect(alive.has(allocation.tex)).toBe(false);

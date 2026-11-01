@@ -46,12 +46,3 @@ it("distinguishes busy, closed, exhaustion and allocation refusal before immedia
   expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"closed"});
 });
 
-it("grants closing resources only to the actual running pre-cut ticket",()=>{
-  const stream=new GlOperationStream(),peer=new GlOperationStream();
-  const first=stream.reserve("commands")!,second=stream.reserve("query")!,cut=stream.capturePrefix();
-  expect(cut.complete).toBe(false);expect(cut.permits(stream)).toBe(false);expect(cut.permits(peer)).toBe(false);
-  expect(first.start()).toBe(true);expect(cut.permits(stream)).toBe(true);first.finish();
-  expect(second.cancel()).toBe(true);expect(cut.complete).toBe(true);
-  const later=stream.reserve("commands")!;expect(later.start()).toBe(true);
-  expect(cut.permits(stream)).toBe(false);expect(cut.complete).toBe(true);later.finish();
-});

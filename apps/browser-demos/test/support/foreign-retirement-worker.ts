@@ -82,8 +82,7 @@ self.onmessage = ({data}) => {
       require(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,"restored shared image complete");
       const rgba = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba); colors.push([...rgba]);
     }
-    registry.retryForeignRetirements();
-    require(!registry.hasForeignRetirements() && !gl.isTexture(gpu.tex) && !gl.isTexture(native),"canonical retirement follows repaired views");
+    require(registry.retireForeignBo(41) && !gl.isTexture(gpu.tex) && !gl.isTexture(native),"canonical retirement follows repaired views");
     require(!peer.textures.has(name) && peer.shadow.textureUnits[1] === null && peer.framebufferAttachments.size === 0,"logical retirement committed");
     require(deadBinds === 0,"retired container never rebound");
     gl.framebufferTexture2D = attach; gl.bindTexture = bind; gl.bindFramebuffer = frame;

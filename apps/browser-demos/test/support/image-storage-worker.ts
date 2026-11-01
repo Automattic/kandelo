@@ -541,12 +541,11 @@ self.onmessage = ({ data }) => {
     try {
       const accepted = mutate(O.QOP_IMAGE_STORAGE,[O.OP_TEX_IMAGE_2D,0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
       storageCommit = [accepted,storageOwner.textureViews.get(storageObject)!.source === null ? 0 : 1,storageOwner.imageRevisions.get(storageObject)!];
-      kernel.gl.retireForeignBo(43);
-      require(gl.isTexture(storageBo.tex) && kernel.gl.hasForeignRetirements(), "canonical BO waits for retired view cleanup");
+      require(!kernel.gl.retireForeignBo(43) && gl.isTexture(storageBo.tex), "canonical BO waits for retired view cleanup");
       storageCleanupBlocked = api.host_gl_query(7,O.QOP_GET_ERROR,64,0,512,4,12);
       require(storageCleanupBlocked === -5 && gl.isTexture(oldStorage.native), "retired view cleanup fence");
     } finally { gl.deleteTexture = storageDelete; }
-    require(error(12) === 0x500 && !gl.isTexture(storageBo.tex), "view cleanup before canonical BO retirement");
+    require(error(12) === 0x500 && kernel.gl.retireForeignBo(43) && !gl.isTexture(storageBo.tex), "view cleanup before canonical BO retirement");
     send(O.OP_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,1,1,0x1908,0x1401,4],rgba([0,0,255,255]),12);
     const storageOwned = [pixels(95,12),pixels(96,11)];
     // Raw WPK publication must preserve every legal public number and give
@@ -599,15 +598,14 @@ self.onmessage = ({ data }) => {
     };
     let rawBlocked: number, rawBlockedOutput: number[], rawInvalid: number;
     try {
-      kernel.gl.retireForeignBo(42);
-      require(kernel.gl.hasForeignRetirements() && gl.isTexture(rawBo.tex), "raw backing quarantined");
+      require(!kernel.gl.retireForeignBo(42) && gl.isTexture(rawBo.tex), "raw backing quarantined");
       new Uint32Array(memory.buffer, 64, 1).set([0x8069]); new Uint8Array(memory.buffer, 512, 4).fill(0xa5);
       rawInvalid = api.host_gl_query(7, O.QOP_GET_INTEGERV, 64, 4, memory.buffer.byteLength + 8, 4, 12);
       require(rawInvalid === -14 && retireRejects === 1, "raw output preflight before retirement");
       rawBlocked = api.host_gl_query(7, O.QOP_GET_INTEGERV, 64, 4, 512, 4, 12); rawBlockedOutput = [...new Uint8Array(memory.buffer, 512, 4)];
       require(rawBlocked === -5 && gl.isTexture(rawBo.tex), "raw pending group blocked");
     } finally { gl.framebufferTexture2D = retireAttach; }
-    require(error(11) === 0x500 && !kernel.gl.hasForeignRetirements() && !gl.isTexture(rawBo.tex), "raw retirement retry");
+    require(error(11) === 0x500 && kernel.gl.retireForeignBo(42) && !gl.isTexture(rawBo.tex), "raw retirement retry");
     const rawRevoked = [new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 11).buffer).getUint32(0, true)];
     send(O.OP_ACTIVE_TEXTURE, [0x84c1], new Uint8Array(), 12); rawRevoked.push(new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 12).buffer).getUint32(0, true));
     send(O.OP_ACTIVE_TEXTURE, [0x84c0], new Uint8Array(), 12); rawRevoked.push(new DataView(query(O.QOP_GET_INTEGERV, [0x8069], 4, 12).buffer).getUint32(0, true) === rawName ? 1 : -1);

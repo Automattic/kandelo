@@ -2,7 +2,7 @@ import type { GlObjectCapture } from "./object-capture.js";
 import type { GlCompressedUpload } from "./compressed-upload.js";
 import type { GlReadbackCapture } from "./readback-capture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
-import { CpuImageStorage, type CpuImageRetirement } from "./cpu-image-storage.js";
+import { CpuImageStorage } from "./cpu-image-storage.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { gpuStorageFormat } from "./gpu-storage-format.js";
@@ -11,7 +11,7 @@ import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion, NativeRetirementReceipt } from "./native-recovery.js";
+import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
@@ -173,23 +173,7 @@ export type GlExecutionRetirementGuard = {
   prepareRetirement(): boolean;
 };
 
-type ExecutionCompletion = {context:WebGL2RenderingContext;complete:boolean;listeners:Set<GlExecutionRetirementReceipt>};
-export class GlExecutionRetirementReceipt {
-  private listener:(()=>void)|undefined;
-  constructor(private actual:ExecutionCompletion) {actual.listeners.add(this);}
-  get context():WebGL2RenderingContext {return this.actual.context;}
-  get complete():boolean {return this.actual.complete;}
-  watch(listener:()=>void):void {this.listener=listener;if(this.complete)this.changed();}
-  changed():void {try {this.listener?.();}catch(error){if(isKernelExportFailure(error))throw error;/* Notification never acknowledges cleanup. */}}
-  forget():void {this.listener=undefined;this.actual.listeners.delete(this);}
-}
-function executionChanged(record:ExecutionRecord,complete=false):void {
-  if(complete && record.completion.complete)return;
-  record.completion.complete ||= complete;
-  for(const receipt of record.completion.listeners)receipt.changed();
-}
 type ExecutionRecord = {
-  completion:ExecutionCompletion;
   binding: GlBinding;
   replacement: GlBinding;
   key: string;
@@ -232,7 +216,7 @@ export class GlContextExecutionLease {
     const releasedNow=!this.#released;
     if (releasedNow) { this.#released = true; record.references--; }
     if (record.retired && record.references === 0) {
-      if (!collectExecution(record)) {if(releasedNow)executionChanged(record);return false;}
+      if (!collectExecution(record)) return false;
     } else if (!record.retired && record.references === 0) {
       record.records.delete(record); record.contexts.delete(record.binding);
     }
@@ -268,7 +252,7 @@ function collectExecution(record: ExecutionRecord): boolean {
   // A registry retry may already have completed this lease's cleanup.
   // Releasing its old token must not recapture or invalidate a new owner.
   if (record.cleaned && record.cleanup?.complete) {
-    record.records.delete(record); record.contexts.delete(record.binding);executionChanged(record,true);
+    record.records.delete(record); record.contexts.delete(record.binding);
     return true;
   }
   try {
@@ -290,46 +274,13 @@ function collectExecution(record: ExecutionRecord): boolean {
     if (!cleanup.pending) {
       if (!retireNativeRetirement(cleanup)) return false;
     } else if (!repairNativeState(record.gl) || !cleanup.complete) return false;
-    record.records.delete(record); record.contexts.delete(record.binding);executionChanged(record,true);
+    record.records.delete(record); record.contexts.delete(record.binding);
     return true;
   } catch(error) {if(isKernelExportFailure(error))throw error;return false;}
 }
 
-/** Frozen actual BO cleanup capabilities; no guest view or cleanup callback. */
-export class GlBoRetirement {
-  private started=false;
-  private foreignComplete=false;
-  private wake:(()=>void)|undefined;
-  private receipts:readonly NativeRetirementReceipt[];
-  prepared:boolean;
-  constructor(readonly bo:number,readonly gpu:GlGpuAllocation|undefined,
-    native:readonly NativeRetirementReceipt[],readonly foreign:ReadonlyMap<GlObjectGroup,GlBinding>,
-    readonly cpu:CpuImageRetirement|null=null) {this.prepared=cpu===null;this.receipts=native;}
-  get native():readonly NativeRetirementReceipt[]{return this.receipts;}
-  contexts():Set<WebGL2RenderingContext> {
-    return new Set([...this.native.map(value=>value.context),...[...this.foreign.values()].flatMap(value=>value.gl?[value.gl]:[])]);
-  }
-  watch(wake:()=>void):void {this.wake=wake;for(const receipt of this.native)receipt.watch(wake);}
-  adopt(receipts:readonly NativeRetirementReceipt[]):void {
-    if(this.prepared)return;
-    this.receipts=receipts;this.prepared=true;
-    if(this.wake)for(const receipt of receipts)receipt.watch(this.wake);
-  }
-  get armed():boolean {return this.started;}
-  revokeForeign():boolean {
-    this.started=true;
-    let complete=true;
-    for(const owner of this.foreign.values())complete=revokeForeignBo(owner,this.bo)&&complete;
-    this.foreignComplete=complete;return complete;
-  }
-  retire():boolean {let complete=true;for(const receipt of this.native)complete=receipt.retry()&&complete;return complete;}
-  get complete():boolean {return this.prepared && this.foreignComplete && this.native.every(value=>value.complete);}
-  forget():void {for(const receipt of this.native)receipt.forget();}
-}
-
 export class GlContextRegistry {
   private bindings = new Map<string, GlBinding>();
-  private forgottenBoRetirements=new WeakSet<GlBoRetirement>();
   private executions = new WeakMap<GlBinding, ExecutionRecord>();
   private executionRecords = new Set<ExecutionRecord>();
   private listeners = new Set<GlChangeListener>();
@@ -416,7 +367,7 @@ export class GlContextRegistry {
       if (!record) {
         const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
           cmdbufLen:b.cmdbufLen},b.canvas);
-        record = {completion:{context:b.gl,complete:false,listeners:new Set()},binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
+        record = {binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
           references:0,retired:false,cleaned:false,cleanup:null,records:this.executionRecords,
           contexts:this.executions,gpuBos:this.gpuBos};
         this.executionRecords.add(record);
@@ -434,20 +385,6 @@ export class GlContextRegistry {
   retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
     if (this.get(binding.pid, binding.sessionId) !== binding) return null;
     return GlSubmitExecution.capture(this, binding, muxer);
-  }
-
-  executionRetirementCaptureCost(pid:number,session:number):number {
-    let count=0;for(const record of this.executionRecords)if(record.binding.pid===pid&&record.binding.sessionId===session)count++;return count;
-  }
-  /** Existing retired sources remain authoritative after the public slot is
-   * replaced. Observe their actual completion cells, without another lease. */
-  captureSessionRetirements(pid:number,session:number,operations:GlOperationStream):GlExecutionRetirementReceipt[]|null {
-    const receipts:GlExecutionRetirementReceipt[]=[];
-    try {
-      for(const record of this.executionRecords)if(record.binding.pid===pid && record.binding.sessionId===session && record.binding.operations===operations)
-        receipts.push(new GlExecutionRetirementReceipt(record.completion));
-      return receipts;
-    }catch(error){for(const receipt of receipts)receipt.forget();if(isKernelExportFailure(error))throw error;return null;}
   }
 
   /** Cleanup can mutate native selectors even when its own guard is not the
@@ -534,7 +471,6 @@ export class GlContextRegistry {
       return false;
     }
     destroyContextResources(b,this.gpuBos);
-    this.retryForeignRetirements();
     return true;
   }
 
@@ -637,111 +573,28 @@ export class GlContextRegistry {
    *  This DELIBERATELY leaves `gpuBos` untouched: a GPU-tier bo's texture
    *  is owned by the bo itself (this registry), not by any binding, and
    *  is released only via `destroyGpuBo` on bo destroy. */
-  private foreignRetirements = new Map<number, Map<GlObjectGroup, GlBinding>>();
-  private physicalBoRetirements=new Map<number,GlBoRetirement>();
-  retirementCaptureCost(bo:number):number {
-    // An upper bound avoids allocating a deduplication set before reserving
-    // the copied capability metadata. Existing native storage is not copied.
-    return 1+(this.gpuBos.has(bo)?1:0)+this.cpuImages.retirementCaptureCost(bo)+this.bindings.size+this.executionRecords.size;
-  }
-  canCaptureBoRetirement(bo:number):boolean {return !this.physicalBoRetirements.has(bo);}
-  captureBoRetirement(bo:number,knownCpu=false,cpuStore?:GbmBoRegistry):GlBoRetirement|null {
-    const old=this.physicalBoRetirements.get(bo);if(old)return null;
-    const gpu=this.gpuBos.get(bo);
-    if(!gpu && !knownCpu && !this.foreignRetirements.has(bo))return null;
-    if(!gpu && knownCpu && cpuStore) {
-      const streams=new Set([...this.bindings.values(),...Array.from(this.executionRecords,record=>record.binding)].map(binding=>binding.operations));
-      let cpu:CpuImageRetirement|null=null;
-      try {
-        const prefixes=[...streams].map(stream=>stream.capturePrefix());
-        cpu=this.cpuImages.reserveRetirement(bo,cpuStore,prefixes);if(!cpu)return null;
-        const capability=new GlBoRetirement(bo,undefined,[],new Map(this.foreignRetirementOwners(bo,false)),cpu);
-        this.physicalBoRetirements.set(bo,capability);return capability;
-      }catch{if(cpu)this.cpuImages.forgetReservedRetirement(cpu,true);return null;}
-    }
-    const cpu=this.cpuImages.captureRetirements(bo);
-    if(!cpu)return null;
-    const native=[...cpu];
-    try {
-      if(gpu) {
-        const receipt=NativeRetirementReceipt.capture(gpu.retirement);
-        if(!receipt){for(const value of native)value.forget();this.cpuImages.forgetRetirement(bo);return null;}
-        native.push(receipt);
-      }
-      const foreign=this.foreignRetirementOwners(bo,false);
-      const capability=new GlBoRetirement(bo,gpu,native,new Map(foreign));
-      this.physicalBoRetirements.set(bo,capability);return capability;
-    }catch {for(const value of native)value.forget();this.cpuImages.forgetRetirement(bo);return null;}
-  }
-  boRetirementReady(capability:GlBoRetirement):boolean {
-    return this.physicalBoRetirements.get(capability.bo)===capability
-      && (!capability.cpu||this.cpuImages.reservationReady(capability.cpu));
-  }
-  prepareBoRetirement(capability:GlBoRetirement):boolean {
-    if(this.physicalBoRetirements.get(capability.bo)!==capability)return false;
-    if(capability.prepared)return true;
-    if(!capability.cpu)return false;
-    const receipts=this.cpuImages.captureReservedRetirements(capability.cpu);if(!receipts)return false;
-    capability.adopt(receipts);return true;
-  }
-  retireCapturedCpuStorage(capability:GlBoRetirement,pid:number):{complete:boolean;notificationFault:boolean} {
-    if(this.physicalBoRetirements.get(capability.bo)!==capability||!capability.complete)return {complete:false,notificationFault:false};
-    return capability.cpu?this.cpuImages.retireCanonical(capability.cpu,pid):{complete:true,notificationFault:false};
-  }
-  retireCapturedBo(capability:GlBoRetirement):boolean {
-    if(this.physicalBoRetirements.get(capability.bo)!==capability||!this.prepareBoRetirement(capability))return false;
-    const current=this.gpuBos.get(capability.bo);
-    if(current && current!==capability.gpu)return false;
-    this.foreignRetirements.set(capability.bo,new Map(capability.foreign));
-    if(!capability.revokeForeign())return false;
-    // Physical journals stay owned by the capability even when public maps
-    // disappear while accepted execution retains their storage.
-    if(current===capability.gpu)this.gpuBos.delete(capability.bo);
-    if(!capability.retire())return false;
-    if(!this.cpuImages.retire(capability.bo))return false;
-    this.foreignRetirements.delete(capability.bo);return capability.complete;
-  }
-  abandonBoRetirement(capability:GlBoRetirement):boolean {
-    if(this.physicalBoRetirements.get(capability.bo)!==capability||capability.armed)return false;
-    if(capability.cpu&&!this.cpuImages.forgetReservedRetirement(capability.cpu,true))return false;
-    capability.forget();this.cpuImages.forgetRetirement(capability.bo);this.physicalBoRetirements.delete(capability.bo);return true;
-  }
-  forgetBoRetirement(capability:GlBoRetirement):boolean {
-    if(this.forgottenBoRetirements.has(capability))return true;
-    if(this.physicalBoRetirements.get(capability.bo)!==capability || !capability.complete)return false;
-    if(capability.cpu&&!this.cpuImages.forgetReservedRetirement(capability.cpu))return false;
-    capability.forget();this.cpuImages.forgetRetirement(capability.bo);this.physicalBoRetirements.delete(capability.bo);this.forgottenBoRetirements.add(capability);return true;
-  }
-
-
-  /** A cleanup-only view retains the original group/native context across
-   * member retirement. It never enters command dispatch or guest authority. */
-  private foreignRetirementOwners(bo: number,publish=true): Map<GlObjectGroup, GlBinding> {
-    let owners = this.foreignRetirements.get(bo);
-    if (!publish) owners=new Map(owners);
-    else if (!owners) { owners = new Map(); this.foreignRetirements.set(bo,owners); }
+  /** Every object group that can hold a native view of a BO, including
+   * groups whose public context is gone but whose accepted execution still
+   * owns the native context. A cleanup-only view never enters command
+   * dispatch or guest authority. */
+  private foreignViewOwners(): GlBinding[] {
+    const owners = new Map<GlObjectGroup, GlBinding>();
     const bindings = new Set([...this.bindings.values(),...Array.from(this.executionRecords,record=>record.binding)]);
-    for (const b of bindings) if (b.gl && !owners.has(b.objects)) {
-      const cleanup = exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors});
-      owners.set(b.objects,cleanup as GlBinding);
-    }
-    return owners;
+    for (const b of bindings) if (b.gl && !owners.has(b.objects))
+      owners.set(b.objects, exposeGlSharedObjects({objects:b.objects,gl:b.gl,errors:b.errors}) as GlBinding);
+    return [...owners.values()];
   }
-  dropForeignTexturesForBo(bo: number): boolean {
-    const pending = this.foreignRetirements.has(bo);
-    let accepted = true;
-    for (const b of this.foreignRetirementOwners(bo).values()) accepted = revokeForeignBo(b,bo) && accepted;
-    if (accepted && !pending) this.foreignRetirements.delete(bo);
-    return accepted;
-  }
-  /** True when every native view of `bo` is gone; false when some remain
-   * pending in `foreignRetirements`, which `retryForeignRetirements` and the
-   * submit path retry before later GL work. */
+  /** Delete every native view and allocation of a destroyed bo: foreign
+   * textures in every group, its GPU-tier storage, CPU-image mirrors and an
+   * exported image. False when a native deletion was refused. */
   retireForeignBo(bo: number): boolean {
-    this.foreignRetirementOwners(bo);
-    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)
-      && this.retireExportedBo(bo)) this.foreignRetirements.delete(bo);
-    return !this.foreignRetirements.has(bo);
+    return this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo) && this.retireExportedBo(bo);
+  }
+  /** Revoke every group's foreign texture views of `bo`. */
+  dropForeignTexturesForBo(bo: number): boolean {
+    let complete = true;
+    for (const b of this.foreignViewOwners()) complete = revokeForeignBo(b,bo) && complete;
+    return complete;
   }
   /** Exported GLES images keyed by their GPU-tier bo (EXPORT_IMAGE). The
    *  record owns the source object's storage once the object stops using
@@ -750,7 +603,7 @@ export class GlContextRegistry {
   publishExportedImage(record: GlExportedImage): void { this.exportedImages.set(record.bo, record); }
   exportedImage(bo: number): GlExportedImage | undefined {
     const record = this.exportedImages.get(bo);
-    return record?.boLive && !this.foreignRetirements.has(bo) ? record : undefined;
+    return record?.boLive ? record : undefined;
   }
   /** The GPU-tier storage KMS presents for `bo`: a GBM GPU bo or an
    *  exported GLES image (exportedImageScanout gives the latter's reader). */
@@ -764,19 +617,6 @@ export class GlContextRegistry {
     this.exportedImages.delete(bo);
     return true;
   }
-  retryForeignRetirements(): void {
-    for (const bo of this.foreignRetirements.keys()) this.retireForeignBo(bo);
-  }
-  hasForeignRetirements(): boolean { return this.foreignRetirements.size !== 0; }
-  *foreignRetirementContexts(): Iterable<WebGL2RenderingContext> {
-    for (const owners of this.foreignRetirements.values()) for (const b of owners.values()) if (b.gl) yield b.gl;
-  }
-  groupHasForeignRetirement(b: GlBinding): boolean {
-    for (const bo of b.foreignTextureBos.values()) if (this.foreignRetirements.has(bo)) return true;
-    for (const source of b.imageSources.values()) if (this.foreignRetirements.has(source.bo)) return true;
-    return false;
-  }
-
   /** Allocate a GPU-tier bo (`DRM_IOCTL_WPK_CREATE_GPU_BO`): an empty
    *  `w×h` RGBA texture plus a color-attachment FBO on `gl` (the shared
    *  multiplexer context). Idempotent — a second call for a live `bo_id`
@@ -797,10 +637,8 @@ export class GlContextRegistry {
   ): number | null {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
-        w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.() ||
-        this.foreignRetirements.has(bo_id)) return null;
+        w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.()) return null;
     if (!this.retryExecutionRetirements(gl) || !repairNativeState(gl)) return null;
-    if(this.physicalBoRetirements.has(bo_id))return null;
     const existing = this.gpuBos.get(bo_id);
     if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
       ? existing.texId : null;
@@ -831,7 +669,7 @@ export class GlContextRegistry {
    *  storage to construct a distinct logical view without a CPU upload. */
   gpuBo(bo_id: number): GpuBo | undefined {
     const entry = this.gpuBos.get(bo_id);
-    return this.foreignRetirements.has(bo_id) || entry?.retirement.pending ? undefined : entry;
+    return entry?.retirement.pending ? undefined : entry;
   }
 
   /** Apply the GPU-tier producer render-target redirect for `b` if both

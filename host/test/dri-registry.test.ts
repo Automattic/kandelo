@@ -10,163 +10,11 @@
  * failed somewhere in a fork."
  */
 import { describe, expect, it, vi } from "vitest";
-import { GbmBoRegistry, GbmMappingFault, GbmMappingRetirement } from "../src/dri/registry.js";
+import { GbmBoRegistry, GbmMappingFault } from "../src/dri/registry.js";
 import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
-
-describe("retained whole-mapping cleanup", () => {
-  function fixture(shared = true) {
-    const old = new WebAssembly.Memory({initial: 1, maximum: 3, shared});
-    const memories = new Map([[100, old]]);
-    const resolver = vi.fn((pid: number) => memories.get(pid));
-    const reg = new GbmBoRegistry({getProcessMemory: resolver});
-    reg.create({pid: 100, bo_id: 7, size: 64, w: 4, h: 4, stride: 16});
-    reg.bind(100, 7, 1024, 64);
-    reg.primeBindFromSab(100, 7, old, 1024);
-    return {old, reg, resolver,
-      replace(memory: WebAssembly.Memory) { memories.set(100, memory); },
-      addPeer(pid: number, memory: WebAssembly.Memory) { memories.set(pid, memory); }};
-  }
-
-  it("publishes only the captured original Memory after a pid resolver replacement", () => {
-    const f = fixture();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    expect(cap).not.toBeNull();
-    new Uint8Array(f.old.buffer)[1024 + 17] = 91;
-    const replacement = newMemory();
-    new Uint8Array(replacement.buffer)[1024 + 17] = 44;
-    f.replace(replacement);
-    f.resolver.mockClear();
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(f.resolver).not.toHaveBeenCalled();
-    expect(f.reg.pixelView(7)![17]).toBe(91);
-    expect(new Uint8Array(replacement.buffer)[1024 + 17]).toBe(44);
-    expect(f.reg.get(100, 7)!.binding).toBeNull();
-    expect(cap.complete).toBe(true);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-  });
-
-  it("leaves another alias live and stale until it imports the retiring writer", () => {
-    const f = fixture();
-    const peer = newMemory();
-    f.addPeer(200, peer);
-    f.reg.bind(200, 7, 4096, 64);
-    f.reg.primeBindFromSab(200, 7, peer, 4096);
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(f.reg.get(200, 7)!.binding).toEqual({addr: 4096, len: 64});
-    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(0);
-    f.reg.syncImportsForPid(200, peer);
-    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(73);
-    expect(f.reg.pixelView(7)![3]).toBe(73);
-  });
-
-  it("retires the same captured allocation after a peer alias is admitted", () => {
-    const f = fixture();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    const peer = newMemory();
-    f.addPeer(200, peer);
-    expect(f.reg.bind(200, 7, 4096, 64)).toBe(0);
-    f.reg.primeBindFromSab(200, 7, peer, 4096);
-    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(cap.complete).toBe(true);
-    expect(f.reg.get(100, 7)!.binding).toBeNull();
-    expect(f.reg.get(200, 7)!.binding).toEqual({addr: 4096, len: 64});
-    expect(f.reg.pixelView(7)![3]).toBe(73);
-    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(0);
-    // The survivor is now the only alias: its pending-reader obligation must
-    // be recorded in current metadata, not the pre-bind metadata snapshot.
-    expect(f.reg.hasStaleableImports(200)).toBe(true);
-    f.reg.syncImportsForPid(200, peer);
-    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(73);
-    expect(f.reg.hasStaleableImports(200)).toBe(false);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-  });
-
-  it("refuses a new backing allocation under the same BO and mapping numbers", () => {
-    const f = fixture();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    const originalBacking = f.reg.pixelView(7)!.buffer;
-    f.reg.destroy(100, 7);
-    f.reg.create({pid: 100, bo_id: 7, size: 64, w: 4, h: 4, stride: 16});
-    f.reg.bind(100, 7, 1024, 64);
-    f.reg.primeBindFromSab(100, 7, f.old, 1024);
-    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
-    f.resolver.mockClear();
-    expect(f.reg.pixelView(7)!.buffer).not.toBe(originalBacking);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(false);
-    expect(cap.complete).toBe(false);
-    expect(f.reg.pixelView(7)![3]).toBe(0);
-    expect(f.reg.get(100, 7)!.binding).toEqual({addr: 1024, len: 64});
-    expect(f.resolver).not.toHaveBeenCalled();
-    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
-  });
-
-  it.each([true, false])("uses fresh original buffers after growth, shared=%s", shared => {
-    const f = fixture(shared);
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    const oldView = new Uint8Array(f.old.buffer);
-    f.old.grow(1);
-    if (!shared) expect(oldView.byteLength).toBe(0);
-    new Uint8Array(f.old.buffer)[1024 + 63] = 99;
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(f.reg.pixelView(7)![63]).toBe(99);
-  });
-
-  it("refuses forged/foreign capabilities and never recaptures a same-number successor", () => {
-    const f = fixture();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)).toBeNull();
-    expect(f.reg.retireCapturedMapping(new GbmMappingRetirement())).toBe(false);
-    expect(new GbmBoRegistry().retireCapturedMapping(cap)).toBe(false);
-    new Uint8Array(f.old.buffer)[1024] = 71;
-    f.reg.bind(100, 7, 1024, 64);
-    const before = f.reg.pixelView(7)!.slice();
-    new Uint8Array(f.old.buffer)[1024] = 88;
-    f.resolver.mockClear();
-    // Admission published/detached the old generation before replacing it.
-    expect(before[0]).toBe(71);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(cap.complete).toBe(true);
-    expect(f.resolver).not.toHaveBeenCalled();
-    expect(f.reg.pixelView(7)).toEqual(before);
-    expect(f.reg.get(100, 7)!.binding).not.toBeNull();
-    expect(f.reg.abandonMappingRetirement(cap)).toBe(false);
-  });
-
-  it("distinguishes safe preparation abandonment from actual mapping retirement", () => {
-    const f = fixture();
-    expect(f.reg.captureMappingRetirement(100, 7, 1025, 64, f.old)).toBeNull();
-    expect(f.reg.captureMappingRetirement(100, 7, 1024, 0, f.old)).toBeNull();
-    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, null)).toBeNull();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
-    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
-    expect(cap.complete).toBe(false);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(false);
-    expect(f.reg.get(100, 7)!.binding).not.toBeNull();
-    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)).not.toBeNull();
-  });
-
-  it("retains notification failure separately without repeating physical detach", () => {
-    const f = fixture();
-    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
-    const observer = vi.fn(() => { throw new Error("observer failed after detach"); });
-    const unsubscribe = f.reg.onChange(observer);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(cap.complete).toBe(true);
-    expect(cap.notificationFault).toBe(true);
-    expect(observer).toHaveBeenCalledTimes(1);
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-    expect(observer).toHaveBeenCalledTimes(1);
-    expect(f.reg.abandonMappingRetirement(cap)).toBe(false);
-    unsubscribe();
-  });
-});
 
 describe("BO publication copies", () => {
   it.each([0, 1])("does not copy an unchanged mapping at address %i", (addr) => {
@@ -1028,26 +876,6 @@ describe("shared-byte changed-run scan", () => {
   });
 });
 
-it("authenticates the allocator-backed retirement across alias metadata changes and observer faults",()=>{
-  const bos=new GbmBoRegistry(),peer=new GbmBoRegistry();
-  bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});const capability=bos.captureAllocationRetirement(77)!;
-  expect(peer.matchesAllocationRetirement(capability)).toBe(false);expect(peer.retireCapturedAllocation(capability,7)).toBe(false);
-  expect(bos.bind(8,77,0,16)).toBe(0);expect(bos.matchesAllocationRetirement(capability)).toBe(true);
-  let calls=0;bos.onChange((_pid,_bo,event)=>{if(event==="destroy"){calls++;throw Error("metadata observer refused");}});
-  expect(bos.retireCapturedAllocation(capability,7)).toBe(true);expect(capability.complete).toBe(true);expect(capability.notificationFault).toBe(true);
-  expect(bos.dims(77)).toBeUndefined();expect(bos.listForPid(8)).toEqual([]);
-  expect(bos.retireCapturedAllocation(capability,7)).toBe(true);expect(calls).toBe(1);
-});
-it("never uses a captured CPU allocation token to retire a reused numeric BO",()=>{
-  const bos=new GbmBoRegistry();bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});
-  const capability=bos.captureAllocationRetirement(77)!;bos.destroy(7,77);bos.create({pid:8,bo_id:77,w:2,h:2,stride:8,size:16});
-  const replacement=bos.pixelView(77)!;replacement.fill(9);
-  expect(bos.matchesAllocationRetirement(capability)).toBe(false);expect(bos.retireCapturedAllocation(capability,7)).toBe(false);
-  expect(capability.complete).toBe(false);expect(bos.pixelView(77)?.buffer).toBe(replacement.buffer);
-  expect(bos.abandonAllocationRetirement(capability)).toBe(true);expect(bos.retireCapturedAllocation(capability,7)).toBe(false);
-});
-
-
 describe("original mapping Memory and split-generation custody",()=>{
   function fixture() {
     const original=new WebAssembly.Memory({initial:2,maximum:3}),replacement=new WebAssembly.Memory({initial:2,maximum:3});
@@ -1060,9 +888,8 @@ describe("original mapping Memory and split-generation custody",()=>{
     const f=fixture();new Uint8Array(f.original.buffer)[1027]=91;new Uint8Array(f.replacement.buffer)[1027]=44;f.replace();f.resolver.mockClear();
     f.reg.syncToSab(71);expect(f.reg.pixelView(71)![3]).toBe(91);expect(f.resolver).not.toHaveBeenCalled();
   });
-  it("refuses capture/prime/import from a different Memory before writes",()=>{
+  it("refuses prime/import from a different Memory before writes",()=>{
     const f=fixture();f.replace();new Uint8Array(f.replacement.buffer).fill(33,1024,1088);
-    expect(f.reg.captureMappingRetirement(1,71,1024,64,f.replacement)).toBeNull();
     f.reg.primeBindFromSab(1,71,f.replacement,1024);f.reg.syncImportsForPid(1,f.replacement);
     expect([...new Uint8Array(f.replacement.buffer,1024,64)]).toEqual(Array(64).fill(33));
   });
@@ -1071,180 +898,53 @@ describe("original mapping Memory and split-generation custody",()=>{
     expect(f.reg.publishDevicePixels(71,new Uint8Array(64).fill(77))).toBe(true);
     expect(new Uint8Array(f.original.buffer)[1024]).toBe(77);expect(new Uint8Array(f.replacement.buffer)[1024]).toBe(33);
   });
-  it("retires two disjoint captures through actual surviving descendants after the first split",()=>{
-    const f=fixture(),left=f.reg.captureMappingRetirement(1,71,1032,8,f.original),right=f.reg.captureMappingRetirement(1,71,1064,8,f.original);
-    expect(left).not.toBeNull();expect(right).not.toBeNull();
-    expect(f.reg.captureMappingRetirement(1,71,1036,8,f.original)).toBeNull();
-    new Uint8Array(f.original.buffer,1024,64).fill(71);f.replace();f.resolver.mockClear();
-    expect(f.reg.retireCapturedMapping(right!)).toBe(true);expect(f.reg.retireCapturedMapping(left!)).toBe(true);
-    expect(left!.complete && right!.complete).toBe(true);expect(f.reg.pixelView(71)).toEqual(new Uint8Array(64).fill(71));
-    expect(f.reg.findBindingByAddr(1,1024)).toBe(71);expect(f.reg.findBindingByAddr(1,1040)).toBe(71);expect(f.reg.findBindingByAddr(1,1072)).toBe(71);
-    expect(f.resolver).not.toHaveBeenCalled();
-  });
-  it("retains only old-generation fragments across unmap and same-number successor admission",()=>{
-    const f=fixture(),cap=f.reg.captureMappingRetirement(1,71,1024,64,f.original)!;
-    new Uint8Array(f.original.buffer,1024,64).fill(19);f.reg.unbind(1,71,1040,16);expect(cap.complete).toBe(false);
-    f.replace();expect(f.reg.bind(1,71,1040,16,16)).toBe(0);f.reg.primeBindFromSab(1,71,f.replacement,1040);
-    new Uint8Array(f.replacement.buffer,1040,16).fill(83);new Uint8Array(f.original.buffer)[1024]=29;
-    expect(f.reg.retireCapturedMapping(cap)).toBe(true);expect(cap.complete).toBe(true);
-    expect(f.reg.findBindingByAddr(1,1040)).toBe(71);expect(new Uint8Array(f.replacement.buffer)[1040]).toBe(83);
-    expect(f.reg.pixelView(71)![0]).toBe(29);expect(f.reg.pixelView(71)![16]).toBe(19);
-    f.reg.syncToSab(71);expect(f.reg.pixelView(71)![16]).toBe(83);
-  });
-  it("does not detach anything or complete a captured range if replacement admission rolls back",()=>{
-    const f=fixture(),cap=f.reg.captureMappingRetirement(1,71,1024,64,f.original)!;
-    const remove=f.reg.onChange(()=>{throw new Error("observer refuses replacement");});
-    expect(f.reg.bind(1,71,1040,16,16,16)).toBeLessThan(0);remove();expect(cap.complete).toBe(false);
-    expect(f.reg.get(1,71)!.binding).toEqual({addr:1024,len:64});expect(f.reg.retireCapturedMapping(cap)).toBe(true);
-  });
 });
 
-describe("mapping retirement completion and rollback", () => {
-  function fixture() {
-    const memory = new WebAssembly.Memory({initial:1,maximum:2});
-    const registry = new GbmBoRegistry({getProcessMemory:()=>memory});
+describe("kernel-unmapped mapping detach", () => {
+  it("publishes from the original native Memory buffer despite an own shadow property",()=>{
+    const memory=new WebAssembly.Memory({initial:1,maximum:2});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
     registry.create({pid:3,bo_id:81,size:64,w:4,h:4,stride:16});
     expect(registry.bind(3,81,1024,64)).toBe(0);
     expect(registry.primeBindFromSab(3,81,memory,1024)).toBe(true);
-    return {memory,registry};
-  }
-
-  it.each([[1024,8],[1080,8],[1040,16],[1024,64]])("keeps exact descendants and completes the range %i+%i once", (addr,len) => {
-    const {memory,registry}=fixture();
-    const capability=registry.captureMappingRetirement(3,81,addr,len,memory)!;
-    const notification=vi.fn(()=>{expect(capability.complete).toBe(true);expect(capability.retire()).toBe(true);});
-    const removed=vi.fn();capability.watch(removed)();capability.watch(notification);
-    new Uint8Array(memory.buffer,1024,64).fill(47);
-    expect(capability.forget()).toBe(false);
-    expect(capability.retire()).toBe(true);
-    expect(capability.complete).toBe(true);
-    expect(notification).toHaveBeenCalledOnce();expect(removed).not.toHaveBeenCalled();
-    expect(registry.findBindingByAddr(3,addr)).toBeUndefined();
-    if(addr>1024)expect(registry.findBindingByAddr(3,1024)).toBe(81);
-    if(addr+len<1088)expect(registry.findBindingByAddr(3,addr+len)).toBe(81);
-    expect(registry.pixelView(81)).toEqual(new Uint8Array(64).fill(47));
-    expect(capability.forget()).toBe(true);expect(capability.retire()).toBe(true);
-    expect(notification).toHaveBeenCalledOnce();
-  });
-
-  it("keeps pending publication and all old fragments after an actual copy exception",()=>{
-    const {memory,registry}=fixture();
-    const capability=registry.captureMappingRetirement(3,81,1040,16,memory)!;
-    const notification=vi.fn();capability.watch(notification);
-    new Uint8Array(memory.buffer,1024,64).fill(63);
-    const original=Uint8Array.prototype.set;
-    const failure=vi.spyOn(Uint8Array.prototype,"set").mockImplementationOnce(()=>{throw new Error("copy failed");});
-    try {
-      expect(capability.retire()).toBe(false);
-      expect(capability.complete).toBe(false);expect(capability.abandon()).toBe(false);
-      expect(capability.forget()).toBe(false);
-      expect(registry.get(3,81)!.binding).toEqual({addr:1024,len:64});
-      expect(notification).not.toHaveBeenCalled();
-    } finally {failure.mockRestore();}
-    expect(Uint8Array.prototype.set).toBe(original);
-    expect(capability.retire()).toBe(true);expect(notification).toHaveBeenCalledOnce();
-    expect(registry.pixelView(81)).toEqual(new Uint8Array(64).fill(63));
-    expect(registry.get(3,81)!.binding).toEqual({addr:1056,len:32,boOffset:32});
-  });
-
-  it("contains completion-observer faults and refuses mutation reentry before metadata is committed",()=>{
-    const {memory,registry}=fixture();
-    const capability=registry.captureMappingRetirement(3,81,1040,16,memory)!;
-    capability.watch(()=>{throw new Error("receiver notification fault");});
-    const observer=registry.onChange(()=>{
-      expect(registry.bind(3,81,2048,64)).toBeLessThan(0);
-      // Detaching a kernel-unmapped range cannot wait: reentry is fatal.
-      expect(()=>registry.unbind(3,81)).toThrow(GbmMappingFault);
-      expect(registry.captureMappingRetirement(3,81,1024,8,memory)).toBeNull();
-    });
-    expect(capability.retire()).toBe(true);observer();
-    expect(capability.notificationFault).toBe(true);
-    expect(registry.findBindingByAddr(3,1024)).toBe(81);
-    expect(registry.findBindingByAddr(3,1056)).toBe(81);
-    expect(registry.findBindingByAddr(3,2048)).toBeUndefined();
-  });
-
-  it("authenticates the original native Memory buffer despite an own shadow property",()=>{
-    const {memory,registry}=fixture();
-    const originalBuffer=memory.buffer;
     const replacement=new WebAssembly.Memory({initial:1});
-    new Uint8Array(originalBuffer)[1024]=69;
+    new Uint8Array(memory.buffer)[1024]=69;
     new Uint8Array(replacement.buffer)[1024]=88;
     Object.defineProperty(memory,"buffer",{get:()=>replacement.buffer,configurable:true});
-    const capability=registry.captureMappingRetirement(3,81,1024,64,memory)!;
-    expect(capability.retire()).toBe(true);
+    registry.unbind(3,81,1024,64);
     expect(registry.pixelView(81)![0]).toBe(69);
     expect(new Uint8Array(replacement.buffer)[1024]).toBe(88);
   });
 
-  it("rolls back an entire process reservation if a later range is already leased",()=>{
-    const {memory,registry}=fixture();
-    expect(registry.bind(3,81,2048,64)).toBe(0);
-    expect(registry.primeBindFromSab(3,81,memory,2048)).toBe(true);
-    const existing=registry.captureMappingRetirement(3,81,2048,64,memory)!;
-    expect(registry.captureProcessMappingRetirements(3,memory)).toBeNull();
-    const first=registry.captureMappingRetirement(3,81,1024,64,memory)!;
-    expect(first).not.toBeNull();expect(first.abandon()).toBe(true);
-    expect(existing.abandon()).toBe(true);
-    const capabilities=registry.captureProcessMappingRetirements(3,memory)!;
-    expect(capabilities).toHaveLength(2);
-    expect(capabilities.every(capability=>capability.retire())).toBe(true);
-    expect(registry.hasStaleableImports(3)).toBe(false);
-    expect(registry.get(3,81)!.binding).toBeNull();
-  });
-
-  it("keeps unprimed metadata-only custody from gaining later byte authority",()=>{
-    const registry=new GbmBoRegistry();
-    const memory=new WebAssembly.Memory({initial:1});
-    registry.create({pid:3,bo_id:81,size:64,w:4,h:4,stride:16});
-    registry.bind(3,81,1024,64);
-    const capability=registry.captureMappingRetirement(3,81,1024,64,null)!;
-    expect(capability).not.toBeNull();
-    expect(registry.primeBindFromSab(3,81,memory,1024)).toBe(false);
-    expect(registry.primeProcessMappings(3,memory)).toBe(false);
-    expect(capability.retire()).toBe(true);
-    expect(registry.pixelView(81)).toEqual(new Uint8Array(64));
-  });
-});
-
-
-describe("exact mapping ranges include non-BO page padding",()=>{
-  it("retires a padding-only descendant and announces it to a child without reading pixels",()=>{
+  it("detaches a padding-only descendant without reading pixels",()=>{
     const page=65_536;
     const memory=new WebAssembly.Memory({initial:4,maximum:5});
-    const child=new WebAssembly.Memory({initial:4,maximum:5});
-    const registry=new GbmBoRegistry({getProcessMemory:pid=>pid===1?memory:undefined});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
     registry.create({pid:1,bo_id:91,size:page+64,w:1,h:1,stride:4});
     expect(registry.bind(1,91,page,2*page,0,2*page)).toBe(0);
     expect(registry.primeBindFromSab(1,91,memory,page)).toBe(true);
     new Uint8Array(memory.buffer,page,page+64).fill(37);
-    const whole=registry.captureMappingRetirement(1,91,page,2*page,memory)!;
-    expect(whole).not.toBeNull();
-    expect(()=>registry.unbind(1,91,page,page)).not.toThrow();
-    expect(whole.complete).toBe(false);
-    // A fully padded child alias still has mapping custody, no canonical bytes.
-    expect(registry.bind(2,91,3*page,page,2*page)).toBe(0);
-    expect(registry.primeProcessMappings(2,child)).toBe(true);
-    const padded=registry.captureMappingRetirement(2,91,3*page,page,child)!;
-    expect(padded.retire()).toBe(true);expect(padded.complete).toBe(true);
-    expect(whole.retire()).toBe(true);expect(whole.complete).toBe(true);
+    registry.unbind(1,91,page,page);
+    expect(registry.findBindingByAddr(1,2*page)).toBe(91);
+    registry.unbind(1,91,2*page,page);
     expect(registry.pixelView(91)).toEqual(new Uint8Array(page+64).fill(37));
     expect(registry.get(1,91)!.binding).toBeNull();
-    expect(registry.get(2,91)!.binding).toBeNull();
   });
 
-  it("captures a genuine late-admitted child Memory before first prime, without gaining writes",()=>{
-    const registry=new GbmBoRegistry();
-    const memory=new WebAssembly.Memory({initial:1});
-    registry.create({pid:4,bo_id:92,size:64,w:4,h:4,stride:16});
-    registry.bind(4,92,1024,64);
-    new Uint8Array(memory.buffer,1024,64).fill(99);
-    const capabilities=registry.captureProcessMappingRetirements(4,memory)!;
-    expect(capabilities).toHaveLength(1);
-    expect(registry.primeBindFromSab(4,92,memory,1024)).toBe(false);
-    expect(capabilities[0].retire()).toBe(true);
-    expect(registry.pixelView(92)).toEqual(new Uint8Array(64));
-    expect(new Uint8Array(memory.buffer)[1024]).toBe(99);
+  it("refuses reentrant detach from a change observer as a fatal fault",()=>{
+    const memory=new WebAssembly.Memory({initial:1,maximum:2});
+    const registry=new GbmBoRegistry({getProcessMemory:()=>memory});
+    registry.create({pid:3,bo_id:81,size:64,w:4,h:4,stride:16});
+    expect(registry.bind(3,81,1024,64)).toBe(0);
+    let reentry:unknown;
+    const observer=registry.onChange(()=>{
+      expect(registry.bind(3,81,2048,64)).toBeLessThan(0);
+      try { registry.unbind(3,81); } catch (error) { reentry=error; }
+    });
+    registry.unbind(3,81,1040,16);observer();
+    expect(reentry).toBeInstanceOf(GbmMappingFault);
+    expect(registry.findBindingByAddr(3,1024)).toBe(81);
+    expect(registry.findBindingByAddr(3,1056)).toBe(81);
   });
 });
 

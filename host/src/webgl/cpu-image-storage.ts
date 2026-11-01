@@ -1,10 +1,9 @@
 import { setOpaqueAlphaStorage } from "./opaque-alpha.js";
-import type { GbmBoRegistry, GbmAllocationRetirement } from "../dri/registry.js";
-import type { GlOperationPrefix } from "./operation-stream.js";
+import type { GbmBoRegistry } from "../dri/registry.js";
 import type { GlBinding } from "./registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { readGbmFront } from "./gbm-front-copy.js";
-import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, retireNativeRetirement } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./image-writes.js";
@@ -23,84 +22,13 @@ type Mirror = {
   begun?: number;
   pending: CpuImageReadback | null;
 };
-type MirrorContexts=Map<WebGL2RenderingContext,Map<string,Mirror>>;
-type Closing={bo:number;store:WeakRef<GbmBoRegistry>;allocation:GbmAllocationRetirement;contexts:MirrorContexts;
-  prefixes:readonly GlOperationPrefix[];receipts:NativeRetirementReceipt[]|null};
-const closingRecords=new WeakMap<CpuImageRetirement,Closing>();
-/** Issued by the mirror allocator before close, containing no process view. */
-export class CpuImageRetirement {constructor(){Object.freeze(this);}}
-
 /** CPU BOs keep their linear storage identity. Native images are coherent
  * mirrors, never GPU-tier BOs or public texture names. Submission boundaries
  * serialize CPU publication, native execution, and device writeback. */
 export class CpuImageStorage {
-  private reservedRetirements=new Set<number>();
-  private closing=new Map<number,CpuImageRetirement>();
   private mirrors = new Map<number, Map<WebGL2RenderingContext, Map<string, Mirror>>>();
 
-  /** Snapshot actual mirror journals before any root is revoked. No storage
-   * reference is added, so observation cannot prevent final deletion. */
-  retirementCaptureCost(bo:number):number {
-    let count=0;for(const views of this.mirrors.get(bo)?.values()??[])count+=views.size;return count;
-  }
-  captureRetirements(bo: number): NativeRetirementReceipt[] | null {
-    if(this.closing.has(bo))return null;
-    const receipts: NativeRetirementReceipt[]=[];
-    try {
-      for(const views of this.mirrors.get(bo)?.values() ?? []) for(const mirror of views.values()) {
-        const receipt=NativeRetirementReceipt.capture(mirror.allocation.retirement);
-        if(!receipt) {for(const old of receipts)old.forget();return null;}
-        receipts.push(receipt);
-      }
-      this.reservedRetirements.add(bo);return receipts;
-    } catch {for(const old of receipts)old.forget();return null;}
-  }
-
-  reserveRetirement(bo:number,store:GbmBoRegistry,prefixes:readonly GlOperationPrefix[]):CpuImageRetirement|null {
-    if(this.closing.has(bo)||this.reservedRetirements.has(bo))return null;
-    const allocation=store.captureAllocationRetirement(bo);if(!allocation)return null;
-    try {
-      const capability=new CpuImageRetirement(),contexts=this.mirrors.get(bo)??new Map();
-      const record:Closing={bo,store:new WeakRef(store),allocation,contexts,prefixes:[...prefixes],receipts:null};
-      closingRecords.set(capability,record);this.mirrors.set(bo,contexts);this.closing.set(bo,capability);return capability;
-    }catch{store.abandonAllocationRetirement(allocation);return null;}
-  }
-  reservationReady(capability:CpuImageRetirement):boolean {
-    const record=closingRecords.get(capability);
-    return !!record && this.closing.get(record.bo)===capability && record.prefixes.every(prefix=>prefix.complete);
-  }
-  captureReservedRetirements(capability:CpuImageRetirement):NativeRetirementReceipt[]|null {
-    const record=closingRecords.get(capability),store=record?.store.deref();
-    if(!record||!store||!this.reservationReady(capability)||!store.matchesAllocationRetirement(record.allocation))return null;
-    if(record.receipts)return record.receipts;
-    const receipts:NativeRetirementReceipt[]=[];
-    try {
-      for(const views of record.contexts.values())for(const mirror of views.values()) {
-        const receipt=NativeRetirementReceipt.capture(mirror.allocation.retirement);
-        if(!receipt){for(const old of receipts)old.forget();return null;}receipts.push(receipt);
-      }
-      this.reservedRetirements.add(record.bo);record.receipts=receipts;return receipts;
-    }catch{for(const old of receipts)old.forget();return null;}
-  }
-  retireCanonical(capability:CpuImageRetirement,pid:number):{complete:boolean;notificationFault:boolean} {
-    const record=closingRecords.get(capability),store=record?.store.deref();
-    if(!record||!store||!record.receipts||!record.receipts.every(receipt=>receipt.complete))return {complete:false,notificationFault:false};
-    return {complete:store.retireCapturedAllocation(record.allocation,pid),notificationFault:record.allocation.notificationFault};
-  }
-  forgetReservedRetirement(capability:CpuImageRetirement,abandon=false):boolean {
-    const record=closingRecords.get(capability),store=record?.store.deref();
-    if(!record||this.closing.get(record.bo)!==capability||!store)return false;
-    if(!abandon&&!record.allocation.complete)return false;
-    if(abandon&&!store.abandonAllocationRetirement(record.allocation))return false;
-    this.closing.delete(record.bo);this.reservedRetirements.delete(record.bo);closingRecords.delete(capability);return true;
-  }
-
-  forgetRetirement(bo:number):void {this.reservedRetirements.delete(bo);}
   acquire(b: GlBinding, bo: number, store: GbmBoRegistry, layout: CpuImageLayout): GlGpuAllocation | null {
-    if(this.reservedRetirements.has(bo))return null;
-    const closing=this.closing.get(bo),record=closing&&closingRecords.get(closing);
-    if(record && (record.store.deref()!==store||!store.matchesAllocationRetirement(record.allocation)
-      ||!record.prefixes.some(prefix=>prefix.permits(b.operations))))return null;
     const gl = b.gl, bytes = store.pixelView(bo);
     const {width, height, format, pitch, offset} = layout;
     // The mirror's texture holds the plane's own format (cpu-image-codec.ts).
@@ -110,7 +38,7 @@ export class CpuImageStorage {
     if (!gl || !bytes || ![width,height,format,pitch,offset,span].every(Number.isSafeInteger) ||
         width <= 0 || height <= 0 || offset < 0 || offset % align || pitch < width * codec.cpp || pitch % align ||
         span > bytes.byteLength) return null;
-    let contexts = record?.contexts ?? this.mirrors.get(bo);
+    let contexts = this.mirrors.get(bo);
     if (!contexts) { contexts = new Map(); this.mirrors.set(bo, contexts); }
     let views = contexts.get(gl);
     if (!views) { views = new Map(); contexts.set(gl, views); }

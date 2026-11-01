@@ -3957,9 +3957,9 @@ would make the kernel trap (`syscalls::apply_dri_release_effect`). The exec
 and exit backstop (`WasmPosixKernel.releaseProcessViews`) and the buffer
 registry's own publication paths follow the same rule: a primed mapping
 that has lost its address space or baseline cannot publish, and is fatal.
-Native GL deletions are not deferred past these calls: the host's foreign
-retirement journal was only revisited before later GL work, which nothing
-guarantees, and only a refused native deletion could leave an entry there.
+Native GL deletions are not deferred past these calls: the host keeps no
+journal that would retry a refused deletion before later GL work, which
+nothing guarantees will ever come.
 
 The browser's optional image-owned `presentation.displayScale` advertises
 a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
@@ -5015,8 +5015,8 @@ custody. A queue owns the exact source `GlFenceLease`, destination execution and
 operation ticket; an accepted wait survives result cancellation or Forget.
 Same-native ordering uses the captured sync handle, while foreign-native
 ordering polls that source on later host turns without blocking peer streams.
-A fence lease also pins its actual native-retirement journal, so physical cleanup
-receipts cannot delete a sync still owned by a query or wait. Public kernel
+A fence lease also pins its actual native-retirement journal, so the sync is
+not deleted while a query or wait still owns it. Public kernel
 source-fd capture, scheduling and lifecycle activation remain required before
 this source model supports end-to-end EGL server waits.
 

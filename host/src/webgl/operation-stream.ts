@@ -11,16 +11,6 @@ const immediateRefusals = {
   exhausted:Object.freeze({state:"exhausted" as const}),allocationFailure:Object.freeze({state:"allocation-failure" as const}),
 };
 
-/** A cut of this actual ledger, not a caller-supplied sequence. It contains
- * no binding, callback or process storage. Only a running admitted ticket can
- * use a closing resource, and only if it preceded this captured cut. */
-export class GlOperationPrefix {
-  private constructor(private stream: GlOperationStream, private cut: number) {}
-  static capture(stream: GlOperationStream): GlOperationPrefix { return new GlOperationPrefix(stream,stream.admissionSequence); }
-  get complete(): boolean { return this.stream.prefixComplete(this.cut); }
-  permits(stream: GlOperationStream): boolean { return stream===this.stream && stream.runningPrefix(this.cut); }
-}
-
 export class GlOperationTicket {
   constructor(private readonly stream: GlOperationStream,
     readonly kind: GlOperationKind, readonly sequence: number) {}
@@ -37,11 +27,6 @@ export class GlOperationStream {
   private closed = false;
 
   get admissionSequence(): number { return this.serial; }
-  capturePrefix(): GlOperationPrefix { return GlOperationPrefix.capture(this); }
-  prefixComplete(cut: number): boolean { return !this.tickets.some(ticket=>ticket.sequence<=cut); }
-  runningPrefix(cut: number): boolean {
-    const ticket=this.tickets[0];return !!ticket && ticket.sequence<=cut && this.states.get(ticket)==="running";
-  }
 
   reserve(kind: GlOperationKind): GlOperationTicket | null {
     if (this.closed || this.serial === Number.MAX_SAFE_INTEGER) return null;

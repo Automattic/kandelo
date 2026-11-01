@@ -1053,10 +1053,7 @@ export class WasmPosixKernel {
         if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
       } catch { muxer?.invalidateCurrent(); return false; }
     }
-    if (!this.gl.hasForeignRetirements()) return true;
-    for (const gl of this.gl.foreignRetirementContexts()) this.gl_muxers.get(gl)?.invalidateCurrent();
-    this.gl.retryForeignRetirements();
-    return !this.gl.groupHasForeignRetirement(b);
+    return true;
   }
 
   private glMuxerFor(gl: WebGL2RenderingContext): GlMuxer {
@@ -2902,11 +2899,9 @@ export class WasmPosixKernel {
           // both tiers. GPU allocations have no CPU registry entry, so a
           // CPU mirror's destroy event cannot drive native retirement.
           // The kernel BO is already gone, so a step that cannot finish is a
-          // fatal host fault. A native view left in foreignRetirements would
-          // only be retried before later GL work, which nothing guarantees,
-          // and only a refused native deletion leaves one there: storage an
-          // accepted execution still holds is already released by that
-          // execution's lease, so retireForeignBo reports it as retired.
+          // fatal host fault. Storage an accepted execution still holds is
+          // released by that execution's lease, so retireForeignBo reports
+          // it as retired; false means a native deletion was refused.
           this.runDriCleanup(pid, "gbm_bo_destroy", `BO ${bo_id}`, [
             () => this.bos.destroy(pid, bo_id),
             () => { this.kms.retireCursorBo(bo_id); },
