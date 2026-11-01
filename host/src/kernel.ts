@@ -76,7 +76,7 @@ import {
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
 } from "./generated/abi";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
-import { registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
+import { exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
@@ -3352,6 +3352,41 @@ export class WasmPosixKernel {
           return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout));
           } catch { return -5; }
         },
+        // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
+        // renderbuffer of context `ctxId` as GPU-tier bo `boId`. `attrs` is
+        // the kernel's 48-byte WpkDrmExportImage copy; the reply writes the
+        // image extent, its GL internal format, the share group's source
+        // token and the object's sibling revision. Negative errno otherwise.
+        host_gl_export_image: (pid: number, ctxId: number, boId: number,
+          attrsPtr: KernelPointer, attrsLen: KernelPointer): number => {
+          try {
+            ctxId >>>= 0;
+            const b = this.gl.getContext(pid, ctxId);
+            if (!b?.gl || b.contextId !== ctxId || !this.prepareForeignRetirements(b)) return -5;
+            if (this.#checkedKernelIndex(attrsLen, "image export length") !== GL_IMAGE_EXPORT_BYTES) return -22;
+            const destination = this.#rustLentKernelDestination(attrsPtr, GL_IMAGE_EXPORT_BYTES, "image export reply");
+            const bytes = this.#readKernelBytes(attrsPtr, GL_IMAGE_EXPORT_BYTES);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+            this.glMuxerFor(b.gl).switchTo(b);
+            const result = exportImageStorage(b, boId >>> 0, view.getUint32(4, true),
+              view.getUint32(8, true), view.getUint32(12, true));
+            if (typeof result === "number") {
+              this.gl_muxers.get(b.gl)?.invalidateCurrent();
+              return result;
+            }
+            this.gl.publishExportedImage(result.record);
+            const reply = new Uint8Array(GL_IMAGE_EXPORT_BYTES);
+            reply.set(bytes);
+            const out = new DataView(reply.buffer);
+            out.setUint32(20, result.record.width, true);
+            out.setUint32(24, result.record.height, true);
+            out.setUint32(28, result.internalFormat, true);
+            out.setUint32(32, result.token, true);
+            out.setUint32(36, result.revision, true);
+            this.#writeKernelBytes(destination, reply);
+            return 0;
+          } catch { return -5; }
+        },
         host_gl_bind_foreign_texture: (
           pid: number, ctxId: number, boId: number, glTarget: number,
         ): number => {
@@ -3371,6 +3406,14 @@ export class WasmPosixKernel {
             const name = bindGpuForeignTexture(b, boId, gpu);
             if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();
             return name;
+          }
+          // An exported GLES image is GPU storage too; it is only ever an
+          // image source, never a raw foreign texture.
+          const exported = this.gl.exportedImage(boId);
+          if (exported) {
+            if (glTarget !== WPK_IMAGE_SOURCE_TARGET) return -22;
+            if (b.gl !== exported.gl) return -5;
+            return registerExportedSource(b, exported);
           }
           if (glTarget === WPK_IMAGE_SOURCE_TARGET) return -22;
           const dims = this.bos.dims(boId);

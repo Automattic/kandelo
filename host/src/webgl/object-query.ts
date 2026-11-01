@@ -1,6 +1,7 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
+import type { GlImageStorage } from "./image-storage.js";
 import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
@@ -93,7 +94,8 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         if (!b.shadow.renderbuffer) return fail(b,0x502);
         const image=b.renderbufferViews.get(b.shadow.renderbuffer)?.source;
         if(image){
-          const value=arg===0x8d42?image.width:arg===0x8d43?image.height:arg===0x8d44?0x8058:arg===0x8d54||arg===0x8d55?0:8;
+          const format=imageRenderbufferFormat(image);
+          const value=arg===0x8d42?image.width:arg===0x8d43?image.height:arg===0x8d44?format[0]:format[1][arg-0x8d50];
           result.setInt32(0,value,true);return 4;
         }
         let value = 0;
@@ -110,4 +112,20 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
       default: return -22;
     }
   });
+}
+
+/** Sized format and red/green/blue/alpha/depth/stencil bits of an EGLImage
+ * as a renderbuffer sibling. BO images are RGBA8; an exported GLES image has
+ * its source's format (EGL 1.5 section 3.9). */
+function imageRenderbufferFormat(image: GlImageStorage): [number, number[]] {
+  const sized: Record<number, number[]> = {
+    0x8058: [8,8,8,8,0,0], 0x8051: [8,8,8,0,0,0], 0x8056: [4,4,4,4,0,0], 0x8057: [5,5,5,1,0,0],
+    0x8d62: [5,6,5,0,0,0], 0x81a5: [0,0,0,0,16,0], 0x8d48: [0,0,0,0,0,8], 0x88f0: [0,0,0,0,24,8],
+  };
+  let internal = image.internalFormat ?? 0x8058;
+  if (!sized[internal]) {
+    const rgb = image.format === 0x1907, type = image.type ?? 0x1401;
+    internal = type === 0x8033 ? 0x8056 : type === 0x8034 ? 0x8057 : type === 0x8363 ? 0x8d62 : rgb ? 0x8051 : 0x8058;
+  }
+  return [internal, sized[internal]];
 }

@@ -1,18 +1,35 @@
-import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
 import { expandedColorAttachment, forgetExpandedLevels } from "./luminance-float.js";
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { recordRenderbufferSize, recordTextureReplacement } from "./image-sizes.js";
+import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
 /** Private source handles never enter the public GLuint texture namespace. */
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
+/** Size of shared::dri::WpkDrmExportImage, the EXPORT_IMAGE host record. */
+export const GL_IMAGE_EXPORT_BYTES = 48;
+/** Canonical EGLImage storage. BO images are level 0 of a private RGBA
+ * texture. An exported GLES image (EGL 1.5 section 3.9) is the source
+ * object's own image: a 2D level, a cube-map face level, or a renderbuffer,
+ * with the format that object was given. */
 export type GlImageSource = {
   token: number;
   key?: string;
   bo: number;
-  texture: WebGLTexture;
+  texture: WebGLTexture | null;
   width: number;
   height: number;
+} & GlImageStorage;
+export type GlImageStorage = {
+  /** Texture image target (GL_TEXTURE_2D or a cube face); default 2D. */
+  target?: number;
+  level?: number;
+  renderbuffer?: WebGLRenderbuffer | null;
+  /** texImage2D triple for sibling views; default RGBA8. */
+  internalFormat?: number;
+  format?: number;
+  type?: number;
 };
 export type GlTextureView = {
   native: WebGLTexture;
@@ -24,8 +41,8 @@ export type GlRenderbufferView = {
   native: WebGLRenderbuffer;
   source: GlImageSource | null;
 };
-const TEX = 0x0de1, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0;
-export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture, width: number, height: number, key?: string): number {
+const TEX = 0x0de1, CUBE = 0x8513, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0;
+export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture | null, width: number, height: number, key?: string, storage: GlImageStorage = {}): number {
   for (const source of b.imageSources.values())
     if (source.bo === bo && source.key === key)
       return source.token;
@@ -33,13 +50,23 @@ export function registerImageSource(b: GlBinding, bo: number, texture: WebGLText
     return -12;
   const token = b.nextImageSource;
   try {
-    b.imageSources.set(token, { token, bo, texture, width, height, key });
+    b.imageSources.set(token, { token, bo, texture, width, height, key, ...storage });
   }
   catch {
     return -12;
   }
   b.nextImageSource++;
   return token;
+}
+/** Attach canonical storage at `point` of the framebuffer bound to `target`. */
+function sourceAttachment(source: GlImageSource, target: number, point: number, level = 0): NativeCall {
+  if (source.renderbuffer) return ["framebufferRenderbuffer", target, point, RBO, source.renderbuffer];
+  return ["framebufferTexture2D", target, point, source.target ?? TEX, source.texture, (source.level ?? 0) + level];
+}
+/** Sibling writes can bind the canonical texture as GL_TEXTURE_2D only when
+ * it is level 0 of a 2D texture; any other storage is written through. */
+function directSource(source: GlImageSource): boolean {
+  return !source.renderbuffer && (source.target ?? TEX) === TEX && (source.level ?? 0) === 0;
 }
 export function textureNative(b: GlBinding, object: WebGLTexture): WebGLTexture {
   return b.textureViews.get(object)?.native ?? object;
@@ -55,18 +82,21 @@ export function canonicalRenderbuffer(b: GlBinding, native: WebGLRenderbuffer): 
 }
 /** All utility work restores actual native state, including distinct read and
  * draw defaults. The logical shadow continues to contain stable identities. */
-function withImageState(b: GlBinding, call: () => boolean): boolean {
+function withImageState(b: GlBinding, call: () => boolean, cube = false): boolean {
   const gl = b.gl!;
   let active = 0, texture: WebGLTexture | null = null, draw: WebGLFramebuffer | null = null, read: WebGLFramebuffer | null = null, renderbuffer: WebGLRenderbuffer | null = null;
+  let cubeTexture: WebGLTexture | null = null;
   for (const capture of [
     () => { active = Number(gl.getParameter(0x84e0)); },
     () => { texture = gl.getParameter(0x8069); },
     () => { draw = gl.getParameter(0x8ca6); },
     () => { read = gl.getParameter(0x8caa); },
     () => { renderbuffer = gl.getParameter(0x8ca7); },
+    ...(cube ? [() => { cubeTexture = gl.getParameter(0x8514); }] : []),
   ]) if (!checkedGlCall(b,capture)) return false;
   return applyNativeChanges(b,[{apply:call,restore:nativeInverse(b)}],{finalizer:nativeInverse(b,
-    [["activeTexture",active],["bindTexture",TEX,texture]], [["bindRenderbuffer",RBO,renderbuffer]],
+    [["activeTexture",active],["bindTexture",TEX,texture],...(cube ? [["bindTexture",CUBE,cubeTexture] as NativeCall] : [])],
+    [["bindRenderbuffer",RBO,renderbuffer]],
     [["bindFramebuffer",DRAW,draw]], [["bindFramebuffer",READ,read]])});
 }
 function copySource(b: GlBinding, view: GlTextureView): boolean {
@@ -105,8 +135,9 @@ function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSou
         [0x2800, 0x2801, 0x2802, 0x2803].forEach((pname, i) => gl.texParameteri(TEX, pname, params[i]));
         if (preserveBase) {
           gl.bindFramebuffer(READ, read);
-          gl.framebufferTexture2D(READ, COLOR, TEX, source.texture, 0);
-          gl.texImage2D(TEX, 0, 0x8058, source.width, source.height, 0, 0x1908, 0x1401, null);
+          invokeNativeCall(gl, sourceAttachment(source, READ, COLOR));
+          gl.texImage2D(TEX, 0, source.internalFormat ?? 0x8058, source.width, source.height, 0,
+            source.format ?? 0x1908, source.type ?? 0x1401, null);
         }
       }))
         return false;
@@ -136,11 +167,8 @@ export function imageAttachmentCall(b: GlBinding, target: number, point: number,
     return ["framebufferRenderbuffer", target, point, RBO, null];
   }
   const view = override ?? (image.kind === "texture" ? b.textureViews.get(image.object) : b.renderbufferViews.get(image.object));
-  if (view?.source) {
-    const native = view.source.texture, imageTarget = image.kind === "texture" ? image.target : TEX;
-    const level = image.kind === "texture" ? image.level : 0;
-    return ["framebufferTexture2D", target, point, imageTarget, native, level];
-  }
+  if (view?.source)
+    return sourceAttachment(view.source, target, point, image.kind === "texture" ? image.level : 0);
   if (image.kind === "texture") {
     const native = (view?.native as WebGLTexture | undefined) ?? image.object;
     const imageTarget = image.target, level = image.level;
@@ -166,11 +194,12 @@ function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRender
         restore:nativeInverse(b, [["bindFramebuffer",DRAW,fbo],before])});
     }
   if (kind === 1) {
-    for (let unit=0;unit<b.shadow.textureUnits.length;unit++) if (b.shadow.textureUnits[unit] === object) {
-      changes.push({apply: () => checkedGlCall(b, () => gl.activeTexture(0x84c0+unit)) &&
-          checkedGlCall(b, () => gl.bindTexture(TEX,next.native as WebGLTexture)),
-        restore:nativeInverse(b, [["activeTexture",0x84c0+unit],["bindTexture",TEX,old.native as WebGLTexture]])});
-    }
+    for (const [units, bindTarget] of [[b.shadow.textureUnits, TEX], [b.shadow.cubeTextureUnits, CUBE]] as const)
+      for (let unit=0;unit<units.length;unit++) if (units[unit] === object) {
+        changes.push({apply: () => checkedGlCall(b, () => gl.activeTexture(0x84c0+unit)) &&
+            checkedGlCall(b, () => gl.bindTexture(bindTarget,next.native as WebGLTexture)),
+          restore:nativeInverse(b, [["activeTexture",0x84c0+unit],["bindTexture",bindTarget,old.native as WebGLTexture]])});
+      }
   } else if (b.shadow.renderbuffer === object) changes.push({apply: () => checkedGlCall(b, () => gl.bindRenderbuffer(RBO,next.native as WebGLRenderbuffer)),
     restore:nativeInverse(b, [["bindRenderbuffer",RBO,old.native as WebGLRenderbuffer]])});
   // Other contexts' containers participate, so retirement of this submitter
@@ -192,7 +221,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
   const old = b.textureViews.get(object) ?? { native: object, source: null, read: null };
   const had = b.textureViews.has(object);
   const retired = reserveNativeRetirement(b,[
-    ["deleteTexture",b.externallyOwnedTextures.has(old.native) ? null : old.native], ["deleteFramebuffer",old.read]]);
+    ["deleteTexture",b.externallyOwnedTextures.has(old.native) || exportOwned(old.native) ? null : old.native], ["deleteFramebuffer",old.read]]);
   if (!retired) return false;
   let committed = false;
   try {
@@ -242,6 +271,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
       return false;
     }
     b.textureViewOwners.delete(old.native);
+    unlinkSource(object, next.native);
     committed = true;
     retireNativeRetirement(retired);
     return true;
@@ -250,7 +280,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
 function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: GlRenderbufferView): boolean {
   const old = b.renderbufferViews.get(object) ?? { native: object, source: null };
   const had = b.renderbufferViews.has(object);
-  const retired = reserveNativeRetirement(b,[["deleteRenderbuffer",next.native === old.native ? null : old.native]]);
+  const retired = reserveNativeRetirement(b,[["deleteRenderbuffer",next.native === old.native || exportOwned(old.native) ? null : old.native]]);
   if (!retired) return false;
   let committed = false;
   try {
@@ -303,6 +333,7 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
     if (next.native !== old.native) {
       b.renderbufferViewOwners.delete(old.native);
     }
+    unlinkSource(object, next.native);
     committed = true; retireNativeRetirement(retired);
     return true;
   } finally { if (!committed) transferNativeRetirement(retired); }
@@ -334,6 +365,9 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
         transferCandidate(view); installed = true;
         recordTextureReplacement(object as WebGLTexture, source.width, source.height);
         forgetExpandedLevels(object); // EGLImage storage replaces every level
+        replaceTextureLevels(object as WebGLTexture, TEX, {width: source.width, height: source.height,
+          internalFormat: source.internalFormat ?? 0x8058, format: source.format ?? 0x1908,
+          type: source.type ?? 0x1401, compressed: false});
         return true;
       }
       return false;
@@ -346,11 +380,11 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
 export function imageSourceToken(b: GlBinding, kind: number, name: number): number | null {
   if (kind === 1) {
     const object = b.textures.get(name);
-    return object ? (b.textureViews.get(object)?.source?.token ?? 0) : null;
+    return object ? (b.textureViews.get(object)?.source?.token ?? linkedToken(b, object)) : null;
   }
   if (kind === 2) {
     const object = b.rbos.get(name);
-    return object ? (b.renderbufferViews.get(object)?.source?.token ?? 0) : null;
+    return object ? (b.renderbufferViews.get(object)?.source?.token ?? linkedToken(b, object)) : null;
   }
   return null;
 }
@@ -358,25 +392,28 @@ export type GlBoundImageState = {
   source: number;
   revision: number;
 };
-function boundImageObject(b: GlBinding, kind: number, target: number): WebGLTexture | WebGLRenderbuffer | null {
-  if ((kind !== 1 && kind !== 2) || (kind === 1 ? target !== TEX : target !== RBO)) {
+function boundImageObject(b: GlBinding, kind: number, target: number, cube = false): WebGLTexture | WebGLRenderbuffer | null {
+  if ((kind !== 1 && kind !== 2) || (kind === 1 ? target !== TEX && !(cube && target === CUBE) : target !== RBO)) {
     recordGlError(b, 0x500);
     return null;
   }
-  const object = kind === 1 ? b.shadow.textureUnits[b.shadow.activeTexture] : b.shadow.renderbuffer;
+  const object = kind === 1 ? (target === CUBE ? b.shadow.cubeTextureUnits : b.shadow.textureUnits)[b.shadow.activeTexture]
+    : b.shadow.renderbuffer;
   if (!object)
     recordGlError(b, 0x502);
   return object ?? null;
 }
 /** Resolve the implicit binding, never a potentially reused public name. */
+/** A cube-map binding can be read (an exported face keeps its source a
+ * sibling) but never becomes an EGLImage target. */
 export function boundImageState(b: GlBinding, kind: number, target: number, source?: number): GlBoundImageState | null {
-  const object = boundImageObject(b, kind, target);
+  const object = boundImageObject(b, kind, target, source === undefined);
   if (!object)
     return null;
   if (source !== undefined && !importImageObject(b, kind, object, source))
     return null;
   const view = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
-  return { source: view?.source?.token ?? 0, revision: b.imageRevisions.get(object) ?? 0 };
+  return { source: view?.source?.token ?? linkedToken(b, object), revision: b.imageRevisions.get(object) ?? 0 };
 }
 /** Each sampling view has independent parameters. Refresh its pixels from the
  * canonical image before every draw, including writes made through other APIs. */
@@ -401,12 +438,26 @@ export function boundImageTexture(b: GlBinding, target: number): GlTextureView |
 }
 /** Pixel updates preserve shared storage; respecification allocates an owned
  * candidate and commits only after native validation and container retargeting. */
-export function imageTextureOperation(b: GlBinding, target: number, respecify: boolean, call: () => void, preserveBase = true): boolean {
+export function imageTextureOperation(b: GlBinding, target: number, respecify: boolean, call: () => void, preserveBase = true, level?: number): boolean {
   const view = boundImageTexture(b, target);
-  if (!view?.source)
+  if (!view?.source) {
+    const object = (target === TEX ? b.shadow.textureUnits : isCubeFace(target) || target === CUBE
+      ? b.shadow.cubeTextureUnits : [])[b.shadow.activeTexture];
+    if (respecify && object && linkedSource(object))
+      return orphanLinkedTexture(b, object, target === TEX ? TEX : CUBE,
+        level === undefined ? null : {face: target, level}, call);
     return checkedGlCall(b, call);
-  if (!respecify)
-    return withImageState(b, () => checkedGlCall(b, () => { b.gl!.bindTexture(TEX, view.source!.texture); call(); }));
+  }
+  if (!respecify) {
+    const source = view.source;
+    if (directSource(source))
+      return withImageState(b, () => checkedGlCall(b, () => { b.gl!.bindTexture(TEX, source.texture); call(); }));
+    // Cube-face, nonzero-level or renderbuffer storage cannot be bound as
+    // this 2D sibling: update the sibling's view, then copy it into the
+    // canonical image so every sibling observes the write.
+    return withImageState(b, () => checkedGlCall(b, () => { b.gl!.bindTexture(TEX, view.native); call(); })
+      && writeThrough(b, view));
+  }
   const object = b.shadow.textureUnits[b.shadow.activeTexture]!;
   // [RUNTIME-WORKAROUND: CHROMIUM-COPY-TEX-RESPEC] Do not copy a base
   // image that this command replaces; Chromium can retain those copied pixels.
@@ -425,7 +476,9 @@ export function imageTextureOperation(b: GlBinding, target: number, respecify: b
 }
 export function imageRenderbufferStorage(b: GlBinding, call: () => void): boolean {
   const object = b.shadow.renderbuffer, view = object && b.renderbufferViews.get(object);
-  if (!view?.source)
+  // Respecifying an exported renderbuffer orphans its image: the image
+  // keeps the old storage and the object receives new storage.
+  if (!view?.source && !(object && linkedSource(object)))
     return checkedGlCall(b, call);
   const candidate = reserveNativeRetirement(b,[["deleteRenderbuffer",null]]);
   if (!candidate) return false;
@@ -462,7 +515,8 @@ function imageRetirement(b: GlBinding, object: WebGLTexture|WebGLRenderbuffer, c
 }
 export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean {
   const view = b.textureViews.get(object), native = view?.native ?? object;
-  if (!imageRetirement(b,object,[["deleteTexture",b.externallyOwnedTextures.has(native) ? null : native],["deleteFramebuffer",view?.read ?? null]])) return false;
+  unlinkSource(object, null);
+  if (!imageRetirement(b,object,[["deleteTexture",b.externallyOwnedTextures.has(native) || exportOwned(native) ? null : native],["deleteFramebuffer",view?.read ?? null]])) return false;
   b.textureViewOwners.delete(native);
   b.textureViews.delete(object);
   b.imageRevisions.delete(object);
@@ -471,9 +525,219 @@ export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean 
 }
 export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer): boolean {
   const native = renderbufferNative(b, object);
-  if (!imageRetirement(b,object,[["deleteRenderbuffer",native]])) return false;
+  unlinkSource(object, null);
+  if (!imageRetirement(b,object,[["deleteRenderbuffer",exportOwned(native) ? null : native]])) return false;
   b.renderbufferViewOwners.delete(native);
   b.renderbufferViews.delete(object);
   b.imageRevisions.delete(object);
   return true;
+}
+
+/* ----- GLES objects as EGLImage sources (EGL 1.5 section 3.9) ----------
+ * An exported image IS the source object's image: no copy is made, so
+ * writes through the source object and through every sibling target the
+ * same storage. The GPU-tier BO owns that storage from export on. While the
+ * source object still uses it ("linked"), the object stays an EGLImage
+ * sibling; respecifying or deleting the object orphans the image, which
+ * keeps the old storage (KHR_image_base, OES_EGL_image). */
+export type GlExportedImage = {
+  bo: number;
+  gl: WebGL2RenderingContext;
+  object: WebGLTexture | WebGLRenderbuffer;
+  native: WebGLTexture | WebGLRenderbuffer;
+  renderbuffer: boolean;
+  width: number;
+  height: number;
+  storage: GlImageStorage;
+  sourceUsing: boolean;
+  boLive: boolean;
+};
+export type GlImageExport = { record: GlExportedImage; token: number; revision: number; internalFormat: number };
+const exportedByNative = new WeakMap<object, GlExportedImage>();
+const exportedBySource = new WeakMap<object, GlExportedImage>();
+
+function exportOwned(native: object): boolean {
+  return exportedByNative.get(native)?.boLive === true;
+}
+function linkedSource(object: object): GlExportedImage | undefined {
+  const record = exportedBySource.get(object);
+  return record?.sourceUsing ? record : undefined;
+}
+/** The object stopped using the exported storage (respecified, deleted or
+ * given other storage); the image keeps it. */
+function unlinkSource(object: object, next: object | null): void {
+  const record = exportedBySource.get(object);
+  if (!record || next === record.native) return;
+  record.sourceUsing = false;
+  exportedBySource.delete(object);
+}
+function linkedToken(b: GlBinding, object: object): number {
+  const record = linkedSource(object);
+  if (!record) return 0;
+  for (const source of b.imageSources.values()) if (source.bo === record.bo) return source.token;
+  return 0;
+}
+
+/** Copy a sibling's updated view into canonical storage that cannot be bound
+ * as that 2D sibling. Blits ignore every fragment operation except the
+ * scissor test, which is suspended for the copy. */
+function writeThrough(b: GlBinding, view: GlTextureView): boolean {
+  const gl = b.gl!, source = view.source!;
+  if (!view.read) { recordGlError(b, 0x502); return false; }
+  const scratch = reserveNativeRetirement(b,[["deleteFramebuffer",null]]);
+  if (!scratch) return false;
+  try {
+    return checkedGlCall(b, () => {
+      const fbo = gl.createFramebuffer(); scratch.calls[0][1] = fbo;
+      gl.bindFramebuffer(READ, fbo);
+      gl.framebufferTexture2D(READ, COLOR, TEX, view.native, 0);
+      gl.bindFramebuffer(DRAW, view.read);
+      const scissor = gl.isEnabled(0x0c11);
+      if (scissor) gl.disable(0x0c11);
+      try { gl.blitFramebuffer(0, 0, source.width, source.height, 0, 0, source.width, source.height, 0x4000, 0x2600); }
+      finally { if (scissor) gl.enable(0x0c11); }
+    });
+  } finally { retireNativeRetirement(scratch); }
+}
+
+/** Respecification of a linked source texture: give the object new storage
+ * holding every image except the one being respecified, apply the call
+ * there, and leave the exported image's storage untouched. Retaining an
+ * image copies it through a framebuffer, so a compressed or non-color-
+ * renderable retained image fails with GL_OUT_OF_MEMORY instead of being
+ * silently dropped. */
+function orphanLinkedTexture(b: GlBinding, object: WebGLTexture, bindTarget: number,
+  skip: {face: number; level: number} | null, call: () => void): boolean {
+  const gl = b.gl!, old = textureNative(b, object);
+  const candidate = reserveNativeRetirement(b,[["deleteTexture",null]]);
+  const scratch = candidate && reserveNativeRetirement(b,[["deleteFramebuffer",null]]);
+  if (!candidate || !scratch) { if (candidate) retireNativeRetirement(candidate); return false; }
+  let fresh: WebGLTexture | null = null, installed = false;
+  try {
+    const pnames = [0x2800, 0x2801, 0x2802, 0x2803];
+    const accepted = withImageState(b, () => {
+      const params: number[] = [];
+      if (!checkedGlCall(b, () => {
+        gl.bindTexture(bindTarget, old);
+        for (const pname of pnames) params.push(Number(gl.getTexParameter(bindTarget, pname)));
+        fresh = gl.createTexture(); candidate.calls[0][1] = fresh;
+        scratch.calls[0][1] = gl.createFramebuffer();
+      })) return false;
+      if (!fresh || !scratch.calls[0][1]) { recordGlError(b, 0x505); return false; }
+      if (!checkedGlCall(b, () => {
+        gl.bindTexture(bindTarget, fresh);
+        pnames.forEach((pname, i) => gl.texParameteri(bindTarget, pname, params[i]));
+        gl.bindFramebuffer(READ, scratch.calls[0][1] as WebGLFramebuffer);
+      })) return false;
+      for (const [face, images] of textureFaces(object)) for (const [level, image] of images) {
+        if (skip && skip.face === face && skip.level === level) continue;
+        if (image.compressed) { recordGlError(b, 0x505); return false; }
+        let complete = false;
+        if (!checkedGlCall(b, () => {
+          gl.texImage2D(face, level, image.internalFormat, image.width, image.height, 0, image.format, image.type, null);
+          gl.framebufferTexture2D(READ, COLOR, face, old, level);
+          complete = gl.checkFramebufferStatus(READ) === 0x8cd5;
+        })) return false;
+        if (!complete) { recordGlError(b, 0x505); return false; }
+        if (!checkedGlCall(b, () => gl.copyTexSubImage2D(face, level, 0, 0, 0, 0, image.width, image.height))) return false;
+      }
+      return checkedGlCall(b, () => { gl.bindTexture(bindTarget, fresh); call(); });
+    }, bindTarget === CUBE);
+    if (!accepted || !fresh) return false;
+    if (!replaceTextureView(b, object, { native: fresh, source: null, read: null })) return false;
+    transferNativeRetirement(candidate); installed = true;
+    return true;
+  } finally {
+    retireNativeRetirement(scratch);
+    if (!installed) retireNativeRetirement(candidate);
+  }
+}
+
+/** Validate and publish level `level` of texture `name` (GL_TEXTURE_2D or a
+ * cube face) or renderbuffer `name` as the storage of GPU-tier `bo`.
+ * Returns a negative errno: ENOENT (no object), EINVAL (wrong object type,
+ * incomplete texture without the required level 0, renderbuffer without
+ * single-sample storage), ERANGE (not a valid mipmap level), EBUSY (already
+ * an EGLImage sibling), ENOMEM or EIO. Errors match KHR_gl_texture_2D_image,
+ * KHR_gl_texture_cubemap_image and KHR_gl_renderbuffer_image. */
+export function exportImageStorage(b: GlBinding, bo: number, target: number, name: number, level: number): GlImageExport | number {
+  const gl = b.gl;
+  if (!gl) return -5;
+  const renderbuffer = target === RBO;
+  const object = renderbuffer ? b.rbos.get(name) : b.textures.get(name);
+  if (!object) return -2;
+  const view = renderbuffer ? b.renderbufferViews.get(object) : b.textureViews.get(object as WebGLTexture);
+  if (view?.source || linkedSource(object)) return -16;
+  let native: WebGLTexture | WebGLRenderbuffer, width = 0, height = 0, storage: GlImageStorage;
+  if (renderbuffer) {
+    native = renderbufferNative(b, object);
+    let internalFormat = 0, samples = 0;
+    if (!withImageState(b, () => checkedGlCall(b, () => {
+      gl.bindRenderbuffer(RBO, native);
+      width = Number(gl.getRenderbufferParameter(RBO, 0x8d42));
+      height = Number(gl.getRenderbufferParameter(RBO, 0x8d43));
+      internalFormat = Number(gl.getRenderbufferParameter(RBO, 0x8d44));
+      samples = Number(gl.getRenderbufferParameter(RBO, 0x8cab));
+    }))) return -5;
+    if (!(width > 0) || !(height > 0) || samples) return -22;
+    storage = { renderbuffer: native, internalFormat };
+  } else {
+    const cube = target !== TEX, faces = textureFaces(object);
+    if (cube ? faces.has(TEX) : CUBE_FACES.some(face => faces.has(face))) return -22;
+    if (level > 31) return -34;
+    native = textureNative(b, object);
+    let minFilter = 0;
+    if (!withImageState(b, () => checkedGlCall(b, () => {
+      gl.bindTexture(cube ? CUBE : TEX, native);
+      minFilter = Number(gl.getTexParameter(cube ? CUBE : TEX, 0x2801));
+    }), cube)) return -5;
+    if (!textureComplete(object, cube, minFilter)) {
+      if (level !== 0) return -22;
+      if (cube ? CUBE_FACES.some(face => !textureLevel(object, face, 0)) : !textureLevel(object, TEX, 0)) return -22;
+    }
+    const image = textureLevel(object, target, level);
+    if (!image) return -34;
+    width = image.width; height = image.height;
+    storage = { target, level, internalFormat: image.internalFormat, format: image.format, type: image.type };
+  }
+  const previous = b.imageRevisions.get(object) ?? 0;
+  if (previous === 0xffffffff) return -12;
+  const record: GlExportedImage = { bo, gl, object, native, renderbuffer, width, height, storage,
+    sourceUsing: true, boLive: true };
+  const token = registerImageSource(b, bo, renderbuffer ? null : native as WebGLTexture, width, height, undefined, storage);
+  if (token < 0) return token;
+  try {
+    b.imageRevisions.set(object, previous + 1);
+    exportedByNative.set(native, record);
+    exportedBySource.set(object, record);
+  } catch {
+    b.imageSources.delete(token);
+    if (previous) b.imageRevisions.set(object, previous); else b.imageRevisions.delete(object);
+    exportedByNative.delete(native); exportedBySource.delete(object);
+    return -12;
+  }
+  return { record, token, revision: previous + 1, internalFormat: storage.internalFormat ?? 0 };
+}
+
+/** Register an exported image as a source in another share group. */
+export function registerExportedSource(b: GlBinding, record: GlExportedImage): number {
+  if (!record.boLive) return -2;
+  return registerImageSource(b, record.bo, record.renderbuffer ? null : record.native as WebGLTexture,
+    record.width, record.height, undefined, record.storage);
+}
+
+/** The bo's last reference ended. The image's storage is deleted unless the
+ * source object still uses it, in which case the object owns it again. */
+export function retireExportedImage(record: GlExportedImage): boolean {
+  record.boLive = false;
+  if (record.sourceUsing) {
+    exportedBySource.delete(record.object);
+    exportedByNative.delete(record.native);
+    record.sourceUsing = false;
+    return true;
+  }
+  exportedByNative.delete(record.native);
+  const retirement = reserveNativeRetirement({ gl: record.gl, errors: [] },
+    [[record.renderbuffer ? "deleteRenderbuffer" : "deleteTexture", record.native] as NativeDeletion]);
+  return !!retirement && retireNativeRetirement(retirement);
 }

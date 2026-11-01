@@ -1746,6 +1746,7 @@ fn handle_dri_ioctl(
     if (gl::GLIO_INIT..=gl::GLIO_SUBMIT_QUERY).contains(&request)
         || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
         || request == DRM_IOCTL_WPK_IMPORT_IMAGE
+        || request == DRM_IOCTL_WPK_EXPORT_IMAGE
     {
         let dri = dri_state(proc, ofd_idx)?;
         if dri.gl.as_ref().is_some_and(|gl| gl.owner_pid != pid)
@@ -2102,6 +2103,75 @@ fn handle_dri_ioctl(
             let source = host.gl_import_image(pid, req.ctx_id, bo_id, req.width, req.height, req.format, req.pitch, req.offset);
             if source <= 0 { return Err(Errno::EIO); }
             req.source = source as u32;
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            Ok(())
+        }
+        DRM_IOCTL_WPK_EXPORT_IMAGE => {
+            if buf.len() < core::mem::size_of::<WpkDrmExportImage>() { return Err(Errno::EINVAL); }
+            let mut req: WpkDrmExportImage = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // GL_TEXTURE_2D, the six GL_TEXTURE_CUBE_MAP_* faces, or
+            // GL_RENDERBUFFER. Name zero is the default object, which can
+            // never be an EGLImage source.
+            let target_valid = req.target == 0x0de1 || (0x8515..=0x851a).contains(&req.target)
+                || req.target == 0x8d41;
+            if !target_valid || req.name == 0 || req.bo_handle != 0 || req.width != 0
+                || req.height != 0 || req.internal_format != 0 || req.source != 0
+                || req.revision != 0 || req.reserved != [0, 0] {
+                return Err(Errno::EINVAL);
+            }
+            let tid = current_tid_for_process(proc);
+            {
+                let gls = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
+                // EGL lets the image's context be current on this thread or
+                // on none; another thread's current context is not ours to use.
+                if gls.current.is_some_and(|binding| binding.owner_tid != tid) { return Err(Errno::EACCES); }
+            }
+            require_gl_display_live(proc, ofd_idx)?;
+            // The host decides the extent from the object itself, so the bo
+            // is reserved first and sized after the host accepts it.
+            let bo_id = crate::dri::with_registry(|r| r.try_alloc_gpu(1, 1, 32).map(|bo| bo.id))
+                .ok_or(Errno::ENOMEM)?;
+            let retire = |host: &mut dyn HostIO| {
+                crate::dri::with_registry(|r| { r.decref(bo_id); });
+                host.gbm_bo_destroy(pid, bo_id);
+            };
+            let mut attrs = [0u8; core::mem::size_of::<WpkDrmExportImage>()];
+            let length = attrs.len();
+            attrs.copy_from_slice(&buf[..length]);
+            let rc = host.gl_export_image(pid, req.ctx_id, bo_id, &mut attrs);
+            if rc < 0 {
+                retire(host);
+                let errno = Errno::from_u32((-rc) as u32).filter(|errno| matches!(errno,
+                    Errno::EINVAL | Errno::ENOENT | Errno::ERANGE | Errno::EBUSY
+                    | Errno::ENOMEM | Errno::EACCES | Errno::EIO));
+                return Err(errno.unwrap_or(Errno::EIO));
+            }
+            let reply: WpkDrmExportImage = unsafe { core::ptr::read_unaligned(attrs.as_ptr() as *const _) };
+            if reply.width == 0 || reply.height == 0 || reply.width > i32::MAX as u32
+                || reply.height > i32::MAX as u32 || reply.source == 0
+                || crate::dri::with_registry(|r| r.set_gpu_extent(bo_id, reply.width, reply.height)).is_none() {
+                retire(host);
+                return Err(Errno::EIO);
+            }
+            let handle = match dri_state_mut(proc, ofd_idx) {
+                Ok(dri) => {
+                    let mut gem = dri.gem.borrow_mut();
+                    let handle = gem.next_handle;
+                    match gem.next_handle.checked_add(1) {
+                        Some(next) => { gem.next_handle = next; gem.handles.insert(handle, bo_id); Some(handle) }
+                        None => None,
+                    }
+                }
+                Err(_) => None,
+            };
+            let Some(handle) = handle else { retire(host); return Err(Errno::EMFILE); };
+            req.bo_handle = handle;
+            req.width = reply.width;
+            req.height = reply.height;
+            req.internal_format = reply.internal_format;
+            req.source = reply.source;
+            req.revision = reply.revision;
             unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
             Ok(())
         }
@@ -25620,6 +25690,12 @@ mod tests {
         /// `gl_bind_foreign_texture` call.
         gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
         gl_import_image_calls: Vec<(i32, u32, u32, [u32; 5])>,
+        /// `gl_export_image` calls: pid, ctx, bo, (target, name, level).
+        gl_export_image_calls: Vec<(i32, u32, u32, [u32; 3])>,
+        /// Negative errno, or zero to report `gl_export_image_reply`.
+        gl_export_image_rc: i32,
+        /// width, height, internal format, source token, revision.
+        gl_export_image_reply: [u32; 5],
         /// Return value for `gl_bind_foreign_texture` (> 0 = texture id,
         /// <= 0 = failure → the ioctl surfaces EIO).
         gl_bind_foreign_texture_rc: i32,
@@ -25786,6 +25862,9 @@ mod tests {
                 kms_set_fb_calls: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
                 gl_import_image_calls: Vec::new(),
+                gl_export_image_calls: Vec::new(),
+                gl_export_image_rc: 0,
+                gl_export_image_reply: [16, 8, 0x1908, 5, 3],
                 gl_bind_foreign_texture_rc: 7,
                 gbm_gpu_bo_create_calls: Vec::new(),
                 gbm_gpu_bo_create_rc: 0,
@@ -26686,6 +26765,17 @@ mod tests {
             width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
             self.gl_import_image_calls.push((pid, ctx_id, bo_id, [width, height, format, pitch, offset]));
             self.gl_bind_foreign_texture_rc
+        }
+        fn gl_export_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32, attrs: &mut [u8]) -> i32 {
+            let word = |at: usize| u32::from_le_bytes(attrs[at..at + 4].try_into().unwrap());
+            self.gl_export_image_calls.push((pid, ctx_id, bo_id, [word(4), word(8), word(12)]));
+            if self.gl_export_image_rc != 0 {
+                return self.gl_export_image_rc;
+            }
+            for (index, value) in self.gl_export_image_reply.iter().enumerate() {
+                attrs[20 + index * 4..24 + index * 4].copy_from_slice(&value.to_le_bytes());
+            }
+            0
         }
 
         fn gl_bind_foreign_texture(
@@ -56829,6 +56919,65 @@ impl HostIO for RelSymlinkMock {
         let original = bytes;
         assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes), Err(Errno::EIO));
         assert_eq!(bytes, original);
+    }
+
+    #[test]
+    fn drm_export_image_publishes_a_gpu_bo_for_a_live_gl_object() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let ctx_id = glio_test_bind(&mut proc, &mut host, fd);
+        let good = WpkDrmExportImage {ctx_id, target: 0x0de1, name: 9, level: 1, ..Default::default()};
+        let mut bytes = [0u8; core::mem::size_of::<WpkDrmExportImage>()];
+        assert_eq!(bytes.len(), 48);
+        // Malformed requests are rejected before the host or registry is used.
+        for bad in [
+            WpkDrmExportImage {name: 0, ..good}, WpkDrmExportImage {target: 0x8513, ..good},
+            WpkDrmExportImage {target: 0x0de0, ..good}, WpkDrmExportImage {ctx_id: ctx_id + 1, ..good},
+            WpkDrmExportImage {bo_handle: 1, ..good}, WpkDrmExportImage {revision: 1, ..good},
+            WpkDrmExportImage {reserved: [0, 1], ..good},
+        ] {
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, bad); }
+            let original = bytes;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_EXPORT_IMAGE, &mut bytes), Err(Errno::EINVAL));
+            assert_eq!(bytes, original);
+        }
+        assert!(host.gl_export_image_calls.is_empty());
+        // Host validation errors pass through; the provisional bo is retired.
+        for (rc, errno) in [(Errno::ERANGE, Errno::ERANGE), (Errno::EBUSY, Errno::EBUSY),
+            (Errno::ENOENT, Errno::ENOENT), (Errno::E2BIG, Errno::EIO)] {
+            host.gl_export_image_rc = -(rc as i32);
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, good); }
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_EXPORT_IMAGE, &mut bytes), Err(errno));
+            let (_, _, bo_id, _) = *host.gl_export_image_calls.last().unwrap();
+            assert!(crate::dri::with_registry(|r| r.get(bo_id).is_none()));
+            assert_eq!(host.gbm_bo_destroy_calls.last(), Some(&(1, bo_id)));
+        }
+        host.gl_export_image_rc = 0;
+        for target in [0x0de1, 0x8515, 0x851a, 0x8d41] {
+            let request = WpkDrmExportImage {target, ..good};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_EXPORT_IMAGE, &mut bytes).unwrap();
+            let out: WpkDrmExportImage = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const _) };
+            let (pid, context, bo_id, selector) = *host.gl_export_image_calls.last().unwrap();
+            assert_eq!((pid, context, selector), (1, ctx_id, [target, 9, 1]));
+            assert_eq!((out.width, out.height, out.internal_format, out.source, out.revision), (16, 8, 0x1908, 5, 3));
+            assert_ne!(out.bo_handle, 0);
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            assert_eq!(dri_state(&proc, ofd).unwrap().gem.borrow().handles.get(&out.bo_handle), Some(&bo_id));
+            // The image is GPU storage with the object's real extent.
+            let bo = crate::dri::with_registry(|r| r.get(bo_id).cloned()).unwrap();
+            assert_eq!((bo.width, bo.height, bo.tier), (16, 8, crate::dri::BoTier::GpuTexture));
+        }
+        // An implausible host extent is a renderer fault, not an image.
+        host.gl_export_image_reply = [0, 8, 0x1908, 5, 3];
+        unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, good); }
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_EXPORT_IMAGE, &mut bytes), Err(Errno::EIO));
     }
 
     #[test]

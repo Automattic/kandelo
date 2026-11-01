@@ -2038,7 +2038,9 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
         case EGL_EXTENSIONS:
             return "EGL_EXT_image_dma_buf_import "
                    "EGL_EXT_image_dma_buf_import_modifiers "
-                   "EGL_KHR_image_base EGL_KHR_no_config_context "
+                   "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image "
+                   "EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_renderbuffer_image "
+                   "EGL_KHR_no_config_context "
                    "EGL_KHR_surfaceless_context EGL_KHR_fence_sync "
                    "EGL_KHR_wait_sync";
         default:
@@ -2745,10 +2747,127 @@ static int dmabuf_format_supported(EGLint fourcc) {
  * it can be refreshed from memory. */
 static EGLImageKHR create_image_locked(EGLDisplay, EGLContext, EGLenum,
                                         EGLClientBuffer, const void *, int);
+static EGLAttrib image_attribute(const void *list, int wide, size_t index);
 /* Read the API's actual element width. In particular, a wide unknown key
  * must not alias a recognized EGLint key, and a terminator has no value. */
 static EGLAttrib image_attribute(const void *list, int wide, size_t index) {
     return wide ? ((const EGLAttrib *)list)[index] : ((const EGLint *)list)[index];
+}
+/* EGL 1.5 Table 3.10 GLES sources: the GL image target, the source object
+ * kind (1 texture, 2 renderbuffer) and the object's own binding target. */
+static int gl_image_target(EGLenum target, uint32_t *gl_target, uint32_t *kind, uint32_t *object_target) {
+    uint32_t image, type, object;
+    if (target == EGL_GL_TEXTURE_2D) { image = GL_TEXTURE_2D; type = 1; object = GL_TEXTURE_2D; }
+    else if (target >= EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= EGL_GL_TEXTURE_CUBE_MAP_NEGATIVE_Z) {
+        /* Both enum ranges list +X, -X, +Y, -Y, +Z, -Z. */
+        image = GL_TEXTURE_CUBE_MAP_POSITIVE_X + (target - EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_X);
+        type = 1; object = GL_TEXTURE_CUBE_MAP;
+    } else if (target == EGL_GL_RENDERBUFFER) { image = GL_RENDERBUFFER; type = 2; object = GL_RENDERBUFFER; }
+    else return 0;
+    if (gl_target) *gl_target = image;
+    if (kind) *kind = type;
+    if (object_target) *object_target = object;
+    return 1;
+}
+/* Take ownership of a bo handle from a context session into the generation's
+ * image descriptor, where every image handle lives. */
+static uint32_t adopt_bo_handle(struct egl_generation *generation, int fd, uint32_t handle) {
+    struct imported_bo_reference *owner = calloc(1, sizeof *owner);
+    uint32_t local = owner ? transfer_bo_handle(fd, generation->fd, handle) : 0;
+    if (fd != generation->fd) {
+        struct wpk_drm_gem_close request = {.handle = handle};
+        int error = errno;
+        ioctl(fd, WPK_DRM_IOCTL_GEM_CLOSE, &request);
+        errno = error;
+    }
+    if (!local) {
+        if (fd == generation->fd) {
+            struct wpk_drm_gem_close request = {.handle = handle};
+            ioctl(fd, WPK_DRM_IOCTL_GEM_CLOSE, &request);
+        }
+        free(owner);
+        return 0;
+    }
+    pthread_mutex_lock(&g_image_mutex);
+    owner->handle = local;
+    owner->references = 1;
+    owner->next = generation->imported_bos;
+    generation->imported_bos = owner;
+    pthread_mutex_unlock(&g_image_mutex);
+    return local;
+}
+/* EGL 1.5 section 3.9.1 with KHR_gl_texture_2D_image,
+ * KHR_gl_texture_cubemap_image and KHR_gl_renderbuffer_image. The image is
+ * the object's own storage, not a copy: the object becomes an EGLImage
+ * sibling, and respecifying or deleting it orphans the image. */
+static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGLContext ctx,
+                                          EGLenum target, EGLClientBuffer buffer,
+                                          const void *attrib_list, int wide) {
+    uint32_t gl_target, kind, object_target;
+    (void)gl_image_target(target, &gl_target, &kind, &object_target);
+    /* These targets name an object in ctx, so they require a context. */
+    struct egl_context_record *context = ctx == EGL_NO_CONTEXT ? NULL : find_context(generation, ctx);
+    if (!context) { g_last_error = EGL_BAD_CONTEXT; return EGL_NO_IMAGE_KHR; }
+    EGLAttrib level = 0;
+    for (size_t i = 0; attrib_list; i += 2) {
+        EGLAttrib key = image_attribute(attrib_list, wide, i);
+        if (key == EGL_NONE) break;
+        if (key != EGL_GL_TEXTURE_LEVEL && key != EGL_GL_TEXTURE_ZOFFSET && key != EGL_IMAGE_PRESERVED_KHR) {
+            g_last_error = EGL_BAD_PARAMETER; return EGL_NO_IMAGE_KHR;
+        }
+        EGLAttrib value = image_attribute(attrib_list, wide, i + 1);
+        if (key == EGL_IMAGE_PRESERVED_KHR && value != EGL_TRUE && value != EGL_FALSE) {
+            g_last_error = EGL_BAD_PARAMETER; return EGL_NO_IMAGE_KHR;
+        }
+        /* The level selects a texture image; renderbuffers have one image
+         * and no target here uses the 3D z offset. */
+        if (key == EGL_GL_TEXTURE_LEVEL && kind == 1) level = value;
+    }
+    uintptr_t name = (uintptr_t)buffer;
+    /* Name zero is the default object, which can never be a source. */
+    if (!name || name > UINT32_MAX) { g_last_error = EGL_BAD_PARAMETER; return EGL_NO_IMAGE_KHR; }
+    if (level < 0 || level > INT32_MAX) { g_last_error = EGL_BAD_MATCH; return EGL_NO_IMAGE_KHR; }
+    switch (_wpk_gl_image_source_state(context->encoder, kind, object_target, (uint32_t)name)) {
+    case WPK_GL_IMAGE_SOURCE_READY: break;
+    case WPK_GL_IMAGE_SOURCE_SIBLING: g_last_error = EGL_BAD_ACCESS; return EGL_NO_IMAGE_KHR;
+    default: g_last_error = EGL_BAD_PARAMETER; return EGL_NO_IMAGE_KHR;
+    }
+    /* The context's queued commands must define the object first. Another
+     * thread's current context is not this thread's to use. */
+    if (context->owner && context->owner != &g_thread_binding) {
+        g_last_error = EGL_BAD_ACCESS; return EGL_NO_IMAGE_KHR;
+    }
+    if (context->owner && _wpk_gl_flush_checked() != 0) {
+        g_last_error = EGL_BAD_ACCESS; return EGL_NO_IMAGE_KHR;
+    }
+    if (!g_next_object_handle) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
+    struct wpk_egl_image *image = calloc(1, sizeof *image);
+    if (!image) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
+    struct wpk_drm_export_image request = {.ctx_id = context->backend_id, .target = gl_target,
+        .name = (uint32_t)name, .level = (uint32_t)level};
+    if (ioctl(context->session->fd, WPK_DRM_IOCTL_EXPORT_IMAGE, &request) != 0) {
+        free(image);
+        g_last_error = errno == ENOENT || errno == EINVAL ? EGL_BAD_PARAMETER
+                     : errno == ERANGE ? EGL_BAD_MATCH
+                     : errno == ENOMEM || errno == EMFILE ? EGL_BAD_ALLOC : EGL_BAD_ACCESS;
+        return EGL_NO_IMAGE_KHR;
+    }
+    /* Releasing the only handle retires the bo; the host then returns the
+     * storage to the object, which never stopped using it. */
+    image->handle = adopt_bo_handle(generation, context->session->fd, request.bo_handle);
+    if (!image->handle) { free(image); g_last_error = EGL_BAD_ALLOC; return EGL_NO_IMAGE_KHR; }
+    image->generation = generation;
+    image->public_handle = g_next_object_handle++;
+    image->width = request.width;
+    image->height = request.height;
+    image->references = 1;
+    image->public_live = 1;
+    pthread_mutex_lock(&g_image_mutex);
+    image->next = g_images;
+    g_images = image;
+    pthread_mutex_unlock(&g_image_mutex);
+    _wpk_gl_link_image_source(context->encoder, kind, (uint32_t)name, image, request.source, request.revision);
+    return (EGLImageKHR)image->public_handle;
 }
 EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target,
                        EGLClientBuffer buffer, const EGLAttrib *attrib_list) {
@@ -2784,9 +2903,11 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_BAD_CONTEXT;
         return EGL_NO_IMAGE_KHR;
     }
-    /* GL texture and renderbuffer sources (EGL 1.5 Table 3.10) are not
-     * implemented; their targets stay EGL_BAD_PARAMETER. The dma-buf
-     * target requires EGL_NO_CONTEXT and a NULL buffer. */
+    if (gl_image_target(target, NULL, NULL, NULL))
+        return create_gl_image_locked(generation, ctx, target, buffer, attrib_list, wide);
+    /* The dma-buf target requires EGL_NO_CONTEXT and a NULL buffer. Any
+     * other target, including EGL_GL_TEXTURE_3D (ES 2.0 has no 3D
+     * textures), is EGL_BAD_PARAMETER. */
     if (target != EGL_LINUX_DMA_BUF_EXT || ctx != EGL_NO_CONTEXT
         || buffer != NULL) {
         g_last_error = EGL_BAD_PARAMETER;

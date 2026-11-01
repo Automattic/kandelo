@@ -500,6 +500,7 @@ host/test/webgl-framebuffer-names.test.ts	source-only
 host/test/webgl-gbm-front-copy.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only
 host/test/webgl-image-bindings.test.ts	source-only
+host/test/webgl-image-export.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-inverse-sequence.test.ts	source-only

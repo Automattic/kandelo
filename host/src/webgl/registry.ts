@@ -12,7 +12,7 @@ import type { GlClientArrayFields } from "./client-array.js";
 import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
-import { destroyTextureView, destroyRenderbufferView } from "./image-storage.js";
+import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
 import type { GlUniformUpload } from "./uniform-upload.js";
 import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
 import type { GlSurfaceCreation } from "./surface-create.js";
@@ -757,7 +757,24 @@ export class GlContextRegistry {
   }
   retireForeignBo(bo: number): void {
     this.foreignRetirementOwners(bo);
-    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)) this.foreignRetirements.delete(bo);
+    if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)
+      && this.retireExportedBo(bo)) this.foreignRetirements.delete(bo);
+  }
+  /** Exported GLES images keyed by their GPU-tier bo (EXPORT_IMAGE). The
+   *  record owns the source object's storage once the object stops using
+   *  it; bo retirement releases it. */
+  private exportedImages = new Map<number, GlExportedImage>();
+  publishExportedImage(record: GlExportedImage): void { this.exportedImages.set(record.bo, record); }
+  exportedImage(bo: number): GlExportedImage | undefined {
+    const record = this.exportedImages.get(bo);
+    return record?.boLive && !this.foreignRetirements.has(bo) ? record : undefined;
+  }
+  private retireExportedBo(bo: number): boolean {
+    const record = this.exportedImages.get(bo);
+    if (!record) return true;
+    if (!retireExportedImage(record)) return false;
+    this.exportedImages.delete(bo);
+    return true;
   }
   retryForeignRetirements(): void {
     for (const bo of this.foreignRetirements.keys()) this.retireForeignBo(bo);

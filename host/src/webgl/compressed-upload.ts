@@ -4,6 +4,7 @@ import { checkedQueryReply } from "./state-query.js";
 import { imageTextureOperation, type GlTextureView } from "./image-storage.js";
 import { prepareTextureOperation } from "./texture-bindings.js";
 import { setExpandedLevel } from "./luminance-float.js";
+import { recordTextureLevel } from "./texture-levels.js";
 import * as O from "./ops.js";
 
 // One context owns at most this many detached compressed bytes. Exceeding
@@ -97,9 +98,13 @@ export function runCompressedUpload(b: GlBinding, input: Uint8Array, out: Uint8A
     const accepted=imageTextureOperation(b,target,image,()=>{
       if (image) b.gl!.compressedTexImage2D(target,level,format,width,height,border,upload.bytes);
       else b.gl!.compressedTexSubImage2D(target,level,x,y,width,height,format,upload.bytes);
-    },level!==0);
+    },level!==0,image ? level : undefined);
     // A compressed level is never an expanded luminance/alpha float level.
-    if (accepted && image) setExpandedLevel(upload.object,target,level,null);
+    if (accepted && image) {
+      setExpandedLevel(upload.object,target,level,null);
+      recordTextureLevel(upload.object,target,level,
+        {width,height,internalFormat:format,format,type:0,compressed:true});
+    }
     return accepted ? reply() : -5;
   });
 }

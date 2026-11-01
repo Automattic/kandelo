@@ -4433,6 +4433,12 @@
     {
       "kind": "func",
       "module": "env",
+      "name": "host_gl_export_image",
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
       "name": "host_gl_import_image",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
@@ -5999,6 +6005,66 @@
         }
       ],
       "size": 32
+    },
+    "WpkDrmExportImage": {
+      "fields": [
+        {
+          "name": "ctx_id",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "target",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "name",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "level",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "bo_handle",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "width",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "height",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "internal_format",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "source",
+          "offset": 32,
+          "span": 4
+        },
+        {
+          "name": "revision",
+          "offset": 36,
+          "span": 4
+        },
+        {
+          "name": "reserved",
+          "offset": 40,
+          "span": 8
+        }
+      ],
+      "size": 48
     },
     "WpkDrmGemClose": {
       "fields": [

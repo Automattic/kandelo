@@ -1949,7 +1949,7 @@ static int import_image_object(uint32_t kind, struct wpk_object_name *object, GL
 }
 /* An explicit public name may already belong to a new peer object. Read
  * the retained implicit binding and publish only an ordered owned revision. */
-static int sync_object_image(uint32_t kind, struct wpk_object_name *object) {
+static int sync_object_image_target(uint32_t kind, GLenum target, struct wpk_object_name *object) {
     if (!object)
         return 1;
     uint32_t *input = malloc(8);
@@ -1959,7 +1959,7 @@ static int sync_object_image(uint32_t kind, struct wpk_object_name *object) {
         return 0;
     }
     input[0] = kind;
-    input[1] = kind == 1 ? GL_TEXTURE_2D : GL_RENDERBUFFER;
+    input[1] = target;
     int accepted = checked_query_reply(QOP_BOUND_IMAGE_STATE, input, 8, reply, 8);
     free(input);
     uint32_t source = 1, revision = 0;
@@ -1970,6 +1970,56 @@ static int sync_object_image(uint32_t kind, struct wpk_object_name *object) {
     if (!accepted || source)
         return 0;
     return publish_object_image(_wpk_gl_current_encoder()->objects, object, NULL, 0, revision);
+}
+static int sync_object_image(uint32_t kind, struct wpk_object_name *object) {
+    return sync_object_image_target(kind, kind == 1 ? GL_TEXTURE_2D : GL_RENDERBUFFER, object);
+}
+/* An exported cube-map face keeps its cube texture a sibling; respecifying
+ * any face of that texture ends the association (EGL 1.5 section 3.9). */
+static int is_cube_face(GLenum target) {
+    return target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z;
+}
+static int sync_respecified_image(GLenum target) {
+    if (target == GL_TEXTURE_2D)
+        return sync_object_image(1, g_texture_units[g_active_unit].texture_object);
+    if (target != GL_TEXTURE_CUBE_MAP && !is_cube_face(target))
+        return 1;
+    /* Cube maps are never EGLImage targets; only an exported source needs
+     * the extra round trip. */
+    struct wpk_object_name *object = g_texture_units[g_active_unit].cube_object;
+    struct wpk_object_group *group = _wpk_gl_current_encoder()->objects;
+    pthread_mutex_lock(&group->mutex);
+    int linked = object && object->image;
+    pthread_mutex_unlock(&group->mutex);
+    return linked ? sync_object_image_target(1, GL_TEXTURE_CUBE_MAP, object) : 1;
+}
+int _wpk_gl_image_source_state(struct wpk_gles_context *state, uint32_t kind,
+                               uint32_t object_target, uint32_t name) {
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    struct wpk_object_name *object =
+        find_object_name(group, kind == 1 ? WPK_NAMES_TEXTURE : WPK_NAMES_RENDERBUFFER, name);
+    /* A generated name is no object until its first bind fixes its type. */
+    int result = !object || object->target != object_target ? WPK_GL_IMAGE_SOURCE_INVALID
+               : object->image ? WPK_GL_IMAGE_SOURCE_SIBLING : WPK_GL_IMAGE_SOURCE_READY;
+    pthread_mutex_unlock(&group->mutex);
+    return result;
+}
+void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
+                               struct wpk_egl_image *image, uint32_t source, uint32_t revision) {
+    struct wpk_object_group *group = state->objects;
+    pthread_mutex_lock(&group->mutex);
+    struct wpk_object_name *object =
+        find_object_name(group, kind == 1 ? WPK_NAMES_TEXTURE : WPK_NAMES_RENDERBUFFER, name);
+    int retained = object && object->references < UINT_MAX;
+    if (retained)
+        object->references++;
+    pthread_mutex_unlock(&group->mutex);
+    if (!retained)
+        return;
+    _wpk_egl_image_retain(image);
+    (void)publish_object_image(group, object, image, source, revision);
+    object_release(group, object);
 }
 static GLenum image_target_error(struct wpk_object_group *group, struct wpk_object_name *object,
                                  GLenum target) {
@@ -2395,8 +2445,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         return;
     // A rejected imported allocation must not turn row uploads into writes
     // to the old shared image. Establish orphaning before publishing pixels.
-    if (target == GL_TEXTURE_2D &&
-        !sync_object_image(1, g_texture_units[g_active_unit].texture_object))
+    if (!sync_respecified_image(target))
         return;
     emit_tex_sub_image_2d(target, level, 0, 0, width, height, format, type, bpp, data);
 }
@@ -2426,8 +2475,7 @@ void glGenerateMipmap(GLenum target) {
     EMIT_BEGIN(OP_GENERATE_MIPMAP, 4)
     w_u32(&_c, (uint32_t)target);
     EMIT_END()
-    if (target == GL_TEXTURE_2D)
-        sync_object_image(1, g_texture_units[g_active_unit].texture_object);
+    sync_respecified_image(target);
 }
 
 void glTexParameteri(GLenum target, GLenum pname, GLint param) {
@@ -3544,8 +3592,8 @@ static void compressed_upload(uint32_t op, GLenum target, GLint level, GLenum fo
     }
     header[0]=3;header[2]=0;memcpy(request,header,12);
     if (!compressed_upload_query(fd,request,12,reply,token,0)) goto cancel;
-    if (op==OP_COMPRESSED_TEX_IMAGE_2D && target==GL_TEXTURE_2D)
-        sync_object_image(1,g_texture_units[g_active_unit].texture_object);
+    if (op==OP_COMPRESSED_TEX_IMAGE_2D)
+        sync_respecified_image(target);
     free(request);free(reply);return;
 cancel:
     /* ABORT drops staged bytes only. It cannot undo or repeat an uncertain
@@ -3579,8 +3627,7 @@ void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
     w_u32(&_c, (uint32_t)internalformat);
     w_i32(&_c, x); w_i32(&_c, y); w_i32(&_c, width); w_i32(&_c, height); w_i32(&_c, border);
     EMIT_END()
-    if (target == GL_TEXTURE_2D)
-        sync_object_image(1, g_texture_units[g_active_unit].texture_object);
+    sync_respecified_image(target);
 }
 
 void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,

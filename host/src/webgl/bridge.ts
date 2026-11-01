@@ -25,6 +25,7 @@ import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniform
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
+import { isCubeFace, recordGeneratedMipmaps as recordGeneratedLevelRecords, recordTextureLevel } from "./texture-levels.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
@@ -299,6 +300,13 @@ function normalizeTextureType(type: number): number {
   // WebGL2 accepts the core GL_HALF_FLOAT token. Native renderers such as LOVE
   // pick the OES token when GL_OES_texture_half_float is advertised.
   return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
+}
+
+/** The logical texture a 2D or cube-face image call specifies. */
+function boundLevelObject(b: GlBinding, target: number): WebGLTexture | null {
+  const unit = b.shadow.activeTexture;
+  return target === 0x0de1 ? b.shadow.textureUnits[unit] ?? null
+    : isCubeFace(target) ? b.shadow.cubeTextureUnits[unit] ?? null : null;
 }
 
 function normalizeTextureInternalFormat(internal: number, format: number, type: number): number {
@@ -867,11 +875,13 @@ function dispatch(
         : { internal: normalizeTextureInternalFormat(internalFormat, format, type), format };
       const accepted = imageTextureOperation(b,target,true,()=>gl.texImage2D(
         target, level, native.internal, width, height, border, native.format, type, data,
-      ),level!==0);
+      ),level!==0,level);
       if (accepted) {
         recordTextureImage(b,target,level,width,height);
         setExpandedLevel(boundLogicalTexture(b,target),target,level,
           expanded ? {format,type,width,height} : null);
+        recordTextureLevel(boundLevelObject(b,target),target,level,
+          {width,height,internalFormat:native.internal,format:native.format,type,compressed:false});
       }
       return accepted;
     }
@@ -954,26 +964,31 @@ function dispatch(
     }
     case O.OP_GENERATE_MIPMAP: {
       const target = v.getUint32(p,true);
+      const object = target === 0x8513 ? b.shadow.cubeTextureUnits[b.shadow.activeTexture]
+        : b.shadow.textureUnits[b.shadow.activeTexture];
       if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target))) {
         recordGeneratedMipmaps(b,target);
         generateExpandedMipmaps(boundLogicalTexture(b,target),target);
+        recordGeneratedLevelRecords(object,target);
       }
       return;
     }
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
-      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.compressedTexImage2D(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
-        v.getInt32(p + 12, true),
-        v.getInt32(p + 16, true),
+      const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
+      const internalFormat = v.getUint32(p + 8, true);
+      const width = v.getInt32(p + 12, true), height = v.getInt32(p + 16, true);
+      if (imageTextureOperation(b,target,true,()=>gl.compressedTexImage2D(
+        target, level, internalFormat, width, height,
         v.getInt32(p + 20, true),
         data,
-      ),v.getInt32(p+4,true)!==0))
-        { recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+12,true),v.getInt32(p+16,true));
-          setExpandedLevel(boundLogicalTexture(b,v.getUint32(p,true)),v.getUint32(p,true),v.getInt32(p+4,true),null); }
+      ),level!==0,level)) {
+        recordTextureImage(b,target,level,width,height);
+        setExpandedLevel(boundLogicalTexture(b,target),target,level,null);
+        recordTextureLevel(boundLevelObject(b,target),target,level,
+          {width,height,internalFormat,format:internalFormat,type:0,compressed:true});
+      }
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
@@ -991,21 +1006,26 @@ function dispatch(
       ));
       return;
     }
-    case O.OP_COPY_TEX_IMAGE_2D:
+    case O.OP_COPY_TEX_IMAGE_2D: {
       if (!requireFramebufferDimensions(b,true)) return;
-      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.copyTexImage2D(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getUint32(p + 8, true),
+      const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
+      const internalFormat = v.getUint32(p + 8, true);
+      const width = v.getInt32(p + 20, true), height = v.getInt32(p + 24, true);
+      // ES 2.0 copies take an unsized internal format from the framebuffer.
+      if (imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
+        target, level, internalFormat,
         v.getInt32(p + 12, true),
         v.getInt32(p + 16, true),
-        v.getInt32(p + 20, true),
-        v.getInt32(p + 24, true),
+        width, height,
         v.getInt32(p + 28, true),
-      ),v.getInt32(p+4,true)!==0))
-        { recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+20,true),v.getInt32(p+24,true));
-          setExpandedLevel(boundLogicalTexture(b,v.getUint32(p,true)),v.getUint32(p,true),v.getInt32(p+4,true),null); }
+      ),level!==0,level)) {
+        recordTextureImage(b,target,level,width,height);
+        setExpandedLevel(boundLogicalTexture(b,target),target,level,null);
+        recordTextureLevel(boundLevelObject(b,target),target,level,
+          {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false});
+      }
       return;
+    }
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
       if (!requireFramebufferDimensions(b,true)) return;
       imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(

@@ -4704,6 +4704,36 @@ pub mod dri {
     }
 
 
+    /// Publish one GLES object image as an EGLImage source (EGL 1.5 section
+    /// 3.9, KHR_gl_texture_2D_image, KHR_gl_texture_cubemap_image and
+    /// KHR_gl_renderbuffer_image). `target` is `GL_TEXTURE_2D`, a
+    /// `GL_TEXTURE_CUBE_MAP_*` face or `GL_RENDERBUFFER`; `name` and `level`
+    /// select the object in context `ctx_id` on this object session. The
+    /// kernel returns a new GPU-tier bo handle whose storage is that object's
+    /// own image: the object becomes an EGLImage sibling, and respecifying
+    /// or deleting it orphans the image rather than changing it.
+    pub const DRM_IOCTL_WPK_EXPORT_IMAGE: u32 = 0xc030_64e3;
+
+    /// `EXPORT_IMAGE` argument. 48 bytes; every output and reserved word is
+    /// zero on input. `source`/`revision` identify the object's sibling
+    /// state in the exporting context's share group.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmExportImage {
+        pub ctx_id: u32,          // 0   in
+        pub target: u32,          // 4   in
+        pub name: u32,            // 8   in
+        pub level: u32,           // 12  in
+        pub bo_handle: u32,       // 16  out
+        pub width: u32,           // 20  out
+        pub height: u32,          // 24  out
+        pub internal_format: u32, // 28  out  GL internal format of the image
+        pub source: u32,          // 32  out  share-group image source token
+        pub revision: u32,        // 36  out  source object's sibling revision
+        pub reserved: [u32; 2],   // 40  zero
+    }
+
+
     /// GPU-bo allocator argument. 16 bytes on wasm32 (4 × u32). `format` and
     /// `usage` are passed through to libgbm's `gbm_bo_create(format, usage)`
     /// from the user side.

@@ -346,6 +346,31 @@ struct wpk_egl_image {
     size_t map_len;
 };
 
+/* DRM_IOCTL_WPK_EXPORT_IMAGE mirrors shared::dri::WpkDrmExportImage: publish
+ * a texture level, cube-map face level or renderbuffer of `ctx_id` as a new
+ * GPU-tier bo whose storage is that object's image (EGL 1.5 section 3.9).
+ * Outputs are zero on input; `source`/`revision` order the object's sibling
+ * state in the exporting share group. */
+#define WPK_DRM_IOCTL_EXPORT_IMAGE 0xc03064e3u
+struct wpk_drm_export_image {
+    uint32_t ctx_id, target, name, level;
+    uint32_t bo_handle, width, height, internal_format, source, revision;
+    uint32_t reserved[2];
+};
+_Static_assert(sizeof(struct wpk_drm_export_image) == 48, "export image layout");
+/* Source object admission for an exported image, in the exporting context's
+ * share group. kind 1 = texture of `object_target` (GL_TEXTURE_2D or
+ * GL_TEXTURE_CUBE_MAP), 2 = renderbuffer. */
+#define WPK_GL_IMAGE_SOURCE_READY 0
+#define WPK_GL_IMAGE_SOURCE_INVALID 1   /* not an object of that type */
+#define WPK_GL_IMAGE_SOURCE_SIBLING 2   /* already an EGLImage sibling */
+int _wpk_gl_image_source_state(struct wpk_gles_context *state, uint32_t kind,
+                               uint32_t object_target, uint32_t name);
+/* Record the accepted export: the source object retains the image as one of
+ * its siblings until it is respecified or deleted. */
+void _wpk_gl_link_image_source(struct wpk_gles_context *state, uint32_t kind, uint32_t name,
+                               struct wpk_egl_image *image, uint32_t source, uint32_t revision);
+
 /* A retained private source token, separate from public GL names, for either
  * storage tier. Zero for no current context or unavailable native storage. */
 /* Lookup retains a temporary reference; the caller must release it. */

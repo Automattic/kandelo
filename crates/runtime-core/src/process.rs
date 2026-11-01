@@ -585,6 +585,18 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// `DRM_IOCTL_WPK_EXPORT_IMAGE`: make the selected GLES object's image
+    /// the storage of GPU-tier bo `bo_id`. `attrs` is the kernel's copy of
+    /// `WpkDrmExportImage`; the host writes `width`, `height`,
+    /// `internal_format`, `source` and `revision`. Returns zero or a negative
+    /// errno: ENOENT/EINVAL (no such object of that target), ERANGE (level
+    /// is not a valid mipmap level), EBUSY (already an EGLImage sibling),
+    /// ENOMEM, or EIO (renderer unavailable).
+    #[allow(unused_variables)]
+    fn gl_export_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32, attrs: &mut [u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     #[allow(unused_variables)]
     fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
 

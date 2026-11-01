@@ -5790,7 +5790,7 @@ fn channel_signal_area() -> Value {
 
 fn marshalled_structs() -> Value {
     use shared::dri::{
-        WpkDrmBindForeignTexture, WpkDrmImportImage, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
+        WpkDrmBindForeignTexture, WpkDrmExportImage, WpkDrmImportImage, WpkDrmEventVblank, WpkDrmGemClose, WpkDrmGetCap,
         WpkDrmGpuBoCreate, WpkDrmModeCardRes, WpkDrmModeCreateDumb, WpkDrmModeCrtcPageFlip,
         WpkDrmModeDestroyDumb, WpkDrmModeFbCmd2, WpkDrmModeGetConnector, WpkDrmModeGetCrtc,
         WpkDrmModeGetEncoder, WpkDrmModeMapDumb, WpkDrmModeModeinfo, WpkDrmPrimeHandle,
@@ -6155,6 +6155,11 @@ fn marshalled_structs() -> Value {
     structs.insert(
         "WpkDrmImportImage".into(),
         struct_layout!(WpkDrmImportImage { bo_handle, ctx_id, width, height, format, pitch, offset, source }),
+    );
+    structs.insert(
+        "WpkDrmExportImage".into(),
+        struct_layout!(WpkDrmExportImage { ctx_id, target, name, level, bo_handle, width, height,
+            internal_format, source, revision, reserved }),
     );
     structs.insert(
         "WpkDrmBindForeignTexture".into(),

@@ -207,6 +207,11 @@ static uint32_t transferred_handles[8];
 static uint32_t transferred_sources[8];
 static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
+/* GLES-object image export (EXPORT_IMAGE): handle 99 is the exported bo. */
+#define DOUBLE_EXPORT_IMAGE 0xc03064e3u
+static unsigned image_exports, image_export_closes;
+static int image_export_errno;
+static uint32_t image_export_request[4];
 static int fail_prime_export, fail_prime_import, fail_foreign_texture, fail_dmabuf_import;
 static unsigned display_opens, display_closes, object_closes;
 static unsigned native_files[8];
@@ -808,7 +813,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
     } else if (request == 0x40086409u) {
         uint32_t handle = *(uint32_t *)arg;
-        if (handle >= 1000) {
+        if (handle == 99) {
+            image_export_closes++;
+        } else if (handle >= 1000) {
             assert(handle == transferred_handles[fd - 10]);
             transferred_handles[fd - 10] = 0;
             transferred_sources[fd - 10] = 0;
@@ -829,7 +836,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     } else if (request == 0xc01064e1u) {
         foreign_bind_calls++;
         uint32_t *words = arg;
-        assert(words[0] == 77 || words[0] == transferred_handles[fd - 10]);
+        assert(words[0] == 77 || words[0] == 99 || words[0] == transferred_handles[fd - 10]);
         assert(words[2] == slot->context);
         if (pause_foreign_bind) {
             overlap_reach(1); overlap_wait(2);
@@ -850,6 +857,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (raw_reply_fail_calloc) fail_calloc = 1;
             egl_trace(13,fd,words,16);
         }
+    } else if (request == DOUBLE_EXPORT_IMAGE) {
+        uint32_t *words = arg;
+        assert(words[0] == slot->context && words[2] && !words[4] && !words[9] && !words[10] && !words[11]);
+        memcpy(image_export_request, words, sizeof image_export_request);
+        image_exports++;
+        if (image_export_errno) { errno = image_export_errno; image_export_errno = 0; return -1; }
+        const uint32_t kind = words[1] == GL_RENDERBUFFER ? 2 : 1;
+        *object_image_source(slot, kind, words[2]) = 5;
+        words[4] = 99; words[5] = 4; words[6] = 4; words[7] = GL_RGBA; words[8] = 5;
+        words[9] = ++*object_image_revision(slot, kind, words[2]);
     } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
         errno = ENOMEM;
         return -1;
@@ -1118,6 +1135,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     query_gl_error = GL_INVALID_VALUE;
                 else if (words[0] == GL_TEXTURE_2D)
                     orphan_image_source(slot, 1, slot->texture_2d[slot->texture_active]);
+                else if (words[0] == GL_TEXTURE_CUBE_MAP ||
+                         (words[0] >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && words[0] <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z))
+                    orphan_image_source(slot, 1, slot->texture_cube[slot->texture_active]);
             }
             if (op == OP_RENDERBUFFER_STORAGE) {
                 if (fail_image_storage)
@@ -1450,6 +1470,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     redefined_texture = bound_texture;
                     if (input[1] == GL_TEXTURE_2D)
                         orphan_image_source(slot, 1, slot->texture_2d[slot->texture_active]);
+                    else
+                        orphan_image_source(slot, 1, slot->texture_cube[slot->texture_active]);
                 } else if (input[0] == OP_TEX_SUB_IMAGE_2D) {
                     assert(q->in_buf_len == 40 && input[9] == 0);
                     /* Admission checks the existing destination without
@@ -1502,9 +1524,11 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
             uint32_t *reply = allocation_for(q->out_buf_ptr, 16);
             assert((input[0] == 1 && input[1] == GL_TEXTURE_2D) ||
+                   (input[0] == 1 && input[1] == GL_TEXTURE_CUBE_MAP && q->op == 0x26) ||
                    (input[0] == 2 && input[1] == GL_RENDERBUFFER));
-            uint32_t name =
-                input[0] == 1 ? slot->texture_2d[slot->texture_active] : slot->renderbuffer_binding;
+            uint32_t name = input[0] == 2 ? slot->renderbuffer_binding
+                : input[1] == GL_TEXTURE_CUBE_MAP ? slot->texture_cube[slot->texture_active]
+                : slot->texture_2d[slot->texture_active];
             assert(name);
             unsigned failure = image_failure;
             image_failure = 0;
@@ -2481,6 +2505,143 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
             assert(eglTerminate(dpy)); count = -1; modifier = 7;
         }
         assert(!eglQueryDmaBufFormatsEXT((EGLDisplay)-1, 0, NULL, &count) && eglGetError() == EGL_BAD_DISPLAY);
+    } else if (!strcmp(name, "egl-spec-image-gl-texture")) {
+        /* EGL 1.5 section 3.9.1 / KHR_gl_texture_2D_image: a texture level
+         * of the image's context becomes an EGLImage, and the texture
+         * becomes one of its siblings. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const char *extensions = eglQueryString(dpy, EGL_EXTENSIONS);
+        assert(strstr(extensions, "EGL_KHR_gl_texture_2D_image") &&
+               strstr(extensions, "EGL_KHR_gl_texture_cubemap_image") &&
+               strstr(extensions, "EGL_KHR_gl_renderbuffer_image"));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        GLuint textures[2];
+        glGenTextures(2, textures);
+        glBindTexture(GL_TEXTURE_2D, textures[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        const EGLint list[] = {EGL_GL_TEXTURE_LEVEL, 0, EGL_IMAGE_PRESERVED, EGL_TRUE, EGL_NONE};
+        EGLImageKHR img = eglCreateImageKHR(dpy, context, EGL_GL_TEXTURE_2D,
+            (EGLClientBuffer)(uintptr_t)textures[0], list);
+        assert(img != EGL_NO_IMAGE_KHR && eglGetError() == EGL_SUCCESS && image_exports == 1);
+        assert(image_export_request[1] == GL_TEXTURE_2D && image_export_request[2] == textures[0] &&
+               image_export_request[3] == 0);
+        /* The source is now a sibling, so it cannot source another image. */
+        assert(!eglCreateImageKHR(dpy, context, EGL_GL_TEXTURE_2D,
+            (EGLClientBuffer)(uintptr_t)textures[0], list));
+        assert(eglGetError() == EGL_BAD_ACCESS && image_exports == 1);
+        glBindTexture(GL_TEXTURE_2D, textures[1]);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        assert(glGetError() == GL_NO_ERROR);
+        /* The image, the source and the target each hold the storage. */
+        assert(eglDestroyImageKHR(dpy, img) && !image_export_closes);
+        glDeleteTextures(1, &textures[1]);
+        assert(!image_export_closes);
+        glDeleteTextures(1, &textures[0]);
+        assert(image_export_closes == 1 && glGetError() == GL_NO_ERROR);
+        /* Core entry point with EGLAttrib, and a respecified source. */
+        glGenTextures(1, textures);
+        glBindTexture(GL_TEXTURE_2D, textures[0]);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        const EGLAttrib wide[] = {EGL_GL_TEXTURE_LEVEL, 0, EGL_NONE};
+        EGLImage core = eglCreateImage(dpy, context, EGL_GL_TEXTURE_2D,
+            (EGLClientBuffer)(uintptr_t)textures[0], wide);
+        assert(core != EGL_NO_IMAGE && image_exports == 2);
+        assert(eglDestroyImage(dpy, core) && image_export_closes == 1);
+        /* Respecification orphans the image; the source releases it. */
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 2, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        assert(image_export_closes == 2 && glGetError() == GL_NO_ERROR);
+        core = eglCreateImage(dpy, context, EGL_GL_TEXTURE_2D, (EGLClientBuffer)(uintptr_t)textures[0], wide);
+        assert(core != EGL_NO_IMAGE && image_exports == 3 && eglDestroyImage(dpy, core));
+        glDeleteTextures(1, textures);
+        assert(image_export_closes == 3);
+        assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
+        assert(!allocation_count());
+    } else if (!strcmp(name, "egl-spec-image-gl-sources")) {
+        /* Cube-map faces and renderbuffers (KHR_gl_texture_cubemap_image,
+         * KHR_gl_renderbuffer_image). */
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        GLuint cube, rbo;
+        glGenTextures(1, &cube);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cube);
+        const EGLenum faces[] = {EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_X, EGL_GL_TEXTURE_CUBE_MAP_NEGATIVE_X,
+            EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_Y, EGL_GL_TEXTURE_CUBE_MAP_NEGATIVE_Y,
+            EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_Z, EGL_GL_TEXTURE_CUBE_MAP_NEGATIVE_Z};
+        for (unsigned i = 0; i < 6; i++) {
+            EGLImageKHR face = eglCreateImageKHR(dpy, context, faces[i], (EGLClientBuffer)(uintptr_t)cube, NULL);
+            assert(face && image_export_request[1] == GL_TEXTURE_CUBE_MAP_POSITIVE_X + i);
+            assert(eglDestroyImageKHR(dpy, face));
+            /* Respecifying any face orphans the image held by the source. */
+            glTexImage2D(GL_TEXTURE_CUBE_MAP_POSITIVE_X + i, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            assert(image_export_closes == i + 1 && glGetError() == GL_NO_ERROR);
+        }
+        glGenRenderbuffers(1, &rbo);
+        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_STENCIL_INDEX8, 4, 4);
+        EGLImageKHR rb = eglCreateImageKHR(dpy, context, EGL_GL_RENDERBUFFER, (EGLClientBuffer)(uintptr_t)rbo, NULL);
+        assert(rb && image_export_request[1] == GL_RENDERBUFFER && image_export_request[2] == rbo);
+        assert(!eglCreateImageKHR(dpy, context, EGL_GL_RENDERBUFFER, (EGLClientBuffer)(uintptr_t)rbo, NULL));
+        assert(eglGetError() == EGL_BAD_ACCESS);
+        assert(eglDestroyImageKHR(dpy, rb));
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_RGBA4, 4, 4);
+        assert(image_export_closes == 7 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-image-gl-errors")) {
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        GLuint textures[2], rbo, unbound;
+        glGenTextures(2, textures);
+        glGenTextures(1, &unbound);
+        glGenRenderbuffers(1, &rbo);
+        glBindTexture(GL_TEXTURE_2D, textures[0]);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, textures[1]);
+        glBindRenderbuffer(GL_RENDERBUFFER, rbo);
+        EGLClientBuffer tex2d = (EGLClientBuffer)(uintptr_t)textures[0];
+        EGLClientBuffer texcube = (EGLClientBuffer)(uintptr_t)textures[1];
+        const struct { EGLContext context; EGLenum target; EGLClientBuffer buffer; EGLint error; } cases[] = {
+            /* GL sources need a context; the dma-buf rule is the converse. */
+            {EGL_NO_CONTEXT, EGL_GL_TEXTURE_2D, tex2d, EGL_BAD_CONTEXT},
+            /* The default object, a name that is no object, and objects of
+             * another type are not a valid buffer for the target. */
+            {context, EGL_GL_TEXTURE_2D, (EGLClientBuffer)0, EGL_BAD_PARAMETER},
+            {context, EGL_GL_TEXTURE_2D, (EGLClientBuffer)(uintptr_t)unbound, EGL_BAD_PARAMETER},
+            {context, EGL_GL_TEXTURE_2D, (EGLClientBuffer)(uintptr_t)0x12345, EGL_BAD_PARAMETER},
+            {context, EGL_GL_TEXTURE_2D, texcube, EGL_BAD_PARAMETER},
+            {context, EGL_GL_TEXTURE_CUBE_MAP_POSITIVE_X, tex2d, EGL_BAD_PARAMETER},
+            /* Names are per type: renderbuffer 1 exists, renderbuffer 2 does not. */
+            {context, EGL_GL_RENDERBUFFER, texcube, EGL_BAD_PARAMETER},
+            {context, EGL_GL_RENDERBUFFER, (EGLClientBuffer)0, EGL_BAD_PARAMETER},
+            /* ES 2.0 has no 3D textures. */
+            {context, EGL_GL_TEXTURE_3D, tex2d, EGL_BAD_PARAMETER},
+        };
+        for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+            assert(!eglCreateImageKHR(dpy, cases[i].context, cases[i].target, cases[i].buffer, NULL));
+            assert(eglGetError() == cases[i].error);
+        }
+        const EGLint attributes[][5] = {
+            {0x1234, 0, EGL_NONE}, {EGL_IMAGE_PRESERVED, 5, EGL_NONE},
+            {EGL_GL_TEXTURE_LEVEL, -1, EGL_NONE},
+        };
+        const EGLint attribute_errors[] = {EGL_BAD_PARAMETER, EGL_BAD_PARAMETER, EGL_BAD_MATCH};
+        for (unsigned i = 0; i < 3; i++) {
+            assert(!eglCreateImageKHR(dpy, context, EGL_GL_TEXTURE_2D, tex2d, attributes[i]));
+            assert(eglGetError() == attribute_errors[i]);
+        }
+        assert(image_exports == 0);
+        /* Host decisions about the object's actual image state. */
+        const int errnos[] = {ERANGE, EINVAL, EBUSY, ENOMEM, EIO};
+        const EGLint errors[] = {EGL_BAD_MATCH, EGL_BAD_PARAMETER, EGL_BAD_ACCESS, EGL_BAD_ALLOC, EGL_BAD_ACCESS};
+        for (unsigned i = 0; i < 5; i++) {
+            image_export_errno = errnos[i];
+            assert(!eglCreateImageKHR(dpy, context, EGL_GL_TEXTURE_2D, tex2d, NULL));
+            assert(eglGetError() == errors[i] && image_exports == i + 1);
+        }
+        assert(!image_export_closes);
+        assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
+        assert(!allocation_count());
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
