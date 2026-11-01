@@ -35,6 +35,7 @@
 #include <time.h>
 
 #include "gl_abi.h"
+#include "drm_format_info.h"
 #include "gbm_window.h"
 #if defined(__APPLE__)
 #define WPK_WAYLAND_OPTIONAL __attribute__((weak_import))
@@ -3135,12 +3136,11 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
 
 /* ----- EGL_EXT_image_dma_buf_import ------------------------------- */
 
-/* The dma-buf formats a bo can carry: the single-plane fourccs Kandelo's
- * buffers hold exactly (libgbm's k_formats, the kernel's
- * gpu_storage_format_cpp), each one linear plane, with drm_format_info's
- * bytes per pixel. Spelled out because libEGL must not depend on libdrm
- * headers. A GPU-tier image samples and renders the bo's texture; a
- * CPU-tier one is mirrored in a texture of the same format. */
+/* The dma-buf formats a bo can carry, each a linear layout described by
+ * drm_format_info.h (the table libgbm, the kernel and the host share). A
+ * GPU-tier image samples and renders the bo's texture; a CPU-tier one is
+ * mirrored in a texture of the same format. Listed in a fixed order for
+ * eglQueryDmaBufFormatsEXT. */
 #define WPK_FOURCC_ARGB8888 0x34325241u /* 'AR24' */
 #define WPK_FOURCC_XRGB8888 0x34325258u /* 'XR24' */
 #define WPK_FOURCC_ABGR8888 0x34324241u /* 'AB24' */
@@ -3148,30 +3148,34 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
 #define WPK_MOD_LINEAR      0x0000000000000000ull
 #define WPK_MOD_INVALID     0x00ffffffffffffffull
 
-static const struct { EGLint fourcc; uint32_t cpp; } k_dmabuf_formats[] = {
-    {(EGLint)WPK_FOURCC_ARGB8888, 4}, {(EGLint)WPK_FOURCC_XRGB8888, 4},
-    {(EGLint)WPK_FOURCC_ABGR8888, 4}, {(EGLint)WPK_FOURCC_XBGR8888, 4},
-    {(EGLint)0x36314752u, 2}, /* 'RG16' RGB565 */
-    {(EGLint)0x20203852u, 1}, /* 'R8  ' */
-    {(EGLint)0x38385247u, 2}, /* 'GR88' */
-    {(EGLint)0x30335241u, 4}, /* 'AR30' ARGB2101010 */
-    {(EGLint)0x30335258u, 4}, /* 'XR30' XRGB2101010 */
-    {(EGLint)0x30334241u, 4}, /* 'AB30' ABGR2101010 */
-    {(EGLint)0x30334258u, 4}, /* 'XB30' XBGR2101010 */
-    {(EGLint)0x48344241u, 8}, /* 'AB4H' ABGR16161616F */
-    {(EGLint)0x48344258u, 8}, /* 'XB4H' XBGR16161616F */
+static const EGLint k_dmabuf_formats[] = {
+    (EGLint)WPK_FOURCC_ARGB8888, (EGLint)WPK_FOURCC_XRGB8888,
+    (EGLint)WPK_FOURCC_ABGR8888, (EGLint)WPK_FOURCC_XBGR8888,
+    (EGLint)0x36314752u, /* 'RG16' RGB565 */
+    (EGLint)0x20203852u, /* 'R8  ' */
+    (EGLint)0x38385247u, /* 'GR88' */
+    (EGLint)0x30335241u, /* 'AR30' ARGB2101010 */
+    (EGLint)0x30335258u, /* 'XR30' XRGB2101010 */
+    (EGLint)0x30334241u, /* 'AB30' ABGR2101010 */
+    (EGLint)0x30334258u, /* 'XB30' XBGR2101010 */
+    (EGLint)0x48344241u, /* 'AB4H' ABGR16161616F */
+    (EGLint)0x48344258u, /* 'XB4H' XBGR16161616F */
 };
 #define WPK_DMABUF_FORMAT_COUNT \
     ((EGLint)(sizeof k_dmabuf_formats / sizeof k_dmabuf_formats[0]))
 
-/* Bytes per pixel of a dma-buf format, 0 when no bo can carry it. */
-static uint32_t dmabuf_format_cpp(EGLint fourcc) {
-    for (EGLint i = 0; i < WPK_DMABUF_FORMAT_COUNT; i++) {
-        if (k_dmabuf_formats[i].fourcc == fourcc) return k_dmabuf_formats[i].cpp;
-    }
-    return 0;
+/* The layout of a dma-buf format an image can carry, or NULL. */
+static const struct wpk_drm_format_info *dmabuf_format(EGLint fourcc) {
+    for (EGLint i = 0; i < WPK_DMABUF_FORMAT_COUNT; i++)
+        if (k_dmabuf_formats[i] == fourcc) return wpk_drm_format_info((uint32_t)fourcc);
+    return NULL;
 }
-static int dmabuf_format_supported(EGLint fourcc) { return dmabuf_format_cpp(fourcc) != 0; }
+/* Bytes per pixel of a single-plane dma-buf format, 0 when no bo can carry it. */
+static uint32_t dmabuf_format_cpp(EGLint fourcc) {
+    const struct wpk_drm_format_info *info = dmabuf_format(fourcc);
+    return info ? info->cpp[0] : 0;
+}
+static int dmabuf_format_supported(EGLint fourcc) { return dmabuf_format(fourcc) != NULL; }
 
 /* Import plane 0 of a dma-buf. The import holds its own GEM reference, so
  * the caller may close the fd afterwards. Whether the bo has a CPU mapping
@@ -3730,7 +3734,7 @@ EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
     }
     EGLint n = max_formats < WPK_DMABUF_FORMAT_COUNT ? max_formats
                                                      : WPK_DMABUF_FORMAT_COUNT;
-    for (EGLint i = 0; i < n; i++) formats[i] = k_dmabuf_formats[i].fourcc;
+    for (EGLint i = 0; i < n; i++) formats[i] = k_dmabuf_formats[i];
     *num_formats = n;
     return EGL_TRUE;
 }

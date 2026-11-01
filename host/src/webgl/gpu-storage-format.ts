@@ -1,3 +1,4 @@
+import { drmFormatInfo } from "./drm-format-info.js";
 /**
  * The WebGL 2 texture storage of a GPU-tier buffer of a DRM format
  * (`DRM_IOCTL_WPK_CREATE_GPU_BO`). Each format's single plane is stored
@@ -28,17 +29,17 @@ const RGBA16F = { internalFormat: 0x881a, format: 0x1908, type: 0x140b }; // HAL
 /** RGBA8 storage, the format-agnostic default. */
 export const RGBA8_STORAGE: GpuStorageFormat = { ...RGBA8, opaque: false };
 
+/** The format/type pair each sized storage is specified with. */
+const UPLOAD: ReadonlyMap<number, { format: number; type: number }> = new Map<number, { format: number; type: number }>([
+  [0x8229, { format: 0x1903, type: 0x1401 }], // R8: RED, UNSIGNED_BYTE
+  [0x822b, { format: 0x8227, type: 0x1401 }], // RG8: RG, UNSIGNED_BYTE
+  [0x8d62, { format: 0x1907, type: 0x8363 }], // RGB565: RGB, UNSIGNED_SHORT_5_6_5
+  [RGBA8.internalFormat, RGBA8], [RGB10_A2.internalFormat, RGB10_A2], [RGBA16F.internalFormat, RGBA16F],
+]);
+
+/** The storage of a GPU-tier buffer of `fourcc`, from the shared format
+ * table (drm-format-info.ts: gpuStorage, opaque). */
 export function gpuStorageFormat(fourcc: number): GpuStorageFormat | null {
-  switch (fourcc >>> 0) {
-    case 0x20203852: return { internalFormat: 0x8229, format: 0x1903, type: 0x1401, opaque: false }; // R8
-    case 0x38385247: return { internalFormat: 0x822b, format: 0x8227, type: 0x1401, opaque: false }; // GR88: RG8
-    case 0x36314752: return { internalFormat: 0x8d62, format: 0x1907, type: 0x8363, opaque: false }; // RGB565
-    case 0x34325241: case 0x34324241: return { ...RGBA8, opaque: false };   // ARGB/ABGR8888
-    case 0x34325258: case 0x34324258: return { ...RGBA8, opaque: true };    // XRGB/XBGR8888
-    case 0x30335241: case 0x30334241: return { ...RGB10_A2, opaque: false }; // ARGB/ABGR2101010
-    case 0x30335258: case 0x30334258: return { ...RGB10_A2, opaque: true };  // XRGB/XBGR2101010
-    case 0x48344241: return { ...RGBA16F, opaque: false };                   // ABGR16161616F
-    case 0x48344258: return { ...RGBA16F, opaque: true };                    // XBGR16161616F
-    default: return null;
-  }
+  const info = drmFormatInfo(fourcc), upload = info && UPLOAD.get(info.gpuStorage);
+  return info && upload ? { internalFormat: info.gpuStorage, format: upload.format, type: upload.type, opaque: info.opaque } : null;
 }

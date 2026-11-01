@@ -49,6 +49,7 @@
 
 #include <gbm.h>
 #include "gbm_window.h"
+#include "drm_format_info.h"
 #include <xf86drm.h>
 #include <drm/drm.h>
 #include <drm/drm_mode.h>
@@ -273,34 +274,35 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *h
     return _wpk_gbm_surface_metadata(window, width, height, &format, &flags);
 }
 
-/* The single-plane formats a Kandelo buffer holds exactly, and the planes
- * and windows that can use them:
- * - bpp: drm_format_info's bytes per pixel, times 8. CREATE_DUMB accepts
- *   any bpp, so every format has CPU-tier (dumb) storage.
+/* The formats a Kandelo buffer holds, and the planes and windows that can
+ * use them. Each format's memory layout (planes, bytes per sample,
+ * subsampling) comes from drm_format_info.h, the table the kernel, libEGL
+ * and the host share.
  * - scanout: the KMS primary plane scans it out (kms::PRIMARY_PLANE_FORMATS;
  *   10-bit and half-float planes reduced to the 8-bpc output).
  * - window: an EGL window surface can render to it. Kandelo's EGL configs
  *   name 32-bpp 8888 windows, whose fronts are RGBA8 renders.
+ * CREATE_DUMB accepts any bpp, so every format has CPU-tier (dumb) storage.
  * Every format is a GL render target in both tiers: GPU-tier storage is a
  * WebGL 2 texture of the format's own internal format (R8, RG8, RGB565,
  * RGBA8, RGB10_A2, RGBA16F; the kernel's gpu_storage_format_cpp lists the
  * same set), and a CPU-tier buffer imported as an EGLImage is mirrored in
  * that same texture format with an exact byte conversion each way. */
-struct wpk_gbm_format { uint32_t fourcc; uint32_t bpp; int scanout, window; };
+struct wpk_gbm_format { uint32_t fourcc; int scanout, window; };
 static const struct wpk_gbm_format k_formats[] = {
-    {DRM_FORMAT_R8, 8, 1, 0},
-    {DRM_FORMAT_GR88, 16, 1, 0},
-    {DRM_FORMAT_RGB565, 16, 1, 0},
-    {DRM_FORMAT_XRGB8888, 32, 1, 1},
-    {DRM_FORMAT_ARGB8888, 32, 1, 1},
-    {DRM_FORMAT_XBGR8888, 32, 1, 1},
-    {DRM_FORMAT_ABGR8888, 32, 1, 1},
-    {DRM_FORMAT_XRGB2101010, 32, 1, 0},
-    {DRM_FORMAT_ARGB2101010, 32, 1, 0},
-    {DRM_FORMAT_XBGR2101010, 32, 1, 0},
-    {DRM_FORMAT_ABGR2101010, 32, 1, 0},
-    {DRM_FORMAT_XBGR16161616F, 64, 1, 0},
-    {DRM_FORMAT_ABGR16161616F, 64, 1, 0},
+    {DRM_FORMAT_R8, 1, 0},
+    {DRM_FORMAT_GR88, 1, 0},
+    {DRM_FORMAT_RGB565, 1, 0},
+    {DRM_FORMAT_XRGB8888, 1, 1},
+    {DRM_FORMAT_ARGB8888, 1, 1},
+    {DRM_FORMAT_XBGR8888, 1, 1},
+    {DRM_FORMAT_ABGR8888, 1, 1},
+    {DRM_FORMAT_XRGB2101010, 1, 0},
+    {DRM_FORMAT_ARGB2101010, 1, 0},
+    {DRM_FORMAT_XBGR2101010, 1, 0},
+    {DRM_FORMAT_ABGR2101010, 1, 0},
+    {DRM_FORMAT_XBGR16161616F, 1, 0},
+    {DRM_FORMAT_ABGR16161616F, 1, 0},
 };
 
 static const struct wpk_gbm_format *format_info(uint32_t fourcc) {
@@ -309,9 +311,10 @@ static const struct wpk_gbm_format *format_info(uint32_t fourcc) {
     return NULL;
 }
 
+/* drm_format_info's bits per pixel of plane 0. */
 static uint32_t format_bpp(uint32_t fourcc) {
-    const struct wpk_gbm_format *info = format_info(fourcc);
-    return info ? info->bpp : 0;
+    const struct wpk_drm_format_info *layout = format_info(fourcc) ? wpk_drm_format_info(fourcc) : NULL;
+    return layout ? layout->cpp[0] * 8 : 0;
 }
 
 /* A gbm_surface exists to back an EGL window surface. */

@@ -9,6 +9,9 @@
  * blit here, the GPU presenters in their shader), so a framebuffer looks
  * the same whichever presenter shows it, and the CRTC's gamma LUT is
  * indexed by the reduced 8-bit value, as an 8-bpc legacy LUT is. */
+import { drmFormatInfo } from "../webgl/drm-format-info.js";
+import { gpuStorageFormat } from "../webgl/gpu-storage-format.js";
+
 export interface ScanoutGeometry {
   width: number;
   height: number;
@@ -32,38 +35,25 @@ export interface ScanoutFormat {
   gl: { internalFormat: number; format: number; type: number };
 }
 
-const RGBA8_UPLOAD = { internalFormat: 0x8058, format: 0x1908, type: 0x1401 };
-const RGB10_A2_UPLOAD = { internalFormat: 0x8059, format: 0x1908, type: 0x8368 };
-const RGBA16F_UPLOAD = { internalFormat: 0x881a, format: 0x1908, type: 0x140b };
-
+/** Each scanout format's bytes per pixel and texture storage come from the
+ * shared format table (drm-format-info.ts, gpu-storage-format.ts); this
+ * adds only how the presenter decodes a texel. */
 export function scanoutFormat(fourcc: number): ScanoutFormat {
   const { Unorm8, Rgb565, Unorm10, Float } = ScanoutEncoding;
-  switch (fourcc) {
-    case 0x34325258: // XRGB8888: B,G,R,X
-    case 0x34325241: // ARGB8888: B,G,R,A
-      return { bytesPerPixel: 4, bgr: true, encoding: Unorm8, gl: RGBA8_UPLOAD };
-    case 0x34324258: // XBGR8888: R,G,B,X
-    case 0x34324241: // ABGR8888: R,G,B,A
-      return { bytesPerPixel: 4, bgr: false, encoding: Unorm8, gl: RGBA8_UPLOAD };
-    case 0x36314752: // RGB565, little-endian packed words
-      return { bytesPerPixel: 2, bgr: false, encoding: Rgb565, gl: { internalFormat: 0x8d62, format: 0x1907, type: 0x8363 } };
-    case 0x20203852: // R8: red only; green and blue are zero
-      return { bytesPerPixel: 1, bgr: false, encoding: Unorm8, gl: { internalFormat: 0x8229, format: 0x1903, type: 0x1401 } };
-    case 0x38385247: // GR88: R then G; blue is zero
-      return { bytesPerPixel: 2, bgr: false, encoding: Unorm8, gl: { internalFormat: 0x822b, format: 0x8227, type: 0x1401 } };
-    case 0x30335258: // XRGB2101010: blue in bits 0-9, red in 20-29
-    case 0x30335241: // ARGB2101010
-      return { bytesPerPixel: 4, bgr: true, encoding: Unorm10, gl: RGB10_A2_UPLOAD };
-    case 0x30334258: // XBGR2101010: red in bits 0-9, as GL's 2_10_10_10_REV
-    case 0x30334241: // ABGR2101010
-      return { bytesPerPixel: 4, bgr: false, encoding: Unorm10, gl: RGB10_A2_UPLOAD };
-    case 0x48344258: // XBGR16161616F: R, G, B, X half floats
-    case 0x48344241: // ABGR16161616F
-      return { bytesPerPixel: 8, bgr: false, encoding: Float, gl: RGBA16F_UPLOAD };
-    default:
-      throw new RangeError(`Unsupported KMS scanout format ${fourcc}`);
-  }
+  const info = drmFormatInfo(fourcc), storage = gpuStorageFormat(fourcc);
+  if (!info || !storage || !SCANOUT.has(fourcc >>> 0)) throw new RangeError(`Unsupported KMS scanout format ${fourcc}`);
+  const encoding = storage.internalFormat === 0x8d62 ? Rgb565 : storage.internalFormat === 0x8059 ? Unorm10
+    : storage.internalFormat === 0x881a ? Float : Unorm8;
+  return { bytesPerPixel: info.cpp[0] as ScanoutFormat["bytesPerPixel"], bgr: BGR.has(fourcc >>> 0), encoding,
+    gl: { internalFormat: storage.internalFormat, format: storage.format, type: storage.type } };
 }
+
+/** The primary plane's formats (kms::PRIMARY_PLANE_FORMATS). */
+const SCANOUT = new Set([0x34325258, 0x34325241, 0x34324258, 0x34324241, 0x36314752, 0x20203852, 0x38385247,
+  0x30335258, 0x30335241, 0x30334258, 0x30334241, 0x48344258, 0x48344241]);
+/** Formats holding blue where GL holds red: XRGB/ARGB8888 bytes B,G,R,X/A;
+ * X/ARGB2101010 blue in bits 0-9, red in 20-29. */
+const BGR = new Set([0x34325258, 0x34325241, 0x30335258, 0x30335241]);
 
 /** A 10-bit channel at 8 bits: round(v * 255 / 1023), as integers. No value
  *  is a tie (v * 510 + 1023 is odd), so no tie-breaking rule is needed. */

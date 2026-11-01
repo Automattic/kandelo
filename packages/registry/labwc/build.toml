@@ -11,6 +11,7 @@ inputs = [
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",
   "libc/glue/gl_abi.h",
+  "libc/glue/drm_format_info.h",
   "scripts/build-dri-stubs.sh",
   "scripts/build-gles-stubs.sh",
   "scripts/write-graphics-pkgconfig.sh",

@@ -8,7 +8,8 @@ for name in EGL GLES2 KHR; do
     cp -R "$repo_root/libc/musl-overlay/include/$name" "$output_dir/include/"
 done
 cp "$repo_root/libc/musl-overlay/include/gbm.h" "$output_dir/include/"
-cp "$repo_root/libc/glue/gbm_window.h" "$repo_root/libc/glue/wayland-native.h" "$output_dir/glue/"
+cp "$repo_root/libc/glue/gbm_window.h" "$repo_root/libc/glue/wayland-native.h" \
+    "$repo_root/libc/glue/drm_format_info.h" "$output_dir/glue/"
 for name in gl_abi.h libegl_stub.c libglesv2_stub.c; do
     if [ $# -eq 1 ]; then
         git -C "$repo_root" show "$1:libc/glue/$name" > "$output_dir/glue/$name"

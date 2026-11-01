@@ -4664,19 +4664,126 @@ pub mod dri {
     pub const DRM_FORMAT_ABGR16161616F: u32 = 0x48344241;
     /// `fourcc('X','B','4','H')` — RGB half floats then a padding half.
     pub const DRM_FORMAT_XBGR16161616F: u32 = 0x48344258;
+    /// `fourcc('N','V','1','2')` — Y plane, then a 2x2-subsampled plane of
+    /// Cb,Cr byte pairs.
+    pub const DRM_FORMAT_NV12: u32 = 0x3231564e;
+    /// `fourcc('N','V','2','1')` — NV12 with Cr,Cb byte pairs.
+    pub const DRM_FORMAT_NV21: u32 = 0x3132564e;
+    /// `fourcc('Y','U','1','2')` — Y, then 2x2-subsampled Cb and Cr planes.
+    pub const DRM_FORMAT_YUV420: u32 = 0x32315559;
+    /// `fourcc('Y','V','1','2')` — Y, then 2x2-subsampled Cr and Cb planes.
+    pub const DRM_FORMAT_YVU420: u32 = 0x32315659;
+    /// `fourcc('Y','U','Y','V')` — packed Y0,Cb,Y1,Cr bytes per pixel pair.
+    pub const DRM_FORMAT_YUYV: u32 = 0x56595559;
+    /// `fourcc('U','Y','V','Y')` — packed Cb,Y0,Cr,Y1 bytes per pixel pair.
+    pub const DRM_FORMAT_UYVY: u32 = 0x59565955;
+    /// `fourcc('P','0','1','0')` — NV12 layout with little-endian 16-bit
+    /// samples holding 10 bits in their high bits.
+    pub const DRM_FORMAT_P010: u32 = 0x30313050;
+
+    /// The memory layout of a pixel format: `struct drm_format_info` from
+    /// `drivers/gpu/drm/drm_fourcc.c`, for the formats a Kandelo buffer can
+    /// describe. libgbm, libEGL (`libc/glue/drm_format_info.h`) and the
+    /// host (`host/src/webgl/drm-format-info.ts`) carry the same table, so
+    /// every layer sizes and validates a plane identically.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct DrmFormatInfo {
+        pub format: u32,
+        pub num_planes: u32,
+        /// Bytes per sample of each plane (`cpp`); unused planes are 0.
+        pub cpp: [u32; 3],
+        /// Horizontal and vertical chroma subsampling of planes 1 and 2.
+        pub hsub: u32,
+        pub vsub: u32,
+        pub is_yuv: bool,
+        /// The WebGL 2 sized internal format of a GPU-tier buffer of this
+        /// format (0: none can hold it). A GPU buffer has no CPU bytes, so
+        /// formats that differ only in channel order share storage.
+        pub gpu_storage: u32,
+        /// The format's alpha position is padding (X...): its storage keeps
+        /// a stored alpha of 1.0 that rendering never writes.
+        pub opaque: bool,
+    }
+
+    const fn rgb(format: u32, cpp: u32, gpu_storage: u32, opaque: bool) -> DrmFormatInfo {
+        DrmFormatInfo { format, num_planes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, is_yuv: false, gpu_storage, opaque }
+    }
+    const fn yuv(format: u32, num_planes: u32, cpp: [u32; 3], hsub: u32, vsub: u32) -> DrmFormatInfo {
+        DrmFormatInfo { format, num_planes, cpp, hsub, vsub, is_yuv: true, gpu_storage: 0, opaque: false }
+    }
+    const R8_STORAGE: u32 = 0x8229;
+    const RG8_STORAGE: u32 = 0x822b;
+    const RGB565_STORAGE: u32 = 0x8d62;
+    const RGBA8_STORAGE: u32 = 0x8058;
+    const RGB10_A2_STORAGE: u32 = 0x8059;
+    const RGBA16F_STORAGE: u32 = 0x881a;
+
+    /// Every format any Kandelo buffer, framebuffer or image can carry.
+    pub const DRM_FORMATS: [DrmFormatInfo; 20] = [
+        rgb(DRM_FORMAT_R8, 1, R8_STORAGE, false),
+        rgb(DRM_FORMAT_GR88, 2, RG8_STORAGE, false),
+        rgb(DRM_FORMAT_RGB565, 2, RGB565_STORAGE, false),
+        rgb(DRM_FORMAT_XRGB8888, 4, RGBA8_STORAGE, true),
+        rgb(DRM_FORMAT_ARGB8888, 4, RGBA8_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR8888, 4, RGBA8_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR8888, 4, RGBA8_STORAGE, false),
+        rgb(DRM_FORMAT_XRGB2101010, 4, RGB10_A2_STORAGE, true),
+        rgb(DRM_FORMAT_ARGB2101010, 4, RGB10_A2_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR2101010, 4, RGB10_A2_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR2101010, 4, RGB10_A2_STORAGE, false),
+        rgb(DRM_FORMAT_XBGR16161616F, 8, RGBA16F_STORAGE, true),
+        rgb(DRM_FORMAT_ABGR16161616F, 8, RGBA16F_STORAGE, false),
+        yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2),
+        yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2),
+        yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2),
+        yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2),
+        yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1),
+        yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1),
+        yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2),
+    ];
+
+    pub const fn drm_format_info(format: u32) -> Option<DrmFormatInfo> {
+        let mut i = 0;
+        while i < DRM_FORMATS.len() {
+            if DRM_FORMATS[i].format == format { return Some(DRM_FORMATS[i]); }
+            i += 1;
+        }
+        None
+    }
+
+    impl DrmFormatInfo {
+        /// `drm_format_info_plane_width`: planes after the first are
+        /// subsampled, rounding up.
+        pub const fn plane_width(&self, width: u32, plane: usize) -> u32 {
+            if plane == 0 { width } else { width.div_ceil(self.hsub) }
+        }
+        /// `drm_format_info_plane_height`.
+        pub const fn plane_height(&self, height: u32, plane: usize) -> u32 {
+            if plane == 0 { height } else { height.div_ceil(self.vsub) }
+        }
+        /// `drm_format_info_min_pitch` for a framebuffer of `width` pixels.
+        pub const fn min_pitch(&self, width: u32, plane: usize) -> u64 {
+            self.plane_width(width, plane) as u64 * self.cpp[plane] as u64
+        }
+        /// Bytes a reader of one row of `plane` touches. A packed YUV pair
+        /// (YUYV, UYVY) carries the chroma of both pixels, so a row of odd
+        /// width still reads the whole last pair; otherwise `min_pitch`.
+        pub const fn row_bytes(&self, width: u32, plane: usize) -> u64 {
+            if self.is_yuv && self.num_planes == 1 {
+                (width as u64).div_ceil(self.hsub as u64) * self.hsub as u64 * self.cpp[0] as u64
+            } else {
+                self.min_pitch(width, plane)
+            }
+        }
+    }
 
     /// Bytes per pixel (`drm_format_info.cpp[0]`) of a format a GPU-tier
     /// buffer can hold: one whose single plane a WebGL 2 texture stores
     /// exactly and can render into (R8, RG8, RGB565, RGBA8, RGB10_A2,
-    /// RGBA16F). None for any other format.
+    /// RGBA16F; `DrmFormatInfo::gpu_storage`). None for any other format.
     pub const fn gpu_storage_format_cpp(format: u32) -> Option<u32> {
-        match format {
-            DRM_FORMAT_R8 => Some(1),
-            DRM_FORMAT_GR88 | DRM_FORMAT_RGB565 => Some(2),
-            DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 | DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888
-            | DRM_FORMAT_ARGB2101010 | DRM_FORMAT_XRGB2101010 | DRM_FORMAT_ABGR2101010
-            | DRM_FORMAT_XBGR2101010 => Some(4),
-            DRM_FORMAT_ABGR16161616F | DRM_FORMAT_XBGR16161616F => Some(8),
+        match drm_format_info(format) {
+            Some(info) if info.gpu_storage != 0 => Some(info.cpp[0]),
             _ => None,
         }
     }
@@ -4686,16 +4793,8 @@ pub mod dri {
     /// 1.0). A GPU buffer has no CPU bytes, so formats that differ only in
     /// channel order within a pixel (ARGB/ABGR) share storage.
     pub const fn gpu_storage_format(format: u32) -> Option<(u32, bool)> {
-        match format {
-            DRM_FORMAT_R8 => Some((0x8229, false)),
-            DRM_FORMAT_GR88 => Some((0x822b, false)),
-            DRM_FORMAT_RGB565 => Some((0x8d62, false)),
-            DRM_FORMAT_ARGB8888 | DRM_FORMAT_ABGR8888 => Some((0x8058, false)),
-            DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888 => Some((0x8058, true)),
-            DRM_FORMAT_ARGB2101010 | DRM_FORMAT_ABGR2101010 => Some((0x8059, false)),
-            DRM_FORMAT_XRGB2101010 | DRM_FORMAT_XBGR2101010 => Some((0x8059, true)),
-            DRM_FORMAT_ABGR16161616F => Some((0x881a, false)),
-            DRM_FORMAT_XBGR16161616F => Some((0x881a, true)),
+        match drm_format_info(format) {
+            Some(info) if info.gpu_storage != 0 => Some((info.gpu_storage, info.opaque)),
             _ => None,
         }
     }
@@ -6199,6 +6298,45 @@ mod dri_tests {
         // Multi-plane YUV and formats without exact WebGL 2 storage.
         for format in [0, 0x3231564e /* NV12 */, 0x34324752 /* RGB888 */] {
             assert_eq!(gpu_storage_format_cpp(format), None, "{format:#x}");
+        }
+    }
+
+    #[test]
+    fn yuv_formats_match_linux_drm_format_info() {
+        const fn fourcc(a: u8, b: u8, c: u8, d: u8) -> u32 {
+            (a as u32) | ((b as u32) << 8) | ((c as u32) << 16) | ((d as u32) << 24)
+        }
+        // drivers/gpu/drm/drm_fourcc.c: num_planes, cpp, hsub, vsub.
+        for (format, code, planes, cpp, hsub, vsub) in [
+            (DRM_FORMAT_NV12, fourcc(b'N', b'V', b'1', b'2'), 2, [1, 2, 0], 2, 2),
+            (DRM_FORMAT_NV21, fourcc(b'N', b'V', b'2', b'1'), 2, [1, 2, 0], 2, 2),
+            (DRM_FORMAT_YUV420, fourcc(b'Y', b'U', b'1', b'2'), 3, [1, 1, 1], 2, 2),
+            (DRM_FORMAT_YVU420, fourcc(b'Y', b'V', b'1', b'2'), 3, [1, 1, 1], 2, 2),
+            (DRM_FORMAT_YUYV, fourcc(b'Y', b'U', b'Y', b'V'), 1, [2, 0, 0], 2, 1),
+            (DRM_FORMAT_UYVY, fourcc(b'U', b'Y', b'V', b'Y'), 1, [2, 0, 0], 2, 1),
+            (DRM_FORMAT_P010, fourcc(b'P', b'0', b'1', b'0'), 2, [2, 4, 0], 2, 2),
+        ] {
+            assert_eq!(format, code);
+            let info = drm_format_info(format).unwrap();
+            assert_eq!((info.num_planes, info.cpp, info.hsub, info.vsub, info.is_yuv),
+                (planes, cpp, hsub, vsub, true), "{format:#x}");
+        }
+        for format in [DRM_FORMAT_R8, DRM_FORMAT_XRGB8888, DRM_FORMAT_ABGR16161616F] {
+            let info = drm_format_info(format).unwrap();
+            assert_eq!((info.num_planes, info.cpp[0], info.is_yuv),
+                (1, gpu_storage_format_cpp(format).unwrap(), false));
+        }
+        assert_eq!(drm_format_info(0x34324752 /* RGB888 */), None);
+        // A 5x3 NV12 frame: 5x3 luma, 3x2 chroma pairs.
+        let nv12 = drm_format_info(DRM_FORMAT_NV12).unwrap();
+        assert_eq!((nv12.plane_width(5, 1), nv12.plane_height(3, 1)), (3, 2));
+        assert_eq!((nv12.min_pitch(5, 0), nv12.min_pitch(5, 1)), (5, 6));
+        // An odd-width YUYV row still ends with a whole Y0,Cb,Y1,Cr group.
+        let yuyv = drm_format_info(DRM_FORMAT_YUYV).unwrap();
+        assert_eq!((yuyv.min_pitch(5, 0), yuyv.row_bytes(5, 0)), (10, 12));
+        // Every format is listed once.
+        for (i, a) in DRM_FORMATS.iter().enumerate() {
+            assert!(DRM_FORMATS[i + 1..].iter().all(|b| b.format != a.format));
         }
     }
 

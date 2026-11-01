@@ -2279,15 +2279,15 @@ pub(crate) fn handle_dri_ioctl(
         DRM_IOCTL_WPK_IMPORT_IMAGE => {
             if buf.len() < core::mem::size_of::<WpkDrmImportImage>() { return Err(Errno::EINVAL); }
             let mut req: WpkDrmImportImage = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            // Any single-plane format a mirror texture holds exactly
-            // (gpu_storage_format_cpp; host/src/webgl/cpu-image-codec.ts),
-            // its rows and plane aligned to its component size.
-            let Some(cpp) = wasm_posix_shared::dri::gpu_storage_format_cpp(req.format) else {
-                return Err(Errno::EINVAL);
-            };
-            let align = cpp.min(4);
+            // One plane of any single-plane format a mirror texture holds
+            // exactly (drm_format_info; host/src/webgl/cpu-image-codec.ts).
+            // The host uploads it with UNPACK_ALIGNMENT min(cpp, 4), so a
+            // plane and its rows start at that alignment; YUV formats are
+            // converted images (DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE).
+            let info = drm_format_info(req.format).filter(|info| !info.is_yuv).ok_or(Errno::EINVAL)?;
+            let align = info.cpp[0].min(4);
             if req.width == 0 || req.height == 0 || req.source != 0 || req.offset % align != 0
-                || req.pitch % align != 0 || (req.pitch as u64) < req.width as u64 * cpp as u64 {
+                || req.pitch % align != 0 || (req.pitch as u64) < info.row_bytes(req.width, 0) {
                 return Err(Errno::EINVAL);
             }
             let bo_id = {
@@ -2297,10 +2297,11 @@ pub(crate) fn handle_dri_ioctl(
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
                 bo_id
             };
-            let span = req.offset as u64 + (req.height as u64 - 1) * req.pitch as u64
-                + req.width as u64 * cpp as u64;
-            // A CPU-tier bo is bytes: any format may describe them, within
-            // its size (a dma-buf import reinterprets, as on Linux).
+            // A CPU-tier bo is bytes: any format may describe them (a
+            // dma-buf import reinterprets, as on Linux), and its allocation
+            // bpp plays no part; only the plane's last byte must lie inside
+            // the object.
+            let span = req.offset as u64 + (req.height as u64 - 1) * req.pitch as u64 + info.row_bytes(req.width, 0);
             let valid = crate::dri::with_registry(|r| r.get(bo_id).map(|bo|
                 bo.tier == crate::dri::bo::BoTier::CpuShared && span <= bo.size).unwrap_or(false));
             if !valid { return Err(Errno::EINVAL); }
@@ -52330,8 +52331,10 @@ impl HostIO for RelSymlinkMock {
                     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
                 }
                 let original = bytes.clone();
+                // framebuffer_check: an extent past 32 bits is ERANGE.
+                let errno = if offset == u32::MAX { Errno::ERANGE } else { Errno::EINVAL };
                 assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, &mut bytes),
-                    Err(Errno::EINVAL), "gpu={gpu} layout={width}x{height}+{offset}");
+                    Err(errno), "gpu={gpu} layout={width}x{height}+{offset}");
                 assert_eq!(bytes, original, "rejection must not publish a framebuffer id");
                 assert!(kms_state_mut(&mut proc, ofd).unwrap().fbs.borrow().is_empty());
                 assert_eq!(bo_refcount(bo), Some(1), "rejection must not retain the BO");
@@ -54959,6 +54962,58 @@ impl HostIO for RelSymlinkMock {
     // DRM_IOCTL_MODE_ADDFB2 validation (framebuffer_check and
     // drm_gem_fb_init_with_funcs; IGT kms_addfb_basic).
     // -----------------------------------------------------------------
+
+    #[test]
+    fn kms_addfb2_checks_every_plane_before_the_driver_refuses_a_format() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        // A 64x48 NV12 frame in one object: 64x48 luma, 32x24 Cb,Cr pairs.
+        let bo = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 64, height: 72, bpp: 8, ..Default::default() }).unwrap();
+        let mut nv12 = WpkDrmModeFbCmd2 { width: 64, height: 48, pixel_format: DRM_FORMAT_NV12, ..Default::default() };
+        nv12.handles = [bo.handle, bo.handle, 0, 0];
+        nv12.pitches = [64, 64, 0, 0];
+        nv12.offsets = [0, 64 * 48, 0, 0];
+        let addfb = |proc: &mut Process, host: &mut MockHostIO, req: WpkDrmModeFbCmd2| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, req).map(|fb| fb.fb_id)
+        };
+        // framebuffer_check runs over every plane the format has first:
+        // a missing chroma handle or pitch is EINVAL, and a plane whose
+        // extent overflows 32 bits is ERANGE, as drm_internal_framebuffer_create
+        // reports before the driver sees the request.
+        let mut missing = nv12;
+        missing.handles[1] = 0;
+        assert_eq!(addfb(&mut proc, &mut host, missing), Err(Errno::EINVAL));
+        let mut short_pitch = nv12;
+        short_pitch.pitches[1] = 63;
+        assert_eq!(addfb(&mut proc, &mut host, short_pitch), Err(Errno::EINVAL));
+        let mut overflow = nv12;
+        overflow.offsets[1] = u32::MAX - 64;
+        assert_eq!(addfb(&mut proc, &mut host, overflow), Err(Errno::ERANGE));
+        // A well-formed YUV framebuffer then reaches the device, whose only
+        // planes (primary and cursor) scan out RGB formats, so the driver
+        // refuses it as drm_any_plane_has_format does.
+        assert_eq!(addfb(&mut proc, &mut host, nv12), Err(Errno::EINVAL));
+        // The same 32-bit extent rule holds for a single-plane format.
+        let rgb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 64, height: 64, bpp: 32, ..Default::default() }).unwrap();
+        let mut xrgb = WpkDrmModeFbCmd2 { width: 64, height: 64, pixel_format: DRM_FORMAT_XRGB8888, ..Default::default() };
+        xrgb.handles[0] = rgb.handle;
+        xrgb.pitches[0] = 0x0400_0000;
+        assert_eq!(addfb(&mut proc, &mut host, xrgb), Err(Errno::ERANGE));
+        xrgb.pitches[0] = 256;
+        xrgb.offsets[0] = u32::MAX - 256 * 63;
+        assert_eq!(addfb(&mut proc, &mut host, xrgb), Err(Errno::ERANGE));
+        assert!(host.kms_addfb_offsets.is_empty());
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
 
     #[test]
     fn kms_addfb2_follows_linux_flag_modifier_pitch_and_size_rules() {
@@ -57929,6 +57984,63 @@ impl HostIO for RelSymlinkMock {
         let original = bytes;
         assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes), Err(Errno::EIO));
         assert_eq!(bytes, original);
+    }
+
+    #[test]
+    fn drm_import_image_takes_every_single_plane_rgb_format_at_its_own_size() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        // The allocator's bpp says nothing about how a dma-buf is read: an
+        // 8-bpp dumb buffer of 64 bytes carries any format that fits.
+        let mut allocation = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        let request = WpkDrmModeCreateDumb {width: 16, height: 4, bpp: 8, ..Default::default()};
+        unsafe { core::ptr::write_unaligned(allocation.as_mut_ptr() as *mut _, request); }
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut allocation).unwrap();
+        let bo: WpkDrmModeCreateDumb = unsafe { core::ptr::read_unaligned(allocation.as_ptr() as *const _) };
+        let bo_id = crate::dri::bo::next_id_for_test() - 1;
+        assert_eq!(bo.size, 64);
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let attrs = gl::GlContextAttrs {client_version: 2, share_context_id: 0, flags: 0, context_id: 0};
+        let mut context = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(context.as_mut_ptr() as *mut _, attrs); }
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut context).unwrap();
+        let ctx_id = u32::from_le_bytes(context[12..16].try_into().unwrap());
+        glio_test_bind(&mut proc, &mut host, fd);
+        let mut bytes = [0u8; core::mem::size_of::<WpkDrmImportImage>()];
+        let mut import = |host: &mut MockHostIO, request: WpkDrmImportImage| {
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(&mut proc, host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes)
+        };
+        let base = WpkDrmImportImage {bo_handle: bo.handle, ctx_id, width: 4, height: 2,
+            format: 0, pitch: 0, offset: 0, source: 0};
+        // Each format's rows are its own bytes per pixel wide; the last row
+        // may end exactly at the end of the object.
+        for (format, cpp) in [(DRM_FORMAT_R8, 1u32), (DRM_FORMAT_GR88, 2), (DRM_FORMAT_RGB565, 2),
+            (DRM_FORMAT_XRGB2101010, 4), (DRM_FORMAT_ABGR16161616F, 8)] {
+            let pitch = 4 * cpp;
+            let offset = 64 - pitch * 2;
+            import(&mut host, WpkDrmImportImage {format, pitch, offset, ..base}).unwrap();
+            assert_eq!(host.gl_import_image_calls.last(), Some(&(1, ctx_id, bo_id, [4, 2, format, pitch, offset])));
+            assert_eq!(import(&mut host, WpkDrmImportImage {format, pitch, offset: offset + 1, ..base}),
+                Err(Errno::EINVAL), "{format:#x} one byte past the object");
+            assert_eq!(import(&mut host, WpkDrmImportImage {format, pitch: pitch - 1, offset: 0, ..base}),
+                Err(Errno::EINVAL), "{format:#x} pitch below one row");
+        }
+        // An R8 plane needs no alignment; a 16-bit plane needs 2 bytes.
+        import(&mut host, WpkDrmImportImage {format: DRM_FORMAT_R8, pitch: 5, offset: 3, ..base}).unwrap();
+        assert_eq!(import(&mut host, WpkDrmImportImage {format: DRM_FORMAT_GR88, pitch: 10, offset: 3, ..base}),
+            Err(Errno::EINVAL));
+        // Multi-plane and packed YUV formats are not single-plane RGB images.
+        let calls = host.gl_import_image_calls.len();
+        for format in [DRM_FORMAT_NV12, DRM_FORMAT_YUYV, 0x34324752 /* RGB888 */] {
+            assert_eq!(import(&mut host, WpkDrmImportImage {format, pitch: 8, ..base}), Err(Errno::EINVAL));
+        }
+        assert_eq!(host.gl_import_image_calls.len(), calls);
     }
 
     #[test]

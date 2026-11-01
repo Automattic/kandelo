@@ -3789,6 +3789,29 @@ Kandelo's EGL configs are 8888 configs. General CPU/GPU coherence,
 format reinterpretation and native GBM ring posting remain incomplete;
 see the graphics compatibility ledger for the exact implemented scope.
 
+Every layer sizes a pixel format from one table: the planes, bytes per
+sample and chroma subsampling of each format, Linux's `drm_format_info`
+for R8, GR88, RGB565, the 8888, 2101010 and 16161616F orders, and the YUV
+formats NV12, NV21, YUV420, YVU420, YUYV, UYVY and P010, with each RGB
+format's GPU-tier storage (its WebGL 2 internal format, which the GPU
+buffer allocator, the dma-buf format check, the CPU mirror codecs and the
+scanout presenters all read) and whether its alpha is padding. The kernel
+(`wasm_posix_shared::dri::DRM_FORMATS`), libgbm and libEGL
+(`libc/glue/drm_format_info.h`) and the host
+(`host/src/webgl/drm-format-info.ts`) carry the same rows, and
+`host/test/webgl-drm-format-info.test.ts` fails if they differ. Why: a
+plane that the allocator, the importer, the kernel and the host size
+differently is read out of bounds or misread, so the layout has exactly one
+definition. MODE_ADDFB2 runs Linux's `framebuffer_check` over every plane
+of the format first (a missing handle or short pitch of any plane is
+EINVAL, a plane extent past 32 bits is ERANGE) and only then refuses a
+format no plane of this device scans out (EINVAL, as i915 and amdgpu do at
+framebuffer creation): the primary plane scans out RGB only, so a
+well-formed YUV framebuffer is refused there. `DRM_IOCTL_WPK_IMPORT_IMAGE`
+takes a plane of any single-plane RGB format at that format's own bytes
+per pixel; the dumb buffer's allocation bpp plays no part, because a
+dma-buf is bytes whose meaning the importer names.
+
 In the image-backed producer path, rendering resources and presenting them
 are separate operations. Authorized KMS operations select a framebuffer;
 the vblank pump presents its retained GPU BO even when the producer uses

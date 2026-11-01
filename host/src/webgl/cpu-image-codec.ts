@@ -16,6 +16,7 @@
  *   plane's own bits.
  */
 import { gpuStorageFormat, type GpuStorageFormat } from "./gpu-storage-format.js";
+import { drmFormatInfo } from "./drm-format-info.js";
 
 export type CpuImageReadback = Uint8Array<ArrayBuffer> | Uint32Array<ArrayBuffer> | Float32Array<ArrayBuffer>;
 
@@ -184,6 +185,13 @@ function rgba16f(opaque: boolean, storage: GpuStorageFormat): CpuImageCodec {
 export function cpuImageCodec(fourcc: number): CpuImageCodec | null {
   const storage = gpuStorageFormat(fourcc);
   if (!storage) return null;
+  const codec = formatCodec(fourcc, storage);
+  // Each codec's plane size is the shared table's (drm-format-info.ts).
+  if (codec && codec.cpp !== drmFormatInfo(fourcc)!.cpp[0]) throw new Error(`Codec size mismatch for ${fourcc}`);
+  return codec;
+}
+
+function formatCodec(fourcc: number, storage: GpuStorageFormat): CpuImageCodec | null {
   switch (fourcc >>> 0) {
     case 0x20203852: return unorm8(1, storage);                // R8
     case 0x38385247: return unorm8(2, storage);                // GR88: R then G

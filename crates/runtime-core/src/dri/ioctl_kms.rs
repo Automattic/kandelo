@@ -1109,23 +1109,18 @@ pub(crate) fn kms_getfb_handle(proc: &mut Process, ofd_idx: usize, fb: &crate::o
 /// (`mode_config.max_width` / `max_height`).
 pub(crate) const KMS_MAX_FB_DIMENSION: u32 = 16384;
 
-/// Bytes per pixel of a scanout format (`drm_format_info.cpp[0]`).
-pub(crate) fn kms_format_cpp(format: u32) -> Option<u32> {
-    use wasm_posix_shared::dri::*;
-    match format {
-        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 | DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888
-        | DRM_FORMAT_XRGB2101010 | DRM_FORMAT_ARGB2101010 | DRM_FORMAT_XBGR2101010
-        | DRM_FORMAT_ABGR2101010 => Some(4),
-        DRM_FORMAT_XBGR16161616F | DRM_FORMAT_ABGR16161616F => Some(8),
-        DRM_FORMAT_RGB565 | DRM_FORMAT_GR88 => Some(2),
-        DRM_FORMAT_R8 => Some(1),
-        _ => None,
-    }
-}
-
 /// The shared ADDFB/ADDFB2 core: `drm_internal_framebuffer_create`,
-/// `framebuffer_check` and `drm_gem_fb_init_with_funcs` for the single-plane
-/// formats the primary plane scans out. Returns the new fb id.
+/// `framebuffer_check` and the driver's `fb_create`
+/// (`drm_gem_fb_init_with_funcs`). Returns the new fb id.
+///
+/// `framebuffer_check` runs over every plane of the format
+/// (`wasm_posix_shared::dri::drm_format_info`, including multi-plane YUV)
+/// before the driver sees the request, so a missing handle or short pitch
+/// of any plane is EINVAL and a plane extent beyond 32 bits is ERANGE, as on
+/// Linux. The driver then accepts only formats one of its planes scans out
+/// (`drm_any_plane_has_format`, as i915 and amdgpu check at fb creation):
+/// the primary plane takes `kms::PRIMARY_PLANE_FORMATS`, all single-plane
+/// RGB, so a well-formed YUV framebuffer is EINVAL there.
 ///
 /// Format modifiers keep Linux's unsupported-configuration errno (EINVAL):
 /// `DRM_CAP_ADDFB2_MODIFIERS` is 0, so `DRM_MODE_FB_MODIFIERS` is refused
@@ -1143,24 +1138,38 @@ pub(crate) fn kms_add_framebuffer(
         || req.flags & DRM_MODE_FB_MODIFIERS != 0
         || !(1..=KMS_MAX_FB_DIMENSION).contains(&req.width)
         || !(1..=KMS_MAX_FB_DIMENSION).contains(&req.height)
-        || !kms::PRIMARY_PLANE_FORMATS.contains(&req.pixel_format)
     {
         return Err(Errno::EINVAL);
     }
-    let cpp = kms_format_cpp(req.pixel_format).ok_or(Errno::EINVAL)?;
+    // __drm_format_info: a format this device has no layout for.
+    let info = drm_format_info(req.pixel_format).ok_or(Errno::EINVAL)?;
+    // framebuffer_check, every plane of the format, then the unused planes.
+    // Without DRM_MODE_FB_MODIFIERS, Linux ignores unused handles/pitches/
+    // offsets (pre-modifier userspace left them uninitialized) but not
+    // modifiers.
+    for plane in 0..info.num_planes as usize {
+        let height = u64::from(info.plane_height(req.height, plane));
+        let min_pitch = info.min_pitch(req.width, plane);
+        if req.handles[plane] == 0 { return Err(Errno::EINVAL); }
+        if min_pitch > u64::from(u32::MAX)
+            || height * u64::from(req.pitches[plane]) + u64::from(req.offsets[plane]) > u64::from(u32::MAX)
+        {
+            return Err(Errno::ERANGE);
+        }
+        if u64::from(req.pitches[plane]) < min_pitch || req.modifier[plane] != DRM_FORMAT_MOD_LINEAR {
+            return Err(Errno::EINVAL);
+        }
+    }
+    if req.modifier[info.num_planes as usize..].iter().any(|&modifier| modifier != DRM_FORMAT_MOD_LINEAR) {
+        return Err(Errno::EINVAL);
+    }
+    // fb_create: no plane of this device scans out any other format.
+    if !kms::PRIMARY_PLANE_FORMATS.contains(&req.pixel_format) {
+        return Err(Errno::EINVAL);
+    }
     let pitch = u64::from(req.pitches[0]);
     let offset = u64::from(req.offsets[0]);
-    let min_pitch = u64::from(req.width) * u64::from(cpp);
-    // framebuffer_check, plane 0, then the unused planes. Without
-    // DRM_MODE_FB_MODIFIERS, Linux ignores unused handles/pitches/offsets
-    // (pre-modifier userspace left them uninitialized) but not modifiers.
-    if req.handles[0] == 0
-        || u64::from(req.height) * pitch + offset > u64::from(u32::MAX)
-        || pitch < min_pitch
-        || req.modifier.iter().any(|&modifier| modifier != DRM_FORMAT_MOD_LINEAR)
-    {
-        return Err(Errno::EINVAL);
-    }
+    let min_pitch = info.min_pitch(req.width, 0);
     let bo_id = *dri_state(proc, ofd_idx)?
         .gem.borrow().handles
         .get(&req.handles[0])
