@@ -19440,3 +19440,41 @@ checks. Evidence is `.context/readback-capture-r1/`.
 
 No rebuilt rendering, large readback browser success, full CTS, desktop,
 responsiveness or browser-memory acceptance is claimed by source controls.
+
+
+### Combined compressed upload and captured-readback source checkpoint
+
+The compressed repair `626226385b` is integrated as `2590fae09b` after the
+captured-readback commit `2e68e53040`. Shared query tags, context lifetime,
+C encoder fields, native controls and Program schema entries preserve both
+protocols. Combined regeneration retains cursor protocol 3, record size 40 and
+framebuffer offset 36; it does not import the older mutable protocol-2 snapshot.
+Original Brandon Payton authorship is preserved.
+
+Compressed Image/SubImage now retain original signed metadata, reject unsupported
+formats before client byte access and transfer opaque bytes through one bounded
+context-owned transaction. BEGIN admits custody only. The complete original
+native operation runs once at COMMIT after exact destination/context/view and
+revision checks. Unknown commit completion never replays native work. Empty
+uploads remain actual native calls; no NULL bytes, compressed row bands or
+zero-area substitute is manufactured. Actual format enumeration is unchanged.
+A 16 MiB detached staging budget reports OUT_OF_MEMORY on refusal. No specific
+compressed format is newly advertised, and real supported-format native behavior
+still needs runtime validation. Source evidence from the separate mutable cohort
+is `.context/compressed-upload-contract-r1/`, manifest SHA256
+`8eef7932db8fcfa36c6736a5efa939c82430502e745e8471dac456beb2e50ddf`.
+
+After resolving both source changes together, the canonical graphics gate passes
+all 1,565 cases in 51 files with no skips or load failures. The complete native
+C/UBSan inventory passes all 337 cases, including all eight new captured-readback
+and ten compressed-upload controls. Earlier causal failures remain retained.
+The initial readback review found a future-token RELEASE could acknowledge a
+different pending capture; the corrected rule rejects every nonmatching pending
+token, with its own regression. The final read-only review found no further
+blocker in the reviewed normal kernel/forwarding envelope, copied custody,
+teardown or C publication path. Review is not runtime acceptance.
+
+Combined source logs are `.context/readback-capture-r1/combined-source-r1.log`
+and `combined-native-r1.log`. The normal combined SDK/kernel/CTS rebuild and
+three-engine rendered-pixel rerun are the next required evidence; none is
+claimed by these source results. Broader inventory and final gates remain open.
