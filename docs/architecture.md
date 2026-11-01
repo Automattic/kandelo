@@ -1606,6 +1606,27 @@ components allow the search to continue; a permission denial is retained if no
 candidate succeeds. This shared runtime behavior applies on Node and browser
 hosts and lets npm lifecycle scripts find `sh` and package-local commands.
 
+The synchronous `spawnSync`, `execFileSync` and `execSync` APIs use the
+same POSIX spawn path. A native controller writes stdin while draining
+stdout and stderr, then reports the actual PID, wait status, signal and
+binary output. It does not run parent JavaScript jobs during a synchronous
+call. Pipe endpoints owned by the parent are nonblocking; the child's
+endpoints remain blocking. Temporary endpoints are close-on-exec and kept
+away from stdio targets. Failed setup and controller exceptions close owned
+descriptors, and the controller reaps its child. Closed numeric stdio
+sources are checked before temporary pipes can occupy those descriptors.
+
+Synchronous timeout and output limits send the requested signal, close the
+pipes and wait for the child's actual exit. A child that catches that
+signal can delay return, as in Node; this is not a hard wall-clock deadline.
+Detached children use the existing POSIX spawn session attribute. Process
+credential getters read real libc identities, and signal-zero probes use
+the native kill path with structured errors. Changing child uid/gid still
+returns `ENOSYS`: arbitrary credential attributes are an implementation gap.
+The executable's Node mode still depends on argv[0], so overriding argv0
+for the Node executable needs proper entry-point separation. These limits
+must not be hidden by changing the supplied arguments or identities.
+
 The shared Node bootstrap also owns application exit-code absence, stdin
 read readiness, and the URL/Web Streams classes used by HTTP clients.
 SpiderMonkey embeds the integrity-locked JavaScript bundle under

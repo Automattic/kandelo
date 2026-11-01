@@ -79,3 +79,12 @@ fixes should be considered for upstreaming.
   wake live work without keeping an otherwise idle process alive. The
   shared callback batches retain their ordering across microtask
   checkpoints. Raw standalone shell behavior is unchanged.
+
+- `0036-kandelo-node-sync-processes.patch`: interleaves real POSIX pipe
+  reads/writes with child wait/reap, monotonic deadlines and output limits
+  without running parent JavaScript jobs. Only parent pipe endpoints are
+  nonblocking; temporary endpoints are close-on-exec and cannot alias child
+  stdio targets. Node eval arguments are bound as arguments rather than
+  mistaken for an entry file or used to suppress eval execution. Credential
+  getters read real libc identities; detached children use the existing
+  POSIX spawn setsid attribute.
