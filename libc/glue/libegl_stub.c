@@ -71,6 +71,13 @@ static void retire_imported_images(struct egl_generation *generation);
 static void invalidate_generation_images(struct egl_generation *generation);
 
 static _Thread_local EGLint g_last_error = EGL_SUCCESS;
+/* EGL 1.5 section 3.1: eglGetError reports the error of the most recent EGL
+ * call on this thread, and a call that does not fail leaves EGL_SUCCESS.
+ * Every public entry point except eglGetError (which reads and clears)
+ * records success first; each failure path then overwrites it. Starting
+ * from success also covers calls that cannot fail, such as the current
+ * binding getters and eglGetProcAddress. */
+static inline void egl_call_begin(void) { g_last_error = EGL_SUCCESS; }
 static _Thread_local EGLenum g_bound_api = EGL_OPENGL_ES_API;
 struct imported_bo_reference;
 struct egl_thread_binding;
@@ -295,6 +302,7 @@ done:
     return result;
 }
 EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
+    egl_call_begin();
     return native_display((const void *)(uintptr_t)display_id,0);
 }
 
@@ -302,6 +310,7 @@ EGLDisplay eglGetDisplay(EGLNativeDisplayType display_id) {
  * devices select their own DRM open file; they never select by process ID. */
 EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native,
                                  const EGLAttrib *attrib_list) {
+    egl_call_begin();
     if (platform != EGL_PLATFORM_GBM_KHR) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_DISPLAY;
@@ -317,6 +326,7 @@ EGLDisplay eglGetPlatformDisplay(EGLenum platform, void *native,
  * EGLint attribute list. */
 EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
                                     const EGLint *attrib_list) {
+    egl_call_begin();
     if (attrib_list && attrib_list[0] != EGL_NONE) {
         g_last_error = EGL_BAD_ATTRIBUTE;
         return EGL_NO_DISPLAY;
@@ -326,6 +336,7 @@ EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
 
 static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor);
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = initialize_locked(dpy, major, minor);
     unlock_context();
@@ -502,6 +513,7 @@ static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
 
 EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
                          EGLint config_size, EGLint *num_config) {
+    egl_call_begin();
     if (!config_display_ready(dpy)) return EGL_FALSE;
     return return_configs(configs, config_size, num_config, (1u << CONFIG_COUNT) - 1);
 }
@@ -509,6 +521,7 @@ EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
                            EGLConfig *configs, EGLint config_size,
                            EGLint *num_config) {
+    egl_call_begin();
     if (!config_display_ready(dpy)) return EGL_FALSE;
     if (!num_config || (configs && config_size < 0)) {
         g_last_error = EGL_BAD_PARAMETER;
@@ -575,6 +588,7 @@ static int surface_limits_locked(struct egl_generation *generation) {
 }
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
+    egl_call_begin();
     if (!config_display_ready(dpy)) return EGL_FALSE;
     if (config_index(config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
     if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
@@ -595,6 +609,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
 }
 
 EGLBoolean eglBindAPI(EGLenum api) {
+    egl_call_begin();
     if (api != EGL_OPENGL_ES_API) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
@@ -776,6 +791,7 @@ fail:
 }
 EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
                             const EGLint *list) {
+    egl_call_begin();
     lock_context();
     EGLContext result = create_context_locked(dpy, config, share, list);
     unlock_context();
@@ -942,6 +958,7 @@ fail:
 }
 EGLSurface eglCreateWindowSurface(EGLDisplay dpy, EGLConfig config, EGLNativeWindowType win,
                                   const EGLint *list) {
+    egl_call_begin();
     lock_context();
     EGLSurface result = create_window_surface_locked(dpy, config, win, list, NULL);
     unlock_context();
@@ -997,6 +1014,7 @@ static EGLSurface create_platform_window_locked(EGLDisplay dpy, EGLConfig config
 }
 EGLSurface eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config, void *window,
                                          const EGLAttrib *list) {
+    egl_call_begin();
     lock_context();
     EGLSurface surface = create_platform_window_locked(dpy,config,window,list,1);
     unlock_context();
@@ -1004,6 +1022,7 @@ EGLSurface eglCreatePlatformWindowSurface(EGLDisplay dpy, EGLConfig config, void
 }
 EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay dpy, EGLConfig config, void *window,
                                             const EGLint *list) {
+    egl_call_begin();
     lock_context();
     EGLSurface surface = create_platform_window_locked(dpy,config,window,list,0);
     unlock_context();
@@ -1040,6 +1059,7 @@ done:
     unlock_context();return accepted;
 }
 EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLContext handle) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *generation = active_generation(dpy);
@@ -1127,12 +1147,15 @@ done:
     return result;
 }
 EGLContext eglGetCurrentContext(void) {
+    egl_call_begin();
     return g_current ? g_thread_binding.context : EGL_NO_CONTEXT;
 }
 EGLDisplay eglGetCurrentDisplay(void) {
+    egl_call_begin();
     return g_current ? g_thread_binding.generation->display->handle : EGL_NO_DISPLAY;
 }
 EGLSurface eglGetCurrentSurface(EGLint which) {
+    egl_call_begin();
     if (which != EGL_READ && which != EGL_DRAW) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_SURFACE;
@@ -1142,6 +1165,7 @@ EGLSurface eglGetCurrentSurface(EGLint which) {
                                : g_thread_binding.surface;
 }
 EGLBoolean eglQueryContext(EGLDisplay dpy, EGLContext handle, EGLint attribute, EGLint *value) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -1183,6 +1207,7 @@ done:
     return result;
 }
 EGLBoolean eglQuerySurface(EGLDisplay dpy, EGLSurface handle, EGLint attribute, EGLint *value) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *generation = active_generation(dpy);
@@ -1265,6 +1290,7 @@ static struct egl_surface_record *surface_operation_locked(EGLDisplay dpy, EGLSu
     return surface;
 }
 EGLBoolean eglSurfaceAttrib(EGLDisplay dpy, EGLSurface handle, EGLint attribute, EGLint value) {
+    egl_call_begin();
     lock_context();
     EGLBoolean accepted = EGL_FALSE;
     struct egl_surface_record *surface = surface_operation_locked(dpy,handle);
@@ -1302,12 +1328,15 @@ static EGLBoolean texture_surface_operation(EGLDisplay dpy, EGLSurface handle, E
     return EGL_FALSE;
 }
 EGLBoolean eglBindTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
+    egl_call_begin();
     return texture_surface_operation(dpy,surface,buffer);
 }
 EGLBoolean eglReleaseTexImage(EGLDisplay dpy, EGLSurface surface, EGLint buffer) {
+    egl_call_begin();
     return texture_surface_operation(dpy,surface,buffer);
 }
 EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface handle, EGLNativePixmapType target) {
+    egl_call_begin();
     (void)target;
     lock_context();
     struct egl_surface_record *surface = surface_operation_locked(dpy,handle);
@@ -1320,6 +1349,7 @@ EGLBoolean eglCopyBuffers(EGLDisplay dpy, EGLSurface handle, EGLNativePixmapType
     return EGL_FALSE;
 }
 EGLSurface eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig config, EGLNativePixmapType pixmap, const EGLint *list) {
+    egl_call_begin();
     (void)pixmap; (void)list;
     lock_context();
     if (surface_config_locked(dpy,config)) g_last_error = EGL_BAD_MATCH; /* No PIXMAP_BIT config. */
@@ -1327,6 +1357,7 @@ EGLSurface eglCreatePixmapSurface(EGLDisplay dpy, EGLConfig config, EGLNativePix
     return EGL_NO_SURFACE;
 }
 EGLSurface eglCreatePlatformPixmapSurface(EGLDisplay dpy, EGLConfig config, void *pixmap, const EGLAttrib *list) {
+    egl_call_begin();
     (void)pixmap; (void)list;
     lock_context();
     /* KHR_platform_gbm explicitly forbids platform pixmap surfaces. */
@@ -1335,11 +1366,13 @@ EGLSurface eglCreatePlatformPixmapSurface(EGLDisplay dpy, EGLConfig config, void
     return EGL_NO_SURFACE;
 }
 EGLSurface eglCreatePlatformPixmapSurfaceEXT(EGLDisplay dpy, EGLConfig config, void *pixmap, const EGLint *list) {
+    egl_call_begin();
     (void)list;
     return eglCreatePlatformPixmapSurface(dpy,config,pixmap,NULL);
 }
 EGLSurface eglCreatePbufferFromClientBuffer(EGLDisplay dpy, EGLenum buftype, EGLClientBuffer buffer,
                                            EGLConfig config, const EGLint *list) {
+    egl_call_begin();
     (void)buffer; (void)list;
     lock_context();
     if (surface_config_locked(dpy,config)) {
@@ -1370,6 +1403,7 @@ static int swap_gbm_window_locked(struct egl_generation *g, struct egl_surface_r
     return accepted;
 }
 EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -1420,6 +1454,7 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
     return result;
 }
 EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface handle) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -1441,6 +1476,7 @@ EGLBoolean eglDestroySurface(EGLDisplay dpy, EGLSurface handle) {
     return result;
 }
 EGLBoolean eglDestroyContext(EGLDisplay dpy, EGLContext handle) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -1529,6 +1565,7 @@ static void retire_generations_locked(void) {
     }
 }
 EGLBoolean eglTerminate(EGLDisplay dpy) {
+    egl_call_begin();
     lock_context();
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *g = active_generation(dpy);
@@ -1695,6 +1732,7 @@ static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib 
     return sync->handle;
 }
 EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *list) {
+    egl_call_begin();
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     lock_context();
@@ -1704,6 +1742,7 @@ EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *list) {
     return result;
 }
 EGLBoolean eglDestroySync(EGLDisplay dpy, EGLSync handle) {
+    egl_call_begin();
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     lock_context();
@@ -1719,6 +1758,7 @@ EGLBoolean eglDestroySync(EGLDisplay dpy, EGLSync handle) {
     return result;
 }
 EGLBoolean eglGetSyncAttrib(EGLDisplay dpy, EGLSync handle, EGLint attribute, EGLAttrib *value) {
+    egl_call_begin();
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     lock_context();
@@ -1788,6 +1828,7 @@ fail:
     return EGL_FALSE;
 }
 EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags, EGLTime timeout) {
+    egl_call_begin();
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     lock_context();
@@ -1874,6 +1915,7 @@ EGLint eglWaitSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags) {
  * an unsupported sync type as BAD_ATTRIBUTE, not core's BAD_PARAMETER. Do
  * not cast either the input list or the output pointer between these APIs. */
 EGLSyncKHR eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *list) {
+    egl_call_begin();
     lock_context();
     EGLSyncKHR result = EGL_NO_SYNC_KHR;
     if (!display_record(dpy) || !active_generation(dpy) || !active_generation(dpy)->initialized)
@@ -1885,12 +1927,15 @@ EGLSyncKHR eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *list) {
     return result;
 }
 EGLBoolean eglDestroySyncKHR(EGLDisplay dpy, EGLSyncKHR sync) {
+    egl_call_begin();
     return eglDestroySync(dpy, (EGLSync)sync);
 }
 EGLint eglClientWaitSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags, EGLTimeKHR timeout) {
+    egl_call_begin();
     return eglClientWaitSync(dpy, (EGLSync)sync, flags, (EGLTime)timeout);
 }
 EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute, EGLint *value) {
+    egl_call_begin();
     EGLAttrib output;
     EGLBoolean result = eglGetSyncAttrib(dpy, (EGLSync)sync, attribute, value ? &output : NULL);
     /* Every supported fence attribute is an enum representable in EGLint.
@@ -1900,6 +1945,7 @@ EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute
 }
 
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
+    egl_call_begin();
     /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
      * that exist before a display does. The GBM platform is the one this
      * backend is (see eglGetPlatformDisplay). */
@@ -1929,6 +1975,7 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     if (strcmp(procname, #name) == 0) return (__eglMustCastToProperFunctionPointerType)(uintptr_t)&name
 
 __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname) {
+    egl_call_begin();
     if (!procname) return NULL;
     WPK_MAP_GL(eglGetDisplay);
     WPK_MAP_GL(eglGetPlatformDisplay);
@@ -2158,6 +2205,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
 #undef WPK_MAP_GL
 
 EGLBoolean eglWaitClient(void) {
+    egl_call_begin();
     if (!g_thread_binding.object) return EGL_TRUE;
     /* A current reference pins its encoder/session through another thread's
      * destruction request. Do not hold the EGL metadata lock while waiting
@@ -2170,6 +2218,7 @@ EGLBoolean eglWaitClient(void) {
 }
 
 EGLBoolean eglReleaseThread(void) {
+    egl_call_begin();
     lock_context();
     struct egl_thread_binding *binding = &g_thread_binding;
     if (!release_current_locked()) {
@@ -2187,6 +2236,7 @@ EGLBoolean eglReleaseThread(void) {
 }
 
 EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
+    egl_call_begin();
     (void)interval;
     lock_context();
     EGLBoolean accepted = EGL_FALSE;
@@ -2202,16 +2252,19 @@ EGLBoolean eglSwapInterval(EGLDisplay dpy, EGLint interval) {
 }
 
 EGLBoolean eglWaitGL(void) {
+    egl_call_begin();
     /* ES2 is the only bindable client API, so no API switch is needed. */
     return eglWaitClient();
 }
 
 EGLBoolean eglWaitNative(EGLint engine) {
+    egl_call_begin();
     (void) engine;
     return EGL_TRUE;
 }
 
 EGLenum eglQueryAPI(void) {
+    egl_call_begin();
     return g_bound_api;
 }
 
@@ -2339,6 +2392,7 @@ bad_match:
     g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
 }
 EGLSurface eglCreatePbufferSurface(EGLDisplay dpy, EGLConfig config, const EGLint *attrib_list) {
+    egl_call_begin();
     lock_context();
     EGLSurface result = create_pbuffer_locked(dpy,config,attrib_list);
     unlock_context();
@@ -2605,6 +2659,7 @@ static EGLAttrib image_attribute(const void *list, int wide, size_t index) {
 }
 EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target,
                        EGLClientBuffer buffer, const EGLAttrib *attrib_list) {
+    egl_call_begin();
     lock_context();
     EGLImage result = create_image_locked(dpy, ctx, target, buffer, attrib_list, 1);
     unlock_context();
@@ -2612,6 +2667,7 @@ EGLImage eglCreateImage(EGLDisplay dpy, EGLContext ctx, EGLenum target,
 }
 EGLImageKHR eglCreateImageKHR(EGLDisplay dpy, EGLContext ctx, EGLenum target,
                               EGLClientBuffer buffer, const EGLint *attrib_list) {
+    egl_call_begin();
     lock_context();
     EGLImageKHR result = create_image_locked(dpy, ctx, target, buffer, attrib_list, 0);
     unlock_context();
@@ -2859,6 +2915,7 @@ void _wpk_egl_image_release(struct wpk_egl_image *image) {
 }
 
 EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
+    egl_call_begin();
     if (!display_record(dpy)) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
     lock_context();
     if (!active_generation(dpy)) {
@@ -2883,6 +2940,7 @@ EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {
 }
 
 EGLBoolean eglDestroyImage(EGLDisplay dpy, EGLImage image) {
+    egl_call_begin();
     return eglDestroyImageKHR(dpy, image);
 }
 
@@ -2931,6 +2989,7 @@ uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
 
 EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
                                     EGLint *formats, EGLint *num_formats) {
+    egl_call_begin();
     if (!display_record(dpy)) {
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_FALSE;
@@ -2957,6 +3016,7 @@ EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
                                       EGLuint64KHR *modifiers,
                                       EGLBoolean *external_only,
                                       EGLint *num_modifiers) {
+    egl_call_begin();
     if (!display_record(dpy)) {
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_FALSE;

@@ -2155,9 +2155,83 @@ static GLuint prepare_native_uniform_program(void) {
     return program;
 }
 
+/* EGL 1.5 section 3.1: eglGetError reports the most recent call. Leave an
+ * unconsumed failure behind, then require the next successful call to
+ * replace it with EGL_SUCCESS. */
+static void leave_egl_error(void) { assert(!eglBindAPI(0)); }
+#define EXPECT_EGL_SUCCESS(expr) do { leave_egl_error(); assert(expr); \
+    assert(eglGetError() == EGL_SUCCESS); } while (0)
+static int egl_spec_case(EGLDisplay dpy, const char *name) {
+    const EGLint es2[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE};
+    if (!strcmp(name, "egl-spec-success-reset")) {
+        EXPECT_EGL_SUCCESS(eglGetDisplay(EGL_DEFAULT_DISPLAY) == dpy);
+        EXPECT_EGL_SUCCESS(eglQueryString(EGL_NO_DISPLAY, EGL_EXTENSIONS));
+        EXPECT_EGL_SUCCESS(eglGetProcAddress("eglInitialize"));
+        EXPECT_EGL_SUCCESS(eglQueryAPI() == EGL_OPENGL_ES_API);
+        EXPECT_EGL_SUCCESS(eglBindAPI(EGL_OPENGL_ES_API));
+        EXPECT_EGL_SUCCESS(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        EXPECT_EGL_SUCCESS(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
+        EXPECT_EGL_SUCCESS(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
+        EXPECT_EGL_SUCCESS(eglWaitClient() && eglWaitGL());
+        EXPECT_EGL_SUCCESS(eglInitialize(dpy, NULL, NULL));
+        EXPECT_EGL_SUCCESS(eglQueryString(dpy, EGL_VENDOR));
+        EGLConfig config = NULL; EGLint count = 0, value = 0;
+        EXPECT_EGL_SUCCESS(eglGetConfigs(dpy, &config, 1, &count) && count == 1);
+        const EGLint choose[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+        EXPECT_EGL_SUCCESS(eglChooseConfig(dpy, choose, &config, 1, &count) && count == 1);
+        EXPECT_EGL_SUCCESS(eglGetConfigAttrib(dpy, config, EGL_RED_SIZE, &value) && value == 8);
+        EGLContext context = eglCreateContext(dpy, config, EGL_NO_CONTEXT, es2);
+        assert(context != EGL_NO_CONTEXT);
+        leave_egl_error();
+        assert(eglCreateContext(dpy, config, EGL_NO_CONTEXT, es2) != EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_SUCCESS);
+        EXPECT_EGL_SUCCESS(eglQueryContext(dpy, context, EGL_CONTEXT_CLIENT_VERSION, &value) && value == 2);
+        const EGLint size[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+        EGLSurface surface = eglCreatePbufferSurface(dpy, config, size);
+        assert(surface != EGL_NO_SURFACE);
+        leave_egl_error();
+        assert(eglCreatePbufferSurface(dpy, config, size) != EGL_NO_SURFACE);
+        assert(eglGetError() == EGL_SUCCESS);
+        EXPECT_EGL_SUCCESS(eglQuerySurface(dpy, surface, EGL_WIDTH, &value) && value == 4);
+        EXPECT_EGL_SUCCESS(eglSurfaceAttrib(dpy, surface, EGL_SWAP_BEHAVIOR, EGL_BUFFER_DESTROYED));
+        EXPECT_EGL_SUCCESS(eglMakeCurrent(dpy, surface, surface, context));
+        EXPECT_EGL_SUCCESS(eglSwapInterval(dpy, 0));
+        EXPECT_EGL_SUCCESS(eglSwapBuffers(dpy, surface));
+        EXPECT_EGL_SUCCESS(eglWaitNative(EGL_CORE_NATIVE_ENGINE));
+        EXPECT_EGL_SUCCESS(eglWaitClient());
+        EGLSync sync = eglCreateSync(dpy, EGL_SYNC_FENCE, NULL); assert(sync != EGL_NO_SYNC);
+        leave_egl_error();
+        assert(eglCreateSync(dpy, EGL_SYNC_FENCE, NULL) != EGL_NO_SYNC);
+        assert(eglGetError() == EGL_SUCCESS);
+        EGLAttrib attribute = 0;
+        EXPECT_EGL_SUCCESS(eglGetSyncAttrib(dpy, sync, EGL_SYNC_TYPE, &attribute));
+        EXPECT_EGL_SUCCESS(eglClientWaitSync(dpy, sync, 0, 0) == EGL_TIMEOUT_EXPIRED);
+        EXPECT_EGL_SUCCESS(eglDestroySync(dpy, sync));
+        EGLImageKHR img = image(dpy);
+        leave_egl_error(); (void)image(dpy); assert(eglGetError() == EGL_SUCCESS);
+        EXPECT_EGL_SUCCESS(eglDestroyImageKHR(dpy, img));
+        EXPECT_EGL_SUCCESS(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count > 0);
+        EXPECT_EGL_SUCCESS(eglQueryDmaBufModifiersEXT(dpy, 0x34324241, 0, NULL, NULL, &count));
+        EXPECT_EGL_SUCCESS(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        EXPECT_EGL_SUCCESS(eglDestroySurface(dpy, surface));
+        EXPECT_EGL_SUCCESS(eglDestroyContext(dpy, context));
+        EXPECT_EGL_SUCCESS(eglReleaseThread());
+        EXPECT_EGL_SUCCESS(eglTerminate(dpy));
+        /* eglGetError itself still reads and clears. */
+        leave_egl_error();
+        assert(eglGetError() == EGL_BAD_PARAMETER && eglGetError() == EGL_SUCCESS);
+    } else return 0;
+    printf("PASS %s\n", name);
+    return 1;
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    if (!strncmp(argv[1], "egl-spec-", 9)) {
+        assert(egl_spec_case(dpy, argv[1]));
+        return 0;
+    }
     if (!strcmp(argv[1], "display-wayland-window")) {
         EGLDisplay client=eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display);
         assert(client!=EGL_NO_DISPLAY && eglInitialize(client,NULL,NULL));
