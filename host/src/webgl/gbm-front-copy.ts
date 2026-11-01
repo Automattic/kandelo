@@ -6,17 +6,30 @@ const READ = 0x8ca8, DRAW = 0x8ca9, READ_BINDING = 0x8caa, DRAW_BINDING = 0x8ca6
 const READ_BUFFER = 0x0c02, COLOR0 = 0x8ce0, SCISSOR = 0x0c11;
 type GpuFront = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
 
+/** Pure preflights shared with the state-borrowing caller. Invalid requests
+ * retain their original errno before any private error capture or repair. */
+export function validGbmFrontCopy(surface: GlSurfaceResources, target: GpuFront): boolean {
+  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
+  return !!gl && !!source && !!size && gl === target.gl && source !== target.fbo &&
+    Number.isInteger(size.width) && Number.isInteger(size.height) &&
+    size.width > 0 && size.height > 0 && size.width === target.w && size.height === target.h;
+}
+
+export function validGbmFrontRead(surface: GlSurfaceResources): boolean {
+  const size = surface.surfaceSize;
+  return !!surface.gl && !!surface.renderTargetFbo && !!size &&
+    Number.isSafeInteger(size.width) && Number.isSafeInteger(size.height) &&
+    size.width > 0 && size.height > 0 && Number.isSafeInteger(size.width * size.height * 4);
+}
+
 /** A window uses GL's bottom-left coordinates; exported linear buffers have
  * row zero at the top. Copy into an unpublished front without changing the
  * render back or posting to a display. Failed copies cannot mutate a locked
  * front. The caller retains both allocations through this synchronous call. */
 export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
   capturePriorErrors: () => void): number {
-  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
-  if (!gl || !source || !size || gl !== target.gl || source === target.fbo ||
-    !Number.isInteger(size.width) || !Number.isInteger(size.height) ||
-    size.width <= 0 || size.height <= 0 || size.width !== target.w || size.height !== target.h)
-    return -22;
+  if (!validGbmFrontCopy(surface, target)) return -22;
+  const gl = surface.gl!, size = surface.surfaceSize!, source = surface.renderTargetFbo!;
   // Error ownership is captured before entering private driver operations.
   // Repair records retain only native handles/scalars and this private queue.
   const owner = { gl, errors: [] as number[], shadow: {} };
@@ -74,10 +87,8 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
  * native restoration has succeeded. No guest view enters a repair record. */
 export function readGbmFront(surface: GlSurfaceResources,
   capturePriorErrors: () => void): {rc: number; pixels?: Uint8Array<ArrayBuffer>} {
-  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
-  if (!gl || !source || !size || !Number.isSafeInteger(size.width) ||
-      !Number.isSafeInteger(size.height) || size.width <= 0 || size.height <= 0 ||
-      !Number.isSafeInteger(size.width * size.height * 4)) return {rc: -22};
+  if (!validGbmFrontRead(surface)) return {rc: -22};
+  const gl = surface.gl!, size = surface.surfaceSize!, source = surface.renderTargetFbo!;
   let pixels: Uint8Array<ArrayBuffer>;
   try { pixels = new Uint8Array(size.width * size.height * 4); }
   catch { return {rc: -12}; }

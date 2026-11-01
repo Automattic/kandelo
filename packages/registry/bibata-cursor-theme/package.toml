@@ -1,0 +1,30 @@
+# Runtime data package, like ca-certificates: this ZIP contains no executable.
+kind = "program"
+name = "bibata-cursor-theme"
+version = "2.0.7"
+kernel_abi = 56
+depends_on = []
+arches = ["wasm32"]
+
+[source]
+url = "https://github.com/ful1e5/Bibata_Cursor/releases/download/v2.0.7/Bibata-Modern-Ice.tar.xz"
+sha256 = "a68cae60c4dc706350e194ebc91c5fe48bc7bc9d59e119555834a2a7ee5078ef"
+provider = "archive"
+
+[license]
+spdx = "GPL-3.0-only"
+url = "https://github.com/ful1e5/Bibata_Cursor/blob/35ccfe209a808e40d6c2ca60a46cbe4faf68b690/LICENSE"
+
+[build]
+script_path = "packages/registry/bibata-cursor-theme/build-bibata-cursor-theme.sh"
+
+[[outputs]]
+name = "bibata-cursor-theme"
+wasm = "bibata-cursor-theme.zip"
+fork_instrumentation = "disabled"
+
+[[host_tools]]
+name = "python3"
+version_constraint = ">=3.11"
+probe = { args = ["--version"], version_regex = "Python (\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

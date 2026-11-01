@@ -1,0 +1,3 @@
+#!/bin/sh
+# Sway supplies -b and WAYLAND_SOCKET; keep both for its supervised bar.
+exec /usr/local/bin/sfwbar -f /etc/xdg/sfwbar/sfwbar.config "$@"

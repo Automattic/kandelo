@@ -1,0 +1,1688 @@
+Subject: [PATCH] Preserve full interface init callbacks and adapt unary sites explicitly
+
+GInterfaceInitFunc has two arguments. Keep its public registration macros at
+that arity; a shared one-argument trampoline must not erase genuine callbacks.
+Known one-argument initializers use explicit GLib unary adapter macros.
+Apply after the existing callback-signature portability patch.
+
+--- a/demos/gtk-demo/combobox.c
++++ b/demos/gtk-demo/combobox.c
+@@ -247,7 +247,7 @@
+ static void mask_entry_editable_init (GtkEditableInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (MaskEntry, mask_entry, GTK_TYPE_ENTRY,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_EDITABLE,
+                                                 mask_entry_editable_init));
+ 
+ 
+--- a/demos/icon-browser/iconstore.c
++++ b/demos/icon-browser/iconstore.c
+@@ -16,7 +16,7 @@
+ static void icon_store_drag_source_init (GtkTreeDragSourceIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (IconStore, icon_store, GTK_TYPE_LIST_STORE,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+                                                 icon_store_drag_source_init))
+ 
+ 
+--- a/gdk/wayland/gdkdevice-wayland.c
++++ b/gdk/wayland/gdkdevice-wayland.c
+@@ -282,7 +282,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GdkWaylandDevicePad, gdk_wayland_device_pad,
+                          GDK_TYPE_WAYLAND_DEVICE,
+-                         G_IMPLEMENT_INTERFACE (GDK_TYPE_DEVICE_PAD,
++                         G_IMPLEMENT_INTERFACE_UNARY (GDK_TYPE_DEVICE_PAD,
+                                                 gdk_wayland_device_pad_iface_init))
+ 
+ #define GDK_TYPE_WAYLAND_DEVICE_PAD (gdk_wayland_device_pad_get_type ())
+--- a/gdk/x11/gdkdevicemanager-core-x11.c
++++ b/gdk/x11/gdkdevicemanager-core-x11.c
+@@ -48,7 +48,7 @@
+ 
+ 
+ G_DEFINE_TYPE_WITH_CODE (GdkX11DeviceManagerCore, gdk_x11_device_manager_core, GDK_TYPE_DEVICE_MANAGER,
+-                         G_IMPLEMENT_INTERFACE (GDK_TYPE_EVENT_TRANSLATOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (GDK_TYPE_EVENT_TRANSLATOR,
+                                                 gdk_x11_device_manager_event_translator_init))
+ 
+ static void
+--- a/gdk/x11/gdkdevicemanager-xi2.c
++++ b/gdk/x11/gdkdevicemanager-xi2.c
+@@ -76,7 +76,7 @@
+ static void     gdk_x11_device_manager_xi2_event_translator_init (GdkEventTranslatorIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GdkX11DeviceManagerXI2, gdk_x11_device_manager_xi2, GDK_TYPE_X11_DEVICE_MANAGER_CORE,
+-                         G_IMPLEMENT_INTERFACE (GDK_TYPE_EVENT_TRANSLATOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (GDK_TYPE_EVENT_TRANSLATOR,
+                                                 gdk_x11_device_manager_xi2_event_translator_init))
+ 
+ static void    gdk_x11_device_manager_xi2_constructed  (GObject      *object);
+--- a/gdk/x11/gdkdisplay-x11.c
++++ b/gdk/x11/gdkdisplay-x11.c
+@@ -174,7 +174,7 @@
+ static char *gdk_sm_client_id;
+ 
+ G_DEFINE_TYPE_WITH_CODE (GdkX11Display, gdk_x11_display, GDK_TYPE_DISPLAY,
+-                         G_IMPLEMENT_INTERFACE (GDK_TYPE_EVENT_TRANSLATOR,
++                         G_IMPLEMENT_INTERFACE_UNARY (GDK_TYPE_EVENT_TRANSLATOR,
+                                                 gdk_x11_display_event_translator_init))
+ 
+ 
+--- a/gtk/a11y/gtkarrowaccessible.c
++++ b/gtk/a11y/gtkarrowaccessible.c
+@@ -29,7 +29,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkArrowAccessible, gtk_arrow_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkArrowAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_interface_init))
+ 
+ static void
+ gtk_arrow_accessible_initialize (AtkObject *accessible,
+--- a/gtk/a11y/gtkbooleancellaccessible.c
++++ b/gtk/a11y/gtkbooleancellaccessible.c
+@@ -90,7 +90,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkBooleanCellAccessible, gtk_boolean_cell_accessible, GTK_TYPE_RENDERER_CELL_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkBooleanCellAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, gtk_boolean_cell_accessible_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, gtk_boolean_cell_accessible_action_interface_init))
+ 
+ 
+ static AtkStateSet *
+--- a/gtk/a11y/gtkbuttonaccessible.c
++++ b/gtk/a11y/gtkbuttonaccessible.c
+@@ -27,8 +27,8 @@
+ static void atk_image_interface_init  (AtkImageIface  *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkButtonAccessible, gtk_button_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_interface_init))
+ 
+ static void
+ gtk_button_accessible_initialize (AtkObject *obj,
+--- a/gtk/a11y/gtkcellaccessible.c
++++ b/gtk/a11y/gtkcellaccessible.c
+@@ -50,9 +50,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkCellAccessible, gtk_cell_accessible, GTK_TYPE_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkCellAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TABLE_CELL, atk_table_cell_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TABLE_CELL, atk_table_cell_interface_init))
+ 
+ static gint
+ gtk_cell_accessible_get_index_in_parent (AtkObject *obj)
+--- a/gtk/a11y/gtkcolorswatchaccessible.c
++++ b/gtk/a11y/gtkcolorswatchaccessible.c
+@@ -25,7 +25,7 @@
+ static void atk_action_interface_init (AtkActionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorSwatchAccessible, _gtk_color_swatch_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static void
+ state_changed_cb (GtkWidget     *widget,
+--- a/gtk/a11y/gtkcomboboxaccessible.c
++++ b/gtk/a11y/gtkcomboboxaccessible.c
+@@ -33,8 +33,8 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkComboBoxAccessible, gtk_combo_box_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkComboBoxAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ changed_cb (GtkWidget *widget)
+--- a/gtk/a11y/gtkentryaccessible.c
++++ b/gtk/a11y/gtkentryaccessible.c
+@@ -62,8 +62,8 @@
+ GType gtk_entry_icon_accessible_get_type (void);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkEntryIconAccessible, gtk_entry_icon_accessible, ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, icon_atk_action_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, icon_atk_component_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, icon_atk_action_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, icon_atk_component_interface_init))
+ 
+ static void
+ gtk_entry_icon_accessible_remove_entry (gpointer data, GObject *obj)
+@@ -387,9 +387,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkEntryAccessible, gtk_entry_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkEntryAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_EDITABLE_TEXT, atk_editable_text_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TEXT, atk_text_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_EDITABLE_TEXT, atk_editable_text_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TEXT, atk_text_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ 
+ static AtkStateSet *
+--- a/gtk/a11y/gtkexpanderaccessible.c
++++ b/gtk/a11y/gtkexpanderaccessible.c
+@@ -24,7 +24,7 @@
+ static void atk_action_interface_init (AtkActionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkExpanderAccessible, gtk_expander_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static const gchar *
+ gtk_expander_accessible_get_full_text (GtkExpander *widget)
+--- a/gtk/a11y/gtkfilechooserwidgetaccessible.c
++++ b/gtk/a11y/gtkfilechooserwidgetaccessible.c
+@@ -26,7 +26,7 @@
+ static void atk_action_interface_init (AtkActionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileChooserWidgetAccessible, gtk_file_chooser_widget_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static void
+ gtk_file_chooser_widget_accessible_initialize (AtkObject *obj,
+--- a/gtk/a11y/gtkflowboxaccessible.c
++++ b/gtk/a11y/gtkflowboxaccessible.c
+@@ -24,7 +24,7 @@
+ static void atk_selection_interface_init (AtkSelectionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFlowBoxAccessible, gtk_flow_box_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ gtk_flow_box_accessible_init (GtkFlowBoxAccessible *accessible)
+--- a/gtk/a11y/gtkiconviewaccessible.c
++++ b/gtk/a11y/gtkiconviewaccessible.c
+@@ -67,10 +67,10 @@
+ static void atk_image_item_interface_init     (AtkImageIface     *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkIconViewItemAccessible, _gtk_icon_view_item_accessible, ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_item_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_item_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TEXT, atk_text_item_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_item_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_item_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_item_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TEXT, atk_text_item_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_item_interface_init))
+ 
+ 
+ static gboolean
+@@ -862,8 +862,8 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkIconViewAccessible, gtk_icon_view_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkIconViewAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ typedef struct
+ {
+--- a/gtk/a11y/gtkimageaccessible.c
++++ b/gtk/a11y/gtkimageaccessible.c
+@@ -33,7 +33,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkImageAccessible, gtk_image_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkImageAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_interface_init))
+ 
+ static void
+ gtk_image_accessible_initialize (AtkObject *accessible,
+--- a/gtk/a11y/gtkimagecellaccessible.c
++++ b/gtk/a11y/gtkimagecellaccessible.c
+@@ -29,7 +29,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkImageCellAccessible, gtk_image_cell_accessible, GTK_TYPE_RENDERER_CELL_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkImageCellAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_interface_init))
+ 
+ static void
+ gtk_image_cell_accessible_finalize (GObject *object)
+--- a/gtk/a11y/gtklabelaccessible.c
++++ b/gtk/a11y/gtklabelaccessible.c
+@@ -77,7 +77,7 @@
+ static void atk_hyperlink_impl_interface_init (AtkHyperlinkImplIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLabelAccessibleLinkImpl, _gtk_label_accessible_link_impl, ATK_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_HYPERLINK_IMPL, atk_hyperlink_impl_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_HYPERLINK_IMPL, atk_hyperlink_impl_interface_init))
+ 
+ static AtkHyperlink *
+ gtk_label_accessible_link_impl_get_hyperlink (AtkHyperlinkImpl *atk_impl)
+@@ -171,7 +171,7 @@
+ static void atk_action_interface_init (AtkActionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLabelAccessibleLink, _gtk_label_accessible_link, ATK_TYPE_HYPERLINK,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static gchar *
+ gtk_label_accessible_link_get_uri (AtkHyperlink *atk_link,
+@@ -338,8 +338,8 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLabelAccessible, gtk_label_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkLabelAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TEXT, atk_text_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_HYPERTEXT, atk_hypertext_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TEXT, atk_text_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_HYPERTEXT, atk_hypertext_interface_init))
+ 
+ static void
+ gtk_label_accessible_init (GtkLabelAccessible *label)
+--- a/gtk/a11y/gtklevelbaraccessible.c
++++ b/gtk/a11y/gtklevelbaraccessible.c
+@@ -26,7 +26,7 @@
+ static void atk_value_interface_init (AtkValueIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLevelBarAccessible, gtk_level_bar_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init))
+ 
+ static void
+ gtk_level_bar_accessible_initialize (AtkObject *obj,
+--- a/gtk/a11y/gtklinkbuttonaccessible.c
++++ b/gtk/a11y/gtklinkbuttonaccessible.c
+@@ -45,7 +45,7 @@
+ GType _gtk_link_button_accessible_link_get_type (void);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLinkButtonAccessibleLink, _gtk_link_button_accessible_link, ATK_TYPE_HYPERLINK,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static AtkHyperlink *
+ gtk_link_button_accessible_link_new (GtkLinkButtonAccessible *button)
+@@ -183,7 +183,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkLinkButtonAccessible, gtk_link_button_accessible, GTK_TYPE_BUTTON_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkLinkButtonAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_HYPERLINK_IMPL, atk_hypertext_impl_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_HYPERLINK_IMPL, atk_hypertext_impl_interface_init))
+ 
+ static void
+ gtk_link_button_accessible_init (GtkLinkButtonAccessible *button)
+--- a/gtk/a11y/gtklistboxaccessible.c
++++ b/gtk/a11y/gtklistboxaccessible.c
+@@ -24,7 +24,7 @@
+ static void atk_selection_interface_init (AtkSelectionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkListBoxAccessible, gtk_list_box_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ gtk_list_box_accessible_init (GtkListBoxAccessible *accessible)
+--- a/gtk/a11y/gtkmenuitemaccessible.c
++++ b/gtk/a11y/gtkmenuitemaccessible.c
+@@ -49,8 +49,8 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkMenuItemAccessible, gtk_menu_item_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkMenuItemAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init);
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init);
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ gtk_menu_item_accessible_initialize (AtkObject *obj,
+--- a/gtk/a11y/gtkmenushellaccessible.c
++++ b/gtk/a11y/gtkmenushellaccessible.c
+@@ -24,7 +24,7 @@
+ static void atk_selection_interface_init (AtkSelectionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkMenuShellAccessible, gtk_menu_shell_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ gtk_menu_shell_accessible_initialize (AtkObject *accessible,
+--- a/gtk/a11y/gtknotebookaccessible.c
++++ b/gtk/a11y/gtknotebookaccessible.c
+@@ -38,7 +38,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkNotebookAccessible, gtk_notebook_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkNotebookAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init))
+ 
+ static void
+ create_notebook_page_accessible (GtkNotebookAccessible *accessible,
+--- a/gtk/a11y/gtknotebookpageaccessible.c
++++ b/gtk/a11y/gtknotebookpageaccessible.c
+@@ -32,7 +32,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkNotebookPageAccessible, gtk_notebook_page_accessible, ATK_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkNotebookPageAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init))
+ 
+ 
+ static GtkWidget *
+--- a/gtk/a11y/gtkpanedaccessible.c
++++ b/gtk/a11y/gtkpanedaccessible.c
+@@ -24,7 +24,7 @@
+ static void atk_value_interface_init (AtkValueIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkPanedAccessible, gtk_paned_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init))
+ 
+ static void
+ gtk_paned_accessible_size_allocate_gtk (GtkWidget     *widget,
+--- a/gtk/a11y/gtkprogressbaraccessible.c
++++ b/gtk/a11y/gtkprogressbaraccessible.c
+@@ -27,7 +27,7 @@
+ static void atk_value_interface_init (AtkValueIface  *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkProgressBarAccessible, gtk_progress_bar_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init))
+ 
+ static void
+ gtk_progress_bar_accessible_initialize (AtkObject *obj,
+--- a/gtk/a11y/gtkrangeaccessible.c
++++ b/gtk/a11y/gtkrangeaccessible.c
+@@ -30,7 +30,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkRangeAccessible, gtk_range_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkRangeAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init))
+ 
+ static void
+ gtk_range_accessible_value_changed (GtkAdjustment *adjustment,
+--- a/gtk/a11y/gtkscalebuttonaccessible.c
++++ b/gtk/a11y/gtkscalebuttonaccessible.c
+@@ -28,8 +28,8 @@
+ static void atk_value_interface_init  (AtkValueIface  *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkScaleButtonAccessible, gtk_scale_button_accessible, GTK_TYPE_BUTTON_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init));
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init));
+ 
+ static void
+ gtk_scale_button_accessible_value_changed (GtkAdjustment *adjustment,
+--- a/gtk/a11y/gtkspinbuttonaccessible.c
++++ b/gtk/a11y/gtkspinbuttonaccessible.c
+@@ -30,7 +30,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkSpinButtonAccessible, gtk_spin_button_accessible, GTK_TYPE_ENTRY_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkSpinButtonAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_VALUE, atk_value_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_VALUE, atk_value_interface_init))
+ 
+ static void
+ gtk_spin_button_accessible_value_changed (GtkAdjustment *adjustment,
+--- a/gtk/a11y/gtkspinneraccessible.c
++++ b/gtk/a11y/gtkspinneraccessible.c
+@@ -28,7 +28,7 @@
+ static void atk_image_interface_init (AtkImageIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkSpinnerAccessible, gtk_spinner_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_IMAGE, atk_image_interface_init));
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_IMAGE, atk_image_interface_init));
+ 
+ static void
+ gtk_spinner_accessible_initialize (AtkObject *accessible,
+--- a/gtk/a11y/gtkswitchaccessible.c
++++ b/gtk/a11y/gtkswitchaccessible.c
+@@ -33,7 +33,7 @@
+ static void atk_action_interface_init (AtkActionIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkSwitchAccessible, gtk_switch_accessible, GTK_TYPE_WIDGET_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_ACTION, atk_action_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_ACTION, atk_action_interface_init))
+ 
+ static AtkStateSet *
+ gtk_switch_accessible_ref_state_set (AtkObject *accessible)
+--- a/gtk/a11y/gtktextcellaccessible.c
++++ b/gtk/a11y/gtktextcellaccessible.c
+@@ -94,7 +94,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTextCellAccessible, gtk_text_cell_accessible, GTK_TYPE_RENDERER_CELL_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkTextCellAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TEXT, atk_text_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TEXT, atk_text_interface_init))
+ 
+ static AtkStateSet *
+ gtk_text_cell_accessible_ref_state_set (AtkObject *accessible)
+--- a/gtk/a11y/gtktextviewaccessible.c
++++ b/gtk/a11y/gtktextviewaccessible.c
+@@ -63,9 +63,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTextViewAccessible, gtk_text_view_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkTextViewAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_EDITABLE_TEXT, atk_editable_text_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TEXT, atk_text_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_STREAMABLE_CONTENT, atk_streamable_content_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_EDITABLE_TEXT, atk_editable_text_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TEXT, atk_text_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_STREAMABLE_CONTENT, atk_streamable_content_interface_init))
+ 
+ 
+ static void
+--- a/gtk/a11y/gtktreeviewaccessible.c
++++ b/gtk/a11y/gtktreeviewaccessible.c
+@@ -83,10 +83,10 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeViewAccessible, gtk_tree_view_accessible, GTK_TYPE_CONTAINER_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkTreeViewAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_TABLE, atk_table_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_SELECTION, atk_selection_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_ACCESSIBLE_PARENT, gtk_cell_accessible_parent_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_TABLE, atk_table_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_SELECTION, atk_selection_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_ACCESSIBLE_PARENT, gtk_cell_accessible_parent_interface_init))
+ 
+ 
+ static GQuark
+--- a/gtk/a11y/gtkwidgetaccessible.c
++++ b/gtk/a11y/gtkwidgetaccessible.c
+@@ -41,7 +41,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkWidgetAccessible, gtk_widget_accessible, GTK_TYPE_ACCESSIBLE,
+                          G_ADD_PRIVATE (GtkWidgetAccessible)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT, atk_component_interface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT, atk_component_interface_init))
+ 
+ /* Translate GtkWidget::focus-in/out-event to AtkObject::focus-event */
+ static gboolean
+--- a/gtk/a11y/gtkwindowaccessible.c
++++ b/gtk/a11y/gtkwindowaccessible.c
+@@ -43,9 +43,9 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkWindowAccessible,
+                          gtk_window_accessible,
+                          GTK_TYPE_CONTAINER_ACCESSIBLE,
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_COMPONENT,
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_COMPONENT,
+                                                 atk_component_interface_init)
+-                         G_IMPLEMENT_INTERFACE (ATK_TYPE_WINDOW,
++                         G_IMPLEMENT_INTERFACE_UNARY (ATK_TYPE_WINDOW,
+                                                 atk_window_interface_init));
+ 
+ 
+--- a/gtk/deprecated/gtkaction.c
++++ b/gtk/deprecated/gtkaction.c
+@@ -175,7 +175,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkAction, gtk_action, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkAction)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_action_buildable_init))
+ 
+ static void gtk_action_finalize     (GObject *object);
+--- a/gtk/deprecated/gtkactiongroup.c
++++ b/gtk/deprecated/gtkactiongroup.c
+@@ -173,7 +173,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkActionGroup, gtk_action_group, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkActionGroup)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_action_group_buildable_init))
+ 
+ static void
+--- a/gtk/deprecated/gtkcolorseldialog.c
++++ b/gtk/deprecated/gtkcolorseldialog.c
+@@ -88,7 +88,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorSelectionDialog, gtk_color_selection_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkColorSelectionDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_color_selection_dialog_buildable_interface_init))
+ 
+ static GtkBuildableIface *parent_buildable_iface;
+--- a/gtk/deprecated/gtkfontsel.c
++++ b/gtk/deprecated/gtkfontsel.c
+@@ -1642,7 +1642,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkFontSelectionDialog, gtk_font_selection_dialog,
+ 			 GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkFontSelectionDialog)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_font_selection_dialog_buildable_interface_init))
+ 
+ static GtkBuildableIface *parent_buildable_iface;
+--- a/gtk/deprecated/gtkiconfactory.c
++++ b/gtk/deprecated/gtkiconfactory.c
+@@ -196,7 +196,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkIconFactory, gtk_icon_factory, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkIconFactory)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_icon_factory_buildable_init))
+ 
+ static void
+--- a/gtk/deprecated/gtkimagemenuitem.c
++++ b/gtk/deprecated/gtkimagemenuitem.c
+@@ -181,7 +181,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkImageMenuItem, gtk_image_menu_item, GTK_TYPE_MENU_ITEM,
+                          G_ADD_PRIVATE (GtkImageMenuItem)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+                                                 gtk_image_menu_item_activatable_interface_init))
+ 
+ 
+--- a/gtk/deprecated/gtkrecentaction.c
++++ b/gtk/deprecated/gtkrecentaction.c
+@@ -89,7 +89,7 @@
+                          gtk_recent_action,
+                          GTK_TYPE_ACTION,
+                          G_ADD_PRIVATE (GtkRecentAction)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_RECENT_CHOOSER,
+                                                 gtk_recent_chooser_iface_init));
+ 
+ static gboolean
+--- a/gtk/deprecated/gtkstyleproperties.c
++++ b/gtk/deprecated/gtkstyleproperties.c
+@@ -89,9 +89,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkStyleProperties, gtk_style_properties, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkStyleProperties)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER,
+                                                 gtk_style_properties_provider_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
+                                                 gtk_style_properties_provider_private_init));
+ 
+ static void
+--- a/gtk/deprecated/gtkuimanager.c
++++ b/gtk/deprecated/gtkuimanager.c
+@@ -427,7 +427,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkUIManager, gtk_ui_manager, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkUIManager)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_ui_manager_buildable_init))
+ 
+ static void
+--- a/gtk/gtkactionbar.c
++++ b/gtk/gtkactionbar.c
+@@ -70,7 +70,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkActionBar, gtk_action_bar, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkActionBar)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_action_bar_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtkactionhelper.c
++++ b/gtk/gtkactionhelper.c
+@@ -88,7 +88,7 @@
+ static void gtk_action_helper_observer_iface_init (GtkActionObserverInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkActionHelper, gtk_action_helper, G_TYPE_OBJECT,
+-  G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTION_OBSERVER, gtk_action_helper_observer_iface_init))
++  G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTION_OBSERVER, gtk_action_helper_observer_iface_init))
+ 
+ static void
+ gtk_action_helper_report_change (GtkActionHelper *helper,
+--- a/gtk/gtkactionmuxer.c
++++ b/gtk/gtkactionmuxer.c
+@@ -72,8 +72,8 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkActionMuxer, gtk_action_muxer, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_GROUP, gtk_action_muxer_group_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTION_OBSERVABLE, gtk_action_muxer_observable_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_GROUP, gtk_action_muxer_group_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTION_OBSERVABLE, gtk_action_muxer_observable_iface_init))
+ 
+ enum
+ {
+--- a/gtk/gtkappchooserbutton.c
++++ b/gtk/gtkappchooserbutton.c
+@@ -117,7 +117,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkAppChooserButton, gtk_app_chooser_button, GTK_TYPE_COMBO_BOX,
+                          G_ADD_PRIVATE (GtkAppChooserButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_APP_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_APP_CHOOSER,
+                                                 app_chooser_iface_init));
+ 
+ static gboolean
+--- a/gtk/gtkappchooserdialog.c
++++ b/gtk/gtkappchooserdialog.c
+@@ -94,7 +94,7 @@
+ static void gtk_app_chooser_dialog_iface_init (GtkAppChooserIface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GtkAppChooserDialog, gtk_app_chooser_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkAppChooserDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_APP_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_APP_CHOOSER,
+                                                 gtk_app_chooser_dialog_iface_init));
+ 
+ 
+--- a/gtk/gtkappchooserwidget.c
++++ b/gtk/gtkappchooserwidget.c
+@@ -138,7 +138,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkAppChooserWidget, gtk_app_chooser_widget, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkAppChooserWidget)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_APP_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_APP_CHOOSER,
+                                                 gtk_app_chooser_widget_iface_init));
+ 
+ static void
+--- a/gtk/gtkapplicationwindow.c
++++ b/gtk/gtkapplicationwindow.c
+@@ -154,7 +154,7 @@
+ static GType gtk_application_window_actions_get_type   (void);
+ static void  gtk_application_window_actions_iface_init (GRemoteActionGroupInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GtkApplicationWindowActions, gtk_application_window_actions, G_TYPE_SIMPLE_ACTION_GROUP,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_REMOTE_ACTION_GROUP, gtk_application_window_actions_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_REMOTE_ACTION_GROUP, gtk_application_window_actions_iface_init))
+ 
+ static void
+ gtk_application_window_actions_activate_action_full (GRemoteActionGroup *remote,
+@@ -515,8 +515,8 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkApplicationWindow, gtk_application_window, GTK_TYPE_WINDOW,
+                          G_ADD_PRIVATE (GtkApplicationWindow)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_GROUP, gtk_application_window_group_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ACTION_MAP, gtk_application_window_map_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_GROUP, gtk_application_window_group_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ACTION_MAP, gtk_application_window_map_iface_init))
+ 
+ enum {
+   PROP_0,
+--- a/gtk/gtkassistant.c
++++ b/gtk/gtkassistant.c
+@@ -225,7 +225,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkAssistant, gtk_assistant, GTK_TYPE_WINDOW,
+                          G_ADD_PRIVATE (GtkAssistant)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_assistant_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtkbox.c
++++ b/gtk/gtkbox.c
+@@ -227,7 +227,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkBox, gtk_box, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkBox)
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE, gtk_box_buildable_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE, gtk_box_buildable_init))
+ 
+ static void
+ gtk_box_dispose (GObject *object)
+--- a/gtk/gtkbutton.c
++++ b/gtk/gtkbutton.c
+@@ -223,8 +223,8 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkButton, gtk_button, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIONABLE, gtk_button_actionable_iface_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIONABLE, gtk_button_actionable_iface_init)
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 						gtk_button_activatable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtkcellarea.c
++++ b/gtk/gtkcellarea.c
+@@ -605,9 +605,9 @@
+ 
+ G_DEFINE_ABSTRACT_TYPE_WITH_CODE (GtkCellArea, gtk_cell_area, G_TYPE_INITIALLY_UNOWNED,
+                                   G_ADD_PRIVATE (GtkCellArea)
+-                                  G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++                                  G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+                                                          gtk_cell_area_cell_layout_init)
+-                                  G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                                  G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                          gtk_cell_area_buildable_init))
+ 
+ static void
+--- a/gtk/gtkcellareabox.c
++++ b/gtk/gtkcellareabox.c
+@@ -236,7 +236,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkCellAreaBox, gtk_cell_area_box, GTK_TYPE_CELL_AREA,
+                          G_ADD_PRIVATE (GtkCellAreaBox)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+                                                 gtk_cell_area_box_cell_layout_init)
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL))
+ 
+--- a/gtk/gtkcellrendereraccel.c
++++ b/gtk/gtkcellrendereraccel.c
+@@ -531,7 +531,7 @@
+ static void gtk_cell_editable_event_box_cell_editable_init (GtkCellEditableIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkCellEditableEventBox, gtk_cell_editable_event_box, GTK_TYPE_EVENT_BOX,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_EDITABLE, gtk_cell_editable_event_box_cell_editable_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_EDITABLE, gtk_cell_editable_event_box_cell_editable_init))
+ 
+ static void
+ gtk_cell_editable_event_box_start_editing (GtkCellEditable *cell_editable,
+--- a/gtk/gtkcellview.c
++++ b/gtk/gtkcellview.c
+@@ -182,9 +182,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkCellView, gtk_cell_view, GTK_TYPE_WIDGET,
+                          G_ADD_PRIVATE (GtkCellView)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+ 						gtk_cell_view_cell_layout_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_cell_view_buildable_init)
+ 			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL))
+ 
+--- a/gtk/gtkcheckmenuitem.c
++++ b/gtk/gtkcheckmenuitem.c
+@@ -120,7 +120,7 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkCheckMenuItem, gtk_check_menu_item, GTK_TYPE_MENU_ITEM,
+                          G_ADD_PRIVATE (GtkCheckMenuItem)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+                                                 gtk_check_menu_item_activatable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtkcolorbutton.c
++++ b/gtk/gtkcolorbutton.c
+@@ -136,7 +136,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorButton, gtk_color_button, GTK_TYPE_BUTTON,
+                          G_ADD_PRIVATE (GtkColorButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_CHOOSER,
+                                                 gtk_color_button_iface_init))
+ 
+ static void
+--- a/gtk/gtkcolorchooserdialog.c
++++ b/gtk/gtkcolorchooserdialog.c
+@@ -58,7 +58,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorChooserDialog, gtk_color_chooser_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkColorChooserDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_CHOOSER,
+                                                 gtk_color_chooser_dialog_iface_init))
+ 
+ static void
+--- a/gtk/gtkcolorchooserwidget.c
++++ b/gtk/gtkcolorchooserwidget.c
+@@ -92,7 +92,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorChooserWidget, gtk_color_chooser_widget, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkColorChooserWidget)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_CHOOSER,
+                                                 gtk_color_chooser_widget_iface_init))
+ 
+ static void
+--- a/gtk/gtkcoloreditor.c
++++ b/gtk/gtkcoloreditor.c
+@@ -83,7 +83,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorEditor, gtk_color_editor, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkColorEditor)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_CHOOSER,
+                                                 gtk_color_editor_iface_init))
+ 
+ static guint
+--- a/gtk/gtkcolorpickerkwin.c
++++ b/gtk/gtkcolorpickerkwin.c
+@@ -38,8 +38,8 @@
+ static void gtk_color_picker_kwin_iface_init (GtkColorPickerInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorPickerKwin, gtk_color_picker_kwin, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, gtk_color_picker_kwin_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_PICKER, gtk_color_picker_kwin_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, gtk_color_picker_kwin_initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_PICKER, gtk_color_picker_kwin_iface_init))
+ 
+ static gboolean
+ gtk_color_picker_kwin_initable_init (GInitable     *initable,
+--- a/gtk/gtkcolorpickerportal.c
++++ b/gtk/gtkcolorpickerportal.c
+@@ -40,8 +40,8 @@
+ static void gtk_color_picker_portal_iface_init (GtkColorPickerInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorPickerPortal, gtk_color_picker_portal, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, gtk_color_picker_portal_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_PICKER, gtk_color_picker_portal_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, gtk_color_picker_portal_initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_PICKER, gtk_color_picker_portal_iface_init))
+ 
+ static gboolean
+ gtk_color_picker_portal_initable_init (GInitable     *initable,
+--- a/gtk/gtkcolorpickershell.c
++++ b/gtk/gtkcolorpickershell.c
+@@ -38,8 +38,8 @@
+ static void gtk_color_picker_shell_iface_init (GtkColorPickerInterface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkColorPickerShell, gtk_color_picker_shell, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE, gtk_color_picker_shell_initable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_COLOR_PICKER, gtk_color_picker_shell_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE, gtk_color_picker_shell_initable_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_COLOR_PICKER, gtk_color_picker_shell_iface_init))
+ 
+ static gboolean
+ gtk_color_picker_shell_initable_init (GInitable     *initable,
+--- a/gtk/gtkcombobox.c
++++ b/gtk/gtkcombobox.c
+@@ -449,11 +449,11 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkComboBox, gtk_combo_box, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkComboBox)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+                                                 gtk_combo_box_cell_layout_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_EDITABLE,
+                                                 gtk_combo_box_cell_editable_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_combo_box_buildable_init))
+ 
+ 
+--- a/gtk/gtkcomboboxtext.c
++++ b/gtk/gtkcomboboxtext.c
+@@ -104,7 +104,7 @@
+ static GtkBuildableIface *buildable_parent_iface = NULL;
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkComboBoxText, gtk_combo_box_text, GTK_TYPE_COMBO_BOX,
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_combo_box_text_buildable_interface_init));
+ 
+ static void
+--- a/gtk/gtkcssprovider.c
++++ b/gtk/gtkcssprovider.c
+@@ -166,9 +166,9 @@
+ 
+ G_DEFINE_TYPE_EXTENDED (GtkCssProvider, gtk_css_provider, G_TYPE_OBJECT, 0,
+                         G_ADD_PRIVATE (GtkCssProvider)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER,
+                                                gtk_css_style_provider_iface_init)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
+                                                gtk_css_style_provider_private_iface_init));
+ 
+ static void
+--- a/gtk/gtkdialog.c
++++ b/gtk/gtkdialog.c
+@@ -241,7 +241,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkDialog, gtk_dialog, GTK_TYPE_WINDOW,
+                          G_ADD_PRIVATE (GtkDialog)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_dialog_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtkentry.c
++++ b/gtk/gtkentry.c
+@@ -730,9 +730,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkEntry, gtk_entry, GTK_TYPE_WIDGET,
+                          G_ADD_PRIVATE (GtkEntry)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_EDITABLE,
+                                                 gtk_entry_editable_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_EDITABLE,
+                                                 gtk_entry_cell_editable_init))
+ 
+ static void
+--- a/gtk/gtkentrycompletion.c
++++ b/gtk/gtkentrycompletion.c
+@@ -194,9 +194,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkEntryCompletion, gtk_entry_completion, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkEntryCompletion)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+                                                 gtk_entry_completion_cell_layout_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_entry_completion_buildable_init))
+ 
+ 
+--- a/gtk/gtkexpander.c
++++ b/gtk/gtkexpander.c
+@@ -253,7 +253,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkExpander, gtk_expander, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkExpander)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_expander_buildable_init))
+ 
+ static void
+--- a/gtk/gtkfilechooserbutton.c
++++ b/gtk/gtkfilechooserbutton.c
+@@ -363,7 +363,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileChooserButton, gtk_file_chooser_button, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkFileChooserButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FILE_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FILE_CHOOSER,
+                                                 gtk_file_chooser_button_file_chooser_iface_init))
+ 
+ 
+--- a/gtk/gtkfilechooserdialog.c
++++ b/gtk/gtkfilechooserdialog.c
+@@ -248,7 +248,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileChooserDialog, gtk_file_chooser_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkFileChooserDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FILE_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FILE_CHOOSER,
+                                                 _gtk_file_chooser_delegate_iface_init))
+ 
+ static void
+--- a/gtk/gtkfilechoosernative.c
++++ b/gtk/gtkfilechoosernative.c
+@@ -227,7 +227,7 @@
+ static void    _gtk_file_chooser_native_iface_init   (GtkFileChooserIface  *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileChooserNative, gtk_file_chooser_native, GTK_TYPE_NATIVE_DIALOG,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FILE_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FILE_CHOOSER,
+                                                 _gtk_file_chooser_native_iface_init))
+ 
+ 
+--- a/gtk/gtkfilechooserwidget.c
++++ b/gtk/gtkfilechooserwidget.c
+@@ -630,9 +630,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileChooserWidget, gtk_file_chooser_widget, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkFileChooserWidget)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FILE_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FILE_CHOOSER,
+                                                 gtk_file_chooser_widget_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FILE_CHOOSER_EMBED,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FILE_CHOOSER_EMBED,
+                                                 gtk_file_chooser_embed_default_iface_init));
+ 
+ static void
+--- a/gtk/gtkfilefilter.c
++++ b/gtk/gtkfilefilter.c
+@@ -142,7 +142,7 @@
+ 								gpointer      *data);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileFilter, gtk_file_filter, G_TYPE_INITIALLY_UNOWNED,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_file_filter_buildable_init))
+ 
+ static void
+--- a/gtk/gtkfilesystemmodel.c
++++ b/gtk/gtkfilesystemmodel.c
+@@ -1015,11 +1015,11 @@
+ 
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFileSystemModel, _gtk_file_system_model, G_TYPE_OBJECT,
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_file_system_model_iface_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_SORTABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_SORTABLE,
+ 						gtk_file_system_model_sortable_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+ 						drag_source_iface_init))
+ 
+ static void
+--- a/gtk/gtkfontbutton.c
++++ b/gtk/gtkfontbutton.c
+@@ -453,7 +453,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFontButton, gtk_font_button, GTK_TYPE_BUTTON,
+                          G_ADD_PRIVATE (GtkFontButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FONT_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FONT_CHOOSER,
+                                                 gtk_font_button_font_chooser_iface_init))
+ 
+ static void
+--- a/gtk/gtkfontchooserdialog.c
++++ b/gtk/gtkfontchooserdialog.c
+@@ -76,9 +76,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFontChooserDialog, gtk_font_chooser_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkFontChooserDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FONT_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FONT_CHOOSER,
+                                                 _gtk_font_chooser_delegate_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_font_chooser_dialog_buildable_interface_init))
+ 
+ static GtkBuildableIface *parent_buildable_iface;
+--- a/gtk/gtkfontchooserwidget.c
++++ b/gtk/gtkfontchooserwidget.c
+@@ -252,7 +252,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFontChooserWidget, gtk_font_chooser_widget, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkFontChooserWidget)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_FONT_CHOOSER,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_FONT_CHOOSER,
+                                                 gtk_font_chooser_widget_iface_init))
+ 
+ typedef struct _GtkDelayedFontDescription GtkDelayedFontDescription;
+--- a/gtk/gtkframe.c
++++ b/gtk/gtkframe.c
+@@ -209,7 +209,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkFrame, gtk_frame, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkFrame)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_frame_buildable_init))
+ 
+ static void
+--- a/gtk/gtkheaderbar.c
++++ b/gtk/gtkheaderbar.c
+@@ -140,7 +140,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkHeaderBar, gtk_header_bar, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkHeaderBar)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_header_bar_buildable_init));
+ 
+ static void
+--- a/gtk/gtkiconview.c
++++ b/gtk/gtkiconview.c
+@@ -332,9 +332,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkIconView, gtk_icon_view, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkIconView)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+ 						gtk_icon_view_cell_layout_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_icon_view_buildable_init)
+ 			 G_IMPLEMENT_INTERFACE (GTK_TYPE_SCROLLABLE, NULL))
+ 
+--- a/gtk/gtkinfobar.c
++++ b/gtk/gtkinfobar.c
+@@ -200,7 +200,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkInfoBar, gtk_info_bar, GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkInfoBar)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_info_bar_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtklabel.c
++++ b/gtk/gtklabel.c
+@@ -595,7 +595,7 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+ G_DEFINE_TYPE_WITH_CODE (GtkLabel, gtk_label, GTK_TYPE_MISC,
+                          G_ADD_PRIVATE (GtkLabel)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_label_buildable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS
+ 
+--- a/gtk/gtklevelbar.c
++++ b/gtk/gtklevelbar.c
+@@ -192,7 +192,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkLevelBar, gtk_level_bar, GTK_TYPE_WIDGET,
+                          G_ADD_PRIVATE (GtkLevelBar)
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_level_bar_buildable_init))
+ 
+ static GtkLevelBarOffset *
+--- a/gtk/gtklistbox.c
++++ b/gtk/gtklistbox.c
+@@ -194,11 +194,11 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkListBox, gtk_list_box, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkListBox)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_list_box_buildable_interface_init))
+ G_DEFINE_TYPE_WITH_CODE (GtkListBoxRow, gtk_list_box_row, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkListBoxRow)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIONABLE, gtk_list_box_row_actionable_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIONABLE, gtk_list_box_row_actionable_iface_init))
+ 
+ static void                 gtk_list_box_apply_filter_all             (GtkListBox          *box);
+ static void                 gtk_list_box_update_header                (GtkListBox          *box,
+--- a/gtk/gtkliststore.c
++++ b/gtk/gtkliststore.c
+@@ -299,15 +299,15 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkListStore, gtk_list_store, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkListStore)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_list_store_tree_model_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+ 						gtk_list_store_drag_source_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_DEST,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_DEST,
+ 						gtk_list_store_drag_dest_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_SORTABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_SORTABLE,
+ 						gtk_list_store_sortable_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_list_store_buildable_init))
+ 
+ 
+--- a/gtk/gtkmenuitem.c
++++ b/gtk/gtkmenuitem.c
+@@ -226,11 +226,11 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkMenuItem, gtk_menu_item, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkMenuItem)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_menu_item_buildable_interface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+                                                 gtk_menu_item_activatable_interface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIONABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIONABLE,
+                                                 gtk_menu_item_actionable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtkmenutoolbutton.c
++++ b/gtk/gtkmenutoolbutton.c
+@@ -96,7 +96,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkMenuToolButton, gtk_menu_tool_button, GTK_TYPE_TOOL_BUTTON,
+                          G_ADD_PRIVATE (GtkMenuToolButton)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_menu_tool_button_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtkmenutrackeritem.c
++++ b/gtk/gtkmenutrackeritem.c
+@@ -124,7 +124,7 @@
+ 
+ static void gtk_menu_tracker_item_init_observer_iface (GtkActionObserverInterface *iface);
+ G_DEFINE_TYPE_WITH_CODE (GtkMenuTrackerItem, gtk_menu_tracker_item, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTION_OBSERVER, gtk_menu_tracker_item_init_observer_iface))
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTION_OBSERVER, gtk_menu_tracker_item_init_observer_iface))
+ 
+ GType
+ gtk_menu_tracker_item_role_get_type (void)
+--- a/gtk/gtkmessagedialog.c
++++ b/gtk/gtkmessagedialog.c
+@@ -139,7 +139,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkMessageDialog, gtk_message_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkMessageDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_message_dialog_buildable_interface_init))
+ 
+ static GtkBuildableIface *parent_buildable_iface;
+--- a/gtk/gtkmodifierstyle.c
++++ b/gtk/gtkmodifierstyle.c
+@@ -36,9 +36,9 @@
+ 
+ G_DEFINE_TYPE_EXTENDED (GtkModifierStyle, _gtk_modifier_style, G_TYPE_OBJECT, 0,
+                         G_ADD_PRIVATE (GtkModifierStyle)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER,
+                                                gtk_modifier_style_provider_init)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
+                                                gtk_modifier_style_provider_private_init));
+ 
+ static void
+--- a/gtk/gtknotebook.c
++++ b/gtk/gtknotebook.c
+@@ -599,7 +599,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkNotebook, gtk_notebook, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkNotebook)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_notebook_buildable_init))
+ 
+ static void
+--- a/gtk/gtkoverlay.c
++++ b/gtk/gtkoverlay.c
+@@ -94,7 +94,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkOverlay, gtk_overlay, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkOverlay)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_overlay_buildable_init))
+ 
+ static void
+--- a/gtk/gtkprintoperation.c
++++ b/gtk/gtkprintoperation.c
+@@ -159,7 +159,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkPrintOperation, gtk_print_operation, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkPrintOperation)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_PRINT_OPERATION_PREVIEW,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_PRINT_OPERATION_PREVIEW,
+ 						preview_iface_init))
+ 
+ /**
+--- a/gtk/gtkprintunixdialog.c
++++ b/gtk/gtkprintunixdialog.c
+@@ -378,7 +378,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkPrintUnixDialog, gtk_print_unix_dialog, GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkPrintUnixDialog)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_print_unix_dialog_buildable_init))
+ 
+ static GtkBuildableIface *parent_buildable_iface;
+--- a/gtk/gtkrecentchooserdefault.c
++++ b/gtk/gtkrecentchooserdefault.c
+@@ -295,9 +295,9 @@
+ 			 _gtk_recent_chooser_default,
+ 			 GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkRecentChooserDefault)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_RECENT_CHOOSER,
+ 				 		gtk_recent_chooser_iface_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 				 		gtk_recent_chooser_activatable_iface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtkrecentchooserdialog.c
++++ b/gtk/gtkrecentchooserdialog.c
+@@ -107,7 +107,7 @@
+ 			 gtk_recent_chooser_dialog,
+ 			 GTK_TYPE_DIALOG,
+                          G_ADD_PRIVATE (GtkRecentChooserDialog)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_RECENT_CHOOSER,
+ 		       				_gtk_recent_chooser_delegate_iface_init))
+ 
+ static void
+--- a/gtk/gtkrecentchoosermenu.c
++++ b/gtk/gtkrecentchoosermenu.c
+@@ -182,9 +182,9 @@
+ 			 gtk_recent_chooser_menu,
+ 			 GTK_TYPE_MENU,
+                          G_ADD_PRIVATE (GtkRecentChooserMenu)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_RECENT_CHOOSER,
+ 				 		gtk_recent_chooser_iface_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 				 		gtk_recent_chooser_activatable_iface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtkrecentchooserwidget.c
++++ b/gtk/gtkrecentchooserwidget.c
+@@ -64,7 +64,7 @@
+ 		         gtk_recent_chooser_widget,
+ 			 GTK_TYPE_BOX,
+                          G_ADD_PRIVATE (GtkRecentChooserWidget)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_RECENT_CHOOSER,
+ 						_gtk_recent_chooser_delegate_iface_init))
+ 
+ static void
+--- a/gtk/gtkrecentfilter.c
++++ b/gtk/gtkrecentfilter.c
+@@ -146,7 +146,7 @@
+ };
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkRecentFilter, gtk_recent_filter, G_TYPE_INITIALLY_UNOWNED,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_recent_filter_buildable_init))
+ 
+ 
+--- a/gtk/gtkscale.c
++++ b/gtk/gtkscale.c
+@@ -233,7 +233,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkScale, gtk_scale, GTK_TYPE_RANGE,
+                          G_ADD_PRIVATE (GtkScale)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_scale_buildable_interface_init))
+ 
+ static gint
+--- a/gtk/gtksearchenginetracker3.c
++++ b/gtk/gtksearchenginetracker3.c
+@@ -79,7 +79,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkSearchEngineTracker3,
+                          gtk_search_engine_tracker3,
+                          GTK_TYPE_SEARCH_ENGINE,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_INITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_INITABLE,
+                                                 gtk_search_engine_tracker3_initable_iface_init))
+ 
+ static void
+--- a/gtk/gtksearchentry.c
++++ b/gtk/gtksearchentry.c
+@@ -93,7 +93,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkSearchEntry, gtk_search_entry, GTK_TYPE_ENTRY,
+                          G_ADD_PRIVATE (GtkSearchEntry)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_EDITABLE,
+                                                 gtk_search_entry_editable_init))
+ 
+ /* 150 mseconds of delay */
+--- a/gtk/gtksettings.c
++++ b/gtk/gtksettings.c
+@@ -290,9 +290,9 @@
+ 
+ G_DEFINE_TYPE_EXTENDED (GtkSettings, gtk_settings, G_TYPE_OBJECT, 0,
+                         G_ADD_PRIVATE (GtkSettings)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER,
+                                                gtk_settings_provider_iface_init)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
+                                                gtk_settings_provider_private_init));
+ 
+ /* --- functions --- */
+--- a/gtk/gtksizegroup.c
++++ b/gtk/gtksizegroup.c
+@@ -148,7 +148,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkSizeGroup, gtk_size_group, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkSizeGroup)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_size_group_buildable_init))
+ 
+ static void
+--- a/gtk/gtkspinbutton.c
++++ b/gtk/gtkspinbutton.c
+@@ -325,7 +325,7 @@
+ G_DEFINE_TYPE_WITH_CODE (GtkSpinButton, gtk_spin_button, GTK_TYPE_ENTRY,
+                          G_ADD_PRIVATE (GtkSpinButton)
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE, NULL)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_EDITABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_EDITABLE,
+                                                 gtk_spin_button_editable_init))
+ 
+ #define add_spin_binding(binding_set, keyval, mask, scroll)            \
+--- a/gtk/gtkstylecascade.c
++++ b/gtk/gtkstylecascade.c
+@@ -277,9 +277,9 @@
+ }
+ 
+ G_DEFINE_TYPE_EXTENDED (GtkStyleCascade, _gtk_style_cascade, G_TYPE_OBJECT, 0,
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER,
+                                                gtk_style_cascade_provider_iface_init)
+-                        G_IMPLEMENT_INTERFACE (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
++                        G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_STYLE_PROVIDER_PRIVATE,
+                                                gtk_style_cascade_provider_private_iface_init));
+ 
+ static void
+--- a/gtk/gtkswitch.c
++++ b/gtk/gtkswitch.c
+@@ -129,9 +129,9 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkSwitch, gtk_switch, GTK_TYPE_WIDGET,
+                          G_ADD_PRIVATE (GtkSwitch)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIONABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIONABLE,
+                                                 gtk_switch_actionable_iface_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+                                                 gtk_switch_activatable_interface_init));
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtktexttagtable.c
++++ b/gtk/gtktexttagtable.c
+@@ -92,7 +92,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTextTagTable, gtk_text_tag_table, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkTextTagTable)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+                                                 gtk_text_tag_table_buildable_interface_init))
+ 
+ static void
+--- a/gtk/gtktogglebutton.c
++++ b/gtk/gtktogglebutton.c
+@@ -159,7 +159,7 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkToggleButton, gtk_toggle_button, GTK_TYPE_BUTTON,
+                          G_ADD_PRIVATE (GtkToggleButton)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 						gtk_toggle_button_activatable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtktoggletoolbutton.c
++++ b/gtk/gtktoggletoolbutton.c
+@@ -96,7 +96,7 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkToggleToolButton, gtk_toggle_tool_button, GTK_TYPE_TOOL_BUTTON,
+                          G_ADD_PRIVATE (GtkToggleToolButton)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 						gtk_toggle_tool_button_activatable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtktoolbar.c
++++ b/gtk/gtktoolbar.c
+@@ -350,7 +350,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkToolbar, gtk_toolbar, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkToolbar)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TOOL_SHELL,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TOOL_SHELL,
+                                                 toolbar_tool_shell_iface_init)
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_ORIENTABLE,
+                                                 NULL))
+--- a/gtk/gtktoolitem.c
++++ b/gtk/gtktoolitem.c
+@@ -141,7 +141,7 @@
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS;
+ G_DEFINE_TYPE_WITH_CODE (GtkToolItem, gtk_tool_item, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkToolItem)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_ACTIVATABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_ACTIVATABLE,
+ 						gtk_tool_item_activatable_interface_init))
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+ 
+--- a/gtk/gtktoolitemgroup.c
++++ b/gtk/gtktoolitemgroup.c
+@@ -121,7 +121,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkToolItemGroup, gtk_tool_item_group, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkToolItemGroup)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TOOL_SHELL,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TOOL_SHELL,
+                                                 gtk_tool_item_group_tool_shell_init));
+ 
+ static GtkWidget*
+--- a/gtk/gtktreemenu.c
++++ b/gtk/gtktreemenu.c
+@@ -205,7 +205,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeMenu, _gtk_tree_menu, GTK_TYPE_MENU,
+                          G_ADD_PRIVATE (GtkTreeMenu)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+                                                 gtk_tree_menu_cell_layout_init));
+ 
+ static void
+--- a/gtk/gtktreemodelfilter.c
++++ b/gtk/gtktreemodelfilter.c
+@@ -494,9 +494,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeModelFilter, gtk_tree_model_filter, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkTreeModelFilter)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_tree_model_filter_tree_model_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+ 						gtk_tree_model_filter_drag_source_init))
+ 
+ static void
+--- a/gtk/gtktreemodelsort.c
++++ b/gtk/gtktreemodelsort.c
+@@ -444,11 +444,11 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeModelSort, gtk_tree_model_sort, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkTreeModelSort)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_tree_model_sort_tree_model_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_SORTABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_SORTABLE,
+ 						gtk_tree_model_sort_tree_sortable_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+ 						gtk_tree_model_sort_drag_source_init))
+ 
+ static void
+--- a/gtk/gtktreestore.c
++++ b/gtk/gtktreestore.c
+@@ -209,15 +209,15 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeStore, gtk_tree_store, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkTreeStore)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_tree_store_tree_model_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+ 						gtk_tree_store_drag_source_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_DEST,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_DEST,
+ 						gtk_tree_store_drag_dest_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_SORTABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_SORTABLE,
+ 						gtk_tree_store_sortable_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_tree_store_buildable_init))
+ 
+ static void
+--- a/gtk/gtktreeview.c
++++ b/gtk/gtktreeview.c
+@@ -953,9 +953,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeView, gtk_tree_view, GTK_TYPE_CONTAINER,
+                          G_ADD_PRIVATE (GtkTreeView)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_tree_view_buildable_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_SCROLLABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_SCROLLABLE,
+                                                 gtk_tree_view_scrollable_init))
+ 
+ static void
+--- a/gtk/gtktreeviewcolumn.c
++++ b/gtk/gtktreeviewcolumn.c
+@@ -211,9 +211,9 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeViewColumn, gtk_tree_view_column, G_TYPE_INITIALLY_UNOWNED,
+                          G_ADD_PRIVATE (GtkTreeViewColumn)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_CELL_LAYOUT,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_CELL_LAYOUT,
+ 						gtk_tree_view_column_cell_layout_init)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_tree_view_column_buildable_init))
+ 
+ 
+--- a/gtk/gtkwindow.c
++++ b/gtk/gtkwindow.c
+@@ -613,7 +613,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkWindow, gtk_window, GTK_TYPE_BIN,
+                          G_ADD_PRIVATE (GtkWindow)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_BUILDABLE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_BUILDABLE,
+ 						gtk_window_buildable_interface_init))
+ 
+ static void
+--- a/gtk/inspector/gtktreemodelcssnode.c
++++ b/gtk/inspector/gtktreemodelcssnode.c
+@@ -43,7 +43,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeModelCssNode, gtk_tree_model_css_node, G_TYPE_OBJECT,
+                          G_ADD_PRIVATE (GtkTreeModelCssNode)
+-			 G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++			 G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+ 						gtk_tree_model_css_node_tree_model_init))
+ 
+ static GtkCssNode *
+--- a/tests/testtreecolumns.c
++++ b/tests/testtreecolumns.c
+@@ -371,9 +371,9 @@
+ }
+ 
+ G_DEFINE_TYPE_WITH_CODE (ViewColumnModel, view_column_model, GTK_TYPE_LIST_STORE,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL, view_column_model_tree_model_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE, view_column_model_drag_source_init)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_DEST, view_column_model_drag_dest_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL, view_column_model_tree_model_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE, view_column_model_drag_source_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_DEST, view_column_model_drag_dest_init))
+ 
+ static void
+ update_columns (GtkTreeView *view, ViewColumnModel *view_model)
+--- a/tests/testtreednd.c
++++ b/tests/testtreednd.c
+@@ -6,7 +6,7 @@
+ static void my_model_drag_source_init (GtkTreeDragSourceIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (MyModel, my_model, GTK_TYPE_LIST_STORE,
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_DRAG_SOURCE,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_DRAG_SOURCE,
+                                                 my_model_drag_source_init))
+ 
+ static void
+--- a/testsuite/gtk/gtktreemodelrefcount.c
++++ b/testsuite/gtk/gtktreemodelrefcount.c
+@@ -56,7 +56,7 @@
+ 
+ G_DEFINE_TYPE_WITH_CODE (GtkTreeModelRefCount, gtk_tree_model_ref_count, GTK_TYPE_TREE_STORE,
+                          G_ADD_PRIVATE (GtkTreeModelRefCount)
+-                         G_IMPLEMENT_INTERFACE (GTK_TYPE_TREE_MODEL,
++                         G_IMPLEMENT_INTERFACE_UNARY (GTK_TYPE_TREE_MODEL,
+                                                 gtk_tree_model_ref_count_tree_model_init))
+ 
+ static void

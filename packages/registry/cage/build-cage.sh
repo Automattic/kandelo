@@ -59,6 +59,8 @@ SCANNER_PC_DIR="$(pkg-config --variable=pcfiledir wayland-scanner)" || {
 # --- Stage verified source ---
 echo "==> Staging verified cage $CAGE_VERSION source..."
 kandelo_package_stage_primary_source cage "$SRC_DIR" "$KANDELO_PACKAGE_WORK_DIR"
+patch --fuzz=0 -p1 -d "$SRC_DIR" < "$SCRIPT_DIR/patches/0001-initial-scale-from-connector-density.patch"
+bash "$SCRIPT_DIR/tests/check-output-scale.sh" "$SRC_DIR/output.c" "$KANDELO_PACKAGE_WORK_DIR/output-scale-control"
 
 rm -rf "$BUILD_DIR"
 # The resolver-created output directory is itself publication authority, so

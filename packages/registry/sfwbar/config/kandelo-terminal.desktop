@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Comment=Open a terminal in this desktop
+Exec=/usr/local/bin/kandelo-terminal
+Terminal=false
+Categories=System;TerminalEmulator;

@@ -112,7 +112,8 @@ static int native_window, record_windows[3];
 static const void *wayland_native_display=(void *)(uintptr_t)0x576100u;
 static int wayland_native_live=1,native_window_live=1,native_window_active;
 static uint64_t wayland_native_identity=1;
-static unsigned native_window_holds,native_window_presents;
+static unsigned native_window_holds,native_window_presents,native_window_copies,native_window_prepare_presents;
+static int native_window_present_active;
 static uint32_t native_window_bo;
 static int native_window_fd = 10;
 static uint32_t native_window_width = 64, native_window_height = 32;
@@ -136,6 +137,11 @@ int _wpk_wlegl_prepare(void *lease,struct wpk_wlegl_frame *frame) {
     *frame=(struct wpk_wlegl_frame){.fd=native_window_fd,.handle=native_window_bo,
         .width=native_window_width,.height=native_window_height};return 1;
 }
+int _wpk_wlegl_prepare_present(void *lease,struct wpk_wlegl_frame *frame) {
+    if(!_wpk_wlegl_prepare(lease,frame))return 0;
+    native_window_prepare_presents++;native_window_present_active=1;
+    frame->handle=native_window_bo+100;return 1;
+}
 int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,void **lease,struct wpk_wlegl_frame *frame) {
     if(window!=&native_window || (display && (display!=wayland_native_display || identity!=wayland_native_identity))
       || !_wpk_wlegl_prepare((void *)window,frame))return 0;
@@ -144,7 +150,8 @@ int _wpk_wlegl_acquire(const void *window,const void *display,uint64_t identity,
 int _wpk_wlegl_finish(void *lease,int present) {
     assert(lease==&native_window && native_window_holds && native_window_active);
     native_window_active=0;
-    if(present) {if(!native_window_live || !wayland_native_live)return 0;native_window_presents++;}
+    if(present) {assert(native_window_present_active);if(!native_window_live || !wayland_native_live)return 0;native_window_presents++;}
+    native_window_present_active=0;
     return 1;
 }
 void _wpk_wlegl_release(void *lease) {assert(lease==&native_window && native_window_holds);native_window_holds--;}
@@ -222,6 +229,7 @@ struct device_slot {
     int array_saved;
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
     uint32_t current_program;
+    uint32_t framebuffer_draw, framebuffer_read;
 
     struct {
         GLuint name;
@@ -298,6 +306,7 @@ static unsigned char *commands;
 static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
 static unsigned error_only_batches;
+static unsigned compound_batches, compound_failure;
 static unsigned array_captures, array_restores;
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
@@ -370,6 +379,8 @@ static unsigned image_failure, image_queries, fail_image_storage, image_pixel_up
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
+static unsigned framebuffer_bind_queries;
+static int fail_alloc_after_image_mutation;
 static EGLImageKHR nested_image_import, nested_image_state;
 static struct wpk_gles_context *close_group_peer;
 static unsigned close_group_reservations;
@@ -407,6 +418,47 @@ static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride;
 static unsigned captured_chunks;
+static unsigned inline_draws, buffer_binds, buffer_deletes;
+static uint32_t inline_first, inline_count, inline_attributes, inline_payload_size;
+static unsigned char inline_payload[65535];
+static int capture_inline_record;
+static unsigned char inline_record[256];
+static uint32_t inline_record_length;
+static struct { uint32_t index, size, type, normalized, bytes, offset; } inline_layout[16];
+
+/* Interpret the actual packed record: reconstruct selected vertex positions for
+ * existing upload controls and retain all attribute bytes for mixed/layout tests.
+ * This deliberately does not create public buffer names or change selectors. */
+static void interpret_inline_draw(struct device_slot *slot, const unsigned char *payload, uint32_t length) {
+    assert(length >= 16 && length <= sizeof inline_payload && !slot->array_saved);
+    uint32_t header[4]; memcpy(header,payload,16);
+    assert(header[0] <= GL_TRIANGLE_FAN && header[1] <= INT32_MAX &&
+           header[2] > 0 && header[2] <= INT32_MAX && header[3] > 0 && header[3] <= 16);
+    inline_first = header[1]; inline_count = header[2]; inline_attributes = header[3];
+    inline_payload_size = length; memcpy(inline_payload,payload,length);
+    uint32_t at = 16, previous = 0;
+    for (uint32_t i=0; i<inline_attributes; i++) {
+        assert(at+20 <= length);
+        uint32_t a[5]; memcpy(a,payload+at,20); at += 20;
+        const uint32_t width = a[2] == GL_BYTE || a[2] == GL_UNSIGNED_BYTE ? 1 :
+            a[2] == GL_SHORT || a[2] == GL_UNSIGNED_SHORT ? 2 :
+            a[2] == GL_FLOAT || a[2] == GL_FIXED ? 4 : 0;
+        assert(a[0] < 16 && (!i || a[0] > previous) && a[1] >= 1 && a[1] <= 4 && width && a[3] <= 1);
+        assert((uint64_t)inline_count*a[1]*width == a[4] && a[4] <= length-at);
+        inline_layout[i].index=a[0]; inline_layout[i].size=a[1]; inline_layout[i].type=a[2];
+        inline_layout[i].normalized=a[3]; inline_layout[i].bytes=a[4]; inline_layout[i].offset=at;
+        if (capture_array_upload) {
+            const uint64_t capacity = ((uint64_t)inline_first+inline_count)*a[1]*width;
+            assert(capacity <= sizeof captured_bytes);
+            captured_size=(uint32_t)capacity; memset(captured_bytes,0,captured_size);
+            memcpy(captured_bytes+inline_first*a[1]*width,payload+at,a[4]);
+            captured_type=a[2]; captured_stride=0; captured_chunks++;
+        }
+        previous=a[0]; at += a[4];
+    }
+    assert(at == length); inline_draws++; draw_commands++;
+}
+
 
 /* Accepted C control operations plus actual encoder bytes. The source-browser
  * replay supplies kernel dispatch/identity translation, not guest marshalling. */
@@ -438,6 +490,7 @@ static uint32_t *object_image_source(struct device_slot *slot, uint32_t kind, ui
     return NULL;
 }
 static int native_buffer_bind(struct device_slot *slot, uint32_t target, uint32_t name) {
+    buffer_binds++;
     if (buffer_bind_failure) {
         buffer_bind_failure = 0;
         query_gl_error = GL_OUT_OF_MEMORY;
@@ -452,6 +505,7 @@ static int native_buffer_bind(struct device_slot *slot, uint32_t target, uint32_
     return 1;
 }
 static int native_buffer_delete(struct device_slot *slot, uint32_t name) {
+    buffer_deletes++;
     if (buffer_delete_failure) {
         buffer_delete_failure = 0;
         query_gl_error = GL_OUT_OF_MEMORY;
@@ -480,6 +534,15 @@ static void orphan_image_source(struct device_slot *slot, uint32_t kind, uint32_
 }
 /* Model definite native rejection on both legacy queued binds and checked
  * binding queries so the regression can execute against unchanged sources. */
+/* Actual checked selection, independent of the C encoder's bookkeeping. */
+static int native_framebuffer_bind(struct device_slot *slot, uint32_t target, uint32_t name) {
+    if (target != GL_FRAMEBUFFER && target != 0x8ca9 && target != 0x8ca8) {
+        query_gl_error = GL_INVALID_ENUM; return 0;
+    }
+    if (target != 0x8ca8) slot->framebuffer_draw = name;
+    if (target != 0x8ca9) slot->framebuffer_read = name;
+    return 1;
+}
 static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum target, GLuint name) {
     if (bind_failure == 2) {
         bind_failure = 0;
@@ -770,6 +833,25 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         attrs->context_id = slot->context = next_backend_context++;
         egl_trace(2, fd, attrs, sizeof *attrs);
+    } else if (request == GLIO_SUBMIT_QUERY) {
+        struct gl_submit_query_info *packet = arg;
+        compound_batches++;
+        assert(packet->submit.length && !packet->submit.offset);
+        struct gl_submit_info submit = packet->submit;
+        struct gl_query_info query = packet->query;
+        struct gl_submit_query_result result = { .completed_phase = WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT,
+            .result_magic = WPK_GL_SUBMIT_QUERY_REPLY_MAGIC };
+        unsigned failure = compound_failure; compound_failure = 0;
+        if (graphics_ioctl(fd,GLIO_SUBMIT,&submit) != 0) result.submit_rc = -errno;
+        else {
+            if (failure == 1) { errno=EIO; return -1; } // Lost reply after accepted prefix.
+            result.completed_phase = WPK_GL_SUBMIT_QUERY_PHASE_QUERY;
+            if (graphics_ioctl(fd,GLIO_QUERY,&query) != 0) result.query_rc = -errno;
+        }
+        if (failure == 2) result.result_magic = 0;
+        if (failure == 3) result.completed_phase = 99;
+        if (failure == 4) { errno=EIO; return -1; } // Query may already have accepted.
+        packet->result = result;
     } else if (request == GLIO_SUBMIT) {
         submit_batches++;
         const char *session_trace = getenv("KANDELO_GRAPHICS_SESSION_TRACE");
@@ -861,6 +943,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 at += 4 + len;
                 continue;
             }
+            if (op == OP_BIND_FRAMEBUFFER) (void)native_framebuffer_bind(slot,words[0],words[1]);
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
             if (op == OP_DELETE_BUFFERS)
@@ -937,6 +1020,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
             }
             if (op == OP_DRAW_ARRAYS || op == OP_DRAW_ELEMENTS) draw_commands++;
+#ifdef OP_DRAW_CLIENT_ARRAYS
+            if (op == OP_DRAW_CLIENT_ARRAYS) {
+                interpret_inline_draw(slot,commands+at+4,len);
+                if (capture_inline_record) {
+                    assert((uint32_t)len+4 <= sizeof inline_record && inline_record_length == 0);
+                    inline_record_length=(uint32_t)len+4;
+                    memcpy(inline_record,commands+at,inline_record_length);
+                }
+            }
+#endif
             if (op == OP_TEX_IMAGE_2D) redefined_texture = bound_texture;
             if (op == OP_TEX_IMAGE_2D || op == OP_GENERATE_MIPMAP ||
                 op == OP_COMPRESSED_TEX_IMAGE_2D || op == OP_COPY_TEX_IMAGE_2D) {
@@ -992,6 +1085,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (fail_surface_update) { errno = ENOMEM; return -1; }
         uint32_t words[8]; memcpy(words,arg,sizeof words);
         if (!words[5]) surface_target = words[4];
+        else if(native_window_present_active) {
+            assert(words[0]==WPK_SURFACE_DEFAULT && words[1]==native_window_width && words[2]==native_window_height && words[3]==1);
+            assert(words[4]==0 && words[6]==0 && words[7]==0);
+            assert((fd==native_window_fd ? words[5] : transferred_sources[fd-10])==native_window_bo+100 && surface_target!=words[5]);
+            native_window_copies++;
+        }
     } else if (request == GLIO_MAKE_CURRENT) {
         if (fail_make_current) { errno = make_current_errno; return -1; }
         assert(arg);
@@ -1135,12 +1234,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             egl_trace(14,fd,reply,16);
             return 0;
         }
+        if (q->op == 0x2a) framebuffer_bind_queries++;
         if (q->op == 0x27 || q->op == 0x28 || q->op == 0x29 || q->op == 0x2a) {
-            assert(q->out_buf_len == 12);
+            assert(q->out_buf_len == 12 || (q->op == 0x28 && q->out_buf_len == 16) || (q->op == 0x27 && q->out_buf_len == 20));
             assert(q->op == 0x29 ? q->in_buf_len == 20 || q->in_buf_len == 40
                                  : q->in_buf_len == (q->op == 0x28 ? 24u : 8u));
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
-            uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
+            uint32_t *reply = allocation_for(q->out_buf_ptr, q->out_buf_len);
+            uint32_t draw = slot->framebuffer_draw, read = slot->framebuffer_read;
             unsigned failure = image_mutation_failure;
             image_mutation_failure = 0;
             image_mutation_queries++;
@@ -1148,6 +1249,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 raw_discard_queries++;
                 if (raw_discard_failure) failure = raw_discard_failure;
             }
+            int attachment_error = q->op == 0x28 && !(input[1] == 0x8ca8 ? read : draw);
+            if (attachment_error && !failure) failure = 2;
             int storage_error = q->op == 0x29 && fail_image_storage;
             if (storage_error && !failure)
                 failure = 2;
@@ -1156,10 +1259,28 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 return -1;
             }
             if (failure == 2)
-                query_gl_error = storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
+                query_gl_error = attachment_error ? GL_INVALID_OPERATION : storage_error ? GL_INVALID_VALUE : GL_OUT_OF_MEMORY;
             reply[0] = failure == 2 ? 1u : failure == 5 ? 2u : 0u;
             reply[1] = failure == 2 ? 0u : failure == 4 ? 9u : 1u;
-            reply[2] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
+            unsigned footer = q->out_buf_len/4-1;
+            if (q->out_buf_len > 12) {
+                reply[2] = reply[0] == 0 ? (q->op == 0x28 && input[1] == 0x8ca8 ? read : draw) : 0;
+                if (q->op == 0x27) reply[3] = reply[0] == 0 ? read : 0;
+                if (failure == 7) reply[2] = 0; // Malformed accepted attachment receipt.
+            }
+            if (failure >= 8 && failure <= 10) {
+                // Contradictory extended rejection with a valid completion
+                // marker: each payload field must be checked independently.
+                assert(q->op == 0x27 || q->op == 0x28);
+                assert(q->out_buf_len == (q->op == 0x27 ? 20u : 16u));
+                assert(failure != 10 || q->op == 0x27);
+                reply[0] = 1;
+                reply[1] = failure == 8 ? 1u : 0u;
+                reply[2] = failure == 9 ? 1u : 0u;
+                if (q->op == 0x27) reply[3] = failure == 10 ? 1u : 0u;
+            }
+            reply[footer] = failure == 3 || failure == 6 ? 0u : 0x47514c33u;
+            if (q->op == 0x2a && (!failure || failure == 6)) (void)native_framebuffer_bind(slot,input[0],input[1]);
             if (q->op == 0x27 && (!failure || failure == 6) && input[1]) {
                 if (input[0] == 1 && image_groups[slot->image_group].raw_name == input[1]) {
                     image_groups[slot->image_group].raw_name++;
@@ -1177,6 +1298,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                             slot->texture_targets[t].name = 0;
                 } else if (input[0] == 2 && slot->renderbuffer_binding == input[1])
                     slot->renderbuffer_binding = 0;
+                else if (input[0] == 3) {
+                    if (slot->framebuffer_draw == input[1]) slot->framebuffer_draw = 0;
+                    if (slot->framebuffer_read == input[1]) slot->framebuffer_read = 0;
+                }
             }
             if (q->op == 0x29 && !failure) {
                 if (input[0] == OP_TEX_IMAGE_2D) {
@@ -1189,10 +1314,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     orphan_image_source(slot, 2, slot->renderbuffer_binding);
                 }
             }
-            uint32_t trace[13] = {q->op, 12, reply[0]};
+            uint32_t trace[13] = {q->op, q->out_buf_len, reply[0]};
             memcpy(trace + 3, input, q->in_buf_len);
             egl_trace(11, fd, trace, 12 + q->in_buf_len);
-            protocol_trace(2, q->op, input, q->in_buf_len, 12);
+            protocol_trace(2, q->op, input, q->in_buf_len, q->out_buf_len);
+            if (fail_alloc_after_image_mutation) {
+                fail_alloc_after_image_mutation = 0; fail_malloc = fail_calloc = 1;
+            }
             return 0;
         }
         if (q->op == 0x2c) {
@@ -1813,7 +1941,7 @@ static GLuint prepare_native_uniform_program(void) {
 }
 
 int main(int argc, char **argv) {
-    assert(argc == 2);
+    assert(argc == 2 || (argc == 3 && !strcmp(argv[1],"encoder-inline-export")));
     EGLDisplay dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (!strcmp(argv[1], "display-wayland-window")) {
         EGLDisplay client=eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display);
@@ -1825,9 +1953,15 @@ int main(int argc, char **argv) {
         EGLContext context=eglCreateContext(client,(EGLConfig)1,EGL_NO_CONTEXT,attrs);assert(context!=EGL_NO_CONTEXT);
         assert(eglMakeCurrent(client,window,window,context));
         assert(eglSwapBuffers(client,window) && native_window_presents==1 && !native_window_active);
+        assert(native_window_copies==1 && native_window_prepare_presents==1);
+        // Copy failure must cancel the reserved front without attaching it.
+        fail_surface_update=1;
+        assert(!eglSwapBuffers(client,window));(void)eglGetError();fail_surface_update=0;
+        assert(native_window_copies==1 && native_window_presents==1 && !native_window_active && !native_window_present_active);
+        assert(eglSwapBuffers(client,window) && native_window_copies==2 && native_window_presents==2);
         wayland_native_live=0;
         assert(!eglSwapBuffers(client,window) && eglGetError()==EGL_BAD_NATIVE_WINDOW);
-        assert(native_window_presents==1 && native_window_holds==1 && wayland_holds==1);
+        assert(native_window_presents==2 && native_window_holds==1 && wayland_holds==1);
         assert(eglDestroySurface(client,window) && eglDestroyContext(client,context));
         assert(eglReleaseThread() && eglTerminate(client));
         assert(native_window_holds==0 && wayland_holds==0);
@@ -3164,6 +3298,147 @@ int main(int argc, char **argv) {
         assert(destroyed_contexts == 2 && object_closes == 2 && display_closes == 2);
         printf("PASS %s\n",argv[1]); return 0;
     }
+    if (!strcmp(argv[1], "compound-query-success")) {
+        GLuint texture; glGenTextures(1,&texture);
+        unsigned batches=submit_batches, compounds=compound_batches;
+        glBindTexture(GL_TEXTURE_2D,texture);
+        assert(compound_batches == compounds+1 && submit_batches == batches+1);
+        assert(glGetError() == GL_NO_ERROR);
+        glBindTexture(GL_TEXTURE_2D,0);assert(compound_batches==compounds+1);
+        glDeleteTextures(1,&texture);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS compound-query-success"); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-publication-texture") || !strcmp(argv[1], "framebuffer-publication-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-publication-texture");
+        GLuint name=17,framebuffer=77; EGLImageKHR img=image(dpy);
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+        if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+        else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+        for (unsigned allocation=0;allocation<4;allocation++) {
+            unsigned before=image_mutation_queries;
+            if (allocation<2) calloc_before_failure=(int)allocation;
+            else malloc_before_failure=(int)allocation-2;
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+            calloc_before_failure=malloc_before_failure=-1;
+            assert(image_mutation_queries==before && glGetError()==GL_OUT_OF_MEMORY && closes==0);
+        }
+        unsigned before=image_mutation_queries;
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer); fail_submit=1;
+        if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+        else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        fail_submit=0;
+        assert(image_mutation_queries==before && glGetError()==GL_INVALID_OPERATION);
+        fail_alloc_after_image_mutation=1;
+        if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+        else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        assert(fail_malloc && fail_calloc); fail_malloc=fail_calloc=0;
+        assert(glGetError()==GL_NO_ERROR && eglDestroyImageKHR(dpy,img) && closes==0);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);
+        if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+        assert(closes==0); glDeleteFramebuffers(1,&framebuffer); assert(closes==1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-outer-unknown-texture") || !strcmp(argv[1], "framebuffer-outer-unknown-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-outer-unknown-texture");
+        struct wpk_gles_context *peer=_wpk_gl_create_shared_encoder(_wpk_gl_current_encoder()); assert(peer);
+        GLuint name=17; glBindFramebuffer(GL_FRAMEBUFFER,77);
+        for (unsigned failure=1;failure<=4;failure++) {
+            EGLImageKHR img=image(dpy);
+            if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+            else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+            glClear(GL_COLOR_BUFFER_BIT); compound_failure=failure;
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+            assert(glGetError()==GL_INVALID_OPERATION && eglDestroyImageKHR(dpy,img));
+            if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+            assert(closes==0);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && closes==0);
+        _wpk_gl_destroy_encoder(peer); assert(closes==1);
+        assert(eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-deletion-texture") || !strcmp(argv[1], "framebuffer-deletion-rbo")) {
+        int texture = !strcmp(argv[1],"framebuffer-deletion-texture");
+        GLuint name=17,framebuffers[3]={71,72,73}; EGLImageKHR img=image(dpy);
+        if (texture) { glBindTexture(GL_TEXTURE_2D,name); glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,img); }
+        else { glBindRenderbuffer(GL_RENDERBUFFER,name); glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,img); }
+        for (unsigned i=0;i<3;i++) {
+            glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[i]);
+            if (texture) glFramebufferTexture2D(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_TEXTURE_2D,name,0);
+            else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
+        }
+        assert(eglDestroyImageKHR(dpy,img) && closes==0);
+        /* Exercise the already-supported split bridge selectors; this native
+         * ownership control does not advertise a GLES3 API or extension. */
+        glBindFramebuffer(0x8ca9,framebuffers[0]); glBindFramebuffer(0x8ca8,framebuffers[1]);
+        if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
+        assert(closes==0 && glGetError()==GL_NO_ERROR);
+        glDeleteFramebuffers(1,&framebuffers[2]); assert(closes==1);
+        glDeleteFramebuffers(2,framebuffers);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-queued-bind")) {
+        GLuint framebuffers[2]; glGenFramebuffers(2,framebuffers); _wpk_gl_flush();
+        unsigned before_queries=framebuffer_bind_queries,before_submits=submit_batches;
+        for (unsigned i=0;i<6;i++) glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[i%2]);
+        assert(framebuffer_bind_queries==before_queries && submit_batches==before_submits);
+        glFlush(); assert(submit_batches==before_submits+1 && glGetError()==GL_NO_ERROR);
+        glDeleteFramebuffers(2,framebuffers);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
+        puts("PASS framebuffer-queued-bind"); return 0;
+    }
+    if (!strcmp(argv[1], "compound-framebuffer-success")) {
+        GLuint framebuffer;glGenFramebuffers(1,&framebuffer);
+        unsigned batches=submit_batches,compounds=compound_batches;
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffer);
+        assert(compound_batches==compounds && submit_batches==batches);
+        assert(glGetError()==GL_NO_ERROR);
+        assert(compound_batches==compounds+1 && submit_batches==batches+1);
+        glBindFramebuffer(GL_FRAMEBUFFER,0);assert(compound_batches==compounds+1);
+        glDeleteFramebuffers(1,&framebuffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS compound-framebuffer-success");return 0;
+    }
+    if (!strncmp(argv[1], "compound-query-",15)) {
+        binding_model=1;binding_query_kind=GL_TEXTURE_BINDING_2D;
+        glBindTexture(GL_TEXTURE_2D,17);
+        GLuint texture;glGenTextures(1,&texture);
+        unsigned batches=submit_batches,compounds=compound_batches,queries=bind_queries;
+        GLenum expected=GL_INVALID_OPERATION;
+        int oom=!strcmp(argv[1],"compound-query-heap-oom");
+        if (!strcmp(argv[1],"compound-query-submit-reject")) fail_submit=1;
+        else if (!strcmp(argv[1],"compound-query-query-reject")) {bind_failure=2;expected=GL_OUT_OF_MEMORY;}
+        else if (!strcmp(argv[1],"compound-query-query-error")) bind_failure=1;
+        else if (!strcmp(argv[1],"compound-query-inner-malformed")) bind_failure=4;
+        else if (!strcmp(argv[1],"compound-query-outer-unknown")) compound_failure=1;
+        else if (!strcmp(argv[1],"compound-query-result-malformed")) compound_failure=2;
+        else if (!strcmp(argv[1],"compound-query-phase-malformed")) compound_failure=3;
+        else if (!strcmp(argv[1],"compound-query-query-unknown")) compound_failure=4;
+        else if (oom) {malloc_before_failure=1;expected=GL_OUT_OF_MEMORY;}
+        else assert(!"unknown compound control");
+        glBindTexture(GL_TEXTURE_2D,texture);
+        malloc_before_failure=-1;fail_submit=0;
+        assert(submit_batches==batches+1);
+        assert(compound_batches==compounds+(oom?0:1));
+        if (oom || !strcmp(argv[1],"compound-query-submit-reject") ||
+            !strcmp(argv[1],"compound-query-outer-unknown")) assert(bind_queries==queries);
+        else assert(bind_queries==queries+1);
+        assert(glGetError()==expected && glGetError()==GL_NO_ERROR);
+        // Reading errors and an explicit empty flush must never resubmit an
+        // accepted, rejected or unacknowledged prefix.
+        glFlush();assert(submit_batches==batches+1);
+        if (!strcmp(argv[1],"compound-query-query-reject")) {
+            GLint bound=-1;glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);assert(bound==17);
+        }
+        glDeleteTextures(1,&texture);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strcmp(argv[1], "encoder-submit-failure")) {
         void (*get)(GLenum,GLenum,GLint *) = (void (*)(GLenum,GLenum,GLint *))eglGetProcAddress("glGetBufferParameteriv"); assert(get);
         GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
@@ -3550,15 +3825,166 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         printf("PASS %s\n",argv[1]); return 0;
     }
+    if (!strcmp(argv[1], "encoder-inline-export")) {
+        assert(argc == 3);
+        const GLfloat vertices[12] = {-1,-1,1,-1,1,1,-1,-1,1,1,-1,1};
+        GLuint before, after; glGenBuffers(1,&before);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        const unsigned binds=buffer_binds, deletes=buffer_deletes;
+        capture_inline_record=1;
+        glDrawArrays(GL_TRIANGLES,0,6); glFlush();
+        capture_inline_record=0;
+        glGenBuffers(1,&after);
+        assert(inline_draws == 1 && draw_commands == 1 && inline_first == 0 && inline_count == 6 &&
+               inline_attributes == 1 && inline_payload_size == 84 && inline_record_length == 88 &&
+               inline_layout[0].index == 0 && inline_layout[0].size == 2 && inline_layout[0].type == GL_FLOAT &&
+               !inline_layout[0].normalized && inline_layout[0].bytes == sizeof vertices &&
+               !memcmp(inline_payload+inline_layout[0].offset,vertices,sizeof vertices));
+        assert(buffer_binds == binds && buffer_deletes == deletes && buffer_uploads == 0 &&
+               array_captures == 0 && device_slots[0].array_binding == 0 &&
+               device_slots[0].element_binding == 0 && after == before+1 && glGetError() == GL_NO_ERROR);
+        FILE *output=fopen(argv[2],"wb"); assert(output);
+        assert(fwrite(inline_record,1,inline_record_length,output) == inline_record_length && !fclose(output));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-export"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-mixed")) {
+        const GLfloat positions[12] = {99,99,99,99, 1.5f,-2.5f,99,99, 3.5f,4.5f,99,99};
+        const GLbyte colors[9] = {99,99,99, -2,3,99, 4,-5,99};
+        const GLfixed fixed[15] = {99,99,99,99,99, -32768,98304,99,99,99, 16384,65536,99,99,99};
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,16,positions); glEnableVertexAttribArray(1);
+        glVertexAttribPointer(3,2,GL_BYTE,GL_TRUE,3,colors); glEnableVertexAttribArray(3);
+        glVertexAttribPointer(5,2,GL_FIXED,GL_TRUE,20,fixed); glEnableVertexAttribArray(5);
+        glVertexAttribPointer(2,1,GL_FLOAT,GL_FALSE,0,(const void *)1); // Disabled: must not read.
+        glBindBuffer(GL_ARRAY_BUFFER,17); glBufferData(GL_ARRAY_BUFFER,32,NULL,GL_STATIC_DRAW);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,8,(const void *)4); glEnableVertexAttribArray(0);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,71);
+        GLuint before, after; glGenBuffers(1,&before); glFlush();
+        const unsigned binds = buffer_binds, deletes = buffer_deletes, uploads = buffer_uploads;
+        const unsigned allocations_before = allocation_count();
+        fail_malloc = fail_calloc = 1;
+        glDrawArrays(GL_POINTS,1,2); glFlush();
+        fail_malloc = fail_calloc = 0;
+        assert(inline_draws == 1 && draw_commands == 1 && inline_first == 1 && inline_count == 2 && inline_attributes == 3);
+        assert(inline_payload_size == 16+3*20+16+4+16);
+        assert(inline_layout[0].index == 1 && inline_layout[0].type == GL_FLOAT && !inline_layout[0].normalized);
+        assert(!memcmp(inline_payload+inline_layout[0].offset,(const GLfloat[]){1.5f,-2.5f,3.5f,4.5f},16));
+        assert(inline_layout[1].index == 3 && inline_layout[1].type == GL_BYTE && inline_layout[1].normalized);
+        assert(!memcmp(inline_payload+inline_layout[1].offset,(const GLbyte[]){-2,3,4,-5},4));
+        assert(inline_layout[2].index == 5 && inline_layout[2].type == GL_FIXED && inline_layout[2].normalized);
+        assert(!memcmp(inline_payload+inline_layout[2].offset,(const GLfixed[]){-32768,98304,16384,65536},16));
+        assert(buffer_binds == binds && buffer_deletes == deletes && buffer_uploads == uploads &&
+               array_captures == 0 && array_restores == 0 && allocation_count() == allocations_before);
+        assert(device_slots[0].array_binding == 17 && device_slots[0].element_binding == 71);
+        GLint value; void *pointer;
+        glGetVertexAttribiv(1,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&value); assert(value == 16);
+        glGetVertexAttribiv(5,GL_VERTEX_ATTRIB_ARRAY_TYPE,&value); assert(value == GL_FIXED);
+        glGetVertexAttribiv(5,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&value); assert(value == GL_TRUE);
+        glGetVertexAttribPointerv(1,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == positions);
+        glGetVertexAttribiv(0,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&value); assert(value == 17);
+        glGetVertexAttribPointerv(0,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == (void *)4);
+        glGenBuffers(1,&after); assert(after == before+1 && glGetError() == GL_NO_ERROR);
+        glDrawArrays(GL_POINTS,1,2); glFlush(); assert(inline_draws == 2 && draw_commands == 2);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-mixed"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-types")) {
+        const GLenum types[6] = {GL_BYTE,GL_UNSIGNED_BYTE,GL_SHORT,GL_UNSIGNED_SHORT,GL_FIXED,GL_FLOAT};
+        unsigned char sources[16][128];
+        for (unsigned i=0; i<16; i++) {
+            const unsigned width = i%6 < 2 ? 1 : i%6 < 4 ? 2 : 4, size = i%4+1;
+            for (unsigned j=0; j<128; j++) sources[i][j]=(unsigned char)(i*17+j);
+            glVertexAttribPointer(i,size,types[i%6],i&1,width*(size+1),sources[i]);
+            glEnableVertexAttribArray(i);
+        }
+        glDrawArrays(GL_POINTS,1,3); glFlush();
+        assert(inline_draws == 1 && inline_attributes == 16 && inline_first == 1 && inline_count == 3 &&
+               buffer_uploads == 0 && buffer_binds == 0 && buffer_deletes == 0);
+        for (unsigned i=0; i<16; i++) {
+            const unsigned width = i%6 < 2 ? 1 : i%6 < 4 ? 2 : 4, size=i%4+1;
+            assert(inline_layout[i].index == i && inline_layout[i].type == types[i%6] &&
+                   inline_layout[i].size == size && inline_layout[i].normalized == (i&1));
+            for (unsigned vertex=0; vertex<3; vertex++)
+                assert(!memcmp(inline_payload+inline_layout[i].offset+vertex*width*size,
+                               sources[i]+(vertex+1)*width*(size+1),width*size));
+        }
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-types"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-boundary")) {
+        const unsigned maximum = 65535-16-20;
+        GLubyte *vertices = malloc(maximum+1); assert(vertices);
+        for (unsigned i=0; i<=maximum; i++) vertices[i] = (GLubyte)(i*7);
+        capture_array_upload=1;
+        glVertexAttribPointer(0,1,GL_UNSIGNED_BYTE,GL_TRUE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        glDrawArrays(GL_POINTS,0,maximum); glFlush();
+        assert(inline_draws == 1 && inline_payload_size == 65535 && captured_size == maximum &&
+               !memcmp(captured_bytes,vertices,maximum) && buffer_uploads == 0 && array_captures == 0);
+        glDrawArrays(GL_POINTS,0,maximum+1); glFlush();
+        assert(inline_draws == 1 && draw_commands == 2 && captured_size == maximum+1 &&
+               !memcmp(captured_bytes,vertices,maximum+1) && buffer_uploads == 1 &&
+               array_captures == 1 && array_restores == 1 && glGetError() == GL_NO_ERROR);
+        free(vertices);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-boundary"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-preflight")) {
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(const void *)(UINTPTR_MAX-3)); glEnableVertexAttribArray(1);
+        glFlush(); const unsigned batches = submit_batches, allocations_before = allocation_count();
+        // A valid-arithmetic but unreadable first attr must not be copied before
+        // the later attribute's pointer overflow has been rejected.
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(glGetError() == GL_OUT_OF_MEMORY && inline_draws == 0 && draw_commands == 0 &&
+               submit_batches == batches && buffer_uploads == 0 && allocation_count() == allocations_before);
+        glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,NULL); glFlush();
+        const unsigned before_null = submit_batches;
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(glGetError() == GL_INVALID_OPERATION && inline_draws == 0 && draw_commands == 0 && submit_batches == before_null);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-preflight"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-fallbacks")) {
+        glDrawArrays(GL_POINTS,0,1); glFlush(); // No clients.
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,0,0); glFlush(); // Must not read a zero-count source.
+        GLuint vao; glGenVertexArrays(1,&vao); glBindVertexArray(vao);
+        glBindBuffer(GL_ARRAY_BUFFER,17); glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        glEnableVertexAttribArray(0); glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(inline_draws == 0 && draw_commands == 3 && array_captures == 0 && glGetError() == GL_NO_ERROR);
+        glBindVertexArray(0); const GLfloat vertex[2] = {1.5f,-2.5f};
+        glBindBuffer(GL_ARRAY_BUFFER,0); glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex);
+        const GLubyte index=0; glDrawElements(GL_POINTS,1,GL_UNSIGNED_BYTE,&index); glFlush();
+        assert(inline_draws == 0 && draw_commands == 4 && array_captures == 1 && array_restores == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-fallbacks"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-inline-reserve-failure")) {
+        const GLfloat vertices[2] = {1.5f,-2.5f};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();
+        // Fill to within one CLEAR of the command limit. Reserving the whole
+        // inline record must flush first, and refusal must not publish it.
+        for (unsigned i=0; i<WPK_GL_CMDBUF_LEN/8-1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        fail_submit=1; glDrawArrays(GL_POINTS,0,1); fail_submit=0; glFlush();
+        assert(draw_commands == 0 && inline_draws == 0 && clear_commands == 0 && glGetError() == GL_INVALID_OPERATION);
+        glDrawArrays(GL_POINTS,0,1); glFlush();
+        assert(draw_commands == 1 && inline_draws == 1 && glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-inline-reserve-failure"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-client-scratch")) {
-        const GLfloat vertices[6] = {1.5f,0,0,-2.5f,0,0};
+        const unsigned count = 17000;
+        GLfloat *vertices = calloc(count,3*sizeof(GLfloat)); assert(vertices);
+        for (unsigned i=0; i<count; i++) vertices[i*3] = i & 1 ? -2.5f : 1.5f;
         capture_array_upload = 1;
         glVertexAttribPointer(0,1,GL_FLOAT,GL_FALSE,12,vertices); glEnableVertexAttribArray(0);
-        fail_malloc = 1; glDrawArrays(GL_POINTS,0,2); fail_malloc = 0; glFlush();
+        fail_malloc = 1; glDrawArrays(GL_POINTS,0,count); fail_malloc = 0; glFlush();
         assert(draw_commands == 0 && buffer_uploads == 0 && glGetError() == GL_OUT_OF_MEMORY);
-        glDrawArrays(GL_POINTS,0,2); glFlush();
-        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == 8);
-        assert(!memcmp(captured_bytes,(const GLfloat[]){1.5f,-2.5f},8));
+        glDrawArrays(GL_POINTS,0,count); glFlush();
+        assert(draw_commands == 1 && glGetError() == GL_NO_ERROR && captured_size == count*4 && inline_draws == 0);
+        for (unsigned i=0; i<count; i++) assert(!memcmp(captured_bytes+i*4,vertices+i*3,4));
+        free(vertices);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-client-scratch"); return 0;
     }
@@ -3626,49 +4052,66 @@ int main(int argc, char **argv) {
     }
 #ifdef OP_BEGIN_CLIENT_ARRAY
     if (!strcmp(argv[1], "encoder-array-render") ||
-        !strcmp(argv[1], "encoder-array-index-render")) {
+        !strcmp(argv[1], "encoder-array-index-render") ||
+        !strcmp(argv[1], "encoder-array-legacy-render") ||
+        !strcmp(argv[1], "encoder-array-index-legacy-render")) {
+        const int legacy = strstr(argv[1], "legacy") != NULL;
+        const GLsizei count = legacy ? 8192 : 1;
         const EGLint dimensions[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
         EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, NULL, dimensions);
         assert(surface && eglMakeCurrent(dpy, surface, surface, ctx));
         glViewport(0, 0, 1, 1);
-        const GLfloat position[2] = {0, 0}, red[4] = {1, 0, 0, 1};
+        GLfloat *position = calloc((size_t)count, 2*sizeof(GLfloat));
+        GLfloat *red = calloc((size_t)count, 4*sizeof(GLfloat));
+        assert(position && red);
+        for (GLsizei i=0; i<count; i++) { red[i*4] = 1; red[i*4+3] = 1; }
+        const GLsizeiptr color_bytes = (GLsizeiptr)count*4*sizeof(GLfloat);
         glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, position);
         glEnableVertexAttribArray(1);
         glVertexAttrib4f(0, 0, 1, 0, 1);
-        if (!strcmp(argv[1], "encoder-array-index-render")) {
+        if (strstr(argv[1], "index")) {
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 17);
-            glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
             glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
         }
         glBindBuffer(GL_ARRAY_BUFFER, 17);
-        glBufferData(GL_ARRAY_BUFFER, sizeof red, red, GL_STATIC_DRAW);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glBufferData(GL_ARRAY_BUFFER, color_bytes, red, GL_STATIC_DRAW);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
         glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 0, NULL);
         glEnableVertexAttribArray(0);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
-        assert(array_captures == 2 && array_restores == 2 && device_slots[0].array_binding == 17);
+        if (legacy) {
+            // The position payload alone exceeds u16, so both draws exercise
+            // genuine public staging/savepoints, including the mixed VBO draw.
+            assert(inline_draws == 0 && array_captures == 2 && array_restores == 2);
+        } else {
+            assert(inline_draws == 2 && array_captures == 0 && array_restores == 0);
+        }
+        assert(device_slots[0].array_binding == 17 && draw_commands == 2);
         assert(eglSwapBuffers(dpy, surface));
         GLuint buffer = 17;
         glDeleteBuffers(1, &buffer);
         assert(eglDestroySurface(dpy, surface) && eglDestroyContext(dpy, ctx));
+        free(position); free(red);
         assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
         printf("PASS %s\n", argv[1]);
         return 0;
     }
     if (!strcmp(argv[1], "encoder-array-save")) {
-        const GLfloat vertex[2] = {0, 0};
+        const unsigned count = 8192;
+        GLfloat *vertex = calloc(count,2*sizeof(GLfloat)); assert(vertex);
         glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, vertex);
         glEnableVertexAttribArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 17);
         glBufferData(GL_ARRAY_BUFFER, 24, NULL, GL_STATIC_DRAW);
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         glFlush();
         assert(array_captures == 1 && array_restores == 1 && device_slots[0].array_binding == 17 &&
                draw_commands == 1);
         calloc_before_failure = 0;
-        glDrawArrays(GL_POINTS, 0, 1);
+        glDrawArrays(GL_POINTS, 0, count);
         calloc_before_failure = -1;
         glFlush();
         assert(glGetError() == GL_OUT_OF_MEMORY && array_captures == 2 && array_restores == 2 &&
@@ -3682,6 +4125,7 @@ int main(int argc, char **argv) {
         glDrawArrays(GL_POINTS, 0, 0);
         glFlush();
         assert(array_captures == 3 && array_restores == 3 && !device_slots[0].array_saved);
+        assert(inline_draws == 0); free(vertex);
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
                allocation_count() == 0);
         puts("PASS encoder-array-save");
@@ -3689,16 +4133,17 @@ int main(int argc, char **argv) {
     }
 #endif
     if (!strcmp(argv[1], "encoder-stage-allocation")) {
-        const GLfloat vertex[2] = {0,0};
+        const unsigned count = 8192;
+        GLfloat *vertex = calloc(count,2*sizeof(GLfloat)); assert(vertex);
         for (unsigned i = 0; i < 2; i++) {
             glVertexAttribPointer(i,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(i);
         }
         GLuint application; glGenBuffers(1,&application); glBindBuffer(GL_ARRAY_BUFFER,application);
         calloc_before_failure = 1; // First staging buffer succeeds, second fails.
-        glDrawArrays(GL_POINTS,0,1); glFlush();
+        glDrawArrays(GL_POINTS,0,count); glFlush();
         assert(draw_commands == 0 && buffer_uploads == 1 && glGetError() == GL_OUT_OF_MEMORY);
         calloc_before_failure = -1;
-        glDrawArrays(GL_POINTS,0,1); glFlush();
+        glDrawArrays(GL_POINTS,0,count); glFlush();
         assert(draw_commands == 1 && buffer_uploads == 3 && glGetError() == GL_NO_ERROR);
         const GLushort index = 0;
         fail_calloc = 1;
@@ -3707,6 +4152,7 @@ int main(int argc, char **argv) {
         fail_calloc = 0;
         glDrawElements(GL_POINTS,1,GL_UNSIGNED_SHORT,&index); glFlush();
         assert(draw_commands == 2 && buffer_uploads == 6 && glGetError() == GL_NO_ERROR);
+        assert(inline_draws == 0); free(vertex);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-stage-allocation"); return 0;
     }
@@ -3727,7 +4173,7 @@ int main(int argc, char **argv) {
         const GLfloat vertex[2] = {0,0};
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertex); glEnableVertexAttribArray(0);
         glDrawArrays(GL_POINTS,0,1); glFlush();
-        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(buffer_uploads == 0 && inline_draws == 1 && draw_commands == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-delete-array"); return 0;
     }
@@ -3756,7 +4202,7 @@ int main(int argc, char **argv) {
         GLuint array; glGenVertexArrays(1,&array); glBindVertexArray(array);
         glDrawArrays(GL_POINTS,0,1); glFlush(); assert(buffer_uploads == 0);
         glDeleteVertexArrays(1,&array); glDrawArrays(GL_POINTS,0,1); glFlush();
-        assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
+        assert(buffer_uploads == 0 && inline_draws == 1 && draw_commands == 2 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-attribs"); return 0;
     }
@@ -4456,6 +4902,78 @@ int main(int argc, char **argv) {
         printf("PASS %s\n", argv[1]);
         return 0;
     }
+    if (!strcmp(argv[1], "image-attach-rejected-accepted-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-accepted-rbo") ||
+        !strcmp(argv[1], "image-attach-rejected-container-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-container-rbo") ||
+        !strcmp(argv[1], "image-attach-rejected-zero-texture") ||
+        !strcmp(argv[1], "image-attach-rejected-zero-rbo")) {
+        int texture = strstr(argv[1], "-texture") != NULL;
+        int definite = strstr(argv[1], "-zero-") != NULL;
+        unsigned failure = definite ? 2 : strstr(argv[1], "-accepted-") ? 8 : 9;
+        struct wpk_gles_context *peer = _wpk_gl_create_shared_encoder(_wpk_gl_current_encoder());
+        assert(peer);
+        GLuint name = 17, framebuffer;
+        EGLImageKHR img = image(dpy);
+        glGenFramebuffers(1, &framebuffer);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        image_mutation_failure = failure;
+        if (texture)
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, name, 0);
+        else
+            glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, name);
+        GLenum error = glGetError();
+        assert(eglDestroyImageKHR(dpy, img));
+        if (texture) glDeleteTextures(1, &name);
+        else glDeleteRenderbuffers(1, &name);
+        // Malformed refusal cannot release candidate ownership. Canonical
+        // all-zero rejection must release it, even with a live sharing peer.
+        assert(closes == (unsigned)definite);
+        assert(error == (definite ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread());
+        assert(closes == (unsigned)definite);
+        _wpk_gl_destroy_encoder(peer);
+        assert(closes == 1 && eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-delete-rejected-payload-texture") ||
+        !strcmp(argv[1], "image-delete-rejected-payload-rbo")) {
+        int texture = strstr(argv[1], "-texture") != NULL;
+        binding_model = 1;
+        GLuint name = 17;
+        EGLImageKHR img = image(dpy);
+        if (texture) {
+            glBindTexture(GL_TEXTURE_2D, name);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, img);
+        } else {
+            glBindRenderbuffer(GL_RENDERBUFFER, name);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER, img);
+        }
+        assert(eglDestroyImageKHR(dpy, img) && closes == 0);
+        for (unsigned failure = 8; failure <= 10; failure++) {
+            image_mutation_failure = failure;
+            if (texture) glDeleteTextures(1, &name);
+            else glDeleteRenderbuffers(1, &name);
+            assert(glGetError() == GL_INVALID_OPERATION && closes == 0);
+            GLint binding = -1;
+            binding_query_kind = texture ? GL_TEXTURE_BINDING_2D : GL_RENDERBUFFER_BINDING;
+            glGetIntegerv(binding_query_kind, &binding);
+            binding_query_kind = 0;
+            assert(binding == (GLint)name);
+        }
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && closes == 1);
+        assert(eglTerminate(dpy) && allocation_count() == 0);
+        printf("PASS %s\n", argv[1]);
+        return 0;
+    }
     if (!strcmp(argv[1], "image-attach-unknown-texture") ||
         !strcmp(argv[1], "image-attach-unknown-rbo")) {
         int texture = !strcmp(argv[1], "image-attach-unknown-texture");
@@ -4464,7 +4982,7 @@ int main(int argc, char **argv) {
         GLuint name = 17, framebuffer;
         glGenFramebuffers(1, &framebuffer);
         glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-        for (unsigned failure = 1; failure <= 5; failure += failure == 1 ? 2 : 1) {
+        for (unsigned failure = 1; failure <= 7; failure += failure == 1 ? 2 : 1) {
             EGLImageKHR img = image(dpy);
             if (texture) {
                 glBindTexture(GL_TEXTURE_2D, name);
@@ -5520,6 +6038,7 @@ int main(int argc, char **argv) {
         fail_surface_update = 1; native_window_bo = 79;
         assert(!_wpk_egl_window_retarget(&native_window));
         assert(surface_target == 78 && destroyed_surfaces == 0);
+        fail_surface_update=0;
         assert(eglGetCurrentSurface(EGL_DRAW) == surface && eglSwapBuffers(dpy, surface));
         assert(eglDestroySurface(dpy, surface));
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));

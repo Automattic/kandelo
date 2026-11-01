@@ -106,21 +106,29 @@ export class KmsRegistry {
     const length = this.cursor.width * this.cursor.height * 4;
     // Cursor images use a packed prefix, even in a larger allocation.
     // Merge writes from any mapping; unchanged readers cannot erase them.
-    this.gbm.syncToSab(this.cursorBo, length);
-    const bytes = this.gbm.pixelView(this.cursorBo);
+    const gpu = this.readGpuCursor?.(this.cursorBo, this.cursor.width, this.cursor.height);
+    if (gpu === null) {
+      // Lost native storage cannot keep advertising the previous image.
+      this.cursorBytes = null;
+      if (this.cursor.pixels) this.cursor = { ...this.cursor,
+        version: this.cursor.version + 1, pixels: null };
+      return this.cursor;
+    }
+    if (gpu === undefined) this.gbm.syncToSab(this.cursorBo, length);
+    const bytes = gpu ?? this.gbm.pixelView(this.cursorBo);
     if (!bytes || bytes.length < length) {
       throw new Error("KMS cursor BO is unavailable or undersized");
     }
     if (this.cursorBytes?.every((value, i) => value === bytes[i])) return this.cursor;
     this.cursorBytes = bytes.slice(0, length);
     const pixels = new Uint8ClampedArray(length);
-    // Linux cursor images are tightly packed premultiplied ARGB8888;
-    // ImageData requires straight-alpha RGBA, including partial alpha.
+    // CPU cursor images use premultiplied ARGB8888 bytes; native GPU
+    // readback is already RGBA. Both need straight alpha for ImageData.
     for (let i = 0; i < length; i += 4) {
       const a = bytes[i + 3];
-      pixels[i] = a ? bytes[i + 2] * 255 / a : 0;
+      pixels[i] = a ? bytes[i + (gpu === undefined ? 2 : 0)] * 255 / a : 0;
       pixels[i + 1] = a ? bytes[i + 1] * 255 / a : 0;
-      pixels[i + 2] = a ? bytes[i] * 255 / a : 0;
+      pixels[i + 2] = a ? bytes[i + (gpu === undefined ? 0 : 2)] * 255 / a : 0;
       pixels[i + 3] = a;
     }
     this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels };
@@ -128,7 +136,7 @@ export class KmsRegistry {
   }
 
   setCursor(_pid: number, flags: number, boId: number, width: number, height: number,
-    x: number, y: number, hotX: number, hotY: number): void {
+    x: number, y: number, hotX: number, hotY: number): KmsCursor {
     const next = { ...this.cursor, version: this.cursor.version + 1 };
     if (flags & 1) {
       this.cursorBo = boId;
@@ -141,11 +149,11 @@ export class KmsRegistry {
     }
     if (flags & 2) { next.x = x; next.y = y; }
     this.cursor = next;
-    this.cursorSnapshot();
+    return this.cursorSnapshot();
   }
 
   /** A queued observer record cannot cross a drop/reacquire boundary. */
-  applyCursorRecord(bytes: Uint8Array): void {
+  applyCursorRecord(bytes: Uint8Array): KmsCursor | undefined {
     if (bytes.byteLength !== KMS_CURSOR_RECORD_BYTES) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (view.getBigUint64(0, true) !== this.masterLeaseId) return;
@@ -159,10 +167,14 @@ export class KmsRegistry {
     }
     const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
       || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
-    this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
+    return this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
   }
 
-  constructor(private gbm: GbmBoRegistry) {}
+  constructor(private gbm: GbmBoRegistry,
+    // Synchronous owned RGBA bytes from actual retained native storage.
+    // undefined selects CPU storage; null means native context loss.
+    private readGpuCursor?: (bo: number, width: number, height: number) =>
+      Uint8Array<ArrayBuffer> | null | undefined) {}
 
   addFb(fb: HostFb): void { this.fbs.set(fb.fb_id, fb); }
   rmFb(fb_id: number): void { this.fbs.delete(fb_id); }

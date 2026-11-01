@@ -33,6 +33,11 @@ const host = {
   },
 } as unknown as KernelHost;
 
+function setStatus(value: MachineStatus) {
+  status = value;
+  statusListeners.forEach((callback) => callback(status));
+}
+
 function Actions() {
   const stop = React.useCallback(async () => {}, []);
   const { controls, toasts } = useDockActions("fixture", 0, stop);
@@ -48,10 +53,11 @@ function Fixture() {
     <output data-testid="writes">{writes}</output>
     <KernelHostProvider host={host}>{mounted && <Actions />}</KernelHostProvider>
     <button onClick={() => setMounted(false)}>Unmount pane</button>
+    <button onClick={() => setStatus("halted")}>Stop machine</button>
     <button onClick={() => {
-      status = "halted";
-      statusListeners.forEach((callback) => callback(status));
-    }}>Stop machine</button>
+      setStatus("halted");
+      setStatus("running");
+    }}>Reboot machine</button>
     <button onClick={() => finishQueue?.()}>Finish old command</button>
   </>;
 }

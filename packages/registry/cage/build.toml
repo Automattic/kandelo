@@ -1,10 +1,13 @@
 script_path = "packages/registry/cage/build-cage.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 2
+revision    = 3
 
 inputs = [
   "packages/registry/cage/build-cage.sh",
+  "packages/registry/cage/patches/0001-initial-scale-from-connector-density.patch",
+  "packages/registry/cage/tests/check-output-scale.sh",
+  "packages/registry/cage/tests/output-scale.c",
   "libc/glue/libgbm_stub.c",
   "libc/glue/libegl_stub.c",
   "libc/glue/libglesv2_stub.c",

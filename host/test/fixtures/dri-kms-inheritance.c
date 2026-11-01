@@ -250,7 +250,9 @@ int main(int argc, char **argv) {
         char byte;
         CHECK(read(ready[0], &byte, 1) == 1 && byte == 'r');
         struct planes planes = {0};
-        CHECK(ioctl(fd, 0xc01064b5, &planes) == 0 && planes.count == 1);
+        /* The child enabled universal planes on our shared DRM file. The
+         * live adapter advertises both its primary and its cursor plane. */
+        CHECK(ioctl(fd, 0xc01064b5, &planes) == 0 && planes.count == 2);
         CHECK(close(ready[0]) == 0 && close(fd) == 0);
         /* The driver awaits this process's natural exit AND acknowledged
          * Worker retirement before releasing the surviving child. */

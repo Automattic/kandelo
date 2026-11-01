@@ -1,19 +1,26 @@
 /* Actual pinned upstream client, closure and socket machinery, with the same
  * lifetime bridge appended by the normal package recipe. Native source test;
  * no compositor/browser/guest execution is claimed here. */
-#if defined(__APPLE__)
 #include <poll.h>
 #include <signal.h>
 #include <time.h>
 static int wpk_native_ppoll(struct pollfd *,nfds_t,const struct timespec *,const sigset_t *);
 #define ppoll wpk_native_ppoll
-#endif
 #define wl_display_connect _wpk_upstream_display_connect
 #define wl_display_connect_to_fd _wpk_upstream_display_connect_to_fd
 #define wl_display_disconnect _wpk_upstream_display_disconnect
 #include WPK_WAYLAND_CLIENT_SOURCE
 #include "../../../libc/glue/wayland-client-lifetime.inc"
 #include <assert.h>
+
+static pthread_mutex_t fixture_wait_mutex=PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t fixture_wait_cond=PTHREAD_COND_INITIALIZER;
+static int fixture_wait_fd=-1,fixture_wait_entered;
+struct fixture_dispatch {struct wl_display *display;struct wl_event_queue *queue;int result;};
+static void *fixture_dispatch_thread(void *data) {
+    struct fixture_dispatch *call=data;
+    call->result=wl_display_dispatch_queue(call->display,call->queue);return NULL;
+}
 
 int main(void) {
     int pair[2];assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
@@ -73,6 +80,25 @@ int main(void) {
     wl_proxy_destroy(surface);
     _wpk_wl_surface_release(surface_hold);
     assert(fcntl(pair[0],F_GETFD)==-1 && errno==EBADF);close(pair[1]);
+    // Front-ring backpressure dispatches a private queue. Public disconnect
+    // must wake the actual upstream socket wait while a native hold retains
+    // the physical connection until queue and reader teardown complete.
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
+    display=wl_display_connect_to_fd(pair[0]);assert(display);
+    assert(_wpk_wl_display_metadata(display,&identity));
+    hold=_wpk_wl_display_acquire(display,identity);assert(hold);
+    struct fixture_dispatch blocked={.display=display,.queue=wl_display_create_queue(display),.result=0};
+    assert(blocked.queue);pthread_t reader;
+    pthread_mutex_lock(&fixture_wait_mutex);fixture_wait_fd=pair[0];fixture_wait_entered=0;
+    assert(!pthread_create(&reader,NULL,fixture_dispatch_thread,&blocked));
+    while(!fixture_wait_entered)pthread_cond_wait(&fixture_wait_cond,&fixture_wait_mutex);
+    pthread_mutex_unlock(&fixture_wait_mutex);
+    wl_display_disconnect(display);
+    assert(!pthread_join(reader,NULL) && blocked.result==-1);
+    assert(fcntl(pair[0],F_GETFD)>=0);
+    wl_event_queue_destroy(blocked.queue);_wpk_wl_display_release(hold);
+    assert(fcntl(pair[0],F_GETFD)==-1 && errno==EBADF);close(pair[1]);
+    fixture_wait_fd=-1;
     // Identity exhaustion fails before publishing a connection, closes the
     // acquired transport, and never wraps into an older display identity.
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,pair)==0);
@@ -98,7 +124,6 @@ ssize_t wl_os_recvmsg_cloexec(int fd,struct msghdr *message,int flags) {
     return result;
 }
 
-#if defined(__APPLE__)
 /* Native fixture adapter: this case does not test guest ppoll; the actual
  * Kandelo build compiles the upstream call against its real libc ppoll. */
 static int wpk_native_ppoll(struct pollfd *fds,nfds_t count,const struct timespec *timeout,const sigset_t *mask) {
@@ -108,6 +133,10 @@ static int wpk_native_ppoll(struct pollfd *fds,nfds_t count,const struct timespe
         int64_t duration=(int64_t)timeout->tv_sec*1000+(timeout->tv_nsec+999999)/1000000;
         milliseconds=duration>INT_MAX ? INT_MAX : (int)duration;
     }
+    pthread_mutex_lock(&fixture_wait_mutex);
+    if(count==1 && fds[0].fd==fixture_wait_fd) {
+        fixture_wait_entered=1;pthread_cond_signal(&fixture_wait_cond);
+    }
+    pthread_mutex_unlock(&fixture_wait_mutex);
     return poll(fds,count,milliseconds);
 }
-#endif

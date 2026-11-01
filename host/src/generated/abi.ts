@@ -5,6 +5,11 @@ export const ABI_VERSION = 56 as const;
 export const ABI_CUSTOM_SECTION = "wasm-posix-abi" as const;
 export const ABI_KERNEL_EXPORT = "__abi_version" as const;
 
+export const GL_QUERY_REPLY_MAGIC = 1196510259 as const;
+export const GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES = 12 as const;
+export const GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES = 16 as const;
+export const GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES = 20 as const;
+
 /* Kandelo's reference instant: the first Kandelo commit's time. Stamped
 * on image files when no time is supplied; never 0, which software
 * reads as "no timestamp" (wasm_posix_shared::KANDELO_REFERENCE_EPOCH_SECONDS). */
@@ -921,6 +926,7 @@ export const HOST_ADAPTER_OPTIONAL_KERNEL_EXPORTS = [
   "kernel_clipboard_guest_read",
   "kernel_clipboard_offer",
   "kernel_clipboard_stage",
+  "kernel_epoll_wait_retry_state",
   "kernel_gl_query_advance",
   "kernel_gl_query_capture",
   "kernel_gl_query_release",
@@ -2070,6 +2076,7 @@ export const IOCTL_REQUESTS: Record<number, IoctlRequestContract> = {
   72: { argKind: "none", direction: "none", wasm32Size: 0, wasm64Size: 0 },
   73: { argKind: "pointer", direction: "in", wasm32Size: 24, wasm64Size: 40 },
   74: { argKind: "pointer", direction: "in", wasm32Size: 32, wasm64Size: 32 },
+  75: { argKind: "pointer", direction: "inout", wasm32Size: 48, wasm64Size: 64 },
   17920: { argKind: "pointer", direction: "out", wasm32Size: 160, wasm64Size: 160 },
   17921: { argKind: "pointer", direction: "in", wasm32Size: 160, wasm64Size: 160 },
   17922: { argKind: "pointer", direction: "out", wasm32Size: 80, wasm64Size: 80 },

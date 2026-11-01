@@ -560,3 +560,335 @@ fn epoll_reports_exchange_stream_end_failure_and_seal() {
     assert_eq!(batch(&mut p, &mut h, ep, 8), [(EPOLLERR, 3)]);
     assert!(batch(&mut p, &mut h, ep, 8).is_empty(), "edge-triggered: each once");
 }
+
+fn retained_epoll_token(p: &Process) -> u64 {
+    p.epoll_waits
+        .iter()
+        .find(|(tid, _)| *tid == current_tid_for_process(p))
+        .unwrap()
+        .1
+        .token
+}
+
+#[test]
+fn epoll_retry_probe_preserves_empty_wait_and_exact_task_authority() {
+    let mut p = Process::new(140);
+    let mut h = MockHostIO::new();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let tid = current_tid_for_process(&p);
+    let token = retained_epoll_token(&p);
+    let idx = p.epoll_waits[0].1.index;
+    for _ in 0..3 {
+        assert_eq!(
+            epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+            Ok(true)
+        );
+        assert_eq!(
+            crate::descriptor_backing::with_epolls(|t| {
+                let ep = t.get(idx).unwrap();
+                (ep.cursor, ep.waiters)
+            }),
+            (0, 1)
+        );
+        assert_eq!(retained_epoll_token(&p), token);
+    }
+    for (wrong_tid, wrong_token) in [(0, token), (tid + 1, token), (tid, 0), (tid, token + 1)] {
+        assert_eq!(
+            epoll_wait_still_blocked(&mut p, &mut h, wrong_tid, wrong_token, &mut []),
+            Ok(false)
+        );
+    }
+    p.state = crate::process::ProcessState::Stopped;
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(false)
+    );
+    p.state = crate::process::ProcessState::Running;
+    crate::epoll::finish_wait_token(&mut p, tid, token);
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(false)
+    );
+    assert_ne!(retained_epoll_token(&p), token);
+}
+
+#[test]
+fn epoll_retry_probe_never_consumes_edge_oneshot_or_round_robin_state() {
+    for flags in [
+        0,
+        EPOLLET,
+        EPOLLONESHOT,
+        EPOLLET | EPOLLONESHOT,
+        EPOLLEXCLUSIVE,
+    ] {
+        let mut p = Process::new(141);
+        let mut h = MockHostIO::new();
+        let ep = sys_epoll_create1(&mut p, 0).unwrap();
+        let fd = sys_eventfd2(&mut p, 0, 0).unwrap();
+        sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN | flags, 81).unwrap();
+        assert_eq!(
+            sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+            Err(Errno::EAGAIN)
+        );
+        let token = retained_epoll_token(&p);
+        let tid = current_tid_for_process(&p);
+        assert_eq!(
+            epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+            Ok(true)
+        );
+        sys_write(&mut p, &mut h, fd, &1u64.to_le_bytes()).unwrap();
+        let idx = p.epoll_waits[0].1.index;
+        let before = crate::descriptor_backing::with_epolls(|t| {
+            let ep = t.get(idx).unwrap();
+            (
+                ep.cursor,
+                ep.waiters,
+                ep.interests[0].pending,
+                ep.interests[0].disabled,
+            )
+        });
+        for _ in 0..3 {
+            assert_eq!(
+                epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+                Ok(false)
+            );
+        }
+        assert_eq!(
+            crate::descriptor_backing::with_epolls(|t| {
+                let ep = t.get(idx).unwrap();
+                (
+                    ep.cursor,
+                    ep.waiters,
+                    ep.interests[0].pending,
+                    ep.interests[0].disabled,
+                )
+            }),
+            before
+        );
+        assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 81)]);
+        if flags & (EPOLLET | EPOLLONESHOT) != 0 {
+            assert!(batch(&mut p, &mut h, ep, 1).is_empty());
+        }
+    }
+}
+
+#[test]
+fn epoll_retry_probe_uses_retained_description_after_epfd_reuse() {
+    let mut p = Process::new(142);
+    let mut h = MockHostIO::new();
+    let fd = sys_eventfd2(&mut p, 0, 0).unwrap();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN, 32).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let tid = current_tid_for_process(&p);
+    let token = retained_epoll_token(&p);
+    sys_close(&mut p, &mut h, ep).unwrap();
+    assert_eq!(sys_epoll_create1(&mut p, 0).unwrap(), ep);
+    let replacement_fd = sys_eventfd2(&mut p, 1, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, replacement_fd, EPOLLIN, 99).unwrap();
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(true)
+    );
+    sys_write(&mut p, &mut h, fd, &1u64.to_le_bytes()).unwrap();
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(false)
+    );
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 32)]);
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 99)]);
+}
+
+#[test]
+fn epoll_retry_probe_propagates_nested_timer_errors_and_refreshes_expiry() {
+    let mut p = Process::new(143);
+    let mut h = MockHostIO::new();
+    h.clock_time = (100, 0);
+    let timer = sys_timerfd_create(&mut p, 0, 0).unwrap();
+    sys_timerfd_settime(&mut p, &mut h, timer, 0, 0, 0, 5, 0).unwrap();
+    let child = sys_epoll_create1(&mut p, 0).unwrap();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, child, 1, timer, EPOLLIN | EPOLLET | EPOLLONESHOT, 1).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, child, EPOLLIN | EPOLLET, 2).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let tid = current_tid_for_process(&p);
+    let token = retained_epoll_token(&p);
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(true)
+    );
+    h.clock_error = Some(Errno::EIO);
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Err(Errno::EIO)
+    );
+    h.clock_error = None;
+    h.clock_time = (105, 0);
+    for _ in 0..2 {
+        assert_eq!(
+            epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+            Ok(false)
+        );
+    }
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 2)]);
+    assert_eq!(batch(&mut p, &mut h, child, 1), [(EPOLLIN, 1)]);
+    assert!(batch(&mut p, &mut h, child, 1).is_empty());
+    assert_eq!(sys_read(&mut p, &mut h, timer, &mut [0; 8]), Ok(8));
+}
+
+#[test]
+fn epoll_retry_probe_preserves_signal_mask_and_pending_signal() {
+    use crate::signal::sig_bit;
+    use wasm_posix_shared::signal::SIGUSR1;
+    let mut p = Process::new(144);
+    let mut h = MockHostIO::new();
+    let tid = current_tid_for_process(&p);
+    p.set_blocked_for(tid, sig_bit(SIGUSR1));
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, Some(0)),
+        Err(Errno::EAGAIN)
+    );
+    let token = retained_epoll_token(&p);
+    assert!(p.raise_signal(SIGUSR1));
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(false)
+    );
+    assert!(p.signal_pending_for(tid, SIGUSR1));
+    assert_eq!(p.mask_wait_depth_for(tid), 1);
+    assert_eq!(p.blocked_for(tid), 0);
+    assert_eq!(retained_epoll_token(&p), token);
+}
+
+#[test]
+fn epoll_retry_probe_requires_live_source_authority_and_observes_peer_pipe() {
+    let mut p = Process::new(145);
+    let mut h = MockHostIO::new();
+    let (r, w) = sys_pipe2(&mut p, 0).unwrap();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, r, EPOLLIN | EPOLLET, 12).unwrap();
+    let mut peer = fork_child_of(&p, 146);
+    peer.ofd_table
+        .link_shared_states_from(&p.ofd_table, |_| panic!("no DRI"))
+        .unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let tid = current_tid_for_process(&p);
+    let token = retained_epoll_token(&p);
+    sys_close(&mut p, &mut h, r).unwrap();
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Err(Errno::EOPNOTSUPP)
+    );
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut [&mut peer]),
+        Ok(true)
+    );
+    sys_write(&mut p, &mut h, w, b"x").unwrap();
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut [&mut peer]),
+        Ok(false)
+    );
+    assert_eq!(
+        sys_epoll_pwait_with_peers(&mut p, &mut h, ep, 1, 0, None, &mut [&mut peer])
+            .unwrap()
+            .1,
+        [(EPOLLIN, 12)]
+    );
+}
+
+#[test]
+fn epoll_retry_probe_does_not_clear_an_undelivered_stale_candidate() {
+    let mut p = Process::new(147);
+    let mut h = MockHostIO::new();
+    let (r, w) = sys_pipe2(&mut p, 0).unwrap();
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, r, EPOLLIN | EPOLLET, 62).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let token = retained_epoll_token(&p);
+    let tid = current_tid_for_process(&p);
+    let idx = p.epoll_waits[0].1.index;
+    sys_write(&mut p, &mut h, w, b"x").unwrap();
+    sys_read(&mut p, &mut h, r, &mut [0; 1]).unwrap();
+    assert!(crate::descriptor_backing::with_epolls(|t| t
+        .get(idx)
+        .unwrap()
+        .interests[0]
+        .pending));
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(true)
+    );
+    assert!(crate::descriptor_backing::with_epolls(|t| t
+        .get(idx)
+        .unwrap()
+        .interests[0]
+        .pending));
+    sys_write(&mut p, &mut h, w, b"y").unwrap();
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 62)]);
+}
+
+#[test]
+fn epoll_retry_probe_refuses_host_network_authority_without_finishing_wait() {
+    use wasm_posix_shared::socket::{AF_INET, SOCK_NONBLOCK, SOCK_STREAM};
+    let mut p = Process::new(148);
+    let mut h = MockHostIO::new();
+    h.net_connect_result = Ok(());
+    h.net_connect_status_result = Err(Errno::EAGAIN);
+    let fd = sys_socket(&mut p, &mut h, AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0).unwrap();
+    let addr = [
+        AF_INET as u8,
+        0,
+        0,
+        80,
+        203,
+        0,
+        113,
+        7,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ];
+    assert_eq!(
+        sys_connect(&mut p, &mut h, fd, &addr),
+        Err(Errno::EINPROGRESS)
+    );
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, fd, EPOLLIN, 19).unwrap();
+    assert_eq!(
+        sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None),
+        Err(Errno::EAGAIN)
+    );
+    let token = retained_epoll_token(&p);
+    let tid = current_tid_for_process(&p);
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Err(Errno::EOPNOTSUPP)
+    );
+    assert_eq!(retained_epoll_token(&p), token);
+}

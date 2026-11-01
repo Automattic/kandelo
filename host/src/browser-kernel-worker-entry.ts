@@ -4421,16 +4421,16 @@ async function handleHttpRequestMessage(msg: {
     return;
   }
   try {
-    const response = await (msg.hostname === undefined
-      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
-      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
-      msg.port,
-      msg.request,
-      {
-        timeoutMs: msg.timeoutMs,
-        maxResponseBytes: msg.maxResponseBytes,
-      },
-    );
+    const options = {
+      timeoutMs: msg.timeoutMs,
+      maxResponseBytes: msg.maxResponseBytes,
+    };
+    // A hostname names a machine on the Kandelo network; without one the
+    // request is for this machine. Call each directly: binding kernelWorker
+    // into a free function would let it escape the entry root.
+    const response = msg.hostname === undefined
+      ? await kernelWorker.sendHttpRequest(msg.port, msg.request, options)
+      : await remoteSegmentRuntime.fetchHttp(msg.hostname, msg.port, msg.request, options);
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, e instanceof Error ? e.message : String(e));

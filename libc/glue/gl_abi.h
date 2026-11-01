@@ -14,6 +14,10 @@
 #include <stdint.h>
 
 #define WPK_GL_OP_VERSION 17u
+#define WPK_GL_INLINE_DRAW_HEADER_BYTES 16u
+#define WPK_GL_INLINE_DRAW_ATTRIBUTE_BYTES 20u
+#define WPK_GL_INLINE_DRAW_MAX_BYTES 65535u
+#define WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES 16u
 #define WPK_GL_CMDBUF_LEN (1u << 20)
 #define WPK_GL_DEVICE     "/dev/dri/renderD128"
 
@@ -29,6 +33,10 @@
 #define GLIO_PRESENT          0x48u
 #define GLIO_QUERY            0x49u
 #define GLIO_UPDATE_SURFACE   0x4Au
+#define GLIO_SUBMIT_QUERY     0x4Bu
+#define WPK_GL_SUBMIT_QUERY_PHASE_SUBMIT 1u
+#define WPK_GL_SUBMIT_QUERY_PHASE_QUERY  2u
+#define WPK_GL_SUBMIT_QUERY_REPLY_MAGIC  0x47535131u
 
 /* Surface kind tags. */
 #define WPK_SURFACE_DEFAULT  1u
@@ -91,6 +99,7 @@
 #define OP_DISABLE_VERTEX_ATTRIB_ARRAY 0x0501u
 #define OP_VERTEX_ATTRIB_POINTER       0x0502u
 #define OP_DRAW_ARRAYS                 0x0503u
+#define OP_DRAW_CLIENT_ARRAYS          0x0506u
 #define OP_DRAW_ELEMENTS               0x0504u
 #define OP_VERTEX_ATTRIB_4FV           0x0505u
 
@@ -246,6 +255,23 @@ struct gl_query_info {
     uint32_t out_buf_len;
     uint32_t reserved;
 };
+
+/* InOut, native pointer width; old query layout/reserved word are unchanged.
+ * This is one synchronous ordered invocation, not a replayable transaction. */
+struct gl_submit_query_result {
+    uint32_t completed_phase;
+    int32_t submit_rc, query_rc;
+    uint32_t result_magic;
+};
+struct gl_submit_query_info {
+    struct gl_submit_info submit;
+    struct gl_query_info query;
+    struct gl_submit_query_result result;
+};
+_Static_assert(sizeof(struct gl_submit_query_result) == 16, "submit/query result layout");
+_Static_assert(sizeof(struct gl_submit_query_info) == (sizeof(uintptr_t) == 8 ? 64 : 48), "submit/query native layout");
+_Static_assert(__builtin_offsetof(struct gl_submit_query_info, query) == 8, "submit/query query offset");
+_Static_assert(__builtin_offsetof(struct gl_submit_query_info, result) == (sizeof(uintptr_t) == 8 ? 48 : 32), "submit/query result offset");
 
 /* Cross-archive accessors require a current context on the calling thread.
  * Native windows own independent device descriptors and transfer BO names. */

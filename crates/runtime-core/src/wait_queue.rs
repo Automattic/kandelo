@@ -898,6 +898,25 @@ pub mod global {
         with(|q| q.remaining_ns(channel, now_ns))
     }
 
+    /// A retained epoll continuation may skip host replay only before its own
+    /// exact deadline. Another task/kind, a retired handle, or no finite
+    /// deadline is not evidence that this wait remains blocked.
+    pub fn epoll_deadline_pending(
+        channel: ChannelGeneration,
+        pid: u32,
+        tid: u32,
+        now_ns: MonotonicNs,
+    ) -> bool {
+        with(|q| {
+            q.sleeper_for_channel(channel).is_some_and(|s| {
+                s.pid == pid
+                    && s.tid == tid
+                    && s.kind == WaitKind::EpollWait
+                    && s.deadline.is_some_and(|deadline| now_ns < deadline)
+            })
+        })
+    }
+
     /// Retire a wait once its call has completed. Returns whether the handle
     /// named a live generation.
     pub fn close(channel: ChannelGeneration) -> bool {
@@ -1400,6 +1419,25 @@ mod global_tests {
         assert!(global::close(h));
         assert_eq!(global::remaining_ns(h, 0).unwrap_err(), Errno::ESRCH);
         assert!(!global::close(h));
+    }
+
+    #[test]
+    fn epoll_retry_deadline_requires_exact_live_finite_task_wait() {
+        fresh();
+        let h = global::open_deadline(7, 8, WaitKind::EpollWait, 10, Some(100)).unwrap();
+        assert!(global::epoll_deadline_pending(h, 7, 8, 109));
+        assert!(!global::epoll_deadline_pending(h, 7, 8, 110));
+        assert!(!global::epoll_deadline_pending(h, 7, 9, 50));
+        assert!(!global::epoll_deadline_pending(h, 9, 8, 50));
+        let poll = global::open_deadline(7, 8, WaitKind::Poll, 10, Some(100)).unwrap();
+        assert!(!global::epoll_deadline_pending(poll, 7, 8, 50));
+        let infinite = global::open_deadline(7, 8, WaitKind::EpollWait, 10, None).unwrap();
+        assert!(!global::epoll_deadline_pending(infinite, 7, 8, 50));
+        global::close(h);
+        assert!(!global::epoll_deadline_pending(h, 7, 8, 50));
+        let next = global::open_deadline(7, 8, WaitKind::EpollWait, 10, Some(100)).unwrap();
+        assert_ne!(next, h);
+        assert!(global::epoll_deadline_pending(next, 7, 8, 50));
     }
 
     #[test]

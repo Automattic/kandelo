@@ -1449,7 +1449,10 @@
   z-index: 20;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.45);
+  /* Drawn over whatever the guest last painted, so the scrim alone must
+     carry the white text to WCAG AA (4.5:1) even over a white frame; that
+     needs at least 0.54 alpha. */
+  background: rgba(0, 0, 0, 0.62);
   color: #fff;
   font-size: 15px;
   pointer-events: none;

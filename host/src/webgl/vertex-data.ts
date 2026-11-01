@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
 import { vertexAttribute } from "./buffer-references.js";
 import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
@@ -18,14 +18,52 @@ function componentBytes(type: number): number {
 }
 function layoutKey(a: GlVertexAttribute): string { return `${a.type}:${a.size}:${a.stride}:${a.offset}`; }
 
+/** Reserve scalar inverse and shadow publication before driver effects. A
+ * failed setter may have changed physical state even when its reply throws;
+ * shared repair keeps that uncertainty fenced after the logical owner retires. */
+export function installVertexConstant(b: GlBinding, index: number,
+  x: number, y: number, z: number, w: number): void {
+  const gl = b.gl!, limit = maxVertexAttributes(b);
+  if (limit === null) return;
+  if (!limit) { recordGlError(b,0x502); return; }
+  if (!Number.isInteger(index) || index < 0 || index >= limit) { recordGlError(b,0x501); return; }
+  let previous: [number,number,number,number] | undefined;
+  let replacement: typeof b.shadow.vertexAttribValues | undefined;
+  let changes: NativeChange[];
+  let options: {shared: true};
+  try {
+    previous = b.shadow.vertexAttribValues.get(index);
+    if (!previous) {
+      replacement = new Map();
+      // Lookup only valid native slots, never clone a historically poisoned
+      // unbounded index map. The fresh map is unpublished until acceptance.
+      for (let slot=0;slot<limit;slot++) {
+        const value = b.shadow.vertexAttribValues.get(slot);
+        if (value) replacement.set(slot,value);
+      }
+      replacement.set(index,[x,y,z,w]);
+    }
+    const old = previous ?? [0,0,0,1];
+    const write = () => gl.vertexAttrib4f(index,x,y,z,w);
+    changes = [{apply: () => checkedGlCall(b,write),
+      restore: nativeInverse(b,[["vertexAttrib4f",index,old[0],old[1],old[2],old[3]]])}];
+    options = {shared:true};
+  } catch { recordGlError(b,0x505); return; }
+  if (!applyNativeChanges(b,changes,options)) return;
+  // Existing tuples are private fixed-size arrays: replacing their scalar
+  // slots publishes without a fallible Map.set/clone after native acceptance.
+  if (previous) { previous[0]=x; previous[1]=y; previous[2]=z; previous[3]=w; }
+  else b.shadow.vertexAttribValues = replacement!;
+}
+
 /** Install every core format transactionally. Metadata capacity precedes native
  * pointer changes, including independent packed views for converted layouts. */
 export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexAttribute): boolean {
   const gl = b.gl!, width = componentBytes(a.type);
   if (!width) { recordGlError(b,0x500); return false; }
   if (a.size < 1 || a.size > 4 || a.stride < 0) { recordGlError(b,0x501); return false; }
-  let limit = 0;
-  if (!checkedGlCall(b, () => { limit = maxVertexAttributes(gl); })) return false;
+  const limit = maxVertexAttributes(b);
+  if (limit === null) return false;
   if (!limit) { recordGlError(b,0x502); return false; }
   if (index >= limit) { recordGlError(b,0x501); return false; }
   if (a.offset < 0 || a.offset % width || a.stride % width || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
@@ -36,8 +74,6 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   const key = packed ? layoutKey(a) : "";
   const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
   if (!candidate) return false;
-  const rollback = reserveNativeRetirement(b,[["deleteBuffer",null]]);
-  if (!rollback) { retireNativeRetirement(candidate); return false; }
   let created = false, installed = false;
   let view = packed && store ? store.converted.get(key) : undefined;
   if (view && b.bufferRetirements.get(view.native)?.complete) {
@@ -45,7 +81,8 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   }
   try {
     let native = array;
-    if (!a.buffer || (packed && !view)) {
+    if (!a.buffer) native = null;
+    else if (packed && !view) {
       native = allocateNativeBuffer(b,candidate); if (!native) return false;
       if (a.buffer) { view = {native,valid:false}; created = true; }
     } else if (view) native = view.native;
@@ -56,14 +93,15 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
     const oldNative = old.view ?? (old.buffer && (b.bufferStores.get(old.buffer)?.views.get(ARRAY)?.native ?? old.buffer));
     const type = old.type === FIXED ? FLOAT : old.type, normalized = old.type === FIXED ? false : old.normalized;
     const stride = oldPacked ? 0 : old.stride, offset = oldPacked ? 0 : old.offset;
-    const inverse: NativeCall[] = oldNative ? [["bindBuffer",ARRAY,oldNative],["vertexAttribPointer",index,old.size,type,normalized,stride,offset]]
-      : [["clearVertexAttribute",rollback,index,old.size,type,normalized,stride,offset]];
+    // Native null pointers require offset zero; the logical format and offset
+    // remain authoritative and a failed replacement restores that same null.
+    const inverse: NativeCall[] = [["bindBuffer",ARRAY,oldNative],
+      ["vertexAttribPointer",index,old.size,type,normalized,stride,oldNative ? offset : 0]];
     // The caller owns an unpublished attribute candidate. Reserve its view
     // field too: adding it after pointer installation could still allocate.
     if (packed && view) a.view = view.native;
     const accepted = applyNativeChanges(b,[{apply: () => {
       if (!checkedGlCall(b, () => gl.bindBuffer(ARRAY,native))) return false;
-      if (!a.buffer && !checkedGlCall(b, () => gl.bufferData(ARRAY,0,0x88e4))) return false;
       return checkedGlCall(b, () => gl.vertexAttribPointer(index,a.size,a.type === FIXED ? FLOAT : a.type,
         a.type === FIXED ? false : a.normalized,packed ? 0 : a.stride,packed ? 0 : a.offset));
     },restore:nativeInverse(b,inverse)}],{finalizer:nativeInverse(b,[["bindBuffer",ARRAY,array]])});
@@ -74,7 +112,6 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   finally {
     if (!installed && created && view) { store!.converted.delete(key); b.bufferViewOwners.delete(view.native); }
     if (!installed || !a.buffer) retireNativeRetirement(candidate);
-    retireNativeRetirement(rollback);
   }
 }
 

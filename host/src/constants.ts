@@ -762,13 +762,14 @@ function forkGlobalRecipeTypeCode(
 }
 
 function appendSignature(
-  signatures: Map<string, WasmFunctionSignature[]>,
+  signatures: Map<string, WasmFunctionSignature[]> | undefined,
   identity: string,
   signature: WasmFunctionSignature | undefined,
 ): void {
   if (!signature) {
     throw new Error(`function ${identity} refers to an unknown type`);
   }
+  if (!signatures) return;
   const values = signatures.get(identity) ?? [];
   values.push(signature);
   signatures.set(identity, values);
@@ -814,7 +815,10 @@ function readLimits(
  * i32/i64 pointers. Release and resolver acceptance must validate the actual
  * memory architecture, descriptor, and function types as one atomic contract.
  */
-function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactFacts {
+function readWasmForkArtifactFacts(
+  programBytes: ArrayBuffer,
+  retainExportFacts = true,
+): WasmForkArtifactFacts {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) throw new Error("not a wasm binary");
 
@@ -1042,12 +1046,14 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
         const kind = src[pos++];
         const [index, indexBytes] = readULEB128(src, pos);
         pos += indexBytes;
-        appendImportType(facts.exports, name, { kind, index });
+        if (retainExportFacts) {
+          appendImportType(facts.exports, name, { kind, index });
+        }
         if (kind === 0) {
           pendingFunctionExports.push({ name, index });
-        } else if (kind === 3) {
+        } else if (retainExportFacts && kind === 3) {
           appendImportType(facts.globalExports, name, index);
-        } else if (kind === 1) {
+        } else if (retainExportFacts && kind === 1) {
           appendImportType(facts.tableExports, name, index);
         }
       }
@@ -1066,7 +1072,11 @@ function readWasmForkArtifactFacts(programBytes: ArrayBuffer): WasmForkArtifactF
 
   for (const { name, index } of pendingFunctionExports) {
     const typeIndex = functionTypeIndices[index];
-    appendSignature(facts.functionExports, name, functionTypes[typeIndex]);
+    appendSignature(
+      retainExportFacts ? facts.functionExports : undefined,
+      name,
+      functionTypes[typeIndex],
+    );
   }
   return facts;
 }
@@ -2199,7 +2209,7 @@ export function readWasmFunctionImports(
   programBytes: ArrayBuffer,
 ): readonly WasmFunctionImportType[] {
   return Object.freeze(
-    readWasmForkArtifactFacts(programBytes).functionImportEntries.map(
+    readWasmForkArtifactFacts(programBytes, false).functionImportEntries.map(
       (entry) =>
         Object.freeze({
           ...entry,

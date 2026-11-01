@@ -82,6 +82,7 @@ describe("KmsRegistry", () => {
     const bos = new GbmBoRegistry({ getProcessMemory: (p) => p === 7 ? mem : undefined });
     bos.create({ pid: 7, bo_id: 100, size: 4096, w: 32, h: 32, stride: 128 });
     bos.bind(7, 100, 0, 4096);
+    bos.primeBindFromSab(7, 100, mem, 0);
 
     const kms = new KmsRegistry(bos);
     kms.addFb(fb(10, 100));
@@ -233,6 +234,7 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
   const bos = new GbmBoRegistry({ getProcessMemory: pid => pid === 7 ? memory : undefined });
   bos.create({ pid: 7, bo_id: 1, size: 4096, w: 32, h: 32, stride: 128 });
   bos.bind(7, 1, 0, 4096);
+  bos.primeBindFromSab(7, 1, memory, 0);
   const mapped = new Uint8Array(memory.buffer);
   mapped.set([0, 0, 255, 255]);
   mapped[16] = 42;

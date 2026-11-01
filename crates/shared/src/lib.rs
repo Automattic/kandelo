@@ -2328,6 +2328,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_dequeue_signal"),
         HostAdapterKernelExport::required("kernel_drain_wait_completions"),
         HostAdapterKernelExport::required("kernel_epoll_wait_finish"),
+        HostAdapterKernelExport::optional("kernel_epoll_wait_retry_state"),
         HostAdapterKernelExport::required("kernel_epoll_wait_token"),
         HostAdapterKernelExport::required("kernel_exchange_activate"),
         HostAdapterKernelExport::required("kernel_exchange_add_entry"),
@@ -3981,6 +3982,14 @@ pub mod gl {
     /// when the cmdbuf opcode set changes; the libGLESv2 stub records this
     /// at compile time; GLIO_INIT accepts compatible versions 1..=OP_VERSION.
     pub const OP_VERSION: u32 = 17;
+    /// One owned TLV replaces public-name staging for bounded client draws.
+    /// Keep this record in the program digest even during the unpublished epoch.
+    pub mod inline_client_draw {
+        pub const HEADER_BYTES: u32 = 16;
+        pub const ATTRIBUTE_BYTES: u32 = 20;
+        pub const MAX_BYTES: u32 = 65535;
+        pub const MAX_ATTRIBUTES: u32 = 16;
+    }
     /// Private mode of the existing foreign-BO bind ioctl. Its result is a
     /// source token for QOP_IMAGE_TARGET, never a public GLES texture name.
     pub const IMAGE_SOURCE_TARGET: u32 = 0x5750_4b49;
@@ -3999,6 +4008,12 @@ pub mod gl {
     pub const GLIO_PRESENT: u32 = 0x48;
     pub const GLIO_QUERY: u32 = 0x49;
     pub const GLIO_UPDATE_SURFACE: u32 = 0x4A;
+    /// Ordered nonempty submit prefix followed by one checked query. Phase
+    /// errors are returned in-band; ioctl success alone is not GL acceptance.
+    pub const GLIO_SUBMIT_QUERY: u32 = 0x4B;
+    pub const SUBMIT_QUERY_PHASE_SUBMIT: u32 = 1;
+    pub const SUBMIT_QUERY_PHASE_QUERY: u32 = 2;
+    pub const SUBMIT_QUERY_REPLY_MAGIC: u32 = 0x4753_5131;
 
     pub const SESSION_DISPLAY: u32 = 1;
     pub const SESSION_OBJECTS: u32 = 2;
@@ -4101,6 +4116,8 @@ pub mod gl {
     pub const OP_DISABLE_VERTEX_ATTRIB_ARRAY: u16 = 0x0501;
     pub const OP_VERTEX_ATTRIB_POINTER: u16 = 0x0502;
     pub const OP_DRAW_ARRAYS: u16 = 0x0503;
+    /// Bounded, owned client-array bytes and one nonindexed draw. Never public buffer names.
+    pub const OP_DRAW_CLIENT_ARRAYS: u16 = 0x0506;
     pub const OP_DRAW_ELEMENTS: u16 = 0x0504;
     /// `glVertexAttrib4fv(index, value)` — constant (non-array) vertex
     /// attribute. ScummVM's shader pipeline feeds the per-draw color
@@ -4235,10 +4252,34 @@ pub mod gl {
     pub const QOP_BOUND_IMAGE_TARGET: u32 = 0x0025;
     /// V11: kind/target (8 bytes), same 16-byte source/revision reply.
     pub const QOP_BOUND_IMAGE_STATE: u32 = 0x0026;
-    /// V12: kind/name (8 bytes), checked accepted deletion (12-byte reply).
+    /// V12: kind/name (8 bytes). Output size selects the legacy ACK or the
+    /// opt-in deletion-container receipt declared below; input is unchanged.
     pub const QOP_IMAGE_OBJECT_DELETE: u32 = 0x0027;
-    /// V12: kind/target/point/object-target/name/level (24 bytes), checked ACK.
+    /// V12: kind/target/point/object-target/name/level (24 bytes). Output size
+    /// selects the legacy ACK or opt-in attachment-container receipt below.
     pub const QOP_IMAGE_ATTACHMENT: u32 = 0x0028;
+
+    /// Checked query footer. All receipt words are little-endian u32 values.
+    pub const QUERY_REPLY_MAGIC: u32 = 0x4751_4c33;
+    /// Unchanged Q39/Q40 ACK: [status, accepted, QUERY_REPLY_MAGIC]. Status0
+    /// and accepted1 acknowledge GL acceptance; rejected status1 zeros payload.
+    /// Neither old payload value is a framebuffer name.
+    pub const IMAGE_MUTATION_LEGACY_REPLY_BYTES: u32 = 12;
+    /// Opt-in Q40: [status, accepted, container_name, QUERY_REPLY_MAGIC].
+    /// Capture the actual logical selected container after any queued prefix,
+    /// before attachment effects. Successful name is nonzero; logical default
+    /// storage cannot accept attachments. Failure zeros all payload words.
+    /// C may publish ownership only after validating the complete success.
+    pub const IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES: u32 = 16;
+    /// Opt-in Q39: [status, accepted, draw_name, read_name, QUERY_REPLY_MAGIC].
+    /// Names capture this context's selected containers after any queued prefix,
+    /// before deletion effects. Zero explicitly means logical default storage,
+    /// even when backed by a native FBO; equal draw/read names are permitted.
+    /// Deletion detaches matching object references only in selected containers;
+    /// unbound and peer containers retain their exact old object identity.
+    /// Failure zeros payload. Unknown completion never authorizes replay or
+    /// release of input ownership merely because a transport call returned.
+    pub const IMAGE_DELETION_CONTAINERS_REPLY_BYTES: u32 = 20;
     /// V12: allocation opcode plus unchanged payload, checked 12-byte ACK.
     /// TEX_IMAGE_2D requires dataLen=0 (40 bytes); RBO storage is 20 bytes.
     pub const QOP_IMAGE_STORAGE: u32 = 0x0029;
@@ -4391,6 +4432,34 @@ pub mod gl {
         pub out_buf_ptr: u64,
         pub out_buf_len: u32,
         pub reserved: u32,
+    }
+
+    /// Phase receipt for one synchronous invocation, not a retry token.
+    /// Inputs are zero. Negative rc values are errno; unattempted query_rc is
+    /// zero. Only the nested checked-query reply can accept a GL mutation.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryResult {
+        pub completed_phase: u32,
+        pub submit_rc: i32,
+        pub query_rc: i32,
+        pub result_magic: u32,
+    }
+    /// wasm32 ordered submit/query argument, 48 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo,
+        pub result: GlSubmitQueryResult,
+    }
+    /// wasm64 ordered submit/query argument, 64 bytes, InOut.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct GlSubmitQueryInfo64 {
+        pub submit: GlSubmitInfo,
+        pub query: GlQueryInfo64,
+        pub result: GlSubmitQueryResult,
     }
 
 }
@@ -5959,6 +6028,13 @@ mod gl_tests {
         assert_eq!(core::mem::offset_of!(GlSurfaceFrontCopyInfo, copy_target_bo),20);
         assert_eq!(size_of::<GlQueryInfo>(), 24);
         assert_eq!(size_of::<GlQueryInfo64>(), 40);
+        assert_eq!(size_of::<GlSubmitQueryResult>(),16);
+        assert_eq!(size_of::<GlSubmitQueryInfo>(),48);
+        assert_eq!(size_of::<GlSubmitQueryInfo64>(),64);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo,result),32);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,query),8);
+        assert_eq!(core::mem::offset_of!(GlSubmitQueryInfo64,result),48);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_ptr), 8);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, in_buf_len), 16);
         assert_eq!(core::mem::offset_of!(GlQueryInfo64, out_buf_ptr), 24);
@@ -5969,6 +6045,14 @@ mod gl_tests {
     #[test]
     fn cmdbuf_len_is_one_mib() {
         assert_eq!(CMDBUF_LEN, 1024 * 1024);
+    }
+
+    #[test]
+    fn image_container_receipt_sizes_preserve_legacy_and_opt_in_layouts() {
+        assert_eq!(QUERY_REPLY_MAGIC, 0x4751_4c33);
+        assert_eq!(IMAGE_MUTATION_LEGACY_REPLY_BYTES, 3 * 4);
+        assert_eq!(IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES, 4 * 4);
+        assert_eq!(IMAGE_DELETION_CONTAINERS_REPLY_BYTES, 5 * 4);
     }
 
     #[test]
@@ -6029,6 +6113,7 @@ mod gl_tests {
             OP_DISABLE_VERTEX_ATTRIB_ARRAY,
             OP_VERTEX_ATTRIB_POINTER,
             OP_DRAW_ARRAYS,
+            OP_DRAW_CLIENT_ARRAYS,
             OP_DRAW_ELEMENTS,
             OP_VERTEX_ATTRIB_4FV,
             OP_GEN_VERTEX_ARRAYS,

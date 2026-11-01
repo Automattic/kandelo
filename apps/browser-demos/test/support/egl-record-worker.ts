@@ -3,6 +3,8 @@ import {createWasmPosixKernelTestHarness} from "../../../../host/src/kernel";
 import {createKernelScratchTestInstance} from "../../../../host/test/support/kernel-scratch-instance";
 import * as O from "../../../../host/src/webgl/ops";
 
+const commandCapacity=1<<20;
+
 // Replay accepted public-C operations. This adapter supplies the kernel's
 // dispatch/identity role; real Rust guest marshalling remains a separate gate.
 self.onmessage = async ({data}) => {
@@ -37,7 +39,10 @@ self.onmessage = async ({data}) => {
         api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
       }
       if(data.pbuffer) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
-      memory=new WebAssembly.Memory({initial:2,maximum:2});
+      // A legal u16 payload plus its TLV header already exceeds 64 KiB.
+      // Match the C encoder's bounded command capacity and include its base.
+      const pages=Math.ceil((4096+commandCapacity)/65536);
+      memory=new WebAssembly.Memory({initial:pages,maximum:pages});
       native=createWasmPosixKernelTestHarness({io:{} as any,callbacks:{getProcessMemory:()=>memory!},memory,pointerWidth:4,
         instance:createKernelScratchTestInstance(4,memory,()=>({}),()=>4096)});
       imports=(native.testAuthority.buildImportObject(memory) as {env:typeof imports}).env;
@@ -110,7 +115,7 @@ self.onmessage = async ({data}) => {
         if(forwarded)channels.set(fd,createMainForwardChannel({postMessage:message=>postMessage(message)},7,fd));
         // This source replay models one native DRM file. Session identities
         // differ; its synthetic stable file identity is shared by all of them.
-        else imports!.host_gl_bind(7,4096,65536,fd,1n);
+        else imports!.host_gl_bind(7,4096,commandCapacity,fd,1n);
       } else if(kind===2) {
         const id=words.getUint32(12,true);
         const sharedId=words.getUint32(4,true);
@@ -126,7 +131,7 @@ self.onmessage = async ({data}) => {
           sourceContext=id;
           if(forwarded){channels.set(peer,createMainForwardChannel({postMessage:message=>postMessage(message)},7,peer));requireZero(channel(peer).onCreateContext(peer,fd),"create peer");}
           else {
-            imports!.host_gl_bind(7,4096,65536,peer,1n);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
+            imports!.host_gl_bind(7,4096,commandCapacity,peer,1n);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
             requireZero(imports!.host_gl_create_context(7,900,64,16,peer),"create peer");
           }
           prepareProgram(fd);
@@ -178,13 +183,17 @@ self.onmessage = async ({data}) => {
           // not stand in for public C shared-context creation or guest marshalling.
           for(let at=0;at<bytes.length;) {
             const op=words.getUint16(at,true),size=words.getUint16(at+2,true),end=at+4+size;
+            // The owned record has no public staging interval to interrupt.
+            // Delete/reuse from the peer before admission, retaining the same
+            // original-buffer identity and green/red pixel assertions.
+            if(op===O.OP_DRAW_CLIENT_ARRAYS && !injected)injectPeer(fd);
             submit(fd,bytes.slice(at,end));
             if(op===O.OP_BEGIN_CLIENT_ARRAY)captured=true;
             if(op===O.OP_END_CLIENT_ARRAY)captured=false;
             if(captured && !injected && op===O.OP_BIND_BUFFER && words.getUint32(at+4,true)===0x8892) {
               injectPeer(fd);
             }
-            if(op===O.OP_DRAW_ARRAYS)observed.push(pixels(fd));
+            if(op===O.OP_DRAW_ARRAYS || op===O.OP_DRAW_CLIENT_ARRAYS)observed.push(pixels(fd));
             at=end;
           }
         } else {

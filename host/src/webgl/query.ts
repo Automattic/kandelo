@@ -1,5 +1,10 @@
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
+import {
+  GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES,
+  GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES,
+  GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES,
+} from "../generated/abi.js";
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities } from "./surface-capabilities.js";
@@ -113,6 +118,19 @@ function copyReadPixelsResult(view: ArrayBufferView, out: Uint8Array): void {
   out.set(bytes);
 }
 
+/** Resolve only authoritative logical containers. Physical default storage can
+ * have a native FBO; an unregistered named selection is not logical zero. */
+function selectedContainerName(b: GlBinding, framebuffer: WebGLFramebuffer | null): number | null {
+  if (isDefaultFramebuffer(b,framebuffer)) return 0;
+  let name: number | null = null;
+  for (const [candidate,object] of b.fbos) if (object === framebuffer) {
+    if (!candidate || name !== null) { recordGlError(b,0x502); return null; }
+    name = candidate;
+  }
+  if (name === null) recordGlError(b,0x502);
+  return name;
+}
+
 export function runGlQuery(
   b: GlBinding,
   op: number,
@@ -171,15 +189,36 @@ export function runGlQuery(
     });
   }
   if (op === O.QOP_IMAGE_OBJECT_DELETE || op === O.QOP_IMAGE_ATTACHMENT) {
-    if (input.byteLength !== (op === O.QOP_IMAGE_OBJECT_DELETE ? 8 : 24) || out.byteLength !== 12) return -22;
-    return checkedQueryReply(b, out, 4, payload => {
-      const kind = inDv.getUint32(0, true);
-      const accepted = op === O.QOP_IMAGE_OBJECT_DELETE ? deleteImageObject(b, kind, inDv.getUint32(4, true)) :
-        attachImageObject(b, kind, inDv.getUint32(4, true), inDv.getUint32(8, true), inDv.getUint32(12, true), inDv.getUint32(16, true), inDv.getInt32(20, true));
+    const deletion = op === O.QOP_IMAGE_OBJECT_DELETE;
+    const extended = out.byteLength === (deletion
+      ? GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES : GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES);
+    if (input.byteLength !== (deletion ? 8 : 24) || (!extended && out.byteLength !== GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES)) return -22;
+    return checkedQueryReply(b, out, extended ? (deletion ? 12 : 8) : 4, payload => {
+      const result = new DataView(payload.buffer), kind = inDv.getUint32(0,true);
+      // Stage receipt identity before any mutation, including allocation or
+      // retirement. The legacy12-byte reply retains its exact old semantics.
+      let draw = 0, read = 0;
+      if (extended && (deletion ? kind >= 1 && kind <= 3 :
+          (kind === 1 || kind === 2) && validFramebufferTarget(inDv.getUint32(4,true)))) {
+        const selected = selectedContainerName(b,deletion ? b.shadow.fbo : boundFramebuffer(b,inDv.getUint32(4,true)));
+        if (selected === null) return -5;
+        draw = selected;
+        if (deletion) {
+          const selectedRead = selectedContainerName(b,b.shadow.readFbo);
+          if (selectedRead === null) return -5;
+          read = selectedRead;
+        }
+      }
+      const accepted = deletion ? deleteImageObject(b,kind,inDv.getUint32(4,true)) :
+        attachImageObject(b,kind,inDv.getUint32(4,true),inDv.getUint32(8,true),inDv.getUint32(12,true),inDv.getUint32(16,true),inDv.getInt32(20,true));
       if (!accepted) return -5;
       collectRetiredImages(b);
-      new DataView(payload.buffer).setUint32(0, 1, true);
-      return 4;
+      result.setUint32(0,1,true);
+      if (extended) {
+        result.setUint32(4,draw,true);
+        if (deletion) result.setUint32(8,read,true);
+      }
+      return payload.byteLength;
     });
   }
   if (op === O.QOP_BOUND_IMAGE_TARGET || op === O.QOP_BOUND_IMAGE_STATE) {

@@ -624,3 +624,83 @@ it.each(["query","present","make-current"])("forwarded %s refuses an incomplete 
     expect(native.mock.calls).toHaveLength(before);expect(b.operations.pending).toBe(0);native.mockRestore();
   }finally{dispose();capture.mockRestore();}
 });
+
+it.each(["late","completion race"] as const)("does not dirty an already-selected drawable after an unacknowledged rebind: %s",mode=>{
+  const worker=new FakeWorker(),stub=new RecordingGl();let selections=0;
+  Object.assign(stub,{bindVertexArray(){selections++;},bindFramebuffer(which:number,value:unknown){stub.log.push(["bindFramebuffer",[which,value]]);}});
+  const {canvas}=fakeCanvas(stub),dispose=setupMainForward(worker,canvas,7);
+  let refuse=false;const late:GlForwardMessage[]=[];
+  const channel=createMainForwardChannel({postMessage(message){
+    if(refuse&&mode==="late"&&message.type==="gl_forward_make_current")late.push(message);else worker.fire(message);
+  }},7);
+  expect(channel.onCreateContext()).toBe(0);
+  const drawable={drawSurfaceId:0,readSurfaceId:0,width:0,height:0};
+  expect(channel.onMakeCurrent!(drawable)).toBe(0);channel.onSubmit(clearCmdbuf());
+  const before=selections;stub.log=[];refuse=true;
+  const compare=Atomics.compareExchange;
+  const intercept=mode==="late"?vi.spyOn(Atomics,"wait").mockReturnValue("timed-out"):
+    vi.spyOn(Atomics,"compareExchange").mockImplementation(((words:Int32Array,index:number,expected:number,value:number)=>{
+      if(expected===1&&value===2)Atomics.store(words,index,3);return compare(words,index,expected,value);
+    })as typeof Atomics.compareExchange);
+  try{expect(channel.onMakeCurrent!(drawable)).toBe(-5);}finally{intercept.mockRestore();}
+  if(mode==="late")worker.fire(late[0]);
+  const next=createMainForwardChannel({postMessage:message=>worker.fire(message)},7);
+  next.onSubmit(clearCmdbuf());expect(selections).toBe(before);
+  expect(stub.log.filter(([name])=>name==="clear")).toHaveLength(1);
+  expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
+  refuse=false;expect(next.onMakeCurrent!(drawable)).toBe(0);next.onSubmit(clearCmdbuf());
+  expect(selections).toBe(before);expect(stub.log.filter(([name])=>name==="bindFramebuffer")).toEqual([]);
+  dispose();
+});
+
+it("uses the same checked constant publication for forwarded invalid and indeterminate setters",()=>{
+  const worker=new FakeWorker(),stub=new RecordingGl(),values=new Map<number,number[]>();let writes=0,reject=false;
+  Object.assign(stub,{getParameter:()=>8,vertexAttrib4f(index:number,...value:number[]){
+    writes++;if(index>=8){stub.error=0x501;return;}values.set(index,value);
+    if(reject){reject=false;throw Error("forwarded constant accepted then threw");}
+  }});
+  const {canvas}=fakeCanvas(stub),dispose=setupMainForward(worker,canvas,7);
+  const channel=createMainForwardChannel({postMessage:message=>worker.fire(message)},7);
+  expect(channel.onCreateContext()).toBe(0);
+  const submit=(index:number,value:number[])=>{
+    const bytes=new Uint8Array(24),v=new DataView(bytes.buffer);v.setUint16(0,O.OP_VERTEX_ATTRIB_4FV,true);v.setUint16(2,20,true);
+    v.setUint32(4,index,true);value.forEach((part,i)=>v.setFloat32(8+i*4,part,true));channel.onSubmit(bytes);
+  };
+  submit(0xffff_ffff,[5,6,7,8]);expect(writes).toBe(0);
+  const error=channel.onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4);expect(error.rc).toBe(4);expect(new Uint32Array(error.bytes.buffer)[0]).toBe(0x501);
+  submit(2,[1,2,3,4]);reject=true;submit(2,[5,6,7,8]);expect(values.get(2)).toEqual([1,2,3,4]);
+  const query=channel.onQuery!(O.QOP_GET_VERTEX_ATTRIBFV,new Uint8Array(new Uint32Array([2,0x8626]).buffer),24);
+  expect(query.rc).toBe(24);expect([...new Float32Array(query.bytes.buffer,4,4)]).toEqual([1,2,3,4]);
+  dispose();
+});
+
+it("preserves queued framebuffer selection and opt-in container receipts across actual forwarding",() => {
+  const worker = new FakeWorker(), gl = Object.assign(new RecordingGl(), {
+    createTexture:() => ({}), bindTexture:(_target:number,_value:object|null) => {},
+    bindFramebuffer:(_target:number,_value:object|null) => {},
+    framebufferTexture2D:(_target:number,_point:number,_textarget:number,_value:object|null,_level:number) => {},
+  });
+  const dispose = setupMainForward(worker,fakeCanvas(gl).canvas,7);
+  const channel = createMainForwardChannel({postMessage:message => worker.fire(message)},7);
+  const command = (op:number,words:number[]) => {
+    const bytes = new Uint8Array(4+4*words.length), view = new DataView(bytes.buffer);
+    view.setUint16(0,op,true); view.setUint16(2,4*words.length,true);
+    words.forEach((word,i) => view.setUint32(4+4*i,word,true)); channel.onSubmit(bytes);
+  };
+  const query = (op:number,words:number[],length:number) => {
+    const result = channel.onQuery!(op,new Uint8Array(new Uint32Array(words).buffer),length);
+    expect(result.rc).toBe(length);
+    return [...new Uint32Array(result.bytes.buffer,result.bytes.byteOffset,length/4)];
+  };
+  try {
+    expect(channel.onCreateContext()).toBe(0);
+    command(O.OP_BIND_TEXTURE,[0x0de1,17]); command(O.OP_BIND_FRAMEBUFFER,[0x8d40,77]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,17,0],12)).toEqual([0,1,0x47514c33]);
+    command(O.OP_BIND_FRAMEBUFFER,[0xdead,92]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,17,0],16)).toEqual([0,1,77,0x47514c33]);
+    expect(query(O.QOP_GET_ERROR,[],4)).toEqual([0x500]);
+    expect(query(O.QOP_IMAGE_OBJECT_DELETE,[1,17],20)).toEqual([0,1,77,77,0x47514c33]);
+    command(O.OP_BIND_FRAMEBUFFER,[0x8d40,0]);
+    expect(query(O.QOP_IMAGE_ATTACHMENT,[1,0x8d40,0x8ce0,0x0de1,0,0],16)).toEqual([1,0,0,0x47514c33]);
+  } finally { channel.onDestroyContext(); dispose(); }
+});

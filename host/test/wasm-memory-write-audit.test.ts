@@ -130,6 +130,105 @@ describe("WebAssembly memory write audit", () => {
     ).toThrow(/must classify its owner/);
   });
 
+  it.each(["instance", "instance: localInstance"])(
+    "classifies the exact awaited instantiate result binding %s",
+    (binding) => {
+      const local = binding.includes(":") ? "localInstance" : "instance";
+      const sources = {
+        "fixture.mjs": `
+          const bytes = new Uint8Array();
+          const { ${binding} } = await WebAssembly.instantiate(bytes, {});
+          new Uint8Array(${local}.exports.memory.buffer).set([7]);
+        `,
+      };
+      const options = {
+        ...virtualAuditOptions(sources, []),
+        auditWasmAuthorityOrigins: true,
+      };
+      const unclassified = auditWasmMemoryWrites(options);
+      const origin = unclassified.violations.find(
+        (finding) => finding.kind === "wasm-instance-authority",
+      );
+      expect(origin).toBeDefined();
+      const classification: AuditAllowance = {
+        key: origin!.key,
+        disposition: "non-kernel",
+        authorityOwner: "process-memory",
+        why: "This exact source fixture owns only private module storage.",
+      };
+      const classified = auditWasmMemoryWrites({
+        ...options,
+        allowances: [classification],
+      });
+      expect(formatAuditFailures(classified)).toEqual([]);
+
+      // The same binding classified as kernel authority must propagate into
+      // its exported memory and still reject the unreviewed write.
+      const kernel = auditWasmMemoryWrites({
+        ...options,
+        allowances: [{
+          ...classification,
+          disposition: "kernel-control",
+          authorityOwner: "kernel",
+        }],
+      });
+      expect(kernel.contractErrors).toEqual([]);
+      expect(kernel.unusedAllowances).toEqual([]);
+      expect(kernel.violations.some(
+        (finding) => finding.kind === "kernel-write",
+      )).toBe(true);
+
+      const duplicate = auditWasmMemoryWrites({
+        ...virtualAuditOptions({
+          "fixture.mjs": sources["fixture.mjs"] + `
+            const { instance: second } = await WebAssembly.instantiate(bytes, {});
+          `,
+        }, [], [classification]),
+        auditWasmAuthorityOrigins: true,
+      });
+      expect(duplicate.violations.some(
+        (finding) => finding.kind === "wasm-instance-authority",
+      )).toBe(true);
+    },
+  );
+
+  it.each([
+    "const { module } = await WebAssembly.instantiate(bytes, {});",
+    "const { [key]: instance } = await WebAssembly.instantiate(bytes, {});",
+    "const { ['instance']: instance } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance, [key]: other } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance, module } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance, ...rest } = await WebAssembly.instantiate(bytes, {});",
+    "const { ...rest } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance = fallback } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance: { exports } } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance: first, instance: second } = await WebAssembly.instantiate(bytes, {});",
+    "const { instance } = WebAssembly.instantiate(bytes, {});",
+    "const { instance } = { nested: await WebAssembly.instantiate(bytes, {}) };",
+    "const { instance } = new WebAssembly.Instance(module, {});",
+  ])("rejects an unstable destructured authority binding: %s", (declaration) => {
+    const options = {
+      ...virtualAuditOptions({ "fixture.mjs": declaration }, []),
+      auditWasmAuthorityOrigins: true,
+    };
+    const origin = auditWasmMemoryWrites(options).violations.find(
+      (finding) => finding.kind === "wasm-instance-authority",
+    );
+    expect(origin).toBeDefined();
+    const result = auditWasmMemoryWrites({
+      ...options,
+      allowances: [{
+        key: origin!.key,
+        disposition: "non-kernel",
+        authorityOwner: "process-memory",
+        why: "A reviewed origin must still have an exact stable binding.",
+      }],
+    });
+    expect(result.contractErrors.some(
+      (error) => error.includes("authority origin has no stable binding"),
+    )).toBe(true);
+  });
+
   it("finds aliased, destructured, bound, and reflected Wasm authorities", () => {
     const result = auditWasmMemoryWrites({
       ...virtualAuditOptions(
@@ -5149,6 +5248,7 @@ describe("WebAssembly memory write audit", () => {
       const runtime = path.join(root, "runtime");
       mkdirSync(runtime, { recursive: true });
       const expected = [
+        "host/src/vitest.graphics.config.ts",
         "runtime/a.ts",
         "runtime/b.tsx",
         "runtime/c.mts",
@@ -5157,6 +5257,7 @@ describe("WebAssembly memory write audit", () => {
         "runtime/f.jsx",
         "runtime/g.mjs",
         "runtime/h.cjs",
+        "runtime/vitest.graphics.config.ts",
         "scripts/resolve-binary.ts",
       ];
       for (const relative of expected) {
@@ -5195,6 +5296,9 @@ describe("WebAssembly memory write audit", () => {
       for (const relative of [
         "crates/fork-instrument/tests/fixtures/private-module.mjs",
         "scripts/check-fork-memory-artifact.ts",
+        "host/vitest.config.ts",
+        "host/vitest.browser-memory.config.ts",
+        "host/vitest.graphics.config.ts",
       ]) {
         mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
         writeFileSync(path.join(root, relative), "export {};\n");

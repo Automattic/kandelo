@@ -1711,11 +1711,15 @@ neutralizes this class of issue. It hooks `Blob`/`URL.createObjectURL` and the
 document, which the service worker *does* control). It is idempotent and a no-op
 unless a text/html blob URL is used as an iframe src. The service worker inlines
 it (via the `"__BLOB_IFRAME_INTERCEPTOR__"` build-time placeholder, mirroring
-`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents without
-a Content Security Policy, so it applies to app demos, not just WordPress.
+`"__CORS_PROXY_CONFIG__"`) into the `<head>` of bridged HTML documents whose
+Content Security Policy, if any, allows it, so it applies to app demos, not
+just WordPress.
 Documents carrying a
-`Content-Security-Policy` response header retain their declared script policy:
-the bridge does not inject the inline helper or change that header. The
+`Content-Security-Policy` response header that governs scripts (a
+`script-src-elem`, `script-src` or `default-src` directive) retain their
+declared script policy: the bridge does not inject the inline helper or change
+that header. A policy that does not govern scripts, such as WordPress admin's
+`frame-ancestors 'self'`, still gets the helper. The
 blob-iframe adapter is therefore unavailable in those documents; ordinary
 HTML, assets, requests and same-origin iframes still use the bridge.
 
@@ -2834,6 +2838,15 @@ resolve it again.
 
 ## Known Limitations
 
+### Historical GL query reply storage
+
+GL query replies remain heap-owned before copying to caller destinations on
+all hosts. The historical claim of V8 stack-reply visibility failure is
+[suspected and unreduced](../tests/runtime-workarounds/V8-GL-HEAP-QUERY-REPLY/entry.md),
+not a confirmed engine defect. The ordered submit/query transport preserves
+this behavior; it does not establish the cause or a performance benefit.
+
+
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
 
@@ -3451,3 +3464,12 @@ The Node demo uses npm's canonical `https://registry.npmjs.org/` registry.
 Registry metadata and tarballs traverse the ordinary browser TLS and configured
 proxy boundary. Kandelo does not rewrite registry URLs, package metadata, or
 tarball locations and has no npm- or package-specific proxy routing.
+
+### Firefox worker-canvas extraction investigation
+
+A standalone pixel-judging [reproduction](../tests/runtime-workarounds/FIREFOX-OFFSCREEN-EXTRACTION/entry.md)
+tracks transparent `drawImage`/`getImageData` results from an opaque
+worker-painted canvas during native readback. No product workaround is
+implemented. The separate Cage whole-frame screenshot failure and Firefox
+cursor rendering failure remain open; this extraction evidence does not
+establish their cause or waive their acceptance assertions.

@@ -30,7 +30,8 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
-import { installVertexAttribute } from "./vertex-data.js";
+import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
+import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
@@ -319,6 +320,8 @@ function validPayload(op: number, v: DataView): boolean {
   if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
   if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      return validPrivateClientDraw(v);
     case O.OP_BEGIN_CLIENT_ARRAY:
     case O.OP_END_CLIENT_ARRAY:
       return exact(v,0);
@@ -1165,6 +1168,8 @@ function dispatch(
       vao.attributes = attributes;
       return;
     }
+    case O.OP_DRAW_CLIENT_ARRAYS:
+      drawPrivateClientArrays(b,v); return;
     case O.OP_DRAW_ARRAYS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
@@ -1183,17 +1188,8 @@ function dispatch(
       return;
     // Payload: u32 index, f32 x, f32 y, f32 z, f32 w
     case O.OP_VERTEX_ATTRIB_4FV:
-      b.shadow.vertexAttribValues.set(v.getUint32(p, true), [
-        v.getFloat32(p + 4, true), v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true), v.getFloat32(p + 16, true),
-      ]);
-      gl.vertexAttrib4f(
-        v.getUint32(p, true),
-        v.getFloat32(p + 4, true),
-        v.getFloat32(p + 8, true),
-        v.getFloat32(p + 12, true),
-        v.getFloat32(p + 16, true),
-      );
+      installVertexConstant(b,v.getUint32(p,true),v.getFloat32(p+4,true),v.getFloat32(p+8,true),
+        v.getFloat32(p+12,true),v.getFloat32(p+16,true));
       return;
 
     // ----- VAOs -----------------------------------------------------------

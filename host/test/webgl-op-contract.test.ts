@@ -23,4 +23,11 @@ it("keeps GLES command and query tags identical in Rust, C and TypeScript", () =
     expect(new Set(values).size).toBe(values.length);
   }
   expect(c).toMatch(new RegExp(`#define WPK_GL_OP_VERSION\\s+${OP_VERSION}(?:u)?\\b`));
+  const inline = rust.match(/pub mod inline_client_draw \{([^}]+)\}/)![1];
+  for (const [rustName,hostName] of [["HEADER_BYTES","INLINE_DRAW_HEADER_BYTES"],["ATTRIBUTE_BYTES","INLINE_DRAW_ATTRIBUTE_BYTES"],
+    ["MAX_BYTES","INLINE_DRAW_MAX_BYTES"],["MAX_ATTRIBUTES","INLINE_DRAW_MAX_ATTRIBUTES"]] as const) {
+    const value = Number(inline.match(new RegExp(`pub const ${rustName}: u32 = (\\d+);`))![1]);
+    expect(hostOps[hostName]).toBe(value);
+    expect(c).toMatch(new RegExp(`#define WPK_GL_INLINE_DRAW_${rustName}\\s+${value}u?\\b`));
+  }
 });

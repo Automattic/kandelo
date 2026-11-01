@@ -303,6 +303,9 @@ Requires.private: libffi
 Cflags: -I\${includedir}
 EOF
 
+# This shim calls GBM and the client archive's retained-surface helpers.
+# Export those strong dependencies for every static consumer; its optional
+# weak EGL retarget hook does not itself require linking libEGL.
 cat > "$PC_DIR/wayland-egl.pc" <<EOF
 prefix=$INSTALL_DIR
 libdir=\${prefix}/lib
@@ -312,6 +315,7 @@ Name: wayland-egl
 Description: Wayland EGL backend (wl_egl_window) — kandelo shim
 Version: 18.1.0
 Libs: -L\${libdir} -lwayland-egl
+Requires.private: wayland-client gbm
 Cflags: -I\${includedir}
 EOF
 

@@ -248,6 +248,7 @@ run_test() {
         KANDELO_RUNNER_FIXTURE_CWD="$fixture_cwd" \
         KANDELO_RUNNER_GUEST_PROGRAM="$fixture_program" \
         KANDELO_RUNNER_VFS=isolated \
+        KANDELO_RUNNER_NETWORK=offline-egress \
         TIMEOUT="$((TEST_TIMEOUT * 1000))" \
         timeout "$((TEST_TIMEOUT + 5))" node --experimental-wasm-exnref \
             --import tsx/esm examples/run-example.ts "${wasm}" \
@@ -394,6 +395,9 @@ if [ ! -f "$KERNEL_WASM" ]; then
     exit 1
 fi
 abi_contract_stamp_prepare || exit 1
+# shellcheck source=scripts/conformance-program-index.sh
+source "$REPO_ROOT/scripts/conformance-program-index.sh"
+conformance_program_index_prepare || exit 1
 
 PASS=0
 FAIL=0

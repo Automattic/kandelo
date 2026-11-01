@@ -1,0 +1,18 @@
+Subject: [PATCH] Register unary interface initializers explicitly
+
+Keep genuine GInterfaceInitFunc callbacks at their public two-argument arity.
+These initializers take one argument and use the explicit GLib adapter.
+
+--- a/gdk-pixbuf/gdk-pixbuf.c
++++ b/gdk-pixbuf/gdk-pixbuf.c
+@@ -128,8 +128,8 @@
+ static void gdk_pixbuf_loadable_icon_iface_init (GLoadableIconIface *iface);
+ 
+ G_DEFINE_TYPE_WITH_CODE (GdkPixbuf, gdk_pixbuf, G_TYPE_OBJECT,
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_ICON, gdk_pixbuf_icon_iface_init)
+-                         G_IMPLEMENT_INTERFACE (G_TYPE_LOADABLE_ICON, gdk_pixbuf_loadable_icon_iface_init))
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_ICON, gdk_pixbuf_icon_iface_init)
++                         G_IMPLEMENT_INTERFACE_UNARY (G_TYPE_LOADABLE_ICON, gdk_pixbuf_loadable_icon_iface_init))
+ 
+ static void 
+ gdk_pixbuf_init (GdkPixbuf *pixbuf)
