@@ -8,9 +8,13 @@
 //! Kandelo-identified EDID whose identity never changes, while its timing
 //! and size fields describe the display the host actually presents:
 //!
-//! - Identity: manufacturer `KDL` (a three-letter code chosen for Kandelo;
-//!   it is not an assigned PNP ID), product code 1, serial number 1 with the
-//!   serial string `0001`, product name `Kandelo`, model year 2026.
+//! - Identity: manufacturer `KDL`, product code 1, serial number 1 with the
+//!   serial string `0001`, product name `Kandelo`, model year 2026. `KDL` is
+//!   an unregistered virtual-device identity: E-EDID parsers (Linux's
+//!   drm_edid, libdisplay-info) accept any three letters and show an unknown
+//!   code as it is, so correctness does not need a registered PNP ID; a
+//!   registered ID guarantees uniqueness among physical products, and `KDL`
+//!   is unassigned in the UEFI PNP ID registry today.
 //! - The first detailed timing is the connector's first advertised mode
 //!   (the host's preferred mode) with the exact timings GETCONNECTOR
 //!   reports, so the EDID's preferred timing and the mode list agree.

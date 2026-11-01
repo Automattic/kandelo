@@ -4174,6 +4174,12 @@ pub extern "C" fn kernel_dequeue_signal(
         let action = proc.signals.get_action(signum);
         match action.handler {
             SignalHandler::Handler(idx) => {
+                // A blocking atomic KMS commit past its point of no return
+                // waits uninterruptibly, as Linux's commit tail does: a
+                // caught signal stays pending until the commit returns.
+                if crate::dri::atomic::waits_uninterruptibly(proc, tid) {
+                    return 0;
+                }
                 let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
                     dequeue_signal_for(proc, tid, signum);
                 // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK

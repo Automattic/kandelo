@@ -352,6 +352,13 @@ impl Commit {
                     // -1 is "no fence". Any other fd would have to be a
                     // sync_file (sync_file_get_fence), and no sync_file
                     // exists yet, so every such fd fails as on Linux.
+                    //
+                    // TODO(S4 explicit sync): resolve `value` as a sync_file
+                    // fd into a kernel fence held by the staged plane
+                    // (`state->fence`; a second IN_FENCE_FD on the same plane
+                    // is EINVAL). TEST_ONLY only validates it; a real commit
+                    // waits for it before applying, interruptibly, as
+                    // drm_atomic_helper_wait_for_fences(.., true) does.
                     kms::PROP_IN_FENCE_FD => {
                         if value as i64 != -1 {
                             return Err(Errno::EINVAL);
@@ -661,6 +668,9 @@ impl Commit {
             let id = device.next_commit;
             device.next_commit = id.wrapping_add(1);
             device.pending_commit = Some(id);
+            // TODO(S4 explicit sync): attach the commit's out-fence to `id`
+            // so the completing vblank signals it; a dark CRTC's commit
+            // signals it at once, as its event is sent at once.
             Some(id)
         } else {
             None
@@ -822,22 +832,43 @@ fn atomic_object(host: &mut dyn HostIO, obj_id: u32) -> Result<&'static [u32], E
     }
 }
 
-/// One thread's blocking atomic commit across the host's EAGAIN retries.
+/// One thread's blocking atomic commit, parked on the host's EAGAIN retry
+/// path.
 ///
-/// WHY: a blocking commit returns when its flip has completed, as Linux's
-/// `drm_atomic_helper_wait_for_flip_done` does. Kandelo parks the caller on
-/// the host's ordinary blocking-retry path, which re-runs the ioctl from
-/// the unchanged request bytes; the record recognizes that retry so the
-/// commit is applied once and the retry only waits. Linux's flip wait is
-/// not interruptible, so a caught signal does not drop the record: libdrm
-/// (and SA_RESTART) re-issue the same request after EINTR, which then
-/// resumes the wait instead of committing twice.
+/// WHY: Linux's blocking commit (`drm_atomic_helper_commit`) swaps in the
+/// new state at its point of no return and then, in `commit_tail`, waits
+/// for the previous commit (`drm_atomic_helper_wait_for_dependencies`) and
+/// for its own flip (`drm_atomic_helper_wait_for_vblanks`) with
+/// uninterruptible waits: a signal never interrupts it, so it never
+/// reports EINTR and never runs twice. Kandelo waits for the previous
+/// commit before applying (so that commit's frame is still shown for its
+/// vblank, as Linux programs the hardware only after it), then applies, then
+/// waits for its own flip. While a thread has a record here its caught
+/// signals stay pending (`waits_uninterruptibly`, consulted when the kernel
+/// dequeues a signal for delivery), as in TASK_UNINTERRUPTIBLE; default
+/// actions still apply. The parked thread can issue no other system call,
+/// so the host's retry of its ioctl is the only call that finds the record.
 #[derive(Clone, Copy, Debug)]
 pub struct CommitWait {
     pub pid: u32,
     pub tid: u32,
-    pub request: [u8; 56],
-    pub commit: u64,
+    pub phase: WaitPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WaitPhase {
+    /// The previous commit is still pending; nothing is applied yet.
+    Dependency,
+    /// This commit is applied and pending until the vblank that completes it.
+    Flip(u64),
+}
+
+/// Whether thread `tid` of `proc` is inside a blocking atomic commit's
+/// uninterruptible wait, so a caught signal must stay pending.
+pub fn waits_uninterruptibly(proc: &crate::process::Process, tid: u32) -> bool {
+    proc.ofd_table.iter().any(|(_, ofd)| ofd.kms().is_some_and(|kms| {
+        kms.commit_waits.iter().any(|w| w.pid == proc.pid && w.tid == tid)
+    }))
 }
 
 /// Parse the request's objects and properties into `commit`, as the loop
@@ -906,9 +937,10 @@ pub fn atomic_ioctl(
         return Err(Errno::EINVAL);
     }
     let blocking = !test_only && req.flags & DRM_MODE_ATOMIC_NONBLOCK == 0;
-    let request: [u8; 56] = buf[..56].try_into().unwrap();
     if blocking {
-        // A retry of this thread's blocking commit only waits for it.
+        // The host's retry of this thread's parked commit: a commit already
+        // applied only waits for its flip; one waiting for the previous
+        // commit runs again from the start once that one completed.
         let alive = |t: u32| t == proc.pid || proc.get_thread(t).is_some();
         let live: alloc::vec::Vec<u32> = crate::dri::ioctl_kms::kms_state(proc, ofd_idx)?
             .commit_waits.iter().filter(|w| w.pid == pid).map(|w| w.tid)
@@ -916,13 +948,16 @@ pub fn atomic_ioctl(
         let mut kms_file = crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?;
         kms_file.commit_waits.retain(|w| w.pid != pid || live.contains(&w.tid));
         if let Some(index) = kms_file.commit_waits.iter().position(|w| w.pid == pid && w.tid == tid) {
-            let wait = kms_file.commit_waits.remove(index);
-            if wait.request == request {
-                if kms::dev().pending_commit == Some(wait.commit) {
-                    kms_file.commit_waits.push(wait);
-                    return Err(Errno::EAGAIN);
+            match kms_file.commit_waits[index].phase {
+                WaitPhase::Flip(id) if kms::dev().pending_commit == Some(id) => return Err(Errno::EAGAIN),
+                WaitPhase::Flip(_) => {
+                    kms_file.commit_waits.remove(index);
+                    return Ok(());
                 }
-                return Ok(());
+                WaitPhase::Dependency if kms::flip_pending() => return Err(Errno::EAGAIN),
+                WaitPhase::Dependency => {
+                    kms_file.commit_waits.remove(index);
+                }
             }
         }
     }
@@ -943,8 +978,13 @@ pub fn atomic_ioctl(
                 return Err(Errno::ENOMEM);
             }
         }
-        // An out-fence is a sync_file fd, which Kandelo does not have yet;
-        // fail the commit rather than report a fence that does not exist.
+        // TODO(S4 explicit sync): an out-fence request creates the CRTC's
+        // fence (drm_crtc_create_fence), installs a sync_file fd for it and
+        // writes the fd to `out_fence_ptr` (EFAULT/EMFILE as setup_out_fence
+        // reports them); the vblank that completes the commit signals it
+        // (see `Commit::apply` and `dri::retire_vblank_over`). Until the
+        // fence core exists the commit fails without taking effect rather
+        // than report a fence that does not exist.
         if commit.out_fence_ptr != 0 && commit.crtc_in {
             return Err(Errno::EOPNOTSUPP);
         }
@@ -956,9 +996,13 @@ pub fn atomic_ioctl(
     }
     if commit.busy() {
         // Userspace may not get ahead of the previous commit with a
-        // nonblocking one; a blocking one waits for it (nothing is applied
-        // yet, so an interrupting signal loses nothing).
-        return Err(if blocking { Errno::EAGAIN } else { Errno::EBUSY });
+        // nonblocking one; a blocking one waits for it, uninterruptibly.
+        if !blocking {
+            return Err(Errno::EBUSY);
+        }
+        crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?.commit_waits
+            .push(CommitWait { pid, tid, phase: WaitPhase::Dependency });
+        return Err(Errno::EAGAIN);
     }
     let pending = {
         let mut kms_file = crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?;
@@ -966,7 +1010,7 @@ pub fn atomic_ioctl(
         let pending = commit.apply(&mut ctx, CommitKind::Flip, event);
         if blocking {
             if let Some(commit) = pending {
-                kms_file.commit_waits.push(CommitWait { pid, tid, request, commit });
+                kms_file.commit_waits.push(CommitWait { pid, tid, phase: WaitPhase::Flip(commit) });
             }
         }
         pending

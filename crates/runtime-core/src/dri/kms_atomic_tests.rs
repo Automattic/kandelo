@@ -588,18 +588,22 @@ fn kms_atomic_nonblocking_flip_event_arrives_at_the_completing_vblank() {
     igt.close();
 }
 
-/// A blocking commit returns once its flip has completed: it is applied
-/// once, the host's retry only waits, and the completing vblank wakes it.
+/// A blocking commit returns once its flip has completed, applied once and
+/// never interrupted, as Linux's commit tail waits uninterruptibly: while
+/// it is parked a caught signal stays pending (`waits_uninterruptibly`).
 #[test]
 fn kms_atomic_blocking_commit_waits_for_its_flip_once() {
     let _locks = locks();
     let mut igt = Igt::open();
     igt.setup();
+    let tid = igt.proc.pid;
     let fb2 = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
     let fb_id = igt.plane("FB_ID");
     let req = igt.request(0, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(fb2))])], 0);
     let latched = igt.host.kms_set_fb_calls.len();
+    assert!(!crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid));
     assert_eq!(igt.raw(req), Err(Errno::EAGAIN), "parked on its own flip");
+    assert!(crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid), "signals stay pending");
     assert_eq!(igt.getcrtc().fb_id, fb2, "applied before parking");
     assert_eq!(igt.host.kms_set_fb_calls.len(), latched + 1);
     assert_eq!(igt.raw(req), Err(Errno::EAGAIN), "a retry before the vblank still waits");
@@ -607,15 +611,26 @@ fn kms_atomic_blocking_commit_waits_for_its_flip_once() {
     igt.vblank();
     assert!(crate::dri::take_vblank_wake(), "the completing vblank wakes the parked caller");
     assert_eq!(igt.raw(req), Ok(()));
+    assert!(!crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid));
     assert_eq!(igt.host.kms_set_fb_calls.len(), latched + 1);
-    // A blocking commit behind a pending nonblocking one waits without
-    // applying anything.
+    // Behind a pending nonblocking commit, a blocking one waits for it
+    // (uninterruptibly) without applying anything, then applies and waits
+    // for its own flip.
     let fb3 = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
     let flip = igt.request(ATOMIC_NONBLOCK, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(fb3))])], 0);
     assert_eq!(igt.raw(flip), Ok(()));
     let back = igt.request(0, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(fb2))])], 0);
     assert_eq!(igt.raw(back), Err(Errno::EAGAIN));
-    assert_eq!(igt.getcrtc().fb_id, fb3);
+    assert!(crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid));
+    assert_eq!(igt.raw(back), Err(Errno::EAGAIN));
+    assert_eq!(igt.getcrtc().fb_id, fb3, "the previous commit's frame keeps its vblank");
+    igt.vblank();
+    assert_eq!(igt.raw(back), Err(Errno::EAGAIN), "now applied, waiting for its own flip");
+    assert_eq!(igt.getcrtc().fb_id, fb2);
+    assert!(crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid));
+    igt.vblank();
+    assert_eq!(igt.raw(back), Ok(()));
+    assert!(!crate::dri::atomic::waits_uninterruptibly(&igt.proc, tid));
     igt.close();
 }
 

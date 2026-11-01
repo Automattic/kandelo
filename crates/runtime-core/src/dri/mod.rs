@@ -192,6 +192,9 @@ pub fn retire_vblank_over<'a>(
     // A completed commit releases callers parked on it: blocking atomic
     // commits waiting for their own flip or for the previous one.
     let mut wake = kms::complete_pending_flip();
+    // TODO(S4 explicit sync): signal the completed commit's CRTC out-fence
+    // here, with this vblank's timestamp, as drm_crtc_send_vblank_event
+    // signals `e->base.fence`.
     for proc in procs {
         wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec);
     }
