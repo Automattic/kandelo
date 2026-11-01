@@ -130,6 +130,8 @@ struct egl_generation {
     struct egl_display_record *display;
     uint32_t id, pending_surface_target_bo;
     uint32_t pbuffer_limits[3];
+    /* Renderer sample counts (bit n = n samples), immutable per generation. */
+    uint32_t sample_mask;
     struct imported_bo_reference *imported_bos;
     struct egl_session *sessions;
     struct egl_context_record *contexts;
@@ -337,7 +339,7 @@ EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
 }
 
 static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor);
-static int probe_surface_limits(int fd, uint32_t limits[3]);
+static int probe_surface_limits(int fd, uint32_t limits[3], uint32_t *sample_mask);
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     egl_call_begin();
     lock_context();
@@ -400,8 +402,8 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
      * is the host's renderer probe; its limits are kept for the pbuffer
      * attributes. Without this, initialization succeeded and the missing
      * renderer surfaced later as EGL_BAD_ALLOC from window creation. */
-    uint32_t limits[3];
-    int probed=probe_surface_limits(fd,limits);
+    uint32_t limits[3], sample_mask;
+    int probed=probe_surface_limits(fd,limits,&sample_mask);
     if(probed<0) {failure=EGL_BAD_ALLOC;goto fail;}
     if(!probed) {
         fprintf(stderr,"eglInitialize: no GLES renderer is available on this host\n");goto fail;
@@ -409,6 +411,7 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
     if(!generation)generation=calloc(1,sizeof *generation);
     if(!generation) {failure=EGL_BAD_ALLOC;goto fail;}
     memcpy(generation->pbuffer_limits,limits,sizeof limits);
+    generation->sample_mask=sample_mask;
     struct egl_session *session=calloc(1,sizeof *session);
     if(!session) {failure=EGL_BAD_ALLOC;goto fail;}
     *session =
@@ -442,9 +445,13 @@ struct config_attribute {
     EGLint name, value, default_value;
     enum config_match match;
 };
-/* One source for enumeration, selection and queries. These are the existing
- * RGBA8/depth24/stencil8, non-multisampled window and pbuffer storage. Native
- * rendering and API conformance are not inferred from WebGL2. */
+/* One source for enumeration, selection and queries: RGBA8/depth24/stencil8
+ * window and pbuffer storage, single-sampled or multisampled with a sample
+ * count the renderer allocates exactly. Native rendering and API
+ * conformance are not inferred from WebGL2. A multisampled surface resolves
+ * with the renderer's ordinary resolve; WebGL2 offers no per-sample access
+ * that would guarantee a box filter, so no config advertises
+ * EGL_MULTISAMPLE_RESOLVE_BOX_BIT. */
 static const struct config_attribute config_attributes[] = {
     { EGL_BUFFER_SIZE, 32, 0, CFG_MINIMUM },
     { EGL_RED_SIZE, 8, 0, CFG_MINIMUM },
@@ -484,19 +491,43 @@ static const struct config_attribute config_attributes[] = {
 };
 #define CONFIG_ATTRIBUTE_COUNT (sizeof config_attributes / sizeof config_attributes[0])
 /* Both native byte orders use identical RGBA8/depth24/stencil8 renderer
- * storage. Public config IDs describe their GBM window format; backend
- * surface config 1 describes that common storage. Front publication and
- * dma-buf import own byte-order conversion, not GL channel semantics. */
+ * storage. Public config IDs describe their GBM window format; the backend
+ * surface config word describes that common storage and its sample count.
+ * Front publication and dma-buf import own byte-order conversion, not GL
+ * channel semantics. */
 static const uint32_t config_formats[] = {GBM_FORMAT_ABGR8888, GBM_FORMAT_ARGB8888};
-#define CONFIG_COUNT (sizeof config_formats / sizeof config_formats[0])
-static int config_index(EGLConfig config) {
-    uintptr_t id = (uintptr_t)config;
-    return id >= 1 && id <= CONFIG_COUNT ? (int)id - 1 : -1;
+#define CONFIG_VISUALS (sizeof config_formats / sizeof config_formats[0])
+/* Config IDs list both visuals single-sampled, then both visuals for each
+ * supported sample count in ascending order. Every other attribute is equal,
+ * so ID order is exactly the EGL 1.5 section 3.4.1.2 sort order
+ * (SAMPLE_BUFFERS, then SAMPLES, then CONFIG_ID): single-sampled configs
+ * come first unless a request asks for samples. At most 2 * 31 configs. */
+static unsigned config_count(uint32_t sample_mask) {
+    return (unsigned)CONFIG_VISUALS * (1u + (unsigned)__builtin_popcount(sample_mask));
 }
-static EGLint config_value(unsigned config, unsigned attribute) {
-    if (config_attributes[attribute].name == EGL_CONFIG_ID) return (EGLint)config + 1;
-    if (config_attributes[attribute].name == EGL_NATIVE_VISUAL_ID) return (EGLint)config_formats[config];
-    return config_attributes[attribute].value;
+static EGLint config_samples(uint32_t sample_mask, unsigned config) {
+    unsigned rank = config / (unsigned)CONFIG_VISUALS;
+    for (unsigned n = 2; rank && n <= WPK_SURFACE_CONFIG_MAX_SAMPLES; n++)
+        if ((sample_mask & (1u << n)) && !--rank) return (EGLint)n;
+    return 0;
+}
+static int config_index(uint32_t sample_mask, EGLConfig config) {
+    uintptr_t id = (uintptr_t)config;
+    return id >= 1 && id <= config_count(sample_mask) ? (int)id - 1 : -1;
+}
+static uint32_t config_format(unsigned config) { return config_formats[config % CONFIG_VISUALS]; }
+/* Backend storage config word for a surface of this config. */
+static uint32_t config_storage(uint32_t sample_mask, unsigned config) {
+    return WPK_SURFACE_CONFIG(config_samples(sample_mask, config));
+}
+static EGLint config_value(uint32_t sample_mask, unsigned config, unsigned attribute) {
+    switch (config_attributes[attribute].name) {
+    case EGL_CONFIG_ID: return (EGLint)config + 1;
+    case EGL_NATIVE_VISUAL_ID: return (EGLint)config_format(config);
+    case EGL_SAMPLES: return config_samples(sample_mask, config);
+    case EGL_SAMPLE_BUFFERS: return config_samples(sample_mask, config) != 0;
+    default: return config_attributes[attribute].value;
+    }
 }
 
 
@@ -506,10 +537,12 @@ static int config_attribute_index(EGLint name) {
     return -1;
 }
 
-static EGLBoolean config_display_ready(EGLDisplay dpy) {
+static EGLBoolean config_display_ready(EGLDisplay dpy, uint32_t *sample_mask) {
     if (!display_record(dpy)) { g_last_error = EGL_BAD_DISPLAY; return EGL_FALSE; }
     lock_context();
-    int ready = active_generation(dpy) && active_generation(dpy)->initialized;
+    struct egl_generation *generation = active_generation(dpy);
+    int ready = generation && generation->initialized;
+    if (ready && sample_mask) *sample_mask = generation->sample_mask;
     unlock_context();
     if (!ready) { g_last_error = EGL_NOT_INITIALIZED; return EGL_FALSE; }
     return EGL_TRUE;
@@ -519,15 +552,15 @@ static EGLBoolean config_display_ready(EGLDisplay dpy) {
  * returns none (dEQP query_config get_configs_bounds, as Mesa). Only a
  * missing count is EGL_BAD_PARAMETER. */
 static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
-                                 EGLint *num_config, int matches) {
+                                 EGLint *num_config, uint64_t matches, unsigned total) {
     if (!num_config) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
     if (config_size < 0) config_size = 0;
     EGLint count = 0;
-    for (unsigned i = 0; i < CONFIG_COUNT; ++i) {
-        if (!(matches & (1u << i))) continue;
+    for (unsigned i = 0; i < total; ++i) {
+        if (!(matches & (UINT64_C(1) << i))) continue;
         if (!configs) ++count;
         else if (count < config_size) configs[count++] = (EGLConfig)(uintptr_t)(i + 1);
     }
@@ -538,19 +571,23 @@ static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
 EGLBoolean eglGetConfigs(EGLDisplay dpy, EGLConfig *configs,
                          EGLint config_size, EGLint *num_config) {
     egl_call_begin();
-    if (!config_display_ready(dpy)) return EGL_FALSE;
-    return return_configs(configs, config_size, num_config, (1u << CONFIG_COUNT) - 1);
+    uint32_t sample_mask;
+    if (!config_display_ready(dpy, &sample_mask)) return EGL_FALSE;
+    const unsigned total = config_count(sample_mask);
+    return return_configs(configs, config_size, num_config, (UINT64_C(1) << total) - 1, total);
 }
 
 EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
                            EGLConfig *configs, EGLint config_size,
                            EGLint *num_config) {
     egl_call_begin();
-    if (!config_display_ready(dpy)) return EGL_FALSE;
+    uint32_t sample_mask;
+    if (!config_display_ready(dpy, &sample_mask)) return EGL_FALSE;
     if (!num_config) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
+    const unsigned total = config_count(sample_mask);
     EGLint wanted[CONFIG_ATTRIBUTE_COUNT];
     for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++) wanted[i] = config_attributes[i].default_value;
     if (attrib_list) {
@@ -562,9 +599,11 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
         }
     }
     const EGLint id = wanted[config_attribute_index(EGL_CONFIG_ID)];
-    if (id != EGL_DONT_CARE) return return_configs(configs, config_size, num_config, id >= 1 && id <= CONFIG_COUNT ? 1u << (id - 1) : 0);
+    if (id != EGL_DONT_CARE)
+        return return_configs(configs, config_size, num_config,
+            id >= 1 && (unsigned)id <= total ? UINT64_C(1) << (id - 1) : 0, total);
     const EGLint transparency = wanted[config_attribute_index(EGL_TRANSPARENT_TYPE)];
-    unsigned matches = (1u << CONFIG_COUNT) - 1;
+    uint64_t matches = (UINT64_C(1) << total) - 1;
     for (unsigned i = 0; i < CONFIG_ATTRIBUTE_COUNT; i++) {
         const struct config_attribute *attribute = &config_attributes[i];
         const EGLint value = wanted[i];
@@ -585,30 +624,35 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
             EGL_PIXMAP_BIT | EGL_PBUFFER_BIT | EGL_VG_COLORSPACE_LINEAR_BIT |
             EGL_VG_ALPHA_FORMAT_PRE_BIT | EGL_MULTISAMPLE_RESOLVE_BOX_BIT | EGL_SWAP_BEHAVIOR_PRESERVED_BIT));
         if (!valid) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
-        for (unsigned config = 0; config < CONFIG_COUNT; ++config) {
-            EGLint available = config_value(config, i);
+        for (unsigned config = 0; config < total; ++config) {
+            EGLint available = config_value(sample_mask, config, i);
             int accepts = kind == CFG_MINIMUM ? available >= value :
                 kind == CFG_API_MASK || kind == CFG_SURFACE_MASK ? (available & value) == value : available == value;
-            if (!accepts) matches &= ~(1u << config);
+            if (!accepts) matches &= ~(UINT64_C(1) << config);
         }
     }
-    return return_configs(configs, config_size, num_config, matches);
+    /* ID order is the section 3.4.1.2 sort order; see config_count. */
+    return return_configs(configs, config_size, num_config, matches, total);
 }
 
 /* Read immutable renderer limits through the initialized object session,
  * without creating a public context or changing any thread's current state. */
 /* The host answers QOP_SURFACE_CAPABILITIES from its GLES renderer, or
- * fails it when the host has none (ENODEV at the host). 1 = renderer limits,
- * 0 = no usable renderer, -1 = local allocation failure. */
-static int probe_surface_limits(int fd, uint32_t limits[3]) {
-    uint32_t *reply = calloc(4,sizeof *reply);
+ * fails it when the host has none (ENODEV at the host). The extended reply
+ * also names the sample counts the renderer allocates exactly; each becomes
+ * a multisampled config. 1 = renderer limits, 0 = no usable renderer or a
+ * malformed reply, -1 = local allocation failure. */
+static int probe_surface_limits(int fd, uint32_t limits[3], uint32_t *sample_mask) {
+    uint32_t *reply = calloc(5,sizeof *reply);
     if (!reply) return -1;
     const struct gl_query_info query = {.op = QOP_SURFACE_CAPABILITIES,
-        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = 16};
-    int accepted = ioctl(fd,GLIO_QUERY,&query) == 0 && reply[3] == WPK_GL_QUERY_REPLY_MAGIC &&
+        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = WPK_SURFACE_CAPABILITIES_SAMPLES_LEN};
+    /* Zero or one sample is not a multisample buffer. */
+    int accepted = ioctl(fd,GLIO_QUERY,&query) == 0 && reply[4] == WPK_GL_QUERY_REPLY_MAGIC &&
         reply[0] > 0 && reply[0] <= INT32_MAX && reply[1] > 0 && reply[1] <= INT32_MAX &&
-        reply[2] > 0 && reply[2] <= INT32_MAX && (uint64_t)reply[2] <= (uint64_t)reply[0]*reply[1];
-    if (accepted) memcpy(limits,reply,3*sizeof *reply);
+        reply[2] > 0 && reply[2] <= INT32_MAX && (uint64_t)reply[2] <= (uint64_t)reply[0]*reply[1] &&
+        !(reply[3] & 3u);
+    if (accepted) { memcpy(limits,reply,3*sizeof *reply); *sample_mask = reply[3]; }
     free(reply); return accepted;
 }
 /* eglInitialize obtained the limits; an initialized generation always has them. */
@@ -620,8 +664,9 @@ static int surface_limits_locked(struct egl_generation *generation) {
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {
     egl_call_begin();
-    if (!config_display_ready(dpy)) return EGL_FALSE;
-    if (config_index(config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
+    uint32_t sample_mask;
+    if (!config_display_ready(dpy, &sample_mask)) return EGL_FALSE;
+    if (config_index(sample_mask, config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_FALSE; }
     if (!value) { g_last_error = EGL_BAD_PARAMETER; return EGL_FALSE; }
     const int i = config_attribute_index(attribute);
     if (i < 0 || attribute == EGL_MATCH_NATIVE_PIXMAP) { g_last_error = EGL_BAD_ATTRIBUTE; return EGL_FALSE; }
@@ -635,7 +680,7 @@ EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
         unlock_context();
         return accepted ? EGL_TRUE : EGL_FALSE;
     }
-    *value = config_value((unsigned)config_index(config), (unsigned)i);
+    *value = config_value(sample_mask, (unsigned)config_index(sample_mask, config), (unsigned)i);
     return EGL_TRUE;
 }
 
@@ -766,7 +811,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_CONTEXT;
     }
-    if (config_index(config) < 0 && config != EGL_NO_CONFIG_KHR) {
+    if (config_index(generation->sample_mask, config) < 0 && config != EGL_NO_CONFIG_KHR) {
         g_last_error = EGL_BAD_CONFIG;
         return EGL_NO_CONTEXT;
     }
@@ -858,7 +903,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     context->session = session;
     context->backend_id = attrs.context_id;
     context->client_version = version;
-    context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : config_index(config) + 1;
+    context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : config_index(generation->sample_mask, config) + 1;
     context->next = generation->contexts;
     generation->contexts = context;
     session->context_used = 1;
@@ -884,7 +929,7 @@ EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
 static int surface_config_locked(EGLDisplay dpy, EGLConfig config) {
     if (!display_record(dpy)) g_last_error = EGL_BAD_DISPLAY;
     else if (!active_generation(dpy) || !active_generation(dpy)->initialized) g_last_error = EGL_NOT_INITIALIZED;
-    else if (config_index(config) < 0) g_last_error = EGL_BAD_CONFIG;
+    else if (config_index(active_generation(dpy)->sample_mask, config) < 0) g_last_error = EGL_BAD_CONFIG;
     else return 1;
     return 0;
 }
@@ -903,7 +948,8 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_SURFACE;
     }
-    if (config_index(config) < 0) {
+    const int config_slot = config_index(generation->sample_mask, config);
+    if (config_slot < 0) {
         g_last_error = EGL_BAD_CONFIG;
         return EGL_NO_SURFACE;
     }
@@ -916,7 +962,8 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
             g_last_error = EGL_BAD_ALLOC;
             return EGL_NO_SURFACE;
         }
-    struct gl_surface_create request = {.attrs = {.kind = WPK_SURFACE_DEFAULT, .config_id = 1}};
+    struct gl_surface_create request = {.attrs = {.kind = WPK_SURFACE_DEFAULT,
+        .config_id = config_storage(generation->sample_mask, (unsigned)config_slot)}};
     int is_gbm = native != NULL;
     if (native) {
         request.attrs.width = native->width;
@@ -974,7 +1021,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
             if (errno == EOPNOTSUPP) error = EGL_BAD_MATCH;
             goto fail;
         }
-        if (frame.format != config_formats[config_index(config)]) {
+        if (frame.format != config_format((unsigned)config_slot)) {
             error = EGL_BAD_MATCH;
             goto fail;
         }
@@ -1019,7 +1066,7 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
                                            .backend_id = request.surface_id,
                                            .width = request.attrs.width,
                                            .height = request.attrs.height,
-                                           .config_id = config_index(config) + 1,
+                                           .config_id = config_slot + 1,
                                            .render_buffer = render_buffer,
                                            .gl_colorspace = gl_colorspace,
                                            .native_window = (void *)win,
@@ -1090,7 +1137,8 @@ static EGLSurface create_platform_window_locked(EGLDisplay dpy, EGLConfig config
         !_wpk_gbm_surface_metadata(window,&native.width,&native.height,&native.format,&native.flags)) {
         g_last_error = EGL_BAD_NATIVE_WINDOW; return EGL_NO_SURFACE;
     }
-    if (!(native.flags & GBM_BO_USE_RENDERING) || native.format != config_formats[config_index(config)]) {
+    if (!(native.flags & GBM_BO_USE_RENDERING) ||
+        native.format != config_format((unsigned)config_index(active_generation(dpy)->sample_mask, config))) {
         g_last_error = EGL_BAD_MATCH; return EGL_NO_SURFACE;
     }
     return create_window_surface_locked(dpy,config,(EGLNativeWindowType)window,normalized,&native);
@@ -2412,10 +2460,10 @@ static void pbuffer_dimensions(uint32_t width, uint32_t height, uint64_t budget,
         first = last+1;
     }
 }
-static int create_pbuffer_candidate(struct egl_session *session, uint32_t width, uint32_t height,
-                                    struct gl_surface_create *request) {
+static int create_pbuffer_candidate(struct egl_session *session, uint32_t storage, uint32_t width,
+                                    uint32_t height, struct gl_surface_create *request) {
     *request = (struct gl_surface_create){.attrs = {.kind = WPK_SURFACE_PBUFFER,
-        .config_id = 1, .width = width, .height = height}};
+        .config_id = storage, .width = width, .height = height}};
     if (ioctl(session->fd,GLIO_CREATE_SURFACE,request) != 0) return 0;
     if (!request->surface_id || request->attrs.width != width || request->attrs.height != height) {
         ioctl(session->fd,GLIO_DESTROY_SURFACE,NULL); errno = EIO; return 0;
@@ -2426,7 +2474,9 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     struct egl_generation *generation = active_generation(dpy);
     if (!display_record(dpy)) { g_last_error = EGL_BAD_DISPLAY; return EGL_NO_SURFACE; }
     if (!generation || !generation->initialized) { g_last_error = EGL_NOT_INITIALIZED; return EGL_NO_SURFACE; }
-    if (config_index(config) < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
+    const int config_slot = config_index(generation->sample_mask, config);
+    if (config_slot < 0) { g_last_error = EGL_BAD_CONFIG; return EGL_NO_SURFACE; }
+    const uint32_t storage = config_storage(generation->sample_mask, (unsigned)config_slot);
     EGLint width = 0, height = 0, largest = EGL_FALSE, mipmap = EGL_FALSE;
     EGLint format = EGL_NO_TEXTURE, target = EGL_NO_TEXTURE, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
@@ -2478,7 +2528,7 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
     struct gl_surface_create request;
     uint32_t allocated_width, allocated_height;
     pbuffer_dimensions(max_width,max_height,budget,&allocated_width,&allocated_height);
-    if (!create_pbuffer_candidate(session,allocated_width,allocated_height,&request)) {
+    if (!create_pbuffer_candidate(session,storage,allocated_width,allocated_height,&request)) {
         if (!largest || errno != ENOMEM || !budget) goto fail;
         // Search only after a definite allocation rejection. Unknown transport
         // completion and pending native repair must never authorize a retry.
@@ -2489,7 +2539,7 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
             pbuffer_dimensions(max_width,max_height,middle,&allocated_width,&allocated_height);
             uint64_t area = (uint64_t)allocated_width*allocated_height;
             if (area <= low) { low = middle; continue; }
-            if (create_pbuffer_candidate(session,allocated_width,allocated_height,&request)) {
+            if (create_pbuffer_candidate(session,storage,allocated_width,allocated_height,&request)) {
                 best_width = allocated_width; best_height = allocated_height;
                 if (ioctl(session->fd,GLIO_DESTROY_SURFACE,NULL) != 0) goto fail;
                 low = middle;
@@ -2498,12 +2548,12 @@ static EGLSurface create_pbuffer_locked(EGLDisplay dpy, EGLConfig config, const 
                 high = area-1;
             }
         }
-        if (!best_width || !best_height || !create_pbuffer_candidate(session,best_width,best_height,&request)) goto fail;
+        if (!best_width || !best_height || !create_pbuffer_candidate(session,storage,best_width,best_height,&request)) goto fail;
     }
     *surface = (struct egl_surface_record){.handle = (EGLSurface)g_next_object_handle++,
         .session = session, .backend_id = request.surface_id,
         .width = request.attrs.width, .height = request.attrs.height,
-        .pbuffer = 1, .config_id = config_index(config) + 1,
+        .pbuffer = 1, .config_id = config_slot + 1,
         .largest_pbuffer = largest, .mipmap_texture = mipmap,
         .render_buffer = EGL_BACK_BUFFER, .gl_colorspace = gl_colorspace};
     surface->next = generation->surfaces; generation->surfaces = surface;
@@ -3300,7 +3350,7 @@ EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
                                     EGLint *formats, EGLint *num_formats) {
     egl_call_begin();
     /* Display queries answer only for an initialized display. */
-    if (!config_display_ready(dpy)) return EGL_FALSE;
+    if (!config_display_ready(dpy, NULL)) return EGL_FALSE;
     if (max_formats < 0 || !num_formats || (max_formats > 0 && !formats)) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
@@ -3324,7 +3374,7 @@ EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
                                       EGLBoolean *external_only,
                                       EGLint *num_modifiers) {
     egl_call_begin();
-    if (!config_display_ready(dpy)) return EGL_FALSE;
+    if (!config_display_ready(dpy, NULL)) return EGL_FALSE;
     if (!dmabuf_format_supported(format) || max_modifiers < 0
         || !num_modifiers || (max_modifiers > 0 && !modifiers)) {
         g_last_error = EGL_BAD_PARAMETER;

@@ -365,6 +365,9 @@ static unsigned foreign_bind_calls;
 static unsigned raw_discard_failure, raw_discard_queries;
 static uint32_t surface_limits[3] = {8192,8192,67108864};
 static unsigned surface_limit_queries, surface_limit_failure;
+/* Sample counts the fake renderer allocates exactly (bit n = n samples), and
+ * the storage config word of the most recent surface creation. */
+static uint32_t surface_sample_mask, last_surface_config;
 static int raw_reply_fail_malloc, raw_reply_fail_calloc;
 static void overlap_reach(int phase) {
     pthread_mutex_lock(&overlap_mutex); overlap_phase = phase;
@@ -1211,6 +1214,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return -1;
         }
         surface_target = request->attrs.reserved[0];
+        last_surface_config = request->attrs.config_id;
         request->surface_id = slot->surface = next_backend_surface++;
         if (request->attrs.kind == WPK_SURFACE_DEFAULT) {
             if (!request->attrs.width) request->attrs.width = 64;
@@ -1384,14 +1388,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
         if (q->op == GRAPHICS_SURFACE_CAPABILITIES) {
-            assert(q->in_buf_len == 0 && q->out_buf_len == 16 && q->reserved == 0);
+            assert(q->in_buf_len == 0 && (q->out_buf_len == 16 || q->out_buf_len == 20) && q->reserved == 0);
             surface_limit_queries++;
             if (surface_limit_failure == 1) { errno = EIO; return -1; }
-            uint32_t *reply = allocation_for(q->out_buf_ptr,16);
-            memcpy(reply,surface_limits,12); reply[3] = surface_limit_failure == 2 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
+            const unsigned words = q->out_buf_len / 4;
+            uint32_t *reply = allocation_for(q->out_buf_ptr,q->out_buf_len);
+            memcpy(reply,surface_limits,12);
+            if (words == 5) reply[3] = surface_sample_mask;
+            reply[words-1] = surface_limit_failure == 2 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             if (surface_limit_failure == 3) reply[0] = 0;
             if (surface_limit_failure == 4) reply[2] = UINT32_MAX;
-            egl_trace(14,fd,reply,16);
+            egl_trace(14,fd,reply,q->out_buf_len);
             return 0;
         }
         if (q->op == 0x32) {
@@ -2884,6 +2891,107 @@ int main(int argc, char **argv) {
         assert(_wpk_egl_image_export_gbm(other, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
         assert(eglDestroyImageKHR(dpy, other) && eglTerminate(dpy));
         puts("PASS gbm-image-export"); return 0;
+    }
+    if (!strncmp(argv[1], "config-multisample-", 19)) {
+        /* The fake renderer allocates 2 and 4 samples exactly. */
+        surface_sample_mask = (1u << 2) | (1u << 4);
+        if (!strcmp(argv[1], "config-multisample-malformed")) {
+            /* A mask naming 0 or 1 samples is not a renderer answer. */
+            const uint32_t malformed[] = {1u, 1u << 1, (1u << 1) | (1u << 4)};
+            for (unsigned i = 0; i < sizeof malformed / sizeof malformed[0]; i++) {
+                surface_sample_mask = malformed[i];
+                assert(!eglInitialize(dpy, NULL, NULL) && eglGetError() == EGL_NOT_INITIALIZED);
+            }
+            surface_sample_mask = 1u << 4;
+            assert(eglInitialize(dpy, NULL, NULL));
+            EGLint count = 0;
+            assert(eglGetConfigs(dpy, NULL, 0, &count) && count == 4);
+            assert(eglTerminate(dpy));
+            puts("PASS config-multisample-malformed"); return 0;
+        }
+        assert(eglInitialize(dpy, NULL, NULL));
+        if (!strcmp(argv[1], "config-multisample-list")) {
+            EGLConfig configs[7] = {0};
+            EGLint count = 0;
+            assert(eglGetConfigs(dpy, NULL, 0, &count) && count == 6);
+            assert(eglGetConfigs(dpy, configs, 7, &count) && count == 6);
+            const EGLint samples[] = {0, 0, 2, 2, 4, 4};
+            const EGLint formats[] = {GBM_FORMAT_ABGR8888, GBM_FORMAT_ARGB8888};
+            for (unsigned i = 0; i < 6; i++) {
+                EGLint value = -1;
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_CONFIG_ID, &value) && value == (EGLint)i + 1);
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_SAMPLES, &value) && value == samples[i]);
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_SAMPLE_BUFFERS, &value) && value == (samples[i] != 0));
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_NATIVE_VISUAL_ID, &value) && value == formats[i % 2]);
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_SURFACE_TYPE, &value) &&
+                       value == (EGL_WINDOW_BIT | EGL_PBUFFER_BIT));
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_DEPTH_SIZE, &value) && value == 24);
+                assert(eglGetConfigAttrib(dpy, configs[i], EGL_STENCIL_SIZE, &value) && value == 8);
+            }
+            /* EGL 1.5 section 3.4.1.2: SAMPLE_BUFFERS and SAMPLES sort
+             * smaller first; CONFIG_ID breaks the remaining tie. */
+            const struct { EGLint list[5]; EGLint first, count; } requests[] = {
+                {{EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 1, 6},
+                {{EGL_SAMPLE_BUFFERS, 0, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 1, 6},
+                {{EGL_SAMPLE_BUFFERS, 1, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 3, 4},
+                {{EGL_SAMPLES, 3, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 5, 2},
+                {{EGL_SAMPLES, 4, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 5, 2},
+                {{EGL_SAMPLES, 8, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE}, 0, 0},
+                {{EGL_CONFIG_ID, 5, EGL_NONE}, 5, 1},
+                {{EGL_CONFIG_ID, 7, EGL_NONE}, 0, 0},
+            };
+            for (unsigned i = 0; i < sizeof requests / sizeof requests[0]; i++) {
+                EGLConfig chosen[7] = {0};
+                assert(eglChooseConfig(dpy, requests[i].list, chosen, 7, &count) && count == requests[i].count);
+                for (EGLint j = 0; j < count; j++) assert(chosen[j] == (EGLConfig)(uintptr_t)(requests[i].first + j));
+            }
+            EGLint value = 17;
+            assert(!eglGetConfigAttrib(dpy, (EGLConfig)7, EGL_SAMPLES, &value) && eglGetError() == EGL_BAD_CONFIG && value == 17);
+            /* Configs describe the current renderer: a new generation on a
+             * host without multisampling has only single-sampled configs. */
+            surface_sample_mask = 0;
+            assert(eglTerminate(dpy) && eglInitialize(dpy, NULL, NULL));
+            assert(eglGetConfigs(dpy, NULL, 0, &count) && count == 2);
+            assert(!eglGetConfigAttrib(dpy, (EGLConfig)3, EGL_SAMPLES, &value) && eglGetError() == EGL_BAD_CONFIG);
+            const EGLint any_samples[] = {EGL_SAMPLE_BUFFERS, 1, EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+            assert(eglChooseConfig(dpy, any_samples, configs, 7, &count) && count == 0);
+            assert(eglTerminate(dpy));
+            puts("PASS config-multisample-list"); return 0;
+        }
+        if (!strcmp(argv[1], "config-multisample-surfaces")) {
+            const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+            EGLint value = 0;
+            /* Each surface asks the host for storage of its config's count. */
+            const EGLint pbuffer_attrs[] = {EGL_WIDTH, 8, EGL_HEIGHT, 4, EGL_NONE};
+            const uint32_t words[] = {1u, 1u, 1u | (2u << 8), 1u | (2u << 8), 1u | (4u << 8), 1u | (4u << 8)};
+            for (unsigned i = 0; i < 6; i++) {
+                EGLConfig config = (EGLConfig)(uintptr_t)(i + 1);
+                EGLSurface pbuffer = eglCreatePbufferSurface(dpy, config, pbuffer_attrs);
+                assert(pbuffer && last_surface_config == words[i]);
+                assert(eglQuerySurface(dpy, pbuffer, EGL_CONFIG_ID, &value) && value == (EGLint)i + 1);
+                assert(eglQuerySurface(dpy, pbuffer, EGL_MULTISAMPLE_RESOLVE, &value) && value == EGL_MULTISAMPLE_RESOLVE_DEFAULT);
+                /* No config advertises EGL_MULTISAMPLE_RESOLVE_BOX_BIT. */
+                assert(!eglSurfaceAttrib(dpy, pbuffer, EGL_MULTISAMPLE_RESOLVE, EGL_MULTISAMPLE_RESOLVE_BOX));
+                assert(eglGetError() == EGL_BAD_MATCH);
+                assert(eglSurfaceAttrib(dpy, pbuffer, EGL_MULTISAMPLE_RESOLVE, EGL_MULTISAMPLE_RESOLVE_DEFAULT));
+                assert(eglDestroySurface(dpy, pbuffer));
+                record_format = i % 2 ? GBM_FORMAT_ARGB8888 : GBM_FORMAT_ABGR8888;
+                EGLSurface window = eglCreatePlatformWindowSurface(dpy, config, (void *)&record_windows[0], NULL);
+                assert(window != EGL_NO_SURFACE && last_surface_config == words[i]);
+                assert(eglQuerySurface(dpy, window, EGL_CONFIG_ID, &value) && value == (EGLint)i + 1);
+                assert(eglDestroySurface(dpy, window));
+                EGLContext context = eglCreateContext(dpy, config, EGL_NO_CONTEXT, attrs);
+                assert(context && eglQueryContext(dpy, context, EGL_CONFIG_ID, &value) && value == (EGLint)i + 1);
+                assert(eglDestroyContext(dpy, context));
+            }
+            record_format = GBM_FORMAT_ABGR8888;
+            /* A multisampled config's native visual is still checked. */
+            assert(eglCreatePlatformWindowSurface(dpy, (EGLConfig)4, (void *)&record_windows[0], NULL) == EGL_NO_SURFACE);
+            assert(eglGetError() == EGL_BAD_MATCH);
+            assert(eglTerminate(dpy));
+            puts("PASS config-multisample-surfaces"); return 0;
+        }
+        assert(!"unknown multisample config case");
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
