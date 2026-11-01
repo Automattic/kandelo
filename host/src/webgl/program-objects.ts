@@ -6,6 +6,7 @@ import { recordGlError } from "./errors.js";
 import { reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
   type NativeDeletion, type NativeRetirement } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
+import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */
@@ -231,7 +232,9 @@ function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean
   if (!checkedGlCall(b, () => {
     if (b.gl!.getParameter(0x8b8d) === program) b.gl!.useProgram(null);
   })) return false;
-  return checkedGlCall(b, () => b.gl!.deleteProgram(program));
+  if (!checkedGlCall(b, () => b.gl!.deleteProgram(program))) return false;
+  releaseReversedDepthTwin(b, program);
+  return true;
 }
 
 /** Stable generation cell; advancing an accepted link needs no allocation. */
@@ -288,7 +291,14 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     if (candidate) transferNativeRetirement(candidate);
     if (currentName === name) b.currentProgramId = name;
     let linked = false;
-    if (checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); }) && linked) {
+    const queried = checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); });
+    const attached: WebGLShader[] = [];
+    for (const shaderName of b.programShaders.get(name) ?? []) {
+      const shader = b.shaders.get(shaderName);
+      if (shader) attached.push(shader);
+    }
+    recordLinkedProgram(b, program, queried && linked, attached);
+    if (queried && linked) {
       invalidateProgramLocations(b, name);
       if (currentName === name && checkedGlCall(b, () => gl.useProgram(program))) {
         b.shadow.currentProgram = b.currentProgram = program;

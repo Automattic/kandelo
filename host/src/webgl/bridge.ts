@@ -32,6 +32,8 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
+import { issueGlesDraw } from "./draw-state.js";
+import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
 import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
@@ -542,6 +544,7 @@ function dispatch(
     const count=acceptedUniformCount(b,op,v,p);
     if(count===null || count===0) return;
     uniformCount=count;
+    noteUniformWrite(b.currentProgram);
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
@@ -735,8 +738,11 @@ function dispatch(
     case O.OP_DEPTH_RANGEF: {
       // ES 2.0 section 2.5: a command that generates an error has no effect,
       // so the shadow (replayed by the muxer) changes only after acceptance.
+      // ES 2.0 section 2.12.1 permits n > f; WebGL does not. The native range
+      // is the ordered pair and reversed draws run a z-negating twin
+      // executable (reversed-depth.ts), so the shadow keeps the logical pair.
       const range = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(clampUnit) as [number, number];
-      if (!checkedGlCall(b, () => gl.depthRange(...range))) return;
+      if (!checkedGlCall(b, () => gl.depthRange(...nativeDepthRange(range)))) return;
       b.shadow.depthRange = range;
       return;
     }
@@ -982,7 +988,7 @@ function dispatch(
     }
     case O.OP_COMPILE_SHADER: {
       const sh = requireShaderObject(b, v.getUint32(p, true));
-      if (sh) checkedGlCall(b, () => gl.compileShader(sh));
+      if (sh && checkedGlCall(b, () => gl.compileShader(sh))) recordCompiledShader(sh, b.shaderSources.get(sh));
       return;
     }
     case O.OP_VALIDATE_PROGRAM: {
@@ -1225,11 +1231,8 @@ function dispatch(
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
       if (!validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
-      gl.drawArrays(
-        v.getUint32(p, true),
-        v.getInt32(p + 4, true),
-        v.getInt32(p + 8, true),
-      );
+      issueGlesDraw(b,{empty:v.getInt32(p+8,true) === 0,
+        issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true))});
       return;
     case O.OP_DRAW_ELEMENTS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }

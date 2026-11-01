@@ -736,6 +736,9 @@ function queryParameter(b: GlBinding, pname: number): unknown {
   if (pname === 0x86a2) { // NUM_COMPRESSED_TEXTURE_FORMATS
     return (b.gl!.getParameter(0x86a3) as Uint32Array).length;
   }
+  // The native range is the ordered (min, max) pair; ES 2.0 reports the
+  // logical, possibly reversed, values given to glDepthRangef.
+  if (pname === 0x0b70) return [...b.shadow.depthRange];
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING

@@ -4,6 +4,7 @@ import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, prepareBufferDraw, withBufferTransfer } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { issueGlesDraw } from "./draw-state.js";
 
 const BYTE = 0x1401, SHORT = 0x1403, INT = 0x1405;
 const ELEMENT = 0x8893, COPY_READ = 0x8f36, COPY_WRITE = 0x8f37;
@@ -19,7 +20,7 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   // ES 2.0 section 2.8 has no index-offset alignment rule; WebGL 1.0 section
   // 6.4 does. An empty draw reads no index, so validate it at the aligned
   // offset. Every nonempty draw copies its indices to offset zero below.
-  if (count === 0) { checkedGlCall(b, () => gl.drawElements(mode,0,type,offset - offset % width)); return; }
+  if (count === 0) { issueGlesDraw(b,{empty:true,issue:() => gl.drawElements(mode,0,type,offset - offset % width)}); return; }
   const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
   const previous = store?.views.get(ELEMENT)?.native;
   if (!store || !previous || offset < 0 || offset+count*width > store.size) { recordGlError(b,0x502); return; }
@@ -54,7 +55,7 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
         }
         return true;
       })) return false;
-      return checkedGlCall(b, () => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0));
+      return issueGlesDraw(b,{issue:() => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0)});
     },restore:nativeInverse(b)}],{finalizer:nativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
   } finally { retireNativeRetirement(retirement); }
 }

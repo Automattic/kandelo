@@ -6,6 +6,7 @@ import { knownTextureUnitLimit, knownVertexAttributeLimit, maxVertexAttributes }
 import { checkedGlSequence } from "./program-objects.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
+import { nativeDepthRange } from "./reversed-depth.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -99,7 +100,7 @@ export class GlMuxer {
       gl.clearDepth(s.clearDepth);
       gl.clearStencil(s.clearStencil);
       gl.lineWidth(s.lineWidth);
-      gl.depthRange(...s.depthRange);
+      gl.depthRange(...nativeDepthRange(s.depthRange));
       gl.polygonOffset(...s.polygonOffset);
       gl.sampleCoverage(...s.sampleCoverage);
       if (s.sampleCoverageEnabled) gl.enable(0x80a0); else gl.disable(0x80a0);

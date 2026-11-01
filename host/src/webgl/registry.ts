@@ -46,6 +46,7 @@ import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
+import { releaseReversedDepthTwin } from "./reversed-depth.js";
 import { collectRetiredImages, type GlImageAttachment } from "./image-references.js";
 import { destroyBufferStorage } from "./buffer-storage.js";
 import { collectRetiredBuffers, defaultVertexArray, type GlVertexArray } from "./buffer-references.js";
@@ -909,7 +910,10 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
       if (cleanup) for (const [name,value] of b.buffers) if (value === object) b.buffers.delete(name);
     }
     if (!cleanup) for (const object of b.shaders.values()) gl?.deleteShader(object);
-    if (!cleanup) for (const object of programs) gl?.deleteProgram(object);
+    if (!cleanup) for (const object of programs) {
+      gl?.deleteProgram(object);
+      if (gl) releaseReversedDepthTwin({gl,errors:[]},object);
+    }
     for (const object of new Set(b.rbos.values())) if (gl) {
       const accepted = destroyRenderbufferView(b,object);
       if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");

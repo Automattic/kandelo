@@ -3,6 +3,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
+import { releaseReversedDepthTwin } from "./reversed-depth.js";
 
 /** Only native handles/scalars enter a persistent inverse, never guest data or
  * callbacks whose lexical environment could retain a whole binding. */
@@ -20,7 +21,8 @@ export type NativeCall =
   | ["framebufferTexture2D", number, number, number, WebGLTexture | null, number]
   | ["framebufferRenderbuffer", number, number, number, WebGLRenderbuffer | null]
   | ["vertexAttribPointer", number, number, number, boolean, number, number]
-  | ["vertexAttrib4f", number, number, number, number, number];
+  | ["vertexAttrib4f", number, number, number, number, number]
+  | ["useProgram", WebGLProgram | null];
 export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRenderbuffer", WebGLRenderbuffer | null]
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
@@ -197,6 +199,7 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
         continue;
       }
       if (checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
+        if (call[0] === "deleteProgram") releaseReversedDepthTwin(retirement.owner,object);
         retireNativeObject(gl,object); call[1] = null;
       } else {
         accepted = false;
@@ -349,6 +352,7 @@ function retireInverseObject(inverse: NativeInverse, object: object): void {
     }
     for (const call of group) {
       if ((call[0] === "bindFramebuffer" || call[0] === "bindTexture" || call[0] === "bindRenderbuffer" || call[0] === "bindBuffer") && call[2] === object) call[2] = null;
+      if (call[0] === "useProgram" && call[1] === object) call[1] = null;
       if ((call[0] === "framebufferTexture2D" || call[0] === "framebufferRenderbuffer") && call[4] === object) call[4] = null;
     }
   }
