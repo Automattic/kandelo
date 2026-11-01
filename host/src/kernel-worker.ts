@@ -4,6 +4,7 @@ import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
+import { kmsCrtcOutput } from "./dri/kms-gamma";
 import type { HostScanout } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
@@ -2598,6 +2599,9 @@ interface KmsGlPresenter {
    *  without a flip or a new framebuffer. */
   lastOffset: number;
   lastCommits: number;
+  /** The CRTC color stage (gamma table and cursor versions) the last
+   *  present applied; "" when the CRTC had none. */
+  lastOutput: string;
   /** Tick phase for the low-rate exact content comparison.
    *  Every 4th otherwise-skipped tick the presenter samples the
    *  scanout bytes against the last owned upload. This catches
@@ -2760,7 +2764,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   return {
     gl, tex, prog, vao, texW: 0, texH: 0, texFormat: 0,
     bgrUniform: gl.getUniformLocation(prog, "u_bgr"),
-    lastFbId: -1, lastOffset: -1, lastCommits: -1,
+    lastFbId: -1, lastOffset: -1, lastCommits: -1, lastOutput: "",
     presentCount: 0, degraded: false,
     probePhase: 0,
   };
@@ -31197,6 +31201,29 @@ export class CentralizedKernelWorker {
           this.scheduleWakeBlockedRetries(entry);
         }
 
+        // Cursor pixels are already owned copies; the detached presenter
+        // never reads guest memory and cannot expose an unfinished GL frame.
+        // WHY: consume coalesced state before touching the old cursor BO: a
+        // newer ioctl may already have released it. All Wasm reads stay in
+        // this entry, and the presenter receives only owned pixel copies.
+        let cursor: KmsCursor | undefined;
+        if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
+          this.#requireMainScratchRegion().withLease(lease => {
+            const pointer = lease.exportPointer(0, KMS_CURSOR_RECORD_BYTES);
+            const count = this.#invokeEntryScratchExport(
+              entry, lease, "kernel_kms_cursor_read", [pointer, KMS_CURSOR_RECORD_BYTES],
+            );
+            if (count === KMS_CURSOR_RECORD_BYTES) {
+              cursor = this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
+            }
+            else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
+          });
+        }
+        // An accepted record already sampled its live BO in this entry.
+        // Reuse that owned snapshot once; ticks without an accepted record
+        // must still observe mapping writes and native context loss.
+        cursor ??= this.#kernel.kms.cursorSnapshot();
+        const cursorSnapshot = cursor;
         // Retain no guest views beyond this entry. GPU scanout is synchronous
         // while the latched framebuffer owns its BO; a different native
         // display context receives an independent pixel copy. CPU scanout
@@ -31207,9 +31234,17 @@ export class CentralizedKernelWorker {
         const gpuFrames = new Map<number, { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> }>();
         for (const [crtcId, canvas] of this.kmsCanvases) {
           const fb = this.#kernel.kms.currentFb(crtcId);
-          if (!fb || !this.#kernel.gl.scanoutSource(fb.bo_id)) continue;
+          if (!fb || !this.#kernel.gl.scanoutSource(fb.bo_id)) {
+            // A GL session presenting its window to this canvas: re-present
+            // its last frame when the CRTC color stage or the cursor it
+            // blends changed since (a static frame must still change).
+            if (this.kmsContextMode.get(crtcId) === "webgl2") {
+              getKernelGraphicsAccess(this.#kernel).presentCrtcOutput(crtcId);
+            }
+            continue;
+          }
           const frame = getKernelGraphicsAccess(this.#kernel).gpuScanout(
-            fb, canvas, this.kmsContextMode.get(crtcId) !== "2d");
+            fb, canvas, this.kmsContextMode.get(crtcId) !== "2d", crtcId);
           if (frame) gpuFrames.set(crtcId, frame);
         }
         const glPresents: Array<{
@@ -31218,7 +31253,17 @@ export class CentralizedKernelWorker {
           fb: HostScanout;
           pixels: Uint8Array<ArrayBuffer>;
           commits: number;
+          output: string;
         }> = [];
+        // The CRTC color stage: legacy gamma applies to the CRTC output,
+        // after the cursor plane is blended over the primary. With one, the
+        // presenters below show the blended, corrected frame and the cursor
+        // overlay stands down; without one, both are shown as they are.
+        const crtcGamma = (crtcId: number) => this.#kernel.kms.gamma(crtcId);
+        const outputKey = (crtcId: number) => {
+          const gamma = crtcGamma(crtcId);
+          return gamma ? `${gamma.version}:${cursorSnapshot.version}` : "";
+        };
         for (const [crtcId, canvas] of this.kmsCanvases) {
           const gpu = gpuFrames.get(crtcId);
           if (gpu?.direct || this.kmsContextMode.get(crtcId) === "2d") continue;
@@ -31231,8 +31276,9 @@ export class CentralizedKernelWorker {
             ? Number(commitCountFn(crtcId) & 0x7fffffffn) : -1;
           const presenter = this.kmsGlPresenters.get(crtcId);
           const display = this.kmsDisplaySizes.get(crtcId);
+          const output = outputKey(crtcId);
           const changed = !presenter || presenter.lastFbId !== fb.fb_id
-            || presenter.lastOffset !== fb.offset
+            || presenter.lastOffset !== fb.offset || presenter.lastOutput !== output
             || presenter.lastCommits !== commits || presenter.texW !== fb.width
             || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format
             || canvas.width !== (display?.width ?? fb.width)
@@ -31245,8 +31291,16 @@ export class CentralizedKernelWorker {
           if (!pixels) continue;
           // The detached GL phase gets a bounded owned snapshot, never a
           // later lookup that reads guest memory after entry authority ends.
-          glPresents.push({ crtcId, canvas, fb: { ...fb }, commits,
-            pixels: snapshotScanout(fb, pixels) });
+          const snapshot = snapshotScanout(fb, pixels);
+          const gamma = crtcGamma(crtcId);
+          if (gamma) {
+            const rgba = scanoutRgba(fb.pixel_format, snapshot);
+            kmsCrtcOutput(rgba, fb.width, fb.height, gamma, cursorSnapshot);
+            glPresents.push({ crtcId, canvas, commits, output, pixels: rgba,
+              fb: { ...fb, pixel_format: 0x34324241, pitch: fb.width * 4 } });
+          } else {
+            glPresents.push({ crtcId, canvas, fb: { ...fb }, commits, output, pixels: snapshot });
+          }
         }
 
         // WHY: process/BO memory may change on the next ingress. Copy every
@@ -31272,6 +31326,7 @@ export class CentralizedKernelWorker {
           const packedPixels = gpu && !gpu.direct
             ? scanoutRgba(0x34324241, pixels)
             : scanoutRgba(fb.pixel_format, snapshotScanout(fb, pixels));
+          kmsCrtcOutput(packedPixels, width, height, crtcGamma(crtcId), cursorSnapshot);
           blits.push({
             crtcId,
             canvas,
@@ -31315,37 +31370,16 @@ export class CentralizedKernelWorker {
           });
         }
 
-        // Cursor pixels are already owned copies; the detached presenter
-        // never reads guest memory and cannot expose an unfinished GL frame.
-        // WHY: consume coalesced state before touching the old cursor BO: a
-        // newer ioctl may already have released it. All Wasm reads stay in
-        // this entry, and the presenter receives only owned pixel copies.
-        let cursor: KmsCursor | undefined;
-        if (typeof entry.instance.exports.kernel_kms_cursor_read === "function") {
-          this.#requireMainScratchRegion().withLease(lease => {
-            const pointer = lease.exportPointer(0, KMS_CURSOR_RECORD_BYTES);
-            const count = this.#invokeEntryScratchExport(
-              entry, lease, "kernel_kms_cursor_read", [pointer, KMS_CURSOR_RECORD_BYTES],
-            );
-            if (count === KMS_CURSOR_RECORD_BYTES) {
-              cursor = this.#kernel.kms.applyCursorRecord(lease.copyOut(0, KMS_CURSOR_RECORD_BYTES));
-            }
-            else if (count !== 0) throw new Error(`Invalid KMS cursor record length: ${count}`);
-          });
-        }
-        // An accepted record already sampled its live BO in this entry.
-        // Reuse that owned snapshot once; ticks without an accepted record
-        // must still observe mapping writes and native context loss.
-        cursor ??= this.#kernel.kms.cursorSnapshot();
-        const cursorSnapshot = cursor;
         const cursorPlanes = Array.from(this.kmsCursorPlanes, ([crtcId, plane]) => {
           const fb = this.#kernel.kms.currentFb(crtcId);
           const size = fb ?? connectorModeSize(this.kmsDisplaySizes.get(crtcId));
-          return { plane, width: size.width, height: size.height };
+          return { plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
         });
         entry.deferObserverEffect(() => {
           if (this.vblankTimer !== timer) return undefined;
-          for (const { plane, width, height } of cursorPlanes) plane.present(cursorSnapshot, width, height);
+          for (const { plane, width, height, composited } of cursorPlanes) {
+            plane.present(cursorSnapshot, width, height, composited);
+          }
           // The pump never acquires a context here: only canvases explicitly
           // attached in 2D mode can appear in the owned snapshot.
           for (const [crtcId, frame] of gpuFrames) {
@@ -31399,6 +31433,7 @@ export class CentralizedKernelWorker {
               present.fb,
               present.commits,
               present.pixels,
+              present.output,
             );
             if (!painted) continue;
             const presentUs =
@@ -31457,6 +31492,7 @@ export class CentralizedKernelWorker {
     fb: HostScanout,
     commits: number,
     pixels: Uint8Array<ArrayBuffer>,
+    output = "",
   ): boolean {
     const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
     if (!presenter) return false;
@@ -31489,6 +31525,7 @@ export class CentralizedKernelWorker {
       presenter.lastFbId !== fb.fb_id ||
       presenter.lastOffset !== fb.offset ||
       presenter.lastCommits !== commits ||
+      presenter.lastOutput !== output ||
       presenter.texW !== fb.width ||
       presenter.texH !== fb.height ||
       presenter.texFormat !== fb.pixel_format ||
@@ -31541,6 +31578,7 @@ export class CentralizedKernelWorker {
       presenter.lastFbId = fb.fb_id;
       presenter.lastOffset = fb.offset;
       presenter.lastCommits = commits;
+      presenter.lastOutput = output;
       // Adaptive quality: a steady-state present that blows the 60 Hz
       // frame budget means GL is running in software (headless Chromium's
       // SwiftShader) where the mip chain + trilinear fullscreen draw cost

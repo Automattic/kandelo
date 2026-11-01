@@ -712,6 +712,13 @@ pub trait HostIO {
     /// `[x, y, width, height]` in framebuffer pixels (all 0 when disabling).
     fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {}
 
+    #[allow(unused_variables)]
+    /// Set the LUT `crtc_id`'s output passes through: `kms::GAMMA_SIZE`
+    /// red entries, then green, then blue (16-bit, as `struct
+    /// drm_color_lut`), or `None` for none (colors unchanged). The host
+    /// applies it to everything the CRTC presents, cursor included.
+    fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {}
+
     /// True only after the host has negotiated a cursor presentation transport.
     fn kms_cursor_supported(&mut self) -> bool {
         false

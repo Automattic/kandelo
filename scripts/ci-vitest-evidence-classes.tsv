@@ -75,6 +75,7 @@ host/test/dri-egl-native-window.test.ts	prepared-product
 host/test/dri-import-lifetime.test.ts	prepared-product
 host/test/dri-ioctl-interrupt.test.ts	source-only
 host/test/dri-kms-cursor.test.ts	prepared-product
+host/test/dri-kms-gamma-vblank.test.ts	source-only
 host/test/dri-kms-gl-attach-ordering.test.ts	source-only
 host/test/dri-kms-modes.test.ts	prepared-product
 host/test/dri-kms-pageflip.test.ts	prepared-product
@@ -508,6 +509,7 @@ host/test/webgl-image-export.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-inverse-sequence.test.ts	source-only
+host/test/webgl-kms-gamma.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only

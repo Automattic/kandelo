@@ -25,6 +25,15 @@ pub const PROP_DPMS: u32 = 7;
 pub const PROP_LINK_STATUS: u32 = 8;
 pub const PROP_NON_DESKTOP: u32 = 9;
 pub const CURSOR_PLANE_ID: u32 = 10;
+/// CRTC color-management properties (`drm_crtc_enable_color_mgmt`): the
+/// gamma LUT blob and its fixed entry count.
+pub const PROP_GAMMA_LUT: u32 = 11;
+pub const PROP_GAMMA_LUT_SIZE: u32 = 12;
+/// Entries of the CRTC's legacy gamma ramp and of `GAMMA_LUT`
+/// (`crtc->gamma_size`): 256, as common 8-bit legacy drivers report.
+pub const GAMMA_SIZE: u32 = 256;
+/// Bytes of one `struct drm_color_lut` (red, green, blue, reserved).
+pub const COLOR_LUT_ENTRY_BYTES: usize = 8;
 pub const CURSOR_PLANE_FORMATS: [u32; 1] = [DRM_FORMAT_ARGB8888];
 
 /// The pixel formats `DRM_IOCTL_MODE_ADDFB2` accepts for scanout.
@@ -67,7 +76,7 @@ impl Property {
     }
 }
 
-const PROPERTIES: [Property; 5] = [
+const PROPERTIES: [Property; 7] = [
     Property {
         id: PROP_PLANE_TYPE,
         name: "type",
@@ -105,6 +114,13 @@ const PROPERTIES: [Property; 5] = [
         immutable: true,
         kind: PropertyKind::Range(0, 1),
     },
+    Property { id: PROP_GAMMA_LUT, name: "GAMMA_LUT", immutable: false, kind: PropertyKind::Blob },
+    Property {
+        id: PROP_GAMMA_LUT_SIZE,
+        name: "GAMMA_LUT_SIZE",
+        immutable: true,
+        kind: PropertyKind::Range(0, u32::MAX as u64),
+    },
 ];
 
 pub fn property(id: u32) -> Option<&'static Property> {
@@ -118,7 +134,9 @@ pub fn object_type(id: u32) -> Option<u32> {
         ENCODER_ID => Some(DRM_MODE_OBJECT_ENCODER),
         CONNECTOR_ID => Some(DRM_MODE_OBJECT_CONNECTOR),
         PRIMARY_PLANE_ID | CURSOR_PLANE_ID => Some(DRM_MODE_OBJECT_PLANE),
-        PROP_PLANE_TYPE..=PROP_NON_DESKTOP => Some(DRM_MODE_OBJECT_PROPERTY),
+        PROP_PLANE_TYPE..=PROP_NON_DESKTOP | PROP_GAMMA_LUT | PROP_GAMMA_LUT_SIZE => {
+            Some(DRM_MODE_OBJECT_PROPERTY)
+        }
         _ if framebuffer(id).is_some() => Some(DRM_MODE_OBJECT_FB),
         _ if blob(id).is_some() => Some(DRM_MODE_OBJECT_BLOB),
         _ => None,
@@ -143,7 +161,7 @@ pub fn object_properties(obj_id: u32, obj_type: u32) -> Result<&'static [u32], E
         DRM_MODE_OBJECT_CONNECTOR => {
             Ok(&[PROP_EDID, PROP_DPMS, PROP_LINK_STATUS, PROP_NON_DESKTOP])
         }
-        DRM_MODE_OBJECT_CRTC => Ok(&[]),
+        DRM_MODE_OBJECT_CRTC => Ok(&[PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE]),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -155,6 +173,8 @@ pub fn property_value(prop_id: u32) -> u64 {
         PROP_PLANE_TYPE => DRM_PLANE_TYPE_PRIMARY,
         PROP_DPMS => DPMS.load(Ordering::Relaxed),
         PROP_LINK_STATUS => DRM_MODE_LINK_STATUS_GOOD,
+        PROP_GAMMA_LUT => u64::from(gamma_lut_blob()),
+        PROP_GAMMA_LUT_SIZE => u64::from(GAMMA_SIZE),
         _ => 0,
     }
 }
@@ -167,13 +187,32 @@ pub fn object_property_value(obj_id: u32, prop_id: u32) -> u64 {
     }
 }
 
-/// Set a property through the legacy interface. Only DPMS is mutable
-/// there; a value outside the enum, an immutable property, or a
-/// property the object does not carry fails with `EINVAL`.
-pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Result<(), Errno> {
+/// What a property change asks the caller to publish to the host.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PropertyEffect {
+    None,
+    /// The CRTC's effective gamma LUT changed.
+    Gamma,
+}
+
+/// Set a property through the legacy interface. DPMS and the CRTC's
+/// `GAMMA_LUT` are mutable there; a value outside the enum, an immutable
+/// property, or a property the object does not carry fails with `EINVAL`.
+pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Result<PropertyEffect, Errno> {
     let props = object_properties(obj_id, obj_type)?;
     if !props.contains(&prop_id) {
         return Err(Errno::EINVAL);
+    }
+    if prop_id == PROP_GAMMA_LUT {
+        // drm_atomic_replace_property_blob_from_id: 0 clears the LUT (the
+        // CRTC passes colors through); otherwise the blob must exist and
+        // hold exactly GAMMA_SIZE drm_color_lut entries.
+        let id = u32::try_from(value).map_err(|_| Errno::EINVAL)?;
+        if id != 0 && blob(id).is_none_or(|data| data.len() != GAMMA_SIZE as usize * COLOR_LUT_ENTRY_BYTES) {
+            return Err(Errno::EINVAL);
+        }
+        set_gamma_lut_blob(id);
+        return Ok(PropertyEffect::Gamma);
     }
     let prop = property(prop_id).ok_or(Errno::EINVAL)?;
     let PropertyKind::Enum(entries) = prop.kind else {
@@ -185,7 +224,86 @@ pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Res
     let was_active = crtc_active();
     DPMS.store(value, Ordering::Relaxed);
     note_vblank_transition(was_active);
+    Ok(PropertyEffect::None)
+}
+
+/// The legacy gamma ramp (`crtc->gamma_store`): red, green and blue,
+/// GAMMA_SIZE entries each. It starts as the identity ramp `i << 8`
+/// (`drm_mode_crtc_set_gamma_size`) and changes only through SETGAMMA, as
+/// on Linux; GETGAMMA reports it.
+struct GlobalGammaStore(UnsafeCell<Option<[[u16; GAMMA_SIZE as usize]; 3]>>);
+unsafe impl Sync for GlobalGammaStore {}
+static GAMMA_STORE: GlobalGammaStore = GlobalGammaStore(UnsafeCell::new(None));
+/// The `GAMMA_LUT` property: the blob the CRTC output passes through, or 0
+/// when the LUT is absent (colors pass through unchanged).
+static GAMMA_LUT_BLOB: AtomicU32 = AtomicU32::new(0);
+
+fn identity_ramp() -> [[u16; GAMMA_SIZE as usize]; 3] {
+    let ramp: [u16; GAMMA_SIZE as usize] = core::array::from_fn(|i| (i as u16) << 8);
+    [ramp; 3]
+}
+
+pub fn gamma_store() -> [[u16; GAMMA_SIZE as usize]; 3] {
+    unsafe { *GAMMA_STORE.0.get() }.unwrap_or_else(identity_ramp)
+}
+
+pub fn gamma_lut_blob() -> u32 {
+    GAMMA_LUT_BLOB.load(Ordering::Relaxed)
+}
+
+/// Point `GAMMA_LUT` at `id`, holding that blob for the CRTC and releasing
+/// the previous one (an unowned device blob is freed with its last use).
+fn set_gamma_lut_blob(id: u32) {
+    let blobs = unsafe { &mut *BLOBS.0.get() };
+    if let Some(entry) = blobs.get_mut(&id) {
+        entry.held = true;
+    }
+    let previous = GAMMA_LUT_BLOB.swap(id, Ordering::Relaxed);
+    if previous != 0 && previous != id {
+        if let Some(entry) = blobs.get_mut(&previous) {
+            entry.held = false;
+            if entry.owner.is_none() {
+                blobs.remove(&previous);
+            }
+        }
+    }
+}
+
+/// `drm_mode_gamma_set_ioctl` copies each channel straight into
+/// `gamma_store`, so a fault on a later channel leaves the earlier ones
+/// stored (and the LUT the CRTC uses unchanged).
+pub fn store_gamma_channel(channel: usize, values: [u16; GAMMA_SIZE as usize]) {
+    let mut store = gamma_store();
+    store[channel] = values;
+    unsafe { *GAMMA_STORE.0.get() = Some(store) };
+}
+
+/// `drm_atomic_helper_legacy_gamma_set`: make `GAMMA_LUT` a new
+/// device-owned blob holding the stored ramp.
+pub fn commit_legacy_gamma() -> Result<(), Errno> {
+    let ramp = gamma_store();
+    let mut data = alloc::vec::Vec::with_capacity(GAMMA_SIZE as usize * COLOR_LUT_ENTRY_BYTES);
+    for i in 0..GAMMA_SIZE as usize {
+        for channel in ramp.iter().map(|c| c[i]).chain([0]) {
+            data.extend_from_slice(&channel.to_le_bytes());
+        }
+    }
+    let id = allocate_fb_id()?;
+    unsafe { &mut *BLOBS.0.get() }.insert(id, BlobEntry { owner: None, data: data.into(), held: false });
+    set_gamma_lut_blob(id);
     Ok(())
+}
+
+/// The LUT the CRTC output passes through: red, green and blue entries in
+/// that order, or `None` when `GAMMA_LUT` is absent.
+pub fn effective_gamma_lut() -> Option<alloc::vec::Vec<u16>> {
+    let data = blob(gamma_lut_blob())?;
+    let entry = |i: usize, c: usize| {
+        let at = i * COLOR_LUT_ENTRY_BYTES + c * 2;
+        u16::from_le_bytes([data[at], data[at + 1]])
+    };
+    let n = GAMMA_SIZE as usize;
+    Some((0..3).flat_map(|c| (0..n).map(move |i| entry(i, c))).collect())
 }
 
 static NEXT_MAGIC: AtomicU32 = AtomicU32::new(1);
@@ -235,7 +353,7 @@ pub fn release_magic(magic: u32) {
 
 /// Framebuffers share the one mode-object id space, so their ids start
 /// after the fixed objects and are unique across open files.
-static NEXT_FB_ID: AtomicU32 = AtomicU32::new(CURSOR_PLANE_ID + 1);
+static NEXT_FB_ID: AtomicU32 = AtomicU32::new(PROP_GAMMA_LUT_SIZE + 1);
 
 pub fn allocate_fb_id() -> Result<u32, Errno> {
     NEXT_FB_ID
@@ -368,28 +486,50 @@ pub const MAX_BLOB_BYTES: usize = 1 << 20;
 
 /// User-created property blobs (`CREATEPROPBLOB`), keyed by object id and
 /// owned by the creating DRM file.
-struct GlobalBlobs(UnsafeCell<BTreeMap<u32, (crate::lock::OfdId, alloc::rc::Rc<[u8]>)>>);
+/// A property blob: user-created ones belong to the creating file
+/// (`owner`); kernel-created ones (a legacy gamma LUT) to the device. A
+/// blob the CRTC uses (`held`) stays alive after its creator destroys it or
+/// closes, as Linux's CRTC state holds a blob reference.
+struct BlobEntry {
+    owner: Option<crate::lock::OfdId>,
+    data: alloc::rc::Rc<[u8]>,
+    held: bool,
+}
+
+struct GlobalBlobs(UnsafeCell<BTreeMap<u32, BlobEntry>>);
 unsafe impl Sync for GlobalBlobs {}
 static BLOBS: GlobalBlobs = GlobalBlobs(UnsafeCell::new(BTreeMap::new()));
 
 /// Blob ids come from the one mode-object id space.
 pub fn create_blob(owner: crate::lock::OfdId, data: alloc::vec::Vec<u8>) -> Result<u32, Errno> {
     let id = allocate_fb_id()?;
-    unsafe { &mut *BLOBS.0.get() }.insert(id, (owner, data.into()));
+    unsafe { &mut *BLOBS.0.get() }.insert(id, BlobEntry { owner: Some(owner), data: data.into(), held: false });
     Ok(id)
 }
 
 pub fn blob(id: u32) -> Option<alloc::rc::Rc<[u8]>> {
-    unsafe { &*BLOBS.0.get() }.get(&id).map(|(_, data)| data.clone())
+    unsafe { &*BLOBS.0.get() }.get(&id).map(|entry| entry.data.clone())
+}
+
+/// Drop the creator's hold; a blob the CRTC still uses stays readable.
+fn disown_blob(blobs: &mut BTreeMap<u32, BlobEntry>, id: u32) {
+    let held = blobs.get(&id).is_some_and(|entry| entry.held);
+    if held {
+        if let Some(entry) = blobs.get_mut(&id) {
+            entry.owner = None;
+        }
+    } else {
+        blobs.remove(&id);
+    }
 }
 
 pub fn destroy_blob(id: u32, owner: crate::lock::OfdId) -> Result<(), Errno> {
     let blobs = unsafe { &mut *BLOBS.0.get() };
     match blobs.get(&id) {
         None => Err(Errno::EINVAL),
-        Some((creator, _)) if *creator != owner => Err(Errno::EPERM),
+        Some(entry) if entry.owner != Some(owner) => Err(Errno::EPERM),
         Some(_) => {
-            blobs.remove(&id);
+            disown_blob(blobs, id);
             Ok(())
         }
     }
@@ -397,7 +537,12 @@ pub fn destroy_blob(id: u32, owner: crate::lock::OfdId) -> Result<(), Errno> {
 
 /// The DRM file's last close frees the blobs it created.
 pub fn release_blobs(owner: crate::lock::OfdId) {
-    unsafe { &mut *BLOBS.0.get() }.retain(|_, (creator, _)| *creator != owner);
+    let blobs = unsafe { &mut *BLOBS.0.get() };
+    let owned: alloc::vec::Vec<u32> = blobs.iter()
+        .filter(|(_, entry)| entry.owner == Some(owner)).map(|(&id, _)| id).collect();
+    for id in owned {
+        disown_blob(blobs, id);
+    }
 }
 
 /// An fb that `CLOSEFB` dropped while the CRTC scanned it out. Linux keeps
@@ -446,7 +591,9 @@ pub fn framebuffer(id: u32) -> Option<crate::ofd::KmsFb> {
 #[cfg(test)]
 pub fn reset_for_test() {
     DPMS.store(DRM_MODE_DPMS_ON, Ordering::Relaxed);
-    NEXT_FB_ID.store(CURSOR_PLANE_ID + 1, Ordering::Relaxed);
+    NEXT_FB_ID.store(PROP_GAMMA_LUT_SIZE + 1, Ordering::Relaxed);
+    GAMMA_LUT_BLOB.store(0, Ordering::Relaxed);
+    unsafe { *GAMMA_STORE.0.get() = None };
     unsafe { *CURSOR.0.get() = None };
     unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
     unsafe { &mut *BLOBS.0.get() }.clear();
@@ -486,7 +633,8 @@ mod tests {
     fn encoders_carry_no_properties() {
         let _master = super::super::master::lock_for_test();
         assert_eq!(object_properties(ENCODER_ID, DRM_MODE_OBJECT_ANY), Err(Errno::EINVAL));
-        assert_eq!(object_properties(CRTC_ID, DRM_MODE_OBJECT_CRTC), Ok(&[][..]));
+        assert_eq!(object_properties(CRTC_ID, DRM_MODE_OBJECT_CRTC),
+            Ok(&[PROP_GAMMA_LUT, PROP_GAMMA_LUT_SIZE][..]));
     }
 
     #[test]
@@ -495,7 +643,7 @@ mod tests {
         reset_for_test();
         assert_eq!(
             set_property(CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR, PROP_DPMS, DRM_MODE_DPMS_OFF),
-            Ok(())
+            Ok(PropertyEffect::None)
         );
         assert_eq!(property_value(PROP_DPMS), DRM_MODE_DPMS_OFF);
         assert_eq!(

@@ -3654,7 +3654,8 @@ This section is the implementation walk-through; [Linux-compatible graphics devi
 
 - **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565). The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
 - **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS`, `ASYNC_PAGE_FLIP`, `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 0. SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES` and `ASPECT_RATIO`; `ATOMIC` fails with `EOPNOTSUPP` because the card has no atomic interface.
-- **Properties.** The plane carries the immutable `type` enum (Primary). The connector carries `EDID` (an immutable blob with no value: the virtual display has no EDID, so MODE_GETPROPBLOB finds no blob), `DPMS`, `link-status` (Good) and `non-desktop` (0). Through the legacy interface only `DPMS` is settable, and only by the master; the value is recorded and reported back, and the virtual display has no power state to change. Properties Linux marks atomic-only are not listed.
+- **Properties.** The plane carries the immutable `type` enum (Primary). The connector carries `EDID` (an immutable blob with no value: the virtual display has no EDID, so MODE_GETPROPBLOB finds no blob), `DPMS`, `link-status` (Good) and `non-desktop` (0). The CRTC carries `GAMMA_LUT` and the immutable `GAMMA_LUT_SIZE` (256). Through the legacy interface `DPMS` and `GAMMA_LUT` are settable, and only by the master; the `DPMS` value is recorded and reported back, and the virtual display has no power state to change. Properties Linux marks atomic-only are not listed.
+- **Legacy gamma.** The CRTC has a 256-entry gamma ramp per channel, as common 8-bit legacy drivers report through MODE_GETCRTC's `gamma_size`, following `drivers/gpu/drm/drm_color_mgmt.c`. The ramp (`gamma_store`) starts as the identity `i << 8`. MODE_GETGAMMA copies it to anyone; MODE_SETGAMMA needs the master. Both fail with `ENOENT` for another CRTC and `EINVAL` for another size, and copy red, green and blue in turn, so a fault is `EFAULT` after the channels before it moved. A complete SETGAMMA then does what `drm_atomic_helper_legacy_gamma_set` does: it makes `GAMMA_LUT` a new kernel-owned blob of 256 `drm_color_lut` entries (no file may destroy it), which `kms_color`'s legacy-gamma-reset reads back. `OBJ_SETPROPERTY` sets `GAMMA_LUT` to 0 (no LUT) or to any blob of exactly 256 entries (`EINVAL` otherwise) without touching the ramp. The CRTC holds a reference on the blob it uses, so it outlives its creator's DESTROYPROPBLOB or close and is freed when replaced. Each change of the LUT reaches the host through `host_kms_set_gamma(crtc, lut, entries)` (0 entries: none).
 - **Scanout state.** SETCRTC validates its connector list as Linux does and records the mode and framebuffer, which MODE_GETCRTC and MODE_GETPLANE report.
 - **Framebuffers.** RMFB of the framebuffer on the CRTC disables the CRTC, as on Linux. CLOSEFB drops the fd's framebuffer id but leaves a scanned-out framebuffer on the CRTC until the next SETCRTC or PAGE_FLIP replaces it; wlroots closes its framebuffers this way. Framebuffer ids are device-wide. Framebuffers belong to the open file: a child that inherits it through `fork()` or `posix_spawn()` shares the parent's framebuffers, and they are removed only when the last process closes the open file, as Linux does with a `drm_file`. A compositor's child that closes its inherited `O_CLOEXEC` `card0` fd at `exec` leaves the compositor's scanout framebuffer on the CRTC.
 - **Cursor.** MODE_CURSOR and MODE_CURSOR2 retain main's negotiated 64×64 ARGB cursor implementation and BO references. Hosts without that transport report zero cursor capacity and reject cursor operations with ENOTSUP.
@@ -3867,7 +3868,22 @@ RGBA snapshot until pixels change; position-only updates reuse it. The
 copy is bounded to the cursor image rather than the allocation size.
 The worker composites this state
 on a separate transparent canvas at vblank, independently of CPU, GPU,
-or application-owned scanout. It never reads live guest memory during
+or application-owned scanout, while the CRTC has no color stage.
+
+The CRTC color stage is the legacy gamma LUT, which Linux applies to the
+CRTC output after the planes are blended. The host reduces each 16-bit
+entry to 8 bits as `drm_color_lut_extract` does; a table that maps every
+value to itself is no stage at all. With a stage, every presenter shows
+the blended, corrected frame (`host/src/dri/kms-gamma.ts`): the 2D blit
+and the WebGL2 scanout presenter correct their owned RGBA copy, and a
+CRTC whose canvas a GL session owns (a direct GPU scanout, a SETCRTC flip
+onto the session's canvas, or an EGL window present) reads the frame
+back, blends the cursor and applies the LUT on the CPU, and uploads the
+result to a transient texture that it blits to the canvas. The cursor
+overlay then shows nothing. Such a session's last frame is kept before
+correction, so a new LUT or a moved cursor is shown at the next vblank
+even when the guest presents nothing more. Node and browser run the same
+code. It never reads live guest memory during
 that detached presentation phase and never exposes a partially drawn
 application frame. Node retains the same state without a canvas.
 

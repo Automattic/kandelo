@@ -1507,6 +1507,13 @@ pub(crate) fn write_dri_bytes(host: &mut dyn HostIO, pid: i32, pointer: u64, byt
     Ok(())
 }
 
+/// Hand the host the LUT the CRTC output now passes through (`GAMMA_LUT`),
+/// or `None` when colors pass through unchanged.
+fn publish_kms_gamma(host: &mut dyn HostIO) {
+    let lut = kms::effective_gamma_lut();
+    host.kms_set_gamma(kms::CRTC_ID, lut.as_deref());
+}
+
 fn write_dri_u32s(host: &mut dyn HostIO, pid: i32, pointer: u64, values: &[u32]) -> Result<(), Errno> {
     let bytes: Vec<u8> = values.iter().flat_map(|v| v.to_le_bytes()).collect();
     write_dri_bytes(host, pid, pointer, &bytes)
@@ -3091,6 +3098,7 @@ fn handle_dri_card_ioctl(
                 fb_id: kms::crtc_fb(),
                 x,
                 y,
+                gamma_size: kms::GAMMA_SIZE,
                 mode_valid: mode.is_some() as u32,
                 mode: mode.unwrap_or_default(),
                 ..Default::default()
@@ -3681,23 +3689,42 @@ fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_MODE_GETGAMMA | DRM_IOCTL_MODE_SETGAMMA => {
             // struct drm_mode_crtc_lut { crtc_id, gamma_size, red, green, blue }.
-            // The virtual CRTC has no gamma LUT (GETCRTC reports
-            // gamma_size 0): the host presents framebuffer values as they
-            // are. GETGAMMA of size 0 therefore succeeds and copies nothing;
-            // SETGAMMA is DRM_MASTER and, with no gamma_set hook, ENOSYS.
-            let [crtc_id, gamma_size, ..] = read_dri_struct::<[u32; 8]>(buf)?;
+            // drm_mode_gamma_{get,set}_ioctl: the CRTC's legacy ramp has
+            // kms::GAMMA_SIZE entries per channel (GETCRTC's gamma_size) and
+            // any other size is EINVAL. Each channel is copied in turn, so a
+            // fault on a later channel is EFAULT after the earlier ones moved.
+            let [crtc_id, gamma_size, red_lo, red_hi, green_lo, green_hi, blue_lo, blue_hi] =
+                read_dri_struct::<[u32; 8]>(buf)?;
             if request == DRM_IOCTL_MODE_SETGAMMA && !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
             if crtc_id != kms::CRTC_ID {
                 return Err(Errno::ENOENT);
             }
-            if request == DRM_IOCTL_MODE_SETGAMMA {
-                return Err(Errno::ENOSYS);
-            }
-            if gamma_size != 0 {
+            if gamma_size != kms::GAMMA_SIZE {
                 return Err(Errno::EINVAL);
             }
+            let pointers = [red_lo, red_hi, green_lo, green_hi, blue_lo, blue_hi]
+                .chunks(2).map(|w| u64::from(w[0]) | (u64::from(w[1]) << 32)).collect::<Vec<_>>();
+            if request == DRM_IOCTL_MODE_GETGAMMA {
+                let store = kms::gamma_store();
+                for (channel, &pointer) in store.iter().zip(&pointers) {
+                    let bytes: Vec<u8> = channel.iter().flat_map(|v| v.to_le_bytes()).collect();
+                    write_dri_bytes(host, pid, pointer, &bytes)?;
+                }
+                return Ok(());
+            }
+            for (channel, &pointer) in pointers.iter().enumerate() {
+                let mut bytes = [0u8; kms::GAMMA_SIZE as usize * 2];
+                if pointer == 0 || host.proc_read_bytes(pid, pointer, &mut bytes) < 0 {
+                    return Err(Errno::EFAULT);
+                }
+                kms::store_gamma_channel(channel, core::array::from_fn(|i| {
+                    u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]])
+                }));
+            }
+            kms::commit_legacy_gamma()?;
+            publish_kms_gamma(host);
             Ok(())
         }
         DRM_IOCTL_MODE_DIRTYFB => {
@@ -3744,14 +3771,17 @@ fn handle_dri_card_ioctl(
             if req.obj_id == kms::CURSOR_PLANE_ID && !host.kms_cursor_supported() {
                 return Err(Errno::ENOENT);
             }
-            kms::set_property(req.obj_id, req.obj_type, req.prop_id, req.value)
+            if kms::set_property(req.obj_id, req.obj_type, req.prop_id, req.value)? == kms::PropertyEffect::Gamma {
+                publish_kms_gamma(host);
+            }
+            Ok(())
         }
         DRM_IOCTL_MODE_SETPROPERTY => {
             let req: WpkDrmModeConnectorSetProperty = read_dri_struct(buf)?;
             if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
-            kms::set_property(req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
+            kms::set_property(req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value).map(|_| ())
         }
         DRM_IOCTL_GET_MAGIC => {
             let mut kms = kms_state_mut(proc, ofd_idx)?;
@@ -26136,6 +26166,7 @@ mod tests {
         /// SETCRTC/PAGE_FLIP scanout latching can be asserted against.
         kms_set_fb_calls: Vec<(i32, u32, u32)>,
         kms_set_fb_viewports: Vec<[u32; 4]>,
+        kms_gamma_calls: Vec<(u32, Option<Vec<u16>>)>,
         kms_addfb_offsets: Vec<(u32, u32)>,
         /// Recorded `(pid, ctx_id, bo_id, gl_target)` for every
         /// `gl_bind_foreign_texture` call.
@@ -26314,6 +26345,7 @@ mod tests {
                 base_blobs: std::collections::HashMap::new(),
                 kms_set_fb_calls: Vec::new(),
                 kms_set_fb_viewports: Vec::new(),
+                kms_gamma_calls: Vec::new(),
                 kms_addfb_offsets: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
                 gl_import_image_calls: Vec::new(),
@@ -27226,6 +27258,9 @@ mod tests {
         fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {
             self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
             self.kms_set_fb_viewports.push(viewport);
+        }
+        fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {
+            self.kms_gamma_calls.push((crtc_id, lut.map(<[u16]>::to_vec)));
         }
         fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
             width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
@@ -56257,7 +56292,7 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn kms_gamma_dirtyfb_and_unique_follow_linux_for_a_crtc_without_a_lut() {
+    fn kms_dirtyfb_and_unique_follow_linux() {
         use crate::dri::kms;
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
@@ -56268,17 +56303,6 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let fd = kms_master_card0(&mut proc, &mut host);
         let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
-        let lut = |crtc: u32, size: u32| [crtc, size, 0, 0, 0, 0, 0, 0];
-        // GETCRTC reports gamma_size 0: GETGAMMA of 0 entries succeeds for
-        // anyone, any other size is EINVAL; SETGAMMA is master-only and
-        // has no gamma_set hook (ENOSYS).
-        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 0)).unwrap();
-        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256)).map(|_| ()), Err(Errno::EINVAL));
-        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(9, 0)).map(|_| ()), Err(Errno::ENOENT));
-        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 0)).map(|_| ()), Err(Errno::EACCES));
-        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(9, 0)).map(|_| ()), Err(Errno::ENOENT));
-        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 0)).map(|_| ()), Err(Errno::ENOSYS));
-
         // DIRTYFB: master, fb, clip/flag rules, then the continuous-scanout
         // no-op.
         let fb = kms_fb(&mut proc, &mut host, fd, 64, 64, DRM_FORMAT_XRGB8888);
@@ -56479,6 +56503,153 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(bo_refcount(bo), None);
         assert_eq!(kms_cursor_plane(&mut proc, &mut host, second).fb_id, 0);
         sys_close(&mut proc, &mut host, second).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_legacy_gamma_is_a_real_crtc_lut_like_linux_color_mgmt() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let n = kms::GAMMA_SIZE as usize;
+        let lut = |crtc: u32, size: u32, [r, g, b]: [u64; 3]| {
+            [crtc, size, r as u32, (r >> 32) as u32, g as u32, (g >> 32) as u32, b as u32, (b >> 32) as u32]
+        };
+        let channels = [0x4000u64, 0x4400, 0x4800];
+        let read_ramp = |host: &MockHostIO, at: u64| -> Vec<u16> {
+            host.proc_memory[at as usize..at as usize + n * 2].chunks(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]])).collect()
+        };
+        let identity: Vec<u16> = (0..n).map(|i| (i as u16) << 8).collect();
+
+        // GETCRTC reports the legacy ramp size every client sizes its
+        // drm_mode_crtc_lut by; the ramp starts as identity (i << 8).
+        let crtc = kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() }).unwrap();
+        assert_eq!(crtc.gamma_size, 256);
+        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256, channels)).unwrap();
+        for at in channels {
+            assert_eq!(read_ramp(&host, at), identity);
+        }
+        // CRTC color properties: GAMMA_LUT (blob, 0 = no LUT) and the
+        // immutable GAMMA_LUT_SIZE.
+        assert_eq!(kms::object_properties(kms::CRTC_ID, DRM_MODE_OBJECT_CRTC),
+            Ok(&[kms::PROP_GAMMA_LUT, kms::PROP_GAMMA_LUT_SIZE][..]));
+        assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT_SIZE), 256);
+        assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT), 0);
+        assert_eq!(kms::object_type(kms::PROP_GAMMA_LUT), Some(DRM_MODE_OBJECT_PROPERTY));
+
+        // drm_mode_gamma_{get,set}_ioctl errnos.
+        for size in [0, 255, 257] {
+            assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA,
+                lut(kms::CRTC_ID, size, channels)).map(|_| ()), Err(Errno::EINVAL), "size {size}");
+            assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA,
+                lut(kms::CRTC_ID, size, channels)).map(|_| ()), Err(Errno::EINVAL), "size {size}");
+        }
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(9, 256, channels)).map(|_| ()), Err(Errno::ENOENT));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA,
+            lut(kms::CRTC_ID, 256, [0x4000, 1 << 40, 0x4800])).map(|_| ()), Err(Errno::EFAULT));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 256, channels)).map(|_| ()), Err(Errno::EACCES));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(9, 256, channels)).map(|_| ()), Err(Errno::ENOENT));
+        assert!(host.kms_gamma_calls.is_empty(), "no failed SETGAMMA reaches the host");
+
+        // kms_color legacy-gamma: entry 0 black, every other entry maxed.
+        let write_ramp = |host: &mut MockHostIO, at: u64, ramp: &[u16]| {
+            for (i, v) in ramp.iter().enumerate() {
+                host.proc_memory[at as usize + i * 2..at as usize + i * 2 + 2].copy_from_slice(&v.to_le_bytes());
+            }
+        };
+        let maxed: Vec<u16> = (0..n).map(|i| if i == 0 { 0 } else { 0xffff }).collect();
+        for at in channels {
+            write_ramp(&mut host, at, &maxed);
+        }
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 256, channels)).unwrap();
+        let expected: Vec<u16> = maxed.iter().chain(&maxed).chain(&maxed).copied().collect();
+        assert_eq!(host.kms_gamma_calls.last(), Some(&(kms::CRTC_ID, Some(expected.clone()))));
+        for at in channels {
+            write_ramp(&mut host, at, &[0x1234; 256]);
+        }
+        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256, channels)).unwrap();
+        for at in channels {
+            assert_eq!(read_ramp(&host, at), maxed, "GETGAMMA reads back gamma_store");
+        }
+        // kms_color legacy-gamma-reset: the legacy ramp is visible as a
+        // GAMMA_LUT blob of drm_color_lut {r, g, b, 0} entries.
+        let legacy_blob = kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT) as u32;
+        assert_ne!(legacy_blob, 0);
+        let blob = kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETPROPBLOB,
+            WpkDrmModeGetBlob { blob_id: legacy_blob, length: 2048, data: 0x6000 }).unwrap();
+        assert_eq!(blob.length, 2048);
+        let entries: Vec<[u16; 4]> = host.proc_memory[0x6000..0x6800].chunks(8)
+            .map(|e| core::array::from_fn(|c| u16::from_le_bytes([e[c * 2], e[c * 2 + 1]]))).collect();
+        assert_eq!(entries[0], [0, 0, 0, 0]);
+        assert!(entries[1..].iter().all(|e| *e == [0xffff, 0xffff, 0xffff, 0]));
+        // The kernel created it: no file may destroy it.
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, legacy_blob).map(|_| ()), Err(Errno::EPERM));
+
+        // Each channel is copied in turn: a fault on green leaves the new
+        // red stored and the LUT in use (and the host) untouched.
+        let calls = host.kms_gamma_calls.len();
+        write_ramp(&mut host, 0x4000, &identity);
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA,
+            lut(kms::CRTC_ID, 256, [0x4000, 0, 0x4800])).map(|_| ()), Err(Errno::EFAULT));
+        assert_eq!(host.kms_gamma_calls.len(), calls);
+        assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT), u64::from(legacy_blob));
+        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256, [0x5000, 0x5400, 0x5800])).unwrap();
+        assert_eq!(read_ramp(&host, 0x5000), identity);
+        assert_eq!(read_ramp(&host, 0x5400), maxed);
+
+        // GAMMA_LUT through OBJ_SETPROPERTY (drm_atomic_crtc_set_property):
+        // master only; an unknown blob or one not holding exactly
+        // GAMMA_SIZE drm_color_lut entries is EINVAL.
+        let set_lut = |proc: &mut Process, host: &mut MockHostIO, fd: i32, value: u64| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_OBJ_SETPROPERTY, WpkDrmModeObjSetProperty {
+                value, prop_id: kms::PROP_GAMMA_LUT, obj_id: kms::CRTC_ID, obj_type: DRM_MODE_OBJECT_CRTC, pad: 0,
+            }).map(|_| ())
+        };
+        let create = |proc: &mut Process, host: &mut MockHostIO, fd: i32, data: u64, length: u32| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATEPROPBLOB,
+                [data as u32, (data >> 32) as u32, length, 0]).map(|r| r[3]).unwrap()
+        };
+        let short = create(&mut proc, &mut host, plain, 0x8000, 2040);
+        let inverse: Vec<u8> = (0..n).flat_map(|i| {
+            let v = 0xffff - ((i as u16) << 8);
+            [v, v, v, 0]
+        }).flat_map(u16::to_le_bytes).collect();
+        host.proc_memory[0x8000..0x8800].copy_from_slice(&inverse);
+        let user_blob = create(&mut proc, &mut host, plain, 0x8000, 2048);
+        assert_eq!(set_lut(&mut proc, &mut host, plain, u64::from(user_blob)), Err(Errno::EACCES));
+        assert_eq!(set_lut(&mut proc, &mut host, fd, u64::from(short)), Err(Errno::EINVAL));
+        assert_eq!(set_lut(&mut proc, &mut host, fd, 0xffff_fff0), Err(Errno::EINVAL));
+        assert_eq!(set_lut(&mut proc, &mut host, fd, u64::from(kms::CRTC_ID)), Err(Errno::EINVAL));
+        assert_eq!(host.kms_gamma_calls.len(), calls);
+        set_lut(&mut proc, &mut host, fd, u64::from(user_blob)).unwrap();
+        let ramp: Vec<u16> = (0..n).map(|i| 0xffff - ((i as u16) << 8)).collect();
+        let expected: Vec<u16> = ramp.iter().chain(&ramp).chain(&ramp).copied().collect();
+        assert_eq!(host.kms_gamma_calls.last(), Some(&(kms::CRTC_ID, Some(expected))));
+        assert!(kms::blob(legacy_blob).is_none(), "the replaced kernel blob is released");
+        // The CRTC holds the blob past its creator's destroy and close,
+        // and the legacy ramp (gamma_store) is unchanged by the property.
+        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_DESTROYPROPBLOB, user_blob).unwrap();
+        sys_close(&mut proc, &mut host, plain).unwrap();
+        assert!(kms::blob(user_blob).is_some());
+        assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT), u64::from(user_blob));
+        assert!(kms::blob(short).is_none(), "the closed file's unused blob is freed");
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256, channels)).unwrap();
+        assert_eq!(read_ramp(&host, channels[0]), identity);
+        // 0 removes the LUT: colors pass through, and the orphaned blob goes.
+        set_lut(&mut proc, &mut host, fd, 0).unwrap();
+        assert_eq!(host.kms_gamma_calls.last(), Some(&(kms::CRTC_ID, None)));
+        assert!(kms::blob(user_blob).is_none());
+        assert_eq!(kms::object_property_value(kms::CRTC_ID, kms::PROP_GAMMA_LUT), 0);
+        sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
     }
 

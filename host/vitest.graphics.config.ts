@@ -11,6 +11,7 @@ files.push("test/dri-multiplex.test.ts");
 files.push("test/dri-kms-stats-sab.test.ts");
 files.push("test/dri-kms-registry.test.ts");
 files.push("test/dri-ioctl-interrupt.test.ts");
+files.push("test/dri-kms-gamma-vblank.test.ts");
 const evidence = new Map(readFileSync(
   new URL("../scripts/ci-vitest-evidence-classes.tsv", import.meta.url), "utf8",
 ).split("\n").filter((line) => line && !line.startsWith("#"))

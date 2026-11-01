@@ -2,6 +2,7 @@ import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "./kms-cu
 import type { KmsCursor } from "./cursor-plane.js";
 import type { GbmBoRegistry } from "./registry.js";
 import { scanoutFormat } from "./scanout-format.js";
+import { kmsGammaTable, type KmsGamma } from "./kms-gamma.js";
 
 /** A framebuffer as ADDFB/ADDFB2 created it: plane 0 starts `offset` bytes
  *  into the BO (`drm_mode_fb_cmd2.offsets[0]`). */
@@ -98,6 +99,8 @@ export function buildVirtualConnectorMode(
 }
 
 export class KmsRegistry {
+  private gammas = new Map<number, KmsGamma>();
+  private gammaVersion = 0;
   private fbs = new Map<number, HostFb>();
   private crtcBindings = new Map<number, number>();
   private crtcViewports = new Map<number, KmsViewport>();
@@ -127,7 +130,7 @@ export class KmsRegistry {
       // Lost native storage cannot keep advertising the previous image.
       this.cursorBytes = null;
       if (this.cursor.pixels) this.cursor = { ...this.cursor,
-        version: this.cursor.version + 1, pixels: null };
+        version: this.cursor.version + 1, pixels: null, premultiplied: null };
       return this.cursor;
     }
     if (gpu === undefined) this.gbm.syncToSab(this.cursorBo, length);
@@ -138,16 +141,20 @@ export class KmsRegistry {
     if (this.cursorBytes?.every((value, i) => value === bytes[i])) return this.cursor;
     this.cursorBytes = bytes.slice(0, length);
     const pixels = new Uint8ClampedArray(length);
+    const premultiplied = new Uint8ClampedArray(length);
     // CPU cursor images use premultiplied ARGB8888 bytes; native GPU
-    // readback is already RGBA. Both need straight alpha for ImageData.
+    // readback is already RGBA. Both need straight alpha for ImageData;
+    // a CRTC color stage blends the premultiplied image itself.
     for (let i = 0; i < length; i += 4) {
       const a = bytes[i + 3];
-      pixels[i] = a ? bytes[i + (gpu === undefined ? 2 : 0)] * 255 / a : 0;
-      pixels[i + 1] = a ? bytes[i + 1] * 255 / a : 0;
-      pixels[i + 2] = a ? bytes[i + (gpu === undefined ? 0 : 2)] * 255 / a : 0;
+      const r = bytes[i + (gpu === undefined ? 2 : 0)], g = bytes[i + 1], b = bytes[i + (gpu === undefined ? 0 : 2)];
+      pixels[i] = a ? r * 255 / a : 0;
+      pixels[i + 1] = a ? g * 255 / a : 0;
+      pixels[i + 2] = a ? b * 255 / a : 0;
       pixels[i + 3] = a;
+      premultiplied[i] = r; premultiplied[i + 1] = g; premultiplied[i + 2] = b; premultiplied[i + 3] = a;
     }
-    this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels };
+    this.cursor = { ...this.cursor, version: this.cursor.version + 1, pixels, premultiplied };
     return this.cursor;
   }
 
@@ -159,6 +166,7 @@ export class KmsRegistry {
       this.cursorFbId = fbId;
       this.cursorBytes = null;
       next.pixels = null;
+      next.premultiplied = null;
       next.width = width;
       next.height = height;
       next.hotX = hotX;
@@ -198,6 +206,28 @@ export class KmsRegistry {
     // undefined selects CPU storage; null means native context loss.
     private readGpuCursor?: (bo: number, width: number, height: number) =>
       Uint8Array<ArrayBuffer> | null | undefined) {}
+
+  /** The kernel changed the LUT the CRTC's output passes through
+   *  (`host_kms_set_gamma`): 256 red, green, then blue 16-bit entries, or
+   *  null for none. */
+  setGamma(crtc_id: number, lut: Uint16Array | null): void {
+    const table = lut ? kmsGammaTable(lut) : null;
+    const previous = this.gammas.get(crtc_id);
+    if (!table) {
+      if (previous) this.gammas.delete(crtc_id);
+      return;
+    }
+    if (previous && previous.table.every((value, i) => value === table[i])) return;
+    this.gammas.set(crtc_id, { version: ++this.gammaVersion, table });
+  }
+
+  /** The CRTC's color stage, or null when its output is its planes as
+   *  they are (no LUT, or one that maps every value to itself). */
+  gamma(crtc_id: number): KmsGamma | null { return this.gammas.get(crtc_id) ?? null; }
+
+  /** The current cursor plane image and position, without sampling its
+   *  BO again (the vblank pump refreshes it each tick). */
+  currentCursor(): KmsCursor { return this.cursor; }
 
   addFb(fb: HostFb): void { this.fbs.set(fb.fb_id, fb); }
   rmFb(fb_id: number): void { this.fbs.delete(fb_id); }
@@ -267,7 +297,7 @@ export class KmsRegistry {
     this.cursorFbId = 0;
     this.cursorBytes = null;
     this.cursor = { ...this.cursor, version: this.cursor.version + 1,
-      hotX: 0, hotY: 0, width: 0, height: 0, pixels: null };
+      hotX: 0, hotY: 0, width: 0, height: 0, pixels: null, premultiplied: null };
     return true;
   }
 

@@ -67,8 +67,10 @@ previous code):
 - K01–K05: real `WAIT_VBLANK` blocking and events from the host vblank tick;
   `PAGE_FLIP` flags, busy and event rules; Linux `ADDFB2` and `SETCRTC`
   validation; whole-event `read()`; master permission rules; `VERSION`;
-  legacy `ADDFB`, `GETFB2`, gamma (size 0), `DIRTYFB`, `GET_UNIQUE` and
-  property blobs.
+  legacy `ADDFB`, `GETFB2`, `DIRTYFB`, `GET_UNIQUE` and property blobs;
+  a 256-entry legacy gamma ramp (`GETGAMMA`/`SETGAMMA`) with the CRTC's
+  `GAMMA_LUT` and `GAMMA_LUT_SIZE` properties, applied by the host to the
+  CRTC output (cursor included) on every presenter.
 
 **Proposed hard boundaries** (WebGL 2 or host capability limits; each keeps a
 truthful error):
@@ -78,7 +80,7 @@ truthful error):
 - Robust-access and lose-context-on-reset contexts (no WebGL robustness API):
   `EGL_BAD_MATCH`.
 - `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
-- Gamma LUT size 0; no format modifiers; no async or target page flips.
+- No format modifiers; no async or target page flips.
 - `GL_EXT_color_buffer_half_float` is advertised only when WebGL 2's
   `EXT_color_buffer_float` or `EXT_color_buffer_half_float` exists.
 - A host with no GLES renderer (Node without an embedder WebGL2 or

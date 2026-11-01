@@ -2,7 +2,8 @@ import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
-import { drawGpuScanout, readGpuScanout, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
+import { drawGpuScanout, drawKmsOutput, readDefaultFramebuffer, readGpuScanout, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
+import { kmsCrtcOutput } from "./dri/kms-gamma.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
@@ -46,6 +47,7 @@ import { FramebufferRegistry } from "./framebuffer/registry";
 import { GbmBoRegistry } from "./dri/registry";
 import { KmsRegistry } from "./dri/kms-registry";
 import { GlContextRegistry, type GlBinding } from "./webgl/registry";
+import type { GlSurfaceResources } from "./webgl/surface-resources.js";
 import { prepareDrawableTransition, applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
@@ -112,8 +114,11 @@ interface WasmPosixKernelRuntimeAccess {
 
 interface KernelGraphicsAccess {
   readonly withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => T;
-  readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean) =>
+  readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number) =>
     { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null;
+  /** Re-present a GL-owned CRTC's last window frame if its color stage or
+   *  the cursor it blends changed since that frame was shown. */
+  readonly presentCrtcOutput: (crtcId: number) => void;
 }
 const kernelGraphicsAccess = new WeakMap<WasmPosixKernel, KernelGraphicsAccess>();
 
@@ -1143,7 +1148,112 @@ export class WasmPosixKernel {
     });
   }
 
-  private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean):
+  /** A GL-owned CRTC's last presented frame before its color stage (GL row
+   * order, cursor not blended), and the stage it was shown with. Kept only
+   * while the CRTC has a color stage, so a changed LUT or a moved cursor can
+   * be shown on a frame the guest does not present again. */
+  #crtcFrames = new Map<number, { pixels: Uint8Array<ArrayBuffer>; width: number; height: number; output: string }>();
+
+  #crtcOutputKey(crtcId: number): string {
+    const gamma = this.kms.gamma(crtcId);
+    return gamma ? `${gamma.version}:${this.kms.currentCursor().version}` : "";
+  }
+
+  /** Show `frame` (GL row order, the CRTC's planes before blending) as the
+   * CRTC's output on `gl`'s default framebuffer: cursor blended, then the
+   * color stage. Caller holds `withRestoredGraphicsState(gl)`. */
+  #drawCrtcFrame(crtcId: number, gl: WebGL2RenderingContext,
+      frame: Uint8Array<ArrayBuffer>, width: number, height: number): void {
+    const output = frame.slice();
+    kmsCrtcOutput(output, width, height, this.kms.gamma(crtcId), this.kms.currentCursor(), true);
+    if (!drawKmsOutput(gl, output, width, height)) throw new Error("KMS CRTC output failed");
+    this.#crtcFrames.set(crtcId, { pixels: frame, width, height, output: this.#crtcOutputKey(crtcId) });
+  }
+
+  /** Present the CRTC's GPU framebuffer viewport through its color stage.
+   * BO row zero is the top row, so the rows are reversed into GL order;
+   * the primary plane is opaque. */
+  #drawGpuCrtcFrame(crtcId: number, storage: { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number },
+      fb: HostScanout): void {
+    const top = readGpuScanout(storage, fb.width, fb.height, fb.x, fb.y);
+    if (!top) throw new Error("GPU scanout readback failed");
+    const frame = new Uint8Array(top.byteLength);
+    const row = fb.width * 4;
+    for (let y = 0; y < fb.height; y++) {
+      frame.set(top.subarray(y * row, y * row + row), (fb.height - 1 - y) * row);
+    }
+    for (let i = 3; i < frame.length; i += 4) frame[i] = 255;
+    this.#drawCrtcFrame(crtcId, storage.gl, frame, fb.width, fb.height);
+  }
+
+  /** A GL session presented its window (`surface`'s present target) to the
+   * default framebuffer. On a KMS canvas that is the CRTC's output. */
+  #presentWindowFrame(b: GlBinding, surface: GlSurfaceResources = b.drawSurface ?? b.surface): void {
+    const crtcId = b.claimedKmsCrtc;
+    const target = surface.presentTarget;
+    if (crtcId == null || !this.kms.gamma(crtcId) || !b.gl || !target) {
+      if (crtcId != null) this.#crtcFrames.delete(crtcId);
+      blitPresentTarget(b, surface);
+      return;
+    }
+    const gl = b.gl;
+    this.withRestoredGraphicsState(gl, () => {
+      const frame = readGpuScanout({ gl, fbo: target.fbo, w: target.w, h: target.h }, target.w, target.h);
+      if (!frame) throw new Error("KMS window readback failed");
+      this.#drawCrtcFrame(crtcId, gl, frame, target.w, target.h);
+    });
+  }
+
+  /** A GL session's frame went straight to the KMS canvas (its present
+   * target did not exist yet): pass it through the CRTC color stage. */
+  #presentDirectFrame(b: GlBinding): void {
+    const crtcId = b.claimedKmsCrtc;
+    if (crtcId == null) return;
+    if (!this.kms.gamma(crtcId) || !b.gl || !b.canvas) {
+      this.#crtcFrames.delete(crtcId);
+      return;
+    }
+    const gl = b.gl, width = b.canvas.width, height = b.canvas.height;
+    this.withRestoredGraphicsState(gl, () => {
+      const frame = readDefaultFramebuffer(gl, width, height);
+      if (!frame) throw new Error("KMS canvas readback failed");
+      this.#drawCrtcFrame(crtcId, gl, frame, width, height);
+    });
+  }
+
+  private presentCrtcOutput(crtcId: number): void {
+    const b = this.gl.list().find(other => other.claimedKmsCrtc === crtcId && other.gl && other.canvas);
+    if (!b?.gl || !b.canvas) {
+      this.#crtcFrames.delete(crtcId);
+      return;
+    }
+    const gl = b.gl, canvas = b.canvas;
+    if (gl.isContextLost()) {
+      this.glMuxerFor(gl).invalidateCurrent();
+      return;
+    }
+    const output = this.#crtcOutputKey(crtcId);
+    const cached = this.#crtcFrames.get(crtcId);
+    if (cached ? cached.output === output : output === "") return;
+    this.withRestoredGraphicsState(gl, () => {
+      // Without a cached frame the color stage has just begun, and the
+      // canvas still shows the session's last frame as it presented it.
+      const frame = cached ?? (() => {
+        const pixels = readDefaultFramebuffer(gl, canvas.width, canvas.height);
+        if (!pixels) throw new Error("KMS canvas readback failed");
+        return { pixels, width: canvas.width, height: canvas.height };
+      })();
+      if (output !== "") {
+        this.#drawCrtcFrame(crtcId, gl, frame.pixels, frame.width, frame.height);
+        return;
+      }
+      // The color stage ended: show the frame as the session presented it.
+      if (!drawKmsOutput(gl, frame.pixels, frame.width, frame.height)) throw new Error("KMS CRTC output failed");
+      this.#crtcFrames.delete(crtcId);
+    });
+  }
+
+  private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number):
       { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
     const storage = this.scanoutStorage(fb.bo_id);
     if (!storage) return null;
@@ -1163,6 +1273,11 @@ export class WasmPosixKernel {
           this.glMuxerFor(storage.gl).invalidateCurrent();
           canvas.width = fb.width; canvas.height = fb.height;
         }
+        if (this.kms.gamma(crtcId)) {
+          this.#drawGpuCrtcFrame(crtcId, storage, fb);
+          return { direct: true };
+        }
+        this.#crtcFrames.delete(crtcId);
         if (!drawGpuScanout(storage, fb.width, fb.height, fb.x, fb.y)) throw new Error("GPU scanout blit failed");
         return { direct: true };
       }
@@ -1493,7 +1608,9 @@ export class WasmPosixKernel {
     );
     intrinsicApply(intrinsicWeakMapSet, kernelGraphicsAccess, [this, intrinsicObjectFreeze({
       withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => this.withGraphicsState(gl, work),
-      gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean) => this.gpuScanout(fb, canvas, allowDirect),
+      gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number) =>
+        this.gpuScanout(fb, canvas, allowDirect, crtcId),
+      presentCrtcOutput: (crtcId: number) => this.presentCrtcOutput(crtcId),
     })]);
     // Let the GBM bo registry reach per-pid wasm Memory so the
     // bind/unbind sync (parent writes → SAB → child reads after PRIME
@@ -3149,7 +3266,7 @@ export class WasmPosixKernel {
             const selected = b.drawSurface ?? b.surface;
             if (selected.kind === 2) { b.gl!.flush(); return 0; }
             if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
-              try { blitPresentTarget(b); b.gl?.flush(); return 0; } catch { return -5; }
+              try { this.#presentWindowFrame(b, selected); b.gl?.flush(); return 0; } catch { return -5; }
             }
             // A GPU-tier producer renders into an offscreen bo FBO on the
             // shared context, so `eglSwapBuffers` must fence the queued GL
@@ -3181,7 +3298,8 @@ export class WasmPosixKernel {
               // only when one was established before the frame.
               const established = b.presentTarget !== null;
               if (!ensurePresentTarget(b) || !repairNativeState(b.gl!)) return -5;
-              if (established) blitPresentTarget(b);
+              if (established) this.#presentWindowFrame(b, selected);
+              else this.#presentDirectFrame(b);
               if (b.gl && b.canvas && (b.presentTarget !== null || b.renderTargetFbo === null)) {
                 this.callbacks.onKmsGlPresented?.(b.claimedKmsCrtc);
               }
@@ -3602,6 +3720,20 @@ export class WasmPosixKernel {
           this.kms.rmFb(fb_id);
           return DRI_CLEANUP_COMPLETE;
         },
+        host_kms_set_gamma: (crtc_id: number, lut_ptr: KernelPointer, entries: number): void => {
+          // The LUT the CRTC's output passes through (GAMMA_LUT): `entries`
+          // red, then green, then blue 16-bit values, or none at all.
+          if (entries === 0) {
+            this.kms.setGamma(crtc_id, null);
+            return;
+          }
+          if (entries !== 256) throw new Error(`Invalid KMS gamma LUT size ${entries}`);
+          const bytes = this.#readKernelBytes(lut_ptr, entries * 6);
+          const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+          const lut = new Uint16Array(entries * 3);
+          for (let i = 0; i < lut.length; i++) lut[i] = view.getUint16(i * 2, true);
+          this.kms.setGamma(crtc_id, lut);
+        },
         host_kms_set_fb: (
           pid: number,
           crtc_id: number,
@@ -3643,7 +3775,18 @@ export class WasmPosixKernel {
             fb && gpu && b?.gl && gpu.gl === b.gl &&
             b.claimedKmsCrtc === crtc_id && !b.gl.isContextLost()
           ) {
-            blitGpuScanout(b, gpu, fb.width, fb.height, fb.x, fb.y);
+            if (!this.kms.gamma(crtc_id)) {
+              this.#crtcFrames.delete(crtc_id);
+              blitGpuScanout(b, gpu, fb.width, fb.height, fb.x, fb.y);
+            } else {
+              try {
+                const gl = b.gl;
+                this.withRestoredGraphicsState(gl, () => this.#drawGpuCrtcFrame(crtc_id, { ...gpu, gl }, fb));
+              } catch {
+                // The vblank pump presents this framebuffer again on its next
+                // tick, through the same color stage, and reports a failure.
+              }
+            }
           }
         },
       },

@@ -379,6 +379,10 @@ unsafe extern "C" {
     /// viewport whose top-left pixel is (`x`, `y`) in the framebuffer (the
     /// CRTC's mode at its panning offset). `fb_id` 0 disables the CRTC.
     fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32, x: u32, y: u32, width: u32, height: u32);
+    /// Set the LUT `crtc_id`'s output passes through: `entries` red u16s at
+    /// `lut_ptr` (kernel memory), then as many green and blue. `entries` 0
+    /// clears the LUT (colors pass through unchanged).
+    fn host_kms_set_gamma(crtc_id: u32, lut_ptr: *const u16, entries: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,6 +1269,13 @@ impl HostIO for WasmHostIO {
     fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {
         let [x, y, width, height] = viewport;
         unsafe { host_kms_set_fb(pid, crtc_id, fb_id, x, y, width, height) }
+    }
+
+    fn kms_set_gamma(&mut self, crtc_id: u32, lut: Option<&[u16]>) {
+        match lut {
+            Some(lut) => unsafe { host_kms_set_gamma(crtc_id, lut.as_ptr(), (lut.len() / 3) as u32) },
+            None => unsafe { host_kms_set_gamma(crtc_id, core::ptr::null(), 0) },
+        }
     }
 
     fn kms_cursor_supported(&mut self) -> bool {
