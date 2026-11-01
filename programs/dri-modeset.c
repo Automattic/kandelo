@@ -28,10 +28,9 @@
  * exit 0 if every PageFlip + event round-trip succeeds, else 1.
  * argv[1] (optional) overrides FRAMES; default 5 keeps vitest fast.
  *
- * The kernel always queues a flip into pending_flips and the vblank
- * pump drains it into the event ring regardless of the PAGE_FLIP_EVENT
- * flag (see handoff-58 — v1 simplification). We still pass the flag
- * to match real DRM semantics and to match what SDL2 KMSDRM does.
+ * As on Linux, the flip-complete event is queued only because the
+ * flip passes DRM_MODE_PAGE_FLIP_EVENT (what SDL2 KMSDRM does); the
+ * host's vblank pump delivers it at the next vblank.
  */
 #include <errno.h>
 #include <fcntl.h>
