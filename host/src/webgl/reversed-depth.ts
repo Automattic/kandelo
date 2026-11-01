@@ -27,6 +27,8 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
 import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-sampling.js";
+import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
+  vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -173,12 +175,14 @@ export function noteUniformWrite(program: WebGLProgram | null): void {
 /** One private draw executable of a guest executable. A draw may need a
  * reversed depth range and/or luminance sampling of depth textures
  * (depth-sampling.ts); each combination is one variant, keyed by both. */
-export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[] };
-type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number };
+export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[];
+  /** [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] The vertex stage reads gl_DepthRange from a private uniform. */
+  vertexDepthRange?: boolean };
+type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null };
 const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
 function variantKey(options: VariantOptions): string {
-  return `${options.reversedDepth ? 1 : 0}|${options.depthSamplers.join(",")}`;
+  return `${options.reversedDepth ? 1 : 0}|${options.vertexDepthRange ? 1 : 0}|${options.depthSamplers.join(",")}`;
 }
 
 function deleteTwin(owner: CheckedGlOwner, twin: Twin): void {
@@ -202,6 +206,9 @@ export function variantStageSource(source: string, vertex: boolean, options: Var
   let result: string | null = source;
   if (options.depthSamplers.length) result = depthSamplingShaderSource(source, new Set(options.depthSamplers));
   if (result !== null && options.reversedDepth) result = reversedDepthShaderSource(result, vertex);
+  // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] Outermost, so the
+  // reversed-depth prologue's gl_DepthRange reads are redirected too.
+  if (result !== null && vertex && options.vertexDepthRange) result = vertexDepthRangeShaderSource(result);
   return result;
 }
 
@@ -235,7 +242,7 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
       linked = !!gl.getProgramParameter(p, 0x8b82);
     })) return null;
     if (!linked) return null;
-    return { program: p, sources, uniforms: -1 };
+    return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null };
   } finally {
     // Shaders stay alive while attached; the twin program owns them now.
     checkedGlCall(b, () => {
@@ -311,10 +318,14 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
   const reversedDepth = depthRangeReversed(b.shadow.depthRange);
   const depthSamplers = depthSamplersForDraw(b);
   if (depthSamplers === null) return null;
-  // Draws needing neither run the guest executable itself.
-  if (!reversedDepth && !depthSamplers.length) return undefined;
-  const options = { reversedDepth, depthSamplers }, key = variantKey(options);
   const sources = linkedSources.get(primary);
+  // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] Only programs
+  // meeting the reproduced trigger, and only on the affected engine.
+  const vertexDepthRange = sources ? vertexDepthRangeWorkaround(b, primary, sources) : false;
+  if (vertexDepthRange === null) return null;
+  // Draws needing none of these run the guest executable itself.
+  if (!reversedDepth && !depthSamplers.length && !vertexDepthRange) return undefined;
+  const options = { reversedDepth, depthSamplers, vertexDepthRange }, key = variantKey(options);
   let variants = twins.get(primary);
   if (variants && [...variants.values()].some(twin => twin.sources !== sources)) {
     releaseReversedDepthTwin(b, primary); variants = undefined;
@@ -338,8 +349,19 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
   const twin = primary ? [...twins.get(primary)?.values() ?? []].find(variant => variant.program === twinProgram) : undefined;
   if (!primary || !twin) { recordGlError(b, 0x502); return false; }
   const generation = uniformWrites.get(primary) ?? 0;
-  if (twin.uniforms === generation) return true;
-  if (!copyUniforms(b, primary, twin.program)) return false;
-  twin.uniforms = generation;
+  if (twin.uniforms !== generation) {
+    if (!copyUniforms(b, primary, twin.program)) return false;
+    twin.uniforms = generation;
+  }
+  if (twin.vertexDepthRange) {
+    // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] The private
+    // uniform carries what WebGL would give gl_DepthRange for this draw.
+    const values = nativeDepthRangeValues(b.shadow.depthRange), key = values.join(",");
+    if (twin.rangeValues !== key) {
+      const gl = b.gl!;
+      if (!checkedGlCall(b, () => gl.uniform3f(gl.getUniformLocation(twin.program, NATIVE_DEPTH_RANGE_UNIFORM), ...values))) return false;
+      twin.rangeValues = key;
+    }
+  }
   return true;
 }

@@ -11,6 +11,7 @@
  */
 import { aliasedVertexShaderSource } from "../../../host/src/webgl/attribute-aliasing.js";
 import { variantStageSource, type VariantOptions } from "../../../host/src/webgl/reversed-depth.js";
+import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues } from "../../../host/src/webgl/vertex-depth-range.js";
 
 /** "inconclusive": the engine fails the same check on unrewritten shaders
  * (a recorded "engine-defect" control), so it cannot judge the rewrite. */
@@ -262,6 +263,48 @@ function reversedDepth(): void {
     record("reversed-depth.gl_DepthRange.vertex-only", near(got, want), `${fmt(got)} want ${fmt(want)} (near, far, -diff)`);
     gl.deleteProgram(plain.program);
   }
+  // FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM: the host's variant for that trigger
+  // (vertex stage reads a private uniform) must be right on every engine.
+  const workaround = { ...options, vertexDepthRange: true };
+  const wvs = variantStageSource(vertex, true, workaround), wfs = variantStageSource(fragment, false, workaround);
+  const fixed = wvs && wfs ? build(wvs, wfs) : { program: null, log: "no variant" };
+  if (!fixed.program) record("reversed-depth.gl_DepthRange.vertex.with-workaround", false, fixed.log);
+  else {
+    gl.useProgram(fixed.program);
+    gl.uniform3f(gl.getUniformLocation(fixed.program, NATIVE_DEPTH_RANGE_UNIFORM), ...nativeDepthRangeValues([n, f]));
+    drawPoint(fixed.program, { u_z: 0, u_mode: 2 });
+    const got = pixel(), want = [n, f, n - f, 1];
+    record("reversed-depth.gl_DepthRange.vertex.with-workaround", near(got, want), `${fmt(got)} want ${fmt(want)} (near, far, -diff)`);
+    gl.deleteProgram(fixed.program);
+  }
+  gl.depthRange(0, 1);
+}
+
+/** The reproduction's trigger with an ordered range: both stages read
+ * gl_DepthRange and the fragment stage has another uniform. Unrewritten is a
+ * control (an engine-defect record on Firefox); the workaround variant must
+ * give the vertex stage (0.25, 0.75, 0.5) everywhere. */
+function vertexDepthRangeTrigger(): void {
+  target(false);
+  const vertex = "varying mediump vec4 v;\nvoid main() { gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0;\n" +
+    "  v = vec4(gl_DepthRange.near, gl_DepthRange.far, gl_DepthRange.diff, 1.0); }\n";
+  const fragment = "precision mediump float;\nvarying vec4 v;\nuniform float u_other;\n" +
+    "void main() { gl_FragColor = u_other > 2.0 ? vec4(gl_DepthRange.near) : v; }\n";
+  const want = [0.25, 0.75, 0.5, 1];
+  gl.depthRange(0.25, 0.75);
+  for (const workaround of [false, true]) {
+    const options: VariantOptions = { reversedDepth: false, depthSamplers: [], vertexDepthRange: workaround };
+    const vs = variantStageSource(vertex, true, options), fs = variantStageSource(fragment, false, options);
+    const built = vs && fs ? build(vs, fs) : { program: null, log: "no variant" };
+    const name = `vertex-depth-range.trigger.${workaround ? "with-workaround" : "native-control"}`;
+    if (!built.program) { record(name, false, built.log); continue; }
+    gl.useProgram(built.program);
+    if (workaround) gl.uniform3f(gl.getUniformLocation(built.program, NATIVE_DEPTH_RANGE_UNIFORM), ...nativeDepthRangeValues([0.25, 0.75]));
+    drawPoint(built.program, { u_other: 0.5 });
+    const got = pixel(), ok = near(got, want);
+    record(name, ok, `${fmt(got)} want ${fmt(want)}`, ok ? "pass" : workaround ? "fail" : "engine-defect");
+    gl.deleteProgram(built.program);
+  }
   gl.depthRange(0, 1);
 }
 
@@ -382,7 +425,7 @@ function depthSampling(): void {
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, depthSampling]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

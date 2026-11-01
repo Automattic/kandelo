@@ -3356,6 +3356,18 @@ The image-view path avoids copying a base image that the next command
 replaces. Stable Chrome and other backends have not been established as
 affected; the default Playwright headless shell did not reproduce it.
 
+### Firefox vertex-stage gl_DepthRange
+
+On Playwright Firefox 155.0 and 153.0 on macOS, when both shaders of a WebGL 2
+program read `gl_DepthRange` and the program has another active uniform, the
+vertex stage reads that uniform's value as `gl_DepthRange.near` and 0 for
+`far` and `diff`. A standalone, self-judging reproduction is recorded as
+[`FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM`](../tests/runtime-workarounds/FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM/entry.md);
+Chromium and WebKit are correct. On Firefox only, and only for guest programs
+meeting that condition, draws run a private variant whose vertex stage reads
+the depth range from a private uniform, so guest OpenGL ES programs see the
+same `gl_DepthRange` on every engine. A released Firefox has not been checked.
+
 ### WebKit page-process crash when thread workers end
 
 This is a confirmed WebKit defect, recorded in the runtime workaround
