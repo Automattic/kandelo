@@ -33,7 +33,7 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
-import { clearStorageAlphaToOne, nativeColorMask, setOpaqueAlphaStorage, syncAlphaWriteLock } from "./opaque-alpha.js";
+import { clearStorageAlphaToOne, nativeColorMask, setOpaqueAlphaStorage, prepareDrawTarget } from "./opaque-alpha.js";
 import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
   renderbufferOpaqueAlpha,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
@@ -602,8 +602,9 @@ function dispatch(
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR: {
       if (!requireGlesFramebufferComplete(b)) return;
-      // RGB color storage kept as RGBA: the native alpha is never written.
-      syncAlphaWriteLock(b);
+      // RGB color storage kept as RGBA: the native alpha is never written;
+      // sampled siblings of the storage see the write.
+      prepareDrawTarget(b);
       gl.clear(v.getUint32(p, true));
       return;
     }

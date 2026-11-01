@@ -85,6 +85,7 @@ import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, regist
 import { hasNativeRepair, repairNativeState, retireNativeRetirement } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
+import { noteStorageWrite } from "./webgl/image-writes";
 import {
   blitGpuScanout,
   blitPresentTarget,
@@ -3115,6 +3116,8 @@ export class WasmPosixKernel {
                 try {
                   this.withRestoredGraphicsState(gl, () => { rc = copyGbmFront(b.surface, copy, capture); });
                 } catch { if (rc === 0) rc = -5; }
+                // The front buffer's EGLImage siblings copy it again.
+                noteStorageWrite(copy.tex);
                 if (rc !== 0) muxer.invalidateCurrent();
                 return rc;
               }

@@ -24,6 +24,7 @@ import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativ
   type NativeCall, type NativeRetirement } from "./native-recovery.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
+import { hostFramebufferColorStorage, noteStorageWrite } from "./image-writes.js";
 import { WPK_SURFACE_CONFIG_MAX_SAMPLES, WPK_SURFACE_CONFIG_RGBA8_D24S8, WPK_SURFACE_CONFIG_SAMPLES_SHIFT } from "./ops.js";
 
 const READ = 0x8ca8, DRAW = 0x8ca9, RBO = 0x8d41;
@@ -127,6 +128,9 @@ export function allocateMultisampleTarget(owner: CheckedGlOwner, samples: number
  * private owner's failures are renderer faults, never guest GL errors. */
 export function resolveMultisample(gl: WebGL2RenderingContext, source: WebGLFramebuffer,
   destination: WebGLFramebuffer, w: number, h: number): boolean {
+  // The resolve writes the destination's storage (a GBM buffer's texture):
+  // its EGLImage siblings and CPU mirror see the write (image-writes.ts).
+  noteStorageWrite(hostFramebufferColorStorage(destination));
   const owner = { gl, errors: [] as number[], shadow: {} };
   try {
     let oldRead: WebGLFramebuffer | null = null, oldDraw: WebGLFramebuffer | null = null, scissor = false;

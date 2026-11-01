@@ -222,7 +222,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     return false;
   }
   for (const { cube, unit } of units)
-    setTextureUnit(b.shadow, cube, unit, null);
+    setTextureUnit(b, cube, unit, null);
   commitAttachmentDeletion(b, points);
   b.textures.delete(name);
   for (const [bo, entry] of b.foreignTextures)

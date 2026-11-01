@@ -30,7 +30,7 @@ import { allocateNativeBuffer } from "./buffer-storage.js";
 import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
 import type { GlStencilFaceState } from "./shadow.js";
-import { syncAlphaWriteLock } from "./opaque-alpha.js";
+import { prepareDrawTarget } from "./opaque-alpha.js";
 
 const FRONT = 0x0404, BACK = 0x0405, FRONT_AND_BACK = 0x0408;
 const CULL_FACE = 0x0b44, RASTERIZER_DISCARD = 0x8c89, ELEMENT = 0x8893, UNSIGNED_INT = 0x1405;
@@ -143,8 +143,9 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   // factors (blend-constant.ts) run a private variant.
   const twin = draw.empty ? undefined : drawVariantExecutable(b);
   if (twin === null) return false;
-  // RGB color storage kept as RGBA: the native alpha is never written.
-  syncAlphaWriteLock(b);
+  // RGB color storage kept as RGBA: the native alpha is never written;
+  // sampled siblings of the storage see the write.
+  prepareDrawTarget(b);
   if (twin === undefined && stencil.kind === "none") {
     if (draw.observed !== false) return checkedGlCall(b, draw.issue);
     draw.issue();

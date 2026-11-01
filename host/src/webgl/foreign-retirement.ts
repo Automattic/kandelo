@@ -5,7 +5,6 @@ import { collectRetiredImages } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { setTextureUnit } from "./depth-sampling.js";
-import type { GlShadowState } from "./shadow.js";
 
 /** BO ownership expires every raw view generation, including deleted names
  * retained by a peer. A replacement using the number has another identity. */
@@ -30,7 +29,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
   let retired: GlBinding["retiredTextures"];
   let changes: NativeChange[];
   let points: {owner: GlBinding; framebuffer: WebGLFramebuffer; point: number}[];
-  let units: {shadow: GlShadowState; cube: boolean; unit: number}[];
+  let units: {owner: GlBinding; cube: boolean; unit: number}[];
   let captures: {unit: number; target: number; pname: number; previous: WebGLTexture|null}[];
   let natives: Set<WebGLTexture>;
   let hasFramebuffers = false;
@@ -48,7 +47,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
       for (const cube of [false,true]) {
         const bindings = cube ? owner.shadow.cubeTextureUnits : owner.shadow.textureUnits;
         for (let unit=0; unit<bindings.length; unit++) if (bindings[unit] && objects.has(bindings[unit]!)) {
-          units.push({shadow:owner.shadow,cube,unit}); physicalUnits.add(unit);
+          units.push({owner,cube,unit}); physicalUnits.add(unit);
         }
       }
       for (const [framebuffer, attachments] of owner.framebufferAttachments) for (const [point,image] of attachments) {
@@ -88,7 +87,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
       if (!applyNativeChanges(b,changes,{shared:true,finalizer:nativeInverse(b,...finalizer)})) return false;
     } catch { recordGlError(b,0x505); return false; }
   }
-  for (const {shadow,cube,unit} of units) setTextureUnit(shadow,cube,unit,null);
+  for (const {owner,cube,unit} of units) setTextureUnit(owner,cube,unit,null);
   for (const {owner,framebuffer,point} of points) {
     const attachments = owner.framebufferAttachments.get(framebuffer)!; attachments.delete(point);
     if (!attachments.size) owner.framebufferAttachments.delete(framebuffer);

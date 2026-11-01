@@ -69,12 +69,17 @@ export interface GlShadowState {
   unpackAlignment: number;
   packAlignment: number;
 
-  /** Derived from guest state, never reported: whether the native alpha
-   * write is held off because the draw framebuffer's color storage has no
-   * alpha (opaque-alpha.ts), with the framebuffer and inputs revision it was
-   * derived for. The native COLOR_WRITEMASK is the guest mask with alpha
-   * cleared while `locked`. */
-  alphaWriteLock: { fbo: WebGLFramebuffer | null | undefined; revision: number; locked: boolean };
+  /** Derived from guest state, never reported: facts about the draw
+   * framebuffer's color storage (opaque-alpha.ts), with the framebuffer and
+   * inputs revision they were derived for. `locked`: the storage has no
+   * alpha, so the native COLOR_WRITEMASK is the guest mask with alpha
+   * cleared. `writes`: the storage's write count (image-writes.ts), advanced
+   * by every draw and clear. */
+  drawTarget: { fbo: WebGLFramebuffer | null | undefined; revision: number; locked: boolean;
+    writes: { count: number } | null };
+  /** Derived: the 2D texture units bound to an EGLImage sibling view
+   * (image-storage.ts), as of a framebuffer-inputs revision. */
+  sourcedUnits: { revision: number; units: number[] };
   /** Derived: how many texture-unit bindings name a texture whose level 0
    * is a depth image, and whether either texture zero is one, as of a depth
    * level revision (depth-sampling.ts). */
@@ -150,7 +155,8 @@ export function defaultShadow(): GlShadowState {
     pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
     unpackAlignment: 4,
     packAlignment: 4,
-    alphaWriteLock: { fbo: undefined, revision: -1, locked: false },
+    drawTarget: { fbo: undefined, revision: -1, locked: false, writes: null },
+    sourcedUnits: { revision: -1, units: [] },
     depthUnits: { revision: -1, count: 0, defaults: false },
   };
 }

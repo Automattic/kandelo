@@ -2,9 +2,11 @@ import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetir
 import type { GlBinding } from "./registry.js";
 import type { GpuScanoutStorage } from "./kms-scanout.js";
 import type { GlImageAttachment } from "./image-references.js";
+import type { GlShadowState } from "./shadow.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { recordRenderbufferSize, renderbufferLogicalFormat } from "./image-sizes.js";
-import { framebufferInputsChanged } from "./framebuffer-revision.js";
+import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
+import { noteStorageWrite, storageWrites } from "./image-writes.js";
 import { effectiveInternalFormat } from "./es2-formats.js";
 import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
 /** Private source handles never enter the public GLuint texture namespace. */
@@ -38,6 +40,9 @@ export type GlTextureView = {
   source: GlImageSource | null;
   read: WebGLFramebuffer | null;
   candidate?: NativeRetirement;
+  /** The canonical storage's write count (image-writes.ts) when this view
+   * last copied it; the view is current while the count is unchanged. */
+  synced?: number;
 };
 export type GlRenderbufferView = {
   native: WebGLRenderbuffer;
@@ -101,15 +106,23 @@ function withImageState(b: GlBinding, call: () => boolean, cube = false): boolea
     [["bindRenderbuffer",RBO,renderbuffer]],
     [["bindFramebuffer",DRAW,draw]], [["bindFramebuffer",READ,read]])});
 }
+/** The native storage an image source's siblings share. */
+function sourceStorage(source: GlImageSource): object | null {
+  return source.renderbuffer ?? source.texture;
+}
 function copySource(b: GlBinding, view: GlTextureView): boolean {
   if (!view.source)
     return true;
-  const gl = b.gl!, source = view.source;
-  return withImageState(b, () => checkedGlCall(b, () => {
+  const gl = b.gl!, source = view.source, storage = sourceStorage(source);
+  // The count read before the copy: a write during it leaves the view stale.
+  const count = storage ? storageWrites(storage).count : 0;
+  const copied = withImageState(b, () => checkedGlCall(b, () => {
     gl.bindFramebuffer(READ, view.read);
     gl.bindTexture(TEX, view.native);
     gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height);
   }));
+  if (copied) view.synced = count;
+  return copied;
 }
 function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSource, preserveBase = true): GlTextureView | null {
   const gl = b.gl!;
@@ -155,7 +168,11 @@ function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSou
       return checkedGlCall(b, () => gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height));
     });
     if (!accepted) return null;
-    const view = {native:native!,source,read,candidate}; published = true; return view;
+    const storage = sourceStorage(source);
+    // A preserved base is a copy of the source as of now.
+    const view: GlTextureView = {native:native!,source,read,candidate,
+      synced:preserveBase && storage ? storageWrites(storage).count : undefined};
+    published = true; return view;
   } finally { if (!published) retireNativeRetirement(candidate); }
 }
 /** Resolve physical storage while retaining logical attachment query identity. */
@@ -433,19 +450,39 @@ export function boundImageState(b: GlBinding, kind: number, target: number, sour
   const view = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
   return { source: view?.source?.token ?? linkedToken(b, object), revision: b.imageRevisions.get(object) ?? 0 };
 }
-/** Each sampling view has independent parameters. Refresh its pixels from the
- * canonical image before every draw, including writes made through other APIs. */
+/** Each sampling view has independent parameters. Before a draw, a view
+ * bound to a 2D unit copies the canonical image if that storage was written
+ * since its last copy, by any API or context (image-writes.ts). The units
+ * holding views are tracked as bindings change (setTextureUnit), so a draw
+ * that samples no view, or only current views, does no native work. */
 export function prepareImageDraw(b: GlBinding): boolean {
-  const seen = new Set<WebGLTexture>();
-  for (const object of b.shadow.textureUnits) {
-    if (!object || seen.has(object))
-      continue;
-    seen.add(object);
-    const view = b.textureViews.get(object);
-    if (view?.source && !copySource(b, view))
+  const s = b.shadow;
+  if (s.sourcedUnits.revision !== framebufferInputsRevision()) recountSourcedUnits(b);
+  for (const unit of s.sourcedUnits.units) {
+    const object = s.textureUnits[unit], view = object ? b.textureViews.get(object) : undefined;
+    if (!view?.source) continue;
+    const storage = sourceStorage(view.source);
+    if (storage && view.synced === storageWrites(storage).count) continue;
+    if (!copySource(b, view))
       return false;
   }
   return true;
+}
+/** Views gain and lose sources only through view replacement and
+ * destruction, which advance the framebuffer-inputs revision. */
+function recountSourcedUnits(b: GlBinding): void {
+  const units: number[] = [];
+  b.shadow.textureUnits.forEach((object, unit) => { if (object && b.textureViews.get(object)?.source) units.push(unit); });
+  b.shadow.sourcedUnits = { revision: framebufferInputsRevision(), units };
+}
+/** Every write of a 2D unit binding updates the tracked units (depth-sampling.ts). */
+export function noteSourcedUnit(b: { shadow: GlShadowState; textureViews: ReadonlyMap<WebGLTexture, GlTextureView> },
+    unit: number, object: WebGLTexture | null): void {
+  const sourced = b.shadow.sourcedUnits;
+  if (sourced.revision !== framebufferInputsRevision()) return;
+  const at = sourced.units.indexOf(unit);
+  if (at >= 0) sourced.units.splice(at, 1);
+  if (object && b.textureViews.get(object)?.source) sourced.units.push(unit);
 }
 export function boundImageTexture(b: GlBinding, target: number): GlTextureView | undefined {
   if (target !== TEX)
@@ -456,6 +493,19 @@ export function boundImageTexture(b: GlBinding, target: number): GlTextureView |
 /** Pixel updates preserve shared storage; respecification allocates an owned
  * candidate and commits only after native validation and container retargeting. */
 export function imageTextureOperation(b: GlBinding, target: number, respecify: boolean, call: () => void, preserveBase = true, level?: number): boolean {
+  // Whatever storage the command reaches (the object's own, a sibling's
+  // canonical storage, or new storage) counts as written, accepted or not.
+  const base = target === TEX ? TEX : isCubeFace(target) || target === CUBE ? CUBE : 0;
+  const object = base ? (base === TEX ? b.shadow.textureUnits : b.shadow.cubeTextureUnits)[b.shadow.activeTexture]
+    ?? b.shadow.defaultTextures.get(base) : undefined;
+  const before = object ? textureNative(b, object) : null, source = object ? b.textureViews.get(object)?.source : null;
+  try { return textureOperation(b, target, respecify, call, preserveBase, level); }
+  finally {
+    noteStorageWrite(before); noteStorageWrite(source && sourceStorage(source));
+    if (object) noteStorageWrite(textureNative(b, object));
+  }
+}
+function textureOperation(b: GlBinding, target: number, respecify: boolean, call: () => void, preserveBase: boolean, level?: number): boolean {
   const view = boundImageTexture(b, target);
   if (!view?.source) {
     const object = (target === TEX ? b.shadow.textureUnits : isCubeFace(target) || target === CUBE
@@ -492,6 +542,15 @@ export function imageTextureOperation(b: GlBinding, target: number, respecify: b
   } finally { if (!installed && candidate.candidate) retireNativeRetirement(candidate.candidate); }
 }
 export function imageRenderbufferStorage(b: GlBinding, call: () => void): boolean {
+  const object = b.shadow.renderbuffer, view = object ? b.renderbufferViews.get(object) : undefined;
+  const before = object ? renderbufferNative(b, object) : null;
+  try { return renderbufferStorageOperation(b, call); }
+  finally {
+    noteStorageWrite(before); noteStorageWrite(view?.source && sourceStorage(view.source));
+    if (object) noteStorageWrite(renderbufferNative(b, object));
+  }
+}
+function renderbufferStorageOperation(b: GlBinding, call: () => void): boolean {
   const object = b.shadow.renderbuffer, view = object && b.renderbufferViews.get(object);
   // Respecifying an exported renderbuffer orphans its image: the image
   // keeps the old storage and the object receives new storage.

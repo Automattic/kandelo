@@ -2,6 +2,7 @@ import type { GlBinding } from "./registry.js";
 import type { GlShadowState } from "./shadow.js";
 import { attachedNativeStorage } from "./image-storage.js";
 import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
+import { hostFramebufferColorStorage, storageWrites } from "./image-writes.js";
 
 /**
  * Color formats without alpha that WebGL 2 can only store with alpha: an
@@ -64,30 +65,34 @@ export function clearStorageAlphaToOne(gl: WebGL2RenderingContext, attach: (targ
   }
 }
 
-/** The draw framebuffer's color attachment is storage without alpha. */
-function drawColorStorageOpaque(b: GlBinding): boolean {
-  const framebuffer = b.shadow.fbo;
-  const image = framebuffer ? b.framebufferAttachments.get(framebuffer)?.get(0x8ce0) : undefined;
-  return !!image && isOpaqueAlphaStorage(attachedNativeStorage(b, image));
-}
-
 /** The native COLOR_WRITEMASK for the guest mask: alpha off while locked.
  * Every writer of the native mask from guest state uses this. */
 export function nativeColorMask(s: GlShadowState): [boolean, boolean, boolean, boolean] {
   const [r, g, b, a] = s.colorMask;
-  return [r, g, b, a && !s.alphaWriteLock.locked];
+  return [r, g, b, a && !s.drawTarget.locked];
 }
 
-/** Before a draw or clear: re-derive the lock only if the draw framebuffer,
- * its attachments or their storage changed since it was derived, and write
- * the native mask only if the lock changed while the guest writes alpha.
- * Otherwise this is two comparisons. */
-export function syncAlphaWriteLock(b: GlBinding): void {
-  const s = b.shadow, lock = s.alphaWriteLock, revision = framebufferInputsRevision();
-  if (lock.fbo === s.fbo && lock.revision === revision) return;
-  const locked = drawColorStorageOpaque(b);
-  lock.fbo = s.fbo; lock.revision = revision;
-  if (lock.locked === locked) return;
-  lock.locked = locked;
-  if (s.colorMask[3]) b.gl!.colorMask(...nativeColorMask(s));
+/** Before a draw or clear: re-derive the draw framebuffer's color-storage
+ * facts only if the framebuffer, its attachments or their storage changed
+ * since they were derived; write the native mask only if the lock changed
+ * while the guest writes alpha; and count the write to the storage.
+ * Otherwise this is two comparisons and an increment. */
+export function prepareDrawTarget(b: GlBinding): void {
+  const s = b.shadow, target = s.drawTarget, revision = framebufferInputsRevision();
+  if (target.fbo !== s.fbo || target.revision !== revision) {
+    const framebuffer = s.fbo;
+    const image = framebuffer ? b.framebufferAttachments.get(framebuffer)?.get(0x8ce0) : undefined;
+    // A default framebuffer's storage (a GBM buffer an EGL surface renders
+    // into) is registered by the host that allocated it.
+    const storage = image ? attachedNativeStorage(b, image)
+      : framebuffer ? hostFramebufferColorStorage(framebuffer) ?? null : null;
+    const locked = !!image && isOpaqueAlphaStorage(storage);
+    target.fbo = framebuffer; target.revision = revision;
+    target.writes = storage ? storageWrites(storage) : null;
+    if (target.locked !== locked) {
+      target.locked = locked;
+      if (s.colorMask[3]) b.gl!.colorMask(...nativeColorMask(s));
+    }
+  }
+  if (target.writes !== null) target.writes.count++;
 }

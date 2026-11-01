@@ -7,6 +7,7 @@ import { readGbmFront } from "./gbm-front-copy.js";
 import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
+import { noteStorageWrite } from "./image-writes.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
@@ -165,6 +166,8 @@ export class CpuImageStorage {
     ], {shared: true, finalizer: nativeInverse(owner,
       [["bindTexture", 0x0de1, texture]], [["bindBuffer", 0x88ec, unpack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});
+    // Siblings sampling the mirror copy it again (image-writes.ts).
+    noteStorageWrite(tex);
     if (accepted) mirror.snapshot = snapshot;
     return accepted;
   }

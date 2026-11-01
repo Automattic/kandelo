@@ -31,6 +31,7 @@ import { glslTokens, type GlslToken } from "./attribute-aliasing.js";
 import { headerEnd } from "./reversed-depth.js";
 import { depthLevelRevision, levelSamplesDepth, textureLevel } from "./texture-levels.js";
 import type { GlShadowState } from "./shadow.js";
+import { noteSourcedUnit, type GlTextureView } from "./image-storage.js";
 
 const LOOKUPS = new Set(["texture2D", "texture2DProj", "texture2DLod", "texture2DProjLod", "textureCube", "textureCubeLod"]);
 const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube"]);
@@ -205,10 +206,13 @@ function recountDepthUnits(s: GlShadowState): void {
     defaults: samplesDepth(s.defaultTextures.get(0x0de1), false) || samplesDepth(s.defaultTextures.get(0x8513), true) };
 }
 
-/** Every write of a texture-unit binding goes through here. A count that is
- * current stays current; a stale one is recounted at the next draw. */
-export function setTextureUnit(s: GlShadowState, cube: boolean, unit: number, object: WebGLTexture | null): void {
-  const units = cube ? s.cubeTextureUnits : s.textureUnits, depth = s.depthUnits;
+/** Every write of a texture-unit binding goes through here, keeping the
+ * draw-time unit summaries (depth textures here, EGLImage sibling views in
+ * image-storage.ts) current; a stale summary is recounted at the next draw. */
+export function setTextureUnit(owner: { shadow: GlShadowState; textureViews: ReadonlyMap<WebGLTexture, GlTextureView> },
+    cube: boolean, unit: number, object: WebGLTexture | null): void {
+  const s = owner.shadow, units = cube ? s.cubeTextureUnits : s.textureUnits, depth = s.depthUnits;
+  if (!cube) noteSourcedUnit(owner, unit, object);
   if (depth.revision === depthLevelRevision())
     depth.count += Number(samplesDepth(object, cube)) - Number(samplesDepth(units[unit], cube));
   units[unit] = object;

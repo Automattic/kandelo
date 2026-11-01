@@ -2,6 +2,7 @@ import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativ
   type NativeRetirement } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { RGBA8_STORAGE, type GpuStorageFormat } from "./gpu-storage-format.js";
+import { registerFramebufferColorStorage } from "./image-writes.js";
 
 export type GlGpuAllocation = {
   gl: WebGL2RenderingContext;
@@ -54,6 +55,8 @@ export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: num
       let status = 0;
       return checkedGlCall(owner,()=>{status=gl.checkFramebufferStatus(0x8d40);}) && status === 0x8cd5;
     }}],{shared:true,finalizer:restore})) return false;
+    // Guests draw into this framebuffer as their default framebuffer.
+    registerFramebufferColorStorage(allocation.fbo, allocation.tex);
     publish(allocation); published = true;
     return true;
   } catch { return false; }

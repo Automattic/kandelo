@@ -5,6 +5,7 @@ import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { setOpaqueAlphaStorage } from "../src/webgl/opaque-alpha.js";
 import { registerImageSource } from "../src/webgl/image-storage.js";
+import { gpuSourceStorage } from "../src/webgl/foreign-texture.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 
 /**
@@ -28,7 +29,9 @@ const RGBA8 = 0x8058, RGB16F = 0x881b, RGBA16F = 0x881a, DEPTH16 = 0x81a5;
 const RENDERABLE = new Set([RGBA8, 0x8056, 0x8057, 0x8d62, RGBA16F, DEPTH16, 0x88f0]);
 
 type Program = { linked: boolean; uniforms: Map<string, number> };
-type Storage = { format: number; alpha: number; width: number; height: number };
+/** `content` names the last image written to the storage; sampling records
+ * the content of the texture bound to unit 0. */
+type Storage = { format: number; alpha: number; width: number; height: number; content: number };
 
 class CountingGl {
   calls = new Map<string, number>();
@@ -37,8 +40,13 @@ class CountingGl {
   draw: object | null = null;
   read: object | null = null;
   renderbuffer: object | null = null;
-  texture: object | null = null;
+  active = 0;
+  units: (object | null)[] = [];
+  get texture(): object | null { return this.units[this.active] ?? null; }
   current: Program | null = null;
+  /** Content of unit 0's texture at each draw. */
+  sampled: number[] = [];
+  private contents = 1000;
   attachments = new Map<object, object>();
   storage = new Map<object, Storage>();
   draws: Program[] = [];
@@ -59,7 +67,7 @@ class CountingGl {
       case 0x8ca7: return this.renderbuffer;
       case 0x8069: return this.texture;
       case 0x8b8d: return this.current;
-      case 0x84e0: return 0x84c0;
+      case 0x84e0: return 0x84c0 + this.active;
       case 0x8b4d: case 0x8872: case 0x8869: return 16;
       case 0x0d33: case 0x851c: case 0x84e8: return 4096;
       case 0x0d57: return 0;
@@ -79,12 +87,19 @@ class CountingGl {
     if (target !== DRAW) this.read = framebuffer;
   }
   bindRenderbuffer(_target: number, renderbuffer: object | null) { this.renderbuffer = renderbuffer; }
-  bindTexture(_target: number, texture: object | null) { this.texture = texture; }
+  activeTexture(unit: number) { this.active = unit - 0x84c0; }
+  bindTexture(_target: number, texture: object | null) { this.units[this.active] = texture; }
+  getTexParameter() { return 0x2601; }
   texImage2D(_target: number, _level: number, format: number, width: number, height: number) {
-    this.storage.set(this.texture!, { format, alpha: 0, width, height });
+    this.storage.set(this.texture!, { format, alpha: 0, width, height, content: ++this.contents });
+  }
+  texSubImage2D() { this.storage.get(this.texture!)!.content = ++this.contents; }
+  copyTexSubImage2D() {
+    const source = this.storage.get(this.attachments.get(this.read!)!)!;
+    this.storage.get(this.texture!)!.content = source.content;
   }
   renderbufferStorage(_target: number, format: number, width: number, height: number) {
-    this.storage.set(this.renderbuffer!, { format, alpha: 0, width, height });
+    this.storage.set(this.renderbuffer!, { format, alpha: 0, width, height, content: ++this.contents });
   }
   framebufferRenderbuffer(target: number, point: number, _rbTarget: number, image: object | null) {
     if (point !== COLOR0) return;
@@ -111,12 +126,16 @@ class CountingGl {
   useProgram(program: Program | null) { this.current = program; }
   private writeAlpha(alpha: number) {
     const target = this.attachments.get(this.draw!), storage = target && this.storage.get(target);
+    if (storage) storage.content = ++this.contents;
     if (storage && this.mask[3]) storage.alpha = alpha;
   }
   clear(mask: number) { if (mask & 0x4000) this.writeAlpha(this.clearValue[3]); }
   drawArrays() {
     if (this.rejectDraws) { this.error ||= 0x502; return; }
-    this.draws.push(this.current!); this.writeAlpha(this.fragmentAlpha);
+    this.draws.push(this.current!);
+    const unit0 = this.units[0];
+    this.sampled.push(unit0 ? this.storage.get(unit0)?.content ?? 0 : 0);
+    this.writeAlpha(this.fragmentAlpha);
   }
 }
 
@@ -170,6 +189,21 @@ function setup() {
     expect(runGlQuery(b, O.QOP_GET_ERROR, new Uint8Array(), out)).toBe(4);
     return new DataView(out.buffer).getUint32(0, true);
   };
+  const sendBytes = (op: number, payload: Uint8Array) => {
+    const view = new DataView(b.cmdbufView!.buffer);
+    view.setUint16(0, op, true); view.setUint16(2, payload.length, true);
+    b.cmdbufView!.set(payload, 4);
+    expect(decodeAndDispatch(b, 0, 4 + payload.length)).toBe(0);
+  };
+  /** An element buffer holding `indices` (u16) bound to ELEMENT_ARRAY_BUFFER. */
+  const elements = (name: number, indices: number[]) => {
+    send(O.OP_BIND_BUFFER, [0x8893, name]);
+    const payload = new Uint8Array(12 + indices.length * 2), v = new DataView(payload.buffer);
+    v.setUint32(0, 0x8893, true); v.setUint32(4, indices.length * 2, true);
+    indices.forEach((index, i) => v.setUint16(8 + i * 2, index, true));
+    v.setUint32(8 + indices.length * 2, 0x88e4, true);
+    sendBytes(O.OP_BUFFER_DATA, payload);
+  };
   /** Client-array quad (wlroots binds its vertices from client memory). */
   const clientQuad = () => {
     const out = new Uint8Array(4 + 16 + 20 + 32), v = new DataView(out.buffer);
@@ -219,7 +253,7 @@ function setup() {
     gl.calls.clear();
     return { attachments, defaults };
   };
-  return { b, gl, send, sendFloats, query, error, clientQuad, renderbuffer, framebuffer, texture, counting };
+  return { reg, b, gl, send, sendFloats, sendBytes, elements, query, error, clientQuad, renderbuffer, framebuffer, texture, counting };
 }
 
 /** One wlroots-style quad: bind the surface texture, draw a strip. */
@@ -374,7 +408,7 @@ describe("derived draw state follows every change it depends on", () => {
     const h = setup();
     // A GBM XRGB8888 buffer: RGBA8 storage whose alpha is 1.0 and never written.
     const bo = h.gl.createTexture();
-    h.gl.storage.set(bo, { format: RGBA8, alpha: 1, width: 4, height: 4 });
+    h.gl.storage.set(bo, { format: RGBA8, alpha: 1, width: 4, height: 4, content: 1 });
     setOpaqueAlphaStorage(bo, true);
     const token = registerImageSource(h.b, 41, bo, 4, 4);
     h.send(O.OP_BIND_RENDERBUFFER, [RBO, 7]);
@@ -384,6 +418,25 @@ describe("derived draw state follows every change it depends on", () => {
     h.send(O.OP_CLEAR, [0x4000]);
     h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
     expect(h.gl.storage.get(bo)!.alpha).toBe(1);
+    expect(h.error()).toBe(0);
+  });
+
+  // [C2]
+  it.each([
+    ["XRGB8888", 0x34325258, true], ["XBGR2101010", 0x30334258, true], ["XRGB2101010", 0x30335258, true],
+    ["XBGR16161616F", 0x48344258, true], ["ABGR16161616F", 0x48344241, false], ["R8", 0x20203852, false],
+    ["GR88", 0x38385247, false],
+  ])("a GBM %s buffer imported as an EGLImage renderbuffer locks alpha: %s", (_name, format, locked) => {
+    const h = setup();
+    expect(h.reg.createGpuBo(31, h.b.gl!, 4, 4, format)).not.toBeNull();
+    const gpu = h.reg.gpuBo(31)!;
+    const token = registerImageSource(h.b, 31, gpu.tex, 4, 4, undefined, gpuSourceStorage(gpu.storage));
+    h.send(O.OP_BIND_RENDERBUFFER, [RBO, 7]);
+    expect(h.query(O.QOP_IMAGE_TARGET, [2, 7, token]).getUint32(0, true)).toBe(0);
+    h.framebuffer(9, 7);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.mask[3]).toBe(!locked);
+    if (locked) expect(h.gl.storage.get(gpu.tex)!.alpha).toBe(1);
     expect(h.error()).toBe(0);
   });
 
@@ -483,6 +536,99 @@ describe("derived draw state follows every change it depends on", () => {
     expect(h.query(O.QOP_IMAGE_OBJECT_DELETE, [1, 50]).getUint32(0, true)).toBe(0);
     h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
     expect(h.gl.draws.at(-1)).toBe(primary);
+    expect(h.error()).toBe(0);
+  });
+});
+
+describe("EGLImage siblings sample current storage without per-draw copies", () => {
+  /** A compositor: output FBO 9 (RGBA8 renderbuffer 7) and client texture
+   * 60, an EGLImage sibling of buffer storage `bo` (token). */
+  function compositor() {
+    const h = setup();
+    h.renderbuffer(7, RGBA8);
+    h.framebuffer(9, 7);
+    const bo = h.gl.createTexture();
+    h.gl.storage.set(bo, { format: RGBA8, alpha: 1, width: 4, height: 4, content: 1 });
+    const token = registerImageSource(h.b, 41, bo, 4, 4);
+    h.send(O.OP_ACTIVE_TEXTURE, [0x84c0]);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 60]);
+    expect(h.query(O.QOP_IMAGE_TARGET, [1, 60, token]).getUint32(0, true)).toBe(0);
+    const canonical = () => h.gl.storage.get(bo)!.content;
+    const sample = () => { h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]); return h.gl.sampled.at(-1); };
+    return { h, bo, token, canonical, sample };
+  }
+
+  // [C5]
+  it("a steady frame copies nothing", () => {
+    const { h, canonical, sample } = compositor();
+    expect(sample()).toBe(canonical());
+    const { calls } = perDraw(h, 16, "buffer", false);
+    expect(calls.copyTexSubImage2D ?? 0).toBe(0);
+    expect(calls.getParameter ?? 0).toBe(0);
+    expect(h.gl.sampled.slice(-16)).toEqual(new Array(16).fill(canonical()));
+    // Rebinding the sibling each quad, as a compositor does, changes nothing.
+    const bound = perDraw(h, 16, "buffer");
+    expect(bound.calls.copyTexSubImage2D ?? 0).toBe(0);
+    expect(h.error()).toBe(0);
+  });
+
+  // [C5]
+  it("copies once after each write to the canonical storage, by any path", () => {
+    const { h, bo, token, canonical, sample } = compositor();
+    sample();
+    const copies = () => h.gl.calls.get("copyTexSubImage2D") ?? 0;
+    const once = (write: () => void) => {
+      write();
+      h.gl.calls.clear();
+      expect(sample()).toBe(canonical());
+      expect(copies()).toBe(1);
+      h.gl.calls.clear();
+      expect(sample()).toBe(canonical());
+      expect(copies()).toBe(0);
+    };
+    // A client draws into the buffer through an EGLImage renderbuffer.
+    once(() => {
+      h.send(O.OP_BIND_RENDERBUFFER, [RBO, 70]);
+      expect(h.query(O.QOP_IMAGE_TARGET, [2, 70, token]).getUint32(0, true)).toBe(0);
+      h.framebuffer(71, 70);
+      h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+      h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
+    });
+    // ...or clears it.
+    once(() => {
+      h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 71]);
+      h.send(O.OP_CLEAR, [0x4000]);
+      h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
+    });
+    // ...or writes pixels through another sibling texture.
+    once(() => {
+      h.send(O.OP_ACTIVE_TEXTURE, [0x84c1]);
+      h.send(O.OP_BIND_TEXTURE, [TEX, 72]);
+      expect(h.query(O.QOP_IMAGE_TARGET, [1, 72, token]).getUint32(0, true)).toBe(0);
+      h.send(O.OP_TEX_SUB_IMAGE_2D, [TEX, 0, 0, 0, 1, 1, 0x1908, 0x1401, 4, 0x01020304]);
+      // Only unit 0's sibling is counted below; a bound sibling copies too.
+      h.send(O.OP_BIND_TEXTURE, [TEX, 0]);
+      h.send(O.OP_ACTIVE_TEXTURE, [0x84c0]);
+    });
+    expect(h.gl.storage.get(bo)!.content).toBe(canonical());
+    expect(h.error()).toBe(0);
+  });
+
+  // [C5]
+  it("copies after a client renders into a GBM buffer as its default framebuffer", () => {
+    const { h } = compositor();
+    expect(h.reg.createGpuBo(31, h.b.gl!, 4, 4, 0x34325241)).not.toBeNull();
+    const gpu = h.reg.gpuBo(31)!;
+    const token = registerImageSource(h.b, 31, gpu.tex, 4, 4);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 61]);
+    expect(h.query(O.QOP_IMAGE_TARGET, [1, 61, token]).getUint32(0, true)).toBe(0);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    // The EGL surface's default framebuffer is the buffer's own framebuffer.
+    h.b.shadow.fbo = gpu.fbo;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.sampled.at(-1)).toBe(h.gl.storage.get(gpu.tex)!.content);
     expect(h.error()).toBe(0);
   });
 });

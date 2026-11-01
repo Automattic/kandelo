@@ -27,6 +27,7 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { replaceTextureLevels } from "./texture-levels.js";
 import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
+import { noteStorageWrite } from "./image-writes.js";
 
 const GL_TEXTURE_2D = 0x0de1;
 const GL_UNPACK_ROW_LENGTH = 0x0cf2;
@@ -164,6 +165,7 @@ export function bindForeignTexture(
         }
         return checkedGlCall(b, () => gl.texSubImage2D(GL_TEXTURE_2D,0,0,0,dims.w,dims.h,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
     });
+    noteStorageWrite(entry.tex);
     if (!accepted) return -5;
     if (candidate) transferNativeRetirement(candidate);
     published = true;

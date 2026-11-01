@@ -28,7 +28,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
     }
     const units = target === 0x0de1 ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
     const unit = b.shadow.activeTexture;
-    if (unit >= 0 && unit < units.length) setTextureUnit(b.shadow, target !== 0x0de1, unit, name ? texture : null);
+    if (unit >= 0 && unit < units.length) setTextureUnit(b, target !== 0x0de1, unit, name ? texture : null);
     return true;
   }
   if (kind === 2) {

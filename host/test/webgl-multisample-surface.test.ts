@@ -10,6 +10,8 @@ import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
 import { prepareSurfaceCreation } from "../src/webgl/surface-create.js";
 import { retainSurfaceStorage } from "../src/webgl/surface-resources.js";
+import { registerFramebufferColorStorage, storageWrites } from "../src/webgl/image-writes.js";
+import { resolveSurfaceMultisample } from "../src/webgl/multisample.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 
 /** EGL creation word: RGBA8/D24S8 storage (low byte 1), samples in bits 8..16. */
@@ -382,6 +384,26 @@ describe("multisampled GBM and Wayland windows", () => {
     expect([...read.pixels!]).toEqual([...pixels]);
     expect(s.core.state.get(READ_BINDING)).toBe(s.b.surface.multisample!.fbo);
     expect(hasNativeRepair(s.gl)).toBe(false);
+  });
+});
+
+describe("multisampled GBM write counts", () => {
+  it("a resolve into a GBM buffer counts as a write to its storage", () => {
+    const r = msaaGl();
+    const { b } = binding(r.gl, { width: 0, height: 0 });
+    const back = r.textureFramebuffer(4, 2), storage = {};
+    // A GBM buffer's framebuffer registers its color storage at allocation.
+    registerFramebufferColorStorage(back, storage);
+    const retirement = reserveNativeRetirement({ gl: r.gl, errors: [] }, [])!;
+    const result = prepareSurfaceCreation(b, { surfaceId: 6, kind: 1, width: 4, height: 2, configId: config(4), targetBoId: 40 },
+      { gl: r.gl, fbo: back, w: 4, h: 2, retirement });
+    result.prepared!.commit();
+    const writes = storageWrites(storage);
+    // Drawing into the multisampled storage does not write the buffer...
+    expect(writes.count).toBe(0);
+    // ...its resolve does, so EGLImage siblings and CPU mirrors see it.
+    expect(resolveSurfaceMultisample(b.surface)).toBe(true);
+    expect(writes.count).toBe(1);
   });
 });
 
