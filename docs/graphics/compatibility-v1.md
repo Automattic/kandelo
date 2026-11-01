@@ -72,17 +72,31 @@ previous code):
   `GAMMA_LUT` and `GAMMA_LUT_SIZE` properties, applied by the host to the
   CRTC output (cursor included) on every presenter.
 
-**Proposed hard boundaries** (WebGL 2 or host capability limits; each keeps a
-truthful error):
+**Maintainer decisions, 2026-11-01.** No limit below is a silent omission:
+each was approved explicitly, keeps a truthful error or capability report, and
+records why. Deferred work is also listed in
+[future improvements](../future-improvements.md#graphics).
 
-- `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
-- No format modifiers; no async or target page flips.
-- `GL_EXT_color_buffer_half_float` is advertised only when WebGL 2's
-  `EXT_color_buffer_float` or `EXT_color_buffer_half_float` exists.
-- A host with no GLES renderer (Node without an embedder WebGL2 or
-  OffscreenCanvas, or a browser where WebGL2 context creation fails):
-  `eglInitialize` fails with `EGL_NOT_INITIALIZED` (EGL 1.5 §3.2), on both
-  hosts, instead of a later window-surface `EGL_BAD_ALLOC`.
+| Item | Decision | Why |
+|---|---|---|
+| `EGL_SYNC_CL_EVENT` | Boundary: `EGL_BAD_ATTRIBUTE` | Kandelo provides no OpenCL client API. |
+| GL rendering on Node | Deferred | Node has no WebGL; without an embedder WebGL 2 renderer `eglInitialize` fails with `EGL_NOT_INITIALIZED` (EGL 1.5 §3.2), as in a browser without WebGL 2. |
+| OpenGL ES 3.0 | Deferred | The desktop stack (wlroots, Cage, Sway, Labwc, SFWBar, ScummVM's current path) is GLES 2; ES3 would roughly double conformance time. ES3 requests fail with `EGL_BAD_MATCH`. |
+| `EGL_KHR_no_config_context` | Kept | The extension guarantees ES 2.0 with `GL_OES_surfaceless_context` and requires `EGL_BAD_MATCH` for an unsupported version; wlroots needs it. dEQP's `create_context.no_config` expects ES3 beyond the extension text. |
+| KMS format modifiers | Not advertised (`DRM_CAP_ADDFB2_MODIFIERS` 0, no `IN_FORMATS`) | CPU buffers are truly linear and GPU buffers are opaque textures; a tiled layout would be fiction, and no program needs modifiers. |
+| Async and target page flips | Not advertised (caps 0) | Browser presentation cannot tear, so the flag would add no latency benefit; programs fall back without it. |
+| Atomic planes | Primary and cursor only, no scaling or positioning of the primary | The DRM uAPI lets each driver define its planes; overlay planes and scaling are optional. |
+| Dumb buffers on the render node | Allowed | Kandelo's CPU allocator; no program is harmed by being more permissive than Linux. |
+| Multiple KMS displays | Deferred | No current program needs a second monitor; wlroots virtual outputs need no KMS change. |
+| YUV scanout on the primary plane | Deferred | YUV is imported through EGL; an RGB-only primary plane is conformant because drivers define plane formats. |
+| 10-bit and FP16 window surfaces | Deferred | No program in the stack requests them; GBM, EGL import and KMS scanout of those formats are implemented. |
+| `EGL_MULTISAMPLE_RESOLVE_BOX` | No config advertises it | Optional in EGL 1.5; WebGL 2 cannot read individual samples, so an exact box filter cannot be guaranteed. |
+| Constant-color with constant-alpha blending | Implemented (source-factor shader fold) | Previously refused by WebGL; the fold is exact and costs nothing for other draws. |
+| `EGL_WL_bind_wayland_display` | Deferred | Clients use linux-dmabuf; `gbm_bo_import(WL_BUFFER)` fails with `EINVAL`, as in Mesa without a bound `wl_drm`. |
+| Optional wlroots GL extensions (timer query, 2_10_10_10_REV, norm16, KHR_debug) | Deferred | wlroots works without them; no program in the stack needs them. |
+| IGT porting | Deferred | KMS/sync coverage uses Rust and guest tests that mirror IGT subtests by name. |
+| wasm64 compositor builds | Deferred (foundation kept) | No program needs them; the wasm64 Meson cross file and build-roots helper landed. |
+| Host faults | Fatal | A refused cleanup, lost writeback, or bookkeeping violation means the system is breaking down; WebGL context loss is a normal reset, not a fault. |
 
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
@@ -149,10 +163,6 @@ when both stages read it and the program has another active uniform. A
 standalone self-judging reproduction confirms it on Firefox 155 only; it is
 registered as `FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM` with a Firefox-scoped,
 tagged substitution of a private uniform.
-
-**Further boundaries recorded:** dumb-buffer ioctls stay allowed on the render
-node as Kandelo's CPU allocator; primary-plane scaling and positioning are
-refused like Linux's legacy primary helper.
 
 **Robust buffer access (maintainer decision D-25, 2026-11-01): emulated for
 robust contexts only.** `EXT_robustness` §2.8 (`KHR_robustness` §10.3.1.1rob)
