@@ -18168,3 +18168,80 @@ no atomic error publication, guest32/64 marshalling, normal product, browser,
 CTS or baseline completion is claimed. Canonical combined ABI/kernel/resolver,
 own SDK/program/image artifacts and broader consumer/conformance gates remain
 pending. Numeric program56/host3/GL17/fork21 is unchanged.
+
+### Shared child-watch dispatch and upstream callback typing, source stage
+
+Source review identifies a second shared GLib callback contract violation:
+the native child-watch dispatcher calls a public void `GChildWatchFunc`,
+while its source-closure bridge returns gboolean. The new
+`wasm-child-watch-contract.patch` supplies an exact void adapter, retaining
+the separate inner GClosure BOOLEAN/Unix ULONG protocol. GLib remains
+2.84.4 with recipe revision 9; no numeric ABI increment is introduced.
+The original signature traps remain recorded without claiming that stripped
+indirect targets have been recovered.
+
+The upstream test fixture separately adapts its own unary class/default
+interface callbacks and missing connected-userdata parameters to their
+registered signatures. Original helper bodies, assertions, test ordering
+and selection remain. A dedicated inner child-closure callback matches
+the actual GValue protocol instead of reusing an IO-channel callback.
+The twenty-argument mixed libffi family remains unsupported and unmodified.
+
+Recipe revision 5 adds `gobject-child-watch-contract.wasm`, which starts a
+real child exiting 7 through ordinary spawn/exec. Its public and GClosure
+routes check PID/status/userdata, exactly-once notification, closure cleanup
+and ECHILD after reaping. These normal Kandelo cases are prepared, not run.
+A native GLib 2.86.3 reference compiles with strict warnings and passes both
+routes; that does not validate rebuilt Kandelo GLib 2.84.4.
+
+Seventeen focused actual-target header type checks meet their expected
+outcomes: six adapter groups compile, ten incompatible old callback shapes
+reject, and one unchanged public/default-vtable contract group compiles.
+Strict production patch composition matches all seven reviewed complete
+source files. Evidence is under primary
+`.context/gobject-upstream-callback-review-r1/` and
+`.context/gobject-child-watch-integration-r1/`. The first native compiler
+wrapper attempt fails on injected cross-target flags before source parsing;
+the successful type check uses the declared unwrapped LLVM compiler.
+The complete new C fixture also passes strict Wasm32 syntax against those
+recorded normal headers. Its first syntax invocation used an incorrect
+sysroot path and failed at missing time.h; the corrected command derives
+the exact sysroot/compiler/header arguments from the existing type report.
+This source stage is separate from the frozen primary540b normal build;
+it claims no new menu, browser, application or POSIX acceptance.
+
+### Normal child-watch and upstream callback validation at fc00303c42
+
+The separate normal cohort at source
+`fc00303c42769e7e6cb781b5505021191c67ac02` builds its own complete
+Wasm32/Wasm64 SDKs, release xtask, six-package projection, kernel and host.
+Job `child-watch-normal-r1-1031-201452-5106` finishes exit 1 in 512.3
+seconds: all provisioning, build, selected kernel ABI and identity guards
+pass; the unchanged upstream signals target remains a failure. This is
+not a clean overall test run.
+
+All 77 focused actual-library guest cases pass, including both real
+child-watch spawn/exec/status/cleanup/reap routes. The separately recorded
+upstream selection passes 9 of 10 targets. Basic-signals, closure,
+defaultiface, dynamictype and accumulator now pass with their original
+assertions retained. Signals still exits 134 on generated libffi signature
+key `87964688318624` (`0x5000e00000a0`): void result, twenty arguments,
+including float, double and two 64-bit integers. Its empty host-diagnostic
+array is retained with the explicit guest failure; this unsupported
+dispatch family is ordinary implementation work, not a platform boundary.
+The two selections respectively exclude 10 and 77 cases by selection;
+they do not silently skip the failing target.
+
+The actual child-watch program is 820,022 bytes, SHA256
+`8479379c1c016ab67190f91a353a10056aedba7f87cdbb7e6946d49fc83fd25e`.
+The selected kernel is 1,839,996 bytes, SHA256
+`f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
+The projection manifest SHA256 is
+`c7e564109a3ccc8ba39769d7a54830942abe25260596569786bd5b1180a2d62a`.
+Own SDK, host and complete projection identities remain unchanged across
+the tests. Exact commands, raw logs, both test reports and per-artifact
+identities are in mutable worktree
+`.context/child-watch-normal-r1/`, including `summary.json` and
+`results/final-identities.json`. This evidence establishes normal Node
+guest callback behavior. It does not establish Start-menu navigation,
+ScummVM rendering, browser parity, performance or full POSIX conformance.

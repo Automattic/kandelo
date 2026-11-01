@@ -44,6 +44,11 @@ wasm = "gobject-class-handler-contract.wasm"
 fork_instrumentation = "auto"
 
 [[outputs]]
+name = "gobject-child-watch-contract"
+wasm = "gobject-child-watch-contract.wasm"
+fork_instrumentation = "auto"
+
+[[outputs]]
 name = "gobject-type"
 wasm = "gobject-type.wasm"
 fork_instrumentation = "auto"

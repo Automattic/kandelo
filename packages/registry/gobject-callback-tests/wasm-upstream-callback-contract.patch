@@ -1,0 +1,132 @@
+Subject: [PATCH] Adapt upstream test callbacks to their declared registration types
+
+Keep all original helper bodies, assertions and test registrations.
+Class initializers have class_data; connected signals have user_data;
+child closures retain their actual inner GValue representation.
+
+--- a/gobject/tests/basic-signals.c
++++ b/gobject/tests/basic-signals.c
+@@ -100,0 +101,8 @@
++static void
++test_object_class_init_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_object_class_init (instance);
++}
++
+@@ -102 +110 @@
+-                   test_object_class_init, NULL, NULL,
++                   test_object_class_init_callback, NULL, NULL,
+--- a/gobject/tests/accumulator.c
++++ b/gobject/tests/accumulator.c
+@@ -204,0 +205,18 @@
++}
++
++static gboolean
++test_object_signal2_callback_before_with_data (TestObject *object,
++                                        gint        param,
++                                        gpointer    user_data)
++{
++  (void) user_data;
++  return test_object_signal2_callback_before (object, param);
++}
++
++static gboolean
++test_object_signal2_callback_after_with_data (TestObject *object,
++                                        gint        param,
++                                        gpointer    user_data)
++{
++  (void) user_data;
++  return test_object_signal2_callback_after (object, param);
+@@ -236,0 +255,8 @@
++static void
++test_object_class_init_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_object_class_init (instance);
++}
++
+@@ -238 +264 @@
+-                   test_object_class_init, NULL, NULL,
++                   test_object_class_init_callback, NULL, NULL,
+@@ -262 +288 @@
+-                    G_CALLBACK (test_object_signal2_callback_before), NULL);
++                    G_CALLBACK (test_object_signal2_callback_before_with_data), NULL);
+@@ -264 +290 @@
+-                          G_CALLBACK (test_object_signal2_callback_after), NULL);
++                          G_CALLBACK (test_object_signal2_callback_after_with_data), NULL);
+--- a/gobject/tests/testmodule.c
++++ b/gobject/tests/testmodule.c
+@@ -35,0 +36,8 @@
++static void
++test_module_class_init_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_module_class_init (instance);
++}
++
+@@ -37 +45 @@
+-	     test_module_class_init, NULL, NULL,
++	     test_module_class_init_callback, NULL, NULL,
+--- a/gobject/tests/defaultiface.c
++++ b/gobject/tests/defaultiface.c
+@@ -52,0 +53,8 @@
++static void
++test_static_iface_default_init_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_static_iface_default_init (instance);
++}
++
+@@ -54 +62 @@
+-              NULL, test_static_iface_default_init)
++              NULL, test_static_iface_default_init_callback)
+@@ -111,0 +120,16 @@
++}
++
++static void
++test_dynamic_iface_default_init_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_dynamic_iface_default_init (instance);
++}
++
++static void
++test_dynamic_iface_default_finalize_callback (gpointer instance,
++                       gpointer class_data)
++{
++  (void) class_data;
++  test_dynamic_iface_default_finalize (instance);
+@@ -122,2 +146,2 @@
+-      (GClassInitFunc)     test_dynamic_iface_default_init,
+-      (GClassFinalizeFunc) test_dynamic_iface_default_finalize,
++                          test_dynamic_iface_default_init_callback,
++                          test_dynamic_iface_default_finalize_callback,
+--- a/gobject/tests/closure.c
++++ b/gobject/tests/closure.c
+@@ -98,0 +99,17 @@
++/* Match g_child_watch_closure_callback's existing GValue protocol.
++ * The outer native source dispatch remains GChildWatchFunc (void return). */
++static gboolean
++child_quit_callback (
++#ifdef G_OS_UNIX
++                     gulong    pid,
++#else
++                     gpointer  pid,
++#endif
++                     gint      wait_status,
++                     gpointer  user_data)
++{
++  (void) pid;
++  (void) wait_status;
++  return simple_quit_callback (user_data);
++}
++
+@@ -132 +149 @@
+-  test_source (source, G_CALLBACK (iochannel_quit_callback));
++  test_source (source, G_CALLBACK (child_quit_callback));
