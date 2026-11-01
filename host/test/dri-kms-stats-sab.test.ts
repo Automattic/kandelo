@@ -128,6 +128,54 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(Atomics.load(view, 0)).toBe(2);
   });
 
+  it("a dark CRTC shows black once and reports no scanout; lighting it presents again", () => {
+    const kernel = makeKernel();
+    const calls: string[] = [];
+    const context = {
+      fillStyle: "",
+      fillRect: (_x: number, _y: number, w: number, h: number) => { calls.push(`fill ${context.fillStyle} ${w}x${h}`); },
+      putImageData: () => { calls.push("put"); },
+    };
+    const canvas = { width: 32, height: 24, getContext: () => context } as unknown as OffscreenCanvas;
+    const stats = new Int32Array(new SharedArrayBuffer(64));
+    kernel.attachKmsCanvas(1, canvas, stats.buffer as SharedArrayBuffer, { mode: "2d" });
+    stubScanout(kernel, 32, 24);
+    const kms = kernel.kms as unknown as Record<string, unknown>;
+    let dark = false;
+    const lit = kms.currentFb as (id: number) => unknown;
+    kms.isDark = () => dark;
+    kms.currentFb = (id: number) => (dark ? undefined : lit(id));
+    vi.advanceTimersByTime(17);
+    expect(calls).toEqual(["put"]);
+    expect(Atomics.load(stats, 9)).toBe(1);
+    dark = true; // ACTIVE 0 or DPMS Off: the kernel latched no framebuffer
+    vi.advanceTimersByTime(17);
+    vi.advanceTimersByTime(17);
+    expect(calls).toEqual(["put", "fill #000 32x24"]); // cleared once, not the last frame
+    expect(Atomics.load(stats, 9)).toBe(0);
+    dark = false;
+    vi.advanceTimersByTime(17);
+    expect(calls).toEqual(["put", "fill #000 32x24", "put"]);
+    expect(Atomics.load(stats, 9)).toBe(1);
+  });
+
+  it("stats-only consumers (Node) see the same scanout state", () => {
+    const kernel = makeKernel();
+    const stats = new Int32Array(new SharedArrayBuffer(64));
+    kernel.attachKmsStats(1, stats.buffer as SharedArrayBuffer);
+    stubScanout(kernel, 16, 16);
+    const kms = kernel.kms as unknown as Record<string, unknown>;
+    let dark = false;
+    const lit = kms.currentFb as (id: number) => unknown;
+    kms.isDark = () => dark;
+    kms.currentFb = (id: number) => (dark ? undefined : lit(id));
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 9)).toBe(1);
+    dark = true;
+    vi.advanceTimersByTime(17);
+    expect(Atomics.load(stats, 9)).toBe(0);
+  });
+
   it("tickVblank is a no-op for the stats slots when no SAB is attached", () => {
     const kernel = makeKernel();
     stubScanout(kernel, 8, 8);

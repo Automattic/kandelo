@@ -24,6 +24,20 @@ describe("KmsRegistry", () => {
     expect(kms.currentFb(1)).toBeUndefined();
   });
 
+  it("isDark: a CRTC that latched no framebuffer, or lost the one it scans, is dark", () => {
+    const kms = new KmsRegistry(new GbmBoRegistry());
+    expect(kms.isDark(1)).toBe(false); // never lit: nothing was shown
+    kms.addFb(fb(10));
+    kms.setFb(1, 10, { x: 0, y: 0, width: 64, height: 32 });
+    expect(kms.isDark(1)).toBe(false);
+    kms.setFb(1, 0, { x: 0, y: 0, width: 0, height: 0 }); // ACTIVE 0 / DPMS Off
+    expect(kms.isDark(1)).toBe(true);
+    kms.setFb(1, 10, { x: 0, y: 0, width: 64, height: 32 });
+    expect(kms.isDark(1)).toBe(false);
+    kms.rmFb(10); // RMFB disables the CRTC that scans it
+    expect(kms.isDark(1)).toBe(true);
+  });
+
   it("flipCount counts every latch, including a rebind of the same fb", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
     expect(kms.flipCount()).toBe(0);

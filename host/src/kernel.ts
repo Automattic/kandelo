@@ -123,6 +123,10 @@ interface KernelGraphicsAccess {
   /** Re-present a GL-owned CRTC's last window frame if its color stage or
    *  the cursor it blends changed since that frame was shown. */
   readonly presentCrtcOutput: (crtcId: number) => void;
+  /** A dark CRTC (`KmsRegistry.isDark`): clear the native WebGL2 output it
+   *  was last shown through (a GL session that owns the canvas, or direct
+   *  GPU scanout) to black. Returns whether a context was cleared. */
+  readonly blankCrtcOutput: (crtcId: number) => boolean;
 }
 const kernelGraphicsAccess = new WeakMap<WasmPosixKernel, KernelGraphicsAccess>();
 
@@ -1196,6 +1200,11 @@ export class WasmPosixKernel {
    * default framebuffer. On a KMS canvas that is the CRTC's output. */
   #presentWindowFrame(b: GlBinding, surface: GlSurfaceResources = b.drawSurface ?? b.surface): void {
     const crtcId = b.claimedKmsCrtc;
+    // A dark CRTC shows black: the session's frame does not reach it.
+    if (crtcId != null && this.kms.isDark(crtcId) && b.gl) {
+      this.#clearToBlack(crtcId, b.gl);
+      return;
+    }
     const target = surface.presentTarget;
     if (crtcId == null || !this.kms.gamma(crtcId) || !b.gl || !target) {
       if (crtcId != null) this.#releaseColorStage(crtcId);
@@ -1210,6 +1219,11 @@ export class WasmPosixKernel {
   #presentDirectFrame(b: GlBinding): void {
     const crtcId = b.claimedKmsCrtc;
     if (crtcId == null) return;
+    // The frame went straight to the canvas; a dark CRTC still shows black.
+    if (this.kms.isDark(crtcId) && b.gl) {
+      this.#clearToBlack(crtcId, b.gl);
+      return;
+    }
     if (!this.kms.gamma(crtcId) || !b.gl || !b.canvas) {
       this.#releaseColorStage(crtcId);
       return;
@@ -1253,6 +1267,33 @@ export class WasmPosixKernel {
     this.#presentThroughStage(crtcId, gl, null, 0, 0, canvas.width, canvas.height, false, false);
   }
 
+  /** The WebGL2 context each CRTC's frames last reached the canvas
+   *  through by direct GPU scanout, so a dark CRTC can be cleared there. */
+  #directScanoutGl = new Map<number, WebGL2RenderingContext>();
+
+  /** Clear `gl`'s default framebuffer (the canvas) to opaque black: the
+   *  output of a CRTC that scans out nothing. The color stage, if any, has
+   *  no frame to show until the CRTC lights again. */
+  #clearToBlack(crtcId: number, gl: WebGL2RenderingContext): void {
+    this.#releaseColorStage(crtcId);
+    if (gl.isContextLost()) return;
+    this.withGraphicsState(gl, () => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.disable(gl.SCISSOR_TEST);
+      gl.colorMask(true, true, true, true);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    });
+  }
+
+  private blankCrtcOutput(crtcId: number): boolean {
+    const owner = this.gl.list().find(b => b.claimedKmsCrtc === crtcId && b.gl && b.canvas);
+    const gl = owner?.gl ?? this.#directScanoutGl.get(crtcId);
+    if (!gl) return false;
+    this.#clearToBlack(crtcId, gl);
+    return true;
+  }
+
   private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number):
       { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
     const storage = this.scanoutStorage(fb.bo_id);
@@ -1266,6 +1307,7 @@ export class WasmPosixKernel {
     if (fb.x + fb.width > storage.w || fb.y + fb.height > storage.h)
       throw new Error("Invalid GPU scanout storage dimensions");
     const direct = allowDirect && canvas.getContext("webgl2") === storage.gl;
+    if (direct) this.#directScanoutGl.set(crtcId, storage.gl);
     // A LUT, or a 10-bit/half-float buffer reduced to the 8-bit output,
     // needs the CRTC output stage; any other buffer blits as it is.
     if (direct && (this.kms.gamma(crtcId) || scanoutNeedsReduction(storage))) {
@@ -1641,6 +1683,7 @@ export class WasmPosixKernel {
       gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number) =>
         this.gpuScanout(fb, canvas, allowDirect, crtcId),
       presentCrtcOutput: (crtcId: number) => this.presentCrtcOutput(crtcId),
+      blankCrtcOutput: (crtcId: number) => this.blankCrtcOutput(crtcId),
     })]);
     // Let the GBM bo registry reach per-pid wasm Memory so the
     // bind/unbind sync (parent writes → SAB → child reads after PRIME

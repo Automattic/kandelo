@@ -3330,8 +3330,14 @@ export class CentralizedKernelWorker {
    *  count, timestamp, width, height, blit µs); slots [5,6] populated
    *  from kernel-side `kernel_kms_commit_count` / `kernel_kms_last_frame_us`;
    *  slot 7 = active presenter (1 = 2d, 2 = pump webgl2-scanout,
-   *  3 = program-owned WebGL2, 0 = none). */
+   *  3 = program-owned WebGL2, 0 = none); slot 8 = DRM master pid; slot 9
+   *  = scanout state (1 = the CRTC scans out a framebuffer, 0 = it shows
+   *  nothing: never lit, or dark). */
   private kmsStatsViews = new Map<number, Int32Array>();
+  /** CRTCs whose canvas has been cleared to black since they went dark
+   *  (`KmsRegistry.isDark`); cleared once per dark period, so a dark CRTC
+   *  costs the pump nothing per tick. */
+  private kmsBlanked = new Set<number>();
   /** Cached per-CRTC scratch for both presenters (putImageData /
    *  texImage2D) so the pump doesn't allocate 8 MB/frame at 1080p.
    *  Resized on bo geometry change. Backed by a plain `ArrayBuffer` so
@@ -31302,7 +31308,23 @@ export class CentralizedKernelWorker {
           .kernel_kms_commit_count as
           ((id: number) => bigint) | undefined;
         const gpuFrames = new Map<number, { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> }>();
+        // A dark CRTC (turned off, DPMS Off, or its framebuffer removed)
+        // shows black, not its last frame: clear each presenter's output
+        // once per dark period. Native WebGL2 outputs (a GL session owning
+        // the canvas, direct GPU scanout) are cleared inside this entry;
+        // the pump's own 2D and WebGL2 presenters in the detached phase.
+        const blanks: Array<{ crtcId: number; canvas: OffscreenCanvas }> = [];
         for (const [crtcId, canvas] of this.kmsCanvases) {
+          if (!this.#kernel.kms.isDark(crtcId)) {
+            this.kmsBlanked.delete(crtcId);
+            continue;
+          }
+          if (this.kmsBlanked.has(crtcId)) continue;
+          getKernelGraphicsAccess(this.#kernel).blankCrtcOutput(crtcId);
+          blanks.push({ crtcId, canvas });
+        }
+        for (const [crtcId, canvas] of this.kmsCanvases) {
+          if (this.#kernel.kms.isDark(crtcId)) continue;
           const fb = this.#kernel.kms.currentFb(crtcId);
           if (!fb || !this.#kernel.gl.scanoutSource(fb.bo_id)) {
             // A GL session presenting its window to this canvas: re-present
@@ -31411,6 +31433,7 @@ export class CentralizedKernelWorker {
           ((id: number) => bigint) | undefined;
         const statsSnapshots: Array<{
           stats: Int32Array;
+          scanning: boolean;
           ownerPid: number;
           width: number | null;
           height: number | null;
@@ -31427,6 +31450,7 @@ export class CentralizedKernelWorker {
             : Number((lastFrameUs?.(crtcId) ?? 0n) & 0x7fffffffn);
           statsSnapshots.push({
             stats,
+            scanning: fb !== undefined && !this.#kernel.kms.isDark(crtcId),
             ownerPid: this.#kernel.kms.getMasterPid() ?? 0,
             width: fb?.width ?? null,
             height: fb?.height ?? null,
@@ -31513,11 +31537,35 @@ export class CentralizedKernelWorker {
               if (stats.length > 7) Atomics.store(stats, 7, 2);
             }
           }
+          for (const { crtcId, canvas } of blanks) {
+            if (this.kmsContextMode.get(crtcId) === "2d") {
+              const context = this.kmsContexts.get(crtcId);
+              if (context) {
+                context.fillStyle = "#000";
+                context.fillRect(0, 0, canvas.width, canvas.height);
+              }
+            }
+            const presenter = this.kmsGlPresenters.get(crtcId);
+            if (presenter && !presenter.gl.isContextLost()) {
+              const gl = presenter.gl;
+              gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+              gl.clearColor(0, 0, 0, 1);
+              gl.clear(gl.COLOR_BUFFER_BIT);
+              // Present the next lit frame even if it is the same buffer.
+              presenter.lastFbId = -1;
+            }
+            this.kmsBlanked.add(crtcId);
+          }
           for (const snapshot of statsSnapshots) {
             // Display capability outlives applications. Publish ownership
             // even without a framebuffer so consumers can observe release.
             if (snapshot.stats.length > 8) {
               Atomics.store(snapshot.stats, 8, snapshot.ownerPid);
+            }
+            // Whether the CRTC scans out at all: a dark CRTC reads 0 on
+            // every host, Node stats consumers included.
+            if (snapshot.stats.length > 9) {
+              Atomics.store(snapshot.stats, 9, snapshot.scanning ? 1 : 0);
             }
             if (snapshot.width !== null && snapshot.height !== null) {
               Atomics.store(snapshot.stats, 2, snapshot.width);

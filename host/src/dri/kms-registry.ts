@@ -243,6 +243,17 @@ export class KmsRegistry {
     }
   }
 
+  /** Whether the CRTC scans out nothing although it has scanned out:
+   *  the kernel latched no framebuffer (a CRTC turned off, `ACTIVE` 0 or
+   *  DPMS Off, or disabled), or the latched framebuffer was removed (RMFB
+   *  disables the CRTC that scans it). A dark CRTC's output is black, on
+   *  every presenter. A CRTC that never latched anything is not dark: its
+   *  output was never shown. */
+  isDark(crtc_id: number): boolean {
+    const id = this.crtcBindings.get(crtc_id);
+    return id !== undefined && (id === 0 || !this.fbs.has(id));
+  }
+
   /** Monotonic count of SETCRTC/PAGE_FLIP latches. The vblank pump
    *  compares it across ticks to wake blocked pollers only when a flip
    *  could have retired into an event ring. */
