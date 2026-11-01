@@ -1,9 +1,8 @@
 import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
-import { expandedColorAttachment, forgetExpandedLevels } from "./luminance-float.js";
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { recordRenderbufferSize, recordTextureReplacement } from "./image-sizes.js";
+import { recordRenderbufferSize } from "./image-sizes.js";
 import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
 /** Private source handles never enter the public GLuint texture namespace. */
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
@@ -363,8 +362,6 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
     try {
       if (replaceTextureView(b, object as WebGLTexture, view)) {
         transferCandidate(view); installed = true;
-        recordTextureReplacement(object as WebGLTexture, source.width, source.height);
-        forgetExpandedLevels(object); // EGLImage storage replaces every level
         replaceTextureLevels(object as WebGLTexture, TEX, {width: source.width, height: source.height,
           internalFormat: source.internalFormat ?? 0x8058, format: source.format ?? 0x1908,
           type: source.type ?? 0x1401, compressed: false});
@@ -418,7 +415,6 @@ export function boundImageState(b: GlBinding, kind: number, target: number, sour
 /** Each sampling view has independent parameters. Refresh its pixels from the
  * canonical image before every draw, including writes made through other APIs. */
 export function prepareImageDraw(b: GlBinding): boolean {
-  if (expandedColorAttachment(b, b.shadow.fbo)) { recordGlError(b, 0x506); return false; }
   const seen = new Set<WebGLTexture>();
   for (const object of b.shadow.textureUnits) {
     if (!object || seen.has(object))

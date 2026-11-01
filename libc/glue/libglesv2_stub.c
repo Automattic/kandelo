@@ -2276,6 +2276,15 @@ static GLenum texture_pixel_error(GLenum format, GLenum type, uint32_t *bpp) {
 static GLenum texture_image_error(GLint internal, GLenum format, GLenum type, uint32_t *bpp) {
     GLenum error = texture_pixel_error(format, type, bpp);
     if (error == GL_INVALID_ENUM) return error;
+    /* Sized internal formats the dEQP-GLES2 tables accept with exactly one
+     * unsized pair (glsFboCompletenessTests.cpp s_extTextureRgRboFormats and
+     * s_extTextureFormatBGRA8888Formats, uploaded through gluTextureUtil's
+     * transfer format): EXT_texture_rg R8/RG8 and BGRA8888's BGRA8_EXT. */
+    if ((GLenum)internal == GL_R8_EXT || (GLenum)internal == GL_RG8_EXT || (GLenum)internal == GL_BGRA8_EXT) {
+        GLenum base = (GLenum)internal == GL_R8_EXT ? GL_RED_EXT
+                      : (GLenum)internal == GL_RG8_EXT ? GL_RG_EXT : GL_BGRA_EXT;
+        return format == base && type == GL_UNSIGNED_BYTE ? error : GL_INVALID_OPERATION;
+    }
     if (!texture_format_known((GLenum)internal)) return GL_INVALID_VALUE;
     if ((GLenum)internal != format) return GL_INVALID_OPERATION;
     return error;
@@ -2295,11 +2304,15 @@ static GLenum copy_texture_format_error(GLenum internal) {
 /* Section 4.4.3 RenderbufferStorage formats plus the extension formats the
  * host advertises: OES_rgb8_rgba8, OES_packed_depth_stencil and
  * EXT_texture_rg. No color-buffer float extension is advertised to GLES 2
- * (host/src/webgl/capabilities.ts), so 16F/32F formats are INVALID_ENUM. */
+ * (host/src/webgl/capabilities.ts), so 16F/32F formats are INVALID_ENUM.
+ * BGRA and BGRA8_EXT follow the dEQP-GLES2 EXT_texture_format_BGRA8888
+ * table (required color-renderable renderbuffers); the host stores them as
+ * RGBA8 and reports the requested format. */
 static GLenum renderbuffer_format_error(GLenum internal) {
     switch (internal) {
         case GL_RGBA4: case GL_RGB5_A1: case GL_RGB565: case GL_DEPTH_COMPONENT16: case GL_STENCIL_INDEX8:
         case GL_RGB8_OES: case GL_RGBA8_OES: case GL_DEPTH24_STENCIL8_OES: case GL_R8_EXT: case GL_RG8_EXT:
+        case GL_BGRA_EXT: case GL_BGRA8_EXT:
             return GL_NO_ERROR;
         default:
             return GL_INVALID_ENUM;
@@ -2429,7 +2442,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
         raise_client_error(error);
         return;
     }
-    if (internalFormat == GL_BGRA_EXT)
+    if (internalFormat == GL_BGRA_EXT || internalFormat == GL_BGRA8_EXT)
         internalFormat = GL_RGBA;
     uint32_t words[10] = {OP_TEX_IMAGE_2D,
                           target,

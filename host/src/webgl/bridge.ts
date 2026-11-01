@@ -25,18 +25,19 @@ import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniform
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
-import { isCubeFace, recordGeneratedMipmaps as recordGeneratedLevelRecords, recordTextureLevel } from "./texture-levels.js";
+import { boundTextureObject, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
-import { boundLogicalTexture, expandedColorAttachment, expandedFloatFormat, expandedLevel, expandedNative, expandedSourceBytes,
-  expandRows, generateExpandedMipmaps, setExpandedLevel } from "./luminance-float.js";
+import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
+import { copiedTextureColorRenderable, nativeRenderbufferFormat, renderbufferColorRenderable,
+  textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
-import { recordGeneratedMipmaps, recordRenderbufferSize, recordTextureImage, requireFramebufferDimensions } from "./image-sizes.js";
+import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
@@ -302,13 +303,6 @@ function normalizeTextureType(type: number): number {
   return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
 }
 
-/** The logical texture a 2D or cube-face image call specifies. */
-function boundLevelObject(b: GlBinding, target: number): WebGLTexture | null {
-  const unit = b.shadow.activeTexture;
-  return target === 0x0de1 ? b.shadow.textureUnits[unit] ?? null
-    : isCubeFace(target) ? b.shadow.cubeTextureUnits[unit] ?? null : null;
-}
-
 function normalizeTextureInternalFormat(internal: number, format: number, type: number): number {
   // GLES2 extensions use unsized RED/RG and floating-point formats. WebGL2
   // requires their sized GLES3 equivalents. es2-formats.ts has already
@@ -561,13 +555,6 @@ function dispatch(
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
       break;
   }
-  // GLES 2 section 4.4.5: a luminance/alpha float level is not
-  // color-renderable, although its RGBA stand-in may be natively.
-  if ((op === O.OP_CLEAR || op === O.OP_COPY_TEX_IMAGE_2D || op === O.OP_COPY_TEX_SUB_IMAGE_2D) &&
-      expandedColorAttachment(b, op === O.OP_CLEAR ? b.shadow.fbo : b.shadow.readFbo)) {
-    recordGlError(b, 0x506);
-    return;
-  }
   let uniformCount=1;
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
     const count=acceptedUniformCount(b,op,v,p);
@@ -578,7 +565,7 @@ function dispatch(
   switch (op) {
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR:
-      if (!requireFramebufferDimensions(b)) return;
+      if (!requireGlesFramebufferComplete(b)) return;
       gl.clear(v.getUint32(p, true));
       return;
     case O.OP_CLEAR_COLOR:
@@ -877,11 +864,9 @@ function dispatch(
         target, level, native.internal, width, height, border, native.format, type, data,
       ),level!==0,level);
       if (accepted) {
-        recordTextureImage(b,target,level,width,height);
-        setExpandedLevel(boundLogicalTexture(b,target),target,level,
-          expanded ? {format,type,width,height} : null);
-        recordTextureLevel(boundLevelObject(b,target),target,level,
-          {width,height,internalFormat:native.internal,format:native.format,type,compressed:false});
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat:native.internal,format:native.format,type,compressed:false,
+            gles:{internalFormat,format,type,expanded,colorRenderable:textureColorRenderable(internalFormat,format,type)}});
       }
       return accepted;
     }
@@ -902,8 +887,8 @@ function dispatch(
       // its own logical format/type, and an expanded format reaches only such
       // a level; the RGBA stand-in would otherwise accept RGBA data natively.
       const expanded = expandedFloatFormat(format, type);
-      const logical = expandedLevel(boundLogicalTexture(b,target),target,level);
-      if ((expanded || logical) && (logical?.format !== format || logical.type !== type)) {
+      const logical = textureLevel(boundTextureObject(b,target)!,target,level)?.gles;
+      if ((expanded || logical?.expanded) && (!logical?.expanded || logical.format !== format || logical.type !== type)) {
         recordGlError(b,0x502); return false;
       }
       const nativeFormat = expanded ? expandedNative(type).format : format;
@@ -964,13 +949,8 @@ function dispatch(
     }
     case O.OP_GENERATE_MIPMAP: {
       const target = v.getUint32(p,true);
-      const object = target === 0x8513 ? b.shadow.cubeTextureUnits[b.shadow.activeTexture]
-        : b.shadow.textureUnits[b.shadow.activeTexture];
-      if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target))) {
-        recordGeneratedMipmaps(b,target);
-        generateExpandedMipmaps(boundLogicalTexture(b,target),target);
-        recordGeneratedLevelRecords(object,target);
-      }
+      if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target)))
+        recordGeneratedMipmaps(boundTextureObject(b,target),target);
       return;
     }
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
@@ -984,10 +964,10 @@ function dispatch(
         v.getInt32(p + 20, true),
         data,
       ),level!==0,level)) {
-        recordTextureImage(b,target,level,width,height);
-        setExpandedLevel(boundLogicalTexture(b,target),target,level,null);
-        recordTextureLevel(boundLevelObject(b,target),target,level,
-          {width,height,internalFormat,format:internalFormat,type:0,compressed:true});
+        // ES 2.0 section 4.4.5: compressed formats are not color-renderable.
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat,format:internalFormat,type:0,compressed:true,
+            gles:{internalFormat,format:internalFormat,type:0,expanded:false,colorRenderable:false}});
       }
       return;
     }
@@ -1007,7 +987,7 @@ function dispatch(
       return;
     }
     case O.OP_COPY_TEX_IMAGE_2D: {
-      if (!requireFramebufferDimensions(b,true)) return;
+      if (!requireGlesFramebufferComplete(b,true)) return;
       const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
       const internalFormat = v.getUint32(p + 8, true);
       const width = v.getInt32(p + 20, true), height = v.getInt32(p + 24, true);
@@ -1019,15 +999,15 @@ function dispatch(
         width, height,
         v.getInt32(p + 28, true),
       ),level!==0,level)) {
-        recordTextureImage(b,target,level,width,height);
-        setExpandedLevel(boundLogicalTexture(b,target),target,level,null);
-        recordTextureLevel(boundLevelObject(b,target),target,level,
-          {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false});
+        recordTextureLevel(boundTextureObject(b,target),target,level,
+          {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false,
+            gles:{internalFormat,format:internalFormat,type:0x1401,expanded:false,
+              colorRenderable:copiedTextureColorRenderable(internalFormat)}});
       }
       return;
     }
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
-      if (!requireFramebufferDimensions(b,true)) return;
+      if (!requireGlesFramebufferComplete(b,true)) return;
       imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1309,7 +1289,7 @@ function dispatch(
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
-      if (!requireFramebufferDimensions(b) || !validateDrawFramebufferWithoutProgram(b)) return;
+      if (!requireGlesFramebufferComplete(b) || !validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
       issueGlesDraw(b,{mode:v.getUint32(p,true),empty:v.getInt32(p+8,true) === 0,
         issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true)),
@@ -1400,13 +1380,15 @@ function dispatch(
     }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE: {
+      const internal = v.getUint32(p + 4, true);
       const accepted = imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
         v.getUint32(p, true),
-        v.getUint32(p + 4, true),
+        nativeRenderbufferFormat(internal),
         v.getInt32(p + 8, true),
         v.getInt32(p + 12, true),
       ));
-      if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true));
+      if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true),
+        internal,renderbufferColorRenderable(internal));
       return accepted;
     }
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName

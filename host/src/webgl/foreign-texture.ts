@@ -18,7 +18,7 @@
  */
 import { importImageStorage, registerImageSource } from "./image-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { recordTextureReplacement } from "./image-sizes.js";
+import { replaceTextureLevels } from "./texture-levels.js";
 import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 
@@ -161,7 +161,9 @@ export function bindForeignTexture(
     if (!accepted) return -5;
     if (candidate) transferNativeRetirement(candidate);
     published = true;
-    if (realloc) recordTextureReplacement(entry.tex, dims.w, dims.h);
+    // Foreign storage is not a guest specification: no GLES 2 format record.
+    if (realloc) replaceTextureLevels(entry.tex, GL_TEXTURE_2D,
+      {width: dims.w, height: dims.h, internalFormat: 0x1908, format: 0x1908, type: 0x1401, compressed: false});
     entry.w = dims.w; entry.h = dims.h; return entry.texId;
   } catch { recordGlError(b,0x505); return -5; }
   finally {

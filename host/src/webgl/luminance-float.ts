@@ -1,5 +1,3 @@
-import type { GlBinding } from "./registry.js";
-
 /**
  * OES_texture_float and OES_texture_half_float define LUMINANCE, ALPHA and
  * LUMINANCE_ALPHA textures of type FLOAT and HALF_FLOAT_OES. WebGL 2 accepts
@@ -9,20 +7,14 @@ import type { GlBinding } from "./registry.js";
  * L -> (L,L,L,1), A -> (0,0,0,A), LA -> (L,L,L,A). Sampling, filtering and
  * mipmap generation of the RGBA stand-in equal those of the logical level.
  *
- * The logical (format, type) of each such level is kept here, keyed by the
- * guest-visible texture object (shared by an EGL share group), because GLES 2
- * performs no format conversion: a later TexSubImage2D must name the same
- * format and type, and the level is never color-renderable (section 4.4.5).
+ * The guest's logical (format, type) and the expansion flag live on the
+ * level record in texture-levels.ts. GLES 2 performs no format conversion,
+ * so a later TexSubImage2D must name the same format and type, and the level
+ * is never color-renderable (section 4.4.5).
  */
 
 const L = 0x1909, A = 0x1906, LA = 0x190a, RGBA = 0x1908;
 const FLOAT = 0x1406, HALF_FLOAT = 0x140b;
-const TEXTURE_2D = 0x0de1, CUBE = 0x8513, CUBE_FIRST = 0x8515;
-
-export type ExpandedLevel = { format: number; type: number; width: number; height: number };
-
-const levels = new WeakMap<object, Map<number, ExpandedLevel>>();
-const levelKey = (target: number, level: number) => target * 64 + level;
 
 /** `type` is the WebGL type (HALF_FLOAT_OES already normalized). */
 export function expandedFloatFormat(format: number, type: number): boolean {
@@ -32,57 +24,6 @@ export function expandedFloatFormat(format: number, type: number): boolean {
 /** Native WebGL 2 triple used for an expanded level. */
 export function expandedNative(type: number): { internal: number; format: number } {
   return { internal: type === FLOAT ? 0x8814 /* RGBA32F */ : 0x881a /* RGBA16F */, format: RGBA };
-}
-
-/** The guest-visible texture bound to an image target on the active unit. */
-export function boundLogicalTexture(b: GlBinding, target: number): object | null {
-  const base = target === TEXTURE_2D ? TEXTURE_2D : CUBE;
-  const units = base === TEXTURE_2D ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
-  return units[b.shadow.activeTexture] ?? b.shadow.defaultTextures.get(base) ?? null;
-}
-
-export function expandedLevel(texture: object | null, target: number, level: number): ExpandedLevel | undefined {
-  return texture ? levels.get(texture)?.get(levelKey(target, level)) : undefined;
-}
-
-/** Record the outcome of an accepted image specification of one level. */
-export function setExpandedLevel(texture: object | null, target: number, level: number, value: ExpandedLevel | null): void {
-  if (!texture) return;
-  let map = levels.get(texture);
-  if (!value) { map?.delete(levelKey(target, level)); return; }
-  if (!map) levels.set(texture, map = new Map());
-  map.set(levelKey(target, level), value);
-}
-
-/** EGLImage targeting replaces every level's storage. */
-export function forgetExpandedLevels(texture: object | null): void {
-  if (texture) levels.delete(texture);
-}
-
-/** An accepted GenerateMipmap derives every lower level from the base
- * level, with the base level's logical format. */
-export function generateExpandedMipmaps(texture: object | null, target: number): void {
-  if (!texture) return;
-  const faces = target === CUBE ? Array.from({ length: 6 }, (_, i) => CUBE_FIRST + i) : [target];
-  const map = levels.get(texture);
-  if (!map) return;
-  for (const face of faces) {
-    for (const key of [...map.keys()]) if (Math.floor(key / 64) === face && key % 64 !== 0) map.delete(key);
-    const base = map.get(levelKey(face, 0));
-    if (!base) continue;
-    for (let level = 1, w = base.width, h = base.height; w > 1 || h > 1; level++) {
-      w = Math.max(1, w >> 1); h = Math.max(1, h >> 1);
-      map.set(levelKey(face, level), { ...base, width: w, height: h });
-    }
-  }
-}
-
-/** True when the framebuffer's color attachment is an expanded level: GLES 2
- * luminance/alpha formats are not color-renderable, although the RGBA stand-in
- * may be under EXT_color_buffer_float. */
-export function expandedColorAttachment(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
-  const image = framebuffer ? b.framebufferAttachments.get(framebuffer)?.get(0x8ce0) : undefined;
-  return image?.kind === "texture" && !!expandedLevel(image.object, image.target, image.level);
 }
 
 /**

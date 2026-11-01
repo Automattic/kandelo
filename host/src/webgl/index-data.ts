@@ -5,7 +5,7 @@ import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, prepareBufferDraw, withBufferTransfer } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { issueGlesDraw } from "./draw-state.js";
-import { requireFramebufferDimensions } from "./image-sizes.js";
+import { requireGlesFramebufferComplete } from "./image-sizes.js";
 
 const BYTE = 0x1401, SHORT = 0x1403, INT = 0x1405;
 const ELEMENT = 0x8893, COPY_READ = 0x8f36, COPY_WRITE = 0x8f37;
@@ -17,7 +17,7 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   if (mode > 6 || (type !== BYTE && type !== SHORT)) { recordGlError(b,0x500); return; }
   if (count < 0) { recordGlError(b,0x501); return; }
   const width = type === BYTE ? 1 : 2, promotedWidth = width*2;
-  if (!requireFramebufferDimensions(b) || !validateDrawFramebufferWithoutProgram(b)) return;
+  if (!requireGlesFramebufferComplete(b) || !validateDrawFramebufferWithoutProgram(b)) return;
   // ES 2.0 section 2.8 has no index-offset alignment rule; WebGL 1.0 section
   // 6.4 does. An empty draw reads no index, so validate it at the aligned
   // offset. Every nonempty draw copies its indices to offset zero below.

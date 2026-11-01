@@ -5,13 +5,32 @@
  * and whether the texture is complete. The host records each image only
  * after the renderer accepted the call that specified it, so this is the
  * object's actual state rather than what a client asked for. */
+import type { GlBinding } from "./registry.js";
+
 export type GlTextureLevel = {
   width: number;
   height: number;
+  /** Native WebGL 2 storage triple. */
   internalFormat: number;
   format: number;
   type: number;
   compressed: boolean;
+  /** The guest's GLES 2 specification. Absent for storage the guest did not
+   * specify (an imported EGLImage or foreign buffer), whose format the native
+   * renderer alone describes. */
+  gles?: GlesLevelFormat;
+};
+
+/** GLES 2 view of a level. `type` uses WebGL's HALF_FLOAT for
+ * HALF_FLOAT_OES. `expanded` marks a LUMINANCE/ALPHA float level stored as
+ * RGBA (luminance-float.ts); `colorRenderable` is section 4.4.5 under the
+ * advertised extensions (es2-formats.ts), which WebGL 2 does not apply. */
+export type GlesLevelFormat = {
+  internalFormat: number;
+  format: number;
+  type: number;
+  expanded: boolean;
+  colorRenderable: boolean;
 };
 
 const TEX = 0x0de1, CUBE = 0x8513, FACE0 = 0x8515;
@@ -19,6 +38,15 @@ export const CUBE_FACES = [0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851a] as co
 
 type Faces = Map<number, Map<number, GlTextureLevel>>;
 const levels = new WeakMap<WebGLTexture, Faces>();
+
+/** The logical texture an image call addresses on the active unit: the
+ * bound object, or the context's texture zero for that target. */
+export function boundTextureObject(b: GlBinding, target: number): WebGLTexture | null {
+  const base = target === TEX ? TEX : target === CUBE || isCubeFace(target) ? CUBE : 0;
+  if (!base) return null;
+  const units = base === TEX ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
+  return units[b.shadow.activeTexture] ?? b.shadow.defaultTextures.get(base) ?? null;
+}
 
 export function isCubeFace(target: number): boolean {
   return target >= FACE0 && target <= FACE0 + 5;

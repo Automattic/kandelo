@@ -269,7 +269,10 @@ describe("OES_texture_float luminance and alpha formats", () => {
     send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
     expect(b.errors).toEqual([INVALID_FRAMEBUFFER_OPERATION]);
     expect(gl.calls.filter(call => call === "clear" || call === "drawArrays")).toEqual([]);
+    // RGBA FLOAT is not color-renderable in GLES 2 either; RGBA bytes are.
     expect(storage([O.OP_TEX_IMAGE_2D, TEX, 0, RGBA, 2, 2, 0, RGBA, FLOAT, 0])).toBe(true);
+    expect(status()).toBe(0x8cd6);
+    expect(storage([O.OP_TEX_IMAGE_2D, TEX, 0, RGBA, 2, 2, 0, RGBA, UB, 0])).toBe(true);
     expect(status()).toBe(0x8cd5);
   });
 });

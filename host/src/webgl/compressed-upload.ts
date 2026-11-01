@@ -3,7 +3,6 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { imageTextureOperation, type GlTextureView } from "./image-storage.js";
 import { prepareTextureOperation } from "./texture-bindings.js";
-import { setExpandedLevel } from "./luminance-float.js";
 import { recordTextureLevel } from "./texture-levels.js";
 import * as O from "./ops.js";
 
@@ -99,12 +98,11 @@ export function runCompressedUpload(b: GlBinding, input: Uint8Array, out: Uint8A
       if (image) b.gl!.compressedTexImage2D(target,level,format,width,height,border,upload.bytes);
       else b.gl!.compressedTexSubImage2D(target,level,x,y,width,height,format,upload.bytes);
     },level!==0,image ? level : undefined);
-    // A compressed level is never an expanded luminance/alpha float level.
-    if (accepted && image) {
-      setExpandedLevel(upload.object,target,level,null);
+    // ES 2.0 section 4.4.5: compressed formats are not color-renderable.
+    if (accepted && image)
       recordTextureLevel(upload.object,target,level,
-        {width,height,internalFormat:format,format,type:0,compressed:true});
-    }
+        {width,height,internalFormat:format,format,type:0,compressed:true,
+          gles:{internalFormat:format,format,type:0,expanded:false,colorRenderable:false}});
     return accepted ? reply() : -5;
   });
 }

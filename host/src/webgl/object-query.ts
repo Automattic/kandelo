@@ -2,6 +2,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import type { GlImageStorage } from "./image-storage.js";
+import { renderbufferLogicalFormat } from "./image-sizes.js";
 import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
@@ -100,6 +101,8 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         }
         let value = 0;
         if (!checkedGlCall(b, () => { value = Number(gl.getRenderbufferParameter(name,arg)); })) return -5;
+        // BGRA renderbuffers are stored as RGBA8; report the requested format.
+        if (arg === 0x8d44) value = renderbufferLogicalFormat(b.shadow.renderbuffer) ?? value;
         result.setInt32(0,value,true); return 4;
       }
       case O.QOP_GET_TEX_PARAMETER: {

@@ -5802,6 +5802,19 @@ int main(int argc, char **argv) {
                 {GL_RED_EXT, GL_UNSIGNED_BYTE}, {GL_RG_EXT, GL_FLOAT}, {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT},
                 {GL_DEPTH_STENCIL_OES, GL_UNSIGNED_INT_24_8_OES},
             };
+            /* dEQP-GLES2 tables: sized R8/RG8/BGRA8_EXT with their one pair. */
+            const struct { GLint internal; GLenum format, error; } sized[] = {
+                {GL_R8_EXT, GL_RED_EXT, GL_NO_ERROR}, {GL_RG8_EXT, GL_RG_EXT, GL_NO_ERROR},
+                {GL_BGRA8_EXT, GL_BGRA_EXT, GL_NO_ERROR},
+                {GL_R8_EXT, GL_RG_EXT, GL_INVALID_OPERATION}, {GL_BGRA8_EXT, GL_RGBA, GL_INVALID_OPERATION},
+            };
+            for (size_t i = 0; i < sizeof sized / sizeof sized[0]; i++) {
+                glTexImage2D(GL_TEXTURE_2D,0,sized[i].internal,1,1,0,sized[i].format,GL_UNSIGNED_BYTE,pixel);
+                glFlush();
+                assert(glGetError() == sized[i].error && glGetError() == GL_NO_ERROR);
+            }
+            assert(image_mutation_queries == queries + 3 && image_pixel_updates == updates + 3);
+            queries += 3; updates += 3;
             for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++) {
                 glTexImage2D(GL_TEXTURE_2D,0,(GLint)admitted[i].format,1,1,0,admitted[i].format,admitted[i].type,pixel);
                 glFlush();
@@ -5845,10 +5858,10 @@ int main(int argc, char **argv) {
             assert(image_mutation_queries == queries);
             /* Core and always-advertised formats reach the host. */
             const GLenum admitted[] = {GL_RGBA4, GL_RGB5_A1, GL_RGB565, GL_DEPTH_COMPONENT16, GL_STENCIL_INDEX8,
-                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b};
+                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b, GL_BGRA_EXT, GL_BGRA8_EXT};
             for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++)
                 glRenderbufferStorage(GL_RENDERBUFFER,admitted[i],1,1);
-            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 10);
+            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 12);
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
