@@ -329,6 +329,10 @@ name = "graphics-cts-egl"
 class = "test-support"
 
 [[packages]]
+name = "graphics-cts"
+class = "test-support"
+
+[[packages]]
 name = "libevent-tests"
 class = "test-support"
 

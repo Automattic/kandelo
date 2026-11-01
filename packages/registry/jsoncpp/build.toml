@@ -7,5 +7,6 @@ revision    = 1
 # resolver hashes these tracked inputs on a clean checkout.
 inputs = [
   "packages/registry/jsoncpp/build-jsoncpp.sh",
+  "packages/registry/jsoncpp/build-jobs.sh",
   "scripts/package-build-roots.sh",
 ]
