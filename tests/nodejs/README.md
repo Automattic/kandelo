@@ -812,6 +812,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Real TCP listeners and half-close | [#1617](https://github.com/Automattic/kandelo/pull/1617) |
 | Exit-listener status and fatal diagnostics | [#1619](https://github.com/Automattic/kandelo/pull/1619) |
 | Real TCP connection limits and drop events | [#1620](https://github.com/Automattic/kandelo/pull/1620) |
+| Timer references, cancellation, refresh and promises | [#1621](https://github.com/Automattic/kandelo/pull/1621) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
