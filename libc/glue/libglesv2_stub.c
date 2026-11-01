@@ -2165,21 +2165,23 @@ static void copy_row(uint8_t *dst, const uint8_t *src, uint32_t bytes,
     }
 }
 
-/* Emit OP_TEX_SUB_IMAGE_2D records for `height` rows of `width` pixels,
- * the first at `src`, each `src_stride` bytes after the one before. The
- * TLV payload-length field is u16, so the rows are split into bands; each
- * band's rows are packed at the host's unpack stride, whose data length
- * is (rows-1)*stride + width*bpp. */
-static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
+/* Largest OP_TEX_SUB_IMAGE_2D pixel payload: the TLV payload-length field
+ * is u16 and the record header takes 36 bytes. */
+#define WPK_TEX_ROW_PAYLOAD (0xFFFFu - 36u)
+
+/* Emit OP_TEX_SUB_IMAGE_2D records for `height` rows of `width` pixels of
+ * one column band, the first at `src`, each `src_stride` bytes after the one
+ * before. The rows are split into row groups; each group's rows are packed at
+ * the host's unpack stride, whose data length is (rows-1)*stride + width*bpp.
+ * The caller guarantees that one packed row fits a record. */
+static void emit_tex_band(GLenum target, GLint level, GLint xoff, GLint yoff,
                           GLsizei width, GLsizei height,
                           GLenum format, GLenum type, uint32_t bpp,
                           const uint8_t *src, uint32_t src_stride) {
-    if (src == NULL || width <= 0 || height <= 0) return;
     int swap = format == GL_BGRA_EXT;
     uint32_t stride = unpack_row_stride(width, bpp);
     uint32_t tail = (uint32_t)width * bpp;
-    uint32_t max_rows = (0xFFFFu - 36u) / stride;
-    if (max_rows == 0) return;
+    uint32_t max_rows = WPK_TEX_ROW_PAYLOAD / stride;
     for (GLsizei y = 0; y < height; ) {
         uint32_t rows = (uint32_t)(height - y);
         if (rows > max_rows) rows = max_rows;
@@ -2195,12 +2197,35 @@ static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
         w_u32(&_c, (uint32_t)type);
         w_u32(&_c, dlen);
         for (uint32_t r = 0; r < rows; r++) {
-            copy_row(_c + r * stride,
-                     src + ((uint32_t)y + r) * src_stride, tail, swap);
+            copy_row(_c + (size_t)r * stride,
+                     src + ((size_t)(uint32_t)y + r) * src_stride, tail, swap);
         }
         _c += dlen;
         EMIT_END()
         y += (GLsizei)rows;
+    }
+}
+
+/* GLES 2.0.25 sections 3.7.1/3.7.2 load the whole image. A packed row wider
+ * than one record (RGBA8 at 16375 pixels, RGBA float at 4094) is sent as
+ * column bands: ordinary subimage records at an advancing x offset. Each
+ * band's rows are packed at that band's own UNPACK_ALIGNMENT stride, which is
+ * the stride the host's native unpack applies to a band of that width, and
+ * the source is still addressed at the caller's full row stride. */
+static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
+                          GLsizei width, GLsizei height,
+                          GLenum format, GLenum type, uint32_t bpp,
+                          const uint8_t *src, uint32_t src_stride) {
+    if (src == NULL || width <= 0 || height <= 0) return;
+    /* align(w*bpp) <= payload exactly when w*bpp <= the largest multiple of
+     * the alignment that fits; bpp <= 16, so a band has at least one pixel. */
+    const uint32_t band_max = (WPK_TEX_ROW_PAYLOAD & ~((uint32_t)g_unpack_alignment - 1u)) / bpp;
+    for (uint32_t x = 0; x < (uint32_t)width; ) {
+        uint32_t band = (uint32_t)width - x;
+        if (band > band_max) band = band_max;
+        emit_tex_band(target, level, (GLint)((uint32_t)xoff + x), yoff, (GLsizei)band, height,
+                      format, type, bpp, src + (size_t)x * bpp, src_stride);
+        x += band;
     }
 }
 

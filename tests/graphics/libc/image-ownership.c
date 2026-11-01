@@ -398,6 +398,11 @@ static int compressed_supported, compressed_fail_action, compressed_fail_mode;
 static const uint8_t *compressed_expected;
 static uint32_t compressed_expected_size;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates, copy_tex_image_commands;
+/* Texel image rebuilt from OP_TEX_SUB_IMAGE_2D records, using the host's
+ * packed stride (UNPACK_ALIGNMENT tracked from OP_PIXEL_STOREI). */
+static uint8_t *texel_capture;
+static uint32_t texel_capture_width, texel_capture_height, texel_capture_bpp, texel_capture_records;
+static uint32_t double_unpack_alignment = 4;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
@@ -1030,6 +1035,22 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 image_pixel_updates++;
             if (op == OP_COPY_TEX_IMAGE_2D)
                 copy_tex_image_commands++;
+            if (op == OP_PIXEL_STOREI && words[0] == GL_UNPACK_ALIGNMENT)
+                double_unpack_alignment = words[1];
+            if (op == OP_TEX_SUB_IMAGE_2D && texel_capture) {
+                uint32_t r[9];
+                assert(len >= 36);
+                memcpy(r, commands + at + 4, sizeof r);
+                const uint32_t x = r[2], y = r[3], w = r[4], rows = r[5], dlen = r[8];
+                const uint32_t bpp = texel_capture_bpp, a = double_unpack_alignment;
+                const uint32_t stride = (w * bpp + a - 1u) & ~(a - 1u);
+                assert(w && rows && len == 36u + dlen && dlen == (rows - 1u) * stride + w * bpp);
+                assert(x + w <= texel_capture_width && y + rows <= texel_capture_height);
+                for (uint32_t row = 0; row < rows; row++)
+                    memcpy(texel_capture + ((size_t)(y + row) * texel_capture_width + x) * bpp,
+                           commands + at + 40 + (size_t)row * stride, (size_t)w * bpp);
+                texel_capture_records++;
+            }
             if (op == OP_CLEAR) { clear_commands++; slot->clears++; }
             if (op == 0x030b) validate_commands++;
             if (op == OP_BUFFER_DATA) {
@@ -5478,6 +5499,53 @@ int main(int argc, char **argv) {
                 glRenderbufferStorage(GL_RENDERBUFFER,admitted[i],1,1);
             assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 11);
         }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-wide-rows-", 18)) {
+        /* GLES 2.0.25 sections 3.7.1/3.7.2 load the whole specified image.
+         * A packed row wider than one command record must still arrive,
+         * split into column bands at the host's unpack stride, preserving
+         * UNPACK_ALIGNMENT and EXT_unpack_subimage source addressing. */
+        uint32_t width, height, bpp, row_length = 0, skip_rows = 0, skip_pixels = 0, alignment = 4;
+        GLint xoff = 0, yoff = 0; GLenum format = GL_RGBA, type = GL_UNSIGNED_BYTE;
+        int sub = 0, swap = 0;
+        if (!strcmp(argv[1], "encoder-wide-rows-rgba8")) { width = 16400; height = 3; bpp = 4; }
+        else if (!strcmp(argv[1], "encoder-wide-rows-float")) { width = 4100; height = 2; bpp = 16; type = GL_FLOAT; alignment = 8; }
+        else if (!strcmp(argv[1], "encoder-wide-rows-bgra")) { width = 16390; height = 2; bpp = 4; format = GL_BGRA_EXT; swap = 1; }
+        else {
+            assert(!strcmp(argv[1], "encoder-wide-rows-subimage"));
+            width = 21901; height = 2; bpp = 3; format = GL_RGB; alignment = 8; sub = 1;
+            row_length = 22003; skip_rows = 1; skip_pixels = 5; xoff = 3; yoff = 2;
+        }
+        const uint32_t texture_width = width + (uint32_t)xoff, texture_height = height + (uint32_t)yoff;
+        const uint32_t source_pixels = row_length ? row_length : width;
+        const uint32_t source_stride = (source_pixels * bpp + alignment - 1u) & ~(alignment - 1u);
+        const size_t source_size = (size_t)(skip_rows + height) * source_stride;
+        uint8_t *source = malloc(source_size), *expected = calloc((size_t)texture_width * texture_height, bpp);
+        texel_capture = calloc((size_t)texture_width * texture_height, bpp);
+        assert(source && expected && texel_capture);
+        for (size_t i = 0; i < source_size; i++) source[i] = (uint8_t)(i * 7u + (i >> 13) + 1u);
+        for (uint32_t y = 0; y < height; y++)
+            for (uint32_t x = 0; x < width; x++) {
+                const uint8_t *in = source + (size_t)(skip_rows + y) * source_stride + (size_t)(skip_pixels + x) * bpp;
+                uint8_t *out = expected + ((size_t)(yoff + (GLint)y) * texture_width + (size_t)xoff + x) * bpp;
+                memcpy(out, in, bpp);
+                if (swap) { out[0] = in[2]; out[2] = in[0]; }
+            }
+        texel_capture_width = texture_width; texel_capture_height = texture_height; texel_capture_bpp = bpp;
+        glPixelStorei(GL_UNPACK_ALIGNMENT, (GLint)alignment);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, (GLint)row_length);
+        glPixelStorei(GL_UNPACK_SKIP_ROWS_EXT, (GLint)skip_rows);
+        glPixelStorei(GL_UNPACK_SKIP_PIXELS_EXT, (GLint)skip_pixels);
+        if (sub) glTexSubImage2D(GL_TEXTURE_2D, 0, xoff, yoff, (GLsizei)width, (GLsizei)height, format, type, source);
+        else glTexImage2D(GL_TEXTURE_2D, 0, (GLint)format, (GLsizei)width, (GLsizei)height, 0, format, type, source);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR);
+        assert(texel_capture_records >= 2); /* at least two column bands */
+        assert(!memcmp(texel_capture, expected, (size_t)texture_width * texture_height * bpp));
+        free(texel_capture); texel_capture = NULL; free(expected); free(source);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         printf("PASS %s\n",argv[1]); return 0;
