@@ -7,7 +7,7 @@ import { readGbmFront } from "./gbm-front-copy.js";
 import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
-import { noteStorageWrite, storageWrites } from "./image-writes.js";
+import { imageWriteAudit, noteStorageWrite, storageWrites } from "./image-writes.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
@@ -209,11 +209,14 @@ export class CpuImageStorage {
 
   publish(b: GlBinding, store: GbmBoRegistry, captureErrors: (gl: WebGL2RenderingContext) => void): boolean {
     if (!b.gl) return true;
+    let audited: number | null = null;
     for (const [bo, mirror] of this.entries(b.gl)) {
       if (!mirror.dirty || mirror.allocation.retirement.pending) continue;
       // Nothing wrote the native image since it became dirty: its pixels
-      // are the ones last represented, so there is nothing to read back.
-      if (mirror.snapshot && mirror.begun === storageWrites(mirror.allocation.tex).count) { mirror.dirty = false; continue; }
+      // are the ones last represented, so there is nothing to read back
+      // (unless the write-count audit verifies exactly that).
+      const uncounted = !!mirror.snapshot && mirror.begun === storageWrites(mirror.allocation.tex).count;
+      if (uncounted && !imageWriteAudit()) { mirror.dirty = false; continue; }
       const bytes = store.pixelView(bo);
       if (!bytes || !mirror.snapshot) return false;
       const codec = cpuImageCodec(mirror.layout.format);
@@ -245,7 +248,8 @@ export class CpuImageStorage {
           for (let k = at; k < at + cpp; k++)
             if (represented[k] !== mirror.snapshot[k]) { next[k] = represented[k]; changed = true; }
         }
-        if (changed && !store.publishDevicePixels(bo, next)) return false;
+        if (uncounted && (changed || alphaWritten)) audited = bo;
+        else if (changed && !store.publishDevicePixels(bo, next)) return false;
         // A format without alpha has no writable alpha channel. Re-upload
         // before the next command if native rendering wrote one, so reads
         // and sampling see one.
@@ -253,6 +257,9 @@ export class CpuImageStorage {
         mirror.pending = null;
         mirror.dirty = false;
       } catch { return false; }
+      if (audited !== null)
+        throw new Error(`CPU image mirror of BO ${audited} changed without a counted write: an image write path ` +
+          "does not advance its storage's write count (image-writes.ts)");
     }
     return true;
   }

@@ -35,6 +35,24 @@ export function noteStorageWrite(native: object | null | undefined): void {
   if (record) record.count++;
 }
 
+/** Audit of the write-count contract (debug and tests). Counting lets a
+ * CPU-tier mirror skip reading back pixels nothing wrote
+ * (cpu-image-storage.ts); a write path that forgot to count would leave its
+ * pixels unpublished without any sign. With the audit on, the mirror reads
+ * back anyway and a change behind an unchanged count is a fatal fault. Off,
+ * it costs one boolean test. On for the graphics test gate
+ * (test/support/image-write-audit.ts); a debug host sets
+ * globalThis.KANDELO_IMAGE_WRITE_AUDIT = true before loading the host. */
+let audit = (globalThis as { KANDELO_IMAGE_WRITE_AUDIT?: unknown }).KANDELO_IMAGE_WRITE_AUDIT === true;
+
+export function setImageWriteAudit(enabled: boolean): void {
+  audit = enabled;
+}
+
+export function imageWriteAudit(): boolean {
+  return audit;
+}
+
 /** Host-owned framebuffers (GBM buffers, CPU-tier mirrors, EGL surface
  * targets) are default framebuffers to the guest, so they have no guest
  * attachment record; their color storage is registered at allocation. */

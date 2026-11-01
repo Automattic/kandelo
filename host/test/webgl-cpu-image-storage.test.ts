@@ -5,7 +5,7 @@ import {GlContextRegistry} from "../src/webgl/registry";
 import {registerImageSource} from "../src/webgl/image-storage";
 import {foreignTextureGl} from "./support/foreign-texture-gl";
 import {halfBits} from "../src/webgl/cpu-image-codec";
-import {noteStorageWrite} from "../src/webgl/image-writes";
+import {noteStorageWrite, setImageWriteAudit} from "../src/webgl/image-writes";
 
 // Tests model accepted native rendering into a mirror by writing its pixels
 // and counting the write, as every renderer write path does (image-writes.ts).
@@ -248,6 +248,11 @@ it("converts every binary16 value read back as float32 to the same half", () => 
 });
 
 it("reads back only mirrors whose native image was written during the submission",()=>{
+  // Production behavior: the write-count audit, on for this gate, reads back anyway.
+  setImageWriteAudit(false);
+  try { readsBackOnlyWrittenMirrors(); } finally { setImageWriteAudit(true); }
+});
+function readsBackOnlyWrittenMirrors() {
   const f=fixture(), first=f.images.acquire(f.b,41,f.store,f.layout)!;
   const second=f.images.acquire(f.b,41,f.store,{...f.layout,format:0x34325241})!;
   expect(f.prepare()).toBe(true);
@@ -261,4 +266,16 @@ it("reads back only mirrors whose native image was written during the submission
   expect(f.publish()).toBe(true);expect(reads).toBe(1);
   expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([100,101,102,103]);
   expect(f.prepare()).toBe(true);expect([...f.textures.get(second.tex)!].slice(0,4)).toEqual([102,101,100,103]);
+}
+
+it("fails loudly when a mirror changes behind an unchanged write count",()=>{
+  const f=fixture(), image=f.images.acquire(f.b,41,f.store,f.layout)!;
+  expect(f.prepare()).toBe(true);
+  // An unchanged submission passes the audit and publishes nothing.
+  f.images.begin(f.b);expect(f.publish()).toBe(true);
+  expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([4,5,6,7]);
+  // A native write that did not count itself is a fatal fault, not lost pixels.
+  f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);
+  expect(()=>f.publish()).toThrow(/changed without a counted write/);
+  expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([4,5,6,7]);
 });

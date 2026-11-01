@@ -29,6 +29,8 @@ export default defineConfig({
   test: {
     ...base.test,
     globalSetup: [],
+    // Image write-count audit (src/webgl/image-writes.ts).
+    setupFiles: ["test/support/image-write-audit.ts"],
     include: files,
   },
 });
