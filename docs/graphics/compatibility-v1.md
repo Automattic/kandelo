@@ -19190,3 +19190,29 @@ before an authenticated ProcessInfo exists do not receive fabricated success.
 Normal runtime/browser-memory tests and the public CTS consumer's use of these
 receipts remain pending. This does not activate physical graphics retirement or
 public retained-query scheduling, and changes no numeric ABI selector.
+
+
+### KMS fixture ownership and cursor identity correction
+
+The earlier 22 source-only KMS setup failures were traced to fixture-created
+framebuffers without borrowed/present allocation custody. Make-current accepted
+their logical membership, but the first submit correctly refused to retain
+unjournaled drawable storage and returned ENOMEM. The fixture now publishes its
+real registry GPU BO retirement through normal `host_gl_update_surface`,
+including both distinct read/draw surface cases. Its selector/error assertions
+remain measured after valid storage publication. A new negative control removes
+only that custody, verifies refusal before any clear, restores the real
+allocation and verifies one accepted effect.
+
+The additional combined-cohort cursor failure came from protocol 2's zero
+reserved word remaining in a protocol 3 test record. The fixture now registers
+its actual framebuffer through `host_kms_addfb` and encodes that identity using
+generated offsets. A live image with framebuffer zero still refuses before
+native sampling. No production ownership checks were loosened.
+
+The exact original file records 134 Pass / 23 Fail. The corrected full file
+passes 158/158; six adjacent complete suites pass 250/250 and scoped strict
+test/production types pass. Evidence is
+`.context/kms-fixture-storage-r1/HANDOFF.md` in the integration worktree. These
+are shared source controls with native doubles, not compiled kernel/GPU or
+browser-memory acceptance.

@@ -5,6 +5,7 @@ import { defaultShadow } from "../src/webgl/shadow";
 import type { GlMuxer } from "../src/webgl/muxer";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import { OP_CLEAR, QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
+import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "../src/dri/kms-cursor-protocol";
 import { hasNativeRepair, repairNativeState, reserveNativeRetirement } from "../src/webgl/native-recovery";
 
 function renderer() {
@@ -186,16 +187,22 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
     pointerWidth: 4, instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096)});
   kernel.gl.createGpuBo(42, r.gl, 2, 2);
   kernel.kms.setMaster(100, 1n, 1n);
-  const record = (lease: bigint, x: number) => {
-    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+  const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+  const fbId = 25;
+  expect(imports.env.host_kms_addfb(100,fbId,42,2,2,0x34325241,8)).toBe(0);
+  const record = (lease: bigint, x: number, framebuffer = fbId) => {
+    const bytes = new Uint8Array(KMS_CURSOR_RECORD_BYTES), view = new DataView(bytes.buffer);
     view.setBigUint64(0, lease, true);
     [42, 2, 2, x, 4, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    view.setUint32(KMS_CURSOR_FRAMEBUFFER_OFFSET,framebuffer,true);
     return bytes;
   };
   const reads = () => r.calls.filter(call => call[0] === "readPixels").length;
   const first = kernel.kms.applyCursorRecord(record(1n, 1)) ?? kernel.kms.cursorSnapshot();
   expect(reads()).toBe(1);
   expect(first.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
+  expect(() => kernel.kms.applyCursorRecord(record(1n,1,0))).toThrow("image identity");
+  expect(reads()).toBe(1); // Refused before sampling native storage.
   r.setPixels([0, 255, 0, 255]);
   const moved = kernel.kms.applyCursorRecord(record(1n, 9)) ?? kernel.kms.cursorSnapshot();
   expect(reads()).toBe(2);
@@ -428,6 +435,15 @@ for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-c
   expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
 });
 
+/** Normal borrowed-target publication, using this harness's allocator-
+ * authorized kernel scratch. No synthetic allocation/retirement capability is minted. */
+function publishBorrowedTarget(imports: Record<string,(...args:any[])=>any>, memory: WebAssembly.Memory,
+  pid: number, session: number, surface: number, bo: number) {
+  const attrs = new DataView(memory.buffer,96,32);
+  [1,2,2,1,bo,0,0,0].forEach((value,index)=>attrs.setUint32(index*4,value,true));
+  expect(imports.host_gl_update_surface(pid,surface,96,32,session)).toBe(0);
+}
+
 /** Real kernel front-export callback, with a separately selected peer owner.
  * These controls prove selector/error ownership, not native pixel performance. */
 function selectedFront(kind: "gpu" | "cpu") {
@@ -460,6 +476,10 @@ function selectedFront(kind: "gpu" | "cpu") {
   binding.gl = r.gl; binding.contextId = 22; binding.surfaceId = 71;
   binding.pendingRenderTargetBoId = 42; binding.renderTargetFbo = r.storage.fbo;
   binding.surfaceSize = {width:2,height:2};
+  // A bare FBO is not accepted storage ownership. Publish the registry BO's
+  // actual retirement through the same import used by ordinary GBM surfaces.
+  publishBorrowedTarget(imports.env,r.memory,8,12,71,42);
+  expect(binding.surface.borrowedTarget?.retirement).toBe(r.kernel.gl.gpuBo(42)!.retirement);
   if (kind === "gpu") {
     const create = r.gl.createFramebuffer;
     r.gl.createFramebuffer = () => target as WebGLFramebuffer;
@@ -581,6 +601,20 @@ it("refuses another guard's cleanup while the selected peer's flags remain unrea
   expect(lease.release()).toBe(true);
 });
 
+/** A second real BO-backed surface. Native allocation/publication is setup,
+ * so reselect the existing owner before measuring its later logical rebind. */
+function secondDrawable(r: ReturnType<typeof selectedDrawable>, framebuffer: WebGLFramebuffer) {
+  r.kernel.gl.bind({pid:8,sessionId:14,cmdbufAddr:0,cmdbufLen:0});
+  const second=r.kernel.gl.get(8,14)!;second.gl=r.gl;second.contextId=24;
+  second.surfaceId=72;second.pendingRenderTargetBoId=44;
+  const create=r.gl.createFramebuffer;r.gl.createFramebuffer=()=>framebuffer;
+  try { expect(r.kernel.gl.createGpuBo(44,r.gl,2,2)).toBeGreaterThan(0); }
+  finally { r.gl.createFramebuffer=create; }
+  publishBorrowedTarget(r.imports,r.memory,8,14,72,44);
+  expect(second.surface.borrowedTarget?.retirement).toBe(r.kernel.gl.gpuBo(44)!.retirement);
+  expect(r.submit()).toBe(0);r.before=r.selections();r.binds.length=0;
+}
+
 function selectedDrawable() {
   const r = selectedFront("gpu");
   r.binding.cmdbufView = new Uint8Array(0);
@@ -610,9 +644,7 @@ it.each([false,true])("restores only framebuffer selectors after same-owner curr
 
 it("restores distinct draw/read defaults without displacing user FBO state",()=>{
   const r=selectedDrawable(), readFbo={};
-  r.kernel.gl.bind({pid:8,sessionId:14,cmdbufAddr:0,cmdbufLen:0});
-  const second=r.kernel.gl.get(8,14)!;second.gl=r.gl;second.contextId=24;
-  second.surfaceId=72;second.renderTargetFbo=readFbo;second.surfaceSize={width:2,height:2};
+  secondDrawable(r,readFbo as WebGLFramebuffer);
   expect(r.imports.host_gl_make_current(8,22,71,72,12)).toBe(0);expect(r.submit()).toBe(0);
   expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);expect(r.state.get(0x8caa)).toBe(readFbo);
   expect(r.selections()).toBe(r.before);
@@ -677,9 +709,7 @@ it("invalidates before releasing an owner-dead surface's final native allocation
 
 it("keeps the dirty drawable witness through a fixed KMS helper's exact native inverse",()=>{
   const r=selectedDrawable(),nextFbo={};
-  r.kernel.gl.bind({pid:8,sessionId:14,cmdbufAddr:0,cmdbufLen:0});
-  const second=r.kernel.gl.get(8,14)!;second.gl=r.gl;second.contextId=24;
-  second.surfaceId=72;second.renderTargetFbo=nextFbo;second.surfaceSize={width:2,height:2};
+  secondDrawable(r,nextFbo as WebGLFramebuffer);
   expect(r.imports.host_gl_make_current(8,22,72,72,12)).toBe(0);
   expect(r.binding.shadow.fbo).toBe(nextFbo);expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);
   r.kernel.kms.setMaster(100,1n,1n);r.kernel.kms.setCursor(100,3,42,2,2,0,0,0,0);
@@ -938,4 +968,21 @@ it("preserves arbitrary captured clear RGB and omits alpha1 writes while the che
   expect(r.calls.at(-1)).toEqual(["opaque primary"]);
   expect(o.writes.filter(call=>call[0]==="clearColor")).toEqual([]);
   expect(r.state).toEqual(before);expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+
+it("refuses unjournaled borrowed storage before commands and accepts its restored real allocation",()=>{
+  const r=selectedFront("gpu"),allocation=r.binding.surface.borrowedTarget;
+  expect(allocation).not.toBeNull();
+  let effects=0;r.gl.clear=()=>{effects++;};
+  const bytes=new Uint8Array(8),view=new DataView(bytes.buffer);
+  view.setUint16(0,OP_CLEAR,true);view.setUint16(2,4,true);view.setUint32(4,0x4000,true);
+  r.binding.cmdbufView=bytes;r.binding.cmdbufLen=bytes.length;
+  expect(r.imports.host_gl_make_current(8,22,71,71,12)).toBe(0);
+  r.binding.surface.borrowedTarget=null;
+  expect(r.imports.host_gl_submit(8,0,bytes.length,12)).toBe(-12);
+  expect(effects).toBe(0);expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
+  r.binding.surface.borrowedTarget=allocation;
+  expect(r.imports.host_gl_submit(8,0,bytes.length,12)).toBe(0);
+  expect(effects).toBe(1);
 });
