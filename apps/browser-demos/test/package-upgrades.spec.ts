@@ -8,52 +8,53 @@ import { PACKAGE_MAINTENANCE_WIRE as wire } from "../../../host/src/generated/ab
 
 test("persistent package activation resumes after reload and rolls back without losing user data", async ({ page, baseURL }) => {
   test.setTimeout(180_000);
-  const before = await softwareImage(1, baseURL);
-  const after = await softwareImage(2, baseURL);
+  const baseDirectory = new URL(`/vfs-groups/${"1".repeat(64)}/`, baseURL).href;
+  const targetDirectory = new URL(`/vfs-groups/${"2".repeat(64)}/`, baseURL).href;
+  const before = await softwareImage(1, baseURL, { imageOwnedReference: true });
+  const after = await softwareImage(2, baseURL, { imageOwnedReference: true, pinDirectory: targetDirectory });
   const kernel = readFileSync(resolveBinary("kernel.wasm"));
   const root = resolve(import.meta.dirname, "../../..");
   const moduleUrl = new URL(`/@fs/${root}/host/src/browser-kernel-host.ts`, baseURL).href;
   const clientUrl = new URL(`/@fs/${root}/apps/browser-demos/pages/kandelo/kernel-host/package-upgrade-client.ts`, baseURL).href;
+  const sourceUrl = new URL(`/@fs/${root}/apps/browser-demos/pages/kandelo/kernel-host/package-image-source.ts`, baseURL).href;
+  const stagingUrl = new URL(`/@fs/${root}/apps/browser-demos/pages/kandelo/kernel-host/opfs-source-image.ts`, baseURL).href;
+  const bootUrl = new URL(`/@fs/${root}/apps/browser-demos/lib/kernel-owned-boot.ts`, baseURL).href;
   const kernelUrl = new URL("/package-upgrade-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/package-upgrade-base.vfs", baseURL).href;
   const inventoryUrl = new URL("/package-upgrade-target.inventory", baseURL).href;
-  const bodyBase = new URL("/package-upgrade-body", baseURL).href;
+  const targetImageUrl = new URL("/package-upgrade-target.vfs", baseURL).href;
   const unexpectedFetches: string[] = [];
   const lazyFetches: string[] = [];
+  const oldFetches: string[] = [];
   const pageErrors: string[] = [];
   page.on("pageerror", error => pageErrors.push(String(error)));
   await page.route(kernelUrl, route => route.fulfill({ body: kernel }));
   await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(before.bytes) }));
   await page.route(inventoryUrl, route => route.fulfill({ body: Buffer.from(after.inventory) }));
-  await page.route(before.lazyUri, route => { unexpectedFetches.push(route.request().url()); return route.abort(); });
+  await page.route(targetImageUrl, route => route.fulfill({ body: Buffer.from(after.bytes) }));
+  const oldSource = new URL("assets/programs/wasm32/upgrade-fixture.wasm", baseDirectory).href;
+  await page.route(oldSource, route => {
+    oldFetches.push(route.request().url());
+    return route.fulfill({ body: Buffer.from(before.lazy) });
+  });
   await page.route(after.lazyUri, route => {
     lazyFetches.push(route.request().url());
     return route.fulfill({ body: Buffer.from(after.lazy) });
-  });
-  await page.route(`${bodyBase}?*`, route => {
-    const query = new URL(route.request().url()).searchParams;
-    const path = query.get("path");
-    const bytes = path === null ? undefined : after.bodies.get(path);
-    const offset = Number(query.get("offset"));
-    const length = Number(query.get("length"));
-    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 65536) {
-      return route.fulfill({ status: 400, body: "Invalid package range" });
-    }
-    return route.fulfill({ status: bytes ? 200 : 404, body: bytes ? Buffer.from(bytes.subarray(offset, offset + length)) : "Missing package fixture" });
   });
   await page.route("https://packages.invalid/**", route => {
     unexpectedFetches.push(route.request().url());
     return route.abort();
   });
   await page.goto(new URL("/trap-signal-test.html", baseURL).href);
-  const name = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, inventoryUrl }) => {
+  const name = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, inventoryUrl, baseDirectory }) => {
     const { BrowserKernel } = await import(moduleUrl);
     const host = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024 });
     const name = `package-upgrade-${crypto.randomUUID()}`;
     const bytes = async (url: string) => new Uint8Array(await (await fetch(url)).arrayBuffer());
     try {
       await host.initFromImage({ kernelWasm: (await bytes(kernelUrl)).buffer,
-        vfsImage: await bytes(imageUrl), experimentalResizablePersistenceName: name, persistentComputerName: name });
+        vfsImage: await bytes(imageUrl), experimentalResizablePersistenceName: name, persistentComputerName: name,
+        lazyAssetDirectory: baseDirectory });
       await host.writeFileToVfs("/user/notes", new TextEncoder().encode("retained browser user data"));
       await host.writeFileToVfs("/software/config", new TextEncoder().encode("my local config"));
       await host.packageMaintenance({ action: "enter" });
@@ -67,11 +68,16 @@ test("persistent package activation resumes after reload and rolls back without 
       await host.packageMaintenance({ action: "prepare" });
       return name;
     } finally { await host.destroy(); }
-  }, { moduleUrl, kernelUrl, imageUrl, inventoryUrl });
+  }, { moduleUrl, kernelUrl, imageUrl, inventoryUrl, baseDirectory });
+  expect(oldFetches).toEqual([]);
   await page.reload();
-  const result = await page.evaluate(async ({ moduleUrl, clientUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name }) => {
+  const result = await page.evaluate(async ({ moduleUrl, clientUrl, sourceUrl, stagingUrl, bootUrl, kernelUrl, imageUrl, inventoryUrl,
+    targetImageUrl, name, baseDirectory, targetDirectory }) => {
     const { BrowserKernel } = await import(moduleUrl);
     const { PackageUpgradeClient } = await import(clientUrl);
+    const { BrowserPackageImageSource, UnprovenPackageSourceCleanupError } = await import(sourceUrl);
+    const { stageRawVfsSourceImage } = await import(stagingUrl);
+    const { loadPositionedImageWriterModuleBytes } = await import(bootUrl);
     const bytes = async (url: string) => {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`Fixture download failed: ${url}`);
@@ -81,7 +87,8 @@ test("persistent package activation resumes after reload and rolls back without 
       const host = new BrowserKernel({ kernelOwnedFs: true, kernelMaxPages: 1024 });
       try {
         await host.initFromImage({ kernelWasm: (await bytes(kernelUrl)).buffer, vfsImage: await bytes(imageUrl),
-          experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: true });
+          experimentalResizablePersistenceName: name, persistentComputerName: name, requireExistingRootfsPersistence: true,
+          lazyAssetDirectory: baseDirectory });
         return host;
       } catch (error) { await host.destroy(); throw error; }
     };
@@ -93,13 +100,18 @@ test("persistent package activation resumes after reload and rolls back without 
     try {
       await host.packageMaintenance({ action: "enter" });
       const pending = (await host.packageMaintenance({ action: "recovery" })).status;
-      const inventory = await bytes(inventoryUrl);
       const client = () => new PackageUpgradeClient((request: Parameters<typeof host.packageMaintenance>[0]) => host.packageMaintenance(request));
-      await client().run("resume", {
-        inventoryBytes: inventory.length,
-        readInventory: async (offset: number, length: number) => inventory.slice(offset, offset + length),
-        readFile: (path: string, offset: number, length: number) => bytes(`${bodyBase}?path=${encodeURIComponent(path)}&offset=${offset}&length=${length}`),
-      });
+      const staged = await stageRawVfsSourceImage(await fetch(targetImageUrl), () => {});
+      let removable = true;
+      try {
+        const source = await BrowserPackageImageSource.open(await loadPositionedImageWriterModuleBytes(), staged.file,
+          { length: staged.integrity.length, sha256: staged.integrity.imageSha256, directory: targetDirectory });
+        try { await client().run("resume", source); }
+        finally { await source.close(); }
+      } catch (error) {
+        if (error instanceof UnprovenPackageSourceCleanupError) { staged.retain(); removable = false; }
+        throw error;
+      } finally { if (removable) await staged.remove(); }
       await host.packageMaintenance({ action: "leave" });
       const liveLazyContents = await text("/software/lazy");
       await host.writeFileToVfs("/software/new/sub/user", new TextEncoder().encode("new browser user child"));
@@ -116,18 +128,20 @@ test("persistent package activation resumes after reload and rolls back without 
       await host.packageMaintenance({ action: "leave" });
       await host.destroy();
       host = await boot();
-      return { pending, updated, activeInventoryMatches, removed, lazyContents, liveLazyContents,
+      return { pending, updated, activeInventoryMatches, removed, lazyContents, liveLazyContents, oldLazyContents: await text("/software/lazy"),
         restored: await text("/software/tool"), oldFile: await text("/software/remove"),
         localConfig: await text("/software/config"), userData: await text("/user/notes"),
         newUserChild: await text("/software/new/sub/user") };
     } finally { await host.destroy(); }
-  }, { moduleUrl, clientUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name });
+  }, { moduleUrl, clientUrl, sourceUrl, stagingUrl, bootUrl, kernelUrl, imageUrl, inventoryUrl, targetImageUrl,
+    name, baseDirectory, targetDirectory });
   expect(result.pending).toBe(wire.RECOVERY_PENDING);
   expect(result.updated).toBe("new program\n".repeat(7000));
   expect(result.activeInventoryMatches).toBe(true);
   expect(result.removed).toBeNull();
   expect(result.lazyContents).toBe("lazy package 2");
   expect(result.liveLazyContents).toBe("lazy package 2");
+  expect(result.oldLazyContents).toBe("lazy package 1");
   expect(result.restored).toBe("old program");
   expect(result.oldFile).toBe("old package file");
   expect(result.localConfig).toBe("my local config");
@@ -135,5 +149,6 @@ test("persistent package activation resumes after reload and rolls back without 
   expect(result.newUserChild).toBe("new browser user child");
   expect(unexpectedFetches).toEqual([]);
   expect(lazyFetches.length).toBeGreaterThan(0);
+  expect(oldFetches).toEqual([oldSource]);
   expect(pageErrors).toEqual([]);
 });

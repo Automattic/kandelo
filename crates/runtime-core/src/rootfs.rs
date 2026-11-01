@@ -54,6 +54,7 @@ pub mod package_plan;
 pub mod package_upgrade;
 pub mod package_maintenance;
 pub mod package_producer;
+pub mod package_sources;
 mod provider_record;
 mod recovery_slots;
 
@@ -15073,6 +15074,7 @@ mod tests {
     mod package_upgrade;
     mod package_maintenance;
     mod package_producer;
+    mod package_sources;
 
     /// A host that owns `image` and serves only [`ByteReq::Image`]. Blob and
     /// archive requests are `ENOSYS`, so a test that accidentally reaches for

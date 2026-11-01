@@ -11,6 +11,8 @@ import { NodeKernelHost } from "../src/node-kernel-host";
 import { PackageMaintenanceError } from "../src/package-maintenance";
 import { softwareImage } from "./fixtures/package-upgrade-image";
 import { PackageUpgradeClient } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-upgrade-client";
+import { PackageImageSource } from "../../images/vfs/lib/package-image-source";
+import { createHash } from "node:crypto";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -51,8 +53,9 @@ async function image(): Promise<Uint8Array> {
   return filesystem.saveImage();
 }
 
-async function boot(bytes: Uint8Array, journal?: string, existing = false): Promise<NodeKernelHost> {
+async function boot(bytes: Uint8Array, journal?: string, existing = false, rootfsLazyAssetDirectory?: string): Promise<NodeKernelHost> {
   const host = new NodeKernelHost({ rootfsImage: bytes,
+    rootfsLazyAssetDirectory,
     ...(journal === undefined ? {} : { experimentalResizablePersistencePath: journal, requireExistingRootfsPersistence: existing }),
   });
   const kernel = readFileSync(resolveBinary("kernel.wasm"));
@@ -66,6 +69,72 @@ async function boot(bytes: Uint8Array, journal?: string, existing = false): Prom
 }
 
 describe("real Node maintenance transport", () => {
+  it("pins changed image-owned sources without replacing the saved base mapping and restores old lazy bytes on rollback", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-pinned-sources-"));
+    const requests: string[] = [];
+    let host: NodeKernelHost | undefined;
+    const oldPath = `/${"1".repeat(64)}/assets/programs/wasm32/upgrade-fixture.wasm`;
+    const newPath = `/${"2".repeat(64)}/assets/programs/wasm32/upgrade-fixture.wasm`;
+    let corrupt = false;
+    const server = createServer((request, response) => {
+      requests.push(request.url ?? "");
+      const version = request.url === oldPath ? 1 : request.url === newPath ? 2 : 0;
+      const body = encoder.encode(`lazy package ${version === 2 && corrupt ? "x" : version}`);
+      response.writeHead(version === 0 ? 404 : 200, { "Content-Length": body.length });
+      response.end(body);
+    });
+    try {
+      await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+      const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+      const baseDirectory = new URL(`${"1".repeat(64)}/`, origin).href;
+      const targetDirectory = new URL(`${"2".repeat(64)}/`, origin).href;
+      const before = await softwareImage(1, origin, { imageOwnedReference: true });
+      const after = await softwareImage(2, origin, { imageOwnedReference: true, pinDirectory: targetDirectory });
+      expect(after.inventory).not.toEqual(after.sourceInventory);
+      const journal = join(directory, "journal");
+      const start = (existing = false) => boot(before.bytes, journal, existing, baseDirectory);
+      host = await start();
+      const client = () => new PackageUpgradeClient(request => host!.packageMaintenance(request));
+      const source = new PackageImageSource(new Uint8Array(readFileSync(new URL("../../local-binaries/kandelo_image_module_positioned32.wasm", import.meta.url))), {
+        length: after.bytes.length, sha256: createHash("sha256").update(after.bytes).digest("hex"), directory: targetDirectory,
+        readAt: (offset, destination) => {
+          const bytes = after.bytes.subarray(offset, offset + destination.length);
+          destination.set(bytes);
+          return bytes.length;
+        },
+      });
+      await host.packageMaintenance({ action: "enter" });
+      await client().run("install", { inventoryBytes: source.inventoryBytes,
+        readInventory: async (offset, length) => source.readInventory(offset, length),
+        readFile: async (path, offset, length) => source.readFile(path, offset, length),
+      });
+      await host.packageMaintenance({ action: "leave" });
+      expect(requests).toEqual([]);
+      await host.destroy();
+      host = await start(true);
+      corrupt = true;
+      await expect(host.readFileFromVfs("/software/lazy")).rejects.toThrow();
+      expect(requests).toEqual([newPath]);
+      await host.destroy();
+      host = await start(true);
+      corrupt = false;
+      expect(await host.readFileFromVfs("/software/lazy")).toEqual(after.lazy);
+      expect(requests).toEqual([newPath, newPath]);
+      await host.packageMaintenance({ action: "enter" });
+      await client().run("rollback");
+      await host.packageMaintenance({ action: "leave" });
+      await host.destroy();
+      host = await start(true);
+      expect(await host.readFileFromVfs("/software/lazy")).toEqual(before.lazy);
+      expect(requests).toEqual([newPath, newPath, oldPath]);
+      expect(await host.readFileFromVfs("/user/notes")).toEqual(encoder.encode("user data"));
+    } finally {
+      await host?.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("runs the application driver through install, persistent reopen and rollback on Node", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-package-client-"));
     let host: NodeKernelHost | undefined;

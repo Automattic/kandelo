@@ -259,10 +259,11 @@ export async function buildLocalVfsAssetGroup(
     validateVfsAssetGroupManifest(manifest);
     const manifestBytes = Buffer.from(canonicalJson(manifest));
     writeExactFile(join(stagedGroup, "manifest.json"), manifestBytes);
+    const manifestDigest = sha256(manifestBytes);
     const manifestIdentity = {
       bytes: manifestBytes.byteLength,
-      path: "vfs-groups/release-1/manifest.json",
-      sha256: sha256(manifestBytes),
+      path: `vfs-groups/${manifestDigest}/manifest.json`,
+      sha256: manifestDigest,
     };
     const map: VfsProductDeploymentMapV1 = {
       kind: "kandelo-pages-private-product-map",

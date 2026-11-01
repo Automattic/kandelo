@@ -27,6 +27,7 @@ host/test/browser-input-source.test.ts	source-only
 host/test/browser-kernel.test.ts	source-only
 host/test/browser-lazy-fetcher.test.ts	source-only
 host/test/browser-mitm-ca-env.test.ts	source-only
+host/test/browser-package-image-source.test.ts	source-only
 host/test/browser-package-upgrade-client.test.ts	source-only
 host/test/browser-pcm-driver.test.ts	source-only
 host/test/browser-persistent-image-codec-worker.test.ts	source-only
@@ -317,9 +318,11 @@ host/test/overlay-storage.test.ts	source-only
 host/test/owned-job-lifetime.test.ts	source-only
 host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
+host/test/package-image-source.test.ts	prepared-product
 host/test/package-maintenance-compaction.test.ts	source-only
 host/test/package-maintenance-runtime.test.ts	prepared-product
 host/test/package-runtime-file.test.ts	prepared-product
+host/test/package-source-inventory.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
 host/test/pathconf.test.ts	prepared-product

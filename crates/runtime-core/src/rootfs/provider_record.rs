@@ -17,6 +17,23 @@ pub(super) fn identity(bytes: &[u8]) -> Result<(u64, [u8; 32]), Errno> {
     Ok((decoded.record().size, decoded.record().digest))
 }
 
+pub(super) fn pin_sources(bytes: &[u8], directory: &[u8]) -> Result<crate::IoBuffer<u8>, Errno> {
+    let mut decoded = decode(bytes)?;
+    let maximum = bytes.len().checked_add(directory.len().checked_add(4096).ok_or(Errno::ENOMEM)?
+        .checked_mul(2).ok_or(Errno::ENOMEM)?).ok_or(Errno::ENOMEM)?;
+    let _scratch = ROOTFS_METADATA.reserve_temporary(maximum.checked_mul(6).ok_or(Errno::ENOMEM)?)?;
+    for record in &mut decoded.section.records {
+        if record.uri.is_empty() { continue; }
+        if let Some(uri) = package_sources::pin_provider_uri(&record.uri, directory, record.digest)? { record.uri = uri; }
+    }
+    for archive in &mut decoded.section.archives {
+        if let Some(uri) = package_sources::pin_provider_uri(&archive.uri, directory, archive.digest)? { archive.uri = uri; }
+    }
+    let encoded = crate::sdef::encode(&decoded.section.archives, &decoded.section.records)?;
+    decode(&encoded)?;
+    crate::package_inventory::metadata_copy(&encoded)
+}
+
 fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
     let mut output = Vec::new();
     output.try_reserve_exact(bytes.len()).map_err(|_| Errno::ENOMEM)?;

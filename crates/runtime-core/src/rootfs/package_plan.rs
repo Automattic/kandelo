@@ -107,7 +107,7 @@ fn require_maintenance(
 }
 
 pub struct VerifiedFile {
-    path: OwnedMetadata,
+    path: crate::IoBuffer<u8>,
     stamp: Option<Stamp>,
     maintenance: u64,
     epoch: u64,
@@ -136,7 +136,7 @@ impl VerifiedFile {
             return Err(VerificationError::Conflict(Conflict::UnownedCollision));
         }
         Ok(Self {
-            path: own_metadata(path)?,
+            path: crate::package_inventory::metadata_copy(path)?,
             stamp: None,
             maintenance,
             epoch,
@@ -227,7 +227,7 @@ impl FileVerification {
         }
         let mut verification = Self {
             file: VerifiedFile {
-                path: own_metadata(path)?,
+                path: crate::package_inventory::metadata_copy(path)?,
                 stamp: Some(stamp),
                 maintenance,
                 epoch,

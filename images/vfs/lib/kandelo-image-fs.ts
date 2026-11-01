@@ -101,6 +101,7 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_package_inventory_finish?: () => number;
   sm_package_inventory_read?: (offset: number, output: number, length: number) => number;
   sm_package_inventory_cancel?: () => void;
+  sm_package_inventory_pin_sources?: (pointer: number, length: number, directory: number, directoryLength: number) => number;
   sm_reset(rootMode: number, uid: number, gid: number): number;
   sm_image_metadata(out: number, outLen: number): number;
   sm_loaded_image_capacity(): bigint;
@@ -475,13 +476,14 @@ export class KandeloImageFs {
 
   /** Copy bytes into the module and run `fn` with the pointer, always freeing. */
   private withBytes<T>(bytes: Uint8Array, fn: (ptr: number, len: number) => T): T {
-    const ptr = this.exports.sm_alloc(bytes.byteLength);
+    const length = bytes.byteLength;
+    const ptr = this.exports.sm_alloc(length);
     if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
       this.mem.set(bytes, ptr);
-      return fn(ptr, bytes.byteLength);
+      return fn(ptr, length);
     } finally {
-      this.exports.sm_free(ptr, bytes.byteLength);
+      this.exports.sm_free(ptr, length);
     }
   }
 
@@ -532,22 +534,45 @@ export class KandeloImageFs {
         });
       }
       const length = this.check(finish(), "finish package inventory", options.name);
-      if (length > 8 * 1024 * 1024) throw new RangeError("Native package inventory exceeds its size bound");
-      const bytes = new Uint8Array(length);
-      const capacity = Math.min(length, 64 * 1024);
-      const pointer = this.exports.sm_alloc(capacity);
-      if (pointer === 0) throw new Error("Package inventory read allocation failed");
-      try {
-        for (let offset = 0; offset < length;) {
-          const amount = Math.min(capacity, length - offset);
-          const count = this.check(read(offset, pointer, amount), "read package inventory", options.name);
-          if (count !== amount) throw new Error("Native package inventory returned a short read");
-          bytes.set(this.mem.subarray(pointer, pointer + count), offset);
-          offset += count;
-        }
-      } finally { this.exports.sm_free(pointer, capacity); }
-      return bytes;
+      return this.readPackageInventory(length);
     } finally { cancel(); }
+  }
+
+  pinPackageInventorySources(bytes: Uint8Array, directory: string): Uint8Array {
+    const { sm_package_inventory_pin_sources: pin, sm_package_inventory_cancel: cancel } = this.exports;
+    if (!pin || !cancel) throw new Error("Image module lacks native source binding; rebuild it");
+    if (bytes.byteLength > 8 * 1024 * 1024) throw new RangeError("Package inventory exceeds its size bound");
+    if (bytes.buffer === this.exports.memory.buffer) throw new TypeError("Package inventories must not alias image-module memory");
+    if (typeof SharedArrayBuffer !== "undefined" && bytes.buffer instanceof SharedArrayBuffer) {
+      throw new TypeError("Package inventories require independently owned bytes");
+    }
+    if (typeof directory !== "string" || directory.length > 4096) throw new RangeError("Package source directory exceeds its size bound");
+    const encodedDirectory = encoder.encode(directory);
+    if (encodedDirectory.byteLength > 4096) throw new RangeError("Package source directory exceeds its size bound");
+    const length = this.withBytes(bytes, (pointer, count) => this.withBytes(encodedDirectory, (directory, directoryLength) =>
+      this.check(pin(pointer, count, directory, directoryLength), "pin package sources", "")));
+    try { return this.readPackageInventory(length); }
+    finally { cancel(); }
+  }
+
+  private readPackageInventory(length: number): Uint8Array {
+    const read = this.exports.sm_package_inventory_read;
+    if (!read) throw new Error("Image module lacks native package inventories; rebuild it");
+    if (length > 8 * 1024 * 1024) throw new RangeError("Native package inventory exceeds its size bound");
+    const bytes = new Uint8Array(length);
+    const capacity = Math.min(length, 64 * 1024);
+    const pointer = this.exports.sm_alloc(capacity);
+    if (pointer === 0) throw new Error("Package inventory read allocation failed");
+    try {
+      for (let offset = 0; offset < length;) {
+        const amount = Math.min(capacity, length - offset);
+        const count = this.check(read(offset, pointer, amount), "read package inventory", "");
+        if (count !== amount) throw new Error("Native package inventory returned a short read");
+        bytes.set(this.mem.subarray(pointer, pointer + count), offset);
+        offset += count;
+      }
+    } finally { this.exports.sm_free(pointer, capacity); }
+    return bytes;
   }
 
   overlayActivationCodecCall(operation: number, input: Uint8Array): Uint8Array | number {
@@ -934,13 +959,8 @@ export class KandeloImageFs {
     const out = this.exports.sm_alloc(want);
     if (out === 0) throw new Error("kandelo-image-module: allocation failed");
     try {
-      const n = this.check(
-        this.exports.sm_read_file(
-          ...this.pathArgs(open.path), BigInt(at), out, want,
-        ) as number,
-        "read",
-        open.path,
-      );
+      const n = this.withPath(open.path, (pointer, pathLength) => this.check(
+        this.exports.sm_read_file(pointer, pathLength, BigInt(at), out, want), "read", open.path));
       buf.set(this.mem.subarray(out, out + n), 0);
       if (position === null) open.offset += n;
       return n;
@@ -974,20 +994,6 @@ export class KandeloImageFs {
     if (!this.openDirs.delete(handle)) {
       throw new Error(`kandelo-image-module: bad directory handle ${handle}`);
     }
-  }
-
-  /**
-   * Copy a path into module memory and return its (ptr, len).
-   *
-   * Callers must free it. Used where a path and another buffer are live at
-   * once and the nested `withPath` shape would read badly.
-   */
-  private pathArgs(path: string): [number, number] {
-    const bytes = encoder.encode(path);
-    const ptr = this.exports.sm_alloc(bytes.byteLength);
-    if (ptr === 0) throw new Error("kandelo-image-module: allocation failed");
-    this.mem.set(bytes, ptr);
-    return [ptr, bytes.byteLength];
   }
 
   /**

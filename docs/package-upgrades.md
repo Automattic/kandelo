@@ -11,12 +11,12 @@ cross-release WordPress upgrade path remain pending. Keep the first-release
 compatibility warning until integrated acceptance proves that path.
 
 A native positioned-file probe now verifies, stages, atomically publishes,
-reopens and rolls back a complete 13,376-path pristine WordPress software-set
+reopens and rolls back a complete 14,487-path pristine WordPress software-set
 comparison without increasing memory budgets. Reopen checks the complete
 inventory and unmanaged user data. This is filesystem/package evidence, not
 an executing WordPress upgrade demo; deferred-source availability and the app
 maintenance owner remain separate acceptance work. Current results are in the
-[persistence plan](persistence-plan.md#maintenance-compaction-and-complete-set-publication-2026-11-01).
+[persistence plan](persistence-plan.md#content-addressed-package-source-binding-2026-11-01).
 
 Rust owns package inventories, conflict checks, staging, activation,
 recovery selection and rollback. Hosts supply bounded byte transport; the
@@ -34,9 +34,9 @@ content identity. Symlink targets retain their POSIX meaning. Deferred
 files additionally retain the complete bounded SDEF provider description.
 The inventory is bounded to 8 MiB, 4,096 packages and 65,536 files.
 
-Encoded inventories, decoded file/action tables, activation-path/parent tables
-and producer records use
-a separate 64 MiB native admission-credit workset. File hashing/staging still uses
+Encoded inventories, decoded file/action tables, verification paths,
+activation-path/parent tables and producer records use a separate 64 MiB
+native admission-credit workset. File hashing/staging still uses
 bounded I/O buffers and does not increase read/writeback cache allowances.
 The package workset appears in the filesystem memory report and releases
 its credits when those owners drop. It does not reserve another Wasm memory
@@ -113,6 +113,81 @@ Both independent WordPress sites remain outside the managed software set
 under `/var/lib/wordpress-sites`. New user-created files are not silently
 added to an installed baseline. Changed managed files still require the
 coordinator's conflict checks; database migrations remain explicit.
+
+## Image-owned source binding
+
+`KandeloImageFs.pinPackageInventorySources` delegates incoming inventory
+binding to Rust. It replaces image-owned `kandelo-lazy:programs/...` and
+`binaries/programs/...` references with absolute HTTP(S) addresses beneath
+the chosen source directory. New asset-group publication names that directory
+with the manifest's SHA-256, instead of the reusable `release-1` label.
+The caller must obtain and verify the intended manifest through the trusted
+bundle path before choosing its directory; a hash-looking path alone does not
+authenticate a server or its contents.
+
+Rust requires the final directory component to be 64 lowercase hexadecimal
+characters, bounds URIs, refuses traversal/ambiguous encodings, and rejects
+unknown relative addresses instead of silently retaining a mutable deployment
+base. Existing absolute HTTP(S) addresses stay unchanged. Other source schemes,
+including realm-local blob URLs, are refused by this web-bundle binding API.
+Files retain their hashes,
+permissions, owners, archive-member paths and opaque activation/seal payloads.
+Package content/dependency commitments stay identical; the complete inventory
+checksum changes to cover the newly bound transport descriptions. This does
+not adopt a saved filesystem as a missing original package baseline.
+
+The incoming bound inventory is separate from the pristine target image's
+original inventory. Staging and publication persist its provider descriptions
+through the existing journal and indexed compaction. Keep the saved base
+image's original lazy-asset directory fixed: target providers have their own
+absolute addresses, while original virtual references and rollback retain the
+original source. A global directory swap would make two releases disagree
+about the same virtual name. No second host-owned source registry or filesystem
+inventory is introduced. The image-module export is additive; filesystem,
+journal, package-format, userspace and kernel-host versions are unchanged.
+
+Source identity is not source availability. A never-fetched lazy resource
+still needs its retained server, or separately retained local bytes. These
+bindings do not promise complete offline operation after a deployment deletes
+old assets. Missing sources remain explicit read failures; they must not fall
+through to another release. These resources are package bytes, not archives
+of privileged host/kernel runtimes. Verified application bundle selection
+and the maintenance/recovery workflow remain integration work.
+
+## Positioned target-image reader
+
+`PackageImageSource` opens a raw image through the positioned native image
+module. Before exposing its inventory, it verifies the complete source image
+against the caller's trusted SHA-256 in 64 KiB windows. It reads the bounded
+resident producer inventory, binds its providers in Rust and retains only the
+bound inventory plus native filesystem state. It neither adopts an installed
+baseline nor executes a guest program. The underlying bytes must remain
+immutable for the reader's lifetime.
+
+`BrowserPackageImageSource` implements the application's source interface with
+a disposable worker. That worker holds an exclusive OPFS access handle for
+the staged target. Inventory and requested resident regular-file reads cross
+the worker boundary in independent buffers of at most 64 KiB. Deferred
+providers remain kernel-staged descriptions, not eagerly downloaded file
+bodies. Only one source request may be in flight. The main thread receives no
+image-sized buffer or Wasm memory; process workers receive no OPFS handles.
+Full source verification occurs during explicit maintenance, not normal boot.
+
+Closing joins the current read and requires an explicit storage-close
+acknowledgement before terminating the worker. An unacknowledged close,
+timeout, worker failure or invalid response requires retaining the staged
+target; termination alone is not treated as proof of OPFS handle retirement.
+The application must keep its source-staging lease until this close completes.
+This source worker does not establish that guest/device/bridge retirement
+has occurred; that remains the maintenance owner's responsibility.
+
+Node uses the same native positioned reader through a host file/byte adapter.
+Small package activation/recovery/rollback fixtures now use real target-image
+reads on Node and Chromium, Firefox and WebKit, rather than a separate
+path-to-body table. A positioned probe also reads the 258,904,403-byte pristine
+WordPress image, its 7,478,268-byte bound inventory and 36,997,760-byte PHP-FPM
+binary, with a maximum observed source read of 65,536 bytes. This is bounded
+source-reader evidence, not a complete WordPress upgrade or RSS measurement.
 
 ## Maintenance and conflict policy
 

@@ -41,6 +41,23 @@ fn complete(
 }
 
 #[test]
+fn package_verification_paths_own_package_credit_not_persistent_namespace_credit() {
+    let _guard = TestGuard::acquire();
+    let _image = computer();
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let namespace = ROOTFS_METADATA.usage().0;
+    let package = crate::metadata_budget::PACKAGE_METADATA.usage().0;
+    set_metadata_budget_bytes(namespace).unwrap();
+    let proof = VerifiedFile::verify_absence(b"/new-program", &table, &token).unwrap();
+    assert_eq!(ROOTFS_METADATA.usage().0, namespace);
+    assert!(crate::metadata_budget::PACKAGE_METADATA.usage().0 > package);
+    proof.revalidate(&table, &token).unwrap();
+    drop(proof);
+    assert_eq!(crate::metadata_budget::PACKAGE_METADATA.usage().0, package);
+}
+
+#[test]
 fn verifies_package_bytes_in_bounded_steps_and_releases_its_handle() {
     let _guard = TestGuard::acquire();
     let image = computer();
