@@ -2914,46 +2914,42 @@ fn handle_dri_card_ioctl(
             }
         }
         DRM_IOCTL_MODE_GETRESOURCES => {
-            if buf.len() < core::mem::size_of::<WpkDrmModeCardRes>() {
-                return Err(Errno::EINVAL);
+            let req: WpkDrmModeCardRes = read_dri_struct(buf)?;
+            // drm_mode_getresources lists this file's framebuffers and the
+            // device's objects, copying min(capacity, count) ids per array.
+            // Every destination that will be written -- a NULL one
+            // included -- is probed before the first write, so a bad later
+            // pointer leaves no earlier array partially updated.
+            let fbs: Vec<u32> = kms_state(proc, ofd_idx)?.fbs.borrow().keys().copied().collect();
+            let outputs: [(u64, u32, &[u32]); 4] = [
+                (req.fb_id_ptr, req.count_fbs, &fbs),
+                (req.crtc_id_ptr, req.count_crtcs, &[kms::CRTC_ID]),
+                (req.connector_id_ptr, req.count_connectors, &[kms::CONNECTOR_ID]),
+                (req.encoder_id_ptr, req.count_encoders, &[kms::ENCODER_ID]),
+            ];
+            for &(pointer, capacity, ids) in &outputs {
+                let copied = ids.len().min(capacity as usize);
+                if copied != 0 {
+                    probe_dri_process_pointer(host, pid, pointer, copied * 4)?;
+                }
             }
-            let req: WpkDrmModeCardRes =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            // Validate every nested address before the first write so a later
-            // unrepresentable wasm64 pointer cannot leave earlier outputs
-            // partially updated.
-            let crtc_id_ptr = (req.count_crtcs >= 1 && req.crtc_id_ptr != 0)
-                .then(|| probe_dri_process_pointer(host, pid, req.crtc_id_ptr, 4))
-                .transpose()?;
-            let connector_id_ptr = (req.count_connectors >= 1 && req.connector_id_ptr != 0)
-                .then(|| probe_dri_process_pointer(host, pid, req.connector_id_ptr, 4))
-                .transpose()?;
-            let encoder_id_ptr = (req.count_encoders >= 1 && req.encoder_id_ptr != 0)
-                .then(|| probe_dri_process_pointer(host, pid, req.encoder_id_ptr, 4))
-                .transpose()?;
-            if let Some(pointer) = crtc_id_ptr {
-                write_dri_u32s(host, pid, pointer, &[kms::CRTC_ID])?;
+            for &(pointer, capacity, ids) in &outputs {
+                let copied = ids.len().min(capacity as usize);
+                if copied != 0 {
+                    write_dri_u32s(host, pid, pointer, &ids[..copied])?;
+                }
             }
-            if let Some(pointer) = connector_id_ptr {
-                write_dri_u32s(host, pid, pointer, &[kms::CONNECTOR_ID])?;
-            }
-            if let Some(pointer) = encoder_id_ptr {
-                write_dri_u32s(host, pid, pointer, &[kms::ENCODER_ID])?;
-            }
-            let resp = WpkDrmModeCardRes {
-                count_fbs: 0,
+            write_dri_struct(buf, WpkDrmModeCardRes {
+                count_fbs: fbs.len() as u32,
                 count_crtcs: 1,
                 count_connectors: 1,
                 count_encoders: 1,
                 min_width: 1,
-                max_width: 16384,
+                max_width: KMS_MAX_FB_DIMENSION,
                 min_height: 1,
-                max_height: 16384,
+                max_height: KMS_MAX_FB_DIMENSION,
                 ..req
-            };
-            unsafe {
-                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, resp);
-            }
+            });
             Ok(())
         }
         DRM_IOCTL_MODE_GETCRTC => {
@@ -2990,7 +2986,9 @@ fn handle_dri_card_ioctl(
             let resp = WpkDrmModeGetEncoder {
                 encoder_id: kms::ENCODER_ID,
                 encoder_type: DRM_MODE_ENCODER_VIRTUAL,
-                crtc_id: kms::CRTC_ID,
+                // drm_encoder_get_crtc: the current link, none while the
+                // CRTC is disabled.
+                crtc_id: if kms::crtc_mode().is_some() { kms::CRTC_ID } else { 0 },
                 possible_crtcs: 0b1,
                 ..Default::default()
             };
@@ -3060,7 +3058,8 @@ fn handle_dri_card_ioctl(
                 count_modes: mode_count,
                 count_props: props.len() as u32,
                 count_encoders: 1,
-                encoder_id: kms::ENCODER_ID,
+                // drm_connector_get_encoder: none while the CRTC is disabled.
+                encoder_id: if kms::crtc_mode().is_some() { kms::ENCODER_ID } else { 0 },
                 connector_id: kms::CONNECTOR_ID,
                 connector_type: DRM_MODE_CONNECTOR_VIRTUAL,
                 connector_type_id: 1,
@@ -8288,22 +8287,25 @@ pub fn sys_read(
                             written
                         }
                         VirtualDevice::DriCard0 => {
-                            // Drain queued DRM events (DRM_EVENT_FLIP_COMPLETE)
-                            // into the caller buffer, one byte at a time so a
-                            // short caller buffer returns whatever fits and
-                            // leaves the remainder queued for the next read.
+                            // drm_read copies whole events only. An event
+                            // that does not fit stays queued and ends the
+                            // read, which returns what was copied so far --
+                            // 0 when even the first event does not fit, so
+                            // an event is never split across reads.
                             let mut kms = kms_state_mut(proc, ofd_idx)?;
                             let mut n = 0usize;
-                            while n < buf.len() {
-                                match kms.event_ring.pop_front() {
-                                    Some(b) => {
-                                        buf[n] = b;
-                                        n += 1;
-                                    }
-                                    None => break,
+                            while kms.event_ring.len() >= 8 {
+                                let header: [u8; 4] = core::array::from_fn(|i| kms.event_ring[4 + i]);
+                                let length = u32::from_le_bytes(header) as usize;
+                                if length > buf.len() - n || length > kms.event_ring.len() {
+                                    break;
                                 }
+                                for (slot, byte) in buf[n..n + length].iter_mut().zip(kms.event_ring.drain(..length)) {
+                                    *slot = byte;
+                                }
+                                n += length;
                             }
-                            if n == 0 {
+                            if n == 0 && kms.event_ring.is_empty() {
                                 // Nothing queued. Linux's drm_read blocks until
                                 // an event arrives (EAGAIN only for O_NONBLOCK),
                                 // and EAGAIN is exactly that here: the host
@@ -55663,6 +55665,105 @@ impl HostIO for RelSymlinkMock {
         // A non-master cannot modeset (DRM_MASTER, checked first).
         assert_eq!(kms_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_SETCRTC,
             WpkDrmModeGetCrtc { x: 0x1_0000, ..valid }).map(|_| ()), Err(Errno::EACCES));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_read_returns_whole_events_and_never_splits_one() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        kms_host_vblank(&mut proc, 1, 0);
+        // drm_read short-buffer-*: two queued events, then a 4-byte read
+        // returns 0 and leaves both queued; 40-byte reads take one each.
+        for user_data in [1, 2] {
+            wait_vblank(&mut proc, &mut host, fd,
+                vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 0, user_data)).unwrap();
+        }
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 4), Ok(Vec::new()));
+        let first = read_drm_events(&mut proc, &mut host, fd, 40).unwrap();
+        assert_eq!((first.len(), le_u32(&first, 8)), (32, 1));
+        let second = read_drm_events(&mut proc, &mut host, fd, 40).unwrap();
+        assert_eq!((second.len(), le_u32(&second, 8)), (32, 2));
+        // empty-*: nothing queued blocks (EAGAIN parks a blocking reader).
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 64), Err(Errno::EAGAIN));
+        // A large buffer takes every whole event that fits.
+        for user_data in [3, 4, 5] {
+            wait_vblank(&mut proc, &mut host, fd,
+                vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 0, user_data)).unwrap();
+        }
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 80).unwrap().len(), 64);
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 80).unwrap().len(), 32);
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_getresources_lists_the_files_fbs_and_faults_null_destinations() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mine = [kms_fb(&mut proc, &mut host, fd, 64, 64, DRM_FORMAT_XRGB8888),
+            kms_fb(&mut proc, &mut host, fd, 64, 64, DRM_FORMAT_XRGB8888)];
+        kms_fb(&mut proc, &mut host, other, 64, 64, DRM_FORMAT_XRGB8888);
+        let ids_at = 0x2000u64;
+        let query = WpkDrmModeCardRes { fb_id_ptr: ids_at, count_fbs: 8, ..Default::default() };
+        let reply = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETRESOURCES, query).unwrap();
+        assert_eq!((reply.count_fbs, reply.count_crtcs, reply.max_width), (2, 1, 16384));
+        assert_eq!(last_written_u32s(&host), mine.to_vec(), "only this file's fbs");
+        // Capacity 1 copies one id; capacity 0 copies none.
+        let writes = host.proc_write_calls.len();
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETRESOURCES,
+            WpkDrmModeCardRes { fb_id_ptr: ids_at, count_fbs: 1, ..Default::default() }).unwrap();
+        assert_eq!(last_written_u32s(&host), alloc::vec![mine[0]]);
+        assert_eq!(host.proc_write_calls.len(), writes + 1);
+        // A NULL destination with room for an id is EFAULT, with nothing
+        // written; a NULL with nothing to copy is fine.
+        let writes = host.proc_write_calls.len();
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETRESOURCES,
+            WpkDrmModeCardRes { fb_id_ptr: ids_at, count_fbs: 2, count_crtcs: 1, ..Default::default() }).map(|_| ()),
+            Err(Errno::EFAULT));
+        assert_eq!(host.proc_write_calls.len(), writes);
+        let empty = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        kms_ioctl(&mut proc, &mut host, empty, DRM_IOCTL_MODE_GETRESOURCES,
+            WpkDrmModeCardRes { count_fbs: 4, ..Default::default() }).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_encoder_and_connector_report_their_link_only_while_the_crtc_is_enabled() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let links = |proc: &mut Process, host: &mut MockHostIO| {
+            let encoder = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETENCODER,
+                WpkDrmModeGetEncoder { encoder_id: kms::ENCODER_ID, ..Default::default() }).unwrap();
+            let connector = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_GETCONNECTOR,
+                WpkDrmModeGetConnector { connector_id: kms::CONNECTOR_ID, ..Default::default() }).unwrap();
+            (encoder.crtc_id, connector.encoder_id, encoder.possible_crtcs)
+        };
+        assert_eq!(links(&mut proc, &mut host), (0, 0, 1));
+        let (fb, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb);
+        assert_eq!(links(&mut proc, &mut host), (kms::CRTC_ID, kms::ENCODER_ID, 1));
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb.to_le_bytes()).unwrap();
+        assert_eq!(links(&mut proc, &mut host), (0, 0, 1));
         kms::reset_for_test();
     }
 
