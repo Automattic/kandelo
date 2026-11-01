@@ -10596,6 +10596,13 @@ fn cleanup_process_for_exit(
     if let Some(locks) = locks {
         publish_advisory_lock_mutation(locks.remove_process(proc.pid));
     }
+
+    // A zombie owes its parent an exit status, not its environment. These live
+    // in the bounded I/O pool, so unreaped children must not keep them there,
+    // or a parent that reaps late can exhaust the pool and fail its own fork.
+    // Only argv[0] stays, because procfs names the process from it.
+    proc.environ = crate::process::ProcessStrings::new();
+    proc.argv.keep_name();
 }
 
 /// Exit normally, publishing the parent-visible status after cleanup.
@@ -28493,6 +28500,24 @@ mod tests {
 
         assert_eq!(high_fd, 2048);
         assert_eq!(proc.fd_table.get(high_fd), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn exit_releases_a_zombies_environment_and_keeps_only_its_name() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (before, _) = crate::io_buffer::IO_MEMORY.usage();
+        let variable = alloc::vec![b'x'; 16 * 1024];
+        for _ in 0..8 { proc.environ.try_push(&variable).unwrap(); }
+        proc.argv.try_push(b"/bin/sh").unwrap();
+        proc.argv.try_push(&variable).unwrap();
+        let (loaded, _) = crate::io_buffer::IO_MEMORY.usage();
+        assert!(loaded >= before + 9 * variable.len());
+        sys_exit(&mut proc, &mut host, 0);
+        assert_eq!(proc.environ.len(), 0);
+        assert_eq!(proc.argv.len(), 1);
+        assert_eq!(proc.argv.first().map(|name| name.as_ref()), Some(b"/bin/sh".as_slice()));
+        assert!(crate::io_buffer::IO_MEMORY.usage().0 < before + variable.len());
     }
 
     #[test]

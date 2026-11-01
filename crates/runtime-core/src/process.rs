@@ -1311,6 +1311,9 @@ impl ProcessStrings {
         self.try_push_owned(crate::IoBuffer::copy_from(entry)?)
     }
 
+    /// Drop everything after the first entry, which names the process.
+    pub fn keep_name(&mut self) { self.0.truncate(1); }
+
     pub(crate) fn try_push_owned(&mut self, entry: crate::IoBuffer<u8>) -> Result<(), Errno> {
         self.0.try_reserve(1)?;
         self.0.push(entry);
