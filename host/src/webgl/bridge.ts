@@ -732,10 +732,14 @@ function dispatch(
       b.shadow.polygonOffset = [v.getFloat32(p, true), v.getFloat32(p + 4, true)];
       gl.polygonOffset(...b.shadow.polygonOffset);
       return;
-    case O.OP_DEPTH_RANGEF:
-      b.shadow.depthRange = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(x => Math.min(1, Math.max(0, x))) as [number, number];
-      gl.depthRange(...b.shadow.depthRange);
+    case O.OP_DEPTH_RANGEF: {
+      // ES 2.0 section 2.5: a command that generates an error has no effect,
+      // so the shadow (replayed by the muxer) changes only after acceptance.
+      const range = [v.getFloat32(p, true), v.getFloat32(p + 4, true)].map(clampUnit) as [number, number];
+      if (!checkedGlCall(b, () => gl.depthRange(...range))) return;
+      b.shadow.depthRange = range;
       return;
+    }
     case O.OP_SAMPLE_COVERAGE:
       b.shadow.sampleCoverage = [Math.min(1, Math.max(0, v.getFloat32(p, true))), v.getUint32(p + 4, true) !== 0];
       gl.sampleCoverage(...b.shadow.sampleCoverage);
