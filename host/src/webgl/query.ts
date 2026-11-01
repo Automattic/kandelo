@@ -451,13 +451,19 @@ export function runGlQuery(
     // i32 precision
     case O.QOP_GET_SHADER_PRECISION_FORMAT: {
       if (input.byteLength < 8 || out.byteLength < 12) return -22;
-      const fmt = gl.getShaderPrecisionFormat(
-        inDv.getUint32(0, true),
-        inDv.getUint32(4, true),
-      );
-      outDv.setInt32(0, fmt?.rangeMin ?? 0, true);
-      outDv.setInt32(4, fmt?.rangeMax ?? 0, true);
-      outDv.setInt32(8, fmt?.precision ?? 0, true);
+      const shader = inDv.getUint32(0,true), precision = inDv.getUint32(4,true);
+      if ((shader !== 0x8b30 && shader !== 0x8b31) || precision < 0x8df0 || precision > 0x8df5) {
+        recordGlError(b,0x500); return -22;
+      }
+      let fmt: WebGLShaderPrecisionFormat | null = null;
+      if (!checkedGlCall(b, () => { fmt = gl.getShaderPrecisionFormat(shader,precision); })) return -5;
+      if (!fmt) { recordGlError(b,0x502); return -5; }
+      // A rejected query must preserve every caller byte. A real zero-valued
+      // fragment precision result remains distinct from a missing native one.
+      const accepted = fmt as WebGLShaderPrecisionFormat;
+      outDv.setInt32(0, accepted.rangeMin, true);
+      outDv.setInt32(4, accepted.rangeMax, true);
+      outDv.setInt32(8, accepted.precision, true);
       return 12;
     }
 

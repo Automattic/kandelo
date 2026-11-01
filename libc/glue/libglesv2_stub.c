@@ -2741,16 +2741,19 @@ void glGetIntegerv(GLenum pname, GLint *data) {
 void glGetShaderPrecisionFormat(GLenum shadertype, GLenum precisiontype,
                                 GLint *range, GLint *precision) {
     if (!_wpk_gl_current_encoder()) return;
+    if ((shadertype != GL_VERTEX_SHADER && shadertype != GL_FRAGMENT_SHADER) ||
+        (precisiontype != GL_LOW_FLOAT && precisiontype != GL_MEDIUM_FLOAT &&
+         precisiontype != GL_HIGH_FLOAT && precisiontype != GL_LOW_INT &&
+         precisiontype != GL_MEDIUM_INT && precisiontype != GL_HIGH_INT)) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
     uint8_t in[8];
     uint32_t s = (uint32_t)shadertype, p = (uint32_t)precisiontype;
     memcpy(in, &s, 4); memcpy(in + 4, &p, 4);
     int32_t out[3] = { 0, 0, 0 };
     if (_wpk_gl_query_into(QOP_GET_SHADER_PRECISION_FORMAT,
-                           in, 8, out, 12) != 0) {
-        if (range) range[0] = range[1] = 0;
-        if (precision) *precision = 0;
-        return;
-    }
+                           in, 8, out, 12) != 0) return;
     if (range) { range[0] = out[0]; range[1] = out[1]; }
     if (precision) *precision = out[2];
 }

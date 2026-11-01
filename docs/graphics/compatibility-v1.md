@@ -18412,3 +18412,39 @@ source status stays unchanged. Supplementary evidence is primary
 `.context/build-retirement-r1/final-retained-toolchain-retirement.json`.
 The original 182.9 GiB cleanup measurement remains a separate captured
 window; ongoing builds prevent attributing a new net free-space delta.
+
+
+### Shader precision query output and error preservation
+
+The combined source at `a6ed5d0d09` overwrites both caller outputs with
+zeros when the C shader-precision query fails. Its ordinary shared host
+handler also publishes results after invalid enums or native errors and
+turns a missing native result into a successful zero result. These are
+ordinary platform defects, not compiler or browser boundaries. The
+[Khronos precision query reference](https://registry.khronos.org/OpenGL-Refpages/es2.0/xhtml/glGetShaderPrecisionFormat.xml)
+requires unchanged output on error and INVALID_ENUM for invalid shader or
+precision types. A valid unsupported fragment high-float result is zero.
+
+The C entry point now validates both enums before dispatch and only
+copies accepted replies. The shared Node/browser host handler validates
+the same enums, captures prior and current native errors through the
+existing checked-call owner, and publishes all three values only after
+an accepted non-null native result. A real zero-valued result remains
+valid. No operation number, wire layout or numeric ABI changes.
+
+Evidence is in primary
+`.context/graphics-main-integration-review-r1/shader-precision-r1/`.
+The unchanged production C source fails four new regressions (invalid
+enums, transport failure, allocation failure and rejected command prefix)
+while its successful-query control passes. The unchanged host source
+fails 10 of 25 new cases. After repair, all **303/303** default native C
+cases pass under UBSan, and all **179/179** selected host cases pass,
+including the new 25 cases. Both finite commands complete with exit zero;
+all five affected source/test hashes agree before and after those runs.
+The prior 298 C and 154 selected host cases remain selected and passing.
+
+This is native C and host/device-double evidence. Normal rebuilt guest
+marshalling, actual browser rendering, full upstream conformance and
+whole-baseline acceptance remain unrun for this increment. It does not
+establish desktop responsiveness or resolve the server-wait, retained
+public-query scheduling, cleanup or other ordinary inventory gaps.

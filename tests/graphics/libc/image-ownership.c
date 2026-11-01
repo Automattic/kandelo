@@ -392,6 +392,8 @@ static EGLImageKHR nested_image_import, nested_image_state;
 static struct wpk_gles_context *close_group_peer;
 static unsigned close_group_reservations;
 static unsigned scalar_queries;
+static unsigned precision_queries;
+static int precision_query_failure;
 static uint32_t core_total, core_offset, core_info[4];
 static unsigned core_calls, core_fail_at, validate_commands;
 static unsigned upload_queries, upload_chunks, upload_commits, upload_aborts;
@@ -1614,6 +1616,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(latest_allocation && q->out_buf_len >= 4 + length);
             memcpy(latest_allocation,&length,4);
             memcpy((uint8_t *)latest_allocation+4,value,length);
+            return 0;
+        }
+        if (q->op == QOP_GET_SHADER_PRECISION_FORMAT) {
+            precision_queries++;
+            assert(q->in_buf_len == 8 && q->out_buf_len == 12 && latest_allocation);
+            if (precision_query_failure) { errno = EIO; return -1; }
+            const GLint result[3] = {127,127,23};
+            memcpy(latest_allocation,result,sizeof result);
             return 0;
         }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
@@ -3861,6 +3871,43 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-uniform-errors");
         return 0;
+    }
+    if (!strncmp(argv[1], "encoder-precision-",18)) {
+        struct { GLint range[2], precision; uint32_t guard; } output = {{71,72},73,0x12345678};
+        const GLenum shaders[] = {GL_VERTEX_SHADER,GL_FRAGMENT_SHADER};
+        const GLenum formats[] = {GL_LOW_FLOAT,GL_MEDIUM_FLOAT,GL_HIGH_FLOAT,GL_LOW_INT,GL_MEDIUM_INT,GL_HIGH_INT};
+        if (!strcmp(argv[1],"encoder-precision-errors")) {
+            const GLenum invalid[] = {0,GL_FLOAT,0xffffffffu};
+            for (unsigned i=0;i<3;i++) {
+                glGetShaderPrecisionFormat(invalid[i],GL_HIGH_FLOAT,output.range,&output.precision);
+                assert(output.range[0]==71 && output.range[1]==72 && output.precision==73 && output.guard==0x12345678);
+                assert(glGetError()==GL_INVALID_ENUM);
+                glGetShaderPrecisionFormat(GL_VERTEX_SHADER,invalid[i],output.range,&output.precision);
+                assert(output.range[0]==71 && output.range[1]==72 && output.precision==73 && output.guard==0x12345678);
+                assert(glGetError()==GL_INVALID_ENUM);
+            }
+            assert(!precision_queries);
+        } else if (!strcmp(argv[1],"encoder-precision-success")) {
+            for (unsigned s=0;s<2;s++) for (unsigned p=0;p<6;p++) {
+                glGetShaderPrecisionFormat(shaders[s],formats[p],output.range,&output.precision);
+                assert(output.range[0]==127 && output.range[1]==127 && output.precision==23 && output.guard==0x12345678);
+            }
+            assert(precision_queries==12 && glGetError()==GL_NO_ERROR);
+        } else {
+            if (!strcmp(argv[1],"encoder-precision-transport")) precision_query_failure=1;
+            else if (!strcmp(argv[1],"encoder-precision-allocation")) fail_malloc=1;
+            else {
+                assert(!strcmp(argv[1],"encoder-precision-prefix"));
+                glClear(GL_COLOR_BUFFER_BIT); fail_submit=1;
+            }
+            glGetShaderPrecisionFormat(GL_FRAGMENT_SHADER,GL_HIGH_FLOAT,output.range,&output.precision);
+            fail_malloc=fail_submit=precision_query_failure=0;
+            assert(output.range[0]==71 && output.range[1]==72 && output.precision==73 && output.guard==0x12345678);
+            assert(precision_queries==(!strcmp(argv[1],"encoder-precision-transport") ? 1u : 0u));
+            if (!strcmp(argv[1],"encoder-precision-allocation")) assert(glGetError()==GL_OUT_OF_MEMORY);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strcmp(argv[1], "encoder-core-reflection")) {
         void (*active)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *) = (void (*)(GLuint,GLuint,GLsizei,GLsizei *,GLint *,GLenum *,GLchar *))eglGetProcAddress("glGetActiveAttrib");
