@@ -4559,7 +4559,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_addfb",
-      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4589,7 +4589,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_set_fb",
-      "signature": "(i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> ()"
     },
     {
       "kind": "func",

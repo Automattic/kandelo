@@ -679,6 +679,7 @@ pub trait HostIO {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32 {
         0
     }
@@ -687,7 +688,9 @@ pub trait HostIO {
     fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
 
     #[allow(unused_variables)]
-    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {}
+    /// Latch `fb_id` on `crtc_id` with the scanned viewport
+    /// `[x, y, width, height]` in framebuffer pixels (all 0 when disabling).
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {}
 
     /// True only after the host has negotiated a cursor presentation transport.
     fn kms_cursor_supported(&mut self) -> bool {
@@ -3873,7 +3876,7 @@ mod tests {
                 height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
-                offset: 16,
+                offset: 16, flags: 0,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
@@ -3996,7 +3999,7 @@ mod tests {
                 height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
-                offset: 16,
+                offset: 16, flags: 0,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
@@ -4059,7 +4062,7 @@ mod tests {
                 height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
-                offset: 16,
+                offset: 16, flags: 0,
             },
         );
         parent.ofd_table.get_mut(ofd_idx).unwrap().dri_state =

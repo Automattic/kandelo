@@ -2822,12 +2822,22 @@ fn disable_crtc_scanning(fb_id: u32) {
     }
     kms::set_crtc_fb(0);
     kms::set_crtc_mode(None);
+    kms::set_crtc_offset((0, 0));
 }
 
 /// Put `fb_id` on the CRTC. An fb that `CLOSEFB` left on the CRTC is no
 /// longer referenced once another fb replaces it.
 fn latch_crtc_fb(host: &mut dyn HostIO, pid: i32, crtc_id: u32, fb_id: u32) {
-    host.kms_set_fb(pid, crtc_id, fb_id);
+    // The CRTC scans its mode's active area at the panning offset; the host
+    // presents exactly that region of the framebuffer.
+    let viewport = match (fb_id, kms::crtc_mode()) {
+        (0, _) | (_, None) => [0; 4],
+        (_, Some(mode)) => {
+            let (x, y) = kms::crtc_offset();
+            [x, y, u32::from(mode.hdisplay), u32::from(mode.vdisplay)]
+        }
+    };
+    host.kms_set_fb(pid, crtc_id, fb_id, viewport);
     kms::set_crtc_fb(fb_id);
     if let Some(closed) = kms::replace_closed_scanout(None) {
         release_kms_fb(host, closed.pid, closed.fb_id, closed.fb.bo_id);
@@ -3008,9 +3018,12 @@ fn handle_dri_card_ioctl(
                 return Err(Errno::ENOENT);
             }
             let mode = kms::crtc_mode();
+            let (x, y) = kms::crtc_offset();
             let resp = WpkDrmModeGetCrtc {
                 crtc_id: kms::CRTC_ID,
                 fb_id: kms::crtc_fb(),
+                x,
+                y,
                 mode_valid: mode.is_some() as u32,
                 mode: mode.unwrap_or_default(),
                 ..Default::default()
@@ -3188,6 +3201,7 @@ fn handle_dri_card_ioctl(
                 width: fb.width,
                 height: fb.height,
                 pixel_format: fb.pixel_format,
+                flags: fb.flags & DRM_MODE_FB_INTERLACED,
                 ..Default::default()
             };
             reply.handles[0] = handle;
@@ -3286,7 +3300,7 @@ fn handle_dri_card_ioctl(
                                 || (bo.bpp == 32 && bo.width == width && bo.height >= height))))
                     { return Err(Errno::EINVAL); }
                     Some(crate::ofd::KmsFb { bo_id, width, height,
-                        pixel_format: DRM_FORMAT_ARGB8888, stride: width * 4, offset: 0 })
+                        pixel_format: DRM_FORMAT_ARGB8888, stride: width * 4, offset: 0, flags: 0 })
                 } else { None };
                 next.fb_id = if next.fb.is_some() { kms::allocate_fb_id()? } else { 0 };
                 next.hot_x = if size == 36 { word(7) as i32 } else { 0 };
@@ -3328,13 +3342,9 @@ fn handle_dri_card_ioctl(
                 if !kms::PRIMARY_PLANE_FORMATS.contains(&fb.pixel_format) {
                     return Err(Errno::EINVAL);
                 }
+                // The panned viewport must lie inside the fb; the host then
+                // presents exactly that region (host_kms_set_fb).
                 check_crtc_viewport(&req.mode, req.x, req.y, &fb)?;
-                // The host presents the framebuffer from its origin and
-                // has no panning offset (host_kms_set_fb), so a panned
-                // viewport is refused rather than shown unpanned.
-                if req.x != 0 || req.y != 0 {
-                    return Err(Errno::EINVAL);
-                }
                 fb_id
             } else {
                 // Linux ignores the fb of a SETCRTC without a mode: it
@@ -3365,6 +3375,9 @@ fn handle_dri_card_ioctl(
                 }
             }
             kms::set_crtc_mode(mode_set.then_some(req.mode));
+            // A disabled CRTC has no primary plane source, so GETCRTC
+            // reports 0/0 as Linux does.
+            kms::set_crtc_offset(if mode_set { (req.x, req.y) } else { (0, 0) });
             latch_crtc_fb(host, pid, req.crtc_id, fb_id);
             Ok(())
         }
@@ -3394,7 +3407,8 @@ fn handle_dri_card_ioctl(
             // Framebuffers are looked up device-wide (drm_framebuffer_lookup);
             // only RMFB/CLOSEFB are creator-file operations.
             let fb = kms::framebuffer(req.fb_id).ok_or(Errno::ENOENT)?;
-            check_crtc_viewport(&mode, 0, 0, &fb)?;
+            let (x, y) = kms::crtc_offset();
+            check_crtc_viewport(&mode, x, y, &fb)?;
             if old_fb.pixel_format != fb.pixel_format {
                 return Err(Errno::EINVAL);
             }
@@ -3741,12 +3755,10 @@ fn kms_format_cpp(format: u32) -> Option<u32> {
 /// `framebuffer_check` and `drm_gem_fb_init_with_funcs` for the single-plane
 /// formats the primary plane scans out. Returns the new fb id.
 ///
-/// Two Kandelo boundaries are reported as Linux reports an unsupported
-/// configuration (EINVAL): format modifiers (`DRM_CAP_ADDFB2_MODIFIERS` is
-/// 0, so `DRM_MODE_FB_MODIFIERS` is refused exactly as on a driver without
-/// modifier support), and a nonzero `offsets[0]`, because the host scanout
-/// interface (`host_kms_addfb`) has no offset and would show the wrong
-/// bytes.
+/// Format modifiers keep Linux's unsupported-configuration errno (EINVAL):
+/// `DRM_CAP_ADDFB2_MODIFIERS` is 0, so `DRM_MODE_FB_MODIFIERS` is refused
+/// exactly as on a driver without modifier support. `offsets[0]` reaches
+/// the host scanout (`host_kms_addfb`), which reads the plane from it.
 fn kms_add_framebuffer(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -3791,10 +3803,12 @@ fn kms_add_framebuffer(
     // not reach a presenter as an internal GPU failure. A GPU-tier BO is a
     // fixed native texture: its view must keep the allocation's row pitch
     // and fit its extent.
+    // A GPU-tier BO is a native texture with no byte addressing, so its
+    // view starts at the texture origin.
     if min_size > bo_size
-        || offset != 0
         || (tier == crate::dri::BoTier::GpuTexture
-            && (req.pitches[0] != bo_stride || req.width > bo_width || req.height > bo_height))
+            && (offset != 0 || req.pitches[0] != bo_stride
+                || req.width > bo_width || req.height > bo_height))
     {
         return Err(Errno::EINVAL);
     }
@@ -3810,13 +3824,15 @@ fn kms_add_framebuffer(
                 pixel_format: req.pixel_format,
                 stride: req.pitches[0],
                 offset: req.offsets[0],
+                flags: req.flags & DRM_MODE_FB_INTERLACED,
             },
         );
         kms::register_framebuffer(id, kms.fbs.downgrade());
         id
     };
     crate::dri::with_registry(|r| r.incref(bo_id));
-    let rc = host.kms_addfb(pid, fb_id, bo_id, req.width, req.height, req.pixel_format, req.pitches[0]);
+    let rc = host.kms_addfb(pid, fb_id, bo_id, req.width, req.height, req.pixel_format,
+        req.pitches[0], req.offsets[0]);
     if rc < 0 {
         kms::unregister_framebuffer(fb_id);
         if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
@@ -26165,6 +26181,8 @@ mod tests {
         /// Recorded `(pid, crtc_id, fb_id)` for every `kms_set_fb` call so
         /// SETCRTC/PAGE_FLIP scanout latching can be asserted against.
         kms_set_fb_calls: Vec<(i32, u32, u32)>,
+        kms_set_fb_viewports: Vec<[u32; 4]>,
+        kms_addfb_offsets: Vec<(u32, u32)>,
         /// Recorded `(pid, ctx_id, bo_id, gl_target)` for every
         /// `gl_bind_foreign_texture` call.
         gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
@@ -26339,6 +26357,8 @@ mod tests {
                 prepared_exec_bytes: None,
                 base_blobs: std::collections::HashMap::new(),
                 kms_set_fb_calls: Vec::new(),
+                kms_set_fb_viewports: Vec::new(),
+                kms_addfb_offsets: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
                 gl_import_image_calls: Vec::new(),
                 gl_export_image_calls: Vec::new(),
@@ -27237,8 +27257,15 @@ mod tests {
             0
         }
 
-        fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
+        fn kms_addfb(&mut self, _pid: i32, fb_id: u32, _bo_id: u32, _width: u32, _height: u32,
+            _pixel_format: u32, _pitch: u32, offset: u32) -> i32 {
+            self.kms_addfb_offsets.push((fb_id, offset));
+            0
+        }
+
+        fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {
             self.kms_set_fb_calls.push((pid, crtc_id, fb_id));
+            self.kms_set_fb_viewports.push(viewport);
         }
         fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
             width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
@@ -55778,14 +55805,29 @@ impl HostIO for RelSymlinkMock {
         let fb = addfb(&mut proc, &mut host, WpkDrmModeFbCmd2 { height: 1020, ..too_small }).unwrap();
         rmfb(&mut proc, &mut host, fb);
 
-        // An unknown handle is ENOENT; an offset the host scanout cannot
-        // honor is refused rather than scanned out from the wrong bytes.
+        // An unknown handle is ENOENT. A plane offset reaches the host,
+        // and counts toward the object size (512 rows of 4096 bytes from
+        // offset 4096 fit; one more row of offset does not).
         let mut unknown = base;
         unknown.handles[0] = 999;
         assert_eq!(addfb(&mut proc, &mut host, unknown), Err(Errno::ENOENT));
         let mut offset = base;
         offset.offsets[0] = 4096;
-        reject(&mut proc, &mut host, offset, "offset");
+        let fb = addfb(&mut proc, &mut host, offset).unwrap();
+        assert_eq!(*host.kms_addfb_offsets.last().unwrap(), (fb, 4096));
+        let info = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETFB2,
+            WpkDrmModeFbCmd2 { fb_id: fb, ..Default::default() }).unwrap();
+        assert_eq!((info.offsets[0], info.flags), (4096, 0));
+        rmfb(&mut proc, &mut host, fb);
+        let mut past = max;
+        past.offsets[0] = 4096;
+        reject(&mut proc, &mut host, past, "offset past the object");
+        // DRM_MODE_FB_INTERLACED is recorded and reported by GETFB2.
+        let fb = addfb(&mut proc, &mut host, WpkDrmModeFbCmd2 { flags: DRM_MODE_FB_INTERLACED, ..base }).unwrap();
+        let info = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETFB2,
+            WpkDrmModeFbCmd2 { fb_id: fb, ..Default::default() }).unwrap();
+        assert_eq!(info.flags, DRM_MODE_FB_INTERLACED);
+        rmfb(&mut proc, &mut host, fb);
         assert!(kms_state(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().fbs.borrow().is_empty());
         sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
@@ -55847,7 +55889,7 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn kms_setcrtc_resolves_fbs_device_wide_keeps_fb_minus_one_and_refuses_panning() {
+    fn kms_setcrtc_resolves_fbs_device_wide_keeps_fb_minus_one_and_pans() {
         use crate::dri::kms;
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
@@ -55872,12 +55914,26 @@ impl HostIO for RelSymlinkMock {
         // fb -1 keeps the bound framebuffer.
         setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: u32::MAX, ..valid }).unwrap();
         assert_eq!(*host.kms_set_fb_calls.last().unwrap(), (1, kms::CRTC_ID, foreign));
-        // Offsets are signed 16-bit (ERANGE). An 800x600 fb would contain a
-        // panned 640x480 viewport, but the host cannot pan, so it is refused
-        // (EINVAL); one past the fb is ENOSPC as on Linux.
+        // Offsets are signed 16-bit (ERANGE); one pixel past the fb is
+        // ENOSPC. A 640x480 viewport panned to (160, 120) of an 800x600 fb
+        // is scanned out: the host receives exactly that region.
         assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 0x1_0000, ..valid }), Err(Errno::ERANGE));
-        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 160, y: 120, ..valid }), Err(Errno::EINVAL));
         assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 161, ..valid }), Err(Errno::ENOSPC));
+        setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 160, y: 120, ..valid }).unwrap();
+        assert_eq!(*host.kms_set_fb_viewports.last().unwrap(), [160, 120, 640, 480]);
+        let panned = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() }).unwrap();
+        assert_eq!((panned.x, panned.y), (160, 120));
+        // kms_flip flip-vs-panning: a flip keeps the panning offset, so the
+        // new fb must cover the panned viewport too.
+        let small_flip = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+        assert_eq!(page_flip(&mut proc, &mut host, fd, small_flip, 0), Err(Errno::ENOSPC));
+        let big_flip = kms_fb(&mut proc, &mut host, fd, 800, 600, DRM_FORMAT_ARGB8888);
+        page_flip(&mut proc, &mut host, fd, big_flip, 0).unwrap();
+        assert_eq!(*host.kms_set_fb_viewports.last().unwrap(), [160, 120, 640, 480]);
+        kms_host_vblank(&mut proc, 0, 1);
+        setcrtc(&mut proc, &mut host, valid).unwrap();
+        assert_eq!(*host.kms_set_fb_viewports.last().unwrap(), [0, 0, 640, 480]);
         let small = kms_fb(&mut proc, &mut host, fd, 320, 240, DRM_FORMAT_ARGB8888);
         assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: small, ..valid }), Err(Errno::ENOSPC));
         // A NULL connector array is EFAULT, not a read of guest address 0.

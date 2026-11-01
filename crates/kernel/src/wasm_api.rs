@@ -370,9 +370,13 @@ unsafe extern "C" {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32;
     fn host_kms_rmfb(pid: i32, fb_id: u32);
-    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32);
+    /// Latch `fb_id` on `crtc_id`, scanning out the `width` x `height`
+    /// viewport whose top-left pixel is (`x`, `y`) in the framebuffer (the
+    /// CRTC's mode at its panning offset). `fb_id` 0 disables the CRTC.
+    fn host_kms_set_fb(pid: i32, crtc_id: u32, fb_id: u32, x: u32, y: u32, width: u32, height: u32);
 }
 
 // ---------------------------------------------------------------------------
@@ -1248,16 +1252,18 @@ impl HostIO for WasmHostIO {
         height: u32,
         pixel_format: u32,
         pitch: u32,
+        offset: u32,
     ) -> i32 {
-        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch) }
+        unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch, offset) }
     }
 
     fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {
         unsafe { host_kms_rmfb(pid, fb_id) }
     }
 
-    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32) {
-        unsafe { host_kms_set_fb(pid, crtc_id, fb_id) }
+    fn kms_set_fb(&mut self, pid: i32, crtc_id: u32, fb_id: u32, viewport: [u32; 4]) {
+        let [x, y, width, height] = viewport;
+        unsafe { host_kms_set_fb(pid, crtc_id, fb_id, x, y, width, height) }
     }
 
     fn kms_cursor_supported(&mut self) -> bool {

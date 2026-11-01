@@ -5,7 +5,11 @@ export type GpuScanoutStorage = { gl: WebGL2RenderingContext; fbo: WebGLFramebuf
 
 /** The caller retains the selected framebuffer/storage through this synchronous
  * operation. All changed native selectors have retryable inverse records. */
-export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height: number): boolean {
+/** Present the `width` x `height` region at (`x`, `y`) of the KMS BO (the
+ * CRTC's panned viewport). BO row zero is the top row, hence the Y inversion. */
+export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height: number, x = 0, y = 0): boolean {
+  if (![x, y, width, height].every(Number.isSafeInteger) || x < 0 || y < 0
+      || x + width > storage.w || y + height > storage.h) return false;
   const gl = storage.gl, owner = { gl, errors: [] as number[] };
   let read: WebGLFramebuffer | null = null, draw: WebGLFramebuffer | null = null, scissor = false;
   let mask: boolean[] = [], clear: number[] = [];
@@ -30,7 +34,7 @@ export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height
   if (scissor) calls.push(() => gl.disable(0x0c11));
   if (readChanged) calls.push(() => gl.bindFramebuffer(0x8ca8, storage.fbo));
   if (drawChanged) calls.push(() => gl.bindFramebuffer(0x8ca9, null));
-  calls.push(() => gl.blitFramebuffer(0, 0, width, height, 0, height, width, 0, 0x4000, 0x2600));
+  calls.push(() => gl.blitFramebuffer(x, y, x + width, y + height, 0, height, width, 0, 0x4000, 0x2600));
   // The primary KMS plane is opaque. Preserve alpha in the BO for image
   // siblings, but do not expose the page background through scanout. RGB is
   // masked off for this clear, so its captured clear values need no change.
@@ -45,11 +49,11 @@ export function drawGpuScanout(storage: GpuScanoutStorage, width: number, height
 /** A different display context (including an explicitly 2D display) needs an
  * owned readback, since WebGL textures cannot cross native contexts. KMS BO
  * row zero is the top row, matching the direct scanout blit's Y inversion. */
-export function readGpuScanout(storage: GpuScanoutStorage, width: number, height: number): Uint8Array<ArrayBuffer> | null {
+export function readGpuScanout(storage: GpuScanoutStorage, width: number, height: number, x = 0, y = 0): Uint8Array<ArrayBuffer> | null {
   const gl = storage.gl, owner = { gl, errors: [] as number[] };
   const length = width * height * 4;
-  if (![width, height, length].every(Number.isSafeInteger) || width <= 0 || height <= 0
-      || width > storage.w || height > storage.h) return null;
+  if (![x, y, width, height, length].every(Number.isSafeInteger) || width <= 0 || height <= 0
+      || x < 0 || y < 0 || x + width > storage.w || y + height > storage.h) return null;
   const pixels = new Uint8Array(length);
   let read: WebGLFramebuffer | null = null, pack: WebGLBuffer | null = null;
   const fields = [0x0d05, 0x0d02, 0x0d04, 0x0d03]; // alignment, row length, skip pixels/rows
@@ -77,7 +81,7 @@ export function readGpuScanout(storage: GpuScanoutStorage, width: number, height
   const restore = nativeInverse(owner,
     readChanged ? [["bindFramebuffer", 0x8ca8, read]] : [],
     packChanged ? [["bindBuffer", 0x88eb, pack]] : [], layoutRestore);
-  calls.push(() => gl.readPixels(0, 0, width, height, 0x1908, 0x1401, pixels));
+  calls.push(() => gl.readPixels(x, y, width, height, 0x1908, 0x1401, pixels));
   const accepted = applyNativeChanges({ ...owner, shadow: {} }, [{ restore,
     apply: () => checkedGlSequence(owner, calls),
   }], { shared: true, finalizer: restore });

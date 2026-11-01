@@ -3690,7 +3690,7 @@ mod tests {
                 height: 63,
                 pixel_format: 0x34325241, // AR24
                 stride: 64 * 4,
-                offset: 16,
+                offset: 16, flags: 0,
             },
         );
         proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =

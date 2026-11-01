@@ -108,6 +108,28 @@ it("copies GPU pixels into independent bytes and restores the caller's pack layo
   expect(hasNativeRepair(r.gl)).toBe(false);
 });
 
+it("presents and reads back the CRTC's panned viewport of a GPU framebuffer", () => {
+  const r = renderer();
+  // A 1x1 viewport panned to (1, 1) of the 2x2 BO (top row first).
+  expect(drawGpuScanout(r.storage, 1, 1, 1, 1)).toBe(true);
+  expect(r.calls[0]).toEqual([1, 1, 2, 2, 0, 1, 1, 0, 0x4000, 0x2600]);
+  const reads: unknown[] = [];
+  const read = r.gl.readPixels.bind(r.gl);
+  (r.gl as unknown as { readPixels: typeof read }).readPixels = (...args: Parameters<typeof read>) => {
+    reads.push(args.slice(0, 4));
+    r.setPixels([1, 2, 3, 4]);
+    read(...args);
+  };
+  expect([...readGpuScanout(r.storage, 1, 1, 1, 0)!]).toEqual([1, 2, 3, 4]);
+  expect(reads).toEqual([[1, 0, 1, 1]]);
+  // A viewport reaching outside the BO is refused before any native call.
+  const calls = r.calls.length;
+  expect(drawGpuScanout(r.storage, 2, 2, 1, 0)).toBe(false);
+  expect(readGpuScanout(r.storage, 1, 1, 2, 0)).toBeNull();
+  expect(r.calls.length).toBe(calls);
+  expect(r.state).toEqual(r.initial);
+});
+
 it("rejects invalid readback geometry before native mutation or allocation", () => {
   const r = renderer();
   for (const [w, h] of [[0, 1], [-1, 1], [1.5, 1], [3, 1], [1, 3], [Number.MAX_SAFE_INTEGER, 2]]) {

@@ -141,6 +141,8 @@ export function blitGpuScanout(
   bo: { fbo: WebGLFramebuffer },
   width: number,
   height: number,
+  x = 0,
+  y = 0,
 ): void {
   const gl = b.gl;
   if (!gl) return;
@@ -152,8 +154,9 @@ export function blitGpuScanout(
 
   gl.bindFramebuffer(GL_READ_FRAMEBUFFER, bo.fbo);
   gl.bindFramebuffer(GL_DRAW_FRAMEBUFFER, null);
+  // (x, y) is the CRTC's panning offset into the BO; row zero is the top.
   gl.blitFramebuffer(
-    0, 0, width, height,
+    x, y, x + width, y + height,
     0, height, width, 0,
     gl.COLOR_BUFFER_BIT, gl.NEAREST,
   );

@@ -3,7 +3,7 @@ import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotCo
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
-import type { HostFb } from "./dri/kms-registry.js";
+import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
@@ -111,7 +111,7 @@ interface WasmPosixKernelRuntimeAccess {
 
 interface KernelGraphicsAccess {
   readonly withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => T;
-  readonly gpuScanout: (fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean) =>
+  readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean) =>
     { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null;
 }
 const kernelGraphicsAccess = new WeakMap<WasmPosixKernel, KernelGraphicsAccess>();
@@ -1158,7 +1158,7 @@ export class WasmPosixKernel {
     });
   }
 
-  private gpuScanout(fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean):
+  private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean):
       { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
     const storage = this.gl.gpuBo(fb.bo_id);
     if (!storage) return null;
@@ -1168,7 +1168,7 @@ export class WasmPosixKernel {
       this.glMuxerFor(storage.gl).invalidateCurrent();
       return null;
     }
-    if (fb.width > storage.w || fb.height > storage.h)
+    if (fb.x + fb.width > storage.w || fb.y + fb.height > storage.h)
       throw new Error("Invalid GPU scanout storage dimensions");
     return this.withRestoredGraphicsState(storage.gl, () => {
       const target = allowDirect ? canvas.getContext("webgl2") : null;
@@ -1178,10 +1178,10 @@ export class WasmPosixKernel {
           this.glMuxerFor(storage.gl).invalidateCurrent();
           canvas.width = fb.width; canvas.height = fb.height;
         }
-        if (!drawGpuScanout(storage, fb.width, fb.height)) throw new Error("GPU scanout blit failed");
+        if (!drawGpuScanout(storage, fb.width, fb.height, fb.x, fb.y)) throw new Error("GPU scanout blit failed");
         return { direct: true };
       }
-      const pixels = readGpuScanout(storage, fb.width, fb.height);
+      const pixels = readGpuScanout(storage, fb.width, fb.height, fb.x, fb.y);
       if (!pixels) throw new Error("GPU scanout readback failed");
       return { direct: false, pixels };
     });
@@ -1483,7 +1483,7 @@ export class WasmPosixKernel {
     );
     intrinsicApply(intrinsicWeakMapSet, kernelGraphicsAccess, [this, intrinsicObjectFreeze({
       withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => this.withGraphicsState(gl, work),
-      gpuScanout: (fb: HostFb, canvas: OffscreenCanvas, allowDirect: boolean) => this.gpuScanout(fb, canvas, allowDirect),
+      gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean) => this.gpuScanout(fb, canvas, allowDirect),
     })]);
     // Let the GBM bo registry reach per-pid wasm Memory so the
     // bind/unbind sync (parent writes → SAB → child reads after PRIME
@@ -3619,13 +3619,24 @@ export class WasmPosixKernel {
           height: number,
           pixel_format: number,
           pitch: number,
+          offset: number,
         ): number => {
-          this.kms.addFb({ fb_id, bo_id, width, height, pixel_format, pitch });
+          this.kms.addFb({ fb_id, bo_id, width, height, pixel_format, pitch, offset: offset >>> 0 });
           return 0;
         },
         host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
-        host_kms_set_fb: (pid: number, crtc_id: number, fb_id: number): void => {
-          this.kms.setFb(crtc_id, fb_id);
+        host_kms_set_fb: (
+          pid: number,
+          crtc_id: number,
+          fb_id: number,
+          x: number,
+          y: number,
+          width: number,
+          height: number,
+        ): void => {
+          // The kernel passes the CRTC's mode-sized viewport at its panning
+          // offset; every presenter shows exactly that framebuffer region.
+          this.kms.setFb(crtc_id, fb_id, { x: x >>> 0, y: y >>> 0, width: width >>> 0, height: height >>> 0 });
           this.kms.notePresenter(pid);
           this.callbacks.onKmsScanoutActive?.();
           // SDL2's KMSDRM backend creates its GL context before the first
@@ -3655,7 +3666,7 @@ export class WasmPosixKernel {
             fb && gpu && b?.gl && gpu.gl === b.gl &&
             b.claimedKmsCrtc === crtc_id && !b.gl.isContextLost()
           ) {
-            blitGpuScanout(b, gpu, fb.width, fb.height);
+            blitGpuScanout(b, gpu, fb.width, fb.height, fb.x, fb.y);
           }
         },
       },

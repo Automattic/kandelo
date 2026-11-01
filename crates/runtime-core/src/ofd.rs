@@ -416,7 +416,7 @@ pub struct DriFdState {
 
 /// A KMS framebuffer object — i.e. one slot in the per-fd `fbs` map,
 /// keyed by the `fb_id` MODE_ADDFB2 returned.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct KmsFb {
     pub bo_id: crate::dri::BoId,
     pub width: u32,
@@ -424,6 +424,8 @@ pub struct KmsFb {
     pub pixel_format: u32,
     pub stride: u32,
     pub offset: u32,
+    /// `DRM_MODE_FB_INTERLACED`, as ADDFB2 recorded it (GETFB2 reports it).
+    pub flags: u32,
 }
 
 /// Exact-ownership handle to one card0 OFD's framebuffer table.

@@ -213,6 +213,19 @@ pub fn allocate_fb_id() -> Result<u32, Errno> {
 }
 
 static CRTC_FB: AtomicU32 = AtomicU32::new(0);
+/// The CRTC's panning offset (`drm_mode_crtc.x`/`y`), packed `x << 16 | y`.
+static CRTC_OFFSET: AtomicU32 = AtomicU32::new(0);
+
+/// Both coordinates fit in 16 bits: SETCRTC rejects larger ones (ERANGE).
+pub fn set_crtc_offset((x, y): (u32, u32)) {
+    debug_assert!(x <= 0xffff && y <= 0xffff);
+    CRTC_OFFSET.store((x << 16) | (y & 0xffff), Ordering::Relaxed);
+}
+
+pub fn crtc_offset() -> (u32, u32) {
+    let packed = CRTC_OFFSET.load(Ordering::Relaxed);
+    (packed >> 16, packed & 0xffff)
+}
 
 /// A page flip latched on the CRTC that its next vblank has not completed.
 /// Linux tracks this per CRTC (the pending commit), not per file: a second
@@ -408,6 +421,7 @@ pub fn reset_for_test() {
     unsafe { &mut *BLOBS.0.get() }.clear();
     set_crtc_fb(0);
     set_crtc_mode(None);
+    set_crtc_offset((0, 0));
     complete_pending_flip();
     replace_closed_scanout(None);
 }

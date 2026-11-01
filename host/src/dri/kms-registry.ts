@@ -1,7 +1,10 @@
 import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "./kms-cursor-protocol.js";
 import type { KmsCursor } from "./cursor-plane.js";
 import type { GbmBoRegistry } from "./registry.js";
+import { scanoutFormat } from "./scanout-format.js";
 
+/** A framebuffer as ADDFB/ADDFB2 created it: plane 0 starts `offset` bytes
+ *  into the BO (`drm_mode_fb_cmd2.offsets[0]`). */
 export type HostFb = {
   fb_id: number;
   bo_id: number;
@@ -9,7 +12,18 @@ export type HostFb = {
   height: number;
   pixel_format: number;
   pitch: number;
+  offset?: number;
 };
+
+/** The region a CRTC scans out: its mode's active area at its panning
+ *  offset (`drm_mode_crtc.x`/`y`), in framebuffer pixels. */
+export type KmsViewport = { x: number; y: number; width: number; height: number };
+
+/** What a CRTC presents. `width`/`height` are the viewport; `x`/`y` its
+ *  origin in the framebuffer (texture coordinates for a GPU-tier BO); and
+ *  `offset` the byte offset of the viewport's first pixel in the BO, so a
+ *  CPU presenter reads `pitch`-strided rows from there. */
+export type HostScanout = HostFb & { x: number; y: number; offset: number };
 
 /** The size the virtual connector advertises for a reported display size:
  *  even-aligned and clamped to the mode range, or the 1920x1080 default
@@ -86,6 +100,7 @@ export function buildVirtualConnectorMode(
 export class KmsRegistry {
   private fbs = new Map<number, HostFb>();
   private crtcBindings = new Map<number, number>();
+  private crtcViewports = new Map<number, KmsViewport>();
   private masterPid: number | null = null;
   private masterFileId: bigint | null = null;
   private masterLeaseId = 0n;
@@ -184,9 +199,16 @@ export class KmsRegistry {
 
   addFb(fb: HostFb): void { this.fbs.set(fb.fb_id, fb); }
   rmFb(fb_id: number): void { this.fbs.delete(fb_id); }
-  setFb(crtc_id: number, fb_id: number): void {
+  /** Latch `fb_id` on the CRTC. The kernel always passes the scanned
+   *  viewport; without one (or with an empty one) the whole fb is shown. */
+  setFb(crtc_id: number, fb_id: number, viewport?: KmsViewport): void {
     this.flips++;
     this.crtcBindings.set(crtc_id, fb_id);
+    if (viewport && viewport.width > 0 && viewport.height > 0) {
+      this.crtcViewports.set(crtc_id, { ...viewport });
+    } else {
+      this.crtcViewports.delete(crtc_id);
+    }
   }
 
   /** Monotonic count of SETCRTC/PAGE_FLIP latches. The vblank pump
@@ -194,9 +216,25 @@ export class KmsRegistry {
    *  could have retired into an event ring. */
   flipCount(): number { return this.flips; }
 
-  currentFb(crtc_id: number): HostFb | undefined {
+  /** The CRTC's scanout: the bound fb narrowed to the viewport the kernel
+   *  latched. A viewport outside the fb (the kernel rejects those with
+   *  ENOSPC) presents nothing rather than bytes outside the plane. */
+  currentFb(crtc_id: number): HostScanout | undefined {
     const id = this.crtcBindings.get(crtc_id);
-    return id === undefined ? undefined : this.fbs.get(id);
+    const fb = id === undefined ? undefined : this.fbs.get(id);
+    if (!fb) return undefined;
+    const view = this.crtcViewports.get(crtc_id)
+      ?? { x: 0, y: 0, width: fb.width, height: fb.height };
+    if (view.x + view.width > fb.width || view.y + view.height > fb.height) return undefined;
+    const { bytesPerPixel } = scanoutFormat(fb.pixel_format);
+    return {
+      ...fb,
+      width: view.width,
+      height: view.height,
+      x: view.x,
+      y: view.y,
+      offset: (fb.offset ?? 0) + view.y * fb.pitch + view.x * bytesPerPixel,
+    };
   }
 
   setMaster(pid: number, fileId: bigint, leaseId: bigint): boolean {
@@ -263,10 +301,14 @@ export class KmsRegistry {
     return null;
   }
 
+  /** The scanned bytes, starting at the viewport's first pixel; rows are
+   *  `currentFb(crtc).pitch` apart. */
   scanoutBytes(crtc_id: number): Uint8Array | undefined {
     const fb = this.currentFb(crtc_id);
     if (!fb) return undefined;
     this.gbm.syncFromMemory(fb.bo_id);
-    return this.gbm.pixelView(fb.bo_id);
+    const pixels = this.gbm.pixelView(fb.bo_id);
+    if (!pixels || fb.offset > pixels.byteLength) return undefined;
+    return pixels.subarray(fb.offset);
   }
 }

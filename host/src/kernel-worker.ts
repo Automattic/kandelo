@@ -4,7 +4,7 @@ import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
-import type { HostFb } from "./dri/kms-registry";
+import type { HostScanout } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
 /**
@@ -2614,6 +2614,9 @@ interface KmsGlPresenter {
    *  identical frame and the 8 MB sync + upload + draw can be
    *  skipped. The content probe below backstops the exceptions. */
   lastFbId: number;
+  /** Byte offset of the presented viewport: a panning SETCRTC changes it
+   *  without a flip or a new framebuffer. */
+  lastOffset: number;
   lastCommits: number;
   /** Tick phase for the low-rate exact content comparison.
    *  Every 4th otherwise-skipped tick the presenter samples the
@@ -2777,7 +2780,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   return {
     gl, tex, prog, vao, texW: 0, texH: 0, texFormat: 0,
     bgrUniform: gl.getUniformLocation(prog, "u_bgr"),
-    lastFbId: -1, lastCommits: -1,
+    lastFbId: -1, lastOffset: -1, lastCommits: -1,
     presentCount: 0, degraded: false,
     probePhase: 0,
   };
@@ -31444,7 +31447,7 @@ export class CentralizedKernelWorker {
         const glPresents: Array<{
           crtcId: number;
           canvas: OffscreenCanvas;
-          fb: HostFb;
+          fb: HostScanout;
           pixels: Uint8Array<ArrayBuffer>;
           commits: number;
         }> = [];
@@ -31461,6 +31464,7 @@ export class CentralizedKernelWorker {
           const presenter = this.kmsGlPresenters.get(crtcId);
           const display = this.kmsDisplaySizes.get(crtcId);
           const changed = !presenter || presenter.lastFbId !== fb.fb_id
+            || presenter.lastOffset !== fb.offset
             || presenter.lastCommits !== commits || presenter.texW !== fb.width
             || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format
             || canvas.width !== (display?.width ?? fb.width)
@@ -31682,7 +31686,7 @@ export class CentralizedKernelWorker {
   private presentKmsGlScanout(
     crtc_id: number,
     canvas: OffscreenCanvas,
-    fb: HostFb,
+    fb: HostScanout,
     commits: number,
     pixels: Uint8Array<ArrayBuffer>,
   ): boolean {
@@ -31715,6 +31719,7 @@ export class CentralizedKernelWorker {
     // the ~15 Hz content probe (see KmsGlPresenter.probePhase).
     const changed =
       presenter.lastFbId !== fb.fb_id ||
+      presenter.lastOffset !== fb.offset ||
       presenter.lastCommits !== commits ||
       presenter.texW !== fb.width ||
       presenter.texH !== fb.height ||
@@ -31766,6 +31771,7 @@ export class CentralizedKernelWorker {
       gl.viewport((cw - vw) >> 1, (ch - vh) >> 1, vw, vh);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       presenter.lastFbId = fb.fb_id;
+      presenter.lastOffset = fb.offset;
       presenter.lastCommits = commits;
       // Adaptive quality: a steady-state present that blows the 60 Hz
       // frame budget means GL is running in software (headless Chromium's

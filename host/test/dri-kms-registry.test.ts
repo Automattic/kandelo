@@ -70,6 +70,31 @@ describe("KmsRegistry", () => {
     expect(bytes!.byteLength).toBe(4096);
   });
 
+  it("scans out the viewport the kernel latched, from the plane offset", () => {
+    const bos = new GbmBoRegistry();
+    bos.create({ pid: 1, bo_id: 100, size: 4096, w: 32, h: 32, stride: 128 });
+    const sab = bos.pixelView(100)!;
+    for (let i = 0; i < sab.byteLength; i++) sab[i] = i & 0xff;
+    const kms = new KmsRegistry(bos);
+    // ADDFB2 offsets[0] = 256 (two 128-byte rows), XRGB8888 32x16.
+    kms.addFb({ fb_id: 10, bo_id: 100, width: 32, height: 16, pixel_format: 0x34325258, pitch: 128, offset: 256 });
+    kms.setFb(1, 10, { x: 0, y: 0, width: 32, height: 16 });
+    expect(kms.currentFb(1)).toMatchObject({ width: 32, height: 16, x: 0, y: 0, offset: 256 });
+    expect(kms.scanoutBytes(1)![0]).toBe(0);
+    expect(kms.scanoutBytes(1)!.byteLength).toBe(4096 - 256);
+    // SETCRTC panning: an 8x4 viewport at (2, 3) starts 3 rows and 2 pixels in.
+    kms.setFb(1, 10, { x: 2, y: 3, width: 8, height: 4 });
+    const view = kms.currentFb(1)!;
+    expect(view).toMatchObject({ fb_id: 10, width: 8, height: 4, x: 2, y: 3, pitch: 128, offset: 256 + 3 * 128 + 8 });
+    expect(kms.scanoutBytes(1)![0]).toBe((256 + 3 * 128 + 8) & 0xff);
+    const packed = snapshotScanout(view, kms.scanoutBytes(1)!);
+    expect(packed.byteLength).toBe(8 * 4 * 4);
+    expect(packed[32]).toBe((256 + 4 * 128 + 8) & 0xff);
+    // A viewport outside the fb presents nothing.
+    kms.setFb(1, 10, { x: 30, y: 0, width: 8, height: 4 });
+    expect(kms.currentFb(1)).toBeUndefined();
+  });
+
   it("scanoutBytes returns undefined for an unknown bo", () => {
     const kms = new KmsRegistry(new GbmBoRegistry());
     kms.addFb(fb(10, 999));
