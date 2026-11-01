@@ -8798,12 +8798,16 @@ mod tests {
     #[test]
     fn kms_cursor_transport_serializes_exact_framebuffer_identity_and_constants() {
         let wire = kms_cursor_transport();
-        assert_eq!(wire["version"], json!(3));
+        // Protocol 4 reserves the first eight bytes (protocol 3's master
+        // grant): the cursor plane is device state, so every earlier
+        // record layout is refused.
+        assert_eq!(wire["version"], json!(4));
         assert_eq!(wire["record_bytes"], json!(40));
+        assert_eq!(wire["offsets"]["reserved_u64"], json!(0));
         assert_eq!(wire["offsets"]["framebuffer_u32"], json!(36));
-        assert_eq!(wire["unsupported_versions"], json!([1, 2]));
+        assert_eq!(wire["unsupported_versions"], json!([1, 2, 3]));
         let rendered = render_ts_module();
-        for (name, value) in [("KMS_CURSOR_PROTOCOL_VERSION", 3),
+        for (name, value) in [("KMS_CURSOR_PROTOCOL_VERSION", 4),
             ("KMS_CURSOR_RECORD_BYTES", 40), ("KMS_CURSOR_FRAMEBUFFER_OFFSET", 36)] {
             assert!(rendered.contains(&format!("export const {name} = {value} as const;")));
         }
