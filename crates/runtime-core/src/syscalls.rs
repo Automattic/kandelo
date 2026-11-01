@@ -3310,7 +3310,9 @@ fn handle_dri_card_ioctl(
         }
         DRM_IOCTL_MODE_SETPLANE => {
             let req: WpkDrmModeSetPlane = read_dri_struct(buf)?;
-            if req.plane_id == kms::PRIMARY_PLANE_ID { return Err(Errno::EOPNOTSUPP); }
+            if req.plane_id == kms::PRIMARY_PLANE_ID {
+                return kms_set_primary_plane(proc, host, req);
+            }
             if req.plane_id != kms::CURSOR_PLANE_ID || !host.kms_cursor_supported() {
                 return Err(Errno::ENOENT);
             }
@@ -3958,6 +3960,61 @@ fn validate_kms_mode(
     {
         return Err(Errno::EINVAL);
     }
+    Ok(())
+}
+
+/// Primary-plane `SETPLANE`, as a legacy driver's primary-plane helper
+/// handles it (`drm_plane_helper_update_primary`): `__setplane_check`,
+/// then an unscaled update that covers the whole CRTC, applied like a
+/// SETCRTC that keeps the mode and connectors with the source origin as the
+/// panning offset. The virtual CRTC cannot position, scale or hide its
+/// primary plane, so those are refused as on such drivers: disabling it is
+/// EINVAL, scaling ERANGE, partial coverage EINVAL.
+fn kms_set_primary_plane(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    req: wasm_posix_shared::dri::WpkDrmModeSetPlane,
+) -> Result<(), Errno> {
+    if req.fb_id == 0 {
+        return Err(Errno::EINVAL);
+    }
+    let fb = kms::framebuffer(req.fb_id).ok_or(Errno::ENOENT)?;
+    if req.crtc_id != kms::CRTC_ID {
+        return Err(Errno::ENOENT);
+    }
+    if !kms::PRIMARY_PLANE_FORMATS.contains(&fb.pixel_format) {
+        return Err(Errno::EINVAL);
+    }
+    let int_max = i32::MAX as i64;
+    if i64::from(req.crtc_w) > int_max || i64::from(req.crtc_x) > int_max - i64::from(req.crtc_w)
+        || i64::from(req.crtc_h) > int_max || i64::from(req.crtc_y) > int_max - i64::from(req.crtc_h)
+    {
+        return Err(Errno::ERANGE);
+    }
+    // drm_framebuffer_check_src_coords (16.16 fixed point).
+    let (fb_w, fb_h) = (u64::from(fb.width) << 16, u64::from(fb.height) << 16);
+    let (src_x, src_y, src_w, src_h) =
+        (u64::from(req.src_x), u64::from(req.src_y), u64::from(req.src_w), u64::from(req.src_h));
+    if src_w > fb_w || src_x > fb_w - src_w || src_h > fb_h || src_y > fb_h - src_h {
+        return Err(Errno::ENOSPC);
+    }
+    // A disabled CRTC leaves the plane invisible, which the helper refuses.
+    let mode = kms::crtc_mode().ok_or(Errno::EINVAL)?;
+    if src_w != u64::from(req.crtc_w) << 16 || src_h != u64::from(req.crtc_h) << 16 {
+        return Err(Errno::ERANGE);
+    }
+    if req.crtc_x != 0 || req.crtc_y != 0
+        || req.crtc_w != u32::from(mode.hdisplay) || req.crtc_h != u32::from(mode.vdisplay)
+        || (req.src_x | req.src_y) & 0xffff != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    let (x, y) = (req.src_x >> 16, req.src_y >> 16);
+    if x > 0xffff || y > 0xffff {
+        return Err(Errno::ERANGE);
+    }
+    kms::set_crtc_offset((x, y));
+    latch_crtc_fb(host, proc.pid as i32, kms::CRTC_ID, req.fb_id);
     Ok(())
 }
 
@@ -56414,6 +56471,50 @@ impl HostIO for RelSymlinkMock {
         let read_write = export(&mut proc, &mut host, O_CLOEXEC | O_RDWR).unwrap();
         assert_eq!(access(&proc, read_write), O_RDWR);
         sys_mmap(&mut proc, &mut host, 0, 1024, PROT_READ | PROT_WRITE, MAP_SHARED, read_write, 0).unwrap();
+    }
+
+    #[test]
+    fn kms_primary_setplane_is_a_full_crtc_unscaled_update() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let shown = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_XRGB8888);
+        let wide = kms_fb(&mut proc, &mut host, fd, 800, 600, DRM_FORMAT_XRGB8888);
+        let set = WpkDrmModeSetPlane { plane_id: kms::PRIMARY_PLANE_ID, crtc_id: kms::CRTC_ID, fb_id: wide,
+            crtc_w: 640, crtc_h: 480, src_w: 640 << 16, src_h: 480 << 16, ..Default::default() };
+        let setplane = |proc: &mut Process, host: &mut MockHostIO, req| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETPLANE, req).map(|_| ())
+        };
+        // No mode on the CRTC: the plane would be invisible.
+        assert_eq!(setplane(&mut proc, &mut host, set), Err(Errno::EINVAL));
+        kms_scan_out(&mut proc, &mut host, fd, shown);
+        // Primary helper refusals (kms_universal_plane sanity): disabling
+        // the primary, partial coverage or positioning, scaling, a source
+        // outside the fb, an unknown fb or CRTC.
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { fb_id: 0, ..set }), Err(Errno::EINVAL));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { crtc_x: 100, ..set }), Err(Errno::EINVAL));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { crtc_w: 320, src_w: 320 << 16, ..set }), Err(Errno::EINVAL));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { src_w: 540 << 16, ..set }), Err(Errno::ERANGE));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { src_x: 161 << 16, ..set }), Err(Errno::ENOSPC));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { crtc_x: -1, crtc_w: u32::MAX, ..set }), Err(Errno::ERANGE));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { fb_id: 0xffff_fff0, ..set }), Err(Errno::ENOENT));
+        assert_eq!(setplane(&mut proc, &mut host, WpkDrmModeSetPlane { crtc_id: 9, ..set }), Err(Errno::ENOENT));
+        assert_eq!(kms::crtc_fb(), shown);
+        // A covering, unscaled update latches the fb with the source origin
+        // as the panning offset.
+        setplane(&mut proc, &mut host, WpkDrmModeSetPlane { src_x: 160 << 16, src_y: 120 << 16, ..set }).unwrap();
+        assert_eq!(kms::crtc_fb(), wide);
+        assert_eq!(*host.kms_set_fb_viewports.last().unwrap(), [160, 120, 640, 480]);
+        let plane = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANE,
+            WpkDrmModeGetPlane { plane_id: kms::PRIMARY_PLANE_ID, ..Default::default() }).unwrap();
+        assert_eq!((plane.fb_id, plane.crtc_id), (wide, kms::CRTC_ID));
+        kms::reset_for_test();
     }
 
     #[test]
