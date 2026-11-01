@@ -2392,6 +2392,26 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, NULL, attributes) == EGL_NO_DISPLAY);
         assert(eglGetError() == EGL_BAD_ATTRIBUTE);
         assert(eglGetDisplay(EGL_DEFAULT_DISPLAY) == dpy && eglGetError() == EGL_SUCCESS);
+    } else if (!strcmp(name, "egl-spec-window-attributes")) {
+        /* EGL 1.5 section 3.5.1: EGL_WIDTH and EGL_HEIGHT are pbuffer
+         * attributes. A window's size comes from the native window or the
+         * host drawable, never from the attribute list. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLint sized[][3] = {{EGL_WIDTH, 8, EGL_NONE}, {EGL_HEIGHT, 8, EGL_NONE}};
+        for (unsigned i = 0; i < 2; i++) {
+            assert(eglCreateWindowSurface(dpy, (EGLConfig)1, 0, sized[i]) == EGL_NO_SURFACE);
+            assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+            assert(eglCreateWindowSurface(dpy, (EGLConfig)1,
+                (EGLNativeWindowType)(uintptr_t)&record_windows[0], sized[i]) == EGL_NO_SURFACE);
+            assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+        }
+        const EGLint back[] = {EGL_RENDER_BUFFER, EGL_BACK_BUFFER, EGL_NONE};
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, back);
+        EGLint width = 0, height = 0;
+        assert(surface != EGL_NO_SURFACE && eglGetError() == EGL_SUCCESS);
+        assert(eglQuerySurface(dpy, surface, EGL_WIDTH, &width) && width == 64);
+        assert(eglQuerySurface(dpy, surface, EGL_HEIGHT, &height) && height == 32);
+        assert(eglDestroySurface(dpy, surface) && eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
@@ -4774,7 +4794,7 @@ int main(int argc, char **argv) {
         const int legacy = strstr(argv[1], "legacy") != NULL;
         const GLsizei count = legacy ? 8192 : 1;
         const EGLint dimensions[] = {EGL_WIDTH, 1, EGL_HEIGHT, 1, EGL_NONE};
-        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, NULL, dimensions);
+        EGLSurface surface = eglCreatePbufferSurface(dpy, (EGLConfig)1, dimensions);
         assert(surface && eglMakeCurrent(dpy, surface, surface, ctx));
         glViewport(0, 0, 1, 1);
         GLfloat *position = calloc((size_t)count, 2*sizeof(GLfloat));
@@ -7170,8 +7190,7 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "surface-current")) {
-        const EGLint size[] = { EGL_WIDTH, 64, EGL_HEIGHT, 64, EGL_NONE };
-        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, size);
+        EGLSurface surface = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, NULL);
         assert(surface != EGL_NO_SURFACE);
         assert(eglMakeCurrent(dpy, surface, surface, ctx));
         assert(eglDestroySurface(dpy, surface));
@@ -7181,7 +7200,7 @@ int main(int argc, char **argv) {
         assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
         assert(destroyed_surfaces == 1);
         assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
-        EGLSurface replacement = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, size);
+        EGLSurface replacement = eglCreateWindowSurface(dpy, (EGLConfig)1, 0, NULL);
         assert(replacement != EGL_NO_SURFACE && replacement != surface);
         assert(!eglMakeCurrent(dpy, surface, surface, ctx));
         assert(eglGetError() == EGL_BAD_SURFACE);

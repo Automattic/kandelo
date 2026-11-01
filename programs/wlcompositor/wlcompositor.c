@@ -3973,12 +3973,11 @@ static void setup_gl(void) {
                                         EGL_NONE };
     glc.ctx = eglCreateContext(glc.dpy, NULL, EGL_NO_CONTEXT, ctx_attrs);
     if (glc.ctx == EGL_NO_CONTEXT) { eglTerminate(glc.dpy); return; }
-    /* The drawing buffer must be mode-sized; we create the surface
-     * before the first ADDFB, so the host cannot infer the size — pass
-     * it explicitly (wpk libEGL honors EGL_WIDTH/EGL_HEIGHT). */
-    const EGLint srf_attrs[] = { EGL_WIDTH, (EGLint)g.pw,
-                                 EGL_HEIGHT, (EGLint)g.ph, EGL_NONE };
-    glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, srf_attrs);
+    /* EGL window surfaces take no size attributes (EGL 1.5 section
+     * 3.5.1); without a native window the host drawable sets the size.
+     * The ES 3 request above fails on the ES 2-only libEGL, so this
+     * compositor currently runs its CPU path. */
+    glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, NULL);
     if (glc.srf == EGL_NO_SURFACE) { eglTerminate(glc.dpy); return; }
     if (!eglMakeCurrent(glc.dpy, glc.srf, glc.srf, glc.ctx)) {
         eglTerminate(glc.dpy);

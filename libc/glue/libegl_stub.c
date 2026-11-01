@@ -889,13 +889,12 @@ static EGLSurface create_window_surface_locked(EGLDisplay dpy, EGLConfig config,
       || (generation->display->native_kind==NATIVE_WAYLAND && is_gbm)) {
         g_last_error=EGL_BAD_NATIVE_WINDOW;return EGL_NO_SURFACE;
     }
+    /* EGL 1.5 section 3.5.1 window attributes only. EGL_WIDTH and
+     * EGL_HEIGHT are pbuffer attributes: a window's size comes from its
+     * native window or, without one, from the host drawable. */
     EGLint render_buffer = EGL_BACK_BUFFER, gl_colorspace = EGL_GL_COLORSPACE_LINEAR;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
-        if (a[0] == EGL_WIDTH && a[1] >= 0)
-            request.attrs.width = (uint32_t)a[1];
-        else if (a[0] == EGL_HEIGHT && a[1] >= 0)
-            request.attrs.height = (uint32_t)a[1];
-        else if (a[0] == EGL_RENDER_BUFFER &&
+        if (a[0] == EGL_RENDER_BUFFER &&
                  (a[1] == EGL_BACK_BUFFER || a[1] == EGL_SINGLE_BUFFER)) {
             render_buffer = a[1];
         } else if (a[0] == EGL_GL_COLORSPACE &&
