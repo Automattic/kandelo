@@ -19,6 +19,86 @@ combined implementation pass is complete. The full normal upstream executables
 and the earlier adapted EGL subset are distinct consumers. GBM/DRM/KMS, platform
 failure injection and POSIX coverage remain separate requirements.
 
+## Implementation pass status, 2026-11-01
+
+This records source-level implementation since `e7271c9435`. None of it is
+browser, CTS or normal-artifact validation. Every item below remains
+unvalidated until the combined build-and-test phase runs it.
+
+**How gaps were found.** Read-only audits compared the code with the ES 2.0.25
+and EGL 1.5 specifications, Mesa libgbm and the Linux DRM uAPI. A second pass
+read the pinned upstream dEQP sources (`a119e62de3`, including
+`modules/glshared`) and IGT GPU tools (`4c88f67e15`) and traced each case's
+pass rule through Kandelo. A further audit found that the main-thread
+forwarding, owned-query, final-effects and server-wait-queue models are
+reachable only from tests: production GL runs synchronously in the kernel
+worker, and `host_gl_submit` drains before it returns.
+
+**Implemented, with focused causal tests** (each new test failed on the
+previous code):
+
+- E08: `eglWaitSync`/`EGL_KHR_wait_sync` on the synchronous path. The kernel
+  resolves the guest's source fd to an owned object session; the host issues
+  the native barrier on a shared renderer, otherwise the facade observes the
+  signal before returning (see `docs/architecture.md`).
+- E01–E07: success resets the error on every entry point; query-string,
+  wait-native, context-attribute, CL-event, native-visual, unknown-display,
+  window-attribute, dma-buf-query and release-thread semantics; GL texture,
+  cube-map face and renderbuffer EGLImages that share the source object's
+  storage and orphan on respecification (new private ioctl
+  `DRM_IOCTL_WPK_EXPORT_IMAGE` and import `host_gl_export_image`, additive in
+  the ABI 56 / host 3 family); dEQP version, `EGL_NO_DISPLAY` release and
+  negative config-size errors.
+- G01–G10: one ES2 format table shared by C and host; texture rows wider than
+  one record uploaded in column bands; pixel-store, query-name and
+  framebuffer-target admission limited to ES2 plus advertised extensions;
+  unaligned vertex and index offsets; framebuffer names never reused while in
+  use; long attribute names; `MAX_VERTEX_ATTRIBS` from the context; buffer
+  sizes beyond the transport report `OUT_OF_MEMORY`;
+  `FRAMEBUFFER_INCOMPLETE_DIMENSIONS`; ES2 color-renderability on one
+  per-level texture record; reversed depth ranges through a private program
+  twin; independent front/back stencil through per-face draw splitting;
+  attribute aliasing through a private executable; luminance/alpha float
+  textures stored as expanded RGBA; dEQP R8, RG8 and BGRA8 formats; the
+  guest-visible extension string reduced to implemented ES2 extensions.
+- B01–B03: Mesa user-data semantics; dma-buf imports bounded by the real
+  buffer size, linear `FD_MODIFIER` import, GPU-tier marking; legacy format
+  canonicalization and unsupported-usage refusal; absent-plane sentinels.
+- K01–K05: real `WAIT_VBLANK` blocking and events from the host vblank tick;
+  `PAGE_FLIP` flags, busy and event rules; Linux `ADDFB2` and `SETCRTC`
+  validation; whole-event `read()`; master permission rules; `VERSION`;
+  legacy `ADDFB`, `GETFB2`, gamma (size 0), `DIRTYFB`, `GET_UNIQUE` and
+  property blobs.
+
+**Proposed hard boundaries** (WebGL 2 or host capability limits; each keeps a
+truthful error):
+
+- Blend factors pairing `CONSTANT_COLOR` with `CONSTANT_ALPHA` (WebGL 1.0
+  §6.13): `INVALID_OPERATION`, state unchanged.
+- Robust-access and lose-context-on-reset contexts (no WebGL robustness API):
+  `EGL_BAD_MATCH`.
+- `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
+- Gamma LUT size 0; no format modifiers; no async or target page flips.
+
+**Known upstream expectations outside this baseline.**
+`dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
+context whenever `EGL_KHR_no_config_context` is advertised. The extension
+text does not require ES3, wlroots requires the extension, and GLES3 is a
+separate expansion, so this case is expected to fail until GLES3 exists.
+
+**Unverified mechanisms to check first in the build phase.** The reversed-depth
+twin, attribute-alias executable and future depth-sampling variants rewrite
+GLSL that no real compiler has compiled yet. Per-face stencil splitting costs
+about one native draw per triangle when the faces differ; this is unmeasured.
+`OES_standard_derivatives` relies on WebGL 2 accepting `#extension` in GLSL ES
+1.00. The dEQP-EGL window cases run only with `--deqp-visibility=hidden`.
+
+**Still open in the implementation pass:** `OES_depth_texture` luminance
+sampling and API rules; ADDFB2 offsets and SETCRTC panning at scanout;
+restartable interrupted vblank waits; remaining KMS authority details; a
+`GbmBoRegistry.unbind` flush failure that leaves a mapping attached; and the
+maintainer's decision on the test-only forwarding path.
+
 ## Landing scope
 
 On 2026-10-29 the user split delivery into the bounded cage/sway landing
