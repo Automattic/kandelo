@@ -1480,7 +1480,8 @@ describe("query handler", () => {
     gl.getParameter = (name: number) => { seen.push(name); return 23; };
     const reply = new Uint8Array(4);
     expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([pname]).buffer), reply)).toBe(4);
-    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(23);
+    // MAX_FRAGMENT_UNIFORM_VECTORS reserves the blend-fold variant's row (limits.ts).
+    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(pname === 0x8dfd ? 22 : 23);
     expect(seen).toEqual([pname]);
   });
 

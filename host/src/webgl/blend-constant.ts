@@ -24,7 +24,9 @@
  * and destination factors (which may read source alpha) are untouched.
  *
  * Cost: the factor is computed when BlendFunc/BlendColor change; a draw tests
- * one shadow field. Only draws that actually blend with such a pair pay for
+ * one shadow field. The variant's uniform needs one fragment uniform row, so
+ * MAX_FRAGMENT_UNIFORM_VECTORS is reported one below native (limits.ts) and
+ * every program within the reported limit can still link its variant. Only draws that actually blend with such a pair pay for
  * the variant, a framebuffer component-type query and, when the factor
  * changed, one uniform upload.
  */

@@ -1,4 +1,5 @@
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
+import { engineLosesVertexDepthRange } from "./vertex-depth-range.js";
 
 /** Immutable limits belong to the native context, independently of whichever
  * guest currently owns its mutable state. Weak keys do not retain a retired
@@ -68,4 +69,54 @@ export function maxVertexAttributes(owner: CheckedGlOwner): number | null {
   if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return 0;
   vertexLimits.set(gl,count);
   return count;
+}
+
+/**
+ * Guest-visible uniform vector limits (ES 2.0 table 6.20).
+ *
+ * Some exact emulations draw with a private variant of the guest's program
+ * (reversed-depth.ts holds the variant machinery). A variant that declares a
+ * uniform the guest program lacks needs room the guest could otherwise use:
+ * a program using every native uniform vector links, but its variant would
+ * not, and the draw would be refused. So each advertised limit is the native
+ * limit minus the rows any variant can add to that stage at once; a program
+ * within the advertised limits can always link every variant. Each private
+ * uniform is at most a vec4, so it needs at most one row under the GLSL ES
+ * 1.00 Appendix A packing that WebGL enforces.
+ *
+ * Audit of every emulation that runs during a guest draw:
+ * - blend-constant.ts adds one `vec3` uniform to the fragment stage, on every
+ *   engine: one fragment row.
+ * - [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM]
+ *   vertex-depth-range.ts adds one `vec3` uniform to the vertex stage, only
+ *   where that workaround runs: one vertex row there.
+ * - reversed-depth.ts negates clip z and copies gl_DepthRange into a global
+ *   (only in a stage that already reads it); depth-sampling.ts adds helper
+ *   functions and bool parameters; attribute-aliasing.ts replaces aliased
+ *   attributes with one vec4 per location the guest already binds. None adds
+ *   a uniform, varying, attribute or texture unit.
+ * - Client arrays use the guest's own attribute indices with private buffers;
+ *   opaque-alpha and luminance/alpha float expansion change storage formats
+ *   and write masks only.
+ * - The KMS color stage and resolve/copy utilities run their own programs or
+ *   blits between guest draws, never alongside a guest program.
+ * Varyings, vertex attributes and texture units therefore keep their native
+ * limits. The reduction cannot reach the ES 2.0 minimums on WebGL 2 (which
+ * guarantees 256 vertex and 224 fragment vectors); a renderer reporting less
+ * cannot run both a conforming guest and its emulations, which is a renderer
+ * fault, not a smaller limit.
+ */
+const PRIVATE_FRAGMENT_UNIFORM_ROWS = 1;
+const MIN_VERTEX_UNIFORM_VECTORS = 128, MIN_FRAGMENT_UNIFORM_VECTORS = 16;
+
+/** The guest-visible value of a queried limit; other names pass through. */
+export function guestLimit(pname: number, native: unknown): unknown {
+  if (pname !== 0x8dfb && pname !== 0x8dfd) return native;
+  const vertex = pname === 0x8dfb;
+  const reserved = vertex ? (engineLosesVertexDepthRange() ? 1 : 0) : PRIVATE_FRAGMENT_UNIFORM_ROWS;
+  const minimum = vertex ? MIN_VERTEX_UNIFORM_VECTORS : MIN_FRAGMENT_UNIFORM_VECTORS;
+  if (typeof native !== "number" || !Number.isInteger(native) || native - reserved < minimum)
+    throw new Error(`Renderer reports ${String(native)} ${vertex ? "vertex" : "fragment"} uniform vectors; ` +
+      `${reserved} are reserved for private emulation and ES 2.0 requires ${minimum}`);
+  return native - reserved;
 }

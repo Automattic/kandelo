@@ -14,6 +14,7 @@ import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities, validSurfaceCapabilitiesLength } from "./surface-capabilities.js";
 import { withMultisampleRead } from "./multisample.js";
+import { guestLimit } from "./limits.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -436,7 +437,9 @@ export function runGlQuery(
       }
       let value: unknown;
       if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
-      return writeNumericValues(outDv, out.byteLength, value, false, pname);
+      // Outside the checked call: an impossible limit is a renderer fault,
+      // never a guest GL error.
+      return writeNumericValues(outDv, out.byteLength, guestLimit(pname, value), false, pname);
     }
 
     // in: u32 pname; out: f32 value(s)
@@ -455,7 +458,9 @@ export function runGlQuery(
       }
       let value: unknown;
       if (!checkedGlCall(b, () => { value = queryParameter(b, pname); })) return -22;
-      return writeNumericValues(outDv, out.byteLength, value, true, pname);
+      // Outside the checked call: an impossible limit is a renderer fault,
+      // never a guest GL error.
+      return writeNumericValues(outDv, out.byteLength, guestLimit(pname, value), true, pname);
     }
 
     // in: u32 program, u32 nameLen, u8 name[nameLen]; out: i32 location-index

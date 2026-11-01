@@ -10,7 +10,8 @@
  * range from a private uniform instead of gl_DepthRange, so the program no
  * longer has both stages reading the built-in. The fragment stage, guest
  * reflection and guest uniforms are unchanged; the private uniform exists only
- * in the variant, which the guest never observes.
+ * in the variant, which the guest never observes. Its row is reserved from the
+ * reported MAX_VERTEX_UNIFORM_VECTORS on this engine (limits.ts guestLimit).
  */
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall } from "./program-objects.js";

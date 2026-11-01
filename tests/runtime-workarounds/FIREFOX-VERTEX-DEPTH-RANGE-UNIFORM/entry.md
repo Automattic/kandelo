@@ -39,8 +39,12 @@ depth-range and depth-texture variants (the redirection is applied last).
 
 Cost: one extra program link per affected program (and per combination with
 the other variants), one `uniform3f` when the depth range changes, and one
-uniform of the private variant's budget; a variant that cannot link refuses
-the draw with INVALID_OPERATION, as the other variants do. Programs that do
+uniform row of the vertex stage's budget. On Firefox the host therefore
+reports `MAX_VERTEX_UNIFORM_VECTORS` one below the native limit
+(`guestLimit` in `host/src/webgl/limits.ts`), so a guest program within the
+reported limit always leaves room for the variant's uniform; a variant that
+still cannot link refuses the draw with INVALID_OPERATION, as the other
+variants do. Programs that do
 not meet the trigger, and every program on other engines, are unchanged.
 
 ## Evidence
