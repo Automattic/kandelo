@@ -1,3 +1,4 @@
+import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
@@ -15,6 +16,7 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   if (count < 0) { recordGlError(b,0x501); return; }
   const width = type === BYTE ? 1 : 2, promotedWidth = width*2;
   if (offset % width) { recordGlError(b,0x502); return; }
+  if (!validateDrawFramebufferWithoutProgram(b)) return;
   if (count === 0) { checkedGlCall(b, () => gl.drawElements(mode,0,type,offset)); return; }
   const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
   const previous = store?.views.get(ELEMENT)?.native;

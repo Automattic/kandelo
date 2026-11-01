@@ -18,6 +18,7 @@ class BufferGl {
   attributes = new Map<number, {buffer: object | null; size: number; type: number; normalized: boolean; stride: number; offset: number}>();
   reject(label: string) { if (this.fault !== label) return false; this.fault = null; this.errors.push(0x502); return true; }
   getError() { return this.errors.shift() ?? 0; }
+  deleteProgram(_program: WebGLProgram) {}
   createBuffer() { if (this.failCreate) return null; const object = {}; this.alive.add(object); return object; }
   deleteBuffer(object: object) {
     if (this.reject("delete")) return;
@@ -57,6 +58,9 @@ class BufferGl {
 function setup() {
   const registry = new GlContextRegistry(); registry.bind({ pid: 1, cmdbufAddr: 0, cmdbufLen: 64 });
   const b = registry.get(1)!, gl = new BufferGl(); b.gl = gl as unknown as WebGL2RenderingContext;
+  // These vertex/buffer controls model a valid installed executable. Missing-
+  // program framebuffer validation is covered by program-link controls.
+  b.shadow.currentProgram = b.currentProgram = {} as WebGLProgram;
   b.cmdbufView = new Uint8Array(64);
   const query = (target: number, name: number) => {
     const out = new Uint8Array(12);

@@ -1,3 +1,4 @@
+import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { publishedUniformLocation } from "./object-group.js";
 /**
  * Cmdbuf TLV walker + per-op dispatch.
@@ -34,7 +35,7 @@ import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-clien
 import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
-import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted } from "./program-objects.js";
+import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
@@ -937,8 +938,8 @@ function dispatch(
       return;
     }
     case O.OP_COMPILE_SHADER: {
-      const sh = b.shaders.get(v.getUint32(p, true));
-      if (sh) gl.compileShader(sh);
+      const sh = requireShaderObject(b, v.getUint32(p, true));
+      if (sh) checkedGlCall(b, () => gl.compileShader(sh));
       return;
     }
     case O.OP_VALIDATE_PROGRAM: {
@@ -966,8 +967,10 @@ function dispatch(
     }
     case O.OP_ATTACH_SHADER: {
       const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
-      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
-      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
+      const sh = requireShaderObject(b, shaderName);
+      if (!sh) return;
       if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
       if (checkedGlCall(b, () => gl.attachShader(prog, sh))) {
         let attached = b.programShaders.get(programName);
@@ -987,7 +990,8 @@ function dispatch(
     // Payload: u32 program, u32 index, u32 nameLen, u8 name[nameLen]
     case O.OP_BIND_ATTRIB_LOCATION: {
       const programName = v.getUint32(p, true);
-      const prog = b.programs.get(programName);
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
       const index = v.getUint32(p + 4, true);
       const nameLen = v.getUint32(p + 8, true);
       // [RUNTIME-WORKAROUND: CHROMIUM-TEXTDECODER-REJECTS-SHARED-VIEWS] Suspected engine defect; the copy below is the workaround.
@@ -996,7 +1000,7 @@ function dispatch(
       const nameBytes = new Uint8Array(nameLen);
       nameBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 12, nameLen));
       const name = new TextDecoder().decode(nameBytes);
-      if (prog && checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
+      if (checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
         let attributes = b.programAttributeBindings.get(programName);
         if (!attributes) { attributes = new Map(); b.programAttributeBindings.set(programName, attributes); }
         attributes.set(name, index);
@@ -1013,8 +1017,10 @@ function dispatch(
     }
     case O.OP_DETACH_SHADER: {
       const programName = v.getUint32(p, true), shaderName = v.getUint32(p + 4, true);
-      const prog = b.programs.get(programName), sh = b.shaders.get(shaderName);
-      if (!prog || !sh) { recordGlError(b, 0x501); return; }
+      const prog = requireProgramObject(b, programName);
+      if (!prog) return;
+      const sh = requireShaderObject(b, shaderName);
+      if (!sh) return;
       if (!b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
       if (checkedGlCall(b, () => gl.detachShader(prog, sh))) {
         b.programShaders.get(programName)!.delete(shaderName);
@@ -1174,6 +1180,7 @@ function dispatch(
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
+      if (!validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
       gl.drawArrays(
         v.getUint32(p, true),

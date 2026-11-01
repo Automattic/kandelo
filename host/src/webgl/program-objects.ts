@@ -31,6 +31,30 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
   }
 }
 
+/** Shader and program names share one namespace. Deferred-deletion names
+ * remain valid while their actual objects are retained in these shared maps. */
+export function requireProgramObject(b: GlBinding, name: number): WebGLProgram | null {
+  const program = name === 0 ? undefined : b.programs.get(name);
+  if (!program) recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501);
+  return program ?? null;
+}
+export function requireShaderObject(b: GlBinding, name: number): WebGLShader | null {
+  const shader = name === 0 ? undefined : b.shaders.get(name);
+  if (!shader) recordGlError(b, b.programs.has(name) ? 0x502 : 0x501);
+  return shader ?? null;
+}
+
+/** Location queries require the named program's current accepted link state;
+ * an older executable retained for drawing does not make a failed relink valid. */
+export function linkedProgramForQuery(b: GlBinding, name: number): WebGLProgram | null {
+  const program = requireProgramObject(b, name);
+  if (!program) return null;
+  let linked = false;
+  if (!checkedGlCall(b, () => { linked = !!b.gl!.getProgramParameter(program, 0x8b82); })) return null;
+  if (!linked) { recordGlError(b, 0x502); return null; }
+  return program;
+}
+
 /** Empty native receivers are reserved before creation. Even a native call
  * which returns a handle and an error leaves that handle owned for rollback. */
 export function createShaderIfAccepted(b: GlBinding, type: number, name: number): void {

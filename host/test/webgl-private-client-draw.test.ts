@@ -108,6 +108,9 @@ function payload(options: {first?: number; count?: number; type?: number; size?:
 function fixture(type = FLOAT, size = 2, stride = 0, offset = 0) {
   const registry = new GlContextRegistry(); registry.bind({pid:1,cmdbufAddr:0,cmdbufLen:1024});
   const b = registry.get(1)!, gl = new Gl(); b.gl = gl as unknown as WebGL2RenderingContext;
+  // These vertex/buffer controls model a valid installed executable. Missing-
+  // program framebuffer validation has separate controls below.
+  b.shadow.currentProgram = b.currentProgram = {} as WebGLProgram;
   const array = gl.createBuffer()!, element = gl.createBuffer()!;
   gl.array = array; gl.element = element; b.shadow.arrayBuffer = array;
   b.buffers.set(17,array); b.buffers.set(18,element);
@@ -292,4 +295,20 @@ it("rejects a malformed trailing private record before an earlier command mutate
   view.setUint16(0,O.OP_BIND_BUFFER,true); view.setUint16(2,8,true); view.setUint32(4,ARRAY,true); view.setUint32(8,17,true);
   view.setUint16(12,O.OP_DRAW_CLIENT_ARRAYS,true); view.setUint16(14,16,true); b.cmdbufView = bytes;
   expect(decodeAndDispatch(b,0,bytes.length)).toBe(-22); expect(gl.counts.size).toBe(0); restored();
+});
+
+for (const fault of ["incomplete", "native-error", "throw"]) it(`refuses private client allocation after no-program framebuffer ${fault}`, () => {
+  const {b,gl,restored} = fixture(); b.shadow.currentProgram = b.currentProgram = null;
+  const checked: number[] = [];
+  Object.assign(gl,{checkFramebufferStatus(target: number) {
+    checked.push(target);
+    if(fault === "throw") throw Error("framebuffer unavailable");
+    if(fault === "native-error") gl.errors.push(0x505);
+    return 0x8cd7;
+  }});
+  b.errors.push(0x501); gl.errors.push(0x500);
+  expect(drawPrivateClientArrays(b,payload())).toEqual({attempted:false,accepted:false,restored:false});
+  expect(checked).toEqual([0x8ca9]); expect(gl.counts.size).toBe(0); expect(gl.draws).toHaveLength(0);
+  expect(b.errors).toEqual([0x501,0x500,fault === "incomplete" ? 0x506 : fault === "native-error" ? 0x505 : 0x502]);
+  restored();
 });
