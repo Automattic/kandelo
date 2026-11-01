@@ -3223,31 +3223,55 @@ fn handle_dri_card_ioctl(
             apply_kms_cursor(proc, host, ofd_idx, flags, next)
         }
         DRM_IOCTL_MODE_SETCRTC => {
-            if buf.len() < core::mem::size_of::<WpkDrmModeGetCrtc>() {
-                return Err(Errno::EINVAL);
-            }
-            let req: WpkDrmModeGetCrtc =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            let kms = kms_state(proc, ofd_idx)?;
+            let req: WpkDrmModeGetCrtc = read_dri_struct(buf)?;
+            // drm_ioctl_permit checks DRM_MASTER before the handler runs.
             if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
+            }
+            // drm_mode_setcrtc: CRTC x/y offsets are signed 16-bit internally.
+            if req.x & 0xffff_0000 != 0 || req.y & 0xffff_0000 != 0 {
+                return Err(Errno::ERANGE);
             }
             if req.crtc_id != kms::CRTC_ID {
                 return Err(Errno::ENOENT);
             }
             let mode_set = req.mode_valid != 0;
-            if mode_set && !kms.fbs.borrow().contains_key(&req.fb_id) {
-                return Err(Errno::ENOENT);
-            }
-            if mode_set != (req.count_connectors > 0) {
-                return Err(Errno::EINVAL);
-            }
-            if req.count_connectors > 1 {
+            let fb_id = if mode_set {
+                // fb_id -1 keeps the currently bound framebuffer. Others
+                // resolve device-wide; only RMFB/CLOSEFB are creator-only.
+                let fb_id = if req.fb_id == u32::MAX {
+                    match kms::crtc_fb() {
+                        0 => return Err(Errno::EINVAL),
+                        current => current,
+                    }
+                } else {
+                    req.fb_id
+                };
+                let fb = kms::framebuffer(fb_id).ok_or(Errno::ENOENT)?;
+                validate_kms_mode(host, &req.mode)?;
+                if !kms::PRIMARY_PLANE_FORMATS.contains(&fb.pixel_format) {
+                    return Err(Errno::EINVAL);
+                }
+                check_crtc_viewport(&req.mode, req.x, req.y, &fb)?;
+                // The host presents the framebuffer from its origin and
+                // has no panning offset (host_kms_set_fb), so a panned
+                // viewport is refused rather than shown unpanned.
+                if req.x != 0 || req.y != 0 {
+                    return Err(Errno::EINVAL);
+                }
+                fb_id
+            } else {
+                // Linux ignores the fb of a SETCRTC without a mode: it
+                // disables the CRTC.
+                0
+            };
+            if mode_set != (req.count_connectors > 0) || req.count_connectors > 1 {
                 return Err(Errno::EINVAL);
             }
             if req.count_connectors > 0 {
-                let pointer = req.set_connectors_ptr;
-                let mut ids = alloc::vec![0u8; req.count_connectors as usize * 4];
+                let len = req.count_connectors as usize * 4;
+                let pointer = probe_dri_process_pointer(host, pid, req.set_connectors_ptr, len)?;
+                let mut ids = alloc::vec![0u8; len];
                 if host.proc_read_bytes(pid, pointer, &mut ids) < 0 {
                     return Err(Errno::EFAULT);
                 }
@@ -3258,9 +3282,12 @@ fn handle_dri_card_ioctl(
                     return Err(Errno::ENOENT);
                 }
             }
-            // Linux ignores the fb of a SETCRTC without a mode: it disables
-            // the CRTC.
-            let fb_id = if mode_set { req.fb_id } else { 0 };
+            if mode_set && !kms::crtc_active() {
+                // Enabling the CRTC starts its vblank counter at a real time.
+                if let Ok((sec, nsec)) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+                    crate::dri::stamp_vblank_if_unset(sec as u32, (nsec / 1000) as u32);
+                }
+            }
             kms::set_crtc_mode(mode_set.then_some(req.mode));
             latch_crtc_fb(host, pid, req.crtc_id, fb_id);
             Ok(())
@@ -3606,6 +3633,49 @@ fn kms_add_framebuffer(
         return Err(Errno::ENOMEM);
     }
     Ok(fb_id)
+}
+
+/// `drm_mode_convert_umode` + `drm_mode_validate_basic`, then the virtual
+/// display's own `mode_valid`: the host can present only the modes its
+/// connector advertises, so any other timing is refused like a mode a
+/// driver cannot drive (EINVAL).
+fn validate_kms_mode(
+    host: &mut dyn HostIO,
+    mode: &wasm_posix_shared::dri::WpkDrmModeModeinfo,
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    if mode.clock > i32::MAX as u32 || mode.vrefresh > i32::MAX as u32 {
+        return Err(Errno::ERANGE);
+    }
+    let flags = mode.flags & !DRM_MODE_FLAG_PIC_AR_MASK;
+    if mode.flags & DRM_MODE_FLAG_PIC_AR_MASK > DRM_MODE_FLAG_PIC_AR_MAX
+        || mode.mode_type & !DRM_MODE_TYPE_ALL != 0
+        || flags & !DRM_MODE_FLAG_ALL != 0
+        || flags & DRM_MODE_FLAG_3D_MASK > DRM_MODE_FLAG_3D_MAX
+        || mode.clock == 0
+        || mode.hdisplay == 0
+        || mode.hsync_start < mode.hdisplay
+        || mode.hsync_end < mode.hsync_start
+        || mode.htotal < mode.hsync_end
+        || mode.vdisplay == 0
+        || mode.vsync_start < mode.vdisplay
+        || mode.vsync_end < mode.vsync_start
+        || mode.vtotal < mode.vsync_end
+    {
+        return Err(Errno::EINVAL);
+    }
+    let timing = |m: &WpkDrmModeModeinfo| (
+        m.clock, m.hdisplay, m.hsync_start, m.hsync_end, m.htotal, m.hskew,
+        m.vdisplay, m.vsync_start, m.vsync_end, m.vtotal, m.vscan,
+        m.flags & !DRM_MODE_FLAG_PIC_AR_MASK,
+    );
+    let wanted = timing(mode);
+    if !crate::dri::modes::connector_modes(host.kms_mode_info(kms::CONNECTOR_ID))
+        .iter().any(|m| timing(m) == wanted)
+    {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
 }
 
 /// `drm_crtc_check_viewport`: the mode's active area placed at `(x, y)` must
@@ -52389,9 +52459,17 @@ impl HostIO for RelSymlinkMock {
             crtc_id: kms::CRTC_ID,
             fb_id,
             mode_valid: 1,
-            mode: WpkDrmModeModeinfo { hdisplay: 640, vdisplay: 480, vrefresh: 60, ..Default::default() },
+            mode: kms_test_mode(),
             ..Default::default()
         }
+    }
+
+    /// The connector's 640x480 mode (the mock host reports no preferred
+    /// mode, so it comes first).
+    fn kms_test_mode() -> wasm_posix_shared::dri::WpkDrmModeModeinfo {
+        let mode = crate::dri::modes::connector_modes(Default::default())[0];
+        assert_eq!((mode.hdisplay, mode.vdisplay), (640, 480));
+        mode
     }
 
     fn last_written_u32s(host: &MockHostIO) -> Vec<u32> {
@@ -53220,12 +53298,12 @@ impl HostIO for RelSymlinkMock {
             &mut host,
             fd,
             DRM_IOCTL_MODE_CREATE_DUMB,
-            WpkDrmModeCreateDumb { width: 64, height: 32, bpp: 32, ..Default::default() },
+            WpkDrmModeCreateDumb { width: 640, height: 480, bpp: 32, ..Default::default() },
         )
         .unwrap();
         let mut fb_req = WpkDrmModeFbCmd2 {
-            width: 64,
-            height: 32,
+            width: 640,
+            height: 480,
             pixel_format: DRM_FORMAT_ARGB8888,
             ..Default::default()
         };
@@ -55485,6 +55563,106 @@ impl HostIO for RelSymlinkMock {
         reject(&mut proc, &mut host, offset, "offset");
         assert!(kms_state(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().fbs.borrow().is_empty());
         sys_close(&mut proc, &mut host, fd).unwrap();
+        kms::reset_for_test();
+    }
+
+    // -----------------------------------------------------------------
+    // DRM_IOCTL_MODE_SETCRTC (drm_mode_setcrtc semantics).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn kms_setcrtc_validates_the_mode_against_basic_rules_and_the_connector() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let fb = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_XRGB8888);
+        let valid = kms_modeset(&mut host, fb);
+        let mode = valid.mode;
+        let setcrtc = |proc: &mut Process, host: &mut MockHostIO, req| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETCRTC, req).map(|_| ())
+        };
+        // kms_invalid_mode: every malformed timing is refused.
+        let broken = [
+            ("zero-clock", WpkDrmModeModeinfo { clock: 0, ..mode }),
+            ("zero-hdisplay", WpkDrmModeModeinfo { hdisplay: 0, ..mode }),
+            ("zero-vdisplay", WpkDrmModeModeinfo { vdisplay: 0, ..mode }),
+            ("bad-hsync-start", WpkDrmModeModeinfo { hsync_start: mode.hdisplay - 1, ..mode }),
+            ("bad-vsync-start", WpkDrmModeModeinfo { vsync_start: mode.vdisplay - 1, ..mode }),
+            ("bad-hsync-end", WpkDrmModeModeinfo { hsync_end: mode.hsync_start - 1, ..mode }),
+            ("bad-vsync-end", WpkDrmModeModeinfo { vsync_end: mode.vsync_start - 1, ..mode }),
+            ("bad-htotal", WpkDrmModeModeinfo { htotal: mode.hsync_end - 1, ..mode }),
+            ("bad-vtotal", WpkDrmModeModeinfo { vtotal: mode.vsync_end - 1, ..mode }),
+            ("clock-too-high", WpkDrmModeModeinfo { clock: mode.clock + 1, ..mode }),
+            ("int-max-clock", WpkDrmModeModeinfo { clock: i32::MAX as u32, ..mode }),
+            ("bad type", WpkDrmModeModeinfo { mode_type: 1, ..mode }),
+            ("bad flag", WpkDrmModeModeinfo { flags: 1 << 10, ..mode }),
+            ("bad aspect", WpkDrmModeModeinfo { flags: 5 << 19, ..mode }),
+        ];
+        for (name, mode) in broken {
+            assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { mode, ..valid }), Err(Errno::EINVAL), "{name}");
+        }
+        for (name, mode) in [
+            ("uint-max-clock", WpkDrmModeModeinfo { clock: u32::MAX, ..mode }),
+            ("overflow-vrefresh", WpkDrmModeModeinfo { vrefresh: u32::MAX, ..mode }),
+        ] {
+            assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { mode, ..valid }), Err(Errno::ERANGE), "{name}");
+        }
+        assert!(host.kms_set_fb_calls.is_empty());
+        // The connector's own mode (type/name/vrefresh are not timing).
+        setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc {
+            mode: WpkDrmModeModeinfo { mode_type: 0, vrefresh: 0, name: [0; 32], ..mode }, ..valid }).unwrap();
+        assert_eq!(kms::crtc_fb(), fb);
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_setcrtc_resolves_fbs_device_wide_keeps_fb_minus_one_and_refuses_panning() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let setcrtc = |proc: &mut Process, host: &mut MockHostIO, req| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_SETCRTC, req).map(|_| ())
+        };
+        // A framebuffer another (non-master) card0 file created.
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let foreign = kms_fb(&mut proc, &mut host, other, 800, 600, DRM_FORMAT_ARGB8888);
+        let valid = kms_modeset(&mut host, foreign);
+        // fb -1 with nothing bound yet.
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: u32::MAX, ..valid }), Err(Errno::EINVAL));
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: 0xffff_fff0, ..valid }), Err(Errno::ENOENT));
+        setcrtc(&mut proc, &mut host, valid).unwrap();
+        assert_eq!(kms::crtc_fb(), foreign);
+        // fb -1 keeps the bound framebuffer.
+        setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: u32::MAX, ..valid }).unwrap();
+        assert_eq!(*host.kms_set_fb_calls.last().unwrap(), (1, kms::CRTC_ID, foreign));
+        // Offsets are signed 16-bit (ERANGE). An 800x600 fb would contain a
+        // panned 640x480 viewport, but the host cannot pan, so it is refused
+        // (EINVAL); one past the fb is ENOSPC as on Linux.
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 0x1_0000, ..valid }), Err(Errno::ERANGE));
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 160, y: 120, ..valid }), Err(Errno::EINVAL));
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { x: 161, ..valid }), Err(Errno::ENOSPC));
+        let small = kms_fb(&mut proc, &mut host, fd, 320, 240, DRM_FORMAT_ARGB8888);
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { fb_id: small, ..valid }), Err(Errno::ENOSPC));
+        // A NULL connector array is EFAULT, not a read of guest address 0.
+        assert_eq!(setcrtc(&mut proc, &mut host, WpkDrmModeGetCrtc { set_connectors_ptr: 0, ..valid }), Err(Errno::EFAULT));
+        let crtc = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() }).unwrap();
+        assert_eq!((crtc.fb_id, crtc.x, crtc.y, crtc.mode_valid), (foreign, 0, 0, 1));
+        // A non-master cannot modeset (DRM_MASTER, checked first).
+        assert_eq!(kms_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_SETCRTC,
+            WpkDrmModeGetCrtc { x: 0x1_0000, ..valid }).map(|_| ()), Err(Errno::EACCES));
         kms::reset_for_test();
     }
 
