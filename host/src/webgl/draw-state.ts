@@ -44,9 +44,15 @@ export type GlesDraw = {
   empty?: boolean;
   /** The draw's vertex indices in submission order (for face passes). */
   vertices(): ArrayLike<number> | null;
+  /** False when the caller does not use the draw's acceptance. A draw that
+   * installs no private state is then issued as a plain command, like
+   * Clear: a native error stays pending in the context's error state for
+   * the next drain instead of costing two getError calls per draw. */
+  observed?: boolean;
 };
 
 type StencilPlan = { kind: "none" } | { kind: "mirror"; face: number } | { kind: "split" };
+const NO_STENCIL_PLAN: StencilPlan = Object.freeze({ kind: "none" });
 
 function sameStencilSelectors(a: GlStencilFaceState, b: GlStencilFaceState, bits?: number): boolean {
   if (bits === undefined) return a.ref === b.ref && a.valueMask === b.valueMask && a.writeMask === b.writeMask;
@@ -59,7 +65,7 @@ function sameStencilSelectors(a: GlStencilFaceState, b: GlStencilFaceState, bits
 
 function stencilPlan(b: GlBinding, draw: GlesDraw): StencilPlan | null {
   const s = b.shadow, { front, back } = s.stencil;
-  if (sameStencilSelectors(front, back)) return { kind: "none" };
+  if (sameStencilSelectors(front, back)) return NO_STENCIL_PLAN;
   const triangles = draw.mode >= TRIANGLES && draw.mode <= 6;
   if (!s.stencilTestEnabled || !triangles || draw.empty) return { kind: "mirror", face: FRONT };
   if (s.cullFaceEnabled) return { kind: "mirror", face: s.cullFace === FRONT ? BACK : FRONT };
@@ -139,7 +145,11 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   if (twin === null) return false;
   // RGB color storage kept as RGBA: the native alpha is never written.
   syncAlphaWriteLock(b);
-  if (twin === undefined && stencil.kind === "none") return checkedGlCall(b, draw.issue);
+  if (twin === undefined && stencil.kind === "none") {
+    if (draw.observed !== false) return checkedGlCall(b, draw.issue);
+    draw.issue();
+    return true;
+  }
 
   const changes: NativeChange[] = [], finalizer: NativeCall[][] = [];
   if (twin) {

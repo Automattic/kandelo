@@ -1362,7 +1362,7 @@ function dispatch(
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
       if (!requireGlesFramebufferComplete(b) || !validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
-      issueGlesDraw(b,{mode:v.getUint32(p,true),empty:v.getInt32(p+8,true) === 0,
+      issueGlesDraw(b,{mode:v.getUint32(p,true),empty:v.getInt32(p+8,true) === 0,observed:false,
         issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true)),
         vertices:() => sequentialVertices(v.getInt32(p+4,true),v.getInt32(p+8,true))});
       return;

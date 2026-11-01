@@ -27,7 +27,7 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
 import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-sampling.js";
-import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
+import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
 
@@ -327,13 +327,16 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
   const reversedDepth = depthRangeReversed(b.shadow.depthRange);
   const depthSamplers = depthSamplersForDraw(b);
   if (depthSamplers === null) return null;
-  const sources = linkedSources.get(primary);
   // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] Only programs
   // meeting the reproduced trigger, and only on the affected engine.
-  const vertexDepthRange = sources ? vertexDepthRangeWorkaround(b, primary, sources) : false;
-  if (vertexDepthRange === null) return null;
+  const affected = engineLosesVertexDepthRange();
   // One shadow field test for draws without a constant color/alpha pair.
-  const blendFold = blendFoldNeeded(b.shadow) ? drawColorBufferKind(b) : undefined;
+  const folding = blendFoldNeeded(b.shadow);
+  if (!reversedDepth && !depthSamplers.length && !affected && !folding) return undefined;
+  const sources = linkedSources.get(primary);
+  const vertexDepthRange = affected && sources ? vertexDepthRangeWorkaround(b, primary, sources) : false;
+  if (vertexDepthRange === null) return null;
+  const blendFold = folding ? drawColorBufferKind(b) : undefined;
   if (blendFold === null) return null;
   // Draws needing none of these run the guest executable itself.
   if (!reversedDepth && !depthSamplers.length && !vertexDepthRange && !blendFold) return undefined;

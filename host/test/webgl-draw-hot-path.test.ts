@@ -43,8 +43,11 @@ class CountingGl {
   storage = new Map<object, Storage>();
   draws: Program[] = [];
   fragmentAlpha = 0.25;
+  /** A native draw error, as WebGL records for a rejected draw. */
+  rejectDraws = false;
+  error = 0;
   private next = 1;
-  getError() { return 0; }
+  getError() { const error = this.error; this.error = 0; return error; }
   isContextLost() { return false; }
   getExtension(name: string) { return name === "EXT_color_buffer_float" ? {} : null; }
   getParameter(pname: number): unknown {
@@ -111,7 +114,10 @@ class CountingGl {
     if (storage && this.mask[3]) storage.alpha = alpha;
   }
   clear(mask: number) { if (mask & 0x4000) this.writeAlpha(this.clearValue[3]); }
-  drawArrays() { this.draws.push(this.current!); this.writeAlpha(this.fragmentAlpha); }
+  drawArrays() {
+    if (this.rejectDraws) { this.error ||= 0x502; return; }
+    this.draws.push(this.current!); this.writeAlpha(this.fragmentAlpha);
+  }
 }
 
 const vertex = "attribute vec2 pos;\nvarying vec2 uv;\nvoid main() { uv = pos; gl_Position = vec4(pos, 0.0, 1.0); }\n";
@@ -279,6 +285,25 @@ describe("draws that use no exactness feature do no extra work", () => {
     const { defaultTextureGets } = perDraw(h, 16, "buffer");
     expect(defaultTextureGets).toBe(0);
     expect(h.gl.draws.every(program => program === h.gl.current)).toBe(true);
+  });
+
+  // [C4]
+  it("a buffer-array draw with no private state issues only the draw", () => {
+    const h = setup();
+    h.renderbuffer(7, RGB16F);
+    h.framebuffer(9, 7);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    const { calls, attachmentGets, defaultTextureGets } = perDraw(h, 16, "buffer", false);
+    expect(calls).toEqual({ drawArrays: 1 });
+    expect(attachmentGets).toBe(0);
+    expect(defaultTextureGets).toBe(0);
+    expect(h.gl.storage.get(h.b.rbos.get(7)!)!.alpha).toBe(1);
+    // A native rejection of such a draw still reaches the guest's GetError.
+    h.gl.rejectDraws = true;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    h.gl.rejectDraws = false;
+    expect(h.error()).toBe(0x502);
+    expect(h.error()).toBe(0);
   });
 
   // [C3]

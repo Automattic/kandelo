@@ -21,11 +21,14 @@ export const NATIVE_DEPTH_RANGE_UNIFORM = "kandelo_native_depth_range_values";
 const RANGE = "kandelo_native_depth_range", RANGE_TYPE = "kandelo_native_depth_range_parameters";
 const MAIN = "kandelo_native_depth_range_main";
 
-/** Gecko's WebGL implementation, where the defect reproduces. */
+/** Gecko's WebGL implementation, where the defect reproduces. Asked on
+ * every draw, so the answer is kept for the last user agent seen. */
+let lastAgent: string | undefined, lastLoses = false;
 export function engineLosesVertexDepthRange(
   userAgent = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent,
 ): boolean {
-  return userAgent !== undefined && /\bFirefox\//.test(userAgent);
+  if (userAgent !== lastAgent) { lastAgent = userAgent; lastLoses = userAgent !== undefined && /\bFirefox\//.test(userAgent); }
+  return lastLoses;
 }
 
 function readsDepthRange(source: string): boolean {
