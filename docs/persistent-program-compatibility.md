@@ -145,6 +145,9 @@ filesystem metadata, private mappings, threads and fork/exec environment
 isolation. Browser tests also verify the installed hashes and run offline.
 These examples do not replace semantic conformance suites or prove every
 program compatible.
+Additional dynamic-linking cases run a previously built program and side
+module through `dlopen`, and a lazily fetched copy of `echo`. Their bytes are
+checked against the dynamic-linking and executable manifest entries.
 
 An incompatible change needs either a bounded Rust adapter that preserves the
 old guest representation/semantics or a deliberately new program baseline.
@@ -157,11 +160,26 @@ does not retroactively decouple programs linked against today's channel.
 
 For this iteration the fork instrumentation contract is versioned, not declared
 stable. Its linked-frame, module-state, reference, exception and capability
-descriptors have explicit format versions checked before launch. The current
-program digest also binds this surface; the ABI-55 baseline is a regression
-gate for this release, not a promise to freeze the unfinished fork protocol.
-A future incompatible fork change needs an explicit compatibility decision and
-corresponding version/baseline changes, not a silent snapshot refresh.
+descriptors have explicit format versions checked before launch, and
+`abi/fork-contract.json` gives the whole surface one version and a digest of
+its current contents.
+
+The contract is independent of the program digest. That digest covers the
+frozen copy in `abi/program-fork-surface-v1.json`, which is never updated, so
+it keeps its ABI-55 value and existing programs stay valid. Changing the live
+fork surface fails `xtask check-program-baseline` until the version in
+`abi/fork-contract.json` is bumped. Ordinary programs are then unaffected,
+while a forking program built for another contract is refused before execution
+with rebuild guidance and its file is left unchanged.
+
+Programs carry their contract in an optional `kandelo.wpk_fork.contract`
+section holding a little-endian `u32`. No stamp means contract 1, so nothing
+needed rebuilding when this was introduced. `wasm-fork-instrument` does not
+stamp yet, because version 1 needs no stamp: a guard test fails if the version
+rises before the instrumenter does. Only the
+`program_artifact.fork_instrumentation` snapshot key is separated this way.
+Fork-related layouts in other program sections, such as the save-buffer sizes
+in the process memory layout, still move the program digest.
 
 User-built forking programs cannot be automatically upgraded in this stage.
 They may require rebuilding and instrumentation with the current SDK after a

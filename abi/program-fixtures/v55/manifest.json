@@ -65,5 +65,25 @@
     "-O2",
     "-Isysroot/include/libdrm",
     "-Isysroot/include/drm"
-  ]
+  ],
+  "dynamicLinking": {
+    "sourceRevision": "b4a5a48d85d00e6a201470c37691a28f7bc0b534",
+    "producer": "Frozen outputs of examples/dlopen/build.sh; never rebuilt by the compatibility tests",
+    "program": {
+      "name": "dlopen",
+      "file": "dlopen.wasm",
+      "size": 46388,
+      "sha256": "4d2224896e9074251cb7610fc98b1164e88c87260ec90442f8516c276bcca9fa",
+      "sourcePath": "examples/dlopen/main.c",
+      "sourceSha256": "9038b5412b7458a2f1608bb3337c1dcb65d9448b96ec4dce6ffc9ff576ac572f"
+    },
+    "sideModule": {
+      "name": "hello-lib",
+      "file": "hello-lib.so",
+      "size": 771,
+      "sha256": "a51e0e60dcf7a7ed8739d80fd7e57b4958c1dc894a37394790430a3b755e5e0b",
+      "sourcePath": "examples/dlopen/hello-lib.c",
+      "sourceSha256": "017e4750ce640a02ce59bfc5cb6b8c5b9589b180e7a65bf55ff13ec4efab74b0"
+    }
+  }
 }

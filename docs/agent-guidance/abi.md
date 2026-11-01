@@ -21,6 +21,11 @@ the change:
 
 Do not ship an incompatible change under an existing version.
 
+A change to `program_artifact.fork_instrumentation` alone is neither of these.
+It updates `abi/fork-contract.json`, bumps that record's version and leaves
+`abi/program-fork-surface-v1.json` frozen, so only forking programs need
+rebuilding. See `docs/persistent-program-compatibility.md`.
+
 Persistent-program baseline enforcement is stricter than the ordinary
 additive snapshot classifier. Preserve the declared supported baseline even
 when bumping a program version; see

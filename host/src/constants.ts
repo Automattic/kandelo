@@ -5,6 +5,8 @@ import {
   PROCESS_MEMORY_THREAD_SLOT_DECL_EXPORT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
   WPK_FORK_CAPABILITIES_SECTION,
+  WPK_FORK_CONTRACT_SECTION,
+  WPK_FORK_CONTRACT_VERSION,
   WPK_FORK_CAPABILITIES_VERSION,
   WPK_FORK_CAP_KNOWN_MASK,
   WPK_FORK_CAP_REQUIRED_FLAGS,
@@ -2172,13 +2174,31 @@ function describeForkArtifactContractFailures(
  * the artifact. This is shared by program admission and the dynamic linker so
  * a side module cannot defer a malformed reconstruction recipe until replay.
  */
+// Programs built before the contract was versioned carry no stamp. Their
+// meaning is fixed: they are contract 1, whatever the current version is.
+const UNSTAMPED_FORK_CONTRACT_VERSION = 1;
+
+function describeForkContractVersionFailures(programBytes: ArrayBuffer): string[] {
+  const stamp = readWasmCustomSectionPayload(programBytes, WPK_FORK_CONTRACT_SECTION);
+  if (stamp !== null && stamp.byteLength !== 4) {
+    return [`invalid ${WPK_FORK_CONTRACT_SECTION} section (${stamp.byteLength} bytes)`];
+  }
+  const version = stamp === null
+    ? UNSTAMPED_FORK_CONTRACT_VERSION
+    : new DataView(stamp.buffer, stamp.byteOffset, 4).getUint32(0, true);
+  return version === WPK_FORK_CONTRACT_VERSION
+    ? []
+    : [`built for fork instrumentation contract ${version}, but this runtime uses contract ${WPK_FORK_CONTRACT_VERSION}`];
+}
+
 export function describeWasmForkArtifactContractFailures(
   programBytes: ArrayBuffer,
 ): string[] {
   try {
-    return describeForkArtifactContractFailures(
-      readWasmForkArtifactFacts(programBytes),
-    );
+    return [
+      ...describeForkContractVersionFailures(programBytes),
+      ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
+    ];
   } catch (error) {
     return [
       `cannot validate ABI 43 fork-artifact contract: ${
@@ -2554,7 +2574,8 @@ export function describeWasmArtifactPolicyFailures(
     } else if (!abiContractDigestsEqual(guestDigest, options.expectedAbiContractDigest)) {
       failures.push(
         "ABI contract digest mismatch — guest built against a different ABI " +
-          "snapshot than the running kernel; rebuild the guest",
+          "snapshot than the running kernel; its file is unchanged. Rebuild it " +
+          "with the current Kandelo SDK, or install a compatible package update",
       );
     }
   }
@@ -2641,6 +2662,7 @@ export function describeWasmArtifactPolicyFailures(
     const failureCount = failures.length;
     try {
       failures.push(
+        ...describeForkContractVersionFailures(programBytes),
         ...describeForkArtifactContractFailures(readWasmForkArtifactFacts(programBytes)),
       );
     } catch (error) {

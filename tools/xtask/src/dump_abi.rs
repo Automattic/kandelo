@@ -2062,6 +2062,16 @@ fn render_ts_module() -> String {
         ));
     }
     out.push_str(&format!(
+        "export const WPK_FORK_CONTRACT_SECTION = {:?} as const;\n",
+        "kandelo.wpk_fork.contract"
+    ));
+    out.push_str(&format!(
+        "export const WPK_FORK_CONTRACT_VERSION = {} as const;\n",
+        crate::supported_program_baseline::fork_contract()
+            .expect("abi/fork-contract.json must be valid")
+            .version
+    ));
+    out.push_str(&format!(
         "export const WPK_FORK_CAPABILITIES_SECTION = {:?} as const;\n",
         shared::abi::WPK_FORK_CAPABILITIES_SECTION
     ));
@@ -4399,6 +4409,12 @@ fn declared_snapshot_sections() -> Sections {
     s.add(KernelHost, "export_deny", export_deny());
 
     s
+}
+
+pub(crate) fn source_fork_surface_digest() -> Result<[u8; 32], String> {
+    crate::local_abi_identity::fork_surface_digest(
+        &Value::Object(declared_snapshot_sections().finish().into_iter().collect()),
+    )
 }
 
 pub(crate) fn source_program_contract_digest() -> Result<[u8; 32], String> {

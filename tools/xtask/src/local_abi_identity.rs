@@ -52,6 +52,7 @@ pub(crate) fn program_contract_digest(
     for name in program {
         surface.insert(name.to_owned(), object[name].clone());
     }
+    bind_baseline_fork_surface(&mut surface)?;
     let mut canonical = Vec::new();
     write_canonical_json(&Value::Object(surface), &mut canonical)?;
     let mut hasher = Sha256::new();
@@ -60,6 +61,51 @@ pub(crate) fn program_contract_digest(
     hasher.update((canonical.len() as u64).to_le_bytes());
     hasher.update(&canonical);
     Ok(hasher.finalize().into())
+}
+
+/// The fork surface that the digest of every ABI 55 program covers. Fork
+/// instrumentation is versioned separately and is not stable, so this copy is
+/// deliberately never updated: it keeps a fork-only change from moving the
+/// digest that ordinary programs carry. See `abi/fork-contract.json`.
+const BASELINE_FORK_SURFACE: &str = include_str!("../../../abi/program-fork-surface-v1.json");
+const FORK_SURFACE_KEY: &str = "fork_instrumentation";
+
+fn bind_baseline_fork_surface(surface: &mut serde_json::Map<String, Value>) -> Result<(), String> {
+    let Some(fork) = surface
+        .get_mut("program_artifact")
+        .and_then(Value::as_object_mut)
+        .and_then(|artifact| artifact.get_mut(FORK_SURFACE_KEY))
+    else {
+        return Ok(());
+    };
+    *fork = serde_json::from_str(BASELINE_FORK_SURFACE)
+        .map_err(|error| format!("parse baseline fork surface: {error}"))?;
+    Ok(())
+}
+
+/// Digest of the live fork surface, which `abi/fork-contract.json` versions.
+pub(crate) fn fork_surface_digest(snapshot: &Value) -> Result<[u8; 32], String> {
+    let surface = snapshot
+        .get("program_artifact")
+        .and_then(|artifact| artifact.get(FORK_SURFACE_KEY))
+        .ok_or("must declare the fork instrumentation surface")?;
+    let mut canonical = Vec::new();
+    write_canonical_json(surface, &mut canonical)?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"kandelo-fork-contract-surface-v1\0");
+    hasher.update((canonical.len() as u64).to_le_bytes());
+    hasher.update(&canonical);
+    Ok(hasher.finalize().into())
+}
+
+pub(crate) fn local_fork_surface_digest(repo_root: &Path) -> Result<[u8; 32], String> {
+    let path = repo_root.join("abi/snapshot.json");
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("read ABI snapshot {}: {error}", path.display()))?;
+    let value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse ABI snapshot {}: {error}", path.display()))?;
+    fork_surface_digest(&value)
+        .map_err(|error| format!("ABI snapshot {}: {error}", path.display()))
 }
 
 /// The program-surface section names, after proving `abi_surfaces` assigns
@@ -149,7 +195,7 @@ fn write_canonical_json(value: &serde_json::Value, output: &mut Vec<u8>) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use super::{local_abi_contract_digest, program_contract_digest};
+    use super::{fork_surface_digest, local_abi_contract_digest, program_contract_digest};
     use serde_json::{Value, json};
     use std::path::PathBuf;
 
@@ -240,6 +286,27 @@ mod tests {
         );
         // A snapshot with no sections at all needs no surfaces.
         assert!(program_contract_digest(&json!({"abi_version": 4}), 4).is_ok());
+    }
+
+    #[test]
+    fn fork_only_changes_move_the_fork_digest_but_not_the_program_digest() {
+        let snapshot = |fork: serde_json::Value, program: u32| json!({
+            "abi_version": 4,
+            "abi_surfaces": { "program": ["program_artifact", "syscalls"], "kernel_host": [] },
+            "program_artifact": { "fork_instrumentation": fork, "heap_safepoint_import": {} },
+            "syscalls": { "read": program },
+        });
+        let (original, changed) = (snapshot(json!({"format": 1}), 1), snapshot(json!({"format": 2}), 1));
+        assert_eq!(
+            program_contract_digest(&original, 4).unwrap(),
+            program_contract_digest(&changed, 4).unwrap()
+        );
+        assert_ne!(fork_surface_digest(&original).unwrap(), fork_surface_digest(&changed).unwrap());
+        assert_ne!(
+            program_contract_digest(&original, 4).unwrap(),
+            program_contract_digest(&snapshot(json!({"format": 1}), 2), 4).unwrap(),
+            "the rest of the program surface must still move the digest"
+        );
     }
 
     /// The committed snapshot, through the real section structure: a change
