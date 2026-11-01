@@ -288,6 +288,7 @@ struct wpk_gles_context {
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
     uint32_t next_uniform_upload;
+    uint32_t next_readback_capture;
     GLuint array_buffer;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
@@ -2547,6 +2548,54 @@ GLenum glCheckFramebufferStatus(GLenum target) {
     return (GLenum)status;
 }
 
+/* A captured native read is never repeated on an unknown reply. Preallocate
+ * cancellation buffers before admission, and publish only after every copied
+ * byte and the final release have been acknowledged. */
+static int readback_capture_query(int fd, uint8_t *request, uint32_t input_len,
+                                  uint8_t *reply, uint32_t output_len,
+                                  uint32_t token, uint32_t expected, int quiet) {
+    memset(reply,0,output_len);
+    struct gl_query_info info = {.op=QOP_READBACK_CAPTURE,
+        .in_buf_ptr=(uintptr_t)request,.in_buf_len=input_len,
+        .out_buf_ptr=(uintptr_t)reply,.out_buf_len=output_len,.reserved=0};
+    if (ioctl(fd,GLIO_QUERY,&info) != 0) goto invalid;
+    uint32_t status,echoed,count,magic;
+    memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&count,reply+8,4);
+    memcpy(&magic,reply+output_len-4,4);
+    if (status>1 || magic!=WPK_GL_QUERY_REPLY_MAGIC) goto invalid;
+    if (status) return 0; /* The host's original GL error owns this rejection. */
+    if (echoed!=token || count!=expected) goto invalid;
+    return 1;
+invalid:
+    if (!quiet) raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+static int captured_read_pixels(const uint8_t metadata[24], uint8_t *pixels, uint32_t total) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    if (state->next_readback_capture==UINT32_MAX) {raise_client_error(GL_OUT_OF_MEMORY);return 0;}
+    uint8_t *request=malloc(36),*reply=malloc(65536);
+    if (!request || !reply) {free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return 0;}
+    if (flush_commands()!=0) {free(request);free(reply);return 0;}
+    int fd=_wpk_gl_fd(),success=0;
+    uint32_t token=++state->next_readback_capture;
+    uint32_t header[3]={1,token,total};memcpy(request,header,12);memcpy(request+12,metadata,24);
+    if (!readback_capture_query(fd,request,36,reply,16,token,total,0)) goto abort;
+    for (uint32_t offset=0;offset<total;) {
+        uint32_t count=total-offset;if (count>65520u) count=65520u;
+        uint32_t chunk[4]={2,token,offset,count};memcpy(request,chunk,16);
+        if (!readback_capture_query(fd,request,16,reply,count+16,token,count,0)) goto abort;
+        memcpy(pixels+offset,reply+12,count);offset+=count;
+    }
+    header[0]=3;memcpy(request,header,8);
+    if (!readback_capture_query(fd,request,8,reply,16,token,0,0)) goto abort;
+    success=1;goto done;
+abort:
+    header[0]=3;memcpy(request,header,8);
+    (void)readback_capture_query(fd,request,8,reply,16,token,0,1);
+done:
+    free(request);free(reply);return success;
+}
+
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, void *pixels) {
     if (!_wpk_gl_current_encoder()) return;
@@ -2581,15 +2630,14 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     uint64_t row = (uint64_t)(uint32_t)width * bpp;
     uint64_t stride = (row + (uint32_t)g_pack_alignment - 1u)
                       & ~((uint64_t)(uint32_t)g_pack_alignment - 1u);
-    /* Bound before multiplying by height: even valid signed dimensions can
-     * overflow uint64_t for wide component types. The query's bounded reply
-     * remains an ordinary large-readback implementation gap. */
-    if (stride > 65536u) {
+    /* Bound before multiplication: oversized signed dimensions and wide
+     * component types must never wrap into a smaller destination allocation. */
+    if (stride > UINT32_MAX) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
     uint64_t required = (uint64_t)((uint32_t)height - 1u) * stride + row;
-    if (required > 65536u) {
+    if (required > UINT32_MAX || required > SIZE_MAX) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
@@ -2599,7 +2647,9 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
-    if (_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, reply, out_len) == 0) {
+    int accepted = out_len > 65536u ? captured_read_pixels(in,reply,out_len)
+        : _wpk_gl_query_into(QOP_READ_PIXELS,in,sizeof in,reply,out_len)==0;
+    if (accepted) {
         /* Pack padding belongs to the caller. Transport staging must never
          * overwrite it, nor publish any pixel after a rejected native read. */
         for (uint32_t r = 0; r < (uint32_t)height; ++r)

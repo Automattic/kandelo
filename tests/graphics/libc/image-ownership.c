@@ -701,6 +701,7 @@ int graphics_munmap(void *a, size_t len) {
 }
 static unsigned log_queries;
 static int log_query_failure;
+static unsigned read_capture_token, read_capture_total, read_capture_chunks, read_capture_fail_chunk, read_capture_lost_release, read_capture_lost_begin, read_capture_bad_magic, read_capture_bad_count;
 static unsigned read_pixels_queries;
 static uint32_t read_pixels_capacity;
 static int read_pixels_failure;
@@ -1629,6 +1630,34 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t size=4;
             assert(q->out_buf_len >= 8);
             memcpy(latest_allocation,&size,4);memcpy((uint8_t *)latest_allocation+4,"abcd",4);
+            return 0;
+        }
+        if (q->op == 0x33) {
+            const uint32_t *input = allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint32_t *reply = allocation_for(q->out_buf_ptr,q->out_buf_len);
+            unsigned action=input[0], token=input[1], count=0;
+            assert(token && q->out_buf_len>=16);
+            memset(reply,0,q->out_buf_len);
+            if (action == 1) {
+                assert(q->in_buf_len==36 && q->out_buf_len==16);
+                read_pixels_queries++; read_capture_total=input[2]; count=input[2];
+                if (read_pixels_failure) {query_gl_error=GL_INVALID_FRAMEBUFFER_OPERATION;reply[0]=1;}
+                else read_capture_token=token;
+                if (read_capture_lost_begin) {read_capture_lost_begin=0;errno=EIO;return -1;}
+            } else if (action == 2) {
+                assert(q->in_buf_len==16 && token==read_capture_token);
+                count=input[3]; assert(input[2]+count<=read_capture_total && q->out_buf_len==count+16);
+                read_capture_chunks++;
+                if (read_capture_fail_chunk && read_capture_chunks==read_capture_fail_chunk) {errno=EIO;return -1;}
+                memset((uint8_t *)reply+12,0x3c,count);
+            } else {
+                assert(action==3 && q->in_buf_len==8 && q->out_buf_len==16);
+                assert(!read_capture_token || token==read_capture_token);
+                read_capture_token=0;
+                if (read_capture_lost_release) {read_capture_lost_release=0;errno=EIO;return -1;}
+            }
+            if (action==2 && read_capture_bad_count) count++;
+            reply[1]=token;reply[2]=count;uint32_t magic=(action==1 && read_capture_bad_magic)?0:WPK_GL_QUERY_REPLY_MAGIC;memcpy((uint8_t *)reply+q->out_buf_len-4,&magic,4);
             return 0;
         }
         if (q->op == QOP_READ_PIXELS) {
@@ -4869,6 +4898,45 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-captured-read-", 22)) {
+        enum {width=257,height=129,row=771,stride=776,total=(height-1)*stride+row};
+        uint8_t *pixels=malloc(total+2);assert(pixels);memset(pixels,0xa5,total+2);
+        glPixelStorei(GL_PACK_ALIGNMENT,8);
+        if (!strcmp(argv[1],"encoder-captured-read-reject")) read_pixels_failure=1;
+        else if (!strcmp(argv[1],"encoder-captured-read-chunk-failure")) read_capture_fail_chunk=2;
+        else if (!strcmp(argv[1],"encoder-captured-read-release-failure")) read_capture_lost_release=1;
+        else if (!strcmp(argv[1],"encoder-captured-read-lost-begin")) read_capture_lost_begin=1;
+        else if (!strcmp(argv[1],"encoder-captured-read-bad-magic")) read_capture_bad_magic=1;
+        else if (!strcmp(argv[1],"encoder-captured-read-bad-count")) read_capture_bad_count=1;
+        else if (!strcmp(argv[1],"encoder-captured-read-allocation")) {
+            for (int failure=0;failure<3;failure++) {
+                malloc_before_failure=failure;
+                glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,pixels+1);
+                malloc_before_failure=-1;
+                assert(read_pixels_queries==0 && glGetError()==GL_OUT_OF_MEMORY);
+                for(unsigned i=0;i<total+2;i++) assert(pixels[i]==0xa5);
+            }
+            free(pixels);
+            assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+            assert(allocation_count()==0);printf("PASS %s\n",argv[1]);return 0;
+        } else assert(!strcmp(argv[1],"encoder-captured-read-large"));
+        glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,pixels+1);
+        assert(read_pixels_queries==1 && read_capture_total==total && read_capture_token==0);
+        int success=!read_pixels_failure && !read_capture_fail_chunk && !strcmp(argv[1],"encoder-captured-read-large");
+        for (unsigned i=0;i<total+2;i++) {
+            int pixel=i>=1 && i<=total && ((i-1)%stride)<row;
+            assert(pixels[i]==(success && pixel?0x3c:0xa5));
+        }
+        assert(glGetError()==(success?GL_NO_ERROR:read_pixels_failure?GL_INVALID_FRAMEBUFFER_OPERATION:GL_INVALID_OPERATION));
+        assert(glGetError()==GL_NO_ERROR);
+        if (!read_pixels_failure) {
+            unsigned expected=read_capture_bad_magic || !strcmp(argv[1],"encoder-captured-read-lost-begin")?0:read_capture_bad_count?1:2;
+            assert(read_capture_chunks==expected);
+        }
+        free(pixels);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0);printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strncmp(argv[1], "encoder-read-", 13)) {
         uint8_t pixels[32];

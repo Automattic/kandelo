@@ -76,3 +76,8 @@ It uses the same normal executable, data and renderer, with an exact case
 manifest from the pinned 19,825-case upstream inventory. No upstream assertion
 or native surface behavior is changed for this group. Its inclusion is an
 executable probe, not a claim that its cases already pass.
+
+The first color-clear probe aborts before comparison because the prior C readback
+transport refuses outputs larger than 64 KiB. Keep that ResourceError and all
+missing later cases visible while the captured-readback repair is rebuilt and
+validated; source controls do not establish a rendered pass.

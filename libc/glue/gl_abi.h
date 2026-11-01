@@ -218,6 +218,7 @@
 #define QOP_FENCE_STATUS 0x002Fu
 #define QOP_RELEASE_FENCE 0x0030u
 #define QOP_FLUSH 0x0031u
+#define QOP_READBACK_CAPTURE 0x0033u
 /* Private mode of the existing BO bind ioctl, returning a source token. */
 #define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u
 

@@ -228,3 +228,6 @@ export const QOP_FLUSH = 0x0031;
 // Reserved with shared::gl; no production control dispatch/pending path yet.
 export const KERNEL_GL_QUERY_CONTROL = 0x7fff_fffe;
 export const GL_QUERY_NEEDS_OWNED_ADMISSION = -2147483647;
+
+// Reserved ABI56: one native read followed by independent copied-byte chunks.
+export const QOP_READBACK_CAPTURE = 0x0033;

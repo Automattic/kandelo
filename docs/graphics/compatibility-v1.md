@@ -19377,4 +19377,66 @@ The public consumer now also admits the complete 19-case upstream color-clear
 group, from the same exact 19,825-case inventory and upstream pin. It retains
 all masks, scissors, repeated operations and native rendered-pixel comparisons;
 no upstream assertion or surface behavior is replaced. This opens a reproducible
-rendering probe beyond negative API checks. Actual outcomes are pending.
+rendering probe beyond negative API checks. Its first actual outcomes and the
+resulting large-readback work are recorded next.
+
+
+### Rendered color-clear probe exposes the readback transport ceiling
+
+At `2fe11e6938a8c600b8af6520142697963b9e430c`, the public complete 19-case
+color-clear probe ran in all three canonical headless engines with the preceding
+normal artifacts, without a rebuild. Each guest aborts on its first case,
+`dEQP-GLES2.functional.color_clear.complex_rgb`, with ResourceError:
+`glReadPixels` returned `GL_OUT_OF_MEMORY`. The other 18 cases are missing, not
+passed or skipped. The ordinary C 64 KiB reply ceiling prevents upstream's
+larger pixel comparison from running; it is not a browser boundary.
+
+Job `graphics-cts-color-clear-r1-1031-233323-74f7` exits 1 in 13 seconds.
+Each exact guest retirement proof succeeds, and page/console/cleanup diagnostics
+are empty. All 22 normal artifact receipts remain unchanged; native browser
+exits and port 5709 refusal are recorded. Owned Firefox scratch cleanup retains
+a permission-denied residual. Original reports, QPA and failure evidence remain
+in `.context/cts-color-clear-r1/`, release SHA256
+`85ca04a705e8d8fd156f129652b82d9f07bc377299211021f2e114599a228587`.
+
+### Captured large readback, source implementation
+
+The ordinary GLES C/host path now captures one full original native read into
+independent host-owned storage, then transfers only those accepted bytes through
+bounded checked chunks. It never replaces one read with repeated row/band reads.
+The C encoder allocates staging and cancellation buffers before admission,
+flushes earlier work once and uses a monotonic context-local token. Unknown
+capture or release acknowledgments never replay native work. Only complete
+transfer and acknowledged release publish actual pixel rows; caller padding and
+all caller bytes on a failed transaction remain unchanged.
+
+The host validates complete geometry against context packing, binds copied
+storage to the original native/logical context and shadow, and rechecks identity
+after capture and before chunks. Public context retirement and canvas detachment
+revoke the copied result immediately, separately from native execution custody.
+A 64 MiB copied-storage budget per pending context is explicit and reports
+OUT_OF_MEMORY on exhaustion; the 64 KiB RPC ceiling no longer limits one read.
+This is a resource budget, not a demonstrated platform boundary or an excuse for
+other incomplete query/storage behavior. Small reads keep their existing path.
+
+The checked capture protocol is additive in reserved program ABI 56 / GL 17:
+QOP 0x33 BEGIN, CHUNK and RELEASE, with original signed geometry, independent
+byte count, non-replayed caller tokens and checked completion markers. Its
+Program snapshot section is regenerated against the unchanged export surface
+of the preceding normally built protocol-3 kernel. That serialization step does
+not make the old kernel or linked programs fresh; the combined normal rebuild
+and actual pixel rerun remain required.
+
+Causal controls record six host failures and four actual-C failures before the
+implementation. Focused source controls and eight actual native C/UBSan cases
+now cover immutable multi-chunk reads, padding, failed later chunks, lost begin
+or release acknowledgments, malformed receipts and allocation refusal without
+partial caller publication. The canonical graphics source gate passed 1,538
+cases before the final capture-identity regression was added; final combined
+gates are pending. Narrow production type closure passes. Private logs retain
+an initial no-test reporter-path failure, an incorrect TypeScript tool-path
+attempt and a rejected ABI generator flag; corrected commands ran the reported
+checks. Evidence is `.context/readback-capture-r1/`.
+
+No rebuilt rendering, large readback browser success, full CTS, desktop,
+responsiveness or browser-memory acceptance is claimed by source controls.

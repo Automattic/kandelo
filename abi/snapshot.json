@@ -23,6 +23,7 @@
       "custom_sections",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
+      "gl_readback_capture",
       "gl_submit_query",
       "host_env_imports",
       "host_intercepted_syscalls",
@@ -1453,6 +1454,46 @@
     "op_version": 17,
     "opcode": 1286,
     "public_buffer_names": false
+  },
+  "gl_readback_capture": {
+    "actions": {
+      "begin": 1,
+      "chunk": 2,
+      "release": 3
+    },
+    "begin_bytes": 36,
+    "begin_fields": [
+      "action",
+      "token",
+      "total",
+      "x",
+      "y",
+      "width",
+      "height",
+      "format",
+      "type"
+    ],
+    "byte_order": "little-endian",
+    "chunk_bytes": 16,
+    "chunk_fields": [
+      "action",
+      "token",
+      "offset",
+      "count"
+    ],
+    "copyout": "after-complete-transfer-and-release-ack",
+    "max_chunk_bytes": 65520,
+    "native_capture": "one-original-read",
+    "opcode": 51,
+    "release_bytes": 8,
+    "release_fields": [
+      "action",
+      "token"
+    ],
+    "reply": "status,token,count,chunk-bytes,magic",
+    "reply_fixed_bytes": 16,
+    "reply_magic": 1196510259,
+    "tokens": "monotonic-per-context-no-capture-replay"
   },
   "gl_submit_query": {
     "negative_phase_rc": "errno",

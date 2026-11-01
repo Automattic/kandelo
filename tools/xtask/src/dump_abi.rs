@@ -4390,6 +4390,20 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
+    s.add(Program, "gl_readback_capture", json!({
+        "opcode": shared::gl::QOP_READBACK_CAPTURE,
+        "byte_order": "little-endian",
+        "begin_bytes": 36, "begin_fields": ["action","token","total","x","y","width","height","format","type"],
+        "chunk_bytes": 16, "chunk_fields": ["action","token","offset","count"],
+        "release_bytes": 8, "release_fields": ["action","token"],
+        "actions": {"begin":1,"chunk":2,"release":3},
+        "reply": "status,token,count,chunk-bytes,magic",
+        "reply_fixed_bytes": 16, "max_chunk_bytes": 65520,
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "tokens": "monotonic-per-context-no-capture-replay",
+        "native_capture": "one-original-read",
+        "copyout": "after-complete-transfer-and-release-ack"
+    }));
     s.add(
         Program,
         "gl_image_container_receipts",

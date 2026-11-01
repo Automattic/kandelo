@@ -1,3 +1,4 @@
+import { runReadbackCapture } from "./readback-capture.js";
 import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
@@ -309,6 +310,7 @@ export function runGlQuery(
   if (!b.gl) return -1;
   const gl = b.gl;
   if (!repairNativeState(gl) || !reconcileClientArrayRestore(b,gl)) return -5;
+  if (op === O.QOP_READBACK_CAPTURE) return runReadbackCapture(b,input,out,(metadata,bytes)=>readNativePixels(b,metadata,bytes));
   if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
@@ -623,24 +625,8 @@ export function runGlQuery(
     }
 
     // in: i32 x, i32 y, i32 w, i32 h, u32 format, u32 type; out: u8 pixels[...]
-    case O.QOP_READ_PIXELS: {
-      if (input.byteLength < 24) return -22;
-      const x = inDv.getInt32(0, true);
-      const y = inDv.getInt32(4, true);
-      const w = inDv.getInt32(8, true);
-      const h = inDv.getInt32(12, true);
-      const format = inDv.getUint32(16, true);
-      const type = normalizeHalfFloatType(inDv.getUint32(20, true));
-      // WebGL2 readPixels requires the destination view to match `type`.
-      const view = readPixelsViewForType(type, out);
-      if (!checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); })) return -22;
-      copyReadPixelsResult(view, out);
-      // gl.readPixels writes into `out` directly. Bytes-written depends
-      // on (format,type,w,h); the kernel cap (`MAX_QUERY_OUT_LEN`) is
-      // the upper bound. Return the full out length — the C side knows
-      // the geometry.
-      return out.byteLength;
-    }
+    case O.QOP_READ_PIXELS:
+      return readNativePixels(b,input,out);
 
     // in: u32 shadertype, u32 precisiontype; out: i32 rangeMin, i32 rangeMax,
     // i32 precision
@@ -856,4 +842,23 @@ function normalizeNumericValues(value: unknown, pname: number): number[] {
   if (Array.isArray(value)) return value.map(Number);
   if (ArrayBuffer.isView(value)) return Array.from(value as unknown as ArrayLike<number>, Number);
   return [Number(value) || 0];
+}
+
+function readNativePixels(b: GlBinding, input: Uint8Array, out: Uint8Array): number {
+      if (input.byteLength < 24) return -22;
+      const inDv = new DataView(input.buffer,input.byteOffset,input.byteLength);
+      const gl = b.gl!;
+      const x = inDv.getInt32(0, true);
+      const y = inDv.getInt32(4, true);
+      const w = inDv.getInt32(8, true);
+      const h = inDv.getInt32(12, true);
+      const format = inDv.getUint32(16, true);
+      const type = normalizeHalfFloatType(inDv.getUint32(20, true));
+      // WebGL2 readPixels requires the destination view to match `type`.
+      const view = readPixelsViewForType(type, out);
+      if (!checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); })) return -22;
+      copyReadPixelsResult(view, out);
+      // Both routes own independent staging. The capture route validates its
+      // complete geometry separately from each bounded transport reply.
+      return out.byteLength;
 }

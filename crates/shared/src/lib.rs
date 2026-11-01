@@ -4302,6 +4302,11 @@ pub mod gl {
     pub const QOP_RELEASE_FENCE: u32 = 0x0030;
     /// V17 server flush acknowledgement: no input or output bytes.
     pub const QOP_FLUSH: u32 = 0x0031;
+    /// Reserved ABI56: one native read followed by immutable copied-byte chunks.
+    /// BEGIN(action1,token,total,x,y,w,h,format,type)=36 bytes;
+    /// CHUNK(action2,token,offset,count)=16; RELEASE(action3,token)=8.
+    /// Checked reply: status,token,count,chunk bytes,QUERY_REPLY_MAGIC.
+    pub const QOP_READBACK_CAPTURE: u32 = 0x0033;
 
     // --- marshalled ioctl argument structs ---------------------------------
 
@@ -6189,6 +6194,7 @@ mod gl_tests {
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,
             QOP_FLUSH,
+            QOP_READBACK_CAPTURE,
         ];
         for (i, &a) in qops.iter().enumerate() {
             for &b in &qops[i + 1..] {
