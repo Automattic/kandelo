@@ -2002,6 +2002,14 @@ fn handle_dri_ioctl(
             }
             let mut req: WpkDrmPrimeHandle =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // drm_prime_handle_to_fd_ioctl: only DRM_CLOEXEC (O_CLOEXEC) and
+            // DRM_RDWR (O_RDWR) are defined; the dma-buf is read-only
+            // without DRM_RDWR.
+            use wasm_posix_shared::flags::{O_CLOEXEC, O_RDONLY, O_RDWR};
+            if req.flags & !(O_CLOEXEC | O_RDWR) != 0 {
+                return Err(Errno::EINVAL);
+            }
+            let access = if req.flags & O_RDWR != 0 { O_RDWR } else { O_RDONLY };
             let bo_id = *dri_state(proc, ofd_idx)?
                 .gem.borrow().handles
                 .get(&req.handle)
@@ -2021,7 +2029,7 @@ fn handle_dri_ioctl(
             let path = alloc::format!("/dev/dri/prime-{}-{:x}", bo_id, cookie).into_bytes();
             let prime_ofd = proc.ofd_table.create(
                 crate::ofd::FileType::CharDevice,
-                wasm_posix_shared::flags::O_RDWR,
+                access,
                 crate::ofd::PRIME_FD_HOST_HANDLE,
                 path,
             );
@@ -14233,6 +14241,14 @@ pub fn sys_mmap(
                     .ok_or(Errno::EINVAL)?;
             if bo_tier == crate::dri::BoTier::GpuTexture {
                 return Err(Errno::EINVAL);
+            }
+            // do_mmap: a writable shared mapping needs a writable file, so
+            // a dma-buf exported without DRM_RDWR maps read-only.
+            if flags & wasm_posix_shared::mmap::MAP_SHARED != 0
+                && prot & wasm_posix_shared::mmap::PROT_WRITE != 0
+                && ofd.status_flags() & wasm_posix_shared::flags::O_ACCMODE != wasm_posix_shared::flags::O_RDWR
+            {
+                return Err(Errno::EACCES);
             }
             let aligned_bo_size = (bo_size as usize)
                 .checked_add(0xFFFF)
@@ -56271,6 +56287,40 @@ impl HostIO for RelSymlinkMock {
         assert!(kms::blob(kept).is_none());
         sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
+    }
+
+    #[test]
+    fn dri_prime_export_checks_flags_and_maps_read_only_without_drm_rdwr() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::flags::{O_ACCMODE, O_CLOEXEC, O_RDONLY, O_WRONLY};
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let bo = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 16, height: 16, bpp: 32, ..Default::default() }).unwrap();
+        let export = |proc: &mut Process, host: &mut MockHostIO, flags: u32| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_PRIME_HANDLE_TO_FD,
+                WpkDrmPrimeHandle { handle: bo.handle, flags, fd: -1 }).map(|r| r.fd)
+        };
+        // drm_prime_handle_to_fd_ioctl: only DRM_CLOEXEC | DRM_RDWR.
+        for bad in [O_WRONLY, 0x40, O_CLOEXEC | 0x8000] {
+            assert_eq!(export(&mut proc, &mut host, bad), Err(Errno::EINVAL), "flags {bad:#x}");
+        }
+        let access = |proc: &Process, prime: i32| {
+            let ofd = proc.fd_table.get(prime).unwrap().ofd_ref.0;
+            proc.ofd_table.get(ofd).unwrap().status_flags() & O_ACCMODE
+        };
+        let read_only = export(&mut proc, &mut host, O_CLOEXEC).unwrap();
+        assert_eq!(access(&proc, read_only), O_RDONLY);
+        assert_eq!(sys_mmap(&mut proc, &mut host, 0, 1024, PROT_READ | PROT_WRITE, MAP_SHARED, read_only, 0),
+            Err(Errno::EACCES));
+        sys_mmap(&mut proc, &mut host, 0, 1024, PROT_READ, MAP_SHARED, read_only, 0).unwrap();
+        let read_write = export(&mut proc, &mut host, O_CLOEXEC | O_RDWR).unwrap();
+        assert_eq!(access(&proc, read_write), O_RDWR);
+        sys_mmap(&mut proc, &mut host, 0, 1024, PROT_READ | PROT_WRITE, MAP_SHARED, read_write, 0).unwrap();
     }
 
     #[test]
