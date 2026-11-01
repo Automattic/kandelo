@@ -1868,7 +1868,7 @@ fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
     match request {
         gl::GLIO_SUBMIT | gl::GLIO_SUBMIT_QUERY | gl::GLIO_PRESENT
         | DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE | DRM_IOCTL_WPK_IMPORT_IMAGE
-        | DRM_IOCTL_WPK_EXPORT_IMAGE => true,
+        | DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE | DRM_IOCTL_WPK_EXPORT_IMAGE => true,
         // `op` is the first word of both pointer widths' layouts.
         gl::GLIO_QUERY => buf.get(..4).is_some_and(|op| !matches!(
             u32::from_le_bytes(op.try_into().unwrap()),
@@ -60785,6 +60785,19 @@ impl HostIO for RelSymlinkMock {
         let info = gl::GlQueryInfo { op: gl::QOP_SERVER_WAIT, in_buf_ptr: 32, in_buf_len: 8,
             out_buf_ptr: 64, out_buf_len: 16, ..Default::default() };
         sys_ioctl(proc, host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info))
+    }
+
+    #[test]
+    fn every_buffer_reading_gl_entry_waits_for_implicit_fences() {
+        use wasm_posix_shared::dri::*;
+        // A planar YUV import reads every plane's bytes into the converted
+        // image, exactly as the single-plane import does, so it must wait for
+        // the planes' pending writers too.
+        for request in [DRM_IOCTL_WPK_IMPORT_IMAGE, DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE,
+            DRM_IOCTL_WPK_EXPORT_IMAGE, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE]
+        {
+            assert!(gl_entry_touches_buffers(request, &[]), "request {request:#x}");
+        }
     }
 
     #[test]
