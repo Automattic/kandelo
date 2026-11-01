@@ -12,14 +12,20 @@ import { inspectCtsRetirement } from "../../../tests/graphics/cts-retirement.mjs
 
 test.use({ headless: true, serviceWorkers: "block" });
 const group = process.env.KANDELO_CTS_GLES2_GROUP ?? "negative-state";
-if (group !== "negative-state" && group !== "negative-api") {
-  throw new Error("KANDELO_CTS_GLES2_GROUP must be negative-state or negative-api");
+if (!["negative-state", "negative-api", "color-clear"].includes(group)) {
+  throw new Error("KANDELO_CTS_GLES2_GROUP must be negative-state, negative-api or color-clear");
 }
 const negativeApi = JSON.parse(readFileSync(new URL("../../../tests/graphics/cts-gles2-negative-api.json", import.meta.url), "utf8"));
+const colorClear = JSON.parse(readFileSync(new URL("../../../tests/graphics/cts-gles2-color-clear.json", import.meta.url), "utf8"));
 const upstream = JSON.parse(readFileSync(new URL("../../../packages/registry/graphics-cts/upstream.json", import.meta.url), "utf8"));
-if (negativeApi.upstreamRevision !== upstream.revision) throw new Error("CTS case inventory pin is stale");
-const expectedCases: readonly string[] = group === "negative-state" ? GLES2_NEGATIVE_STATE_CASES : negativeApi.cases;
-const caseFilter = group === "negative-state" ? "dEQP-GLES2.functional.negative_api.state.*" : negativeApi.caseFilter;
+for (const inventory of [negativeApi, colorClear]) {
+  if (inventory.upstreamRevision !== upstream.revision) throw new Error("CTS case inventory pin is stale");
+}
+const selected = group === "negative-state"
+  ? { cases: GLES2_NEGATIVE_STATE_CASES, caseFilter: "dEQP-GLES2.functional.negative_api.state.*" }
+  : group === "negative-api" ? negativeApi : colorClear;
+const expectedCases: readonly string[] = selected.cases;
+const caseFilter = selected.caseFilter;
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 // Each selected group is complete; neither establishes the full baseline.

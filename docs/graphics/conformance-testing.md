@@ -55,10 +55,24 @@ Its checked-in case manifest comes from the actual upstream inventory and
 must match the package's upstream revision. The default remains the smaller
 negative-state group. The broader probe currently fails; its recorded failures
 are implementation work, not accepted expectations. Unsupported compressed-format
-cases remain explicit results pending a separate applicability audit. The
+cases remain explicit. The applicability audit confirms that no specific
+compressed format is required by GLES 2.0; it does not validate callable
+compressed API metadata or transport. The
 consumer never changes upstream assertions or converts non-Pass results to Pass.
 
 Inventory enumeration is separate from test execution. Keep complete upstream
 case lists, raw QPA and source/artifact identities for broader runs. Record
 results and ordinary gaps in [the compatibility ledger](compatibility-v1.md).
 Do not infer conformance from a successful build, an inventory or a demo.
+
+The complete 19-case color-clear group exercises upstream rendered-pixel
+comparisons, including color masks, scissors and repeated clears:
+
+```sh
+scripts/dev-shell.sh bash -c 'KANDELO_CTS_GLES2_GROUP=color-clear bash scripts/test-graphics-cts.sh --project chromium'
+```
+
+It uses the same normal executable, data and renderer, with an exact case
+manifest from the pinned 19,825-case upstream inventory. No upstream assertion
+or native surface behavior is changed for this group. Its inclusion is an
+executable probe, not a claim that its cases already pass.

@@ -51,3 +51,15 @@ test("negative API inventory matches the pinned upstream revision and group", ()
   assert.equal(new Set(inventory.cases).size, inventory.cases.length);
   assert.ok(inventory.cases.every(name => typeof name === "string" && name.startsWith("dEQP-GLES2.functional.negative_api.")));
 });
+
+
+test("color-clear inventory matches the pinned upstream revision and complete group", () => {
+  const inventory = JSON.parse(readFileSync(new URL("./cts-gles2-color-clear.json", import.meta.url), "utf8"));
+  const upstream = JSON.parse(readFileSync(new URL("../../packages/registry/graphics-cts/upstream.json", import.meta.url), "utf8"));
+  assert.equal(inventory.upstreamRevision, upstream.revision);
+  assert.match(inventory.inventorySha256, /^[a-f0-9]{64}$/);
+  assert.equal(inventory.caseFilter, "dEQP-GLES2.functional.color_clear.*");
+  assert.equal(inventory.cases.length, 19);
+  assert.equal(new Set(inventory.cases).size, inventory.cases.length);
+  assert.ok(inventory.cases.every(name => typeof name === "string" && name.startsWith("dEQP-GLES2.functional.color_clear.")));
+});

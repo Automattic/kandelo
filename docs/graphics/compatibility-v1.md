@@ -64,25 +64,24 @@ normal Node guest cases and 9/10 upstream targets; a twenty-argument mixed libff
 signature remains an ordinary gap. Neither those lower-level controls nor the
 newly available preview establish a working menu or ScummVM client rendering.
 
-Broader source repairs pass 303 native C UBSan controls and 179 focused host
-model cases. Its own kernel/SDK32/64, canonical ABI/layout and resolver checks
-pass with unchanged program digest. The private mapping capability passes 52
-controls; its separate cleanup codec passes 37, both with narrow strict types.
-The full upstream harness builds normally; actual Node EGL enumeration lists
-4,117 cases. Renderer-backed headless Chromium now enumerates all 19,825 GLES2
-cases successfully. Actual CTS execution remains pending; enumeration is not
-conformance. On that earlier ports runtime, the first 31 upstream negative-
-state cases run with 25 Pass and six Fail. Broader source fixes hint/string enums and now includes the validated shader/
-program query repair. The first complete negative-state group passes 31/31 on
-its own normal candidate cohort; combined cursor and three-engine gates remain
-pending. These are
-separate source cohorts, not combined acceptance.
+The combined source checkpoint `ce161367f9` has now been normally built and
+exercised in all three headless browser engines. All 31 upstream negative-state
+cases and their strict fixture gates pass in each engine. The complete 246-case
+negative API group reports 237 Pass, zero Fail and nine NotSupported in each
+engine; its strict fixture remains failed, and WebKit additionally emits 39
+native negative-API diagnostics. These outcomes are not full conformance or
+rendered-pixel acceptance. The new exact admission/exit/retirement observation
+passes with real guests on Node and all three browsers before destroy.
 
-Earlier combined Rust checkpoint `b87e6eb971` passes 3,501 native workspace cases
-without failures/ignores/filters, plus normal host bundles/declarations. The
-separate xtask suite passes 833 unit and 8 integration cases. Later source changes
-still require broad reruns. Full host, real three-engine rendering, browser-
-memory, actual CTS execution and required POSIX acceptance remain open.
+At that checkpoint the canonical source graphics gate passes 1,527 cases across
+50 files; the combined Rust workspace suite passes 3,518 cases with no failures,
+ignored or filtered cases. The repaired C cohort passes 319 native UBSan cases.
+The private mapping capability and cleanup codec retain their separately scoped
+52 and 37 controls. Public retained-query scheduling, physical graphics cleanup,
+partial mapping retirement, remaining API/transport gaps, full CTS, full host,
+browser-memory and required POSIX acceptance remain open. A normal three-engine
+negative group does not close those obligations. Later sections retain exact
+source cuts, artifacts, historical failures and the limits of each check.
 
 Main cut `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated through
 `bc182981fb`. Later dated sections retain exact original source cuts, artifact
@@ -19287,3 +19286,95 @@ future correlation. There is no prefix allowlist or extra GL error drain. All
 21 QPA/retirement parser controls pass and collection finds all three headless
 projects. The new combined normal runtime run is pending; historical results
 retain their original fixture and cannot be relabeled by these source changes.
+
+
+### Combined normal three-engine retirement and negative API evidence
+
+Frozen source `ce161367f940db5a8798fc936034e41476223e17` completed fresh release
+xtask, SDK32/64 freshness, normal selected kernel/CTS closure, host build and
+actual-kernel ABI stages. Job
+`graphics-cts-retirement-three-engine-r2-1031-232521-2209` exits 0 in 2m26s.
+The kernel was normally published; CTS and its five library dependencies were
+normal cache hits. No desktop or other image product was rebuilt for this probe.
+Program ABI remains 56, host 3 / GL 17 / fork 21.
+
+| Headless engine | Negative-state Pass | Guest exit | Strict fixture |
+| --- | ---: | ---: | --- |
+| Chromium 153.0.8010.12 | 31 | 0 | Pass |
+| Firefox 155.0 | 31 | 0 | Pass |
+| WebKit 26.6 | 31 | 0 | Pass |
+
+All three actual guests report one authenticated image admission, semantic exit
+and cooperative retirement in the same realm/image identity before destroy.
+The real main acknowledgment is present, registration is removed-or-absent and
+post-commit failure is false. These particular guests have zero pthreads; source
+controls cover threaded acknowledgment behavior separately. All page, console,
+host, cleanup and memory-boundary diagnostics are empty. All Playwright-observed
+workers close. WebKit observes only its kernel worker; the exact guest-memory
+receipt does not claim native process-worker join, garbage collection, physical
+graphics-resource retirement or browser-memory gate acceptance.
+
+The same normally packaged kernel and EGL executable also pass the actual Node
+inventory check in `.context/cts-node-retirement-r1/`: 4,117 unique EGL cases,
+308 groups, guest exit 0, exact pre-destroy cooperative receipt, no diagnostics
+or cleanup failures, destroy returned. Inventory is not EGL semantic execution.
+Its report SHA256 is recorded in its release manifest; release SHA256 is
+`825405ee6060941f31905496fca7753b76e267810472dceba558db109f7f0b75`.
+
+The broader optional group then reused the exact same SDK, kernel, CTS binaries,
+data, image writer and host without another build. Job
+`graphics-cts-negative-api-combined-r3-1031-232851-6b3c` exits 1 in 1m03s:
+
+| Headless engine | Pass | Fail | NotSupported | Strict fixture |
+| --- | ---: | ---: | ---: | --- |
+| Chromium 153.0.8010.12 | 237 | 0 | 9 | Fail |
+| Firefox 155.0 | 237 | 0 | 9 | Fail |
+| WebKit 26.6 | 237 | 0 | 9 | Fail |
+
+All 246 identities are complete and unique in each original QPA, with no missing
+or unexpected case. Each guest exits 0 and records the same exact cooperative
+retirement proof before destroy. The assertion on non-Pass results rejects all
+nine NotSupported results; none is waived or converted. Their legal empty-format
+applicability and incomplete compressed-call coverage remain as audited above.
+WebKit additionally records 39 native validation diagnostics with exact public
+worker/source/timestamp metadata, including unknown native source locations.
+They remain unclassified failures; matching message text is not causal proof
+that a diagnostic belongs to an expected upstream error. Later assertions can
+be unreached after the first failure, so no additional executed assertion count
+is inferred. Page, host, cleanup and memory-boundary records remain empty.
+
+Both runs rehash all 22 normal artifact receipt files unchanged, and the first
+run's 5,391 tracked source files remain unchanged through each guarded run.
+Kernel SHA256 is
+`442560d4bebbce40ee5e48ceb6954c95b14ed5c61bb79c1740c82d3c97ab660a`;
+GLES2 executable SHA256 is
+`242a6aa4c654fb6698d63f36a24dcdd88ff2d59593b3f07d9774ea4cfe7cc6f8`;
+CTS data SHA256 is
+`fdfc40b91b6a304a2a4f0977336c5ffea4e49f18135fd9e7e7583a822ba2980c`.
+Actual native browser exits are recorded for all six launches and both owned
+server ports refuse after completion. Each exclusively owned Firefox TMPDIR
+retains one permission-denied scratch residual after a finite cleanup attempt;
+these are recorded in cleanup.json, separate from guest cleanup success.
+
+Evidence and exact launch commands remain in
+`.context/graphics-cts-three-engine-r2/` (release SHA256
+`299317869b6f80da8bb2a5b7748ec491e37c37bc537ed5e315d4faa7604133b5`)
+and `.context/cts-negative-api-combined-r3/` (release SHA256
+`3a81e9870df067adca7fd828b91e85d1930bc1eb2a5f09204ad63ed5e6e29dde`).
+No full CTS, desktop, responsiveness or broader memory acceptance is claimed.
+
+### Combined Rust regression and next rendered-pixel group
+
+At the same source checkpoint, normal
+`scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh cargo-workspace` passes
+all 3,518 cases, with zero failed, ignored, measured or filtered cases across
+98 result records. Job `graphics-combined-rust-workspace-r2-1031-232933-3ae5`
+exits 0 in 1m18s. This is the whole workspace excluding xtask, whose separate
+previous results remain tied to their earlier source. Raw console and counts are
+in `.context/graphics-combined-rust-r2/`. This does not replace POSIX execution.
+
+The public consumer now also admits the complete 19-case upstream color-clear
+group, from the same exact 19,825-case inventory and upstream pin. It retains
+all masks, scissors, repeated operations and native rendered-pixel comparisons;
+no upstream assertion or surface behavior is replaced. This opens a reproducible
+rendering probe beyond negative API checks. Actual outcomes are pending.
