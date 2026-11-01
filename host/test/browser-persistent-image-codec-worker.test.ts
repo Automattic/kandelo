@@ -83,14 +83,14 @@ describe("codec worker physical close proof", () => {
     expect(await response).toMatchObject({ type: "done", closed: true, memoryUsage: { wasmPages: 19, inputWindowPeak: 0 } });
     expect(close).toHaveBeenCalledOnce();
   });
-  it.each([19, 20] as const)("runs bounded native image policy %s without opening an OPFS handle", async operation => {
+  it.each([12, 19, 20] as const)("runs bounded native image policy %s without opening an OPFS handle", async operation => {
     let respond!: (reply: ImageCodecResponse) => void;
     const response = new Promise<ImageCodecResponse>(resolve => { respond = resolve; });
     const worker = { onmessage: null as ((event: MessageEvent<ImageCodecRequest>) => void) | null, postMessage: respond };
     vi.stubGlobal("self", worker);
     control.mockReturnValue(-12);
     await import("../../apps/browser-demos/pages/kandelo/kernel-host/persistent-image-codec-worker");
-    const input = new Uint8Array(64);
+    const input = new Uint8Array(operation === 12 ? 72 : 64);
     worker.onmessage?.({ data: { type: "control", operation, input, moduleBytes: new Uint8Array() } } as MessageEvent<ImageCodecRequest>);
     expect(await response).toEqual({ type: "controlled", result: -12, closed: true });
     expect(control).toHaveBeenCalledExactlyOnceWith(operation, input);

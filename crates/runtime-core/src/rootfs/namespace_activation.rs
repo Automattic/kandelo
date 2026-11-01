@@ -80,12 +80,6 @@ fn commit_impl(
         .and_then(|count| count.checked_add(directory_metadata.len()))
         .ok_or(Errno::ENOMEM)?;
     let mut timestamps = reserve_replay_vec(maximum_timestamps, &mut scratch)?;
-    let mut transaction = MutationBatch::new(
-        edits
-            .len()
-            .checked_add(maximum_timestamps)
-            .ok_or(Errno::ENOMEM)?,
-    )?;
     let mut order = CanonicalDirentOrder::new();
     for edit in edits {
         order
@@ -109,15 +103,6 @@ fn commit_impl(
         for ino in [edit.expected, edit.replacement].into_iter().flatten() {
             let index = index_for(ino)?;
             let inode = state.get(index).ok_or(Errno::EIO)?;
-            if matches!(
-                inode.kind,
-                InodeKind::PersistentRegular
-                    | InodeKind::BaseRegular { .. }
-                    | InodeKind::LazyMember { .. }
-            ) && inode.mode & 0o6000 != 0
-            {
-                return Err(Errno::EOPNOTSUPP);
-            }
             if !(allow_directories && inode.is_dir())
                 && !matches!(
                     inode.kind,
@@ -131,25 +116,6 @@ fn commit_impl(
             }
             timestamps.push((index, NamespaceTimestamp::Changed));
         }
-        transaction.push_with(edit.name.len().checked_add(8).ok_or(Errno::ENOMEM)?, || {
-            let mut name = Vec::new();
-            name.try_reserve_exact(edit.name.len())
-                .map_err(|_| Errno::ENOMEM)?;
-            name.extend_from_slice(edit.name);
-            let key = OverlayKey::Dirent {
-                parent: edit.parent,
-                name,
-            };
-            match edit.replacement {
-                Some(ino) => {
-                    let mut value = Vec::new();
-                    value.try_reserve_exact(8).map_err(|_| Errno::ENOMEM)?;
-                    value.extend_from_slice(&ino.to_le_bytes());
-                    Ok(Mutation::Put { key, value })
-                }
-                None => Ok(Mutation::Delete { key }),
-            }
-        })?;
     }
     let mut previous = None;
     for change in directory_metadata {
@@ -171,6 +137,28 @@ fn commit_impl(
         (*index, matches!(stamp, NamespaceTimestamp::Changed))
     });
     timestamps.dedup_by_key(|(index, _)| *index);
+    let mut transaction = MutationBatch::new(edits.len().checked_add(timestamps.len()).ok_or(Errno::ENOMEM)?)?;
+    for edit in edits {
+        transaction.push_with(edit.name.len().checked_add(8).ok_or(Errno::ENOMEM)?, || {
+            let mut name = Vec::new();
+            name.try_reserve_exact(edit.name.len())
+                .map_err(|_| Errno::ENOMEM)?;
+            name.extend_from_slice(edit.name);
+            let key = OverlayKey::Dirent {
+                parent: edit.parent,
+                name,
+            };
+            match edit.replacement {
+                Some(ino) => {
+                    let mut value = Vec::new();
+                    value.try_reserve_exact(8).map_err(|_| Errno::ENOMEM)?;
+                    value.extend_from_slice(&ino.to_le_bytes());
+                    Ok(Mutation::Put { key, value })
+                }
+                None => Ok(Mutation::Delete { key }),
+            }
+        })?;
+    }
     let allocated = state.persistent_allocated_blocks.ok_or(Errno::EIO)?;
     let projected = persistent_namespace_blocks(state, transaction.as_slice(), &timestamps)?;
     let capacity = state.image.ok_or(Errno::EIO)?.capacity_bytes.div_ceil(4096);
@@ -208,7 +196,7 @@ fn commit_impl(
                 .checked_add(target_bytes.checked_mul(2).ok_or(Errno::ENOMEM)?)
                 .ok_or(Errno::ENOMEM)?,
         )?;
-        let mut change = PreparedPersistentMetadataChange::from_inode(index, inode)?;
+        let mut change = PreparedPersistentMetadataChange::from_inode(state, index)?;
         if let Ok(position) =
             directory_metadata.binary_search_by_key(&inode.ino, |change| change.ino)
         {

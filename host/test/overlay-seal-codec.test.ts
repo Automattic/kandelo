@@ -141,11 +141,11 @@ test("native seal transport preserves maximum safe lengths and source-slot ident
   assert.deepEqual(sealCodec.decodeHeader(sealCodec.encodeHeader(record)), record);
 });
 
-test("native journal policy checks the complete header before returning its base identity", () => {
+test.each([1, 2])("native journal v%i policy checks the complete header before returning its base identity", version => {
   const header = Buffer.alloc(sealCodec.journalHeaderLength());
   assert.equal(header.length, 72);
   header.write("KOVL");
-  header.writeUInt32LE(1, 4);
+  header.writeUInt32LE(version, 4);
   header.fill(23, 8, 40);
   header.set(createHash("sha256").update(header.subarray(0, 40)).digest(), 40);
   assert.deepEqual(sealCodec.journalBaseDigest(header), new Uint8Array(32).fill(23));
@@ -158,6 +158,17 @@ test("native journal policy checks the complete header before returning its base
     assert.throws(() => sealCodec.journalBaseDigest(header.subarray(0, length)), InvalidOverlaySealError);
   }
   assert.throws(() => sealCodec.journalBaseDigest(new Uint8Array(73)), InvalidOverlaySealError);
+});
+
+test("native journal policy refuses unknown versions with otherwise valid checksums", () => {
+  for (const version of [0, 3, 0xffff_ffff]) {
+    const header = Buffer.alloc(72);
+    header.write("KOVL");
+    header.writeUInt32LE(version, 4);
+    header.fill(23, 8, 40);
+    header.set(createHash("sha256").update(header.subarray(0, 40)).digest(), 40);
+    assert.throws(() => sealCodec.journalBaseDigest(header), InvalidOverlaySealError);
+  }
 });
 
 test("native journal resource errors and transport mismatches are not corruption", () => {

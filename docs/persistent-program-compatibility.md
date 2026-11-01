@@ -23,9 +23,9 @@ does not permit deleting incompatible storage or claiming upgrades exist.
 | Checked image | `KDIIMG1`, version 1 | Rust `persistent_image` |
 | VFSI container | 1 or 2, with an explicit supported feature-bit mask | Rust `kandelo_image_fs` |
 | KIFS filesystem body | 1 or 2 | Rust image filesystem reader |
-| Overlay journal | `KOVL`, version 1 | Rust `persistent_overlay` |
+| Overlay journal | `KOVL`, version 1 (1 MiB frames) or 2 (16 MiB frames) | Rust `persistent_overlay` |
 | Overlay checkpoint index | 1–5 | Rust `persistent_overlay_index` |
-| Journal inode record | 1; version 2 for durable deferred providers | Rust rootfs replay |
+| Journal inode record | 1; 2 for durable providers; 3 for privileged regular/base/provider metadata | Rust rootfs replay |
 | Original-program reference | 1 | Rust `fork-instrument` |
 
 These numbers do not advance with a kernel-host ABI bump or every build.
@@ -62,6 +62,16 @@ the image-builder descriptor setters cannot silently edit such a live inode.
 The native coordinator can stage and activate these bindings with package
 inventory and rollback references. It is not yet an exposed or accepted
 Node/browser upgrade workflow; see [package upgrades](package-upgrades.md).
+
+Privileged regular/base/provider metadata now uses inode-record version 3.
+It preserves the same bounded metadata fields and provider descriptions;
+it does not change the program, kernel-host, inventory or transaction
+versions. Recovery refuses unknown record versions. Native writable-raw
+content changes that clear privileges couple data/length and the resulting
+inode metadata in one journal transaction; later cache writeback cannot
+publish changed bytes under the pre-write privilege bits. Deferred content
+retains its existing hash checks and write restrictions. This native path
+still needs rebuilt Node/browser privileged-upgrade acceptance.
 
 Existing journals are opened without truncating incomplete tails. Recovery
 retains a logical committed end, validates filesystem metadata, and leaves
@@ -716,20 +726,21 @@ verification, maintenance admission and durable provider staging above it.
 Distribution authentication remains a separate integration requirement. New nested
 directories and in-place directory metadata changes join the same atomic
 commit; removed directories remain available for user-created children.
-Directory/file type changes, special-node updates, set-ID regular leaves,
-and transactions exceeding the journal's size limit are refused without
+Directory/file type changes, special-node updates, unchecked privileged
+sources and transactions exceeding the journal's size limit are refused without
 weakening permissions or splitting the commit. The release goal
 still requires full-package mutation support, producer/host integration and
 Node/browser upgrade acceptance.
 
 Ordinary persistent namespace and metadata writers also refuse records that
-recovery cannot admit. Immutable regular/lazy set-ID leaves cannot be linked,
-unlinked or renamed while preserving those unsupported permission records;
-created FIFO/socket nodes cannot acquire set-ID permissions. These operations
-return `EPERM` before writing, rather than acknowledging an unreopenable
-journal or silently stripping existing permissions. Supported directory setgid
-and sticky special-file modes remain available. This is an explicit current
-persistent-permission limitation, not complete set-ID mutation support.
+recovery cannot admit. The native implementation preserves supported
+regular/lazy set-ID leaves through linking, unlinking, renaming and package
+activation. Resident raw changes use coupled permission/content transactions;
+verified deferred leaves stay read-only. Created FIFO/socket nodes still
+cannot acquire set-ID permissions: those operations return `EPERM` before
+writing. Supported directory setgid and sticky special-file modes remain
+available. Rebuilt Node/browser acceptance and the remaining filesystem
+limitations are not implied by native permission support.
 
 The first release requires explicit compatibility warnings and integrated
 persistence validation. Transactional package/lazy-reference upgrades remain

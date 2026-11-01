@@ -66,7 +66,8 @@ async function run(job: Extract<ImageCodecRequest, { type: "write" | "inspect" |
   try {
     controller.signal.throwIfAborted();
     if (job.type === "control") {
-      if (!(job.input instanceof Uint8Array) || job.input.length !== 64 || (job.operation !== 19 && job.operation !== 20)) {
+      if (!(job.input instanceof Uint8Array) || job.input.length !== (job.operation === 12 ? 72 : 64)
+        || (job.operation !== 12 && job.operation !== 19 && job.operation !== 20)) {
         throw new Error("Persistent image control request is invalid");
       }
       filesystem = KandeloImageFs.createPositioned(job.moduleBytes);

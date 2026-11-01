@@ -327,7 +327,7 @@ pub(super) fn stage(
     {
         return Err(Errno::EINVAL);
     }
-    if mode & !0o1777 != 0 {
+    if mode & !0o7777 != 0 {
         return Err(Errno::EPERM);
     }
     sync_persistence()?;

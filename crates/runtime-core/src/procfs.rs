@@ -734,7 +734,7 @@ pub(crate) fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<cr
         ProcfsEntry::KandeloWritebackLosses => {
             crate::writeback_loss::render_writeback_losses()
         }
-        ProcfsEntry::KandeloFilesystemMemory => crate::metadata_budget::render_filesystem_memory(),
+        ProcfsEntry::KandeloFilesystemMemory => crate::rootfs::filesystem_memory_report(),
         ProcfsEntry::PidMounts(pid) => {
             validate_pid(proc, *pid)?;
             crate::IoBuffer::copy_from(MOUNTS_CONTENT)

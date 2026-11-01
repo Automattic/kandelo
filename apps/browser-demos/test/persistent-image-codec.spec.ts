@@ -67,6 +67,37 @@ test("browser image binding selection uses bounded Rust policy without a filesys
   expect(result.moduleLength).toBeGreaterThan(0);
 });
 
+test("browser journal headers use bounded Rust format policy for v1 and v2", async ({ page, baseURL }) => {
+  const wasmUrl = new URL("/journal-header-policy-module.wasm", baseURL).href;
+  await page.route(wasmUrl, route => route.fulfill({ body: readFileSync(resolve(repository, "local-binaries/kandelo_image_module_positioned32.wasm")) }));
+  await page.goto(new URL("/trap-signal-test.html", baseURL).href);
+  const results = await page.evaluate(async ({ codecUrl, wasmUrl }) => {
+    const { runPersistentImageControl } = await import(codecUrl) as typeof import("../pages/kandelo/kernel-host/persistent-image-codec");
+    const moduleBytes = new Uint8Array(await (await fetch(wasmUrl)).arrayBuffer());
+    const header = async (version: number): Promise<Uint8Array> => {
+      const bytes = new Uint8Array(72);
+      bytes.set(new TextEncoder().encode("KOVL"));
+      new DataView(bytes.buffer).setUint32(4, version, true);
+      bytes.fill(23, 8, 40);
+      bytes.set(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes.subarray(0, 40))), 40);
+      return bytes;
+    };
+    const results: (number | number[])[] = [];
+    for (const version of [1, 2, 3, 0]) {
+      const result = await runPersistentImageControl(moduleBytes, 12, await header(version));
+      results.push(typeof result === "number" ? result : Array.from(result));
+    }
+    const damaged = await header(2);
+    damaged[71] ^= 1;
+    results.push(await runPersistentImageControl(moduleBytes, 12, damaged) as number);
+    return results;
+  }, {
+    codecUrl: new URL(`/@fs/${resolve(repository, "apps/browser-demos/pages/kandelo/kernel-host/persistent-image-codec.ts")}`, baseURL).href,
+    wasmUrl,
+  });
+  expect(results).toEqual([Array(32).fill(23), Array(32).fill(23), -ERRNO.EIO, -ERRNO.EIO, -ERRNO.EIO]);
+});
+
 for (const policy of ["crc32c", "sha256"] as const) {
   test(`browser codec publishes a closed ${policy} OPFS target before kernel reuse`, async ({ page, baseURL }) => {
     test.setTimeout(180_000);

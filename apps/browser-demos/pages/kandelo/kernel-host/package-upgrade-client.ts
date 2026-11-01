@@ -39,7 +39,7 @@ export function packageUpgradeProgress(bytes: Uint8Array): PackageUpgradeProgres
   const stagedVerified = data.getUint32(wire.PROGRESS_STAGED_COUNT_OFFSET, true);
   const phase = data.getUint32(wire.PROGRESS_PHASE_OFFSET, true);
   if (data.getUint32(wire.PROGRESS_VERSION_OFFSET, true) !== wire.VERSION ||
-      phase > wire.PHASE_ROLLED_BACK || files > 65536 || installedVerified > files || stagedVerified > files ||
+      phase > wire.PHASE_ROLLED_BACK || files > wire.MAX_CHANGED_FILES || installedVerified > files || stagedVerified > files ||
       pathLength > 4096 || bytes.length !== wire.PROGRESS_HEADER_BYTES + pathLength) {
     throw new Error("Invalid package maintenance progress");
   }

@@ -775,10 +775,12 @@ async function verifyJournalHeader(
     const journal = file === null ? null : await file.getFile();
     if (journal === null || journal.size < 72) return false;
     const header = new Uint8Array(await journal.slice(0, 72).arrayBuffer());
-    return header.byteLength === 72 && new TextDecoder().decode(header.subarray(0, 4)) === "KOVL"
-      && new DataView(header.buffer).getUint32(4, true) === 1
-      && bytesToHex(header.subarray(8, 40)) === imageIdentitySha256
-      && await sha256(header.subarray(0, 40)) === bytesToHex(header.subarray(40, 72));
+    const result = await runPersistentImageControl(await loadPositionedImageWriterModuleBytes(), 12, header);
+    if (typeof result === "number") {
+      if (result === -ERRNO.EIO) return false;
+      throw Object.assign(new Error("Native journal header validation failed"), { errno: -result });
+    }
+    return bytesToHex(result) === imageIdentitySha256;
   };
   if (await matches(journalName + ".journal")) return;
   const prefix = journalName + ".";

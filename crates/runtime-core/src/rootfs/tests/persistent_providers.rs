@@ -18,7 +18,7 @@ fn roomy_image() -> Vec<u8> {
     .unwrap()
 }
 
-fn provider(archive: bool, payload_bytes: usize) -> Vec<u8> {
+pub(super) fn provider(archive: bool, payload_bytes: usize) -> Vec<u8> {
     let data: &[u8] = if archive {
         b"hello\n"
     } else {
@@ -55,7 +55,7 @@ fn provider(archive: bool, payload_bytes: usize) -> Vec<u8> {
     crate::sdef::encode(&archives, &[record]).unwrap()
 }
 
-fn source<'a>(image: &'a [u8]) -> impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno> + 'a {
+pub(super) fn source<'a>(image: &'a [u8]) -> impl FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno> + 'a {
     move |request, output| {
         let (bytes, offset) = match request {
             ByteReq::Image { offset } => (image, offset),
@@ -235,7 +235,7 @@ fn provider_admission_refuses_bad_versions_missing_hashes_and_live_descriptors_w
     );
     release_handle(handle);
     assert_eq!(
-        stage_persistent_deferred_file(b"/setid", &descriptor, 0o4755, 0, 0),
+        stage_persistent_deferred_file(b"/invalid-mode", &descriptor, 0o10755, 0, 0),
         Err(Errno::EPERM)
     );
     assert_eq!(*storage.0.lock(), before);
@@ -410,7 +410,7 @@ fn recovery_refuses_future_provider_inode_versions_without_repairing_source() {
     let image = tiny_vfs_described();
     let digest = Sha256::digest(image).into();
     let mut bytes = source(image);
-    for invalid in [0, 1, 3] {
+    for invalid in [0, 1, 3, 4, 255] {
         load_image(image.len() as u64, &mut bytes).unwrap();
         let ino = ROOTFS.with(|state| state.next_ino);
         let metadata = PersistentInodeMetadata::from_inode(&Inode::new(

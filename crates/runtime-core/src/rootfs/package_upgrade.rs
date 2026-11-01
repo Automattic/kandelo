@@ -1,7 +1,7 @@
 use super::package_plan::{FileVerification, VerificationError, VerifiedFile};
 use super::*;
 use crate::io_buffer::IoBuffer;
-use crate::package_inventory::{Change, Content, File, Inventory, MAX_BYTES, STATE_ROOT};
+use crate::package_inventory::{Change, Content, File, Inventory, MAX_BYTES, MAX_FILES, STATE_ROOT};
 use crate::process_table::{MaintenanceToken, ProcessTable};
 
 pub const INSTALLED: &[u8] = b"/var/lib/kandelo/packages/installed";
@@ -15,7 +15,8 @@ const ROLLED_BACK: &[u8] = b"/var/lib/kandelo/packages/transaction/rolled-back";
 const NEW: &[u8] = b"/var/lib/kandelo/packages/transaction/new";
 const OLD: &[u8] = b"/var/lib/kandelo/packages/transaction/old";
 const RECORD_BYTES: usize = 108;
-const MAX_ACTIONS: usize = 4096;
+const MAX_ACTIONS: usize = MAX_FILES * 2;
+const _: () = assert!(MAX_ACTIONS == wasm_posix_shared::package_maintenance_wire::MAX_CHANGED_FILES as usize);
 const CHUNK_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,15 +75,48 @@ impl From<VerificationError> for Error {
 
 type Source<'a> = dyn FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno> + 'a;
 
-struct OwnedFile {
-    path: OwnedMetadata,
+enum ActivationPath<'a> {
+    Borrowed(&'a [u8]),
+    Private(OwnedMetadata),
+}
+
+impl AsRef<[u8]> for ActivationPath<'_> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Borrowed(path) => path,
+            Self::Private(path) => path,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct InventoryRange {
+    start: u32,
+    end: u32,
+}
+
+impl InventoryRange {
+    fn capture(inventory: &[u8], field: &[u8]) -> Result<Self, Errno> {
+        let start = (field.as_ptr() as usize).checked_sub(inventory.as_ptr() as usize).ok_or(Errno::EIO)?;
+        let end = start.checked_add(field.len()).ok_or(Errno::EIO)?;
+        if end > inventory.len() { return Err(Errno::EIO); }
+        Ok(Self { start: u32::try_from(start).map_err(|_| Errno::EIO)?, end: u32::try_from(end).map_err(|_| Errno::EIO)? })
+    }
+
+    fn view(self, inventory: &[u8]) -> &[u8] {
+        inventory.get(self.start as usize..self.end as usize).expect("validated immutable inventory range changed")
+    }
+}
+
+struct IndexedFile {
+    path: InventoryRange,
     mode: u32,
     uid: u32,
     gid: u32,
-    content: OwnedContent,
+    content: IndexedContent,
 }
 
-enum OwnedContent {
+enum IndexedContent {
     Regular {
         size: u64,
         digest: [u8; 32],
@@ -90,33 +124,30 @@ enum OwnedContent {
     Deferred {
         size: u64,
         digest: [u8; 32],
-        provider: OwnedMetadata,
+        provider: InventoryRange,
     },
-    Symlink(OwnedMetadata),
+    Symlink(InventoryRange),
     Directory,
 }
 
-impl OwnedFile {
-    fn copy(file: File<'_>) -> Result<Self, Error> {
-        if file.content != Content::Directory && file.mode & 0o6000 != 0 {
-            return Err(Error::UnsupportedPath);
-        }
+impl IndexedFile {
+    fn capture(inventory: &[u8], file: File<'_>) -> Result<Self, Error> {
         let content = match file.content {
-            Content::Regular { size, digest } => OwnedContent::Regular { size, digest },
+            Content::Regular { size, digest } => IndexedContent::Regular { size, digest },
             Content::Deferred {
                 size,
                 digest,
                 provider,
-            } => OwnedContent::Deferred {
+            } => IndexedContent::Deferred {
                 size,
                 digest,
-                provider: own_metadata(provider)?,
+                provider: InventoryRange::capture(inventory, provider)?,
             },
-            Content::Symlink(target) => OwnedContent::Symlink(own_metadata(target)?),
-            Content::Directory => OwnedContent::Directory,
+            Content::Symlink(target) => IndexedContent::Symlink(InventoryRange::capture(inventory, target)?),
+            Content::Directory => IndexedContent::Directory,
         };
         Ok(Self {
-            path: own_metadata(file.path)?,
+            path: InventoryRange::capture(inventory, file.path)?,
             mode: file.mode,
             uid: file.uid,
             gid: file.gid,
@@ -124,37 +155,37 @@ impl OwnedFile {
         })
     }
 
-    fn view(&self) -> File<'_> {
+    fn view<'a>(&self, inventory: &'a [u8]) -> File<'a> {
         File {
-            path: &self.path,
+            path: self.path.view(inventory),
             package: 0,
             mode: self.mode,
             uid: self.uid,
             gid: self.gid,
             content: match &self.content {
-                OwnedContent::Regular { size, digest } => Content::Regular {
+                IndexedContent::Regular { size, digest } => Content::Regular {
                     size: *size,
                     digest: *digest,
                 },
-                OwnedContent::Deferred {
+                IndexedContent::Deferred {
                     size,
                     digest,
                     provider,
                 } => Content::Deferred {
                     size: *size,
                     digest: *digest,
-                    provider,
+                    provider: provider.view(inventory),
                 },
-                OwnedContent::Symlink(target) => Content::Symlink(target),
-                OwnedContent::Directory => Content::Directory,
+                IndexedContent::Symlink(target) => Content::Symlink(target.view(inventory)),
+                IndexedContent::Directory => Content::Directory,
             },
         }
     }
 }
 
 struct Action {
-    before: Option<OwnedFile>,
-    after: Option<OwnedFile>,
+    before: Option<IndexedFile>,
+    after: Option<IndexedFile>,
     live: Option<VerifiedFile>,
     staged: Option<VerifiedFile>,
 }
@@ -166,31 +197,34 @@ impl Action {
                 .as_ref()
                 .or(self.after.as_ref())
                 .map(|file| &file.content),
-            Some(OwnedContent::Directory)
+            Some(IndexedContent::Directory)
         )
     }
     fn adds_directory(&self) -> bool {
         self.before.is_none() && self.is_directory()
     }
-    fn path(&self) -> &[u8] {
-        &self.before.as_ref().or(self.after.as_ref()).unwrap().path
+    fn path<'a>(&self, before: &'a [u8], after: &'a [u8]) -> &'a [u8] {
+        self.before.as_ref().map(|file| file.path.view(before))
+            .or_else(|| self.after.as_ref().map(|file| file.path.view(after)))
+            .expect("upgrade action has no file")
     }
-    fn source(&self, phase: Phase) -> Option<&OwnedFile> {
+    fn source<'a>(&self, phase: Phase, before: &'a [u8], after: &'a [u8]) -> Option<File<'a>> {
         if phase == Phase::Active {
-            self.after.as_ref().or_else(|| {
+            self.after.as_ref().map(|file| file.view(after)).or_else(|| {
                 self.before
                     .as_ref()
-                    .filter(|file| matches!(file.content, OwnedContent::Directory))
+                    .filter(|file| matches!(file.content, IndexedContent::Directory))
+                    .map(|file| file.view(before))
             })
         } else {
-            self.before.as_ref()
+            self.before.as_ref().map(|file| file.view(before))
         }
     }
-    fn destination(&self, phase: Phase) -> Option<&OwnedFile> {
+    fn destination<'a>(&self, phase: Phase, before: &'a [u8], after: &'a [u8]) -> Option<File<'a>> {
         if phase == Phase::Active {
-            self.before.as_ref()
+            self.before.as_ref().map(|file| file.view(before))
         } else {
-            self.after.as_ref()
+            self.after.as_ref().map(|file| file.view(after))
         }
     }
 }
@@ -379,9 +413,9 @@ pub fn discard_transaction(
     if recovery(table, token, source)? == Recovery::None {
         return Ok(());
     }
-    let mut leaves = IoBuffer::try_with_capacity(MAX_ACTIONS * 2 + 6)?;
+    let mut leaves = IoBuffer::new();
     let mut directories = IoBuffer::try_with_capacity(2)?;
-    let mut staged_directories = IoBuffer::try_with_capacity(MAX_ACTIONS)?;
+    let mut staged_directories = IoBuffer::new();
     let root = opendir(TRANSACTION)?;
     let result = (|| {
         let mut name = [0; 255];
@@ -397,10 +431,10 @@ pub fn discard_transaction(
                         let child = &child[..length];
                         if child.len() != 8
                             || !child.iter().all(u8::is_ascii_hexdigit)
-                            || leaves.len() == MAX_ACTIONS * 2 + 6
                         {
                             return Err(Error::InvalidState);
                         }
+                        validate_discard_leaf_count(leaves.len())?;
                         let mut full = [0; 80];
                         full[..path.len()].copy_from_slice(path);
                         full[path.len()] = b'/';
@@ -416,7 +450,7 @@ pub fn discard_transaction(
                             if next?.is_some() {
                                 return Err(Error::InvalidState);
                             }
-                            staged_directories.push(own_metadata(full)?);
+                            staged_directories.try_push(own_metadata(full)?)?;
                         } else {
                             push_discard_leaf(&mut leaves, full)?;
                         }
@@ -436,7 +470,7 @@ pub fn discard_transaction(
                     b"status" => STATUS,
                     _ => return Err(Error::InvalidState),
                 };
-                if kind != 8 || leaves.len() >= MAX_ACTIONS * 2 + 6 {
+                if kind != 8 {
                     return Err(Error::InvalidState);
                 }
                 push_discard_leaf(&mut leaves, path)?;
@@ -471,11 +505,101 @@ pub(super) fn push_discard_leaf(
     leaves: &mut IoBuffer<OwnedMetadata>,
     path: &[u8],
 ) -> Result<(), Error> {
-    if leaves.len() >= MAX_ACTIONS * 2 + 6 {
-        return Err(Error::InvalidState);
-    }
+    validate_discard_leaf_count(leaves.len())?;
     leaves.try_push(own_metadata(path)?)?;
     Ok(())
+}
+
+pub(super) fn validate_discard_leaf_count(count: usize) -> Result<(), Error> {
+    if count >= MAX_ACTIONS * 2 + 6 { Err(Error::InvalidState) } else { Ok(()) }
+}
+
+#[cfg(test)]
+mod inventory_range_tests {
+    use super::*;
+
+    #[test]
+    fn inventory_ranges_refuse_foreign_and_out_of_bounds_slices() {
+        let bytes = b"0123456789abcdef";
+        for field in [&bytes[..2], &bytes[7..10], &bytes[12..]] {
+            assert!(matches!(InventoryRange::capture(&bytes[2..8], field), Err(Errno::EIO)));
+        }
+        let range = InventoryRange::capture(bytes, &bytes[3..9]).unwrap();
+        assert_eq!(range.view(bytes), b"345678");
+        let empty = InventoryRange::capture(bytes, &bytes[bytes.len()..]).unwrap();
+        assert!(empty.view(bytes).is_empty());
+    }
+
+    #[test]
+    fn indexed_files_retain_metadata_without_allocating_or_borrowing_old_backing_addresses() {
+        let original = b"prefix/bin/program:provider-bytes:symlink-target".to_vec();
+        let path = &original[6..18];
+        let provider = &original[19..33];
+        let target = &original[34..];
+        let inputs = [
+            File { path, package: 0, mode: 0o6755, uid: 12, gid: 34,
+                content: Content::Regular { size: 400, digest: [7; 32] } },
+            File { path, package: 0, mode: 0o4750, uid: 12, gid: 34,
+                content: Content::Deferred { size: 400, digest: [7; 32], provider } },
+            File { path, package: 0, mode: 0o777, uid: 12, gid: 34, content: Content::Symlink(target) },
+            File { path, package: 0, mode: 0o2750, uid: 12, gid: 34, content: Content::Directory },
+        ];
+        let baseline_io = crate::io_buffer::IO_MEMORY.usage().0;
+        let baseline_packages = crate::metadata_budget::PACKAGE_METADATA.usage().0;
+        let baseline_namespace = ROOTFS_METADATA.usage().0;
+        let copied = original.clone();
+        {
+            let _quota = crate::io_buffer::test_budget(baseline_io);
+            for expected in inputs {
+                let indexed = IndexedFile::capture(&original, expected).unwrap();
+                let actual = indexed.view(&copied);
+                assert_eq!(actual, expected);
+                assert_eq!(actual.path.as_ptr(), copied[6..].as_ptr());
+                assert_ne!(actual.path.as_ptr(), original[6..].as_ptr());
+                if let Content::Deferred { provider, .. } = actual.content {
+                    assert_eq!(provider.as_ptr(), copied[19..].as_ptr());
+                }
+            }
+        }
+        assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, baseline_io);
+        assert_eq!(crate::metadata_budget::PACKAGE_METADATA.usage().0, baseline_packages);
+        assert_eq!(ROOTFS_METADATA.usage().0, baseline_namespace);
+        let indexed = IndexedFile::capture(&original, inputs[1]).unwrap();
+        drop(original);
+        assert_eq!(indexed.view(&copied).path, b"/bin/program");
+        assert_eq!(indexed.view(&copied).content.file_identity(), Some((400, [7; 32])));
+    }
+
+    #[test]
+    fn action_views_select_the_correct_immutable_inventory_for_each_phase() {
+        let before = b"/same/old-target";
+        let after = b"prefix/same/new-target";
+        let old = File { path: &before[..5], package: 0, mode: 0o755, uid: 12, gid: 34,
+            content: Content::Symlink(&before[5..]) };
+        let new = File { path: &after[6..11], package: 0, mode: 0o750, uid: 56, gid: 78,
+            content: Content::Symlink(&after[11..]) };
+        let action = Action {
+            before: Some(IndexedFile::capture(before, old).unwrap()),
+            after: Some(IndexedFile::capture(after, new).unwrap()),
+            live: None, staged: None,
+        };
+        assert_eq!(action.path(before, after), b"/same");
+        for phase in [Phase::Pending, Phase::RolledBack] {
+            assert_eq!(action.source(phase, before, after), Some(old));
+            assert_eq!(action.destination(phase, before, after), Some(new));
+        }
+        assert_eq!(action.source(Phase::Active, before, after), Some(new));
+        assert_eq!(action.destination(Phase::Active, before, after), Some(old));
+        let added = Action { before: None, ..action };
+        assert_eq!(added.path(before, after).as_ptr(), after[6..].as_ptr());
+        assert!(added.source(Phase::Pending, before, after).is_none());
+        let removed_directory = Action {
+            before: Some(IndexedFile::capture(before, File { content: Content::Directory, ..old }).unwrap()),
+            after: None, live: None, staged: None,
+        };
+        assert!(removed_directory.is_directory());
+        assert_eq!(removed_directory.source(Phase::Active, before, after).unwrap().content, Content::Directory);
+    }
 }
 
 pub struct Upgrade {
@@ -519,7 +643,9 @@ impl Upgrade {
         if count > MAX_ACTIONS {
             return Err(Errno::E2BIG.into());
         }
-        let mut actions = IoBuffer::try_with_capacity(count)?;
+        let before_bytes = before.as_slice();
+        let after_bytes = after.as_slice();
+        let mut actions = crate::package_inventory::metadata_with_capacity(count)?;
         for change in old.changes(&next) {
             let (before, after) = match change {
                 Change::Added(file) => (None, Some(file)),
@@ -534,8 +660,8 @@ impl Upgrade {
                 }
             };
             actions.push(Action {
-                before: before.map(OwnedFile::copy).transpose()?,
-                after: after.map(OwnedFile::copy).transpose()?,
+                before: before.map(|file| IndexedFile::capture(before_bytes, file)).transpose()?,
+                after: after.map(|file| IndexedFile::capture(after_bytes, file)).transpose()?,
                 live: None,
                 staged: None,
             });
@@ -712,12 +838,12 @@ impl Upgrade {
         let current = if self.live_cursor < self.actions.len() {
             Some((
                 VerificationTarget::Installed,
-                self.actions[self.live_cursor].path(),
+                self.actions[self.live_cursor].path(&self.before, &self.after),
             ))
         } else if self.staged_cursor < self.actions.len() {
             Some((
                 VerificationTarget::Staged,
-                self.actions[self.staged_cursor].path(),
+                self.actions[self.staged_cursor].path(&self.before, &self.after),
             ))
         } else {
             None
@@ -744,15 +870,15 @@ impl Upgrade {
         }
         let action = self.actions.get(index).ok_or(Errno::EINVAL)?;
         Ok(action.after.as_ref().map(|file| StagingFile {
-            path: &file.path,
+            path: file.path.view(&self.after),
             upload_size: match file.content {
-                OwnedContent::Regular { size, .. } => Some(size),
+                IndexedContent::Regular { size, .. } => Some(size),
                 _ => None,
             },
         }))
     }
     pub fn action_path(&self, index: usize) -> Result<&[u8], Error> {
-        Ok(self.actions.get(index).ok_or(Errno::EINVAL)?.path())
+        Ok(self.actions.get(index).ok_or(Errno::EINVAL)?.path(&self.before, &self.after))
     }
 
     pub fn verify_next(
@@ -768,10 +894,10 @@ impl Upgrade {
         }
         let action = &mut self.actions[self.live_cursor];
         if self.checking.is_none() {
-            if let Some(file) = action.source(self.phase) {
-                self.checking = Some(FileVerification::begin(&file.view(), table, token)?);
+            if let Some(file) = action.source(self.phase, &self.before, &self.after) {
+                self.checking = Some(FileVerification::begin(&file, table, token)?);
             } else {
-                action.live = Some(VerifiedFile::verify_absence(action.path(), table, token)?);
+                action.live = Some(VerifiedFile::verify_absence(action.path(&self.before, &self.after), table, token)?);
                 self.live_cursor += 1;
                 return Ok(self.live_cursor == self.actions.len());
             }
@@ -881,10 +1007,10 @@ impl Upgrade {
             return Err(Errno::EBUSY.into());
         }
         let action = self.actions.get(index).ok_or(Errno::EINVAL)?;
-        let file = action.after.as_ref().ok_or(Errno::EINVAL)?;
+        let file = action.after.as_ref().ok_or(Errno::EINVAL)?.view(&self.after);
         let path = staged_path(index, self.phase)?;
         match &file.content {
-            OwnedContent::Directory => {
+            Content::Directory => {
                 if offset != 0 || !bytes.is_empty() {
                     return Err(Errno::EINVAL.into());
                 }
@@ -893,7 +1019,7 @@ impl Upgrade {
                 }
                 Ok(0)
             }
-            OwnedContent::Regular { size, .. } => {
+            Content::Regular { size, .. } => {
                 if bytes.len() > CHUNK_BYTES
                     || offset
                         .checked_add(bytes.len() as u64)
@@ -918,16 +1044,16 @@ impl Upgrade {
                 }
                 Ok(count)
             }
-            OwnedContent::Deferred { provider, .. } => {
+            Content::Deferred { provider, .. } => {
                 if offset != 0 || !bytes.is_empty() {
                     return Err(Errno::EINVAL.into());
                 }
                 if let Some(before) = &action.before {
-                    if before.view().content.file_identity() == file.view().content.file_identity()
+                    if before.view(&self.before).content.file_identity() == file.content.file_identity()
                     {
                         let local = ROOTFS.with(|state| {
                             let root = state.mount_root()?;
-                            let index = state.walk(root, &split_components(action.path()))?;
+                            let index = state.walk(root, &split_components(action.path(&self.before, &self.after)))?;
                             Ok::<_, Errno>(matches!(
                                 state.get(index).ok_or(Errno::EIO)?.kind,
                                 InodeKind::PersistentRegular
@@ -949,7 +1075,7 @@ impl Upgrade {
                                 .as_ref()
                                 .ok_or(Error::InvalidState)?
                                 .revalidate(table, token)?;
-                            link(action.path(), &path)?;
+                            link(action.path(&self.before, &self.after), &path)?;
                             sync_persistence()?;
                             return Ok(0);
                         }
@@ -959,7 +1085,7 @@ impl Upgrade {
                 stage_persistent_deferred_file(&path, &provider, file.mode, file.uid, file.gid)?;
                 Ok(0)
             }
-            OwnedContent::Symlink(target) => {
+            Content::Symlink(target) => {
                 if offset != 0 || !bytes.is_empty() {
                     return Err(Errno::EINVAL.into());
                 }
@@ -989,13 +1115,13 @@ impl Upgrade {
             self.staged_cursor += 1;
             return Ok(self.staged_cursor == self.actions.len());
         }
-        let Some(file) = action.destination(self.phase) else {
+        let Some(file) = action.destination(self.phase, &self.before, &self.after) else {
             self.staged_cursor += 1;
             return Ok(self.staged_cursor == self.actions.len());
         };
         if self.checking.is_none() {
             self.checking = Some(FileVerification::begin_at(
-                &file.view(),
+                &file,
                 &staged_path(self.staged_cursor, self.phase)?,
                 table,
                 token,
@@ -1030,14 +1156,14 @@ impl Upgrade {
         for control in &self.controls {
             control.revalidate(table, token)?;
         }
-        let mut names = IoBuffer::try_with_capacity(
+        let mut names = crate::package_inventory::metadata_with_capacity(
             self.actions
                 .len()
-                .checked_mul(2)
+                .checked_mul(3)
                 .and_then(|count| count.checked_add(2))
                 .ok_or(Errno::ENOMEM)?,
         )?;
-        let mut directory_metadata = IoBuffer::try_with_capacity(self.actions.len())?;
+        let mut directory_metadata = crate::package_inventory::metadata_with_capacity(self.actions.len())?;
         for (index, action) in self.actions.iter().enumerate() {
             let live = action.live.as_ref().ok_or(Error::InvalidState)?;
             live.revalidate(table, token)?;
@@ -1051,10 +1177,10 @@ impl Upgrade {
                         .as_ref()
                         .and_then(VerifiedFile::inode)
                         .ok_or(Error::InvalidState)?;
-                    names.push((own_metadata(action.path())?, None, Some(ino)));
-                    names.push((staged_path(index, self.phase)?, Some(ino), None));
+                    names.push((ActivationPath::Borrowed(action.path(&self.before, &self.after)), None, Some(ino)));
+                    names.push((ActivationPath::Borrowed(action.staged.as_ref().unwrap().path()), Some(ino), None));
                 } else if let (Some(source), Some(destination)) =
-                    (action.source(self.phase), action.destination(self.phase))
+                    (action.source(self.phase, &self.before, &self.after), action.destination(self.phase, &self.before, &self.after))
                 {
                     let expected = (source.mode, source.uid, source.gid);
                     let replacement = (destination.mode, destination.uid, destination.gid);
@@ -1072,7 +1198,12 @@ impl Upgrade {
             }
             let replacement = action.staged.as_ref().and_then(VerifiedFile::inode);
             if live.inode() != replacement {
-                names.push((own_metadata(action.path())?, live.inode(), replacement));
+                names.push((ActivationPath::Borrowed(action.path(&self.before, &self.after)), live.inode(), replacement));
+            }
+            if let Some(staged) = &action.staged {
+                if let Some(ino) = staged.inode() {
+                    names.push((ActivationPath::Borrowed(staged.path()), Some(ino), None));
+                }
             }
             if self.phase == Phase::Pending && action.before.is_some() {
                 let path = staged_path(index, Phase::Active)?;
@@ -1081,7 +1212,7 @@ impl Upgrade {
                     Err(error) => return Err(error.into()),
                     Ok(_) => return Err(Errno::EEXIST.into()),
                 }
-                names.push((path, None, live.inode()));
+                names.push((ActivationPath::Private(path), None, live.inode()));
             }
         }
         let replacement_inventory = if self.phase == Phase::Active {
@@ -1090,7 +1221,7 @@ impl Upgrade {
             AFTER
         };
         names.push((
-            own_metadata(INSTALLED)?,
+            ActivationPath::Borrowed(INSTALLED),
             self.installed.inode(),
             Some(lstat(replacement_inventory)?.st_ino),
         ));
@@ -1105,12 +1236,13 @@ impl Upgrade {
             ROLLED_BACK
         };
         names.push((
-            own_metadata(STATUS)?,
+            ActivationPath::Borrowed(STATUS),
             Some(lstat(STATUS)?.st_ino),
             Some(lstat(marker)?.st_ino),
         ));
-        let mut parents = IoBuffer::try_with_capacity(names.len())?;
+        let mut parents = crate::package_inventory::metadata_with_capacity(names.len())?;
         for (path, expected, replacement) in &names {
+            let path = path.as_ref();
             let offset = path
                 .iter()
                 .rposition(|byte| *byte == b'/')
@@ -1126,7 +1258,7 @@ impl Upgrade {
                 Err(Errno::ENOENT) if self.phase == Phase::Pending => {
                     let position = self
                         .actions
-                        .binary_search_by_key(&parent, Action::path)
+                        .binary_search_by_key(&parent, |action| action.path(&self.before, &self.after))
                         .map_err(|_| Errno::ENOENT)?;
                     let action = &self.actions[position];
                     if !action.adds_directory() {

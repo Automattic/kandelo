@@ -304,8 +304,25 @@ fn package_upgrade_and_rollback_recover_with_user_data_untouched() {
         .stage(1, 0, b"new", &table, &token, &mut source)
         .unwrap();
     verify_staged(&mut upgrade, &table, &token, &mut source);
+    {
+        struct PackageLimit(usize);
+        impl Drop for PackageLimit {
+            fn drop(&mut self) { crate::metadata_budget::PACKAGE_METADATA.set_limit(self.0).unwrap(); }
+        }
+        let (used, limit) = crate::metadata_budget::PACKAGE_METADATA.usage();
+        let _limit = PackageLimit(limit);
+        let committed = journal.0.lock().clone();
+        crate::metadata_budget::PACKAGE_METADATA.set_limit(used).unwrap();
+        assert_eq!(upgrade.commit(&table, &token), Err(Error::Storage(Errno::ENOMEM)));
+        assert_eq!(*journal.0.lock(), committed);
+        assert_eq!(upgrade.phase(), Phase::Pending);
+        assert_eq!(contents(b"/hello.txt", &mut source), b"hello sffs\n");
+    }
     upgrade.commit(&table, &token).unwrap();
     assert_eq!(contents(b"/hello.txt", &mut source), b"updated software");
+    for index in 0..2 {
+        assert!(matches!(lstat(alloc::format!("/var/lib/kandelo/packages/transaction/new/{index:08x}").as_bytes()), Err(Errno::ENOENT)));
+    }
     assert_eq!(contents(package_upgrade::INSTALLED, &mut source), after);
     drop(upgrade);
     load_image(image.len() as u64, &mut source).unwrap();
@@ -324,6 +341,7 @@ fn package_upgrade_and_rollback_recover_with_user_data_untouched() {
     verify_staged(&mut rollback, &table, &token, &mut source);
     rollback.commit(&table, &token).unwrap();
     drop(rollback);
+    assert!(matches!(lstat(b"/var/lib/kandelo/packages/transaction/old/00000000"), Err(Errno::ENOENT)));
     load_image(image.len() as u64, &mut source).unwrap();
     enable_resizable_persistence(
         Box::new(journal),
@@ -701,6 +719,123 @@ fn package_upgrade_allocation_refusal_keeps_the_old_namespace_and_allows_retry()
 }
 
 #[test]
+fn package_upgrade_plans_more_than_four_thousand_changes_with_indexed_inventory_payloads() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _) = computer();
+    let mut source = image_host(&image);
+    let names = (0..5000).map(|index| alloc::format!("/package-{index:08}").into_bytes()).collect::<Vec<_>>();
+    let files = names.iter().map(|path| file(path, b"package bytes")).collect::<Vec<_>>();
+    let after = manifest(b"2", &files);
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let baseline_namespace = ROOTFS_METADATA.usage().0;
+    let baseline_packages = crate::metadata_budget::PACKAGE_METADATA.usage().0;
+    let original_journal = journal.0.lock().clone();
+    {
+        struct PackageLimit(usize);
+        impl Drop for PackageLimit {
+            fn drop(&mut self) { crate::metadata_budget::PACKAGE_METADATA.set_limit(self.0).unwrap(); }
+        }
+        let _limit = PackageLimit(crate::metadata_budget::PACKAGE_METADATA.usage().1);
+        crate::metadata_budget::PACKAGE_METADATA.set_limit(baseline_packages + 2 * 1024 * 1024).unwrap();
+        assert!(matches!(Upgrade::begin(&after, &table, &token, 55, [7; 32], &mut source),
+            Err(Error::Storage(Errno::ENOMEM))));
+        assert_eq!(crate::metadata_budget::PACKAGE_METADATA.usage().0, baseline_packages);
+        assert_eq!(*journal.0.lock(), original_journal);
+        assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::None);
+    }
+    let upgrade = Upgrade::begin(&after, &table, &token, 55, [7; 32], &mut source).unwrap();
+    assert_eq!(upgrade.action_count(), 5001);
+    assert_eq!(upgrade.action_path(0).unwrap(), b"/hello.txt");
+    assert_eq!(upgrade.action_path(5000).unwrap(), names[4999]);
+    assert_eq!(upgrade.staging_file(1).unwrap().unwrap().path, names[0]);
+    assert_eq!(upgrade.progress().current.unwrap().1, b"/hello.txt");
+    assert!(crate::metadata_budget::PACKAGE_METADATA.usage().0 > baseline_packages + after.len() * 2);
+    assert!(ROOTFS_METADATA.usage().0 < baseline_namespace + 64 * 1024);
+    drop(upgrade);
+    assert_eq!(crate::metadata_budget::PACKAGE_METADATA.usage().0, baseline_packages);
+    assert_eq!(contents(b"/hello.txt", &mut source), b"hello sffs\n");
+    assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::None);
+}
+
+#[test]
+fn indexed_symlink_upgrade_resumes_without_caller_buffers_and_rolls_back_the_correct_target() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _) = computer();
+    let mut source = image_host(&image);
+    symlink(b"hello.txt", b"/package-link", 0, 0).unwrap();
+    let old_link = File { mode: 0o777, content: Content::Symlink(b"hello.txt"), ..file(b"/package-link", b"") };
+    let before = manifest(b"1", &[file(b"/hello.txt", b"hello sffs\n"), old_link]);
+    install_inventory(&before, &mut source);
+    let after = manifest(b"different-version-and-file-offsets", &[
+        file(b"/added", b"added"),
+        file(b"/hello.txt", b"hello sffs\n"),
+        File { content: Content::Symlink(b"user-post"), ..old_link },
+    ]);
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let mut upgrade = Upgrade::begin(&after, &table, &token, 55, [7; 32], &mut source).unwrap();
+    drop(after);
+    verify_live(&mut upgrade, &table, &token, &mut source);
+    upgrade.prepare(&table, &token, &mut source).unwrap();
+    drop(upgrade);
+    load_image(image.len() as u64, &mut source).unwrap();
+    enable_resizable_persistence(Box::new(journal.clone()), Sha256::digest(&image).into(), &mut source).unwrap();
+    let mut resumed = Upgrade::resume(&table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut resumed, &table, &token, &mut source);
+    for index in 0..resumed.action_count() {
+        let bytes = if resumed.action_path(index).unwrap() == b"/added" { b"added".as_slice() } else { b"" };
+        resumed.stage(index, 0, bytes, &table, &token, &mut source).unwrap();
+    }
+    verify_staged(&mut resumed, &table, &token, &mut source);
+    resumed.commit(&table, &token).unwrap();
+    drop(resumed);
+    let mut target = [0; 32];
+    let length = readlink(b"/package-link", &mut target).unwrap();
+    assert_eq!(&target[..length], b"user-post");
+    let mut linked_bytes = [0; 32];
+    let count = read_file_at(b"/package-link", 0, &mut linked_bytes, &mut source).unwrap();
+    assert_eq!(&linked_bytes[..count], b"retain database and uploads");
+    load_image(image.len() as u64, &mut source).unwrap();
+    enable_resizable_persistence(Box::new(journal), Sha256::digest(&image).into(), &mut source).unwrap();
+    let mut rollback = Upgrade::resume(&table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut rollback, &table, &token, &mut source);
+    verify_staged(&mut rollback, &table, &token, &mut source);
+    rollback.commit(&table, &token).unwrap();
+    drop(rollback);
+    let length = readlink(b"/package-link", &mut target).unwrap();
+    assert_eq!(&target[..length], b"hello.txt");
+    let count = read_file_at(b"/package-link", 0, &mut linked_bytes, &mut source).unwrap();
+    assert_eq!(&linked_bytes[..count], b"hello sffs\n");
+    assert_eq!(contents(package_upgrade::INSTALLED, &mut source), before);
+    assert!(matches!(lstat(b"/added"), Err(Errno::ENOENT)));
+}
+
+#[test]
+fn private_staging_discard_allocates_only_for_present_entries_and_releases_its_workset() {
+    let _guard = TestGuard::acquire();
+    let (image, _journal, before) = computer();
+    let mut source = image_host(&image);
+    let after = manifest(b"2", &[file(b"/hello.txt", b"updated")]);
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let mut upgrade = Upgrade::begin(&after, &table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut upgrade, &table, &token, &mut source);
+    upgrade.prepare(&table, &token, &mut source).unwrap();
+    upgrade.stage(0, 0, b"updated", &table, &token, &mut source).unwrap();
+    drop(upgrade);
+    let baseline = crate::io_buffer::IO_MEMORY.usage().0;
+    {
+        let _quota = crate::io_buffer::test_budget(baseline + 128 * 1024);
+        package_upgrade::discard_transaction(&table, &token, &mut source).unwrap();
+    }
+    assert!(crate::io_buffer::IO_MEMORY.usage().0 <= baseline);
+    assert_eq!(contents(package_upgrade::INSTALLED, &mut source), before);
+    assert_eq!(contents(b"/hello.txt", &mut source), b"hello sffs\n");
+    assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::None);
+}
+
+#[test]
 fn discarded_upgrade_handles_cannot_change_the_next_transactions_staging() {
     let _guard = TestGuard::acquire();
     let (image, _journal, _before) = computer();
@@ -734,18 +869,30 @@ fn discarded_upgrade_handles_cannot_change_the_next_transactions_staging() {
 #[test]
 fn package_upgrade_discard_bounds_control_paths_as_well_as_staged_leaves() {
     let _guard = TestGuard::acquire();
-    let mut leaves = crate::IoBuffer::new();
-    for _ in 0..8198 {
-        package_upgrade::push_discard_leaf(&mut leaves, b"").unwrap();
+    let limit = 4 * package_inventory::MAX_FILES + 6;
+    for count in [0, 8198, limit - 1] {
+        assert_eq!(package_upgrade::validate_discard_leaf_count(count), Ok(()));
     }
-    assert_eq!(
-        package_upgrade::push_discard_leaf(
-            &mut leaves,
-            b"/var/lib/kandelo/packages/transaction/pending"
-        ),
-        Err(Error::InvalidState)
-    );
-    assert_eq!(leaves.len(), 8198);
+    for count in [limit, limit + 1, usize::MAX] {
+        assert_eq!(package_upgrade::validate_discard_leaf_count(count), Err(Error::InvalidState));
+    }
+    let mut leaves = crate::IoBuffer::new();
+    for _ in 0..8 {
+        package_upgrade::push_discard_leaf(&mut leaves, b"/var/lib/kandelo/packages/transaction/pending").unwrap();
+    }
+    let previous_io = crate::io_buffer::IO_MEMORY.usage().0;
+    let previous_namespace = ROOTFS_METADATA.usage().0;
+    {
+        let _quota = crate::io_buffer::test_budget(previous_io);
+        assert_eq!(package_upgrade::push_discard_leaf(&mut leaves, b"/var/lib/kandelo/packages/transaction/pending"),
+            Err(Error::Storage(Errno::ENOMEM)));
+    }
+    assert_eq!(leaves.len(), 8);
+    assert!(leaves.iter().all(|path| path.as_ref() == b"/var/lib/kandelo/packages/transaction/pending"));
+    assert_eq!(crate::io_buffer::IO_MEMORY.usage().0, previous_io);
+    assert_eq!(ROOTFS_METADATA.usage().0, previous_namespace);
+    package_upgrade::push_discard_leaf(&mut leaves, b"/var/lib/kandelo/packages/transaction/active").unwrap();
+    assert_eq!(leaves.len(), 9);
 }
 
 #[test]
@@ -894,14 +1041,26 @@ impl OverlayStorage for Interruptible {
 
 #[test]
 fn package_upgrade_and_rollback_every_torn_commit_recover_one_complete_set() {
+    package_commit_cuts(false);
+}
+
+#[test]
+fn privileged_package_upgrade_and_rollback_every_torn_commit_recover_one_complete_set() {
+    package_commit_cuts(true);
+}
+
+fn package_commit_cuts(privileged: bool) {
     let _guard = TestGuard::acquire();
     let (image, journal, _) = computer();
     let mut source = image_host(&image);
+    let old_mode = if privileged { 0o6755 } else { 0o644 };
+    let new_mode = if privileged { 0o4750 } else { 0o644 };
+    chmod(b"/hello.txt", old_mode).unwrap();
     let before = manifest(
         b"1",
         &[
             directory(b"/dir", 0o755),
-            file(b"/hello.txt", b"hello sffs\n"),
+            File { mode: old_mode, ..file(b"/hello.txt", b"hello sffs\n") },
         ],
     );
     install_inventory(&before, &mut source);
@@ -909,7 +1068,7 @@ fn package_upgrade_and_rollback_every_torn_commit_recover_one_complete_set() {
         b"2",
         &[
             directory(b"/dir", 0o2750),
-            file(b"/hello.txt", b"updated software"),
+            File { mode: new_mode, ..file(b"/hello.txt", b"updated software") },
             directory(b"/new", 0o755),
         ],
     );
@@ -994,6 +1153,8 @@ fn package_upgrade_and_rollback_every_torn_commit_recover_one_complete_set() {
             )
             .unwrap();
             let expected = if cut == length { next_phase } else { old_phase };
+            assert_eq!(lstat(b"/hello.txt").unwrap().st_mode & 0o7777,
+                if expected == Phase::Active { new_mode } else { old_mode });
             assert_eq!(
                 package_upgrade::recovery(&table, &token, &mut source).unwrap(),
                 Recovery::Transaction(expected),

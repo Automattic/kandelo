@@ -134,6 +134,18 @@ describe("bounded application package upgrade client", () => {
     expect(() => packageUpgradeProgress(bytes)).toThrow(/Invalid/);
   });
 
+  it.each([65537, 131072])("accepts %i changed paths from the bounded union of two inventories", files => {
+    const bytes = progress(wire.PHASE_PENDING);
+    new DataView(bytes.buffer).setUint32(wire.PROGRESS_FILE_COUNT_OFFSET, files, true);
+    expect(packageUpgradeProgress(bytes).files).toBe(files);
+  });
+
+  it("rejects progress beyond the Rust-owned changed-file transport bound", () => {
+    const bytes = progress(wire.PHASE_PENDING);
+    new DataView(bytes.buffer).setUint32(wire.PROGRESS_FILE_COUNT_OFFSET, wire.MAX_CHANGED_FILES + 1, true);
+    expect(() => packageUpgradeProgress(bytes)).toThrow(/Invalid/);
+  });
+
   it.each(["uploadInventory", "verifyInstalled"] as const)("cleans volatile %s state after abort so a fresh install can retry", async action => {
     const state = fixture();
     const abort = new AbortController();

@@ -1060,7 +1060,7 @@ export class LiveOverlayCompactor {
     this.#stopped = true;
     if (this.#timer !== null) clearInterval(this.#timer);
     this.#timer = null;
-    return this.#running ?? Promise.resolve();
+    return this.#running?.then(() => {}, () => {}) ?? Promise.resolve();
   }
 
   compactIfNeeded(): Promise<void> {
@@ -1070,20 +1070,33 @@ export class LiveOverlayCompactor {
     return this.#running;
   }
 
-  async #compact(): Promise<void> {
+  settle(): Promise<void> {
+    return this.#running ?? Promise.resolve();
+  }
+
+  compactForMaintenance(): Promise<void> {
+    if (this.#stopped) return Promise.reject(new Error("Persistent compaction has stopped"));
+    if (this.#running !== null) return this.#running;
+    this.#running = this.#compact(true);
+    return this.#running;
+  }
+
+  async #compact(required = false): Promise<void> {
     const selected = this.#selected;
     try {
       const next = await compactOverlayGeneration(
         selected,
         this.files,
         this.handoff,
-        this.minTailBytes,
+        required ? 0 : this.minTailBytes,
         () => !this.#stopped && this.#selected === selected,
         this.onError,
       );
       if (next !== selected) {
         this.#selected = next;
         this.onGeneration(next);
+      } else if (required) {
+        throw new Error("Required persistent compaction was not activated");
       }
     } catch (error) {
       if (error instanceof UnconfirmedOverlayActivationError) {
@@ -1092,6 +1105,7 @@ export class LiveOverlayCompactor {
         this.#timer = null;
       } else this.#retryAfter = Date.now() + 30_000;
       this.onError(error);
+      if (required) throw error;
     } finally {
       this.#running = null;
     }

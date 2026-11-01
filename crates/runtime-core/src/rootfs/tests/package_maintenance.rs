@@ -21,6 +21,36 @@ fn word(bytes: &[u8], offset: u32) -> u32 {
 }
 
 #[test]
+fn package_maintenance_compaction_advice_requires_maintenance_and_tracks_indexed_publication() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _) = computer();
+    let mut source = image_host(&image);
+    let mut table = ProcessTable::new();
+    let mut controller = crate::rootfs::package_maintenance::control::Controller::new();
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_COMMIT, 0, &mut [], &mut source),
+        Err(Errno::EPERM.into()));
+    controller.call(&mut table, wire::OP_ENTER, 0, 0, &mut enter_packet(), &mut source).unwrap();
+    let before = journal.0.lock().clone();
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_STAGE, 0, &mut [], &mut source), Ok(0));
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_COMMIT, 0, &mut [], &mut source), Ok(1));
+    assert_eq!(*journal.0.lock(), before);
+    for (index, offset, bytes) in [(wire::OP_PROGRESS, 0, Vec::new()), (wire::OP_STAGE, 1, Vec::new()),
+        (wire::OP_STAGE, 0, vec![1])] {
+        assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, index, offset, &mut bytes.clone(), &mut source),
+            Err(Errno::EINVAL.into()));
+    }
+    let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+    let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+    prepare_persistence_compaction(Box::new(target)).unwrap();
+    checkpoint_prepared_persistence(Box::new(index)).unwrap();
+    activate_persistence_compaction().unwrap();
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_COMMIT, 0, &mut [], &mut source), Ok(0));
+    assert_eq!(controller.call(&mut table, wire::OP_CANCEL, 0, 0, &mut [], &mut source), Ok(0));
+    controller.call(&mut table, wire::OP_LEAVE, 0, 0, &mut [], &mut source).unwrap();
+    assert!(table.create_process().is_ok());
+}
+
+#[test]
 fn package_maintenance_control_transports_inventory_progress_staging_and_explicit_release() {
     let _guard = TestGuard::acquire();
     let (image, _journal, _) = computer();
@@ -152,6 +182,13 @@ fn package_maintenance_control_transports_inventory_progress_staging_and_explici
         .unwrap()
         == 0
     {}
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_COMMIT, 0, &mut [], &mut source), Ok(1));
+    let target = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+    let index = SharedJournalStorage(Arc::new(Mutex::new(Vec::new())));
+    prepare_persistence_compaction(Box::new(target)).unwrap();
+    checkpoint_prepared_persistence(Box::new(index)).unwrap();
+    activate_persistence_compaction().unwrap();
+    assert_eq!(controller.call(&mut table, wire::OP_COMPACTION_NEEDED, wire::OP_COMMIT, 0, &mut [], &mut source), Ok(0));
     controller
         .call(&mut table, wire::OP_COMMIT, 0, 0, &mut [], &mut source)
         .unwrap();

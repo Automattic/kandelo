@@ -107,6 +107,7 @@ impl Controller {
                     | wire::OP_VERIFY_STAGED
                     | wire::OP_STAGING_FILE
                     | wire::OP_RESTART_STAGING_FILE
+                    | wire::OP_COMPACTION_NEEDED
             )
         {
             return Err(Errno::EINVAL.into());
@@ -149,6 +150,12 @@ impl Controller {
         let session = self.session.as_mut().ok_or(Errno::EPERM)?;
         session.token(table)?;
         match opcode {
+            wire::OP_COMPACTION_NEEDED => {
+                if !matches!(index, wire::OP_PREPARE | wire::OP_STAGE | wire::OP_COMMIT
+                    | wire::OP_DISCARD | wire::OP_RESTART_STAGING_FILE)
+                { return Err(Errno::EINVAL.into()); }
+                Ok(usize::from(super::super::maintenance_compaction_needed(index == wire::OP_COMMIT)?))
+            }
             wire::OP_LEAVE => {
                 session.leave(table, source)?;
                 self.session = None;

@@ -6,9 +6,17 @@ The isolated release-stability branch contains a Rust upgrade coordinator,
 native inventory-authoring primitive and bounded kernel/host transport.
 Producer-owned fixture sets upgrade and roll back through Node and all
 three browser engines, including reload recovery and new lazy-file reads.
-Production image bundles, the application workflow and a supported
+Application bundle selection, the maintenance/recovery workflow and a supported
 cross-release WordPress upgrade path remain pending. Keep the first-release
 compatibility warning until integrated acceptance proves that path.
+
+A native positioned-file probe now verifies, stages, atomically publishes,
+reopens and rolls back a complete 13,376-path pristine WordPress software-set
+comparison without increasing memory budgets. Reopen checks the complete
+inventory and unmanaged user data. This is filesystem/package evidence, not
+an executing WordPress upgrade demo; deferred-source availability and the app
+maintenance owner remain separate acceptance work. Current results are in the
+[persistence plan](persistence-plan.md#maintenance-compaction-and-complete-set-publication-2026-11-01).
 
 Rust owns package inventories, conflict checks, staging, activation,
 recovery selection and rollback. Hosts supply bounded byte transport; the
@@ -26,13 +34,24 @@ content identity. Symlink targets retain their POSIX meaning. Deferred
 files additionally retain the complete bounded SDEF provider description.
 The inventory is bounded to 8 MiB, 4,096 packages and 65,536 files.
 
-Encoded inventories, decoded file tables and producer records use a separate
-64 MiB native admission-credit workset. File hashing/staging still uses
+Encoded inventories, decoded file/action tables, activation-path/parent tables
+and producer records use
+a separate 64 MiB native admission-credit workset. File hashing/staging still uses
 bounded I/O buffers and does not increase read/writeback cache allowances.
 The package workset appears in the filesystem memory report and releases
 its credits when those owners drop. It does not reserve another Wasm memory
 or increase address-space ceilings; smaller actual heap availability can
 refuse an otherwise valid update.
+
+Upgrade actions retain checked byte ranges into their owned, immutable
+before/after inventories instead of copying each path, provider description
+and symlink target. These ranges contain offsets, not pointers into decoded
+tables or caller buffers. Install, pending recovery and rollback select
+the corresponding inventory explicitly. The decoded tables can be released
+after planning without invalidating action content. Private discard first
+collects and validates recognized entries, growing its admitted workset
+only for entries actually present; it never reserves the largest permitted
+cleanup list for a small update.
 
 Each package digest commits to its program contract, name/version, complete
 owned-file inventory and exact dependencies. Omitting or substituting a
@@ -164,6 +183,25 @@ acknowledgement. Finalization errors retain whether commit was acknowledged;
 uncertain cleanup refuses another operation until the computer is reopened.
 The same driver passes real Node and three-engine browser fixture tests.
 It is not yet connected to the application's worker-retirement/recovery UI.
+The changed-file progress bound is generated from Rust's shared transport
+definition, including unions larger than one inventory. This adds a
+kernel-host constant without changing packet layout or the program ABI.
+
+Maintenance mutations coordinate with the existing live generation compactor
+on both hosts. An additive, token-authorized native advice operation requests
+compaction before staging when the active tail reaches 32 MiB or journal-state
+admission is under pressure. Publication additionally requests an indexed
+compaction when there are outstanding timestamps, writeback, any active tail
+or a version-1 journal. This releases prefix-state ownership before preparing
+the atomic package publication without raising any memory or tail limits.
+
+The shared host coordinator copies bounded inputs before awaiting compaction,
+joins any running generation handoff, and rechecks both lifecycle admission and
+native advice before dispatching the mutation once. Required compaction failures
+remain failures for the maintenance caller; shutdown still joins their cleanup
+before retiring storage. Recovery inspection and cancellation do not depend on
+successful compaction. No mutation is retried based on a guessed cause of
+`ENOSPC` or `ENOMEM`, or after an uncertain publication.
 
 ## Staging, activation and recovery
 
@@ -192,18 +230,94 @@ rollback references and active authority in one journal transaction.
 New directory trees move from empty private staging directories into the
 final parent graph in that same transaction. Directory mode/owner/group
 updates commit alongside file replacements without replacing their children.
-Staged names remain available for verification. Rollback verifies active
+Staged names remain available until their verified publication. That same
+atomic transaction removes consumed staging aliases while creating rollback
+references; it does not retain two unnecessary private names for each file.
+Activation preparation borrows immutable inventory and verification paths
+instead of copying them into another namespace owner. Rollback verifies active
 package files and retained old files, then atomically restores the old
 names/inventory and rolled-back authority. It does not roll back user data
 or database schemas.
 
 Journal publication prepares all fallible state before storage writes and
 serializes through at most 64 KiB of scratch. This removes the whole-frame
-encoding copy without changing the journal format or its current 1 MiB
-transaction bound. Recovery still validates the complete transaction before
+encoding copy. New journals use `KOVL` version 2, with a 16 MiB format
+limit for one atomic transaction. Recognized version-1 journals retain
+their 1 MiB bound on both replay and append. Compaction creates a new
+version-2 target without rewriting the source; the existing generation
+publication protocol decides whether that target becomes authoritative.
+Unknown versions remain refused. These are disk-format decisions, not
+userspace or kernel-host ABI changes.
+
+Recovery still validates the complete transaction before
 applying records. A failed write or uncertain flush poisons the writer; it
 does not publish an in-memory partial activation or retry against uncertain
 storage.
+
+Recovery and compaction now retain a complete frame only when it fits in
+64 KiB. Larger frames use a 64 KiB page buffer, one record buffer bounded
+by the 192 KiB inode-value limit plus its 278-byte envelope, and 32 bytes
+per page for authentication. These buffers use existing I/O admission;
+read/writeback cache allowances and Wasm memory ceilings are unchanged.
+The reader checks the frame checksum, footer, complete record syntax and
+record count before exposing records to external visitors. It checks every
+reread page against the digest retained from that validated frame, including
+reads for indexed-prefix hashing. A later self-consistent replacement frame
+cannot substitute its pages for the frame being replayed. Small frames still
+borrow their original values without another value buffer.
+
+Ordinary raw write planning and automatic compaction batches retain
+their earlier 1 MiB ceiling. Large atomic publication must fit the active
+tail's existing total bound before it can write; it cannot consume extra
+space beyond the headroom reserved for already accepted writeback.
+Larger format limits do not increase I/O, journal-state or namespace
+memory admission. A valid transaction can still be refused for memory.
+Namespace publication validates the complete edit set and deduplicates inode
+timestamp changes before reserving its mutation table. Its reservation covers
+the actual directory edits plus unique metadata changes, rather than three
+speculative metadata slots per edit. All payloads, replay preparation and the
+complete frame still require admission before the first publication write.
+Multipage frames require extra reads and
+hashing; application startup/recovery performance has not been measured
+for this reader. Rebuilt Node/browser acceptance is also still required.
+
+### Privileged package files
+
+The native implementation can replace and roll back set-user-ID and
+set-group-ID regular files without stripping their permissions. New
+privileged regular/base/provider inode metadata uses record version 3;
+ordinary records keep their existing versions. This is a filesystem-record
+feature, not a program or kernel-host ABI change.
+
+Writable raw files remain writable. The first write prefix that must clear
+privileges commits its data blocks, optional new length and complete
+post-write inode metadata together, before publishing the live change.
+That prefix is bounded to the ordinary 64-block planning window. Later
+prefixes can use the normal writeback cache because privilege clearing is
+already durable. Truncation couples the same metadata with its size, zero
+fence and optional boundary block. Failed preparation leaves permissions
+and content unchanged; failed writes/flushes retain the poisoned-writer and
+old-or-complete-new recovery rules.
+
+Zero-byte writes and unchanged-size truncates do not clear privileges.
+Set-group-ID without group execute permission is retained, matching the
+existing content-write rule. Ownership changes keep their mode/owner/group
+update atomic, and chmod regrant flushes preceding buffered content first.
+Export uses current journal-backed bytes and lengths even after permissions
+are restored.
+
+Deferred files retain their existing write restrictions and read-time hash
+checks. New provider records still require file and applicable archive
+digests; unchecked deferred base content cannot gain persisted privileges.
+Recovery refuses content overlays on providers and on privileged resident
+base files without the required explicit inode metadata. Fixed-overwrite
+mode does not acquire privileged-write support from this change.
+
+These paths pass the complete native runtime suite and image-module suite,
+including every-byte interrupted privileged activation/rollback and raw
+content mutation. Rebuilt Node/browser acceptance for privileged upgrades
+remains required; the existing small three-engine upgrade fixture is not
+evidence for this new permission path.
 
 Reopen requires the installed inventory to match the phase's complete set.
 Unknown versions, malformed receipts and mismatching inventories are
@@ -219,14 +333,23 @@ old versus new state.
 
 - Regular/deferred files, symlinks, nested new directories and directory
   metadata updates are implemented. Directory/file type changes, special
-  nodes and set-ID leaves remain refused. Removed package directories stay
-  in place for user children; rollback requires their original metadata.
+  nodes and unchecked privileged sources remain refused. Removed package
+  directories stay in place for user children; rollback requires their
+  original metadata.
   Rollback of an added directory leaves it for any newly created user data
   while removing its added package-owned files.
-- There are at most 4,096 changed leaves per upgrade. The atomic journal
-  transaction limit also applies; oversized activation is refused, not
-  split into partially visible sets. Memory admission can refuse a valid
-  inventory under a smaller available budget.
+- The planner accepts the union of two inventories, each bounded to
+  65,536 files: at most 131,072 changed paths. A native pristine-product
+  comparison plans all 13,376 WordPress changes without provider fetches.
+  This is planning evidence, not a completed application upgrade.
+  Journal version 1 limits activation to 1 MiB; version 2 permits 16 MiB.
+  Oversized activation is refused, not split into partially visible sets.
+  Memory admission can still refuse a valid inventory/publication; the
+  complete real WordPress set has not yet passed activation acceptance.
+  Its current native staging probe reaches the active-tail bound while
+  streaming a large executable. Maintenance-time compaction is still
+  required in the large-update acceptance workflow; do not disable that
+  bound to finish staging.
 - Pending recovery re-verifies old paths. Raw staging can continue at its
   durable size or explicitly restart that file. Completed activation must
   be reopened as a new operation before rollback. One transaction is
@@ -241,3 +364,9 @@ old versus new state.
 Native tests are development evidence, not proof that browser computers
 can upgrade. The [persistence plan](persistence-plan.md) records actual
 cohorts and remaining delivery gates.
+
+The WordPress + MariaDB acceptance scenario updates Kandelo's compatible
+packaged software set in a saved computer and checks its posts/media after
+upgrade, interruption recovery and rollback. It does not require a
+WordPress-specific updater or automatic WordPress core/plugin/database
+schema migrations. Database migrations remain explicit.

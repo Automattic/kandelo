@@ -524,6 +524,108 @@ describe("overlay generation boot selection", () => {
     expect(() => metadata.dispose()).toThrow("storage retirement is unproven");
   });
 
+  it("forces maintenance compaction below the timer threshold and joins its exact cleanup", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const storage = files(entries);
+    const selected = await enableBestOverlayGeneration(storage, () => {}, true);
+    const events: string[] = [];
+    let active = selected;
+    let releaseOpen!: () => void;
+    let reachedOpen!: () => void;
+    const opening = new Promise<void>(resolve => { releaseOpen = resolve; });
+    const reached = new Promise<void>(resolve => { reachedOpen = resolve; });
+    const compactor = new LiveOverlayCompactor(selected, {
+      ...storage,
+      open: async (slot, file, create) => {
+        const handle = await storage.open(slot, file, create);
+        if (file === "journal" && create) { reachedOpen(); await opening; }
+        return handle;
+      },
+    }, {
+      prepare: target => { events.push("prepare"); target.writeAllAt(0, source.bytes); },
+      checkpoint: index => { events.push("checkpoint"); index.writeAllAt(0, Uint8Array.of(1)); },
+      activate: () => { events.push("activate"); },
+      fail: () => {}, cancel: () => { throw new Error("unexpected cancel"); },
+    }, next => { active = next; events.push("published"); }, error => { throw error; });
+    await compactor.compactIfNeeded();
+    expect(events).toEqual([]);
+    const required = compactor.compactForMaintenance();
+    await reached;
+    expect(compactor.settle()).toBe(required);
+    expect(compactor.compactForMaintenance()).toBe(required);
+    expect(events).toEqual([]);
+    releaseOpen();
+    await required;
+    expect(events).toEqual(["prepare", "checkpoint", "activate", "published"]);
+    expect(active.slot).toBe("g0");
+    expect(source.closeCount).toBe(1);
+    await compactor.stop();
+    await expect(compactor.compactForMaintenance()).rejects.toThrow("has stopped");
+  });
+
+  it("joins a cancelled required compaction during shutdown without masking its caller's refusal", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const storage = files(entries);
+    const selected = await enableBestOverlayGeneration(storage, () => {}, true);
+    let releaseOpen!: () => void;
+    let reachedOpen!: () => void;
+    const opening = new Promise<void>(resolve => { releaseOpen = resolve; });
+    const reached = new Promise<void>(resolve => { reachedOpen = resolve; });
+    const failures: unknown[] = [];
+    const compactor = new LiveOverlayCompactor(selected, {
+      ...storage,
+      open: async (slot, file, create) => {
+        const handle = await storage.open(slot, file, create);
+        if (file === "journal" && create) { reachedOpen(); await opening; }
+        return handle;
+      },
+    }, {
+      prepare: () => { throw new Error("unexpected prepare"); },
+      checkpoint: () => { throw new Error("unexpected checkpoint"); },
+      activate: () => { throw new Error("unexpected activation"); },
+      fail: () => {}, cancel: () => {},
+    }, () => { throw new Error("unexpected publication"); }, error => { failures.push(error); });
+    const required = compactor.compactForMaintenance();
+    const refused = expect(required).rejects.toThrow("was not activated");
+    await reached;
+    let retired = false;
+    const stopped = compactor.stop().then(() => { retired = true; source.close(); });
+    expect(retired).toBe(false);
+    releaseOpen();
+    await Promise.all([stopped, refused]);
+    expect(retired).toBe(true);
+    expect(source.closeCount).toBe(1);
+    expect(failures).toHaveLength(1);
+    expect(["journal", "index", "seal"].map(kind => entries[`g0.${kind}`]?.closeCount)).toEqual([1, 1, 1]);
+  });
+
+  it("reports required compaction failure without acknowledging or hiding it behind timer backoff", async () => {
+    const source = new MemoryStorage(journalBytes());
+    const entries: Record<string, MemoryStorage> = { "legacy.journal": source };
+    const storage = files(entries);
+    const selected = await enableBestOverlayGeneration(storage, () => {}, true);
+    const failure = Object.assign(new Error("quota refused"), { code: "ENOSPC" });
+    const failures: unknown[] = [];
+    let preparations = 0;
+    const compactor = new LiveOverlayCompactor(selected, storage, {
+      prepare: () => { preparations++; throw failure; },
+      checkpoint: () => { throw new Error("unexpected checkpoint"); },
+      activate: () => { throw new Error("unexpected activation"); },
+      fail: () => {}, cancel: () => {},
+    }, () => { throw new Error("unexpected publication"); }, error => { failures.push(error); }, 0);
+    await compactor.compactIfNeeded();
+    expect(preparations).toBe(1);
+    await compactor.compactIfNeeded();
+    expect(preparations).toBe(1);
+    await expect(compactor.compactForMaintenance()).rejects.toBe(failure);
+    expect(preparations).toBe(2);
+    expect(failures).toEqual([failure, failure]);
+    expect(source.closeCount).toBe(0);
+    await compactor.stop();
+  });
+
   it("drains a stopped live compaction that is still opening its target", async () => {
     const source = new MemoryStorage(journalBytes());
     const entries: Record<string, MemoryStorage> = { "legacy.journal": source };

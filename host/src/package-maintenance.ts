@@ -22,6 +22,7 @@ const operations = {
   progress: wire.OP_PROGRESS,
   stagingFile: wire.OP_STAGING_FILE,
   restartStagingFile: wire.OP_RESTART_STAGING_FILE,
+  compactionNeeded: wire.OP_COMPACTION_NEEDED,
 } as const;
 
 export interface PackageMaintenanceRequest {
@@ -65,6 +66,35 @@ export function copyPackageMaintenanceRequest(request: PackageMaintenanceRequest
 
 export function packageMaintenanceOpcode(action: PackageMaintenanceRequest["action"]): number {
   return operations[action];
+}
+
+export async function performPackageMaintenanceWithCompaction(
+  request: PackageMaintenanceRequest,
+  invoke: (request: PackageMaintenanceRequest) => PackageMaintenanceResponse,
+  compactor: { settle(): Promise<void>; compactForMaintenance(): Promise<void> } | null,
+  assertActive: () => void,
+): Promise<PackageMaintenanceResponse> {
+  const command = copyPackageMaintenanceRequest(request);
+  const action = command.action;
+  if (action === "prepare" || action === "stage" || action === "commit"
+    || action === "discard" || action === "restartStagingFile") {
+    await compactor?.settle();
+    assertActive();
+    const query: PackageMaintenanceRequest = { action: "compactionNeeded", index: packageMaintenanceOpcode(action) };
+    const advice = invoke(query);
+    if (advice.status < 0) return advice;
+    if (advice.status !== 0 && advice.status !== 1) throw new Error("Kernel returned invalid compaction advice");
+    if (advice.status === 1) {
+      if (compactor === null) throw new Error("Package maintenance requires persistent compaction support");
+      await compactor.compactForMaintenance();
+      assertActive();
+      const after = invoke(query);
+      if (after.status < 0) return after;
+      if (after.status !== 0) throw new Error("Package maintenance still requires compaction; retry after other mutations finish");
+    }
+  }
+  assertActive();
+  return invoke(command);
 }
 
 export function checkedPackageMaintenanceResponse(value: unknown): PackageMaintenanceResponse {

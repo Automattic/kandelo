@@ -126,6 +126,7 @@ import {
   waitForWorkerQuiescence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
+import { performPackageMaintenanceWithCompaction } from "./package-maintenance";
 import { uninitializedKernelPipeResult } from "./kernel-pipe-transport";
 import {
   ForkReplayGateCoordinator,
@@ -4082,13 +4083,18 @@ async function handleStatVfsPath(
   }
 }
 
-function handlePackageMaintenance(msg: Extract<MainToKernelMessage, { type: "package_maintenance" }>) {
+async function handlePackageMaintenance(msg: Extract<MainToKernelMessage, { type: "package_maintenance" }>) {
   if (!rootImage.has()) { respondError(msg.requestId, "VFS is not initialized"); return; }
   let releaseMutation: (() => void) | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("package maintenance");
     if (msg.request.action === "leave") refreshRootfsTransport?.();
-    respond(msg.requestId, kernelWorker.packageMaintenance(msg.request));
+    respond(msg.requestId, await performPackageMaintenanceWithCompaction(
+      msg.request,
+      request => kernelWorker.packageMaintenance(request),
+      liveOverlayCompactor,
+      () => processMemoryCreators.assertOpen("package maintenance"),
+    ));
   } catch (error) {
     respondError(msg.requestId, error instanceof Error ? error.message : String(error));
   } finally { releaseMutation?.(); }

@@ -2773,6 +2773,11 @@ return admitted slots without growing the reclamation vector. Memory
 reservation failures report `ENOMEM`, separately from logical inode `ENOSPC`;
 reserved capacity is not counted as allocated disk space. A failed preparation
 can retain spare capacity, which the shared Rust metadata ledger charges.
+Single-inode growth doubles small arenas, then caps speculative growth at
+1,024 slots for both inode and reclamation vectors. Explicit bulk reservations
+still prepare their full requested count. This avoids refusing a small creation
+because an unnecessary doubling of a large arena exceeds metadata admission;
+retained capacity and old/new allocation overlap remain charged.
 The ledger also admits owned directory names before journal publication,
 symlink targets, deferred descriptions, archive descriptors, and image JSON.
 `rootfsMetadataBytes` defaults to and cannot exceed the smaller of 64 MiB and

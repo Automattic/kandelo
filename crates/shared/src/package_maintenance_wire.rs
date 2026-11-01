@@ -8,6 +8,7 @@ macro_rules! constants {
 constants! {
     VERSION = 1;
     MAX_BUFFER_BYTES = 65536;
+    MAX_CHANGED_FILES = 131072;
     ENTER_BYTES = 40;
     ENTER_VERSION_OFFSET = 0;
     ENTER_RESERVED_OFFSET = 4;
@@ -59,6 +60,7 @@ constants! {
     OP_STAGING_FILE = 15;
     OP_RESTART_STAGING_FILE = 16;
     OP_LAST_ERROR = 17;
+    OP_COMPACTION_NEEDED = 18;
     ERROR_NONE = 0;
     ERROR_STORAGE = 1;
     ERROR_MISSING = 2;
