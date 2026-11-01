@@ -3341,26 +3341,45 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         DRM_IOCTL_MODE_PAGE_FLIP => {
-            if buf.len() < core::mem::size_of::<WpkDrmModeCrtcPageFlip>() {
+            let req: WpkDrmModeCrtcPageFlip = read_dri_struct(buf)?;
+            // drm_ioctl_permit checks DRM_MASTER before the handler runs.
+            if !kms_file_is_current_master(proc, ofd_idx)? {
+                return Err(Errno::EACCES);
+            }
+            // drm_mode_page_flip_ioctl. Kandelo reports DRM_CAP_ASYNC_PAGE_FLIP
+            // and DRM_CAP_PAGE_FLIP_TARGET as 0, so ASYNC and TARGET_* are
+            // rejected exactly as Linux rejects them without those caps.
+            if req.flags & !DRM_MODE_PAGE_FLIP_FLAGS != 0
+                || req.reserved != 0
+                || req.flags & (DRM_MODE_PAGE_FLIP_ASYNC | DRM_MODE_PAGE_FLIP_TARGET) != 0
+            {
                 return Err(Errno::EINVAL);
             }
-            let req: WpkDrmModeCrtcPageFlip =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            // Read-only gates first to avoid a redundant borrow split.
+            if req.crtc_id != kms::CRTC_ID {
+                return Err(Errno::ENOENT);
+            }
+            // A CRTC with no bound fb (disabled by RMFB or a mode-less
+            // SETCRTC) cannot flip: Linux's "framebuffer is currently
+            // unbound" EBUSY.
+            let mode = kms::crtc_mode().ok_or(Errno::EBUSY)?;
+            let old_fb = kms::framebuffer(kms::crtc_fb()).ok_or(Errno::EBUSY)?;
+            // Framebuffers are looked up device-wide (drm_framebuffer_lookup);
+            // only RMFB/CLOSEFB are creator-file operations.
+            let fb = kms::framebuffer(req.fb_id).ok_or(Errno::ENOENT)?;
+            check_crtc_viewport(&mode, 0, 0, &fb)?;
+            if old_fb.pixel_format != fb.pixel_format {
+                return Err(Errno::EINVAL);
+            }
+            let wants_event = req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0;
+            if wants_event
+                && kms_state(proc, ofd_idx)?.event_space_used() + 32 > DRM_EVENT_SPACE
             {
-                let kms = kms_state(proc, ofd_idx)?;
-                if req.crtc_id != 1 {
-                    return Err(Errno::ENOENT);
-                }
-                if !kms_file_is_current_master(proc, ofd_idx)? {
-                    return Err(Errno::EACCES);
-                }
-                if !kms.fbs.borrow().contains_key(&req.fb_id) {
-                    return Err(Errno::ENOENT);
-                }
-                if kms.pending_flips.iter().any(|p| p.crtc_id == req.crtc_id) {
-                    return Err(Errno::EBUSY);
-                }
+                return Err(Errno::ENOMEM);
+            }
+            // The previous flip's commit completes at the next vblank; until
+            // then the CRTC is busy whichever file queued it.
+            if kms::flip_pending() {
+                return Err(Errno::EBUSY);
             }
             // Best-effort commit stats: a clock-read failure leaves
             // the flip queued and just skips the per-crtc counter
@@ -3375,28 +3394,27 @@ fn handle_dri_card_ioctl(
             }
             // Latch the new scanout fb NOW. The fb is fully painted
             // before the flip ioctl, and the client only reuses the
-            // old bo after the flip-complete event (next vblank), so
-            // an immediate latch is race-free. Without this the host
+            // old bo after the flip completes (next vblank), so an
+            // immediate latch is race-free. Without this the host
             // keeps blitting the fb from the initial SETCRTC forever —
             // for a double-buffered compositor that's the BACK buffer
             // half the time, so the 60 Hz pump samples frames
             // mid-composite (wallpaper painted, windows not yet) and
             // the desktop flickers randomly.
             latch_crtc_fb(host, pid, req.crtc_id, req.fb_id);
-            // Queue the flip but do NOT synthesize the completion
-            // event here. `dri::drain_pending_flips`, called from
-            // `kernel_vblank` on each host vblank tick (16.67 ms),
-            // retires every queued flip into the per-fd `event_ring`
-            // as a DRM_EVENT_FLIP_COMPLETE record stamped with the
-            // new sequence and host monotonic time. Result: libdrm's
-            // `drmModePageFlip → poll → drmHandleEvent` loop returns
-            // at monitor-refresh rate instead of ioctl rate.
-            let mut kms_mut = kms_state_mut(proc, ofd_idx)?;
-            kms_mut.pending_flips.push(crate::ofd::PendingFlip {
-                crtc_id: req.crtc_id,
-                fb_id: req.fb_id,
-                user_data: req.user_data,
-            });
+            kms::set_flip_pending();
+            // The flip completes at the next host vblank
+            // (`dri::retire_vblank`), which also sends the
+            // DRM_EVENT_FLIP_COMPLETE when, and only when, the caller asked
+            // for one. libdrm's `drmModePageFlip → poll → drmHandleEvent`
+            // loop therefore runs at refresh rate, not ioctl rate.
+            if wants_event {
+                kms_state_mut(proc, ofd_idx)?.pending_flips.push(crate::ofd::PendingFlip {
+                    crtc_id: req.crtc_id,
+                    fb_id: req.fb_id,
+                    user_data: req.user_data,
+                });
+            }
             Ok(())
         }
         DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_WAIT_VBLANK_WASM64 => {
@@ -3553,6 +3571,21 @@ fn handle_dri_card_ioctl(
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
     }
+}
+
+/// `drm_crtc_check_viewport`: the mode's active area placed at `(x, y)` must
+/// lie inside the framebuffer, otherwise ENOSPC.
+fn check_crtc_viewport(
+    mode: &wasm_posix_shared::dri::WpkDrmModeModeinfo,
+    x: u32,
+    y: u32,
+    fb: &crate::ofd::KmsFb,
+) -> Result<(), Errno> {
+    let (width, height) = (u32::from(mode.hdisplay), u32::from(mode.vdisplay));
+    if width > fb.width || x > fb.width - width || height > fb.height || y > fb.height - height {
+        return Err(Errno::ENOSPC);
+    }
+    Ok(())
 }
 
 /// Linux's 3 s `wait_event_interruptible_timeout` bound in
@@ -52559,6 +52592,7 @@ impl HostIO for RelSymlinkMock {
         use wasm_posix_shared::dri::*;
         let _master = crate::dri::master::lock_for_test();
         let _bo = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        kms::reset_for_test();
         let mut proc = Process::new(1); let mut host = MockHostIO::new();
         host.cursor_supported = true;
         let fd = kms_master_card0(&mut proc, &mut host);
@@ -52600,13 +52634,18 @@ impl HostIO for RelSymlinkMock {
         kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR,
             WpkDrmModeCursor { flags: DRM_MODE_CURSOR_MOVE, crtc_id: kms::CRTC_ID,
                 x: -2, y: 7, ..Default::default() }).unwrap();
+        // A primary flip on the enabled CRTC leaves the cursor plane alone.
+        let (shown, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        let (next, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, shown);
         kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP,
-            WpkDrmModeCrtcPageFlip { crtc_id: kms::CRTC_ID, fb_id: fb.fb_id,
+            WpkDrmModeCrtcPageFlip { crtc_id: kms::CRTC_ID, fb_id: next,
                 flags: 1, ..Default::default() }).unwrap();
-        assert_eq!(kms::crtc_fb(), fb.fb_id);
+        assert_eq!(kms::crtc_fb(), next);
         assert_eq!(kms::cursor_plane().unwrap().fb.unwrap().bo_id, bo);
         sys_close(&mut proc, &mut host, fd).unwrap();
         assert_eq!(bo_refcount(bo), None);
+        kms::reset_for_test();
     }
 
     #[test]
@@ -54438,6 +54477,7 @@ impl HostIO for RelSymlinkMock {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
+        crate::dri::kms::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
@@ -54455,8 +54495,8 @@ impl HostIO for RelSymlinkMock {
 
         // CREATE_DUMB.
         let create = WpkDrmModeCreateDumb {
-            width: 64,
-            height: 32,
+            width: 640,
+            height: 480,
             bpp: 32,
             ..Default::default()
         };
@@ -54477,8 +54517,8 @@ impl HostIO for RelSymlinkMock {
 
         // ADDFB2.
         let mut fb_req = WpkDrmModeFbCmd2 {
-            width: 64,
-            height: 32,
+            width: 640,
+            height: 480,
             pixel_format: DRM_FORMAT_ARGB8888,
             ..Default::default()
         };
@@ -54511,7 +54551,7 @@ impl HostIO for RelSymlinkMock {
         let flip = WpkDrmModeCrtcPageFlip {
             crtc_id: 1,
             fb_id: fb_out.fb_id,
-            flags: 0,
+            flags: DRM_MODE_PAGE_FLIP_EVENT,
             reserved: 0,
             user_data: 0x42,
         };
@@ -54565,7 +54605,7 @@ impl HostIO for RelSymlinkMock {
         );
 
         // One vblank tick retires the queued flip into event_ring.
-        crate::dri::retire_vblank_for_process(&mut proc, 9, 1, 2);
+        let seq = kms_host_vblank(&mut proc, 1, 2);
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
@@ -54576,7 +54616,7 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x42);
         assert_eq!(u32::from_le_bytes(event[16..20].try_into().unwrap()), 1);
         assert_eq!(u32::from_le_bytes(event[20..24].try_into().unwrap()), 2);
-        assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), 9);
+        assert_eq!(u32::from_le_bytes(event[24..28].try_into().unwrap()), seq as u32);
         assert_eq!(u32::from_le_bytes(event[28..32].try_into().unwrap()), 1);
 
         // With the queue drained, the next PAGE_FLIP succeeds and queues.
@@ -54610,6 +54650,7 @@ impl HostIO for RelSymlinkMock {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         crate::dri::bo::reset_registry();
+        crate::dri::kms::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
@@ -54621,8 +54662,8 @@ impl HostIO for RelSymlinkMock {
         let mut fb_ids = [0u32; 2];
         for slot in &mut fb_ids {
             let create = WpkDrmModeCreateDumb {
-                width: 64,
-                height: 32,
+                width: 640,
+                height: 480,
                 bpp: 32,
                 ..Default::default()
             };
@@ -54635,8 +54676,8 @@ impl HostIO for RelSymlinkMock {
                 unsafe { core::ptr::read_unaligned(cbuf.as_ptr() as *const WpkDrmModeCreateDumb) };
 
             let mut fb_req = WpkDrmModeFbCmd2 {
-                width: 64,
-                height: 32,
+                width: 640,
+                height: 480,
                 pixel_format: DRM_FORMAT_ARGB8888,
                 ..Default::default()
             };
@@ -54732,10 +54773,12 @@ impl HostIO for RelSymlinkMock {
             host,
             fd,
             DRM_IOCTL_MODE_CREATE_DUMB,
-            WpkDrmModeCreateDumb { width: 8, height: 8, bpp: 32, ..Default::default() },
+            // Mode-sized: drm_crtc_check_viewport rejects an fb smaller
+            // than the 640x480 mode `kms_scan_out` sets.
+            WpkDrmModeCreateDumb { width: 640, height: 480, bpp: 32, ..Default::default() },
         )
         .unwrap();
-        let mut fb = WpkDrmModeFbCmd2 { width: 8, height: 8, pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
+        let mut fb = WpkDrmModeFbCmd2 { width: 640, height: 480, pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
         fb.handles[0] = created.handle;
         fb.pitches[0] = created.pitch;
         let fb = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, fb).unwrap();
@@ -55126,6 +55169,140 @@ impl HostIO for RelSymlinkMock {
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WAIT_VBLANK_WASM64, &mut event_req).unwrap();
         let event = read_drm_events(&mut proc, &mut host, fd, 32).unwrap();
         assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x1_0000_0002);
+        kms::reset_for_test();
+    }
+
+    // -----------------------------------------------------------------
+    // DRM_IOCTL_MODE_PAGE_FLIP (drm_mode_page_flip_ioctl semantics).
+    // -----------------------------------------------------------------
+
+    fn kms_fb(proc: &mut Process, host: &mut MockHostIO, fd: i32, width: u32, height: u32, format: u32) -> u32 {
+        use wasm_posix_shared::dri::*;
+        let created = kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width, height, bpp: 32, ..Default::default() }).unwrap();
+        let mut fb = WpkDrmModeFbCmd2 { width, height, pixel_format: format, ..Default::default() };
+        fb.handles[0] = created.handle;
+        fb.pitches[0] = created.pitch;
+        kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, fb).unwrap().fb_id
+    }
+
+    fn page_flip(proc: &mut Process, host: &mut MockHostIO, fd: i32, fb_id: u32, flags: u32) -> Result<(), Errno> {
+        use wasm_posix_shared::dri::*;
+        kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_PAGE_FLIP, WpkDrmModeCrtcPageFlip {
+            crtc_id: crate::dri::kms::CRTC_ID, fb_id, flags, reserved: 0, user_data: 0x77 }).map(|_| ())
+    }
+
+    #[test]
+    fn kms_page_flip_checks_master_flags_reserved_and_crtc_before_any_state() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let next = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+        let latched = host.kms_set_fb_calls.len();
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        assert_eq!(page_flip(&mut proc, &mut host, plain, next, 0x10), Err(Errno::EACCES),
+            "DRM_MASTER is checked before the handler validates anything");
+        for flags in [0x10, DRM_MODE_PAGE_FLIP_ASYNC, DRM_MODE_PAGE_FLIP_TARGET_ABSOLUTE,
+            DRM_MODE_PAGE_FLIP_TARGET_RELATIVE, DRM_MODE_PAGE_FLIP_TARGET,
+            DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC] {
+            assert_eq!(page_flip(&mut proc, &mut host, fd, next, flags), Err(Errno::EINVAL), "flags {flags:#x}");
+        }
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, WpkDrmModeCrtcPageFlip {
+            crtc_id: kms::CRTC_ID, fb_id: next, reserved: 1, ..Default::default() }).map(|_| ()),
+            Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_PAGE_FLIP, WpkDrmModeCrtcPageFlip {
+            crtc_id: kms::CRTC_ID + 1, fb_id: next, ..Default::default() }).map(|_| ()),
+            Err(Errno::ENOENT));
+        assert_eq!(host.kms_set_fb_calls.len(), latched, "no rejected flip latched");
+        assert!(!kms::flip_pending());
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_page_flip_needs_a_bound_crtc_a_covering_fb_and_the_same_format() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let shown = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+        // Never modeset: Linux's "framebuffer is currently unbound" EBUSY.
+        assert_eq!(page_flip(&mut proc, &mut host, fd, shown, 0), Err(Errno::EBUSY));
+        kms_scan_out(&mut proc, &mut host, fd, shown);
+        let small = kms_fb(&mut proc, &mut host, fd, 320, 480, DRM_FORMAT_ARGB8888);
+        let xrgb = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_XRGB8888);
+        let next = kms_fb(&mut proc, &mut host, fd, 800, 600, DRM_FORMAT_ARGB8888);
+        assert_eq!(page_flip(&mut proc, &mut host, fd, 9999, 0), Err(Errno::ENOENT));
+        assert_eq!(page_flip(&mut proc, &mut host, fd, small, 0), Err(Errno::ENOSPC));
+        assert_eq!(page_flip(&mut proc, &mut host, fd, xrgb, 0), Err(Errno::EINVAL));
+        assert_eq!(kms::crtc_fb(), shown);
+        // A larger fb covers the 640x480 viewport.
+        page_flip(&mut proc, &mut host, fd, next, 0).unwrap();
+        assert_eq!(kms::crtc_fb(), next);
+        kms_host_vblank(&mut proc, 0, 1);
+        // RMFB of the scanout fb disables the CRTC; a flip is EBUSY again
+        // instead of re-latching an fb with no mode (GETCRTC coherence).
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut next.to_le_bytes()).unwrap();
+        assert_eq!(page_flip(&mut proc, &mut host, fd, shown, 0), Err(Errno::EBUSY));
+        assert_eq!((kms::crtc_fb(), kms::crtc_mode().is_none()), (0, true));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_page_flip_sends_an_event_only_when_asked_and_is_busy_per_crtc() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let a = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+        let b = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+
+        // Without DRM_MODE_PAGE_FLIP_EVENT the flip completes silently.
+        page_flip(&mut proc, &mut host, fd, a, 0).unwrap();
+        assert_eq!(page_flip(&mut proc, &mut host, fd, b, 0), Err(Errno::EBUSY));
+        kms_host_vblank(&mut proc, 5, 0);
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 64), Err(Errno::EAGAIN));
+
+        // With it, exactly one FLIP_COMPLETE at the next vblank.
+        page_flip(&mut proc, &mut host, fd, b, DRM_MODE_PAGE_FLIP_EVENT).unwrap();
+        let seq = kms_host_vblank(&mut proc, 5, 16_667);
+        let event = read_drm_events(&mut proc, &mut host, fd, 64).unwrap();
+        assert_eq!(event.len(), 32);
+        assert_eq!((le_u32(&event, 0), le_u32(&event, 24), le_u32(&event, 28)),
+            (DRM_EVENT_FLIP_COMPLETE, seq as u32, kms::CRTC_ID));
+        assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x77);
+
+        // EBUSY belongs to the CRTC: a new master cannot queue a second flip
+        // before the vblank that completes the previous master's flip.
+        page_flip(&mut proc, &mut host, fd, a, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        assert_eq!(page_flip(&mut proc, &mut host, other, b, 0), Err(Errno::EBUSY));
+        kms_host_vblank(&mut proc, 5, 33_333);
+        // Framebuffers resolve device-wide: the new master flips to an fb
+        // the previous master's file created.
+        page_flip(&mut proc, &mut host, other, b, 0).unwrap();
+        assert_eq!(kms::crtc_fb(), b);
+        kms_host_vblank(&mut proc, 5, 50_000);
+
+        // A flip event needs room in the file's 4 KiB event space.
+        for _ in 0..(DRM_EVENT_SPACE / 32) {
+            wait_vblank(&mut proc, &mut host, other, vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 100, 0)).unwrap();
+        }
+        assert_eq!(page_flip(&mut proc, &mut host, other, a, DRM_MODE_PAGE_FLIP_EVENT), Err(Errno::ENOMEM));
+        page_flip(&mut proc, &mut host, other, a, 0).unwrap();
         kms::reset_for_test();
     }
 
