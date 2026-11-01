@@ -722,11 +722,17 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
         || (usage != GL_STATIC_DRAW && usage != GL_STREAM_DRAW && usage != GL_DYNAMIC_DRAW)) {
         raise_client_error(GL_INVALID_ENUM); return;
     }
-    if (size < 0 || (uint64_t)size > INT32_MAX) {
+    if (size < 0) {
         raise_client_error(GL_INVALID_VALUE); return;
     }
     if (!(target == GL_ARRAY_BUFFER ? g_array_buffer : g_element_buffer)) {
         raise_client_error(GL_INVALID_OPERATION); return;
+    }
+    /* ES 2.0 section 2.9 makes only a negative size INVALID_VALUE. Buffer
+     * offsets travel as i32, so a larger store could not be addressed: like
+     * any store the GL cannot create, that is OUT_OF_MEMORY. */
+    if ((uint64_t)size > INT32_MAX) {
+        raise_client_error(GL_OUT_OF_MEMORY); return;
     }
     /* With data: u32 target, u32 dataLen, u8 data[dataLen], u32 usage.
      * Without data: u32 target, u32 byteLength, u32 usage. */

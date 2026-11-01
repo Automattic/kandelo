@@ -4910,6 +4910,25 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-unaligned-attribs"); return 0;
     }
+    if (!strcmp(argv[1], "encoder-buffer-data-size")) {
+        /* ES 2.0 section 2.9: only a negative size is INVALID_VALUE. A size
+         * the transport cannot represent is an allocation failure. */
+        assert(sizeof(GLsizeiptr) > 4);
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer);
+        glFlush(); const unsigned uploads = buffer_uploads;
+        glBufferData(GL_ARRAY_BUFFER,-1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_VALUE);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)INT32_MAX+1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_OUT_OF_MEMORY);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)INT64_MAX,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_OUT_OF_MEMORY);
+        glFlush(); assert(buffer_uploads == uploads);
+        glBufferData(GL_ARRAY_BUFFER,INT32_MAX,NULL,GL_STATIC_DRAW); glFlush();
+        assert(buffer_uploads == uploads+1 && glGetError() == GL_NO_ERROR);
+        /* Binding errors precede allocation. */
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)INT32_MAX+1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_OPERATION);
+        glDeleteBuffers(1,&buffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-buffer-data-size"); return 0;
+    }
     if (!strcmp(argv[1], "encoder-buffer-names")) {
         glBindBuffer(GL_ARRAY_BUFFER,1);
         GLuint names[2] = {99,99}; glGenBuffers(2,names);
