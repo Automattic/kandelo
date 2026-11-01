@@ -279,6 +279,7 @@ struct wpk_gles_context {
     GLint unpack_row_length;
     GLint unpack_skip_pixels;
     GLint unpack_skip_rows;
+    GLint pack_alignment;
     /* Unacknowledged flags transfer into the same host context error owner. */
     uint32_t client_errors;
     uint32_t error_reply;
@@ -312,6 +313,7 @@ struct wpk_gles_context {
 #define g_unpack_row_length (_wpk_gl_current_encoder()->unpack_row_length)
 #define g_unpack_skip_pixels (_wpk_gl_current_encoder()->unpack_skip_pixels)
 #define g_unpack_skip_rows (_wpk_gl_current_encoder()->unpack_skip_rows)
+#define g_pack_alignment (_wpk_gl_current_encoder()->pack_alignment)
 #define g_array_buffer (_wpk_gl_current_encoder()->array_buffer)
 #define g_element_buffer (_wpk_gl_current_encoder()->current_vertex_array->element_buffer)
 #define g_attribs (_wpk_gl_current_encoder()->current_vertex_array->attribs)
@@ -358,6 +360,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->texture_units = state->initial_texture_units;
     state->texture_unit_count = WPK_GL_INITIAL_TEXTURE_UNITS;
     state->unpack_alignment = 4;
+    state->pack_alignment = 4;
     state->generate_mipmap_hint = state->fragment_derivative_hint = GL_DONT_CARE;
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
@@ -2175,9 +2178,11 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
 
 void glPixelStorei(GLenum pname, GLint param) {
     if (!_wpk_gl_current_encoder()) return;
-    if (pname == GL_UNPACK_ALIGNMENT
-        && (param == 1 || param == 2 || param == 4 || param == 8)) {
-        g_unpack_alignment = param;
+    if (pname == GL_UNPACK_ALIGNMENT || pname == GL_PACK_ALIGNMENT) {
+        if (param != 1 && param != 2 && param != 4 && param != 8) {
+            raise_client_error(GL_INVALID_VALUE);
+            return;
+        }
     }
     if (pname == GL_UNPACK_ROW_LENGTH_EXT || pname == GL_UNPACK_SKIP_ROWS_EXT
         || pname == GL_UNPACK_SKIP_PIXELS_EXT) {
@@ -2194,6 +2199,8 @@ void glPixelStorei(GLenum pname, GLint param) {
     w_u32(&_c, (uint32_t)pname);
     w_i32(&_c, param);
     EMIT_END()
+    if (pname == GL_UNPACK_ALIGNMENT) g_unpack_alignment = param;
+    else if (pname == GL_PACK_ALIGNMENT) g_pack_alignment = param;
 }
 
 void glDeleteBuffers(GLsizei n, const GLuint *names) {
@@ -2527,14 +2534,19 @@ GLenum glCheckFramebufferStatus(GLenum target) {
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, void *pixels) {
     if (!_wpk_gl_current_encoder()) return;
-    if (!pixels || width <= 0 || height <= 0) return;
-    /* Bytes-per-pixel sizing for the combinations this stub supports.
-     * Extend when a demo needs another (format,type) pair. */
-    uint32_t bpp = 4;
-    if (format == GL_RGB  && type == GL_UNSIGNED_BYTE) bpp = 3;
-    if (format == GL_RGBA && type == GL_FLOAT)         bpp = 16;
-    if (format == GL_RGB  && type == GL_FLOAT)         bpp = 12;
-    uint32_t out_len = (uint32_t)width * (uint32_t)height * bpp;
+    if (width < 0 || height < 0) {
+        raise_client_error(GL_INVALID_VALUE);
+        return;
+    }
+    /* GLES 2.0 sections 3.6.2/4.3.1 require INVALID_OPERATION for these
+     * packed-component mismatches, independently of destination storage. */
+    if ((type == GL_UNSIGNED_SHORT_5_6_5 && format != GL_RGB) ||
+        ((type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_5_5_5_1) &&
+         format != GL_RGBA)) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    uint32_t bpp = bytes_per_pixel(format, type);
     uint8_t in[24];
     int32_t xi = x, yi = y;
     int32_t wi = width, hi = height;
@@ -2545,7 +2557,42 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     memcpy(in + 12, &hi,  4);
     memcpy(in + 16, &fmt, 4);
     memcpy(in + 20, &t,   4);
-    (void)_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, pixels, out_len);
+    /* Empty reads still validate enums, framebuffer and implementation format.
+     * Unknown pixel layouts are rejected by that same native query. */
+    if (!width || !height || !bpp) {
+        (void)_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, NULL, 0);
+        return;
+    }
+    if (!pixels) return;
+    uint64_t row = (uint64_t)(uint32_t)width * bpp;
+    uint64_t stride = (row + (uint32_t)g_pack_alignment - 1u)
+                      & ~((uint64_t)(uint32_t)g_pack_alignment - 1u);
+    /* Bound before multiplying by height: even valid signed dimensions can
+     * overflow uint64_t for wide component types. The query's bounded reply
+     * remains an ordinary large-readback implementation gap. */
+    if (stride > 65536u) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    uint64_t required = (uint64_t)((uint32_t)height - 1u) * stride + row;
+    if (required > 65536u) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    uint32_t out_len = (uint32_t)required;
+    uint8_t *reply = malloc(out_len);
+    if (!reply) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    if (_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, reply, out_len) == 0) {
+        /* Pack padding belongs to the caller. Transport staging must never
+         * overwrite it, nor publish any pixel after a rejected native read. */
+        for (uint32_t r = 0; r < (uint32_t)height; ++r)
+            memcpy((uint8_t *)pixels + r * (uint32_t)stride,
+                   reply + r * (uint32_t)stride, (size_t)row);
+    }
+    free(reply);
 }
 
 void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
