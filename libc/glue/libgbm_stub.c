@@ -10,22 +10,24 @@
  * Surface implemented (v1):
  *   - gbm_create_device / gbm_device_destroy
  *   - gbm_device_is_format_supported (scanout fourccs; per-usage planes)
- *   - gbm_bo_create        (linear; R8, GR88, RGB565, 8888, 2101010 and
- *                           16161616F: see k_formats for each format's tiers)
+ *   - gbm_bo_create        (linear; R8, GR88, RGB565, 8888, 2101010,
+ *                           16161616F, and NV12/NV21/YUV420/YVU420/YUYV/
+ *                           UYVY/P010 in one CPU object: see k_formats)
  *   - gbm_bo_create_with_modifiers / gbm_bo_create_with_modifiers2
  *                          (LINEAR or implicit modifiers only)
  *   - gbm_bo_destroy
  *   - gbm_bo_get_fd        (PRIME export → handle-to-fd)
- *   - gbm_bo_import        (GBM_BO_IMPORT_FD, and GBM_BO_IMPORT_FD_MODIFIER
- *                           for one linear plane: fd-to-handle, bounded by
- *                           the dma-buf's real size; GBM_BO_IMPORT_EGL_IMAGE
+ *   - gbm_bo_import        (GBM_BO_IMPORT_FD for one plane, and
+ *                           GBM_BO_IMPORT_FD_MODIFIER for every linear plane
+ *                           of the format: fd-to-handle, each bounded by its
+ *                           dma-buf's real size; GBM_BO_IMPORT_EGL_IMAGE
  *                           for an image of this device's EGL display)
- *   - gbm_bo_map / gbm_bo_unmap   (single-plane mmap)
+ *   - gbm_bo_map / gbm_bo_unmap   (mmap of the first plane)
  *   - gbm_bo_write         (map + memcpy)
  *   - gbm_bo_set/get_user_data (opaque pointer with destroy cb)
  *   - accessors: get_width / get_height / get_stride / get_format
  *                / get_bpp / get_modifier / get_handle / get_device
- *   - single-plane accessors: get_plane_count / get_offset /
+ *   - per-plane accessors: get_plane_count / get_offset /
  *                get_stride_for_plane / get_handle_for_plane /
  *                get_fd_for_plane
  *   - gbm_device_get_fd / gbm_device_get_backend_name
@@ -42,7 +44,7 @@
  * CPU-facing window rendering remains unsupported rather than silently
  * replacing mappable storage with a GPU-only BO.
  *
- * Format queries report the single linear plane actually allocated here.
+ * Format queries report the linear planes actually allocated here.
  * Every entry point canonicalizes the legacy GBM_BO_FORMAT_XRGB8888/ARGB8888
  * values to their fourcc, as Mesa does, and only fourccs are reported.
  */
@@ -199,9 +201,16 @@ struct gbm_bo {
     uint32_t width, height;
     uint32_t stride;          /* pitch in bytes */
     uint32_t format;          /* fourcc */
-    uint32_t bpp;             /* bits per pixel */
-    uint64_t size;            /* bytes of the plane view (pitch * height) */
+    uint32_t bpp;             /* bits per pixel; 0 for YUV (as Mesa reports) */
+    uint32_t cpp;             /* bytes per sample of plane 0 */
+    uint64_t size;            /* bytes of the CPU view from `offset`: plane 0
+                               * (pitch * height), or every plane of a buffer
+                               * gbm_bo_create laid out in one object */
     uint32_t offset;          /* plane start within the dma-buf (imports only) */
+    /* Every plane (drm_format_info.h); plane 0 repeats handle/stride/offset.
+     * A plane's object may be another plane's or its own. */
+    unsigned plane_count;
+    struct { uint32_t handle, stride, offset; } planes[GBM_MAX_PLANES];
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
     int is_gpu;               /* 1 = GPU-tier (unmappable WebGLTexture bo) */
     struct gbm_mapping *mappings;
@@ -282,27 +291,38 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *h
  *   10-bit and half-float planes reduced to the 8-bpc output).
  * - window: an EGL window surface can render to it. Kandelo's EGL configs
  *   name 32-bpp 8888 windows, whose fronts are RGBA8 renders.
- * CREATE_DUMB accepts any bpp, so every format has CPU-tier (dumb) storage.
- * Every format is a GL render target in both tiers: GPU-tier storage is a
- * WebGL 2 texture of the format's own internal format (R8, RG8, RGB565,
- * RGBA8, RGB10_A2, RGBA16F; the kernel's gpu_storage_format_cpp lists the
- * same set), and a CPU-tier buffer imported as an EGLImage is mirrored in
- * that same texture format with an exact byte conversion each way. */
-struct wpk_gbm_format { uint32_t fourcc; int scanout, window; };
+ * - render: a GL render target. Every RGB format is one in both tiers:
+ *   GPU-tier storage is a WebGL 2 texture of the format's own internal
+ *   format (R8, RG8, RGB565, RGBA8, RGB10_A2, RGBA16F; the kernel's
+ *   gpu_storage_format_cpp lists the same set), and a CPU-tier buffer
+ *   imported as an EGLImage is mirrored in that same texture format with
+ *   an exact byte conversion each way. A YUV buffer is sampled only: EGL
+ *   imports it as an external image converted to RGBA when its bytes
+ *   change, and no texture format stores YUV planes to render into.
+ * CREATE_DUMB accepts any bpp, so every format has CPU-tier (dumb) storage;
+ * a YUV buffer is one dumb object holding all of its planes. */
+struct wpk_gbm_format { uint32_t fourcc; int scanout, window, render; };
 static const struct wpk_gbm_format k_formats[] = {
-    {DRM_FORMAT_R8, 1, 0},
-    {DRM_FORMAT_GR88, 1, 0},
-    {DRM_FORMAT_RGB565, 1, 0},
-    {DRM_FORMAT_XRGB8888, 1, 1},
-    {DRM_FORMAT_ARGB8888, 1, 1},
-    {DRM_FORMAT_XBGR8888, 1, 1},
-    {DRM_FORMAT_ABGR8888, 1, 1},
-    {DRM_FORMAT_XRGB2101010, 1, 0},
-    {DRM_FORMAT_ARGB2101010, 1, 0},
-    {DRM_FORMAT_XBGR2101010, 1, 0},
-    {DRM_FORMAT_ABGR2101010, 1, 0},
-    {DRM_FORMAT_XBGR16161616F, 1, 0},
-    {DRM_FORMAT_ABGR16161616F, 1, 0},
+    {DRM_FORMAT_R8, 1, 0, 1},
+    {DRM_FORMAT_GR88, 1, 0, 1},
+    {DRM_FORMAT_RGB565, 1, 0, 1},
+    {DRM_FORMAT_XRGB8888, 1, 1, 1},
+    {DRM_FORMAT_ARGB8888, 1, 1, 1},
+    {DRM_FORMAT_XBGR8888, 1, 1, 1},
+    {DRM_FORMAT_ABGR8888, 1, 1, 1},
+    {DRM_FORMAT_XRGB2101010, 1, 0, 1},
+    {DRM_FORMAT_ARGB2101010, 1, 0, 1},
+    {DRM_FORMAT_XBGR2101010, 1, 0, 1},
+    {DRM_FORMAT_ABGR2101010, 1, 0, 1},
+    {DRM_FORMAT_XBGR16161616F, 1, 0, 1},
+    {DRM_FORMAT_ABGR16161616F, 1, 0, 1},
+    {DRM_FORMAT_NV12, 0, 0, 0},
+    {DRM_FORMAT_NV21, 0, 0, 0},
+    {DRM_FORMAT_YUV420, 0, 0, 0},
+    {DRM_FORMAT_YVU420, 0, 0, 0},
+    {DRM_FORMAT_YUYV, 0, 0, 0},
+    {DRM_FORMAT_UYVY, 0, 0, 0},
+    {DRM_FORMAT_P010, 0, 0, 0},
 };
 
 static const struct wpk_gbm_format *format_info(uint32_t fourcc) {
@@ -311,10 +331,23 @@ static const struct wpk_gbm_format *format_info(uint32_t fourcc) {
     return NULL;
 }
 
-/* drm_format_info's bits per pixel of plane 0. */
-static uint32_t format_bpp(uint32_t fourcc) {
-    const struct wpk_drm_format_info *layout = format_info(fourcc) ? wpk_drm_format_info(fourcc) : NULL;
-    return layout ? layout->cpp[0] * 8 : 0;
+/* The memory layout of a format a Kandelo buffer holds, or NULL. */
+static const struct wpk_drm_format_info *format_layout(uint32_t fourcc) {
+    return format_info(fourcc) ? wpk_drm_format_info(fourcc) : NULL;
+}
+
+/* Mesa's gbm_bo_get_bpp: bits per pixel of a packed RGB format; YUV has no
+ * single value and reports 0. */
+static uint32_t layout_bpp(const struct wpk_drm_format_info *layout) {
+    return layout->is_yuv ? 0 : layout->cpp[0] * 8;
+}
+
+/* A buffer of a sample-only (YUV) format is no render target, cursor or
+ * scanout buffer. */
+static int usage_serves_format(const struct wpk_gbm_format *info, uint32_t flags) {
+    if ((flags & GBM_BO_USE_SCANOUT) && !info->scanout) return 0;
+    if ((flags & (GBM_BO_USE_RENDERING | GBM_BO_USE_CURSOR)) && !info->render) return 0;
+    return 1;
 }
 
 /* A gbm_surface exists to back an EGL window surface. */
@@ -346,11 +379,12 @@ static uint32_t canonical_format(uint32_t format) {
 
 int gbm_device_get_format_modifier_plane_count(struct gbm_device *gbm,
                                                uint32_t format, uint64_t modifier) {
-    if (!gbm || !format_bpp(canonical_format(format)) || modifier != DRM_FORMAT_MOD_LINEAR) {
+    const struct wpk_drm_format_info *layout = format_layout(canonical_format(format));
+    if (!gbm || !layout || modifier != DRM_FORMAT_MOD_LINEAR) {
         errno = EINVAL;
         return -1;
     }
-    return 1;
+    return (int)layout->num_planes;
 }
 
 char *gbm_format_get_name(uint32_t format, struct gbm_format_name_desc *desc) {
@@ -452,17 +486,41 @@ static int modifier_usage_wants_gpu_tier(uint32_t flags) {
     return (flags & GBM_BO_USE_RENDERING) && !(flags & cpu_facing);
 }
 
+/* Lay the planes of a YUV buffer out in one object, as Mesa's DRI drivers
+ * do: each plane's rows hold its drm_format_info samples (subsampled planes
+ * rounded up, a packed YUYV/UYVY row ending with a whole pixel pair),
+ * rounded to 4 bytes like a dumb buffer's, one plane after another. Fails
+ * (0) when the layout does not fit 32-bit strides and offsets. */
+static int plane_layout(const struct wpk_drm_format_info *layout, uint32_t width, uint32_t height,
+                        uint32_t strides[3], uint32_t offsets[3], uint64_t *size) {
+    uint64_t total = 0;
+    for (unsigned plane = 0; plane < layout->num_planes; plane++) {
+        uint64_t stride = (wpk_drm_row_bytes(layout, width, plane) + 3) & ~(uint64_t)3;
+        if (stride > UINT32_MAX || total > UINT32_MAX) return 0;
+        strides[plane] = (uint32_t)stride;
+        offsets[plane] = (uint32_t)total;
+        total += stride * wpk_drm_plane_height(layout, height, plane);
+    }
+    if (total > UINT32_MAX) return 0;
+    *size = total;
+    return 1;
+}
+
 static struct gbm_bo *bo_create(struct gbm_device *gbm,
                                 uint32_t width, uint32_t height,
                                 uint32_t format, uint32_t flags,
                                 int gpu_tier, int owned_device) {
     format = canonical_format(format);
-    uint32_t bpp = format_bpp(format);
-    if (!gbm || !bpp || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)
-        || ((flags & GBM_BO_USE_SCANOUT) && !format_info(format)->scanout)) {
+    const struct wpk_drm_format_info *layout = format_layout(format);
+    uint32_t strides[3] = {0}, offsets[3] = {0};
+    uint64_t yuv_size = 0;
+    if (!gbm || !layout || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)
+        || !usage_serves_format(format_info(format), flags)
+        || (layout->is_yuv && !plane_layout(layout, width, height, strides, offsets, &yuv_size))) {
         errno = EINVAL;
         return NULL;
     }
+    uint32_t bpp = layout->cpp[0] * 8;
     if (!(owned_device ? retain_owned_device(gbm) : retain_device(gbm))) return NULL;
 
     struct gbm_bo *bo = (struct gbm_bo *) calloc(1, sizeof(*bo));
@@ -475,7 +533,8 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     bo->width    = width;
     bo->height   = height;
     bo->format   = format;
-    bo->bpp      = bpp;
+    bo->bpp      = layout_bpp(layout);
+    bo->cpp      = layout->cpp[0];
     bo->modifier = DRM_FORMAT_MOD_LINEAR;
 
     /* GPU tier first for render-only bos. On any error — notably ENOSYS
@@ -494,6 +553,9 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
             bo->stride = greq.usage;    /* out: stride (bytes) */
             bo->size   = (uint64_t) greq.usage * height;
             bo->is_gpu = 1;
+            bo->plane_count = 1;
+            bo->planes[0].handle = bo->handle;
+            bo->planes[0].stride = bo->stride;
             register_bo(bo);
             return bo;
         }
@@ -513,6 +575,13 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     req.width  = width;
     req.bpp    = bpp;
     req.flags  = 0;
+    if (layout->is_yuv) {
+        /* One byte-wide dumb object of rows as long as plane 0's, enough
+         * of them to hold every plane. */
+        req.width = strides[0];
+        req.height = (uint32_t)((yuv_size + strides[0] - 1) / strides[0]);
+        req.bpp = 8;
+    }
     if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_CREATE_DUMB, &req) < 0) {
         int save = errno;
         free(bo);
@@ -523,6 +592,16 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     bo->handle = req.handle;
     bo->stride = req.pitch;
     bo->size   = req.size;
+    bo->plane_count = layout->num_planes;
+    for (unsigned plane = 0; plane < layout->num_planes; plane++) {
+        bo->planes[plane].handle = req.handle;
+        bo->planes[plane].stride = layout->is_yuv ? strides[plane] : req.pitch;
+        bo->planes[plane].offset = offsets[plane];
+    }
+    if (layout->is_yuv) {
+        bo->stride = strides[0];
+        bo->size = yuv_size;
+    }
     register_bo(bo);
     return bo;
 }
@@ -534,7 +613,7 @@ struct gbm_bo *gbm_bo_create(struct gbm_device *gbm,
                      usage_wants_gpu_tier(flags), 0);
 }
 
-/* Every bo is a single linear plane, so a modifier list is satisfiable
+/* Every bo is linear, so a modifier list is satisfiable
  * when it names LINEAR or leaves the layout implicit (INVALID). */
 static int modifiers_allow_linear(const uint64_t *modifiers, unsigned count) {
     for (unsigned i = 0; i < count; i++) {
@@ -580,28 +659,51 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
 }
 
 /* Caller holds handle_mutex. PRIME reimport returns a GEM name a live peer
- * may already own on this DRM file; only close a name nobody else holds. */
+ * may already own on this DRM file (as any of its planes); only close a
+ * name nobody else holds. */
 static void release_handle_locked(struct gbm_device *dev, uint32_t handle) {
-    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next)
-        if (peer->dev->file == dev->file && peer->handle == handle) return;
+    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next) {
+        if (peer->dev->file != dev->file) continue;
+        for (unsigned plane = 0; plane < peer->plane_count; plane++)
+            if (peer->planes[plane].handle == handle) return;
+    }
     drmCloseBufferHandle(dev->fd, handle);
 }
 
-/* Import one linear plane of a dma-buf. Like a Mesa driver, the caller's
- * geometry is checked against the real object: the stride must hold a row
- * and offset + stride * height must fit in the dma-buf, whose size PRIME
+/* Caller holds handle_mutex. Release each distinct name of `planes`. */
+static void release_plane_handles_locked(struct gbm_device *dev, const uint32_t *handles, unsigned count) {
+    for (unsigned plane = 0; plane < count; plane++) {
+        int repeated = 0;
+        for (unsigned earlier = 0; earlier < plane; earlier++) repeated |= handles[earlier] == handles[plane];
+        if (handles[plane] && !repeated) release_handle_locked(dev, handles[plane]);
+    }
+}
+
+/* Import the linear planes of a dma-buf image, one fd, stride and offset
+ * per plane of the format (drm_format_info.h); the fds may name one object
+ * or several. Like a Mesa driver, the caller's geometry is checked against
+ * the real objects: each stride must hold a row of its plane and offset +
+ * stride * rows must fit in that plane's dma-buf, whose size PRIME
  * lseek(SEEK_END) reports (Linux dma_buf_llseek). The tier comes from the
  * kernel too: MAP_DUMB fails with EINVAL only for an unmappable GPU-tier BO,
- * which is then marked exactly as a native GPU allocation is. */
-static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
-                                   uint32_t width, uint32_t height, uint32_t format,
-                                   uint32_t stride, uint32_t offset, uint32_t usage) {
+ * which is then marked exactly as a native GPU allocation is. A YUV plane
+ * is read from CPU bytes when its image is converted, so it must not be
+ * GPU-tier storage. */
+static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, const int *fds,
+                                    uint32_t width, uint32_t height, uint32_t format,
+                                    const uint32_t *strides, const uint32_t *offsets, uint32_t usage) {
     format = canonical_format(format);
-    uint32_t bpp = format_bpp(format);
-    if (!gbm || fd < 0 || !width || !height || !bpp || (usage & ~WPK_GBM_SUPPORTED_USAGE) ||
-        (uint64_t)width * (bpp / 8) > stride) {
+    const struct wpk_drm_format_info *layout = format_layout(format);
+    if (!gbm || !width || !height || !layout || count != layout->num_planes
+        || (usage & ~WPK_GBM_SUPPORTED_USAGE) || !usage_serves_format(format_info(format), usage)) {
         errno = EINVAL;
         return NULL;
+    }
+    for (unsigned plane = 0; plane < count; plane++) {
+        if (fds[plane] < 0 || wpk_drm_row_bytes(layout, width, plane) > strides[plane]) {
+            errno = EINVAL;
+            return NULL;
+        }
     }
     if (!retain_device(gbm)) return NULL;
 
@@ -609,40 +711,39 @@ static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
      * a cached handle still owned by another public BO. */
     struct gbm_bo *bo = calloc(1, sizeof *bo);
     if (!bo) { release_device(gbm); errno = ENOMEM; return NULL; }
-    struct drm_prime_handle req = {.fd = fd};
-    pthread_mutex_lock(&handle_mutex);
-    if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) {
-        int save = errno;
-        pthread_mutex_unlock(&handle_mutex);
-        free(bo);
-        release_device(gbm);
-        errno = save;
-        return NULL;
-    }
-    /* Only a proven dma-buf is seeked, so no ordinary file offset moves. */
+    uint32_t handles[GBM_MAX_PLANES] = {0};
     int error = 0;
-    off_t real_size = lseek(fd, 0, SEEK_END);
-    if (real_size < 0 || (uint64_t)stride * height + offset > (uint64_t)real_size) {
-        error = EINVAL;
-    } else {
+    pthread_mutex_lock(&handle_mutex);
+    for (unsigned plane = 0; plane < count && !error; plane++) {
+        struct drm_prime_handle req = {.fd = fds[plane]};
+        if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) { error = errno; break; }
+        handles[plane] = req.handle;
+        /* Only a proven dma-buf is seeked, so no ordinary file offset moves. */
+        off_t real_size = lseek(fds[plane], 0, SEEK_END);
+        uint64_t rows = wpk_drm_plane_height(layout, height, plane);
+        if (real_size < 0 || (uint64_t)strides[plane] * rows + offsets[plane] > (uint64_t)real_size) {
+            error = EINVAL;
+            break;
+        }
+        int gpu = 0;
         struct drm_mode_map_dumb probe = {.handle = req.handle};
-        if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) bo->is_gpu = 0;
-        else if (errno == EINVAL) bo->is_gpu = 1;
-        else error = errno;
-        /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. As in
-         * bo_create, scanout needs a primary-plane format. */
-        if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
+        if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) gpu = 0;
+        else if (errno == EINVAL) gpu = 1;
+        else { error = errno; break; }
+        if (gpu && layout->is_yuv) { error = EINVAL; break; }
         /* A GPU-tier BO is a texture of its own format: the claimed format
          * must name that storage (Mesa's import likewise rejects a format
          * the driver cannot sample the buffer as). */
-        if (!error && bo->is_gpu) {
+        if (gpu) {
             struct wpk_drm_check_bo_format check = {.handle = req.handle, .format = format};
-            if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) error = errno;
+            if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) { error = errno; break; }
         }
-        if (!error && (usage & GBM_BO_USE_SCANOUT) && !format_info(format)->scanout) error = EINVAL;
+        if (plane == 0) bo->is_gpu = gpu;
     }
+    /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. */
+    if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
     if (error) {
-        release_handle_locked(gbm, req.handle);
+        release_plane_handles_locked(gbm, handles, count);
         pthread_mutex_unlock(&handle_mutex);
         free(bo);
         release_device(gbm);
@@ -650,19 +751,32 @@ static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
         return NULL;
     }
     bo->dev      = gbm;
-    bo->handle   = req.handle;
+    bo->handle   = handles[0];
     bo->width    = width;
     bo->height   = height;
-    bo->stride   = stride;
-    bo->size     = (uint64_t) stride * height;
-    bo->offset   = offset;
+    bo->stride   = strides[0];
+    bo->size     = (uint64_t) strides[0] * height;
+    bo->offset   = offsets[0];
     bo->format   = format;
-    bo->bpp      = bpp;
+    bo->bpp      = layout_bpp(layout);
+    bo->cpp      = layout->cpp[0];
     bo->modifier = DRM_FORMAT_MOD_LINEAR;
+    bo->plane_count = count;
+    for (unsigned plane = 0; plane < count; plane++) {
+        bo->planes[plane].handle = handles[plane];
+        bo->planes[plane].stride = strides[plane];
+        bo->planes[plane].offset = offsets[plane];
+    }
     bo->handle_next = live_bos;
     live_bos = bo;
     pthread_mutex_unlock(&handle_mutex);
     return bo;
+}
+
+static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
+                                   uint32_t width, uint32_t height, uint32_t format,
+                                   uint32_t stride, uint32_t offset, uint32_t usage) {
+    return import_planes(gbm, 1, &fd, width, height, format, &stride, &offset, usage);
 }
 
 struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
@@ -679,17 +793,26 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
     if (type == GBM_BO_IMPORT_FD_MODIFIER) {
         struct gbm_import_fd_modifier_data *d =
             (struct gbm_import_fd_modifier_data *) buffer;
-        /* Every Kandelo format has one plane and every BO is linear, so
-         * only one fd with an explicit LINEAR or an implicit (INVALID)
-         * layout can describe a real buffer. Multi-plane and tiled
+        /* One fd, stride and offset per plane of the format, as Mesa's DRI
+         * import requires. Every BO is linear, so only an explicit LINEAR
+         * or an implicit (INVALID) layout describes a real buffer; tiled
          * imports are refused rather than reinterpreted as linear. */
-        if (d->num_fds != 1 || d->strides[0] <= 0 || d->offsets[0] < 0 ||
+        if (d->num_fds == 0 || d->num_fds > GBM_MAX_PLANES ||
             (d->modifier != DRM_FORMAT_MOD_LINEAR && d->modifier != DRM_FORMAT_MOD_INVALID)) {
             errno = EINVAL;
             return NULL;
         }
-        return import_plane(gbm, d->fds[0], d->width, d->height, d->format,
-                            (uint32_t)d->strides[0], (uint32_t)d->offsets[0], flags);
+        uint32_t strides[GBM_MAX_PLANES], offsets[GBM_MAX_PLANES];
+        for (unsigned plane = 0; plane < d->num_fds; plane++) {
+            if (d->strides[plane] <= 0 || d->offsets[plane] < 0) {
+                errno = EINVAL;
+                return NULL;
+            }
+            strides[plane] = (uint32_t)d->strides[plane];
+            offsets[plane] = (uint32_t)d->offsets[plane];
+        }
+        return import_planes(gbm, d->num_fds, d->fds, d->width, d->height, d->format,
+                             strides, offsets, flags);
     }
     if (type == GBM_BO_IMPORT_EGL_IMAGE) {
         /* Mesa gbm_dri_bo_import: the EGLImage must belong to the EGL
@@ -731,11 +854,13 @@ int gbm_bo_get_fd(struct gbm_bo *bo) {
 }
 
 int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane) {
-    if (plane != 0) {
+    if (!bo || plane < 0 || (unsigned)plane >= bo->plane_count) {
         errno = EINVAL;
         return -1;
     }
-    return gbm_bo_get_fd(bo);
+    struct drm_prime_handle req = {.handle = bo->planes[plane].handle, .flags = O_CLOEXEC | O_RDWR};
+    if (drmIoctl(bo->dev->fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &req) < 0) return -1;
+    return req.fd;
 }
 
 /* Caller holds mapping_mutex. Map the canonical BO once so overlapping
@@ -765,8 +890,10 @@ void *gbm_bo_map(struct gbm_bo *bo,
         errno = EINVAL;
         return NULL;
     }
-    uint64_t x_bytes = (uint64_t)x * (bo->bpp / 8);
-    uint64_t row_bytes = (uint64_t)width * (bo->bpp / 8);
+    /* The first plane, in its own samples (a YUV buffer's luma or packed
+     * pairs). */
+    uint64_t x_bytes = (uint64_t)x * bo->cpp;
+    uint64_t row_bytes = (uint64_t)width * bo->cpp;
     if (x_bytes + row_bytes > bo->stride ||
         ((uint64_t)y + height - 1) * bo->stride + x_bytes + row_bytes > bo->size) {
         errno = EINVAL;
@@ -847,7 +974,9 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
     struct gbm_bo **link = &live_bos;
     while (*link && *link != bo) link = &(*link)->handle_next;
     if (*link) *link = bo->handle_next;
-    release_handle_locked(bo->dev, bo->handle);
+    uint32_t handles[GBM_MAX_PLANES];
+    for (unsigned plane = 0; plane < bo->plane_count; plane++) handles[plane] = bo->planes[plane].handle;
+    release_plane_handles_locked(bo->dev, handles, bo->plane_count);
     pthread_mutex_unlock(&handle_mutex);
     release_device(bo->dev);
     free(bo);
@@ -913,45 +1042,48 @@ union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo *bo) {
     return h;
 }
 
-/* Every BO here is a single linear plane, so the per-plane accessors
- * collapse onto the whole-BO ones. SDL2's KMSDRM backend walks planes to
- * build its drmModeAddFB2 call. An absent plane follows Mesa: errno EINVAL
- * with handle .s32 == -1 (handle 0 would name "no buffer"), stride 0 and
- * offset 0, so a caller cannot mistake it for a real plane. */
+/* Per-plane accessors report each plane of the format (one for RGB, two or
+ * three for planar YUV). SDL2's KMSDRM backend walks planes to build its
+ * drmModeAddFB2 call. An absent plane follows Mesa: errno EINVAL with
+ * handle .s32 == -1 (handle 0 would name "no buffer"), stride 0 and offset
+ * 0, so a caller cannot mistake it for a real plane. */
 
 int gbm_bo_get_plane_count(struct gbm_bo *bo) {
-    (void) bo;
-    return 1;
+    return (int)bo->plane_count;
+}
+
+static int plane_exists(struct gbm_bo *bo, int plane) {
+    if (plane >= 0 && (unsigned)plane < bo->plane_count) return 1;
+    errno = EINVAL;
+    return 0;
 }
 
 union gbm_bo_handle gbm_bo_get_handle_for_plane(struct gbm_bo *bo, int plane) {
     union gbm_bo_handle h;
-    if (plane != 0) {
-        errno = EINVAL;
+    if (!plane_exists(bo, plane)) {
         h.s64 = 0;
         h.s32 = -1;
         return h;
     }
     h.u64 = 0;
-    h.u32 = bo->handle;
+    h.u32 = bo->planes[plane].handle;
     return h;
 }
 
 uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane) {
-    if (plane != 0) { errno = EINVAL; return 0; }
-    return bo->stride;
+    return plane_exists(bo, plane) ? bo->planes[plane].stride : 0;
 }
 
 uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
-    if (plane != 0) { errno = EINVAL; return 0; }
-    return bo->offset;
+    return plane_exists(bo, plane) ? bo->planes[plane].offset : 0;
 }
 
 /* Report what an allocation with these usages can actually do. Like Mesa's
  * DRI backend, a cursor is never also a render target, and unknown or
  * unsupported usages are unsupported. The kernel cursor plane takes only
  * ARGB8888 (kms::CURSOR_PLANE_FORMATS), the primary plane the k_formats
- * marked scanout; every format is a render target. */
+ * marked scanout; every RGB format is a render target and no YUV format
+ * is. */
 int gbm_device_is_format_supported(struct gbm_device *gbm,
                                    uint32_t format, uint32_t flags) {
     (void) gbm;
@@ -960,7 +1092,7 @@ int gbm_device_is_format_supported(struct gbm_device *gbm,
     if (!info || (flags & ~WPK_GBM_SUPPORTED_USAGE)) return 0;
     if (flags & GBM_BO_USE_CURSOR)
         return !(flags & GBM_BO_USE_RENDERING) && format == GBM_FORMAT_ARGB8888;
-    return !(flags & GBM_BO_USE_SCANOUT) || info->scanout;
+    return usage_serves_format(info, flags);
 }
 
 /* The render back is private GPU storage. Public CPU-facing usage flags

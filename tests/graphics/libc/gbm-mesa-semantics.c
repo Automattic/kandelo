@@ -52,7 +52,7 @@ static uint32_t storage_of(uint32_t format) {
 }
 static unsigned map_dumb_calls, allocations, gpu_allocations;
 static int gpu_context;               /* WPK_CREATE_GPU_BO succeeds */
-static uint32_t last_gpu_format, last_dumb_bpp;
+static uint32_t last_gpu_format, last_dumb_bpp, last_dumb_width, last_dumb_height;
 static struct { int fd; uint32_t handle; } primes[8];
 
 int graphics_gbm_munmap(void *address, size_t length) { return munmap(address, length); }
@@ -86,6 +86,7 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         struct drm_mode_create_dumb *d = data;
         ++allocations;
         last_dumb_bpp = d->bpp;
+        last_dumb_width = d->width; last_dumb_height = d->height;
         /* The kernel's dumb rule: any nonzero bpp, rows rounded to 4 bytes. */
         d->handle = new_handle(0); d->pitch = ((d->width * d->bpp + 7) / 8 + 3) & ~3u;
         d->size = (uint64_t)d->pitch * d->height;
@@ -131,6 +132,14 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         if (!real || !claimed || real >> 1 != claimed >> 1 || ((claimed & 1) && !(real & 1))) {
             errno = EINVAL; return -1;
         }
+        return 0;
+    }
+    if (request == DRM_IOCTL_PRIME_HANDLE_TO_FD) {
+        /* A fresh descriptor naming the handle's object (its size is not
+         * modelled for exports). */
+        struct drm_prime_handle *prime = data;
+        if (!prime->handle || prime->handle >= MAX_HANDLES || !live[prime->handle]) { errno = ENOENT; return -1; }
+        prime->fd = prime_fd(prime->handle, 0);
         return 0;
     }
     if (request == DRM_IOCTL_MODE_MAP_DUMB) {
@@ -680,6 +689,156 @@ static void import_gpu_format(void) {
     close_device(device);
 }
 
+/* Multi-plane and packed YUV buffers (NV12, NV21, YUV420, YVU420, YUYV,
+ * UYVY, P010): one linear CPU-tier object holding every plane, laid out
+ * with drm_format_info's subsampled plane sizes and 4-byte row alignment,
+ * and reported plane by plane. They are sampled through EGLImages only:
+ * no YUV render target, scanout plane or cursor exists, so those usages
+ * fail. */
+static void yuv_buffers(void) {
+    struct gbm_device *device = open_device();
+    static const struct { uint32_t format; unsigned planes; uint32_t strides[3], offsets[3], size; } layouts[] = {
+        {GBM_FORMAT_NV12, 2, {8, 8}, {0, 24}, 40},
+        {GBM_FORMAT_NV21, 2, {8, 8}, {0, 24}, 40},
+        {GBM_FORMAT_YUV420, 3, {8, 4, 4}, {0, 24, 32}, 40},
+        {GBM_FORMAT_YVU420, 3, {8, 4, 4}, {0, 24, 32}, 40},
+        {GBM_FORMAT_YUYV, 1, {12}, {0}, 36},  /* 5 pixels: three Y0,Cb,Y1,Cr groups */
+        {GBM_FORMAT_UYVY, 1, {12}, {0}, 36},
+        {DRM_FORMAT_P010, 2, {12, 12}, {0, 36}, 60},
+    };
+    const uint64_t linear = DRM_FORMAT_MOD_LINEAR;
+    for (unsigned i = 0; i < sizeof layouts / sizeof layouts[0]; ++i) {
+        uint32_t format = layouts[i].format;
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_LINEAR | GBM_BO_USE_WRITE) == 1);
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_RENDERING) == 0);
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_SCANOUT) == 0);
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_CURSOR) == 0);
+        assert(gbm_device_get_format_modifier_plane_count(device, format, linear) == (int)layouts[i].planes);
+        unsigned before = allocations;
+        gpu_context = 1;
+        const uint32_t refused[] = {GBM_BO_USE_RENDERING, GBM_BO_USE_SCANOUT, GBM_BO_USE_CURSOR};
+        for (unsigned j = 0; j < 3; ++j) {
+            errno = 0;
+            assert(!gbm_bo_create(device, 5, 3, format, refused[j]) && errno == EINVAL);
+        }
+        errno = 0;
+        assert(!gbm_bo_create_with_modifiers(device, 5, 3, format, &linear, 1) && errno == EINVAL);
+        errno = 0;
+        assert(!gbm_surface_create(device, 5, 3, format, GBM_BO_USE_LINEAR) && errno == EINVAL);
+        assert(allocations == before && !gpu_allocations);
+        gpu_context = 0;
+        struct gbm_bo *bo = gbm_bo_create_with_modifiers2(device, 5, 3, format, &linear, 1,
+            GBM_BO_USE_WRITE);
+        assert(bo && allocations == before + 1 && last_dumb_bpp == 8);
+        /* One dumb object at least as large as the layout. */
+        assert((uint64_t)last_dumb_width * last_dumb_height >= layouts[i].size);
+        assert(gbm_bo_get_format(bo) == format && gbm_bo_get_modifier(bo) == linear);
+        assert(gbm_bo_get_bpp(bo) == 0); /* Mesa: no single bpp for YUV */
+        assert(gbm_bo_get_plane_count(bo) == (int)layouts[i].planes);
+        assert(gbm_bo_get_stride(bo) == layouts[i].strides[0]);
+        for (unsigned plane = 0; plane < layouts[i].planes; ++plane) {
+            assert(gbm_bo_get_stride_for_plane(bo, (int)plane) == layouts[i].strides[plane]);
+            assert(gbm_bo_get_offset(bo, (int)plane) == layouts[i].offsets[plane]);
+            assert(gbm_bo_get_handle_for_plane(bo, (int)plane).u32 == gbm_bo_get_handle(bo).u32);
+            int fd = gbm_bo_get_fd_for_plane(bo, (int)plane);
+            assert(fd >= 0);
+            close(fd);
+        }
+        errno = 0;
+        assert(gbm_bo_get_handle_for_plane(bo, (int)layouts[i].planes).s32 == -1 && errno == EINVAL);
+        /* gbm_bo_write copies raw bytes into the object: every plane. */
+        uint8_t bytes[60];
+        for (unsigned k = 0; k < sizeof bytes; ++k) bytes[k] = (uint8_t)(k * 3 + i);
+        assert(gbm_bo_write(bo, bytes, layouts[i].size) == 0);
+        uint8_t stored[60] = {0};
+        off_t at = (off_t)gbm_bo_get_handle(bo).u32 * sysconf(_SC_PAGESIZE);
+        assert(pread(fileno(device_file), stored, layouts[i].size, at) == (ssize_t)layouts[i].size);
+        assert(!memcmp(stored, bytes, layouts[i].size));
+        errno = 0;
+        assert(gbm_bo_write(bo, bytes, layouts[i].size + 1) == -1 && errno == EINVAL);
+        /* gbm_bo_map maps the first plane in its own samples. */
+        uint32_t stride = 0; void *token = NULL;
+        uint8_t *luma = gbm_bo_map(bo, 1, 2, 1, 1, GBM_BO_TRANSFER_WRITE, &stride, &token);
+        assert(luma && stride == layouts[i].strides[0]);
+        *luma = 0xa5;
+        gbm_bo_unmap(bo, token);
+        uint8_t value = 0;
+        uint32_t cpp = format == DRM_FORMAT_P010 || format == GBM_FORMAT_YUYV || format == GBM_FORMAT_UYVY ? 2 : 1;
+        assert(pread(fileno(device_file), &value, 1, at + 2 * stride + cpp) == 1 && value == 0xa5);
+        gbm_bo_destroy(bo);
+    }
+    close_device(device);
+}
+
+/* GBM_BO_IMPORT_FD_MODIFIER describes every plane: one fd, stride and offset
+ * per plane, the fds naming one object or several, each plane checked
+ * against the real size of its own object. */
+static void import_yuv(void) {
+    struct gbm_device *device = open_device();
+    uint32_t handle = new_handle(0);
+    int fd = prime_fd(handle, 40); /* 5x3 NV12: Y 8x3 at 0, CbCr 8x2 at 24 */
+    struct gbm_import_fd_modifier_data base = {.width = 5, .height = 3, .format = GBM_FORMAT_NV12,
+        .num_fds = 2, .fds = {fd, fd}, .strides = {8, 8}, .offsets = {0, 24},
+        .modifier = DRM_FORMAT_MOD_LINEAR};
+    struct gbm_bo *bo = gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &base, GBM_BO_USE_LINEAR);
+    assert(bo && gbm_bo_get_plane_count(bo) == 2 && gbm_bo_get_bpp(bo) == 0);
+    assert(gbm_bo_get_handle_for_plane(bo, 1).u32 == handle && gbm_bo_get_offset(bo, 1) == 24);
+    assert(gbm_bo_get_stride_for_plane(bo, 1) == 8);
+    gbm_bo_destroy(bo);
+    assert(!live[handle] && closes[handle] == 1); /* one shared GEM name, closed once */
+    /* Planes in separate objects: each name is held and released. */
+    uint32_t chroma = new_handle(0);
+    int chroma_fd = prime_fd(chroma, 16);
+    struct gbm_import_fd_modifier_data split = base;
+    split.fds[1] = chroma_fd; split.offsets[1] = 0;
+    bo = gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &split, 0);
+    assert(bo && gbm_bo_get_handle_for_plane(bo, 0).u32 == handle);
+    assert(gbm_bo_get_handle_for_plane(bo, 1).u32 == chroma && live[handle] && live[chroma]);
+    gbm_bo_destroy(bo);
+    assert(!live[handle] && !live[chroma] && closes[chroma] == 1);
+    /* A YUV plane is never rendered to or scanned out. */
+    const uint32_t refused[] = {GBM_BO_USE_RENDERING, GBM_BO_USE_SCANOUT};
+    for (unsigned i = 0; i < 2; ++i) {
+        errno = 0;
+        assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &base, refused[i]) && errno == EINVAL);
+    }
+    struct gbm_import_fd_modifier_data bad[6];
+    for (unsigned i = 0; i < 6; ++i) bad[i] = base;
+    bad[0].num_fds = 1;                      /* NV12 has two planes */
+    bad[1].num_fds = 3; bad[1].fds[2] = fd; bad[1].strides[2] = 8;
+    bad[2].strides[1] = 5;                   /* below 3 CbCr pairs */
+    bad[3].offsets[1] = 25;                  /* 25 + 8 * 2 > 40 */
+    bad[4].fds[1] = chroma_fd; bad[4].offsets[1] = 1; /* 1 + 16 > 16 */
+    bad[5].offsets[1] = -8;
+    for (unsigned i = 0; i < 6; ++i) {
+        errno = 0;
+        assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &bad[i], 0) && errno == EINVAL);
+        assert(!live[handle] && !live[chroma]); /* no name outlives a refusal */
+    }
+    /* A GPU-tier object has no CPU bytes for a YUV plane to be read from. */
+    uint32_t gpu = new_handle(1);
+    int gpu_fd = prime_fd(gpu, 40);
+    struct gbm_import_fd_modifier_data texture = base;
+    texture.fds[0] = texture.fds[1] = gpu_fd;
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &texture, 0) && errno == EINVAL);
+    assert(!live[gpu]);
+    /* GBM_BO_IMPORT_FD names one plane: a packed YUV format, not NV12. */
+    struct gbm_import_fd_data single = {.fd = fd, .width = 5, .height = 3, .stride = 8,
+        .format = GBM_FORMAT_NV12};
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD, &single, 0) && errno == EINVAL);
+    single.format = GBM_FORMAT_YUYV; single.stride = 12;
+    bo = gbm_bo_import(device, GBM_BO_IMPORT_FD, &single, GBM_BO_USE_LINEAR);
+    assert(bo && gbm_bo_get_plane_count(bo) == 1 && gbm_bo_get_format(bo) == GBM_FORMAT_YUYV);
+    gbm_bo_destroy(bo);
+    single.stride = 10; /* 5 pixels end inside a third Y0,Cb,Y1,Cr group */
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD, &single, 0) && errno == EINVAL);
+    close(gpu_fd); close(chroma_fd); close(fd);
+    close_device(device);
+}
+
 /* Mesa: an absent plane has handle .s32 == -1 / stride 0 / offset 0 with
  * errno EINVAL; handle 0 would name "no buffer" to libdrm callers. */
 static void plane_accessors(void) {
@@ -717,6 +876,8 @@ int main(int argc, char **argv) {
         {"widened-formats", widened_formats},
         {"import-gpu-format", import_gpu_format},
         {"import-egl-image", import_egl_image},
+        {"yuv-buffers", yuv_buffers},
+        {"import-yuv", import_yuv},
     };
     if (argc != 2) { fprintf(stderr, "usage: %s <case>\n", argv[0]); return 2; }
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {

@@ -3812,6 +3812,22 @@ takes a plane of any single-plane RGB format at that format's own bytes
 per pixel; the dumb buffer's allocation bpp plays no part, because a
 dma-buf is bytes whose meaning the importer names.
 
+GBM allocates a YUV buffer (NV12, NV21, YUV420, YVU420, YUYV, UYVY, P010)
+as one linear CPU-tier dumb object holding every plane, as Mesa's drivers
+lay planar images out: each plane's rows hold its subsampled samples
+(rounded up; a packed YUYV/UYVY row ends with a whole pixel pair) rounded
+to 4 bytes, one plane after another, reported through the per-plane
+accessors. A YUV buffer is sampled, never rendered to or scanned out: no
+WebGL 2 texture format stores YUV planes as a render target and no KMS
+plane scans YUV out, so `GBM_BO_USE_RENDERING`, `_SCANOUT` and `_CURSOR`
+fail with EINVAL and `gbm_device_is_format_supported` reports 0 for them
+(`gbm_bo_create_with_modifiers`, whose implied usage is scanout and
+rendering, therefore fails too). `gbm_bo_get_bpp` is 0 for YUV, as Mesa
+reports. `GBM_BO_IMPORT_FD_MODIFIER` takes one fd, stride and offset per
+plane of the format (one object or several), checks each plane against
+its own object's size, and `GBM_BO_IMPORT_FD` names one plane, so it
+takes packed YUYV/UYVY but not a planar format.
+
 In the image-backed producer path, rendering resources and presenting them
 are separate operations. Authorized KMS operations select a framebuffer;
 the vblank pump presents its retained GPU BO even when the producer uses
