@@ -1400,33 +1400,53 @@ fn release_dri_handle(
     Ok(())
 }
 
-fn handle_drm_version(request: u32, buf: &mut [u8]) -> Result<(), Errno> {
+/// The driver identity `DRM_IOCTL_VERSION` reports; the name matches the
+/// sysfs `DRIVER=` of the platform device. Linux drivers report date "0"
+/// since driver dates were removed (6.14).
+const DRM_DRIVER_NAME: &[u8] = b"kandelo-drm";
+const DRM_DRIVER_DATE: &[u8] = b"0";
+const DRM_DRIVER_DESC: &[u8] = b"Kandelo virtual display";
+
+/// `drm_version`: version 1.0.0 and, through `drm_copy_field`, each
+/// string's full length with up to the caller's capacity copied (a NULL
+/// destination copies nothing). Destinations are probed before any write.
+fn handle_drm_version(host: &mut dyn HostIO, pid: i32, request: u32, buf: &mut [u8]) -> Result<(), Errno> {
     use wasm_posix_shared::dri::{DRM_IOCTL_VERSION, DRM_IOCTL_VERSION_WASM64};
 
-    let (size, name_ptr_offset, date_ptr_offset, desc_ptr_offset, pointer_size) =
-        if request == DRM_IOCTL_VERSION {
-            (36usize, 16usize, 24usize, 32usize, 4usize)
-        } else if request == DRM_IOCTL_VERSION_WASM64 {
-            (64usize, 24usize, 40usize, 56usize, 8usize)
-        } else {
-            return Err(Errno::EINVAL);
-        };
+    // (struct size, size_t/pointer width, offsets of the three len fields)
+    let (size, word, len_offsets) = if request == DRM_IOCTL_VERSION {
+        (36usize, 4usize, [12usize, 20, 28])
+    } else if request == DRM_IOCTL_VERSION_WASM64 {
+        (64usize, 8usize, [16usize, 32, 48])
+    } else {
+        return Err(Errno::EINVAL);
+    };
     if buf.len() < size {
         return Err(Errno::EINVAL);
     }
-
-    let mut name_ptr = [0u8; 8];
-    let mut date_ptr = [0u8; 8];
-    let mut desc_ptr = [0u8; 8];
-    name_ptr[..pointer_size].copy_from_slice(&buf[name_ptr_offset..name_ptr_offset + pointer_size]);
-    date_ptr[..pointer_size].copy_from_slice(&buf[date_ptr_offset..date_ptr_offset + pointer_size]);
-    desc_ptr[..pointer_size].copy_from_slice(&buf[desc_ptr_offset..desc_ptr_offset + pointer_size]);
-
-    buf[..size].fill(0);
+    let read_word = |buf: &[u8], at: usize| -> u64 {
+        let mut bytes = [0u8; 8];
+        bytes[..word].copy_from_slice(&buf[at..at + word]);
+        u64::from_le_bytes(bytes)
+    };
+    let values = [DRM_DRIVER_NAME, DRM_DRIVER_DATE, DRM_DRIVER_DESC];
+    let mut copies = alloc::vec::Vec::new();
+    for (&len_at, value) in len_offsets.iter().zip(values) {
+        let capacity = read_word(buf, len_at);
+        let pointer = read_word(buf, len_at + word);
+        let len = (value.len() as u64).min(capacity) as usize;
+        if len != 0 && pointer != 0 {
+            copies.push((probe_dri_process_pointer(host, pid, pointer, len)?, &value[..len]));
+        }
+    }
+    for (pointer, bytes) in copies {
+        write_dri_bytes(host, pid, pointer, bytes)?;
+    }
     buf[0..4].copy_from_slice(&1i32.to_le_bytes());
-    buf[name_ptr_offset..name_ptr_offset + pointer_size].copy_from_slice(&name_ptr[..pointer_size]);
-    buf[date_ptr_offset..date_ptr_offset + pointer_size].copy_from_slice(&date_ptr[..pointer_size]);
-    buf[desc_ptr_offset..desc_ptr_offset + pointer_size].copy_from_slice(&desc_ptr[..pointer_size]);
+    buf[4..12].fill(0);
+    for (&len_at, value) in len_offsets.iter().zip(values) {
+        buf[len_at..len_at + word].copy_from_slice(&(value.len() as u64).to_le_bytes()[..word]);
+    }
     Ok(())
 }
 
@@ -1758,7 +1778,7 @@ fn handle_dri_ioctl(
         }
     }
     match request {
-        DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(request, buf),
+        DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 => handle_drm_version(host, pid, request, buf),
         DRM_IOCTL_GET_CAP => {
             if buf.len() < core::mem::size_of::<WpkDrmGetCap>() {
                 return Err(Errno::EINVAL);
@@ -51958,18 +51978,19 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
-    fn dri_ioctl_version_returns_v1_with_zero_lengths() {
+    fn dri_ioctl_version_reports_the_driver_strings_with_full_lengths() {
         use wasm_posix_shared::dri::*;
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        // drm_copy_field: copy up to the capacity, report the full length.
         let v_in = WpkDrmVersion {
             name_len: 64,
-            name_ptr: 0xdead_beef,
+            name_ptr: 0x3000,
             date_len: 64,
-            date_ptr: 0xcafe_1234,
-            desc_len: 64,
-            desc_ptr: 0xabad_1dea,
+            date_ptr: 0x3100,
+            desc_len: 7,
+            desc_ptr: 0x3200,
             ..Default::default()
         };
         let mut buf = [0u8; core::mem::size_of::<WpkDrmVersion>() + 1];
@@ -51980,14 +52001,20 @@ impl HostIO for RelSymlinkMock {
             unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const WpkDrmVersion) };
         assert_eq!(v_out.version_major, 1);
         assert_eq!(v_out.version_minor, 0);
-        assert_eq!(v_out.name_len, 0);
-        assert_eq!(v_out.date_len, 0);
-        assert_eq!(v_out.desc_len, 0);
+        assert_eq!((v_out.name_len, v_out.date_len, v_out.desc_len),
+            (DRM_DRIVER_NAME.len() as u32, 1, DRM_DRIVER_DESC.len() as u32));
+        assert_eq!(&host.proc_memory[0x3000..0x3000 + DRM_DRIVER_NAME.len()], b"kandelo-drm");
+        assert_eq!(&host.proc_memory[0x3100..0x3101], b"0");
+        assert_eq!(&host.proc_memory[0x3200..0x3208], b"Kandelo\0", "partial copy, no terminator");
         // Pointers are echoed back verbatim — libdrm round-trips them.
-        assert_eq!(v_out.name_ptr, 0xdead_beef);
-        assert_eq!(v_out.date_ptr, 0xcafe_1234);
-        assert_eq!(v_out.desc_ptr, 0xabad_1dea);
+        assert_eq!((v_out.name_ptr, v_out.date_ptr, v_out.desc_ptr), (0x3000, 0x3100, 0x3200));
         assert_eq!(*buf.last().unwrap(), 0xa5);
+        // A NULL destination copies nothing but still learns the length
+        // (libdrm's first, sizing call).
+        let mut sizing = [0u8; core::mem::size_of::<WpkDrmVersion>()];
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_VERSION, &mut sizing).unwrap();
+        let sized: WpkDrmVersion = unsafe { core::ptr::read_unaligned(sizing.as_ptr() as *const WpkDrmVersion) };
+        assert_eq!(sized.name_len, DRM_DRIVER_NAME.len() as u32);
     }
 
     #[test]
@@ -51998,9 +52025,9 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
         let mut buf = [0u8; 65];
-        let name_ptr = 0x0000_0001_dead_beefu64;
-        let date_ptr = 0x0000_0002_cafe_1234u64;
-        let desc_ptr = 0x0000_0003_abad_1deau64;
+        let name_ptr = 0x3000u64;
+        let date_ptr = 0x3100u64;
+        let desc_ptr = 0x3200u64;
         buf[16..24].copy_from_slice(&64u64.to_le_bytes());
         buf[24..32].copy_from_slice(&name_ptr.to_le_bytes());
         buf[32..40].copy_from_slice(&64u64.to_le_bytes());
@@ -52009,20 +52036,26 @@ impl HostIO for RelSymlinkMock {
         buf[56..64].copy_from_slice(&desc_ptr.to_le_bytes());
         buf[64] = 0xa5;
 
+        let original = buf;
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_VERSION_WASM64, &mut buf).unwrap();
+        assert_eq!(&host.proc_memory[0x3000..0x3000 + DRM_DRIVER_NAME.len()], b"kandelo-drm");
+        // A destination above 4 GiB is EFAULT, never truncated to low memory.
+        let mut high = original;
+        high[24..32].copy_from_slice(&0x0000_0001_0000_3000u64.to_le_bytes());
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_VERSION_WASM64, &mut high), Err(Errno::EFAULT));
 
         assert_eq!(i32::from_le_bytes(buf[0..4].try_into().unwrap()), 1);
-        assert_eq!(u64::from_le_bytes(buf[16..24].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(buf[16..24].try_into().unwrap()), DRM_DRIVER_NAME.len() as u64);
         assert_eq!(
             u64::from_le_bytes(buf[24..32].try_into().unwrap()),
             name_ptr,
         );
-        assert_eq!(u64::from_le_bytes(buf[32..40].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(buf[32..40].try_into().unwrap()), 1);
         assert_eq!(
             u64::from_le_bytes(buf[40..48].try_into().unwrap()),
             date_ptr,
         );
-        assert_eq!(u64::from_le_bytes(buf[48..56].try_into().unwrap()), 0);
+        assert_eq!(u64::from_le_bytes(buf[48..56].try_into().unwrap()), DRM_DRIVER_DESC.len() as u64);
         assert_eq!(
             u64::from_le_bytes(buf[56..64].try_into().unwrap()),
             desc_ptr,
