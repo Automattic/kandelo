@@ -70,6 +70,23 @@ f.ref(); assert.strictEqual(f.hasRef(), false);
 for (const value of [null, undefined, {}, '', 0]) { clearTimeout(value); clearImmediate(value); }
 process.on('exit', () => console.log('node-timers-cancel-handles-ok'));
 ` },
+  { name: 'handle-key-strings', source: `
+const assert = require('assert'); let done = false;
+const timer = setTimeout(() => { done = true; }, 1); const id = +timer;
+for (const key of ['0'+id, ' '+id, id+'.0', id+'e0', '+'+id]) clearTimeout(key);
+process.on('exit', () => { assert(done); console.log('node-timers-handle-key-strings-ok'); });
+` },
+  { name: 'scheduler-receivers', source: `
+const assert = require('assert'); const {scheduler} = require('timers/promises'); let done = false;
+(async () => {
+  await scheduler.yield.call(Object.create(scheduler));
+  await scheduler.wait.call(new Proxy(scheduler, {}), 1);
+  assert.throws(() => scheduler.yield.call({}), {code:'ERR_INVALID_THIS'});
+  assert.throws(() => scheduler.yield.call(null), TypeError);
+  done = true;
+})();
+process.on('exit', () => { assert(done); console.log('node-timers-scheduler-receivers-ok'); });
+` },
   { name: 'immediate-turns', source: `
 const assert = require('assert');
 const seen = []; let final = false;
@@ -138,6 +155,25 @@ let done = false;
   done = true;
 })();
 process.on('exit', () => { assert(done); console.log('node-timers-promises-ok'); });
+` },
+  { name: 'custom-promisify', source: `
+const assert = require('assert'); const {promisify} = require('util'); let done = false;
+(async () => {
+  const custom = async () => 33;
+  function selected() { throw Error('custom implementation was ignored'); }
+  selected[promisify.custom] = custom;
+  assert.strictEqual(promisify(selected),custom);
+  assert.strictEqual(await promisify(selected)(),33);
+  assert.strictEqual(Object.getOwnPropertyDescriptor(custom,promisify.custom).enumerable,false);
+  function method(value, callback) { callback(null,this.base + value); }
+  method.call = () => { throw Error('shadowed call was used'); };
+  const lifted = promisify(method); const original = Reflect.apply;
+  Reflect.apply = () => { throw Error('replaced Reflect.apply was used'); };
+  try { assert.strictEqual(await lifted.bind({base:40})(2),42); }
+  finally { Reflect.apply = original; }
+  done = true;
+})();
+process.on('exit', () => { assert(done); console.log('node-timers-custom-promisify-ok'); });
 ` },
   { name: 'unref-promises', source: `
 const p = require('timers/promises');

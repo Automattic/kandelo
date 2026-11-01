@@ -2558,6 +2558,7 @@ const util = (() => {
         };
     }
 
+    const promisifyApply = Reflect.apply;
     function promisify(fn) {
         const custom = Symbol.for('nodejs.util.promisify.custom');
         const invalid = name => { const error = new TypeError('The "' + name + '" argument must be of type function'); error.code = 'ERR_INVALID_ARG_TYPE'; return error; };
@@ -2570,7 +2571,7 @@ const util = (() => {
         }
         function wrapped(...args) {
             return new Promise((resolve, reject) => {
-                Reflect.apply(fn, this, [...args, (err, result) => err ? reject(err) : resolve(result)]);
+                promisifyApply(fn, this, [...args, (err, result) => err ? reject(err) : resolve(result)]);
             });
         }
         Object.setPrototypeOf(wrapped, Object.getPrototypeOf(fn));
@@ -3358,7 +3359,7 @@ const timers = (() => {
     function activate(timer, start = os.timerNow()) {
         if (timer._idleTimeout < 0 || !timer._onTimeout) return;
         os.clearTimeout(timer[token]);
-        if (timer._destroyed) { known.delete(timer[id]); timer[id] = nextId++; }
+        if (timer._destroyed) { known.delete(String(timer[id])); timer[id] = nextId++; }
         timer._destroyed = false; timer._idleStart = start;
         timer[token] = os.setTimeout(() => {
             timer[token] = undefined;
@@ -3368,7 +3369,7 @@ const timers = (() => {
                 if (timer._repeat && timer._idleTimeout !== -1) {
                     timer._idleTimeout = timer._repeat; activate(timer, entered);
                 } else if (timer[token] === undefined) {
-                    timer._destroyed = true; known.delete(timer[id]);
+                    timer._destroyed = true; known.delete(String(timer[id]));
                 }
             }
         }, timer._idleTimeout, !!timer[refed], start);
@@ -3387,7 +3388,7 @@ const timers = (() => {
         hasRef() { return this[refed]; }
         close() { clearTimeout(this); return this; }
         [Symbol.toPrimitive]() {
-            if (!this._destroyed) known.set(this[id], this);
+            if (!this._destroyed) known.set(String(this[id]), this);
             return this[id];
         }
         [Symbol.dispose]() { clearTimeout(this); }
@@ -3399,10 +3400,10 @@ const timers = (() => {
         validateCallback(callback); return new Timeout(callback, repeat, args.length ? args : undefined, true, true);
     }
     function clearTimeout(timer) {
-        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(Number(timer));
+        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
         if (!timer?._onTimeout) return;
         timer._onTimeout = null; timer._idleTimeout = -1; timer._destroyed = true;
-        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(timer[id]);
+        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(String(timer[id]));
     }
     function clearInterval(timer) { clearTimeout(timer); }
     class Immediate {
@@ -3495,16 +3496,16 @@ const timersPromises = (() => {
             throw aborted(signal);
         } finally { timers.clearInterval(handle); signal?.removeEventListener('abort', cancel); }
     }
-    const schedulerBrand = new WeakSet();
+    const schedulerBrand = Symbol('kScheduler');
     class Scheduler {
         constructor() { const error = new TypeError('Illegal constructor'); error.code = 'ERR_ILLEGAL_CONSTRUCTOR'; throw error; }
         yield() { checkScheduler(this); return setImmediate(); }
         wait(delay, options) { checkScheduler(this); return setTimeout(delay, undefined, options); }
     }
     function checkScheduler(value) {
-        if (!schedulerBrand.has(value)) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
+        if (!value[schedulerBrand]) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
     }
-    const scheduler = Object.create(Scheduler.prototype); schedulerBrand.add(scheduler);
+    const scheduler = Object.create(Scheduler.prototype); scheduler[schedulerBrand] = true;
     return { setTimeout, setImmediate, setInterval, scheduler };
 })();
 

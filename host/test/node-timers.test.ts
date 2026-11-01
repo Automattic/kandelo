@@ -93,6 +93,20 @@ describe('actual timer scheduler source', () => {
     s.scheduler.runOne(); expect(seen).toEqual(['a','micro','b','next']);
     expect(s.scheduler.hasReferences()).toBe(false);
   });
+  it('preserves string key identity for timeout cancellation', () => {
+    const s = subject(); let ran = false;
+    const timer = s.timers.setTimeout(() => { ran = true; }, 1); const id = +timer;
+    for (const key of ['0'+id, ' '+id, id+'.0', id+'e0', '+'+id]) s.timers.clearTimeout(key);
+    s.advance(1); s.scheduler.runOne(); expect(ran).toBe(true);
+  });
+  it('accepts the target scheduler inherited and proxy receivers', async () => {
+    const s = subject(), scheduler = s.timersPromises.scheduler;
+    const inherited = scheduler.yield.call(Object.create(scheduler));
+    s.scheduler.runOne(); await inherited;
+    const proxied = scheduler.wait.call(new Proxy(scheduler, {}), 1);
+    s.advance(1); s.scheduler.runOne(); await proxied;
+    expect(() => scheduler.yield.call(null)).toThrow(TypeError);
+  });
   it('normalizes durations and emits the target warning categories once where required', () => {
     const s = subject();
     for (const delay of [NaN, NaN, -1, -2, Infinity, 2147483648]) {
