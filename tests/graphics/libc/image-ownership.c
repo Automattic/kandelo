@@ -446,7 +446,7 @@ int graphics_pthread_mutex_lock(pthread_mutex_t *mutex) {
 }
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
-static uint32_t captured_size, captured_type, captured_stride;
+static uint32_t captured_size, captured_type, captured_stride, captured_offset, captured_pointers;
 static unsigned captured_chunks;
 static unsigned inline_draws, buffer_binds, buffer_deletes;
 static uint32_t inline_first, inline_count, inline_attributes, inline_payload_size;
@@ -1071,6 +1071,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             if (capture_array_upload && op == OP_VERTEX_ATTRIB_POINTER) {
                 memcpy(&captured_type,commands+at+12,4); memcpy(&captured_stride,commands+at+20,4);
+                memcpy(&captured_offset,commands+at+24,4); captured_pointers++;
             }
             if (op == OP_UNIFORM1F && (GLint)words[0] == -1) {
                 assert(len == 8 && words[1] == 0);
@@ -4822,6 +4823,34 @@ int main(int argc, char **argv) {
         free(vertices);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-unaligned-attribs")) {
+        /* ES 2.0 section 2.8 places no alignment rule on a buffer offset or
+         * stride; only WebGL does. Every component type, including FIXED
+         * and normalized formats, must reach the renderer unchanged. */
+        void (*iv)(GLuint,GLenum,GLint *) = (void (*)(GLuint,GLenum,GLint *))eglGetProcAddress("glGetVertexAttribiv");
+        void (*pv)(GLuint,GLenum,void **) = (void (*)(GLuint,GLenum,void **))eglGetProcAddress("glGetVertexAttribPointerv");
+        assert(iv && pv);
+        static const struct { GLint size; GLenum type; GLboolean normalized; GLsizei stride; uintptr_t offset; } layouts[] = {
+            {3,GL_FLOAT,GL_FALSE,13,1}, {2,GL_FLOAT,GL_FALSE,0,2}, {2,GL_SHORT,GL_TRUE,5,3},
+            {3,GL_UNSIGNED_SHORT,GL_FALSE,0,1}, {4,GL_FIXED,GL_FALSE,17,2}, {3,GL_FIXED,GL_TRUE,6,5},
+            {1,GL_BYTE,GL_TRUE,1,1}, {4,GL_UNSIGNED_BYTE,GL_TRUE,7,3}};
+        GLuint buffer; glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer);
+        capture_array_upload = 1;
+        for (unsigned i = 0; i < sizeof layouts / sizeof layouts[0]; i++) {
+            const unsigned before = captured_pointers;
+            glVertexAttribPointer(1,layouts[i].size,layouts[i].type,layouts[i].normalized,layouts[i].stride,(const void *)layouts[i].offset);
+            assert(glGetError() == GL_NO_ERROR);
+            assert(captured_pointers == before+1 && captured_type == layouts[i].type);
+            assert(captured_stride == (uint32_t)layouts[i].stride && captured_offset == layouts[i].offset);
+            GLint value = -1; void *pointer = NULL;
+            iv(1,GL_VERTEX_ATTRIB_ARRAY_STRIDE,&value); assert(value == layouts[i].stride);
+            iv(1,GL_VERTEX_ATTRIB_ARRAY_NORMALIZED,&value); assert(value == layouts[i].normalized);
+            pv(1,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == (void *)layouts[i].offset);
+        }
+        glDeleteBuffers(1,&buffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-unaligned-attribs"); return 0;
     }
     if (!strcmp(argv[1], "encoder-buffer-names")) {
         glBindBuffer(GL_ARRAY_BUFFER,1);

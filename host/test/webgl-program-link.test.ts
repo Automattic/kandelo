@@ -1102,7 +1102,7 @@ describe("CTS missing-program framebuffer contract", () => {
     const status=vi.fn(()=>0x8cd7);Object.assign(native,{checkFramebufferStatus:status});
     for(const [op,words,error] of [[O.OP_DRAW_ARRAYS,[7,0,1],0x500],
       [O.OP_DRAW_ARRAYS,[0,0,-1],0x501], [O.OP_DRAW_ELEMENTS,[0,1,0,0],0x500],
-      [O.OP_DRAW_ELEMENTS,[0,-1,0x1401,0],0x501], [O.OP_DRAW_ELEMENTS,[0,1,0x1403,1],0x502]] as const) {
+      [O.OP_DRAW_ELEMENTS,[0,-1,0x1401,0],0x501]] as const) {
       send(op,[...words]);expect(query(O.QOP_GET_ERROR)).toBe(error);
     }
     expect(status).not.toHaveBeenCalled();

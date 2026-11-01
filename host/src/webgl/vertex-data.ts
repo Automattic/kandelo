@@ -18,6 +18,18 @@ function componentBytes(type: number): number {
 }
 function layoutKey(a: GlVertexAttribute): string { return `${a.type}:${a.size}:${a.stride}:${a.offset}`; }
 
+/** Layouts WebGL cannot point at directly. FIXED has no WebGL type and a
+ * stride above 255 exceeds WebGL's limit. ES 2.0 section 2.8 also accepts
+ * any byte offset or stride, while WebGL 1.0 section 6.4 (inherited by
+ * WebGL 2) requires both to be multiples of the component size. Each of
+ * these draws from a tightly packed private view instead. The same rule
+ * selects the native layout of every inverse, so a restored pointer is one
+ * WebGL accepts. An unknown type is not packed; its own validation fails. */
+export function packedVertexLayout(a: Pick<GlVertexAttribute,"type"|"stride"|"offset">): boolean {
+  const width = componentBytes(a.type);
+  return a.type === FIXED || a.stride > 255 || (width > 1 && (a.offset % width !== 0 || a.stride % width !== 0));
+}
+
 /** Reserve scalar inverse and shadow publication before driver effects. A
  * failed setter may have changed physical state even when its reply throws;
  * shared repair keeps that uncertainty fenced after the logical owner retires. */
@@ -66,9 +78,11 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
   if (limit === null) return false;
   if (!limit) { recordGlError(b,0x502); return false; }
   if (index >= limit) { recordGlError(b,0x501); return false; }
-  if (a.offset < 0 || a.offset % width || a.stride % width || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
+  // Without a buffer the encoder owns client memory and always sends offset
+  // zero; a nonzero offset cannot name anything here.
+  if (a.offset < 0 || (!a.buffer && a.offset !== 0)) { recordGlError(b,0x502); return false; }
   const array = b.shadow.arrayBuffer, old = vertexAttribute(b,index);
-  const packed = a.type === FIXED || a.stride > 255;
+  const packed = packedVertexLayout(a);
   const store = a.buffer && b.bufferStores.get(a.buffer);
   if (a.buffer && !store) { recordGlError(b,0x502); return false; }
   const key = packed ? layoutKey(a) : "";
@@ -89,7 +103,7 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
     if (created) {
       store!.converted.set(key,view!); b.bufferViewOwners.set(view!.native,a.buffer!);
     }
-    const oldPacked = old.type === FIXED || old.stride > 255 || old.view !== undefined;
+    const oldPacked = packedVertexLayout(old) || old.view !== undefined;
     const oldNative = old.view ?? (old.buffer && (b.bufferStores.get(old.buffer)?.views.get(ARRAY)?.native ?? old.buffer));
     const type = old.type === FIXED ? FLOAT : old.type, normalized = old.type === FIXED ? false : old.normalized;
     const stride = oldPacked ? 0 : old.stride, offset = oldPacked ? 0 : old.offset;

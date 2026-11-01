@@ -1,5 +1,5 @@
 import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
-import { collectConvertedVertexData } from "./vertex-data.js";
+import { collectConvertedVertexData, packedVertexLayout } from "./vertex-data.js";
 import { canonicalBuffer, destroyBufferStorage } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -49,7 +49,7 @@ export function deleteBufferNames(b: GlBinding, names: number[]): boolean {
         restore: nativeInverse(owner, [["bindBuffer",0x8892,oldArray]])});
       for (const [index,a] of attributes) {
         const cleared = {...a,buffer:null}; delete cleared.view; nextAttributes.set(index,cleared);
-        const packed = a.type === 0x140c || a.stride > 255 || a.view !== undefined;
+        const packed = packedVertexLayout(a) || a.view !== undefined;
         const type = a.type === 0x140c ? 0x1406 : a.type;
         const normalized = a.type === 0x140c ? false : a.normalized;
         const stride = packed ? 0 : a.stride, offset = packed ? 0 : a.offset;

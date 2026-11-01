@@ -128,7 +128,8 @@ function runStatePayload(b: GlBinding, op: number, input: Uint8Array, out: Uint8
       if (count <= 0) return fail(b,0x501);
       const width = type === 0x1401 ? 1 : 2;
       const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
-      if (!store || offset%width || offset+count*width > store.size) return fail(b,0x502);
+      // Indices may start at any byte offset (ES 2.0 section 2.8).
+      if (!store || offset+count*width > store.size) return fail(b,0x502);
       let reply: Uint8Array<ArrayBuffer>, scratch: Uint8Array<ArrayBuffer>;
       try { reply = new Uint8Array(8196); scratch = new Uint8Array(Math.min(count*width,BUFFER_TRANSFER_BYTES)); }
       catch { recordGlError(b,0x505); return -12; }

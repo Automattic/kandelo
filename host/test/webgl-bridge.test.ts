@@ -653,7 +653,8 @@ describe("shared buffer deletion", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,4,0x88e4]);
     const calls = gl.log.length;
-    for (const words of [[7,1,0x1401,0],[0,1,0x1405,0],[0,-1,0x1401,0],[0,1,0x1403,1],[0,3,0x1403,0]]) {
+    // An unaligned index offset is valid GLES (section 2.8); only range errors remain.
+    for (const words of [[7,1,0x1401,0],[0,1,0x1405,0],[0,-1,0x1401,0],[0,3,0x1403,0]]) {
       send(a,O.OP_DRAW_ELEMENTS,words);
     }
     expect(gl.log.length).toBe(calls); expect(gl.indexDraws).toEqual([]);

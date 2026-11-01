@@ -896,10 +896,8 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (g_array_buffer && ((uintptr_t)pointer % attrib_type_size(type) || (uint32_t)stride % attrib_type_size(type))) {
-        raise_client_error(GL_INVALID_OPERATION);
-        return;
-    }
+    /* ES 2.0 section 2.8 accepts any buffer offset and stride. WebGL's
+     * component-size alignment rule is the renderer's to adapt to. */
     if (state->current_vertex_array->name && g_array_buffer == 0 && pointer != NULL) {
         raise_client_error(GL_INVALID_OPERATION);
         return;

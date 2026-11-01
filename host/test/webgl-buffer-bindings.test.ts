@@ -591,7 +591,7 @@ it("reserves attribute and converted-view metadata before native pointer effects
 
 it("rejects invalid vertex formats and native-limit indices before allocation or inverse registration", () => {
   for (const [words,error] of [ [[16,2,0x1406,0,0,0],0x501], [[0,5,0x1406,0,0,0],0x501],
-      [[0,2,0x1404,0,0,0],0x500], [[0,2,0x1406,0,0,2],0x502], [[0,2,0x1406,0,0xffffffff,0],0x501] ] as const) {
+      [[0,2,0x1404,0,0,0],0x500], [[0,2,0x1406,0,0xffffffff,0],0x501] ] as const) {
     const {b,gl,submit} = pointerSetup(); const count = gl.alive.size;
     expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[...words]]])).toBe(0);
     expect(gl.attributes.size).toBe(0); expect(gl.alive.size).toBe(count); expect(b.errors).toEqual([error]);

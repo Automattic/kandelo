@@ -3,6 +3,7 @@ import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, prepareBufferDraw } from "./buffer-storage.js";
 import { prepareImageDraw } from "./image-storage.js";
+import { packedVertexLayout } from "./vertex-data.js";
 import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_BYTES, INLINE_DRAW_MAX_ATTRIBUTES } from "./ops.js";
 import {
@@ -109,7 +110,7 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
       return [["bindBuffer",ARRAY,null],
         ["vertexAttribPointer",a.index,old.size,old.type === FIXED ? FLOAT : old.type,
           old.type === FIXED ? false : old.normalized,
-          old.type === FIXED || old.stride > 255 ? 0 : old.stride,0]];
+          packedVertexLayout(old) ? 0 : old.stride,0]];
     });
     const restoreArray: NativeCall[] = [["bindBuffer",ARRAY,b.shadow.arrayBuffer]];
     const completion = {submitted:false,complete:false};

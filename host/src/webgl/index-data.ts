@@ -15,9 +15,11 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   if (mode > 6 || (type !== BYTE && type !== SHORT)) { recordGlError(b,0x500); return; }
   if (count < 0) { recordGlError(b,0x501); return; }
   const width = type === BYTE ? 1 : 2, promotedWidth = width*2;
-  if (offset % width) { recordGlError(b,0x502); return; }
   if (!validateDrawFramebufferWithoutProgram(b)) return;
-  if (count === 0) { checkedGlCall(b, () => gl.drawElements(mode,0,type,offset)); return; }
+  // ES 2.0 section 2.8 has no index-offset alignment rule; WebGL 1.0 section
+  // 6.4 does. An empty draw reads no index, so validate it at the aligned
+  // offset. Every nonempty draw copies its indices to offset zero below.
+  if (count === 0) { checkedGlCall(b, () => gl.drawElements(mode,0,type,offset - offset % width)); return; }
   const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
   const previous = store?.views.get(ELEMENT)?.native;
   if (!store || !previous || offset < 0 || offset+count*width > store.size) { recordGlError(b,0x502); return; }
