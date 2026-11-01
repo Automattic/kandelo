@@ -214,7 +214,7 @@ static uint32_t display_generation = 91;
 static int display_live, fail_display_join;
 static uint32_t bound_texture, redefined_texture;
 static GLenum binding_query_kind;
-static unsigned binding_model, advertised_texture_units;
+static unsigned binding_model, advertised_texture_units, advertised_vertex_attribs, vertex_limit_queries;
 static unsigned char command_storage[8][WPK_GL_CMDBUF_LEN];
 struct device_slot {
     int root_open, object_open, root_live;
@@ -1703,6 +1703,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
             } else
                 memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
+            return 0;
+        }
+        if (q->op == QOP_GET_INTEGERV && q->in_buf_len == 4 &&
+            *(const uint32_t *)(uintptr_t)q->in_buf_ptr == GL_MAX_VERTEX_ATTRIBS) {
+            assert(q->out_buf_len == 4);
+            const GLint limit = advertised_vertex_attribs ? (GLint)advertised_vertex_attribs : 16;
+            memcpy(allocation_for(q->out_buf_ptr,4),&limit,4); vertex_limit_queries++;
             return 0;
         }
         if (q->op == QOP_GET_ATTRIB_LOC && attrib_expected) {
@@ -5060,6 +5067,47 @@ int main(int argc, char **argv) {
         assert(buffer_uploads == 1 && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-vao-elements"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-attrib-limit")) {
+        /* Table 6.18: the attribute limit is the context's MAX_VERTEX_ATTRIBS,
+         * queried once, not a compile-time constant. */
+        void (*iv)(GLuint,GLenum,GLint *) = (void (*)(GLuint,GLenum,GLint *))eglGetProcAddress("glGetVertexAttribiv");
+        void (*pv)(GLuint,GLenum,void **) = (void (*)(GLuint,GLenum,void **))eglGetProcAddress("glGetVertexAttribPointerv");
+        assert(iv && pv);
+        advertised_vertex_attribs = 32;
+        const GLfloat data[3] = {1.5f,-2.5f,3.5f};
+        glVertexAttribPointer(0,1,GL_FLOAT,GL_FALSE,0,data);
+        assert(vertex_limit_queries == 0 && glGetError() == GL_NO_ERROR);
+        glVertexAttribPointer(20,1,GL_FLOAT,GL_FALSE,0,data); glEnableVertexAttribArray(20);
+        assert(glGetError() == GL_NO_ERROR && vertex_limit_queries == 1);
+        GLint value = -1; void *pointer = NULL;
+        iv(20,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&value); assert(value == 1);
+        iv(20,GL_VERTEX_ATTRIB_ARRAY_SIZE,&value); assert(value == 1);
+        pv(20,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == data);
+        iv(27,GL_VERTEX_ATTRIB_ARRAY_SIZE,&value); assert(value == 4 && glGetError() == GL_NO_ERROR);
+        glVertexAttribPointer(32,1,GL_FLOAT,GL_FALSE,0,data); assert(glGetError() == GL_INVALID_VALUE);
+        value = 87; iv(32,GL_VERTEX_ATTRIB_ARRAY_SIZE,&value); assert(value == 87 && glGetError() == GL_INVALID_VALUE);
+        pv(40,GL_VERTEX_ATTRIB_ARRAY_POINTER,&pointer); assert(pointer == data && glGetError() == GL_INVALID_VALUE);
+        assert(vertex_limit_queries == 1);
+        /* A client array above the inline record's 16 attributes draws
+         * through ordinary staging. */
+        capture_array_upload = 1; glDisableVertexAttribArray(0);
+        glDrawArrays(GL_POINTS,0,3); glFlush();
+        assert(draw_commands == 1 && inline_draws == 0 && glGetError() == GL_NO_ERROR);
+        assert(captured_size == sizeof data && !memcmp(captured_bytes,data,sizeof data));
+        /* Each VAO grows its own attribute state. */
+        GLuint array, buffer; glGenVertexArrays(1,&array); glBindVertexArray(array);
+        iv(20,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&value); assert(value == 0);
+        glGenBuffers(1,&buffer); glBindBuffer(GL_ARRAY_BUFFER,buffer);
+        glVertexAttribPointer(25,2,GL_SHORT,GL_TRUE,0,(const void *)4);
+        iv(25,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&value); assert((GLuint)value == buffer);
+        assert(glGetError() == GL_NO_ERROR && vertex_limit_queries == 1);
+        glDeleteBuffers(1,&buffer);
+        iv(25,GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING,&value); assert(value == 0);
+        glBindVertexArray(0); glDeleteVertexArrays(1,&array);
+        iv(20,GL_VERTEX_ATTRIB_ARRAY_ENABLED,&value); assert(value == 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
+        puts("PASS encoder-attrib-limit"); return 0;
     }
     if (!strcmp(argv[1], "encoder-vao-attribs")) {
         const GLfloat vertex[2] = {0,0};

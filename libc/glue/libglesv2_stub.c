@@ -33,7 +33,10 @@
 
 #include "gl_abi.h"
 
-#define WPK_GL_MAX_ATTRIBS 16u
+/* WebGL 2, the API behind every Kandelo renderer, guarantees at least 16
+ * vertex attributes. Those slots live inline in each VAO; higher indices
+ * grow it to the context's actual MAX_VERTEX_ATTRIBS (ES 2.0 table 6.18). */
+#define WPK_GL_INITIAL_ATTRIBS 16u
 #define WPK_GL_INITIAL_TEXTURE_UNITS 32
 #define WPK_GL_INITIAL_FRAMEBUFFER_NAMES 16
 
@@ -250,7 +253,9 @@ struct wpk_vertex_array {
     GLuint name, element_buffer;
     uint64_t element_serial;
     struct wpk_object_name *element_object;
-    struct wpk_client_attrib attribs[WPK_GL_MAX_ATTRIBS];
+    struct wpk_client_attrib initial_attribs[WPK_GL_INITIAL_ATTRIBS];
+    struct wpk_client_attrib *attribs;
+    uint32_t attrib_count;
     struct wpk_vertex_array *next;
 };
 struct wpk_image_attachment {
@@ -311,6 +316,9 @@ struct wpk_gles_context {
     struct wpk_object_name *renderbuffer_object;
     struct wpk_image_attachment *image_attachments;
     uint32_t next_vertex_array;
+    /* MAX_VERTEX_ATTRIBS, queried once on the first index past the inline
+     * slots; zero until then. */
+    uint32_t vertex_attrib_limit;
     char version[256];
     char glsl_version[256];
     char vendor[256];
@@ -353,6 +361,20 @@ void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope) {
     pthread_setcancelstate(scope->cancel_state, NULL);
 }
 
+/* Initial attribute state (ES 2.0 table 6.2): disabled, four FLOAT
+ * components. Only the default VAO can name client memory. */
+static void init_vertex_attribs(struct wpk_vertex_array *vao, uint32_t first, uint32_t count) {
+    for (uint32_t i = first; i < count; i++) {
+        vao->attribs[i] = (struct wpk_client_attrib){.size = 4, .type = GL_FLOAT,
+                                                     .client = vao->name == 0};
+    }
+}
+static void init_vertex_array(struct wpk_vertex_array *vao) {
+    vao->attribs = vao->initial_attribs;
+    vao->attrib_count = WPK_GL_INITIAL_ATTRIBS;
+    init_vertex_attribs(vao, 0, WPK_GL_INITIAL_ATTRIBS);
+}
+
 struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *source) {
     struct wpk_gles_context *state = calloc(1, sizeof *state);
     if (!state) return NULL;
@@ -375,11 +397,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->generate_mipmap_hint = state->fragment_derivative_hint = GL_DONT_CARE;
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
-    for (unsigned i=0; i<WPK_GL_MAX_ATTRIBS; i++) {
-        state->default_vertex_array.attribs[i].size = 4;
-        state->default_vertex_array.attribs[i].type = GL_FLOAT;
-        state->default_vertex_array.attribs[i].client = 1;
-    }
+    init_vertex_array(&state->default_vertex_array);
     return state;
 }
 
@@ -881,15 +899,48 @@ static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
 }
 static uint32_t attrib_type_size(GLenum type);
 
+static uint32_t vertex_attrib_limit(struct wpk_gles_context *state);
+enum { WPK_ATTRIB_ERROR = -1, WPK_ATTRIB_OUT_OF_RANGE = 0, WPK_ATTRIB_PRESENT = 1,
+       WPK_ATTRIB_DEFAULT = 2 };
+/* Classify `index` for the current VAO. With `grow`, a valid index past its
+ * slots grows the VAO to the context limit; without it, such an index keeps
+ * its initial state and reports WPK_ATTRIB_DEFAULT. */
+static int vertex_attrib_slot(struct wpk_gles_context *state, GLuint index, int grow) {
+    struct wpk_vertex_array *vao = state->current_vertex_array;
+    if (index < vao->attrib_count) return WPK_ATTRIB_PRESENT;
+    const uint32_t limit = vertex_attrib_limit(state);
+    if (!limit) return WPK_ATTRIB_ERROR;
+    if (index >= limit) return WPK_ATTRIB_OUT_OF_RANGE;
+    if (!grow) return WPK_ATTRIB_DEFAULT;
+    struct wpk_client_attrib *attribs = calloc(limit, sizeof *attribs);
+    if (!attribs) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return WPK_ATTRIB_ERROR;
+    }
+    memcpy(attribs, vao->attribs, vao->attrib_count * sizeof *attribs);
+    if (vao->attribs != vao->initial_attribs) free(vao->attribs);
+    const uint32_t old = vao->attrib_count;
+    vao->attribs = attribs;
+    vao->attrib_count = limit;
+    init_vertex_attribs(vao, old, limit);
+    return WPK_ATTRIB_PRESENT;
+}
+static const struct wpk_client_attrib initial_vertex_attrib = {.size = 4, .type = GL_FLOAT};
+
 void glEnableVertexAttribArray(GLuint index) {
     if (!_wpk_gl_current_encoder()) return;
-    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].enabled = 1;
+    /* Out-of-range indices still reach the renderer, which reports them. */
+    const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 1);
+    if (slot == WPK_ATTRIB_ERROR) return;
+    if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].enabled = 1;
     EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
 }
 
 void glDisableVertexAttribArray(GLuint index) {
     if (!_wpk_gl_current_encoder()) return;
-    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].enabled = 0;
+    const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 0);
+    if (slot == WPK_ATTRIB_ERROR) return;
+    if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].enabled = 0;
     EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
 }
 
@@ -906,7 +957,9 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (index >= WPK_GL_MAX_ATTRIBS) {
+    const int slot = vertex_attrib_slot(state, index, 1);
+    if (slot == WPK_ATTRIB_ERROR) return;
+    if (slot == WPK_ATTRIB_OUT_OF_RANGE) {
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
@@ -916,7 +969,7 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
-    if (index < WPK_GL_MAX_ATTRIBS) {
+    {
         struct wpk_client_attrib *a = &g_attribs[index];
         if (!object_reference(state->objects, state->array_object)) {
             raise_client_error(GL_OUT_OF_MEMORY);
@@ -927,7 +980,7 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         a->size = size; a->type = type; a->normalized = normalized;
         a->stride = stride; a->pointer = pointer; a->buffer_serial = state->array_serial; a->buffer_name = g_array_buffer;
     }
-    if (g_array_buffer == 0 && !state->current_vertex_array->name && index < WPK_GL_MAX_ATTRIBS) {
+    if (g_array_buffer == 0 && !state->current_vertex_array->name) {
         /* Client memory: record it; the draw uploads what it reads. */
         struct wpk_client_attrib *a = &g_attribs[index];
         a->client = 1;
@@ -941,7 +994,7 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
         emit_vertex_attrib_pointer(index,size,type,normalized,stride,0);
         return;
     }
-    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].client = 0;
+    g_attribs[index].client = 0;
     /* `pointer` is an offset into the bound GL_ARRAY_BUFFER. */
     emit_vertex_attrib_pointer(index, size, type, normalized, stride,
                                (uint32_t)(uintptr_t)pointer);
@@ -1008,6 +1061,16 @@ static int end_array_capture(struct wpk_array_capture *capture) {
     return emitted;
 }
 
+/* Room for one private staging name per attribute slot of the current VAO.
+ * A VAO grown past the inline slots needs heap room; NULL raised OOM. */
+static GLuint *staging_names(GLuint *initial) {
+    const uint32_t count = _wpk_gl_current_encoder()->current_vertex_array->attrib_count;
+    if (count <= WPK_GL_INITIAL_ATTRIBS) return initial;
+    GLuint *names = malloc((size_t)count * sizeof *names);
+    if (!names) raise_client_error(GL_OUT_OF_MEMORY);
+    return names;
+}
+
 /* Stage only referenced elements, packed at their original vertex indices.
  * A bounded scratch buffer avoids reading client stride gaps or unused
  * prefixes. Indexed client draws supply a presence mask for sparse indices. */
@@ -1021,7 +1084,8 @@ static int stage_client_attribs(GLint first, GLsizei count, GLuint *names,
     }
     uint8_t *scratch = NULL;
     if (count <= 0) return 0;
-    for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+    const uint32_t slots = _wpk_gl_current_encoder()->current_vertex_array->attrib_count;
+    for (uint32_t i = 0; i < slots; i++) {
         struct wpk_client_attrib *a = &g_attribs[i];
         if (!a->client || !a->enabled) continue;
         uint32_t tsize = attrib_type_size(a->type);
@@ -1096,18 +1160,19 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
         raise_client_error(GL_INVALID_OPERATION);
         return -1;
     }
-    _Static_assert(WPK_GL_MAX_ATTRIBS == WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES,
-                   "inline client attribute limit matches encoder state");
     struct inline_client_attribute {
         const struct wpk_client_attrib *attribute;
         const uint8_t *source;
         uint32_t index, element, stride, bytes;
-    } plan[WPK_GL_MAX_ATTRIBS];
+    } plan[WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES];
     uint32_t clients = 0;
     uint64_t payload = WPK_GL_INLINE_DRAW_HEADER_BYTES;
-    for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+    for (uint32_t i = 0; i < state->current_vertex_array->attrib_count; i++) {
         const struct wpk_client_attrib *a = &g_attribs[i];
         if (!a->client || !a->enabled) continue;
+        /* The inline record names only the first 16 attributes; a higher
+         * client attribute uses ordinary staging for the whole draw. */
+        if (i >= WPK_GL_INLINE_DRAW_MAX_ATTRIBUTES) return 0;
         const uint32_t width = attrib_type_size(a->type);
         if (!width || a->size < 1 || a->size > 4 || !a->pointer) {
             raise_client_error(GL_INVALID_OPERATION);
@@ -1161,6 +1226,14 @@ static int emit_inline_client_arrays(GLenum mode, GLint first, GLsizei count) {
     return 1;
 }
 
+static void emit_draw_arrays(GLenum mode, GLint first, GLsizei count) {
+    EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
+    w_u32(&_c, (uint32_t)mode);
+    w_i32(&_c, first);
+    w_i32(&_c, (int32_t)count);
+    EMIT_END()
+}
+
 void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     if (!_wpk_gl_current_encoder()) return;
     if (mode > GL_TRIANGLE_FAN) {
@@ -1173,20 +1246,19 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
     }
     if (emit_inline_client_arrays(mode, first, count) != 0)
         return;
-    GLuint staged[WPK_GL_MAX_ATTRIBS];
-    int n = stage_client_attribs(first, count, staged,NULL);
-    if (n < 0)
+    GLuint initial_staged[WPK_GL_INITIAL_ATTRIBS], *staged = staging_names(initial_staged);
+    if (!staged)
         return;
-    {
-        EMIT_BEGIN(OP_DRAW_ARRAYS, 12)
-        w_u32(&_c, (uint32_t)mode);
-        w_i32(&_c, first);
-        w_i32(&_c, (int32_t)count);
-        EMIT_END()
+    int n = stage_client_attribs(first, count, staged,NULL);
+    if (n < 0) {
+        if (staged != initial_staged) free(staged);
+        return;
     }
+    emit_draw_arrays(mode, first, count);
     /* The client definition lives in its VAO record. These private staging
      * objects end after the draw; the next draw uploads that definition. */
     if (n > 0) glDeleteBuffers(n, staged);
+    if (staged != initial_staged) free(staged);
 }
 
 /* ----- sync queries ------------------------------------------------- */
@@ -1298,6 +1370,25 @@ static int query_into_tracked(uint32_t op,
 static int _wpk_gl_query_into(uint32_t op, const void *in, uint32_t in_len,
                               void *dst, uint32_t dst_len) {
     return query_into_tracked(op,in,in_len,dst,dst_len,NULL);
+}
+
+/* Context limit, queried once. Zero means the query failed and its error is
+ * already recorded. A limit below the inline slots contradicts WebGL 2's
+ * guarantee, so it fails loudly rather than shrinking validation. */
+static uint32_t vertex_attrib_limit(struct wpk_gles_context *state) {
+    if (state->vertex_attrib_limit) return state->vertex_attrib_limit;
+    GLint limit = 0;
+    uint32_t pname = GL_MAX_VERTEX_ATTRIBS;
+    const int rc = _wpk_gl_query_into(QOP_GET_INTEGERV, &pname, 4, &limit, 4);
+    if (rc != 0) {
+        if (rc != WPK_GL_QUERY_NOT_DISPATCHED) raise_client_error(GL_INVALID_OPERATION);
+        return 0;
+    }
+    if (limit < (GLint)WPK_GL_INITIAL_ATTRIBS) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return 0;
+    }
+    return state->vertex_attrib_limit = (uint32_t)limit;
 }
 
 /* Every upload request and response uses already-allocated bounded buffers.
@@ -1651,10 +1742,13 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
                                          struct wpk_vertex_array *vao) {
     object_release(state->objects, vao->element_object);
     vao->element_object = NULL;
-    for (unsigned i = 0; i < WPK_GL_MAX_ATTRIBS; i++) {
+    for (unsigned i = 0; i < vao->attrib_count; i++) {
         object_release(state->objects, vao->attribs[i].buffer_object);
         vao->attribs[i].buffer_object = NULL;
     }
+    if (vao->attribs != vao->initial_attribs) free(vao->attribs);
+    vao->attribs = vao->initial_attribs;
+    vao->attrib_count = WPK_GL_INITIAL_ATTRIBS;
 }
 
 /* Release explicit ownership without selecting this context or emitting into
@@ -2424,7 +2518,7 @@ void glDeleteBuffers(GLsizei n, const GLuint *names) {
             vao->element_serial = 0;
             release_object_locked(group, object);
         }
-        for (unsigned a = 0; a < WPK_GL_MAX_ATTRIBS; a++)
+        for (unsigned a = 0; a < vao->attrib_count; a++)
             if (vao->attribs[a].buffer_object == object) {
                 vao->attribs[a].buffer_object = NULL;
                 vao->attribs[a].buffer_serial = 0;
@@ -3912,7 +4006,7 @@ void glGenVertexArrays(GLsizei n, GLuint *out) {
             return;
         }
         entry->name = g_next_vertex_array+(GLuint)i;
-        for (unsigned a=0; a<WPK_GL_MAX_ATTRIBS; a++) { entry->attribs[a].size = 4; entry->attribs[a].type = GL_FLOAT; }
+        init_vertex_array(entry);
         entry->next = pending; pending = entry;
     }
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
@@ -3988,6 +4082,13 @@ void glFlush(void) {
     if (_wpk_gl_server_flush_checked() != 0) raise_client_error(GL_INVALID_OPERATION);
 }
 
+static void emit_draw_elements(GLenum mode, GLsizei count, GLenum type, uint32_t offset) {
+    EMIT_BEGIN(OP_DRAW_ELEMENTS, 16)
+    w_u32(&_c, (uint32_t)mode); w_i32(&_c, count);
+    w_u32(&_c, (uint32_t)type); w_u32(&_c, offset);
+    EMIT_END()
+}
+
 void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) {
     if (!_wpk_gl_current_encoder()) return;
     if (mode > GL_TRIANGLE_FAN || (type != GL_UNSIGNED_BYTE && type != GL_UNSIGNED_SHORT)) {
@@ -3999,13 +4100,13 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         return;
     }
     if (count <= 0) return;
-    GLuint staged[WPK_GL_MAX_ATTRIBS];
     GLuint app_element_buffer = g_element_buffer;
     GLuint element = 0;
     uint32_t offset = (uint32_t)(uintptr_t)indices;
     int has_client = 0;
-    for (unsigned i = 0; i < WPK_GL_MAX_ATTRIBS; i++)
+    for (unsigned i = 0; i < _wpk_gl_current_encoder()->current_vertex_array->attrib_count; i++)
         if (g_attribs[i].enabled && g_attribs[i].client) has_client = 1;
+    GLuint initial_staged[WPK_GL_INITIAL_ATTRIBS], *staged = initial_staged;
     uint32_t max_index = 0;
     uint8_t *used = NULL, *index_reply = NULL;
     if (has_client && app_element_buffer != 0) {
@@ -4063,17 +4164,17 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)((size_t)count * index_size), indices, GL_STREAM_DRAW);
         offset = 0;
     }
+    if (has_client && !(staged = staging_names(initial_staged))) {
+        staged = initial_staged;
+        goto done;
+    }
     int n = has_client ? stage_client_attribs(0, (GLsizei)(max_index + 1), staged,used) : 0;
     if (n >= 0) {
-        {
-            EMIT_BEGIN(OP_DRAW_ELEMENTS, 16)
-            w_u32(&_c, (uint32_t)mode); w_i32(&_c, count);
-            w_u32(&_c, (uint32_t)type); w_u32(&_c, offset);
-            EMIT_END()
-        }
+        emit_draw_elements(mode, count, type, offset);
         if (n > 0) glDeleteBuffers(n, staged);
     }
 done:
+    if (staged != initial_staged) free(staged);
     if (index_reply) free(index_reply); else free(used);
     if (element) {
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app_element_buffer);
@@ -4112,10 +4213,12 @@ void glGetBufferParameteriv(GLenum target, GLenum pname, GLint *params) {
     if (checked_client_query(QOP_GET_BUFFER_PARAMETER,input,sizeof input,&value,sizeof value)) *params = value;
 }
 static int client_vertex_scalar(GLuint index, GLenum pname, GLuint *value) {
-    if (index >= WPK_GL_MAX_ATTRIBS) {
+    const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 0);
+    if (slot == WPK_ATTRIB_ERROR) return 0;
+    if (slot == WPK_ATTRIB_OUT_OF_RANGE) {
         raise_client_error(GL_INVALID_VALUE); return 0;
     }
-    struct wpk_client_attrib *a = &g_attribs[index];
+    const struct wpk_client_attrib *a = slot == WPK_ATTRIB_PRESENT ? &g_attribs[index] : &initial_vertex_attrib;
     switch (pname) {
         case GL_VERTEX_ATTRIB_ARRAY_ENABLED: *value = a->enabled != 0; return 1;
         case GL_VERTEX_ATTRIB_ARRAY_SIZE: *value = (GLuint)a->size; return 1;
@@ -4129,7 +4232,8 @@ static int client_vertex_scalar(GLuint index, GLenum pname, GLuint *value) {
 void glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params) {
     if (!_wpk_gl_current_encoder()) return;
     if (!params) return;
-    if (pname == GL_CURRENT_VERTEX_ATTRIB && index < WPK_GL_MAX_ATTRIBS) {
+    /* The renderer owns current values and validates their index. */
+    if (pname == GL_CURRENT_VERTEX_ATTRIB) {
         uint32_t input[2] = {index,pname}; GLint value[4];
         if (checked_client_query(QOP_GET_VERTEX_ATTRIBIV,input,sizeof input,value,sizeof value)) memcpy(params,value,sizeof value);
     } else { GLuint value; if (client_vertex_scalar(index,pname,&value)) *params = (GLint)value; }
@@ -4137,7 +4241,7 @@ void glGetVertexAttribiv(GLuint index, GLenum pname, GLint *params) {
 void glGetVertexAttribfv(GLuint index, GLenum pname, GLfloat *params) {
     if (!_wpk_gl_current_encoder()) return;
     if (!params) return;
-    if (pname == GL_CURRENT_VERTEX_ATTRIB && index < WPK_GL_MAX_ATTRIBS) {
+    if (pname == GL_CURRENT_VERTEX_ATTRIB) {
         uint32_t input[2] = {index,pname}; GLfloat value[4];
         if (checked_client_query(QOP_GET_VERTEX_ATTRIBFV,input,sizeof input,value,sizeof value)) memcpy(params,value,sizeof value);
     } else { GLuint value; if (client_vertex_scalar(index,pname,&value)) *params = (GLfloat)value; }
@@ -4145,13 +4249,15 @@ void glGetVertexAttribfv(GLuint index, GLenum pname, GLfloat *params) {
 void glGetVertexAttribPointerv(GLuint index, GLenum pname, void **pointer) {
     if (!_wpk_gl_current_encoder()) return;
     if (!pointer) return;
-    if (index >= WPK_GL_MAX_ATTRIBS) {
+    const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 0);
+    if (slot == WPK_ATTRIB_ERROR) return;
+    if (slot == WPK_ATTRIB_OUT_OF_RANGE) {
         raise_client_error(GL_INVALID_VALUE); return;
     }
     if (pname != GL_VERTEX_ATTRIB_ARRAY_POINTER) {
         raise_client_error(GL_INVALID_ENUM); return;
     }
-    *pointer = (void *)g_attribs[index].pointer;
+    *pointer = slot == WPK_ATTRIB_PRESENT ? (void *)g_attribs[index].pointer : NULL;
 }
 static GLboolean client_is_object(uint32_t kind, GLuint name) {
     struct wpk_gl_name_scope name_scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
