@@ -701,6 +701,9 @@ int graphics_munmap(void *a, size_t len) {
 }
 static unsigned log_queries;
 static int log_query_failure;
+static unsigned read_pixels_queries;
+static uint32_t read_pixels_capacity;
+static int read_pixels_failure;
 
 int graphics_ioctl(int fd, unsigned long request, ...) {
     va_list args; va_start(args, request);
@@ -1622,6 +1625,19 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t size=4;
             assert(q->out_buf_len >= 8);
             memcpy(latest_allocation,&size,4);memcpy((uint8_t *)latest_allocation+4,"abcd",4);
+            return 0;
+        }
+        if (q->op == QOP_READ_PIXELS) {
+            assert(q->in_buf_len == 24);
+            read_pixels_queries++;
+            read_pixels_capacity = q->out_buf_len;
+            if (q->out_buf_len)
+                memset(allocation_for(q->out_buf_ptr, q->out_buf_len), 0x3c, q->out_buf_len);
+            if (read_pixels_failure) {
+                query_gl_error = GL_INVALID_FRAMEBUFFER_OPERATION;
+                errno = EINVAL;
+                return -1;
+            }
             return 0;
         }
         if (q->op == QOP_GET_STRING) string_queries++;
@@ -4826,6 +4842,89 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         puts("PASS encoder-generation-counts"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-read-", 13)) {
+        uint8_t pixels[32];
+        memset(pixels, 0xa5, sizeof pixels);
+        if (!strcmp(argv[1], "encoder-read-negative")) {
+            const GLsizei sizes[][2] = {{-1,1}, {1,-1}, {-1,-1}, {INT_MIN,0}};
+            for (unsigned i = 0; i < sizeof sizes / sizeof sizes[0]; ++i) {
+                glReadPixels(0,0,sizes[i][0],sizes[i][1],GL_RGBA,GL_UNSIGNED_BYTE,(void *)(uintptr_t)1);
+                assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            }
+            assert(read_pixels_queries == 0);
+        } else if (!strcmp(argv[1], "encoder-read-packed")) {
+            const GLenum pairs[][2] = {
+                {GL_LUMINANCE_ALPHA,GL_UNSIGNED_SHORT_4_4_4_4},
+                {GL_RGB,GL_UNSIGNED_SHORT_5_5_5_1},
+                {GL_RGBA,GL_UNSIGNED_SHORT_5_6_5},
+            };
+            for (unsigned i = 0; i < sizeof pairs / sizeof pairs[0]; ++i) {
+                glReadPixels(0,0,1,1,pairs[i][0],pairs[i][1],(void *)(uintptr_t)1);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+            assert(read_pixels_queries == 0);
+        } else if (!strcmp(argv[1], "encoder-read-zero")) {
+            glReadPixels(0,0,0,4,GL_RGBA,GL_UNSIGNED_BYTE,(void *)(uintptr_t)1);
+            assert(read_pixels_queries == 1 && read_pixels_capacity == 0);
+            read_pixels_failure = 1;
+            glReadPixels(0,0,4,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+            assert(read_pixels_queries == 2 && read_pixels_capacity == 0);
+            assert(glGetError() == GL_INVALID_FRAMEBUFFER_OPERATION && glGetError() == GL_NO_ERROR);
+        } else if (!strcmp(argv[1], "encoder-read-layout")) {
+            for (unsigned alignment = 1; alignment <= 8; alignment *= 2) {
+                memset(pixels, 0xa5, sizeof pixels);
+                glPixelStorei(GL_PACK_ALIGNMENT, (GLint)alignment);
+                const unsigned stride = (3 + alignment - 1) & ~(alignment - 1);
+                glReadPixels(0,0,1,3,GL_RGB,GL_UNSIGNED_BYTE,pixels + 1);
+                assert(read_pixels_capacity == 2 * stride + 3);
+                for (unsigned i = 0; i < sizeof pixels; ++i) {
+                    int written = i >= 1 && i <= 3;
+                    written |= i >= 1 + stride && i <= 3 + stride;
+                    written |= i >= 1 + 2 * stride && i <= 3 + 2 * stride;
+                    assert(pixels[i] == (written ? 0x3c : 0xa5));
+                }
+                assert(glGetError() == GL_NO_ERROR);
+            }
+            /* Invalid state changes cannot change the subsequent layout. */
+            glPixelStorei(GL_PACK_ALIGNMENT, 3);
+            glReadPixels(0,0,1,2,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            assert(read_pixels_capacity == 12 && glGetError() == GL_INVALID_VALUE);
+        } else if (!strcmp(argv[1], "encoder-read-reject")) {
+            read_pixels_failure = 1;
+            glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            assert(read_pixels_queries == 1);
+            for (unsigned i = 0; i < sizeof pixels; ++i) assert(pixels[i] == 0xa5);
+            assert(glGetError() == GL_INVALID_FRAMEBUFFER_OPERATION && glGetError() == GL_NO_ERROR);
+        } else if (!strcmp(argv[1], "encoder-read-allocation")) {
+            for (int failure = 0; failure < 2; ++failure) {
+                malloc_before_failure = failure;
+                glReadPixels(0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+                malloc_before_failure = -1;
+                assert(read_pixels_queries == 0 && glGetError() == GL_OUT_OF_MEMORY);
+                for (unsigned i = 0; i < sizeof pixels; ++i) assert(pixels[i] == 0xa5);
+            }
+        } else if (!strcmp(argv[1], "encoder-read-context")) {
+            glPixelStorei(GL_PACK_ALIGNMENT, 8);
+            glReadPixels(0,0,1,2,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            assert(read_pixels_capacity == 12);
+            EGLContext peer = eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);
+            assert(peer && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+            glReadPixels(0,0,1,2,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            assert(read_pixels_capacity == 8);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+            glReadPixels(0,0,1,2,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            assert(read_pixels_capacity == 12 && glGetError() == GL_NO_ERROR);
+            assert(eglDestroyContext(dpy,peer));
+        } else {
+            assert(!strcmp(argv[1], "encoder-read-overflow"));
+            glReadPixels(0,0,INT_MAX,INT_MAX,GL_RGBA,GL_FLOAT,(void *)(uintptr_t)1);
+            assert(read_pixels_queries == 0);
+            assert(glGetError() == GL_OUT_OF_MEMORY && glGetError() == GL_NO_ERROR);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strcmp(argv[1],"encoder-params-reject")) {
         void (*const getters[])(GLuint,GLenum,GLint *)={glGetShaderiv,glGetProgramiv};
