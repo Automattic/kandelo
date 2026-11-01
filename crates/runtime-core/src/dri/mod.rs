@@ -10,6 +10,7 @@ pub mod bo;
 pub mod cursor;
 pub mod edid;
 pub mod fence;
+pub mod implicit_sync;
 pub mod ioctl_kms;
 pub mod kms;
 pub mod master;

@@ -863,11 +863,13 @@ pub fn retire_process(pid: u32) {
     // Host-retried DRM sync-object waits keep their fence snapshot outside
     // this queue; the same lifecycle ends them.
     crate::dri::syncobj::forget_process(pid);
+    crate::dri::implicit_sync::forget_process(pid);
 }
 
 pub fn retire_task(pid: u32, tid: u32) {
     with(|p| p.retire_task(pid, tid));
     crate::dri::syncobj::forget_task(pid, tid);
+    crate::dri::implicit_sync::forget_task(pid, tid);
 }
 
 pub fn cancel_task(pid: u32, tid: u32) -> bool {

@@ -1155,3 +1155,60 @@ fn a_waiter_on_a_host_fence_starts_host_polling() {
     assert!(d.readable(fd));
     assert_eq!(d.wait(&[h], 0, 0), Ok(0));
 }
+
+// ── implicit sync of GL work ───────────────────────────────────────────────
+
+/// A GL submission from a process that names a buffer with a pending
+/// implicit writer waits, before the host runs anything, until the writer
+/// signals; fence queries never wait; a caught signal stays pending while
+/// it waits (the call cannot fail with EINTR).
+#[test]
+fn gl_work_waits_for_the_implicit_fences_of_buffers_the_process_names() {
+    use wasm_posix_shared::dri::*;
+    use wasm_posix_shared::gl;
+    let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let (proc, host, fd) = glio_query_preflight_fixture();
+    let mut d = Drm { proc, host, fd };
+    d.host.monotonic_time = Some((100, 0));
+    let created = d.io(fd, DRM_IOCTL_MODE_CREATE_DUMB, WpkDrmModeCreateDumb { width: 4, height: 4,
+        bpp: 32, ..Default::default() }).unwrap();
+    let prime = d.io(fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, WpkDrmPrimeHandle { handle: created.handle,
+        flags: wasm_posix_shared::flags::O_RDWR, fd: -1 }).unwrap().fd;
+    let submit = |d: &mut Drm| {
+        let mut bytes = [0u8; 8];
+        bytes[4..8].copy_from_slice(&8u32.to_le_bytes());
+        sys_ioctl(&mut d.proc, &mut d.host, d.fd, gl::GLIO_SUBMIT, &mut bytes)
+    };
+    // No fence anywhere: the submission runs.
+    submit(&mut d).unwrap();
+    let ran = d.host.gl_submit_sessions.len();
+    // A producer's render-complete fence imported as the buffer's writer.
+    let mut producer = sw("producer");
+    let writer = d.sw_fd(&mut producer, 1);
+    d.io(prime, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, DmaBufSyncFile { flags: DMA_BUF_SYNC_WRITE,
+        fd: writer }).unwrap();
+    assert_eq!(submit(&mut d), Err(Errno::EAGAIN));
+    assert_eq!(d.host.gl_submit_sessions.len(), ran, "nothing reached the host");
+    let (pid, tid) = (d.proc.pid, d.proc.pid);
+    assert!(crate::dri::implicit_sync::waits_uninterruptibly(pid, tid));
+    // A query that reads back waits too; a fence query does not.
+    let mut finish = [0u8; 24];
+    finish[..4].copy_from_slice(&gl::QOP_FINISH.to_le_bytes());
+    assert_eq!(sys_ioctl(&mut d.proc, &mut d.host, fd, gl::GLIO_QUERY, &mut finish), Err(Errno::EAGAIN));
+    glio_fence_query_test(&mut d.proc, &mut d.host, fd, gl::QOP_FENCE_STATUS).unwrap();
+    producer.inc(1, d.now());
+    submit(&mut d).unwrap();
+    assert_eq!(d.host.gl_submit_sessions.len(), ran + 1);
+    assert!(!crate::dri::implicit_sync::waits_uninterruptibly(pid, tid));
+    // A reader's fence makes a submission wait too: it may write the buffer.
+    let mut display = sw("display");
+    let reader = d.sw_fd(&mut display, 1);
+    d.io(prime, DMA_BUF_IOCTL_IMPORT_SYNC_FILE, DmaBufSyncFile { flags: DMA_BUF_SYNC_READ,
+        fd: reader }).unwrap();
+    assert_eq!(submit(&mut d), Err(Errno::EAGAIN));
+    // The process goes away while parked: its record goes with it.
+    crate::wait_park::retire_process(pid);
+    assert!(!crate::dri::implicit_sync::waits_uninterruptibly(pid, tid));
+    display.inc(1, d.now());
+    submit(&mut d).unwrap();
+}

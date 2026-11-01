@@ -4177,7 +4177,11 @@ pub extern "C" fn kernel_dequeue_signal(
                 // A blocking atomic KMS commit past its point of no return
                 // waits uninterruptibly, as Linux's commit tail does: a
                 // caught signal stays pending until the commit returns.
-                if crate::dri::atomic::waits_uninterruptibly(proc, tid) {
+                if crate::dri::atomic::waits_uninterruptibly(proc, tid)
+                    // GL parked on a buffer's implicit fences: on Linux the
+                    // call never waits, so it never fails with EINTR.
+                    || crate::dri::implicit_sync::waits_uninterruptibly(proc.pid, tid)
+                {
                     return 0;
                 }
                 let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =

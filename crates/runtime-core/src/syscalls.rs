@@ -1857,6 +1857,27 @@ fn dma_buf_poll_ready(bo_id: crate::dri::BoId) -> (bool, bool) {
     (readers_wait.is_empty(), writers_wait.is_empty())
 }
 
+/// GL entry points that can read or write buffer contents: command and
+/// query submission (draws sample and render, queries read back, CPU-tier
+/// mirrors upload and publish, EGLImage siblings copy), presentation, image
+/// import and export, and foreign-texture upload. Fence queries, server
+/// waits and surface limits touch no buffer.
+fn gl_entry_touches_buffers(request: u32, buf: &[u8]) -> bool {
+    use wasm_posix_shared::dri::*;
+    use wasm_posix_shared::gl;
+    match request {
+        gl::GLIO_SUBMIT | gl::GLIO_SUBMIT_QUERY | gl::GLIO_PRESENT
+        | DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE | DRM_IOCTL_WPK_IMPORT_IMAGE
+        | DRM_IOCTL_WPK_EXPORT_IMAGE => true,
+        // `op` is the first word of both pointer widths' layouts.
+        gl::GLIO_QUERY => buf.get(..4).is_some_and(|op| !matches!(
+            u32::from_le_bytes(op.try_into().unwrap()),
+            gl::QOP_CREATE_FENCE | gl::QOP_FENCE_STATUS | gl::QOP_RELEASE_FENCE
+                | gl::QOP_SERVER_WAIT | gl::QOP_EXPORT_FENCE | gl::QOP_SURFACE_CAPABILITIES)),
+        _ => false,
+    }
+}
+
 /// Shared render-node ioctls: probe (VERSION / GET_CAP), the dumb-buffer
 /// quartet (CREATE / MAP / DESTROY / GEM_CLOSE), PRIME export/import, and
 /// GLES2 session ioctls. Unknown requests return `ENOSYS` so libdrm
@@ -1885,6 +1906,11 @@ pub(crate) fn handle_dri_ioctl(
         {
             return Err(Errno::EACCES);
         }
+    }
+    if gl_entry_touches_buffers(request, buf) {
+        // Implicit sync: GL that can read or write buffer contents waits
+        // for the fences of the buffers the process names (implicit_sync.rs).
+        crate::dri::implicit_sync::gate(proc, current_tid_for_process(proc))?;
     }
     if crate::dri::syncobj::is_syncobj_request(request) {
         let ns = dri_state(proc, ofd_idx)?.syncobjs.clone();
