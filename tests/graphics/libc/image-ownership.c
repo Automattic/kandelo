@@ -403,7 +403,7 @@ static unsigned image_failure, image_queries, fail_image_storage, image_pixel_up
 static uint8_t *texel_capture;
 static uint32_t texel_capture_width, texel_capture_height, texel_capture_bpp, texel_capture_records;
 static uint32_t double_unpack_alignment = 4;
-static unsigned pixel_store_commands;
+static unsigned pixel_store_commands, framebuffer_bind_commands, framebuffer_status_queries;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
@@ -566,7 +566,8 @@ static void orphan_image_source(struct device_slot *slot, uint32_t kind, uint32_
  * binding queries so the regression can execute against unchanged sources. */
 /* Actual checked selection, independent of the C encoder's bookkeeping. */
 static int native_framebuffer_bind(struct device_slot *slot, uint32_t target, uint32_t name) {
-    if (target != GL_FRAMEBUFFER && target != 0x8ca9 && target != 0x8ca8) {
+    /* Models the host: FRAMEBUFFER is the only guest-visible target. */
+    if (target != GL_FRAMEBUFFER) {
         query_gl_error = GL_INVALID_ENUM; return 0;
     }
     if (target != 0x8ca8) slot->framebuffer_draw = name;
@@ -994,7 +995,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 at += 4 + len;
                 continue;
             }
-            if (op == OP_BIND_FRAMEBUFFER) (void)native_framebuffer_bind(slot,words[0],words[1]);
+            if (op == OP_BIND_FRAMEBUFFER) { framebuffer_bind_commands++; (void)native_framebuffer_bind(slot,words[0],words[1]); }
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
             if (op == OP_DELETE_BUFFERS)
@@ -1242,6 +1243,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if (q->op == QOP_CHECK_FB_STATUS) framebuffer_status_queries++;
         if(q->op==0x35) {
             assert(q->in_buf_len==8 && q->out_buf_len==16 && q->reserved==0);
             const uint32_t *input=allocation_for(q->in_buf_ptr,8);uint32_t *reply=allocation_for(q->out_buf_ptr,16);
@@ -4103,13 +4105,17 @@ int main(int argc, char **argv) {
             else glFramebufferRenderbuffer(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_RENDERBUFFER,name);
         }
         assert(eglDestroyImageKHR(dpy,img) && closes==0);
-        /* Exercise the already-supported split bridge selectors; this native
-         * ownership control does not advertise a GLES3 API or extension. */
-        glBindFramebuffer(0x8ca9,framebuffers[0]); glBindFramebuffer(0x8ca8,framebuffers[1]);
+        /* GLES 2 section 4.4.1 has one framebuffer target, so the bound
+         * container is both the draw and the read selector; WebGL 2's split
+         * selectors are not guest-visible. Deleting the image detaches it
+         * from the bound container only; the others keep it alive. */
+        glBindFramebuffer(0x8ca9,framebuffers[0]); assert(glGetError()==GL_INVALID_ENUM);
+        glBindFramebuffer(GL_FRAMEBUFFER,framebuffers[0]);
         if (texture) glDeleteTextures(1,&name); else glDeleteRenderbuffers(1,&name);
         assert(closes==0 && glGetError()==GL_NO_ERROR);
-        glDeleteFramebuffers(1,&framebuffers[2]); assert(closes==1);
-        glDeleteFramebuffers(2,framebuffers);
+        glDeleteFramebuffers(1,&framebuffers[2]); assert(closes==0);
+        glDeleteFramebuffers(1,&framebuffers[0]); assert(closes==0);
+        glDeleteFramebuffers(1,&framebuffers[1]); assert(closes==1);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count()==0);
         printf("PASS %s\n",argv[1]); return 0;
     }
@@ -5504,6 +5510,27 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-framebuffer-targets")) {
+        /* Section 4.4.1: the GLES 2 framebuffer target is FRAMEBUFFER only.
+         * WebGL 2's READ/DRAW_FRAMEBUFFER are not guest-visible. */
+        GLuint framebuffer; glGenFramebuffers(1,&framebuffer); glFlush();
+        const unsigned binds = framebuffer_bind_commands, statuses = framebuffer_status_queries;
+        const GLenum rejected[] = {0x8ca8, 0x8ca9, 0};
+        for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+            glBindFramebuffer(rejected[i], framebuffer);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            assert(glCheckFramebufferStatus(rejected[i]) == 0);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        }
+        glFlush();
+        assert(framebuffer_bind_commands == binds && framebuffer_status_queries == statuses);
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer); glFlush();
+        assert(glGetError() == GL_NO_ERROR && framebuffer_bind_commands == binds + 1);
+        glDeleteFramebuffers(1,&framebuffer);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-framebuffer-targets"); return 0;
     }
     if (!strcmp(argv[1], "encoder-pixel-store-enums")) {
         /* Sections 3.6.1/4.3.1: only PACK_ALIGNMENT and UNPACK_ALIGNMENT,

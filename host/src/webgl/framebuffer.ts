@@ -7,8 +7,11 @@ export const GL_READ_FRAMEBUFFER = 0x8ca8;
 export const GL_DRAW_FRAMEBUFFER = 0x8ca9;
 export const GL_FRAMEBUFFER_UNDEFINED = 0x8219;
 
+/** Guest-visible framebuffer targets. GLES 2.0.25 section 4.4.1 has only
+ * FRAMEBUFFER; WebGL 2's READ_/DRAW_FRAMEBUFFER selectors stay private to
+ * host internals, which bind them natively without this guest check. */
 export function validFramebufferTarget(target: number): boolean {
-  return target === GL_FRAMEBUFFER || target === GL_READ_FRAMEBUFFER || target === GL_DRAW_FRAMEBUFFER;
+  return target === GL_FRAMEBUFFER;
 }
 
 export function defaultFramebuffer(b: GlBinding, read = false): WebGLFramebuffer | null {

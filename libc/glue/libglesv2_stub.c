@@ -2508,8 +2508,13 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
     }
 }
 
+/* Section 4.4.1: FRAMEBUFFER is the only GLES 2 framebuffer target. */
 void glBindFramebuffer(GLenum target, GLuint fb) {
     if (!_wpk_gl_current_encoder()) return;
+    if (target != GL_FRAMEBUFFER) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
+    }
     EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)
     w_u32(&_c,target); w_u32(&_c,fb);
     EMIT_END()
@@ -2672,6 +2677,10 @@ done:
 
 GLenum glCheckFramebufferStatus(GLenum target) {
     if (!_wpk_gl_current_encoder()) return 0;
+    if (target != GL_FRAMEBUFFER) {
+        raise_client_error(GL_INVALID_ENUM);
+        return 0;
+    }
     uint32_t t = (uint32_t)target;
     uint32_t status = 0;
     if (_wpk_gl_query_into(QOP_CHECK_FB_STATUS, &t, 4, &status, 4) != 0) return 0;

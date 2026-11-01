@@ -1,7 +1,6 @@
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
-import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import {
@@ -71,14 +70,15 @@ const GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368;
 const GL_UNSIGNED_INT_24_8 = 0x84FA;
 const GL_UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B;
 
-// Numeric getParameter names from the WebGL 1/2 state tables. Capability
-// toggles and extended pixel-store names reuse their existing owners below.
+// Guest-visible numeric state: GLES 2.0.25 section 6.1 tables 6.2-6.21 plus
+// the names added by advertised extensions. The renderer is WebGL 2, but its
+// WebGL 2 and WEBGL-only names (3D/array limits, draw/read buffers, VAO,
+// transform feedback, pack/unpack row state, UNPACK_FLIP_Y_WEBGL...) are host
+// internals and INVALID_ENUM for a GLES 2 guest. Capability toggles use
+// capabilityEnabled. EXT_unpack_subimage state is answered by the encoder.
 // String names belong to QOP_GET_STRING. GLES-only compiler/format-count
 // names are derived in queryParameter, rather than sent to WebGL.
-// https://registry.khronos.org/webgl/specs/latest/1.0/#GETPARAMETER
-// https://registry.khronos.org/webgl/specs/latest/2.0/#GETPARAMETER
 const numericParameterNames = new Set([
-  // WebGL 1 core (the native renderer is WebGL2).
   0x84e0, // ACTIVE_TEXTURE
   0x846e, // ALIASED_LINE_WIDTH_RANGE
   0x846d, // ALIASED_POINT_SIZE_RANGE
@@ -151,76 +151,31 @@ const numericParameterNames = new Set([
   0x8069, // TEXTURE_BINDING_2D
   0x8514, // TEXTURE_BINDING_CUBE_MAP
   0x0cf5, // UNPACK_ALIGNMENT
-  0x9243, // UNPACK_COLORSPACE_CONVERSION_WEBGL
-  0x9240, // UNPACK_FLIP_Y_WEBGL
-  0x9241, // UNPACK_PREMULTIPLY_ALPHA_WEBGL
   0x0ba2, // VIEWPORT
-  // WebGL 2 core (the native renderer is WebGL2).
-  0x8f36, // COPY_READ_BUFFER_BINDING
-  0x8f37, // COPY_WRITE_BUFFER_BINDING
-  0x8b8b, // FRAGMENT_SHADER_DERIVATIVE_HINT
-  0x8073, // MAX_3D_TEXTURE_SIZE
-  0x88ff, // MAX_ARRAY_TEXTURE_LAYERS
-  0x9247, // MAX_CLIENT_WAIT_TIMEOUT_WEBGL
-  0x8cdf, // MAX_COLOR_ATTACHMENTS
-  0x8a33, // MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
-  0x8a2e, // MAX_COMBINED_UNIFORM_BLOCKS
-  0x8a31, // MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS
-  0x8824, // MAX_DRAW_BUFFERS
-  0x8d6b, // MAX_ELEMENT_INDEX
-  0x80e9, // MAX_ELEMENTS_INDICES
-  0x80e8, // MAX_ELEMENTS_VERTICES
-  0x9125, // MAX_FRAGMENT_INPUT_COMPONENTS
-  0x8a2d, // MAX_FRAGMENT_UNIFORM_BLOCKS
-  0x8b49, // MAX_FRAGMENT_UNIFORM_COMPONENTS
-  0x8905, // MAX_PROGRAM_TEXEL_OFFSET
-  0x8d57, // MAX_SAMPLES
-  0x9111, // MAX_SERVER_WAIT_TIMEOUT
-  0x84fd, // MAX_TEXTURE_LOD_BIAS
-  0x8c8a, // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
-  0x8c8b, // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
-  0x8c80, // MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS
-  0x8a30, // MAX_UNIFORM_BLOCK_SIZE
-  0x8a2f, // MAX_UNIFORM_BUFFER_BINDINGS
-  0x8b4b, // MAX_VARYING_COMPONENTS
-  0x9122, // MAX_VERTEX_OUTPUT_COMPONENTS
-  0x8a2b, // MAX_VERTEX_UNIFORM_BLOCKS
-  0x8b4a, // MAX_VERTEX_UNIFORM_COMPONENTS
-  0x8904, // MIN_PROGRAM_TEXEL_OFFSET
-  0x88ed, // PIXEL_PACK_BUFFER_BINDING
-  0x88ef, // PIXEL_UNPACK_BUFFER_BINDING
-  0x8c89, // RASTERIZER_DISCARD
-  0x0c02, // READ_BUFFER
-  0x8caa, // READ_FRAMEBUFFER_BINDING
-  0x8919, // SAMPLER_BINDING
-  0x8c1d, // TEXTURE_BINDING_2D_ARRAY
-  0x806a, // TEXTURE_BINDING_3D
-  0x8e24, // TRANSFORM_FEEDBACK_ACTIVE
-  0x8e25, // TRANSFORM_FEEDBACK_BINDING
-  0x8c8f, // TRANSFORM_FEEDBACK_BUFFER_BINDING
-  0x8e23, // TRANSFORM_FEEDBACK_PAUSED
-  0x8a28, // UNIFORM_BUFFER_BINDING
-  0x8a34, // UNIFORM_BUFFER_OFFSET_ALIGNMENT
-  0x85b5, // VERTEX_ARRAY_BINDING
   0x8df8, 0x8df9, 0x8dfa, 0x86a2, // GLES compiler and format counts
 ]);
-const extraPixelStoreNames = new Set(EXTRA_PIXEL_STORE_DEFAULTS.map(([name]) => name));
+// Names added by extensions the host always advertises
+// (capabilities.ts WEBGL2_CORE_GLES2_EXTENSIONS).
+const extensionParameterNames = new Set([
+  0x8b8b, // FRAGMENT_SHADER_DERIVATIVE_HINT_OES (GL_OES_standard_derivatives)
+]);
 
 function validNumericParameter(b: GlBinding, pname: number): boolean {
-  return numericParameterNames.has(pname) || capabilityEnabled(b, pname) !== undefined
-    || extraPixelStoreNames.has(pname)
-    || (pname >= 0x8825 && pname <= 0x8834); // DRAW_BUFFER0..15
+  return numericParameterNames.has(pname) || extensionParameterNames.has(pname)
+    || capabilityEnabled(b, pname) !== undefined;
 }
 
 const shaderParameterNames = new Set([
   0x8b4f, 0x8b80, 0x8b81, GL_INFO_LOG_LENGTH, 0x8b88,
   // SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS, INFO_LOG_LENGTH, SOURCE_LENGTH
 ]);
+// GLES 2 section 6.1.8: DELETE_STATUS, LINK_STATUS, VALIDATE_STATUS,
+// ATTACHED_SHADERS, ACTIVE_UNIFORMS, ACTIVE_ATTRIBUTES, INFO_LOG_LENGTH,
+// ACTIVE_UNIFORM_MAX_LENGTH, ACTIVE_ATTRIBUTE_MAX_LENGTH. WebGL 2 transform
+// feedback and uniform-block names are not GLES 2 program state.
 const programParameterNames = new Set([
   0x8b80, 0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89,
   GL_INFO_LOG_LENGTH, GL_ACTIVE_UNIFORM_MAX_LENGTH, 0x8b8a,
-  // WebGL2 transform feedback and uniform-block queries remain supported.
-  0x8c7f, 0x8c83, 0x8a36,
 ]);
 
 function normalizeHalfFloatType(type: number): number {
@@ -679,9 +634,16 @@ export function runGlQuery(
     case O.QOP_CHECK_FB_STATUS: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const target = inDv.getUint32(0, true);
+      // Section 4.4.5: a target other than FRAMEBUFFER is INVALID_ENUM and
+      // returns zero; WebGL 2 would answer READ/DRAW_FRAMEBUFFER natively.
+      if (!validFramebufferTarget(target)) {
+        recordGlError(b, 0x500);
+        outDv.setUint32(0, 0, true);
+        return 4;
+      }
       const drawable = b.executionDrawable?.drawable ?? b.currentDrawable;
       const surface = target === 0x8ca8 ? drawable?.readSurfaceId : drawable?.drawSurfaceId;
-      const status = validFramebufferTarget(target) && surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
+      const status = surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
         ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
       outDv.setUint32(0, status, true);
       return 4;

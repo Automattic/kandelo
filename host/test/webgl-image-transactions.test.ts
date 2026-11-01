@@ -509,8 +509,15 @@ it("shares framebuffer bind realization and rollback between queued and checked 
   queued(O.OP_BIND_FRAMEBUFFER, [FBO, 72]);
   const accepted = b.fbos.get(72)!;
   expect(accepted).toBe(gl.draw);
-  expect(query(O.QOP_BIND_FRAMEBUFFER, [READ, 71])).toEqual([0, 1]);
+  // GLES 2 has no READ_FRAMEBUFFER target: the checked route rejects it
+  // before realizing a name, exactly as the queued route does.
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [READ, 73])).toEqual([1, 0]);
+  expect(b.errors).toContain(0x500);
+  expect(b.fbos.has(73)).toBe(false);
   expect(b.shadow.fbo).toBe(accepted);
+  expect(b.shadow.readFbo).toBe(accepted);
+  expect(query(O.QOP_BIND_FRAMEBUFFER, [FBO, 71])).toEqual([0, 1]);
+  expect(b.shadow.fbo).toBe(framebuffer);
   expect(b.shadow.readFbo).toBe(framebuffer);
 });
 

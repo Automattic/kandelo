@@ -1044,11 +1044,12 @@ test("surfaceless framebuffer zero rejects rendering while user framebuffers rem
           send(O.OP_CLEAR_COLOR,[0,1,0,1],new Uint8Array(),true); send(O.OP_CLEAR,[0x4000]);
           send(O.OP_DRAW_ARRAYS,[0,0,1]); send(O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]);
           const userPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]), userError = error();
+          // GLES 2 has one framebuffer target: WebGL 2's split selectors are
+          // INVALID_ENUM and leave the bound user framebuffer in place.
           send(O.OP_BIND_FRAMEBUFFER,[0x8ca9,0]);
-          const splitPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          const split = {draw:status(),read:number(O.QOP_CHECK_FB_STATUS,[0x8ca8]),
-            drawName:number(O.QOP_GET_INTEGERV,[0x8ca6]),readName:number(O.QOP_GET_INTEGERV,[0x8caa]),
-            pixels:[...splitPixels.bytes],error:error()};
+          const split = {bindError:error(),draw:status(),read:number(O.QOP_CHECK_FB_STATUS,[0x8ca8]),
+            readError:error(),drawName:number(O.QOP_GET_INTEGERV,[0x8ca6]),
+            readNameRc:query(O.QOP_GET_INTEGERV,[0x8caa]).rc,readNameError:error()};
           send(O.OP_CLEAR,[0x4000]); split.clearError = error();
           send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
           send(O.OP_DELETE_FRAMEBUFFERS,[1,4]); const deletedStatus = status();
@@ -1080,7 +1081,7 @@ test("surfaceless framebuffer zero rejects rendering while user framebuffers rem
   expect(result).toEqual({initialStatus:0x8219,viewport:[0,0,0,0],setupError:0,
     errors:Array(6).fill(0x506),readRc:-22,readBytes:[],attachmentError:0x502,statusAfterAttachment:0x8219,
     copiedTextureRc:4,copiedTexture:[255,0,0,255],userStatus:0x8cd5,userPixels:[0,255,0,255],userError:0,
-    split:{draw:0x8219,read:0x8cd5,drawName:0,readName:4,pixels:[0,255,0,255],error:0,clearError:0x506},
+    split:{bindError:0x500,draw:0x8cd5,read:0,readError:0x500,drawName:4,readNameRc:-22,readNameError:0x500,clearError:0},
     deletedStatus:0x8219,deletedError:0x506,canvasPixels:[0,0,255,255]});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });

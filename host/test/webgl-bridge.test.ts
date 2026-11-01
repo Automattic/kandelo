@@ -1460,7 +1460,8 @@ describe("query handler", () => {
     expect(peer.errors).toEqual([]);
   });
 
-  it.each([0x0d33, 0x8b49, 0x8b8b, 0x8cdf, 0x8a34, 0x8d6b, 0x882f, 0x0d03, 0x806e])("preserves supported GLES/WebGL2 state pname %i", (pname) => {
+  // WebGL2-only names are rejected for the guest (webgl-es2-enums.test.ts).
+  it.each([0x0d33, 0x8b4c, 0x8b8b, 0x8dfd, 0x0d05])("preserves supported GLES state pname %i", (pname) => {
     const { b, gl } = setup();
     const seen: number[] = [];
     gl.getParameter = (name: number) => { seen.push(name); return 23; };
@@ -1470,7 +1471,7 @@ describe("query handler", () => {
     expect(seen).toEqual([pname]);
   });
 
-  it.each([0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89, 0x8c7f, 0x8c83, 0x8a36])("preserves supported program pname %i", (pname) => {
+  it.each([0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89])("preserves supported program pname %i", (pname) => {
     const { b, gl } = setup();
     b.programs.set(9, {} as WebGLProgram);
     const seen: number[] = [];
