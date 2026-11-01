@@ -122,7 +122,7 @@
  * prime-fd on the EGL session's render fd and bind the bo as a texture
  * in the current context. Re-binding refreshes the texture pixels from
  * the producer's latest commit. */
-extern unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd);
+extern unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd, uint32_t fourcc);
 extern unsigned wpkEglBindBoTexture(EGLDisplay dpy, unsigned bo_handle,
                                     unsigned gl_target);
 extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
@@ -1350,6 +1350,15 @@ static void shm_pool_free(struct shm_pool *p) {
     free(p);
 }
 
+/* The DRM fourcc of a buffer's pixels. wl_shm's ARGB8888 (0) and XRGB8888
+ * (1) are the DRM fourccs of the same byte layout; linux-dmabuf buffers
+ * already carry a fourcc. */
+static uint32_t shm_buffer_fourcc(const struct shm_buffer *b) {
+    return b->format == WL_SHM_FORMAT_ARGB8888 ? DRM_FORMAT_ARGB8888
+         : b->format == WL_SHM_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888
+         : b->format;
+}
+
 /* Import + map the client's dumb-bo on first use; the mapping aliases the
  * shared host buffer, so later reads see the client's latest pixels. A
  * buffer may sit at any byte offset in the pool (GTK packs several there),
@@ -1358,11 +1367,7 @@ static void shm_pool_free(struct shm_pool *p) {
 static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
     if (b->import_failed) return NULL;
     if (!b->bo) {
-        /* wl_shm's ARGB8888 (0) and XRGB8888 (1) are the DRM fourccs of the
-         * same byte layout; linux-dmabuf buffers already carry a fourcc. */
-        uint32_t format = b->format == WL_SHM_FORMAT_ARGB8888 ? DRM_FORMAT_ARGB8888
-                        : b->format == WL_SHM_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888
-                        : b->format;
+        uint32_t format = shm_buffer_fourcc(b);
         struct gbm_import_fd_modifier_data d = {
             .width = (uint32_t)b->width,
             .height = (uint32_t)b->height,
@@ -1599,6 +1604,31 @@ static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
         format != DRM_FORMAT_XBGR8888 && format != DRM_FORMAT_ABGR8888) {
         *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_FORMAT;
         return NULL;
+    }
+    /* Refuse at creation a buffer no import path can sample, as a client
+     * expects (linux-dmabuf: `failed`, or invalid_wl_buffer for
+     * create_immed), rather than accepting it and never showing it: a plane
+     * outside its dma-buf, or a GPU-tier buffer made in storage the claimed
+     * format does not name. gbm_bo_import applies both checks (the second
+     * through the kernel's DRM_IOCTL_WPK_CHECK_BO_FORMAT), as the GL and
+     * CPU imports of the buffer later do. */
+    if (g.gbm) {
+        struct gbm_import_fd_modifier_data probe_data = {
+            .width = (uint32_t)width,
+            .height = (uint32_t)height,
+            .format = format,
+            .num_fds = 1,
+            .fds = {p->fd},
+            .strides = {p->stride},
+            .offsets = {p->offset},
+            .modifier = DRM_FORMAT_MOD_LINEAR,
+        };
+        struct gbm_bo *probe = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD_MODIFIER, &probe_data, 0);
+        if (!probe) {
+            *err = ZWP_LINUX_BUFFER_PARAMS_V1_ERROR_INVALID_WL_BUFFER;
+            return NULL;
+        }
+        gbm_bo_destroy(probe);
     }
     struct shm_pool *pool = calloc(1, sizeof(*pool));
     struct shm_buffer *b = calloc(1, sizeof(*b));
@@ -3903,7 +3933,10 @@ static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
      * into the pool has no GL representation — the CPU path reads it. */
     if (b->offset != 0) return 0;
     if (!b->egl_bo_handle) {
-        b->egl_bo_handle = wpkEglImportDmabufHandle(glc.dpy, b->pool->fd);
+        /* Import as the client's real format: a GPU-tier buffer must have
+         * been made in storage that format names (libEGL refuses otherwise,
+         * and so does the CPU path's gbm_bo_import). */
+        b->egl_bo_handle = wpkEglImportDmabufHandle(glc.dpy, b->pool->fd, shm_buffer_fourcc(b));
         if (!b->egl_bo_handle) return 0;
         b->gl_dirty = 1;
     }
@@ -3951,7 +3984,7 @@ static int setup_gl_wallpaper(void) {
     if (!wallpaper_bo) return -1;
     int prime = gbm_bo_get_fd(wallpaper_bo);
     if (prime < 0) { gbm_bo_destroy(wallpaper_bo); return -1; }
-    wallpaper_bo_handle = wpkEglImportDmabufHandle(glc.dpy, prime);
+    wallpaper_bo_handle = wpkEglImportDmabufHandle(glc.dpy, prime, GBM_FORMAT_XRGB8888);
     close(prime);
     if (!wallpaper_bo_handle) { gbm_bo_destroy(wallpaper_bo); return -1; }
     if (gl_wallpaper_upload() != 0) {

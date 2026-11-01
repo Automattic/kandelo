@@ -712,6 +712,8 @@ int graphics_close(int fd) {
 #endif
     assert(fd == 10); return 0;
 }
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd, uint32_t fourcc);
+void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* WPK_CHECK_BO_FORMAT: the errno the kernel answers a claimed fourcc with. */
 static int check_format_errno;
 static unsigned format_checks;
@@ -3675,6 +3677,19 @@ int main(int argc, char **argv) {
             EGLImageKHR value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,gr88);
             assert(value && format_checks == 3 && checked_format == 0x38385247);
             assert(eglDestroyImageKHR(dpy,value) && closes == 3);
+        } else if (!strcmp(argv[1],"dmabuf-handle-format")) {
+            /* The compositor's private import (wpkEglImportDmabufHandle)
+             * names the format it will sample the bo as, and the same kernel
+             * check applies: a refused format releases the handle. */
+            check_format_errno = EINVAL; errno = 0;
+            assert(wpkEglImportDmabufHandle(dpy, 100, 0x36314752) == 0 && errno == EINVAL);
+            assert(format_checks == 1 && checked_format == 0x36314752 && imports == 1 && closes == 1);
+            check_format_errno = 0;
+            unsigned handle = wpkEglImportDmabufHandle(dpy, 100, 0x34324258);
+            assert(handle == 77 && format_checks == 2 && checked_format == 0x34324258 && closes == 1);
+            wpkEglCloseBoHandle(dpy, handle);
+            assert(closes == 2);
+            assert(wpkEglImportDmabufHandle(EGL_NO_DISPLAY, 100, 0x34324258) == 0 && format_checks == 2);
         } else if (!strcmp(argv[1],"dmabuf-required")) {
             for (unsigned omit = 0; omit < 6; omit++) {
                 EGLint incomplete[11]; unsigned cursor = 0;

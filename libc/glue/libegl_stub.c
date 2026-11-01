@@ -2858,10 +2858,27 @@ static unsigned import_dmabuf_handle(struct egl_generation *generation, int prim
     return req.handle;
 }
 
-unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd) {
+static void close_bo_handle(struct egl_generation *generation, unsigned bo_handle);
+/* Import `prime_fd` as a bo the caller will sample as DRM format `fourcc`.
+ * As for an EGL_LINUX_DMA_BUF_EXT image, a GPU-tier bo must have been made
+ * in storage that `fourcc` names (DRM_IOCTL_WPK_CHECK_BO_FORMAT); otherwise
+ * the import fails with errno EINVAL and returns 0. CPU-tier bytes take any
+ * format. */
+unsigned wpkEglImportDmabufHandle(EGLDisplay dpy, int prime_fd, uint32_t fourcc) {
     lock_context();
-    unsigned handle = display_record(dpy)
-        ? import_dmabuf_handle(active_generation(dpy), prime_fd) : 0;
+    struct egl_generation *generation = display_record(dpy) ? active_generation(dpy) : NULL;
+    unsigned handle = generation ? import_dmabuf_handle(generation, prime_fd) : 0;
+    if (handle) {
+        struct wpk_drm_check_bo_format check = {.handle = handle, .format = fourcc};
+        if (ioctl(generation->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) {
+            int error = errno;
+            pthread_mutex_lock(&g_image_mutex);
+            close_bo_handle(generation, handle);
+            pthread_mutex_unlock(&g_image_mutex);
+            errno = error;
+            handle = 0;
+        }
+    }
     unlock_context();
     return handle;
 }
