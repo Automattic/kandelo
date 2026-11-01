@@ -154,8 +154,24 @@ impl Igt {
         }
     }
 
+    /// One tick of the host's vblank pump, publishing any latched host
+    /// effects to this test's host.
     fn vblank(&mut self) -> u64 {
-        kms_host_vblank(&mut self.proc, 100, 0)
+        crate::dri::retire_vblank_over(&mut self.host, [&mut self.proc], 100, 0)
+    }
+
+    /// A sync_file fd holding `timeline`'s fence at `seqno`, as
+    /// `sw_sync_timeline_create_fence` makes one.
+    fn sw_fence(&mut self, timeline: &mut crate::dri::fence::SwTimeline, seqno: u64) -> i32 {
+        let fence = timeline.create_fence(seqno, 0);
+        crate::dri::sync_file::install_fd(&mut self.proc,
+            crate::dri::sync_file::SyncFile::new(fence), true).unwrap()
+    }
+
+    fn fence_signaled(&mut self, fd: i32) -> bool {
+        let mut fds = [WasmPollFd { fd, events: wasm_posix_shared::poll::POLLIN, revents: 0 }];
+        sys_poll(&mut self.proc, &mut self.host, &mut fds, 0).unwrap();
+        fds[0].revents & wasm_posix_shared::poll::POLLIN != 0
     }
 
     fn blob(&mut self, bytes: &[u8]) -> u32 {
@@ -326,23 +342,6 @@ fn kms_atomic_plane_invalid_params() {
     igt.close();
 }
 
-/// igt@kms_atomic@plane-invalid-params-fence, without sw_sync: every fd is
-/// "not a sync_file" (no sync_file exists yet), and -1 means no fence.
-#[test]
-fn kms_atomic_plane_invalid_params_fence() {
-    let _locks = locks();
-    let mut igt = Igt::open();
-    igt.setup();
-    let fence = igt.plane("IN_FENCE_FD");
-    let plane = kms::PRIMARY_PLANE_ID;
-    let drm_fd = igt.fd as u64;
-    assert_eq!(igt.commit(0, &[(plane, &[(fence, drm_fd)])]), Err(Errno::EINVAL));
-    assert_eq!(igt.commit(0, &[(plane, &[(fence, -2i64 as u64)])]), Err(Errno::EINVAL));
-    assert_eq!(igt.commit_blocking(0, &[(plane, &[(fence, -1i64 as u64)])]), Ok(()));
-    assert_eq!(igt.value(plane, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD"), -1i64 as u64);
-    igt.close();
-}
-
 /// igt@kms_atomic@crtc-invalid-params.
 #[test]
 fn kms_atomic_crtc_invalid_params() {
@@ -378,7 +377,12 @@ fn kms_atomic_crtc_invalid_params() {
     igt.close();
 }
 
-/// igt@kms_atomic@crtc-invalid-params-fence, without sw_sync.
+fn sw_timeline() -> crate::dri::fence::SwTimeline {
+    crate::dri::fence::SwTimeline::new("sw_sync", crate::dri::fence::Timeline::Static("igt"))
+}
+
+/// igt@kms_atomic@crtc-invalid-params-fence, with the kernel's software
+/// timeline in place of the sw_sync debugfs device.
 #[test]
 fn kms_atomic_crtc_invalid_params_fence() {
     let _locks = locks();
@@ -399,13 +403,129 @@ fn kms_atomic_crtc_invalid_params_fence() {
     igt.host.proc_memory[OUT_FENCE as usize..][..4].copy_from_slice(&7i32.to_le_bytes());
     assert_eq!(igt.commit(ATOMIC_TEST_ONLY, &[(crtc, &[(mode_id, u64::from(mode)), (out_fence, OUT_FENCE)])]), Ok(()));
     assert_eq!(le_u32(&igt.host.proc_memory, OUT_FENCE as usize), u32::MAX);
-    // A real out-fence is a sync_file fd, which does not exist yet: the
-    // commit fails without taking effect, and the slot still reads -1.
-    let latched = igt.host.kms_set_fb_calls.len();
-    assert_eq!(igt.commit(0, &[(crtc, &[(out_fence, OUT_FENCE)])]), Err(Errno::EOPNOTSUPP));
+    // A valid in-fence on the primary plane while the CRTC turns off (a
+    // modeset without ALLOW_MODESET), with and without an event and
+    // out-fence: EINVAL, nothing applied, the slot reads -1.
+    let mut timeline = sw_timeline();
+    let fence_fd = igt.sw_fence(&mut timeline, 1);
+    let in_fence = igt.plane("IN_FENCE_FD");
+    let primary = kms::PRIMARY_PLANE_ID;
+    assert_eq!(igt.commit(0, &[(crtc, &[(active, 0)]), (primary, &[(in_fence, fence_fd as u64)])]),
+        Err(Errno::EINVAL));
+    assert_eq!(igt.commit(PAGE_FLIP_EVENT, &[(crtc, &[(active, 0), (out_fence, OUT_FENCE)]),
+        (primary, &[(in_fence, fence_fd as u64)])]), Err(Errno::EINVAL));
     assert_eq!(le_u32(&igt.host.proc_memory, OUT_FENCE as usize), u32::MAX);
+    // Successful TEST_ONLY with both fences set: no out-fence is made.
+    assert_eq!(igt.commit(ATOMIC_TEST_ONLY, &[(crtc, &[(active, 1), (out_fence, OUT_FENCE)]),
+        (primary, &[(in_fence, fence_fd as u64)])]), Ok(()));
+    assert_eq!(le_u32(&igt.host.proc_memory, OUT_FENCE as usize), u32::MAX);
+    assert_eq!(igt.crtc_state(), before);
+    // An out-fence without a flip event: a sync_file that signals at the
+    // vblank that completes the commit.
+    assert_eq!(igt.commit(ATOMIC_NONBLOCK, &[(crtc, &[(out_fence, OUT_FENCE)])]), Ok(()));
+    let fd = le_u32(&igt.host.proc_memory, OUT_FENCE as usize) as i32;
+    assert!(fd >= 0);
+    let entry = igt.proc.fd_table.get(fd).unwrap();
+    assert_ne!(entry.fd_flags & wasm_posix_shared::fd_flags::FD_CLOEXEC, 0);
+    assert!(!igt.fence_signaled(fd));
+    igt.vblank();
+    assert!(igt.fence_signaled(fd));
+    igt.close();
+}
+
+/// igt@kms_atomic@plane-invalid-params-fence.
+#[test]
+fn kms_atomic_plane_invalid_params_fence() {
+    let _locks = locks();
+    let mut igt = Igt::open();
+    let (fb, _) = igt.setup();
+    let (in_fence, fb_id, crtc_id) = (igt.plane("IN_FENCE_FD"), igt.plane("FB_ID"), igt.plane("CRTC_ID"));
+    let primary = kms::PRIMARY_PLANE_ID;
+    // An fd that is not a sync_file, and a value that is no fd at all.
+    let drm_fd = igt.fd as u64;
+    assert_eq!(igt.commit(0, &[(primary, &[(in_fence, drm_fd)])]), Err(Errno::EINVAL));
+    assert_eq!(igt.commit(0, &[(primary, &[(in_fence, -2i64 as u64)])]), Err(Errno::EINVAL));
+    // -1 is no fence, and the property always reads -1.
+    assert_eq!(igt.commit_blocking(0, &[(primary, &[(in_fence, -1i64 as u64)])]), Ok(()));
+    assert_eq!(igt.value(primary, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD"), -1i64 as u64);
+    // A valid fence but an invalid CRTC.
+    let mut timeline = sw_timeline();
+    let fence_fd = igt.sw_fence(&mut timeline, 1);
+    assert_eq!(igt.commit(0, &[(primary, &[(crtc_id, u64::from(u32::MAX)), (in_fence, fence_fd as u64)])]),
+        Err(Errno::EINVAL));
+    // A second IN_FENCE_FD on the same plane, even -1.
+    assert_eq!(igt.commit(0, &[(primary, &[(in_fence, fence_fd as u64), (in_fence, u64::MAX)])]),
+        Err(Errno::EINVAL));
+    timeline.inc(1, 0);
+    assert_eq!(igt.commit_blocking(0, &[(primary, &[(fb_id, u64::from(fb)),
+        (crtc_id, u64::from(kms::CRTC_ID)), (in_fence, fence_fd as u64)])]), Ok(()));
+    igt.close();
+}
+
+/// igt@kms_atomic_transition@plane-all-transition-fencing, for the one
+/// CRTC: a nonblocking commit whose plane waits for an in-fence latches at
+/// the first vblank after the fence signals; its flip event and out-fence
+/// complete there, and the CRTC is busy until then.
+#[test]
+fn kms_atomic_transition_plane_all_transition_fencing() {
+    let _locks = locks();
+    let mut igt = Igt::open();
+    igt.setup();
+    let next = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
+    let (in_fence, fb_id, out_fence) = (igt.plane("IN_FENCE_FD"), igt.plane("FB_ID"), igt.crtc("OUT_FENCE_PTR"));
+    let mut timeline = sw_timeline();
+    let fence_fd = igt.sw_fence(&mut timeline, 1);
+    let latched = igt.host.kms_set_fb_calls.len();
+    assert_eq!(igt.commit(ATOMIC_NONBLOCK | PAGE_FLIP_EVENT, &[
+        (kms::CRTC_ID, &[(out_fence, OUT_FENCE)]),
+        (kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(next)), (in_fence, fence_fd as u64)]),
+    ]), Ok(()));
+    let out_fd = le_u32(&igt.host.proc_memory, OUT_FENCE as usize) as i32;
+    assert!(out_fd >= 0);
+    // The state is swapped in, but the host still scans the old frame.
+    assert_eq!(igt.value(kms::PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE, "FB_ID"), u64::from(next));
     assert_eq!(igt.host.kms_set_fb_calls.len(), latched);
+    // Vblanks before the fence signals complete nothing.
+    for _ in 0..3 {
+        igt.vblank();
+        assert!(kms::flip_pending());
+        assert!(!igt.fence_signaled(out_fd));
+        assert_eq!(igt.host.kms_set_fb_calls.len(), latched);
+        assert_eq!(kms_state(&igt.proc, igt.proc.fd_table.get(igt.fd).unwrap().ofd_ref.0)
+            .unwrap().event_ring.len(), 0);
+    }
+    // Another nonblocking commit cannot get ahead of it.
+    assert_eq!(igt.commit(ATOMIC_NONBLOCK, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(next))])]),
+        Err(Errno::EBUSY));
+    timeline.inc(1, 0);
+    igt.vblank();
     assert!(!kms::flip_pending());
+    assert_eq!(igt.host.kms_set_fb_calls.len(), latched + 1);
+    assert!(igt.fence_signaled(out_fd));
+    assert_eq!(kms_state(&igt.proc, igt.proc.fd_table.get(igt.fd).unwrap().ofd_ref.0)
+        .unwrap().event_ring.len(), 32);
+    igt.close();
+}
+
+/// A blocking commit waits for its in-fence before its state is swapped in,
+/// interruptibly: it parks with no commit record, so a signal can end it.
+#[test]
+fn kms_atomic_blocking_commit_waits_for_its_in_fence_first() {
+    let _locks = locks();
+    let mut igt = Igt::open();
+    igt.setup();
+    let next = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
+    let (in_fence, fb_id) = (igt.plane("IN_FENCE_FD"), igt.plane("FB_ID"));
+    let mut timeline = sw_timeline();
+    let fence_fd = igt.sw_fence(&mut timeline, 1);
+    let before = igt.primary_state();
+    let request = [(fb_id, u64::from(next)), (in_fence, fence_fd as u64)];
+    assert_eq!(igt.commit(0, &[(kms::PRIMARY_PLANE_ID, &request)]), Err(Errno::EAGAIN));
+    assert_eq!(igt.primary_state(), before);
+    assert!(!crate::dri::atomic::waits_uninterruptibly(&igt.proc, igt.proc.pid));
+    timeline.inc(1, 0);
+    assert_eq!(igt.commit_blocking(0, &[(kms::PRIMARY_PLANE_ID, &request)]), Ok(()));
+    assert_eq!(igt.value(kms::PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE, "FB_ID"), u64::from(next));
     igt.close();
 }
 

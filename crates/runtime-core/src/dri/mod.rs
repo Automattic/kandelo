@@ -135,6 +135,7 @@ pub fn retire_vblank_for_process(
     seq: u64,
     tv_sec: u32,
     tv_usec: u32,
+    commit_completed: bool,
 ) -> bool {
     use wasm_posix_shared::dri::{DRM_EVENT_FLIP_COMPLETE, DRM_EVENT_VBLANK};
     let mut wake = false;
@@ -145,9 +146,13 @@ pub fn retire_vblank_for_process(
         let before = kms.event_ring.len();
         // Drain in place: a compositor queues one flip per frame, so the
         // vector keeps its capacity instead of reallocating every vblank.
-        for flip in kms.pending_flips.drain(..) {
-            write_vblank_event(&mut kms.event_ring, DRM_EVENT_FLIP_COMPLETE,
-                flip.user_data, flip.crtc_id, seq as u32, tv_sec, tv_usec);
+        // Flip events belong to the CRTC's one pending commit; one whose
+        // in-fences have not signaled is still pending.
+        if commit_completed {
+            for flip in kms.pending_flips.drain(..) {
+                write_vblank_event(&mut kms.event_ring, DRM_EVENT_FLIP_COMPLETE,
+                    flip.user_data, flip.crtc_id, seq as u32, tv_sec, tv_usec);
+            }
         }
         let mut waiting = alloc::vec::Vec::new();
         let off = kms::vblank_off_generation();
@@ -176,10 +181,10 @@ pub fn retire_vblank_for_process(
 /// from `kernel_vblank` on each tick of the host's present pump, so
 /// `drmModePageFlip → poll → drmHandleEvent` and `drmWaitVBlank` both run
 /// at the real refresh cadence on every host.
-pub fn retire_vblank(tv_sec: u32, tv_usec: u32) -> u64 {
+pub fn retire_vblank(host: &mut dyn crate::process::HostIO, tv_sec: u32, tv_usec: u32) -> u64 {
     let mut seq = 0;
     crate::process_table::with_processes(|procs| {
-        seq = retire_vblank_over(procs, tv_sec, tv_usec);
+        seq = retire_vblank_over(host, procs, tv_sec, tv_usec);
     });
     seq
 }
@@ -187,19 +192,22 @@ pub fn retire_vblank(tv_sec: u32, tv_usec: u32) -> u64 {
 /// [`retire_vblank`] over an explicit set of processes (kernel unit tests
 /// drive locally constructed processes through the same path).
 pub fn retire_vblank_over<'a>(
+    host: &mut dyn crate::process::HostIO,
     procs: impl IntoIterator<Item = &'a mut crate::process::Process>,
     tv_sec: u32,
     tv_usec: u32,
 ) -> u64 {
     let seq = vblank_tick(tv_sec, tv_usec);
     // A completed commit releases callers parked on it: blocking atomic
-    // commits waiting for their own flip or for the previous one.
-    let mut wake = kms::complete_pending_flip();
-    // TODO(S4 explicit sync): signal the completed commit's CRTC out-fence
-    // here, with this vblank's timestamp, as drm_crtc_send_vblank_event
-    // signals `e->base.fence`.
+    // commits waiting for their own flip or for the previous one. A commit
+    // whose in-fences have signaled latches here, and its out-fence signals
+    // with this vblank's time, as drm_crtc_send_vblank_event signals
+    // `e->base.fence`.
+    let now_ns = i64::from(tv_sec) * 1_000_000_000 + i64::from(tv_usec) * 1000;
+    let completed = atomic::retire_pending_commit(host, now_ns);
+    let mut wake = completed;
     for proc in procs {
-        wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec);
+        wake |= retire_vblank_for_process(proc, seq, tv_sec, tv_usec, completed);
     }
     if wake {
         VBLANK_WAKE.store(true, Ordering::Relaxed);

@@ -413,6 +413,13 @@ pub struct KmsDevice {
     /// blocking commit waits for it, then for its own.
     pub(crate) pending_commit: Option<u64>,
     pub(crate) next_commit: u64,
+    /// The pending commit's explicit synchronization: the in-fences its
+    /// planes wait for, the host effects deferred until they signal and the
+    /// out-fence its completion signals (see `atomic::retire_pending_commit`).
+    pub(crate) commit_fences: crate::dri::atomic::PendingFences,
+    /// The CRTC's out-fence timeline (`drm_crtc.fence_context`), made on the
+    /// first `OUT_FENCE_PTR`.
+    pub(crate) crtc_fences: Option<crate::dri::fence::CrtcFences>,
     /// Counts `drm_crtc_vblank_off` transitions. Linux sends every queued
     /// vblank event prematurely and wakes every waiter (which then
     /// succeeds) when the CRTC turns off; waits and events record the
@@ -448,6 +455,8 @@ impl KmsDevice {
             next_object_id: FIRST_DYNAMIC_ID,
             pending_commit: None,
             next_commit: 1,
+            commit_fences: crate::dri::atomic::PendingFences::new(),
+            crtc_fences: None,
             vblank_off_generation: 0,
             blobs: BTreeMap::new(),
             closed_scanout: None,
@@ -616,12 +625,6 @@ pub fn crtc_offset() -> (u32, u32) {
 
 pub fn flip_pending() -> bool {
     dev().pending_commit.is_some()
-}
-
-/// The vblank that follows a commit completes it. Returns whether one was
-/// pending, so the vblank can wake callers parked on it.
-pub fn complete_pending_flip() -> bool {
-    dev().pending_commit.take().is_some()
 }
 
 /// Whether the CRTC is lit: it has a mode and is `ACTIVE`. Linux's vblank
@@ -881,6 +884,7 @@ pub fn disable_crtc_scanning(fb_id: u32) {
     device.dpms = DRM_MODE_DPMS_OFF;
     device.primary = PrimaryPlaneState::default();
     device.pending_commit = None;
+    crate::dri::atomic::abandon_pending_commit();
     note_vblank_transition(was_active);
 }
 

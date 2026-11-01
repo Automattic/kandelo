@@ -1038,14 +1038,14 @@ pub(crate) fn handle_dri_card_ioctl(
             if req.obj_id == kms::CURSOR_PLANE_ID && !host.kms_cursor_supported() {
                 return Err(Errno::ENOENT);
             }
-            set_property_legacy(host, pid, req.obj_id, req.obj_type, req.prop_id, req.value)
+            set_property_legacy(proc, host, pid, req.obj_id, req.obj_type, req.prop_id, req.value)
         }
         DRM_IOCTL_MODE_SETPROPERTY => {
             let req: WpkDrmModeConnectorSetProperty = read_dri_struct(buf)?;
             if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
-            set_property_legacy(host, pid, req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
+            set_property_legacy(proc, host, pid, req.connector_id, DRM_MODE_OBJECT_CONNECTOR, req.prop_id, req.value)
         }
         DRM_IOCTL_GET_MAGIC => {
             let mut kms = kms_state_mut(proc, ofd_idx)?;
@@ -1223,6 +1223,7 @@ pub(crate) fn validate_kms_mode(
 /// (`drm_atomic_connector_commit_dpms`); any other property attached to the
 /// object becomes a one-property commit, so the atomic check applies to it.
 fn set_property_legacy(
+    proc: &Process,
     host: &mut dyn HostIO,
     pid: i32,
     obj_id: u32,
@@ -1269,7 +1270,13 @@ fn set_property_legacy(
     }
     let mut commit = Commit::current();
     let mut ctx = CommitContext { host, pid };
-    commit.set_property(&mut ctx, obj_id, prop, value)?;
+    commit.set_property(&mut ctx, proc, obj_id, prop, value)?;
+    commit.check(ctx.host, false)?;
+    // drm_atomic_commit waits for a plane's in-fence before the state is
+    // swapped in, interruptibly; the host's retry runs the call again.
+    if commit.in_fences_pending() {
+        return Err(Errno::EAGAIN);
+    }
     legacy_commit(ctx.host, pid, commit)
 }
 

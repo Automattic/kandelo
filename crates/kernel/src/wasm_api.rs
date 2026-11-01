@@ -16907,7 +16907,7 @@ pub extern "C" fn kernel_vblank() -> u32 {
             Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
             Err(_) => (0u32, 0u32),
         };
-    crate::dri::retire_vblank(tv_sec, tv_usec) as u32
+    crate::dri::retire_vblank(&mut host, tv_sec, tv_usec) as u32
 }
 
 /// Take the coalesced "a vblank queued a DRM event or released a

@@ -1394,7 +1394,7 @@ fn release_dri_handle(
 /// The driver identity `DRM_IOCTL_VERSION` reports; the name matches the
 /// sysfs `DRIVER=` of the platform device. Linux drivers report date "0"
 /// since driver dates were removed (6.14).
-const DRM_DRIVER_NAME_STR: &str = "kandelo-drm";
+pub(crate) const DRM_DRIVER_NAME_STR: &str = "kandelo-drm";
 const DRM_DRIVER_NAME: &[u8] = DRM_DRIVER_NAME_STR.as_bytes();
 const DRM_DRIVER_DATE: &[u8] = b"0";
 const DRM_DRIVER_DESC: &[u8] = b"Kandelo virtual display";
@@ -54518,7 +54518,9 @@ impl HostIO for RelSymlinkMock {
 
     /// One tick of the host's vblank pump over this process.
     fn kms_host_vblank(proc: &mut Process, tv_sec: u32, tv_usec: u32) -> u64 {
-        crate::dri::retire_vblank_over([proc], tv_sec, tv_usec)
+        // No commit in these tests waits for an in-fence, so the tick has no
+        // deferred host effects to publish.
+        crate::dri::retire_vblank_over(&mut MockHostIO::new(), [proc], tv_sec, tv_usec)
     }
 
     fn vblank_wake_taken() -> bool {

@@ -30,6 +30,7 @@
 use wasm_posix_shared::dri::*;
 use wasm_posix_shared::Errno;
 
+use super::fence::Fence;
 use super::kms::{self, CrtcState, PlaneGeometry};
 use crate::ofd::KmsFb;
 use crate::process::HostIO;
@@ -64,7 +65,7 @@ pub struct CursorRequest {
 }
 
 /// A staged state change of the one CRTC, its planes and its connector.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct Commit {
     old_crtc: CrtcState,
     old_primary: StagedPlane,
@@ -87,6 +88,109 @@ pub struct Commit {
     pub allow_modeset: bool,
     /// A legacy cursor ioctl's own flags (`DRM_MODE_CURSOR_BO`/`MOVE`).
     pub cursor_request: Option<CursorRequest>,
+    /// Each plane's `IN_FENCE_FD` fence (`plane_state->fence`): primary,
+    /// cursor. A commit is latched only once they have signaled.
+    pub in_fences: [Option<Fence>; 2],
+    /// The CRTC's out-fence for `OUT_FENCE_PTR`, created by the atomic ioctl
+    /// once the commit is certain to apply; the completing vblank signals it.
+    pub out_fence: Option<Fence>,
+}
+
+/// The host effects of an applied commit: the scanout, the cursor, the
+/// color stage, and the releases that must follow them. A commit whose
+/// planes wait for in-fences keeps them until the vblank that latches it
+/// (`drm_atomic_helper_commit_planes` runs after the fences signal), so the
+/// host goes on presenting the previous frame meanwhile.
+pub(crate) struct HostEffects {
+    pid: i32,
+    presented_before: (u32, [u32; 4]),
+    cursor_before: PresentedCursor,
+    cursor_request: Option<CursorRequest>,
+    flip: bool,
+    primary_replaced: bool,
+    gamma_changed: bool,
+    old_cursor_bo: Option<crate::dri::BoId>,
+}
+
+impl HostEffects {
+    fn publish(self, host: &mut dyn HostIO) {
+        let mut ctx = CommitContext { host, pid: self.pid };
+        let presented = presented_primary();
+        if presented != self.presented_before || self.flip {
+            ctx.host.kms_set_fb(ctx.pid, kms::CRTC_ID, presented.0, presented.1);
+        }
+        if self.primary_replaced {
+            if let Some(closed) = kms::replace_closed_scanout(None) {
+                if closed.fb_id == kms::crtc_fb() {
+                    kms::replace_closed_scanout(Some(closed));
+                } else {
+                    crate::dri::ioctl_kms::release_kms_fb(ctx.host, closed.pid, closed.fb_id, closed.fb.bo_id);
+                }
+            }
+        }
+        publish_cursor(&mut ctx, self.cursor_before, self.cursor_request);
+        if let Some(old) = self.old_cursor_bo {
+            if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
+                crate::syscalls::apply_dri_release_effect(
+                    ctx.pid, crate::syscalls::DriReleaseEffect::DestroyBo(old), ctx.host);
+            }
+        }
+        if self.gamma_changed {
+            let lut = kms::effective_gamma_lut();
+            ctx.host.kms_set_gamma(kms::CRTC_ID, lut.as_deref());
+        }
+    }
+}
+
+/// Explicit synchronization of the CRTC's pending commit: the in-fences it
+/// waits for, the host effects deferred until they signal, and the
+/// out-fence its completion signals.
+#[derive(Default)]
+pub(crate) struct PendingFences {
+    pub(crate) in_fences: alloc::vec::Vec<Fence>,
+    pub(crate) effects: Option<HostEffects>,
+    pub(crate) out_fence: Option<Fence>,
+}
+
+impl PendingFences {
+    pub(crate) const fn new() -> Self {
+        Self { in_fences: alloc::vec::Vec::new(), effects: None, out_fence: None }
+    }
+}
+
+/// The vblank that follows the pending commit completes it, once its
+/// in-fences have signaled: deferred host effects are published (the plane
+/// latches) and its out-fence signals with the vblank's time. Returns
+/// whether a commit completed, so the vblank sends its flip events and wakes
+/// callers parked on it.
+pub fn retire_pending_commit(host: &mut dyn HostIO, now_ns: i64) -> bool {
+    let device = kms::dev();
+    if device.pending_commit.is_none() {
+        return false;
+    }
+    if device.commit_fences.in_fences.iter().any(|fence| !fence.is_signaled()) {
+        return false;
+    }
+    device.pending_commit = None;
+    let fences = core::mem::take(&mut device.commit_fences);
+    if let Some(effects) = fences.effects {
+        effects.publish(host);
+    }
+    if let Some(out_fence) = fences.out_fence {
+        out_fence.signal(0, now_ns);
+    }
+    true
+}
+
+/// The CRTC turned off with a commit pending (its framebuffer was removed):
+/// as `drm_crtc_vblank_off` sends the pending event, the out-fence signals
+/// with the last vblank's time; nothing is left to latch.
+pub(crate) fn abandon_pending_commit() {
+    let fences = core::mem::take(&mut kms::dev().commit_fences);
+    if let Some(out_fence) = fences.out_fence {
+        let (_, sec, usec) = crate::dri::vblank_count_and_time();
+        out_fence.signal(0, i64::from(sec) * 1_000_000_000 + i64::from(usec) * 1000);
+    }
 }
 
 /// The current plane states as a commit stages them.
@@ -235,7 +339,22 @@ impl Commit {
             out_fence_ptr: 0,
             allow_modeset: true,
             cursor_request: None,
+            in_fences: [None, None],
+            out_fence: None,
         }
+    }
+
+    /// Whether a staged in-fence has not signaled yet. Asking is waiting:
+    /// the fences are enabled so their sources report completion.
+    pub fn in_fences_pending(&self) -> bool {
+        let mut pending = false;
+        for fence in self.in_fences.iter().flatten() {
+            if !fence.is_signaled() {
+                fence.enable_signaling();
+                pending = true;
+            }
+        }
+        pending
     }
 
     /// `drm_atomic_get_plane_state`: the plane joins the commit, and so does
@@ -294,6 +413,7 @@ impl Commit {
     pub fn set_property(
         &mut self,
         ctx: &mut CommitContext<'_>,
+        files: &crate::process::Process,
         obj: u32,
         prop: &kms::Property,
         value: u64,
@@ -349,19 +469,19 @@ impl Commit {
                     kms::PROP_CRTC_Y => self.plane_mut(obj).geometry.crtc_y = value as i64 as i32,
                     kms::PROP_CRTC_W => self.plane_mut(obj).geometry.crtc_w = value as u32,
                     kms::PROP_CRTC_H => self.plane_mut(obj).geometry.crtc_h = value as u32,
-                    // -1 is "no fence". Any other fd would have to be a
-                    // sync_file (sync_file_get_fence), and no sync_file
-                    // exists yet, so every such fd fails as on Linux.
-                    //
-                    // TODO(S4 explicit sync): resolve `value` as a sync_file
-                    // fd into a kernel fence held by the staged plane
-                    // (`state->fence`; a second IN_FENCE_FD on the same plane
-                    // is EINVAL). TEST_ONLY only validates it; a real commit
-                    // waits for it before applying, interruptibly, as
-                    // drm_atomic_helper_wait_for_fences(.., true) does.
+                    // drm_atomic_plane_set_property: one fence per plane per
+                    // commit (a second IN_FENCE_FD is EINVAL, even -1), -1 is
+                    // "no fence", and any other fd must be a sync_file
+                    // (sync_file_get_fence), EINVAL otherwise.
                     kms::PROP_IN_FENCE_FD => {
-                        if value as i64 != -1 {
+                        let slot = usize::from(obj == kms::CURSOR_PLANE_ID);
+                        if self.in_fences[slot].is_some() {
                             return Err(Errno::EINVAL);
+                        }
+                        if value as i64 != -1 {
+                            let file = crate::dri::sync_file::from_fd(files, value as i64 as i32)
+                                .ok_or(Errno::EINVAL)?;
+                            self.in_fences[slot] = Some(file.fence().clone());
                         }
                     }
                     // A damage hint: the host presents the whole plane
@@ -626,32 +746,22 @@ impl Commit {
         }
         kms::note_vblank_transition(was_active);
 
-        // Host effects: the scanout, the cursor and the color stage.
-        let presented = presented_primary();
+        // Host effects: the scanout, the cursor and the color stage. A plane
+        // waiting for an in-fence latches at the first vblank after it
+        // signals (`retire_pending_commit`), so they wait with it.
         let flip = self.primary_in && now_active;
-        if presented != presented_before || flip {
-            ctx.host.kms_set_fb(ctx.pid, kms::CRTC_ID, presented.0, presented.1);
-        }
-        if primary_fb_changed || !self.primary.crtc {
-            if let Some(closed) = kms::replace_closed_scanout(None) {
-                if closed.fb_id == kms::crtc_fb() {
-                    kms::replace_closed_scanout(Some(closed));
-                } else {
-                    crate::dri::ioctl_kms::release_kms_fb(ctx.host, closed.pid, closed.fb_id, closed.fb.bo_id);
-                }
-            }
-        }
-        publish_cursor(ctx, cursor_before, self.cursor_request);
-        if let Some(old) = old_cursor_bo {
-            if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
-                crate::syscalls::apply_dri_release_effect(
-                    ctx.pid, crate::syscalls::DriReleaseEffect::DestroyBo(old), ctx.host);
-            }
-        }
-        if gamma_changed {
-            let lut = kms::effective_gamma_lut();
-            ctx.host.kms_set_gamma(kms::CRTC_ID, lut.as_deref());
-        }
+        let effects = HostEffects {
+            pid: ctx.pid,
+            presented_before,
+            cursor_before,
+            cursor_request: self.cursor_request,
+            flip,
+            primary_replaced: primary_fb_changed || !self.primary.crtc,
+            gamma_changed,
+            old_cursor_bo,
+        };
+        let fenced = self.in_fences_pending();
+        let deferred = if fenced { Some(effects) } else { effects.publish(ctx.host); None };
         if flip {
             // Frame statistics for the host's display (kernel_kms_*): a
             // clock failure only skips the sample.
@@ -662,17 +772,25 @@ impl Commit {
         }
 
         // Completion: a flip on a lit CRTC is pending until the next vblank,
-        // which sends its event; a CRTC that is (now) dark completes at once.
-        let pending = if kind == CommitKind::Flip && self.crtc_in && now_active {
+        // which sends its event and signals its out-fence; so is any commit
+        // whose in-fences have not signaled, until the vblank after they do.
+        // A CRTC that is (now) dark otherwise completes at once.
+        let pending = if fenced || (kind == CommitKind::Flip && self.crtc_in && now_active) {
             let device = kms::dev();
             let id = device.next_commit;
             device.next_commit = id.wrapping_add(1);
             device.pending_commit = Some(id);
-            // TODO(S4 explicit sync): attach the commit's out-fence to `id`
-            // so the completing vblank signals it; a dark CRTC's commit
-            // signals it at once, as its event is sent at once.
+            let in_fences = self.in_fences.iter().flatten().cloned().collect();
+            device.commit_fences = PendingFences { in_fences, effects: deferred, out_fence: self.out_fence.clone() };
             Some(id)
         } else {
+            if let Some(out_fence) = &self.out_fence {
+                // drm_atomic_helper_commit_hw_done sends a dark CRTC's event
+                // (and signals its fence) at once.
+                let now = crate::dri::sync_file::monotonic_now(ctx.host)
+                    .expect("fatal KMS commit fault: no monotonic clock after the check");
+                out_fence.signal(0, now);
+            }
             None
         };
         if let Some((file, user_data)) = event {
@@ -876,6 +994,7 @@ pub fn waits_uninterruptibly(proc: &crate::process::Process, tid: u32) -> bool {
 /// stopping at the first fault or invalid entry.
 fn parse_request(
     ctx: &mut CommitContext<'_>,
+    files: &crate::process::Process,
     req: &WpkDrmModeAtomic,
     commit: &mut Commit,
 ) -> Result<(), Errno> {
@@ -900,7 +1019,7 @@ fn parse_request(
             }
             let prop = kms::property(prop_id).ok_or(Errno::ENOENT)?;
             let value = values.get(ctx.host, ctx.pid, copied_props, 8)?;
-            commit.set_property(ctx, obj_id, prop, value)?;
+            commit.set_property(ctx, files, obj_id, prop, value)?;
             copied_props += 1;
         }
     }
@@ -965,7 +1084,7 @@ pub fn atomic_ioctl(
     let mut ctx = CommitContext { host, pid: pid as i32 };
     let mut commit = Commit::current();
     commit.allow_modeset = req.flags & DRM_MODE_ATOMIC_ALLOW_MODESET != 0;
-    parse_request(&mut ctx, &req, &mut commit)?;
+    parse_request(&mut ctx, proc, &req, &mut commit)?;
 
     // prepare_signaling: an event per CRTC in the commit, reserved in the
     // file's event space; an event with no CRTC could never arrive.
@@ -978,21 +1097,18 @@ pub fn atomic_ioctl(
                 return Err(Errno::ENOMEM);
             }
         }
-        // TODO(S4 explicit sync): an out-fence request creates the CRTC's
-        // fence (drm_crtc_create_fence), installs a sync_file fd for it and
-        // writes the fd to `out_fence_ptr` (EFAULT/EMFILE as setup_out_fence
-        // reports them); the vblank that completes the commit signals it
-        // (see `Commit::apply` and `dri::retire_vblank_over`). Until the
-        // fence core exists the commit fails without taking effect rather
-        // than report a fence that does not exist.
-        if commit.out_fence_ptr != 0 && commit.crtc_in {
-            return Err(Errno::EOPNOTSUPP);
-        }
     }
-    let event = wants_event || (!test_only && commit.out_fence_ptr != 0);
+    let out_fence = !test_only && commit.out_fence_ptr != 0 && commit.crtc_in;
+    let event = wants_event || out_fence;
     commit.check(ctx.host, event)?;
     if test_only {
         return Ok(());
+    }
+    // drm_atomic_helper_commit: a blocking commit waits for its planes'
+    // in-fences before its state is swapped in, interruptibly. Parking it
+    // without a record keeps it interruptible; the retry runs it again.
+    if blocking && commit.in_fences_pending() {
+        return Err(Errno::EAGAIN);
     }
     if commit.busy() {
         // Userspace may not get ahead of the previous commit with a
@@ -1003,6 +1119,24 @@ pub fn atomic_ioctl(
         crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?.commit_waits
             .push(CommitWait { pid, tid, phase: WaitPhase::Dependency });
         return Err(Errno::EAGAIN);
+    }
+    if out_fence {
+        // prepare_signaling + setup_out_fence: the CRTC's next fence, a
+        // close-on-exec sync_file for it, and the fd written to the caller's
+        // OUT_FENCE_PTR, before the point of no return (a fault fails the
+        // commit, which then has not taken effect). The completing vblank
+        // signals it.
+        let fence = kms::dev().crtc_fences
+            .get_or_insert_with(|| crate::dri::fence::CrtcFences::new(kms::CRTC_ID, 0))
+            .create(crate::syscalls::DRM_DRIVER_NAME_STR);
+        let fd = crate::dri::sync_file::install_fd(proc,
+            crate::dri::sync_file::SyncFile::new(fence.clone()), true)?;
+        if ctx.host.proc_write_bytes(ctx.pid, commit.out_fence_ptr, &fd.to_le_bytes()) < 0 {
+            crate::syscalls::sys_close(proc, ctx.host, fd).expect("fresh out-fence descriptor");
+            let _ = ctx.host.proc_write_bytes(ctx.pid, commit.out_fence_ptr, &(-1i32).to_le_bytes());
+            return Err(Errno::EFAULT);
+        }
+        commit.out_fence = Some(fence);
     }
     let pending = {
         let mut kms_file = crate::dri::ioctl_kms::kms_state_mut(proc, ofd_idx)?;
