@@ -208,9 +208,11 @@ focused causal tests, none of them browser, guest or CTS validation:
   implicit writers unless an explicit in-fence overrides them.
 
 Open: wlroots' `linux-drm-syncobj-v1` path is unexercised by a running
-compositor until the combined validation. Whether GL sampling of an imported dma-buf must
-wait for fences another program imported into its reservation is a
-maintainer question (no Kandelo producer creates such fences today).
+compositor until the combined validation.
+GL work that can read or write buffers (submission, queries that read back,
+presentation, image import/export, foreign-texture upload) waits, before
+reaching the host, for every fence of the buffers the process names, as
+implicit sync orders GPU jobs on Linux (maintainer decision 2026-11-01).
 The sysroot now carries `linux/sync_file.h` and the implicit-fence part of
 `linux/dma-buf.h`, which wlroots probes at configure time; packages built
 before them still need the normal rebuild to see them.

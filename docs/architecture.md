@@ -4054,7 +4054,11 @@ signal is a kernel invariant violation and stops the kernel. Sources:
   eventfd), once per worker turn, because WebGL updates a sync's status
   only between tasks. Enabling is sticky, as Linux's
   `dma_fence_enable_sw_signaling` is, so a fence that a timed-out waiter
-  enabled is still polled until it completes. A context loss completes the
+  enabled is still polled until it completes. That is deliberate: Linux
+  never disarms a fence's completion path once a waiter armed it, the next
+  waiter would have to arm it again at once, and the cost is bounded
+  because a GL fence completes as soon as its already submitted work does
+  (decision recorded with the maintainer, 2026-11-01). A context loss completes the
   fence with `-EIO`, as a device loss completes Linux fences with an error.
   The host learns of new work, and of fences the kernel released, only from
   the coalesced `IDX_FENCE_HOST_WORK` wake event, so a machine with no
@@ -4115,9 +4119,31 @@ has. A KMS plane update without an explicit `IN_FENCE_FD` waits for its
 framebuffer buffer's unsignaled writers, as `drm_gem_plane_helper_prepare_fb`
 does (an explicit in-fence overrides them); while no buffer holds a fence
 that costs one integer test per commit. GL rendering adds no implicit
-fences: under D-17 it is complete in submission order. Whether GL sampling of an imported buffer must wait for
-fences another program imported into it is an open question recorded in
-the graphics inventory.
+fences: under D-17 it is complete in submission order.
+
+GL work waits for implicit fences too, as a Linux driver makes a job that
+reads a buffer wait for its writers and a job that writes it wait for every
+fence (`crates/runtime-core/src/dri/implicit_sync.rs`). Kandelo's GL runs
+synchronously, so there is no job queue to wait in, and deferring the work is
+not truthful (the host reads the commands from the guest's own buffer, and
+every later command, query and presentation depends on them). The GL entry
+points that can read or write buffer contents (command and query submission,
+presentation, image import and export, foreign-texture upload) therefore
+wait before reaching the host until every fence of every buffer the process
+names through its DRM files has signaled; fence queries, server waits and
+surface limits do not wait. Draw sampling, EGLImage sibling copies, CPU-tier
+mirror uploads and publication, and readback all happen inside those entry
+points, so none of them can observe a buffer whose writers are unfinished or
+overtake its readers. KMS scanout waits through the plane rule above. The
+grain is coarser than Linux's (the kernel cannot see which buffers a
+command buffer touches, so a process waits for any buffer it names, as a
+writer would), which can only delay work, never reorder it. The wait cannot
+deadlock: the only fences that can be pending are a GL fence on a separate
+native context (the host observes its completion) and a KMS out-fence (the
+vblank pump completes it); neither depends on a guest thread. It is
+uninterruptible, because on Linux the call never waits and so never fails
+with `EINTR`: caught signals stay pending until it proceeds, default
+actions still apply. While no buffer holds a fence it is one integer test.
 
 **EGL_ANDROID_native_fence_sync.** `eglCreateSync(KHR)` with
 `EGL_SYNC_NATIVE_FENCE_ANDROID` creates a GL fence (condition
