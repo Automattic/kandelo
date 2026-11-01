@@ -5,6 +5,7 @@ import { imageTextureOperation, type GlTextureView } from "./image-storage.js";
 import { prepareTextureOperation } from "./texture-bindings.js";
 import { recordTextureLevel } from "./texture-levels.js";
 import * as O from "./ops.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 // One context owns at most this many detached compressed bytes. Exceeding
 // custody is a visible OUT_OF_MEMORY, never a successful truncated upload.
@@ -75,7 +76,7 @@ export function runCompressedUpload(b: GlBinding, input: Uint8Array, out: Uint8A
       if (size>COMPRESSED_UPLOAD_MAX_BYTES) {recordGlError(b,0x505);return -12;}
       const object=selected(b,target)!;
       let bytes: Uint8Array<ArrayBuffer>;
-      try {bytes=new Uint8Array(size);} catch {recordGlError(b,0x505);return -12;}
+      try {bytes=new Uint8Array(size);} catch (caught) { rethrowNativeGlFault(caught);recordGlError(b,0x505);return -12;}
       b.compressedUpload={token,op:arg,metadata:[target,level,format,x,y,width,height,border],bytes,cursor:0,
         gl:b.gl,context:b.contextId,objects:b.objects,shadow:b.shadow,unit:b.shadow.activeTexture,object,
         view:b.textureViews.get(object),revision:b.imageRevisions.get(object)??0};

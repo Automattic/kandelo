@@ -82,7 +82,7 @@ import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { hasNativeRepair, NativeGlFault, repairNativeState, retireNativeRetirement, setNativeGlFaultReporter } from "./webgl/native-recovery";
+import { hasNativeRepair, NativeGlFault, repairNativeState, retireNativeRetirement, rethrowNativeGlFault, setNativeGlFaultReporter } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import { noteStorageWrite } from "./webgl/image-writes";
@@ -1051,7 +1051,7 @@ export class WasmPosixKernel {
         // including when invalidation above retained that unread ownership.
         muxer?.captureCurrentErrors();
         if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
-      } catch { muxer?.invalidateCurrent(); return false; }
+      } catch (caught) { muxer?.invalidateCurrent(); rethrowNativeGlFault(caught); return false; }
     }
     return true;
   }
@@ -2856,13 +2856,13 @@ export class WasmPosixKernel {
               size,
               "host_gbm_bo_create size",
             );
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -75; // EOVERFLOW
           }
           try {
             this.bos.create({ pid, bo_id, size: checkedSize, w, h, stride });
             return 0;
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -12; // ENOMEM
           }
         },
@@ -2887,7 +2887,7 @@ export class WasmPosixKernel {
             ctx = this.#sharedGlContext();
             if (!ctx) return -38; // No configured rendering backend.
             this.gl_muxers.get(ctx)?.captureCurrentErrors();
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
           const texId = this.gl.createGpuBo(bo_id, ctx, width, height, _format);
           if (texId == null) return -12; // -ENOMEM
           return 0;
@@ -3009,7 +3009,7 @@ export class WasmPosixKernel {
               shareContextId = view.getUint32(4,true);
               robustAccess = (view.getUint32(8,true) & 1) !== 0;
             }
-          } catch { return -22; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -22; }
           const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
           if (shareContextId && (!source || source === b)) return -22;
           // A reset share group's objects are gone (EXT_robustness issue 6).
@@ -3037,7 +3037,7 @@ export class WasmPosixKernel {
                 failure = -22;
               }
             }
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             // An unacknowledged target must not retain membership or names.
           }
           this.releaseClaimedKmsCanvas(pid, b.sessionId);
@@ -3087,7 +3087,7 @@ export class WasmPosixKernel {
               if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
               return 0;
             } finally { prepared.cancel(); }
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         host_gl_update_surface: (
           pid: number, surfaceId: number, attrsPtr: KernelPointer, attrsLen: KernelPointer, sessionId: number,
@@ -3116,7 +3116,7 @@ export class WasmPosixKernel {
                 let rc = -5;
                 try {
                   this.withRestoredGraphicsState(gl, () => { rc = copyGbmFront(b.surface, copy, capture); });
-                } catch { if (rc === 0) rc = -5; }
+                } catch (caught) { rethrowNativeGlFault(caught); if (rc === 0) rc = -5; }
                 // The front buffer's EGLImage siblings copy it again.
                 noteStorageWrite(copy.tex);
                 if (rc !== 0) muxer.invalidateCurrent();
@@ -3130,7 +3130,7 @@ export class WasmPosixKernel {
                   !Number.isSafeInteger(pitch * size.height) || canonical.byteLength !== pitch * size.height)
                 return -22;
               let linear: Uint8Array<ArrayBuffer>;
-              try { linear = new Uint8Array(canonical.byteLength); } catch { return -12; }
+              try { linear = new Uint8Array(canonical.byteLength); } catch (caught) { rethrowNativeGlFault(caught); return -12; }
               if (!validGbmFrontRead(b.surface)) return -22;
               let read: ReturnType<typeof readGbmFront<Uint8Array<ArrayBuffer>>> = {rc: -5};
               try {
@@ -3138,8 +3138,8 @@ export class WasmPosixKernel {
                   read = readGbmFront(b.surface, capture);
                   return read;
                 });
-              } catch {
-                muxer.invalidateCurrent();
+              } catch (caught) {
+                muxer.invalidateCurrent(); rethrowNativeGlFault(caught);
                 return read.rc === 0 ? -5 : read.rc;
               }
               if (read.rc !== 0 || !read.pixels) { muxer.invalidateCurrent(); return read.rc || -5; }
@@ -3148,7 +3148,7 @@ export class WasmPosixKernel {
               let published = false;
               try {
                 try { packGbmFront(read.pixels,linear,size.width,size.height,pitch,format); }
-                catch { return -12; }
+                catch (caught) { rethrowNativeGlFault(caught); return -12; }
                 published = this.bos.publishDevicePixels(copyId, linear);
                 return published ? 0 : -5;
               } finally { if (!published) muxer.invalidateCurrent(); }
@@ -3182,7 +3182,7 @@ export class WasmPosixKernel {
             }
             if (previous && previous !== multisample) retireNativeRetirement(previous.retirement);
             return 0;
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         host_gl_destroy_surface: (pid: number, surfaceId: number, sessionId?: number): void => {
           const b = this.gl.get(pid, sessionId);
@@ -3214,7 +3214,7 @@ export class WasmPosixKernel {
                 if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
               }
               return 0;
-            } catch { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
+            } catch (caught) { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
           }
           if (!b || b.contextId !== ctxId || !b.gl) return -5;
           if ((drawId === 0) !== (readId === 0)) return -22;
@@ -3239,7 +3239,7 @@ export class WasmPosixKernel {
               return -12;
             }
             if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
-          } catch { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
+          } catch (caught) { if (b.gl) this.glMuxerFor(b.gl).invalidateCurrent(); rethrowNativeGlFault(caught); return -5; }
           return 0;
           } finally { operation?.finish(); }
         },
@@ -3260,7 +3260,7 @@ export class WasmPosixKernel {
               b.cmdbufLen,
               "host_gl_submit command range",
             );
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -22; // EINVAL
           }
           if (!b.cmdbufView) {
@@ -3281,18 +3281,18 @@ export class WasmPosixKernel {
                 b.cmdbufView,
               );
               this.callbacks.onProcessMemoryTarget?.(memory, b);
-            } catch {
+            } catch (caught) { rethrowNativeGlFault(caught);
               return -5; // EIO
             }
           }
           let frame: SubmitFrame;
           try { frame = new SubmitFrame(b.cmdbufView,submission.offset,submission.length); }
-          catch { return -12; } // ENOMEM: no submission has been admitted.
+          catch (caught) { rethrowNativeGlFault(caught); return -12; } // ENOMEM: no submission has been admitted.
           const validation = frame.validate(validateCommandBuffer);
           if (validation < 0) { frame.discard(); return validation; }
           if (!this.prepareForeignRetirements(b)) { frame.discard(); return -5; }
           try { this.gl_submit_queue.enqueue(b,frame); }
-          catch { frame.discard(); return -12; }
+          catch (caught) { frame.discard(); rethrowNativeGlFault(caught); return -12; }
           return this.drainGlSubmits();
         },
         host_gl_present: (pid: number, sessionId?: number): number => {
@@ -3325,7 +3325,7 @@ export class WasmPosixKernel {
               if (!resolveSurfaceMultisample(selected)) return -5;
             }
             if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
-              try { this.#presentWindowFrame(b, selected); b.gl?.flush(); return 0; } catch { return -5; }
+              try { this.#presentWindowFrame(b, selected); b.gl?.flush(); return 0; } catch (caught) { rethrowNativeGlFault(caught); return -5; }
             }
             // A GPU-tier producer renders into an offscreen bo FBO on the
             // shared context, so `eglSwapBuffers` must fence the queued GL
@@ -3364,7 +3364,7 @@ export class WasmPosixKernel {
               }
             }
             return 0;
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
           } finally { operation.finish(); }
         },
         host_gl_query: (
@@ -3400,7 +3400,7 @@ export class WasmPosixKernel {
                 "host_gl_query destination",
               );
             }
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -14; // EFAULT
           }
           if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || !validSurfaceCapabilitiesLength(outputLength))) return -22;
@@ -3410,7 +3410,7 @@ export class WasmPosixKernel {
             inBuf = inputLength > 0
               ? this.#readKernelBytes(inPtr, inputLength)
               : new IntrinsicUint8Array(0);
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -14; // EFAULT
           }
           if (isFenceQuery(op) && !validFenceQuery(inBuf,outputLength)) return -22;
@@ -3452,10 +3452,19 @@ export class WasmPosixKernel {
               const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
               if (!this.gl.cpuImages.prepare(b, this.bos, capture)) return -5;
               this.gl.cpuImages.begin(b);
-              try { written = runGlQuery(b, op, inBuf, outBuf); }
-              finally { if (!this.gl.cpuImages.publish(b, this.bos, capture)) return -5; }
+              // Publish even when the query threw, but never let that
+              // publication's result replace the exception (a NativeGlFault
+              // must propagate; see the catch below).
+              let failure: { error: unknown } | null = null;
+              let reply = -5;
+              try { reply = runGlQuery(b, op, inBuf, outBuf); }
+              catch (error) { failure = { error }; }
+              const published = this.gl.cpuImages.publish(b, this.bos, capture);
+              if (failure) throw failure.error;
+              if (!published) return -5;
+              written = reply;
             }
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -5; // EIO: the renderer failed without a reply
           }
           try {
@@ -3470,7 +3479,7 @@ export class WasmPosixKernel {
                   outputDestination,
                   subarrayUint8Array(outBuf, 0, written),
                 );
-              } catch { return -5; }
+              } catch (caught) { rethrowNativeGlFault(caught); return -5; }
             }
             if (preparedFence?.candidate && !preparedFence.candidate.publish()) return -5;
             return written;
@@ -3495,7 +3504,7 @@ export class WasmPosixKernel {
             gl => this.gl_muxers.get(gl)?.captureCurrentErrors())) return -5;
           return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout),
             gpuSourceStorage(mirror.storage));
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
         // renderbuffer of context `ctxId` as GPU-tier bo `boId`. `attrs` is
@@ -3530,7 +3539,7 @@ export class WasmPosixKernel {
             out.setUint32(36, result.revision, true);
             this.#writeKernelBytes(destination, reply);
             return 0;
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         host_gl_bind_foreign_texture: (
           pid: number, ctxId: number, boId: number, glTarget: number,
@@ -3652,7 +3661,7 @@ export class WasmPosixKernel {
               [src, destination.pointer],
             );
             return 0;
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -14;
           }
         },
@@ -3669,7 +3678,7 @@ export class WasmPosixKernel {
             const status = new IntrinsicInt32Array(buffer, base + CH_STATUS, 1);
             intrinsicApply(intrinsicAtomicsStore, Atomics, [status, 0, CHANNEL_STATUS_COMPLETE]);
             return intrinsicApply(intrinsicAtomicsNotify, Atomics, [status, 0, 1]) >= 0 ? 0 : -14;
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -14;
           }
         },
@@ -3728,7 +3737,7 @@ export class WasmPosixKernel {
             // The process view never escapes this disposable worker or call.
             this.#writeKernelBytes(destination, processView);
             return 0;
-          } catch {
+          } catch (caught) { rethrowNativeGlFault(caught);
             return -14;
           }
         },
@@ -3844,7 +3853,7 @@ export class WasmPosixKernel {
               try {
                 this.#presentThroughStage(crtc_id, b.gl, gpu.fbo, fb.x, fb.y, fb.width, fb.height, true, true,
                   gpu.internalFormat);
-              } catch {
+              } catch (caught) { rethrowNativeGlFault(caught);
                 // The vblank pump presents this framebuffer again on its next
                 // tick, through the same color stage, and reports a failure.
               }

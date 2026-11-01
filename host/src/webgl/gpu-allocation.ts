@@ -1,5 +1,5 @@
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement,
-  type NativeRetirement } from "./native-recovery.js";
+  type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { RGBA8_STORAGE, type GpuStorageFormat } from "./gpu-storage-format.js";
 import { registerFramebufferColorStorage } from "./image-writes.js";
@@ -61,6 +61,6 @@ export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: num
     registerFramebufferColorStorage(allocation.fbo, allocation.tex);
     publish(allocation); published = true;
     return true;
-  } catch { return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); return false; }
   finally { if (!published) retireNativeRetirement(retirement); }
 }

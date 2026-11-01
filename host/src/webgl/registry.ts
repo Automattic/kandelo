@@ -11,7 +11,7 @@ import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, nativeGlFault, NativeGlFault, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
+import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, nativeGlFault, NativeGlFault, type NativeRetirement, type NativeDeletion, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
@@ -197,7 +197,7 @@ export class GlContextExecutionLease {
   static acquire(record: ExecutionRecord): GlContextExecutionLease | null {
     if (record.references >= Number.MAX_SAFE_INTEGER) return null;
     try { const lease = new GlContextExecutionLease(record); record.references++; return lease; }
-    catch { return null; }
+    catch (caught) { rethrowNativeGlFault(caught); return null; }
   }
   get context(): WebGL2RenderingContext | null { return this.#record?.gl ?? null; }
   get retired(): boolean { return this.#record?.retired ?? false; }
@@ -371,7 +371,7 @@ export class GlContextRegistry {
         this.executionRecords.delete(record); this.executions.delete(b);
       }
       return lease;
-    } catch { return null; }
+    } catch (caught) { rethrowNativeGlFault(caught); return null; }
   }
 
   retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
@@ -394,7 +394,7 @@ export class GlContextRegistry {
       try {
         if (!this.retireContextBinding(b,false)) released = false;
         retireSurface(b.surface);
-      } catch (error) {
+      } catch (error) { rethrowNativeGlFault(error);
         failure ??= error;
       } finally {
         b.fences.close();

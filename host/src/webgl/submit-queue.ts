@@ -15,7 +15,7 @@
 import type { GlOperationTicket } from "./operation-stream.js";
 import type { GlBinding } from "./registry.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
-import { nativeGlFault, NativeGlFault } from "./native-recovery.js";
+import { nativeGlFault, NativeGlFault, rethrowNativeGlFault } from "./native-recovery.js";
 
 export interface SubmitExecutionOwner {
   readonly binding: GlBinding;

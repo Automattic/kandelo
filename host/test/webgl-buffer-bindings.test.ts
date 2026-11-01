@@ -58,9 +58,10 @@ class BufferGl {
 }
 /** Decision D-29: a host-owned deletion or inverse restoration that a live
  * renderer refuses is a fatal NativeGlFault. The reporter latches it before
- * it is thrown, so a caller's catch cannot hide it: query replies built by
- * checkedQueryReply catch the exception into a rejected reply, while submit
- * batches and direct calls let it propagate. */
+ * it is thrown, and every host catch on the way out rethrows it
+ * (rethrowNativeGlFault), so query replies, submit batches and direct calls
+ * all propagate the reported fault instead of converting it into an error
+ * result. */
 const REFUSED_RESTORE = "the live renderer refused to restore native state after a rejected change";
 const REFUSED_DELETE_BUFFER = "the live renderer refused deleteBuffer of an object the host retired";
 afterEach(() => setNativeGlFaultReporter(null));
@@ -70,9 +71,9 @@ function expectNativeGlFault(run: () => unknown, message: string): void {
   setNativeGlFaultReporter(fault => { faults.push(fault); });
   try { run(); } catch (error) { thrown = error; }
   finally { setNativeGlFaultReporter(null); }
-  expect(faults.length).toBeGreaterThan(0);
-  for (const fault of faults) { expect(fault).toBeInstanceOf(NativeGlFault); expect(fault.message).toBe(message); }
-  if (thrown !== undefined) expect(faults).toContain(thrown);
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toBe(message);
+  expect(faults).toEqual([thrown]);
 }
 function setup() {
   const registry = new GlContextRegistry(); registry.bind({ pid: 1, cmdbufAddr: 0, cmdbufLen: 64 });

@@ -26,7 +26,7 @@ import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
-import { repairNativeState } from "./native-recovery.js";
+import { repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
@@ -139,10 +139,15 @@ export function decodeAndDispatch(
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;
       if (storage && !storage.before()) return GL_SUBMIT_EIO;
+      // Publish CPU-image storage even when dispatch threw, but never let
+      // that result replace the exception: a NativeGlFault must propagate.
+      let failure: { error: unknown } | null = null;
       try { dispatch(b.gl!, b, payload, 0, op); }
-      finally { if (storage && !storage.after()) return GL_SUBMIT_EIO; }
-      return GL_SUBMIT_OK;
-    } catch (err) {
+      catch (error) { failure = { error }; }
+      const published = !storage || storage.after();
+      if (failure) throw failure.error;
+      return published ? GL_SUBMIT_OK : GL_SUBMIT_EIO;
+    } catch (err) { rethrowNativeGlFault(err);
       logGlBridgeFailure("submit", op, err);
       return GL_SUBMIT_EIO;
     }
@@ -1350,7 +1355,7 @@ function dispatch(
       const vao = activeVertexArray(b);
       let attributes: typeof vao.attributes;
       try { attributes = new Map(vao.attributes); attributes.set(index,attribute); }
-      catch { recordGlError(b,0x505); return; }
+      catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return; }
       if (!installVertexAttribute(b,index,attribute)) return;
       vao.attributes = attributes;
       return;

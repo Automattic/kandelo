@@ -3,8 +3,8 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
 import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
-import { nativeGlFault, rendererEverLost, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
-  type NativeDeletion, type NativeRetirement } from "./native-recovery.js";
+import { nativeGlFault, NativeGlFault, rendererEverLost, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
+  type NativeDeletion, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
 import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable } from "./attribute-aliasing.js";
@@ -27,7 +27,7 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
     const error = gl.getError();
     recordGlError(b, error);
     return error === 0;
-  } catch (error) { if(isKernelExportFailure(error)) throw error;
+  } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x502); // INVALID_OPERATION
     return false;
   }
@@ -102,7 +102,7 @@ export function createShaderIfAccepted(b: GlBinding, type: number, name: number)
     if (!shader) { recordGlError(b, 0x505); return; }
     b.shaders.set(name, shader);
     transferNativeRetirement(receiver);
-  } catch (error) {
+  } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x505);
   } finally { retireNativeRetirement(receiver); }
@@ -125,7 +125,7 @@ export function createProgramIfAccepted(b: GlBinding, name: number): void {
     b.programShaders.set(name, shaders); metadata = true;
     b.programs.set(name, program);
     transferNativeRetirement(receiver);
-  } catch (error) {
+  } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x505);
   } finally {
@@ -176,7 +176,7 @@ export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[]
     const error = gl.getError();
     recordGlError(b, error);
     return error === 0;
-  } catch (error) {
+  } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x502); // INVALID_OPERATION
     return false;
@@ -193,7 +193,7 @@ export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): bo
     const error = gl.getError();
     recordGlError(b, error);
     return error === 0;
-  } catch (error) {
+  } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x502);
     return false;
@@ -218,7 +218,7 @@ export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void
       if (error !== 0) return false;
     }
     return true;
-  } catch (error) {
+  } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
     recordGlError(b, 0x502); // INVALID_OPERATION
     return false;
@@ -367,7 +367,9 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
       }
     }
   } catch (error) {
-    if (isKernelExportFailure(error)) { primaryFailure = error; failed = true; throw error; }
+    // A fatal fault is the primary failure: cleanup in finally must not
+    // replace it.
+    if (isKernelExportFailure(error) || error instanceof NativeGlFault) { primaryFailure = error; failed = true; throw error; }
     recordGlError(b, 0x505);
   } finally {
     try {
@@ -420,7 +422,7 @@ export class GlProgramQueryPin {
       programLinkGeneration(b,program);
       b.programQueryPins.set(program,count+1);
       return pin;
-    } catch (error) { if(isKernelExportFailure(error)) throw error;
+    } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error;
       // The caller still owns its execution lease, so this cannot retire it.
       retained.release();recordGlError(b,0x505);return null;
     }

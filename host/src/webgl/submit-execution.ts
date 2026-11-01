@@ -3,7 +3,7 @@ import type { GlMuxer } from "./muxer.js";
 import type { GlDrawableBinding } from "./current.js";
 import { defaultFramebuffer, logicalDefaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { retainSurfaceStorage, type GlSurfaceStorageLease } from "./surface-resources.js";
-import { nativeGlFault, NativeGlFault } from "./native-recovery.js";
+import { nativeGlFault, NativeGlFault, rethrowNativeGlFault } from "./native-recovery.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 
 /** Per-work selectors contain native handles and copied scalars only. The
@@ -86,7 +86,7 @@ export class GlSubmitExecution {
         work.canvasHeight = binding.canvas.height;
       }
       work.admitted = true;
-    } catch { /* The returned candidate owns every acquired rollback reference. */ }
+    } catch (caught) { rethrowNativeGlFault(caught); /* The returned candidate owns every acquired rollback reference. */ }
     return work;
   }
 

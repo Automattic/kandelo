@@ -17,7 +17,7 @@
 import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { SubmitQueue } from "./submit-queue.js";
-import { NativeGlFault } from "./native-recovery.js";
+import { NativeGlFault, rethrowNativeGlFault } from "./native-recovery.js";
 
 // A callback may enqueue work while dispatching. The later frame cannot run
 // on that same physical renderer until the active frame's tail has finished.
@@ -44,7 +44,7 @@ export function drainSubmitQueue(
     if (!entry) return 0;
     let mux: GlMuxer | null = null, lookupFailed = false, lookupError: unknown;
     try { mux = muxerFor(entry.binding); }
-    catch (error) { lookupFailed = true; lookupError = error; }
+    catch (error) { rethrowNativeGlFault(error); lookupFailed = true; lookupError = error; }
     if (mux && executingMuxers.has(mux)) return 0;
     const frame = entry.frames.shift()!;
     if (mux) executingMuxers.add(mux);

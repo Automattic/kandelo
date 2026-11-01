@@ -8,12 +8,18 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 import * as O from "../src/webgl/ops.js";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 afterEach(() => setNativeGlFaultReporter(null));
-/** Query replies (checkedQueryReply) swallow a thrown fault into an error
- * status; the reporter is what latches it as fatal. */
-function collectFaults(): Error[] {
+/** Decision D-29: the reporter latches a refused native deletion or
+ * restoration as fatal, and query replies (checkedQueryReply) rethrow the
+ * NativeGlFault instead of converting it into an error status. */
+function expectNativeGlFault(run: () => unknown, message: RegExp): void {
   const faults: Error[] = [];
-  setNativeGlFaultReporter(fault => faults.push(fault));
-  return faults;
+  let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch (error) { thrown = error; }
+  finally { setNativeGlFaultReporter(null); }
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(message);
+  expect(faults).toEqual([thrown]);
 }
 function setup() {
   const reg = new GlContextRegistry();
@@ -242,11 +248,8 @@ for (const kind of [1,2]) it(`faults when the live renderer refuses peer storage
     } else if (rejected && texture === first) control.fault = "framebufferTexture2D";
     attach(fbTarget,point,texTarget,texture,level);
   };
-  const faults = collectFaults();
-  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,2],16)[0]).toBe(1);
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,2],16), /live renderer refused to restore native state/);
   expect(rejected).toBe(true);
-  expect(faults).toHaveLength(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
-  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
   expect(b.imageRevisions.get(object)).toBe(1);
   expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
 });
@@ -259,10 +262,7 @@ it("faults when the live renderer refuses image utility selector restoration", (
   let allocated = false;
   gl.createTexture = () => { allocated = true; return create(); };
   gl.bindFramebuffer = (target,frame) => { if (allocated && target === 0x8ca8 && frame === read) control.fault = "bindFramebuffer"; bind(target,frame); };
-  const faults = collectFaults();
-  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(1);
-  expect(faults).toHaveLength(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
-  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16), /live renderer refused to restore native state/);
   expect(b.textureViews.has(object)).toBe(false);
 });
 
@@ -271,10 +271,7 @@ it("faults when the live renderer refuses deletion of a replaced image view", ()
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
   const old = b.textureViews.get(object)!;
   control.failDelete = true;
-  const faults = collectFaults();
-  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16)[0]).toBe(1);
-  expect(faults.length).toBeGreaterThanOrEqual(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
-  expect(faults[0].message).toMatch(/live renderer refused deleteTexture/);
+  expectNativeGlFault(() => checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16), /live renderer refused deleteTexture/);
   expect(alive.has(old.native)).toBe(true);
 });
 

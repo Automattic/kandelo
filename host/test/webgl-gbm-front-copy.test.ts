@@ -1,8 +1,20 @@
-import { expect,it } from "vitest";
+import { afterEach,expect,it } from "vitest";
 import { copyGbmFront, readGbmFront, packGbmFront } from "../src/webgl/gbm-front-copy";
 import { createSurfaceResources } from "../src/webgl/surface-resources";
 import { captureNativeGlErrors } from "../src/webgl/errors";
-import { hasNativeRepair,repairNativeState } from "../src/webgl/native-recovery";
+import { hasNativeRepair,NativeGlFault,setNativeGlFaultReporter } from "../src/webgl/native-recovery";
+const REFUSED_RESTORE="the live renderer refused to restore native state after a rejected change";
+afterEach(() => setNativeGlFaultReporter(null));
+/** Decision D-29: a restoration the live renderer refuses is a fatal
+ * NativeGlFault, reported once and thrown -- never a -5 reply with a repair
+ * retained for a later copy or readback. */
+function expectRefusedRestore(run: () => unknown): void {
+  const faults: Error[]=[];let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch(error) { thrown=error; } finally { setNativeGlFaultReporter(null); }
+  expect(thrown).toBeInstanceOf(NativeGlFault); expect((thrown as Error).message).toBe(REFUSED_RESTORE);
+  expect(faults).toEqual([thrown]);
+}
 const READ=0x8ca8,DRAW=0x8ca9,COLOR0=0x8ce0;
 function fixture() {
   const source={},destination={},oldRead={},oldDraw={};
@@ -43,20 +55,14 @@ it.each(["destination","copy"])("rejects %s failure and restores native state wi
   expect(f.publicErrors.errors).toEqual([]); expect(f.gl.getError()).toBe(0);
   expect(f.calls.filter(([name]) => name==="blit")).toHaveLength(kind==="destination"? 0:1);
 });
-it("retains a failed restoration for later repair",() => {
-  const f=fixture(); f.fault("restore"); expect(f.copy()).toBe(-5); expect(hasNativeRepair(f.gl)).toBe(true);
-  f.fault(""); expect(repairNativeState(f.gl)).toBe(true); f.check();
-  expect(hasNativeRepair(f.gl)).toBe(false); expect(f.publicErrors.errors).toEqual([]);
+it("faults when the live renderer refuses front-copy selector restoration",() => {
+  const f=fixture(); f.fault("restore"); expectRefusedRestore(() => f.copy());
+  // The refused repair stays pending: no later native change is admitted.
+  expect(hasNativeRepair(f.gl)).toBe(true); expect(f.publicErrors.errors).toEqual([]);
 });
 it("rejects mismatched or aliased storage before native mutation",() => {
   const f=fixture(); f.target.w=5; expect(f.copy()).toBe(-22); expect(f.calls).toEqual([]);
   f.target.w=4; f.target.fbo=f.surface.renderTargetFbo!; expect(f.copy()).toBe(-22); expect(f.calls).toEqual([]);
-});
-
-it("retries a pending private restoration before another front copy",() => {
-  const f=fixture(); f.fault("restore"); expect(f.copy()).toBe(-5); expect(hasNativeRepair(f.gl)).toBe(true);
-  f.fault(""); expect(f.copy()).toBe(0); f.check(); expect(hasNativeRepair(f.gl)).toBe(false);
-  expect(f.publicErrors.errors).toEqual([]);
 });
 
 it.each([["memory",-12],["mode",-5]] as const)("preserves state and public errors after %s failure",(kind,rc) => {
@@ -107,10 +113,9 @@ it.each([["read",-5],["memory",-12]] as const)("rejects private %s readback with
   const f=readFixture();f.fault(kind);expect(f.copy()).toEqual({rc});f.check();
   expect(f.publicErrors.errors).toEqual([]);expect(f.gl.getError()).toBe(0);
 });
-it("retains failed pack/read restoration before allowing another CPU readback",()=>{
-  const f=readFixture();f.fault("restore");expect(f.copy()).toEqual({rc:-5});
-  expect(hasNativeRepair(f.gl)).toBe(true);f.fault("");expect(f.copy().rc).toBe(0);
-  f.check();expect(hasNativeRepair(f.gl)).toBe(false);expect(f.publicErrors.errors).toEqual([]);
+it("faults when the live renderer refuses pack/read restoration after a CPU readback",()=>{
+  const f=readFixture();f.fault("restore");expectRefusedRestore(()=>f.copy());
+  expect(hasNativeRepair(f.gl)).toBe(true);expect(f.publicErrors.errors).toEqual([]);
 });
 
 it.each([0x34324241,0x34325241])("packs top-first front rows with native format %i and independent alpha",format=>{

@@ -372,13 +372,14 @@ it("makes a refused framebuffer-binding restoration after a rejected deletion a 
   };
   Object.assign(gl,{deleteFramebuffer() { rejected = true; gl.pendingErrors.push(0x505); }});
   const out = new Uint8Array(12);
-  // The fault is reported before the query's reply wrapper turns the throw
-  // into a failed reply.
-  expect(runGlQuery(b,O.QOP_IMAGE_OBJECT_DELETE,new Uint8Array(new Uint32Array([3,17]).buffer),out)).toBe(12);
-  expect([...new Uint32Array(out.buffer)]).toEqual([1,0,0x47514c33]);
-  expect(reported).toHaveLength(1);
-  expect(reported[0]).toBeInstanceOf(NativeGlFault);
-  expect(reported[0].message).toMatch(REFUSED_RESTORE);
+  // The fault is reported, then the query's reply wrapper rethrows it
+  // instead of turning it into a failed reply.
+  let thrown: unknown;
+  try { runGlQuery(b,O.QOP_IMAGE_OBJECT_DELETE,new Uint8Array(new Uint32Array([3,17]).buffer),out); }
+  catch (error) { thrown = error; }
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(REFUSED_RESTORE);
+  expect(reported).toEqual([thrown]);
   expect(b.fbos.get(17)).toBe(framebuffer);
   expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
 });

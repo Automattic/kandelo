@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { createSurfaceResources, exposeSurfaceResources, retireSurface } from "./surface-resources.js";
 import { resizeSurfaceTarget } from "./present-target.js";
 import type { NativeRetirement } from "./native-recovery.js";
@@ -91,5 +91,5 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
       },
       cancel() { if (pending) { pending = false; retireSurface(candidate); } },
     } };
-  } catch { retireSurface(candidate); return { rc: -5 }; }
+  } catch (caught) { retireSurface(candidate); rethrowNativeGlFault(caught); return { rc: -5 }; }
 }

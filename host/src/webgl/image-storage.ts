@@ -1,4 +1,4 @@
-import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
+import { applyNativeChanges, invokeNativeCall, rethrowNativeGlFault, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import type { GpuScanoutStorage } from "./kms-scanout.js";
 import type { GlImageAttachment } from "./image-references.js";
@@ -59,7 +59,7 @@ export function registerImageSource(b: GlBinding, bo: number, texture: WebGLText
   try {
     b.imageSources.set(token, { token, bo, texture, width, height, key, ...storage });
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     return -12;
   }
   b.nextImageSource++;
@@ -260,7 +260,7 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
     try {
       b.imageRevisions.set(object, previousRevision + 1);
     }
-    catch {
+    catch (caught) { rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
@@ -272,21 +272,22 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
       b.textureViews.set(object, next);
       b.textureViewOwners.set(next.native, object);
     }
-    catch {
+    catch (caught) {
       if (had)
         b.textureViews.set(object, old);
       else
         b.textureViews.delete(object);
-      restoreRevision();
+      restoreRevision(); rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
-    let accepted = false;
+    let accepted = false, fault: unknown;
     try {
       accepted = retarget(b, 1, object, old, next);
     }
-    catch {
-      recordGlError(b, 0x505);
+    catch (caught) {
+      try { rethrowNativeGlFault(caught); recordGlError(b, 0x505); }
+      catch (fatal) { fault = fatal; }
     }
     if (!accepted) {
       if (had)
@@ -295,6 +296,8 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
         b.textureViews.delete(object);
       b.textureViewOwners.delete(next.native);
       restoreRevision();
+      // Roll back first; a fatal fault still propagates.
+      if (fault !== undefined) throw fault;
       return false;
     }
     b.textureViewOwners.delete(old.native);
@@ -324,7 +327,7 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
     try {
       b.imageRevisions.set(object, previousRevision + 1);
     }
-    catch {
+    catch (caught) { rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
@@ -336,21 +339,22 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
       b.renderbufferViews.set(object, next);
       b.renderbufferViewOwners.set(next.native, object);
     }
-    catch {
+    catch (caught) {
       if (had)
         b.renderbufferViews.set(object, old);
       else
         b.renderbufferViews.delete(object);
-      restoreRevision();
+      restoreRevision(); rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
-    let accepted = false;
+    let accepted = false, fault: unknown;
     try {
       accepted = retarget(b, 2, object, old, next);
     }
-    catch {
-      recordGlError(b, 0x505);
+    catch (caught) {
+      try { rethrowNativeGlFault(caught); recordGlError(b, 0x505); }
+      catch (fatal) { fault = fatal; }
     }
     if (!accepted) {
       if (had)
@@ -360,6 +364,8 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
       if (next.native !== old.native)
         b.renderbufferViewOwners.delete(next.native);
       restoreRevision();
+      // Roll back first; a fatal fault still propagates.
+      if (fault !== undefined) throw fault;
       return false;
     }
     if (next.native !== old.native) {
@@ -406,7 +412,12 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
         return true;
       }
       return false;
-    } finally { if (!installed && view.candidate) retireNativeRetirement(view.candidate); }
+    } finally {
+      // A fault after replaceTextureView committed the view leaves it
+      // installed: only a view that never became the object's may retire.
+      if (!installed && view.candidate && b.textureViews.get(object as WebGLTexture) !== view)
+        retireNativeRetirement(view.candidate);
+    }
   }
   if (!replaceRenderbufferView(b, object as WebGLRenderbuffer, { native: renderbufferNative(b, object as WebGLRenderbuffer), source })) return false;
   recordRenderbufferSize(object as WebGLRenderbuffer, source.width, source.height);
@@ -584,7 +595,7 @@ function imageRetirement(b: GlBinding, object: WebGLTexture|WebGLRenderbuffer, c
     retirement = reserveNativeRetirement(b,calls) ?? undefined;
     if (!retirement) return false;
     try { b.imageRetirements.set(object,retirement); }
-    catch { transferNativeRetirement(retirement); recordGlError(b,0x505); return false; }
+    catch (caught) { transferNativeRetirement(retirement); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
   if (!retireNativeRetirement(retirement)) return false;
   b.imageRetirements.delete(object); return true;
@@ -800,10 +811,10 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     b.imageRevisions.set(object, previous + 1);
     exportedByNative.set(native, record);
     exportedBySource.set(object, record);
-  } catch {
+  } catch (caught) {
     b.imageSources.delete(token);
     if (previous) b.imageRevisions.set(object, previous); else b.imageRevisions.delete(object);
-    exportedByNative.delete(native); exportedBySource.delete(object);
+    exportedByNative.delete(native); exportedBySource.delete(object); rethrowNativeGlFault(caught);
     return -12;
   }
   return { record, token, revision: previous + 1, internalFormat: effective };
@@ -851,7 +862,7 @@ export function exportedImageScanout(record: GlExportedImage): GpuScanoutStorage
     record.scanout = { gl, fbo: fbo!, w: record.width, h: record.height, retirement, internalFormat: record.format };
     published = true;
     return record.scanout;
-  } catch { return null; }
+  } catch (caught) { rethrowNativeGlFault(caught); return null; }
   finally { if (!published) retireNativeRetirement(retirement); }
 }
 

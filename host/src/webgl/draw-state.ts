@@ -25,7 +25,7 @@
  * applies WebGL's whole-draw validation, so a rejected draw has no effect.
  */
 import type { GlBinding } from "./registry.js";
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 import { allocateNativeBuffer } from "./buffer-storage.js";
 import { checkedGlCall, checkedGlCallAfterClean, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
@@ -198,7 +198,7 @@ function splitFaces(b: GlBinding, draw: GlesDraw, changes: NativeChange[], final
     return false;
   let plan: ReturnType<typeof facePasses>;
   try { plan = facePasses(draw.mode, vertices); }
-  catch { recordGlError(b, 0x505); return false; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b, 0x505); return false; }
   const retirement = reserveNativeRetirement(b, [["deleteBuffer", null]]);
   if (!retirement) return false;
   try {

@@ -236,6 +236,18 @@ describe("ordered client error flags", () => {
     expect(results).toEqual([0x500,0x501,0x505,0]);
   });
 
+  it("propagates a native fault from a command even when CPU-image publication then fails", () => {
+    // A finally that returned EIO used to replace the fault with a result.
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const fault = new NativeGlFault("the live renderer refused deleteTexture of an object the host retired");
+    gl.clear = () => { throw fault; };
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_CLEAR,4); t.view.setUint32(h.p,0x4000,true);
+    let published = 0;
+    expect(() => decodeAndDispatch(b,0,t.p,{before:()=>true, after:()=>{ published++; return false; }})).toThrow(fault);
+    expect(published).toBe(1);
+  });
+
   it.each([0x08,0x10,0x80,0xffff_ffff])("rejects unsupported mask %i before any batch effect", mask => {
     const gl = new RecordingGl(), { b } = setupBinding(gl);
     const t = new Tlv(b.cmdbufView!.buffer);

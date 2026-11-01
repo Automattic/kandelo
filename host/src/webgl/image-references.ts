@@ -1,7 +1,7 @@
 import { attachImage, destroyTextureView, destroyRenderbufferView, textureNative, renderbufferNative, imageAttachmentCall } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeOwner, nativeInverse, rethrowNativeGlFault, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { setTextureUnit } from "./depth-sampling.js";
@@ -54,7 +54,7 @@ export function attachImageObject(b: GlBinding, kind: number, target: number, po
     else
       containers.delete(framebuffer!);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -98,7 +98,7 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
           target === 0x8ca9 ? [] : [["bindFramebuffer",0x8ca8,oldRead]]) });
     }
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -113,8 +113,8 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
     try {
       b.fbos.set(name, object);
     }
-    catch {
-      checkedGlCall(b, () => gl.deleteFramebuffer(object));
+    catch (caught) {
+      checkedGlCall(b, () => gl.deleteFramebuffer(object)); rethrowNativeGlFault(caught);
       recordGlError(b, 0x505);
       return false;
     }
@@ -210,7 +210,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     }
     b.retiredTextures.set(texture, name);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }
@@ -250,7 +250,7 @@ export function deleteRenderbufferName(b: GlBinding, name: number): boolean {
       });
     b.retiredRenderbuffers.set(object, name);
   }
-  catch {
+  catch (caught) { rethrowNativeGlFault(caught);
     recordGlError(b, 0x505);
     return false;
   }

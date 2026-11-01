@@ -19,7 +19,7 @@
  * their output is sampled by a compositor, never composited by the browser.
  */
 import type { GlBinding } from "./registry.js";
-import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { prepareSurfaceTargetReplacement, surfaceExecutionUsesFramebuffer, type GlPresentTarget, type GlSurfaceResources } from "./surface-resources.js";
 import { allocateMultisampleTarget, type GlMultisampleTarget } from "./multisample.js";
@@ -109,7 +109,7 @@ export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean
     if (existing) retireNativeRetirement(existing.retirement);
     if (replaced) retireNativeRetirement(replaced.retirement);
     return true;
-  } catch { return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); return false; }
   finally {
     if (!published) {
       retireNativeRetirement(retirement);

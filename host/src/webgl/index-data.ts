@@ -1,5 +1,5 @@
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
-import { applyNativeChanges, batchedNativeInverse, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, batchedNativeInverse, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, prepareBufferDraw, withBufferTransfer, type GlBufferStore } from "./buffer-storage.js";
@@ -35,7 +35,7 @@ function indexForm(b: GlBinding, store: GlBufferStore, type: number, phase: numb
     input = new Uint8Array(Math.min(Math.max(total,1),perChunk)*width);
     output = new Uint8Array(Math.min(Math.max(total,1),perChunk)*promotedWidth);
     if (!form) { form = { valid: false, direct: false, native: null }; (store.indexForms ??= new Map()).set(key, form); }
-  } catch { recordGlError(b,0x505); return null; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return null; }
   const entry = form;
   // Pass one reads the indices and looks for a restart value.
   let direct = phase === 0;
@@ -103,7 +103,7 @@ function indexRange(b: GlBinding, store: GlBufferStore, type: number, phase: num
   try {
     values = new Uint16Array(total); blocks = new Uint16Array(Math.ceil(total/RANGE_BLOCK));
     input = new Uint8Array(Math.min(Math.max(total,1),perChunk)*width);
-  } catch { recordGlError(b,0x505); return null; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return null; }
   if (!withBufferTransfer(b,store.source,store.source,() => {
     for (let first=0; first<total; first+=perChunk) {
       const source = input.subarray(0,Math.min(perChunk,total-first)*width);
@@ -119,7 +119,7 @@ function indexRange(b: GlBinding, store: GlBufferStore, type: number, phase: num
   })) return null;
   const range: IndexRange = { valid: true, values, blocks };
   try { (store.indexRanges ??= new Map()).set(key, range); }
-  catch { recordGlError(b,0x505); return null; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return null; }
   return range;
 }
 
@@ -142,7 +142,7 @@ function drawPaddedElements(b: GlBinding, mode: number, count: number, type: num
   const gl = b.gl!;
   let indices: Uint16Array | Uint32Array;
   try { indices = type === BYTE ? new Uint16Array(count) : new Uint32Array(count); }
-  catch { recordGlError(b,0x505); return; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return; }
   const available = Math.max(0, Math.min(count, range.values.length-first));
   for (let i=0; i<available; i++) indices[i] = range.values[first+i];
   const retirement = reserveNativeRetirement(b,[["deleteBuffer",null]]); if (!retirement) return;

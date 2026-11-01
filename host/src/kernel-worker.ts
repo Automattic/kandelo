@@ -6,6 +6,7 @@ import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba, ScanoutEncoding } from "./dri/scanout-format";
 import { kmsCrtcOutput, type KmsGamma } from "./dri/kms-gamma";
 import { KmsColorStage, resetKmsGlState } from "./webgl/kms-color-stage";
+import { rethrowNativeGlFault } from "./webgl/native-recovery.js";
 import type { HostScanout } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
@@ -31675,7 +31676,9 @@ export class CentralizedKernelWorker {
       if (gl && typeof gl.createTexture === "function") {
         presenter = getKernelGraphicsAccess(this.#kernel).withGraphicsState(gl, () => buildKmsGlPresenter(gl));
       }
-    } catch {
+    } catch (error) {
+      // A refused native cleanup is fatal, never an unavailable presenter.
+      rethrowNativeGlFault(error);
       presenter = null;
     }
     if (!presenter) {

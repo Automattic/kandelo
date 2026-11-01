@@ -115,12 +115,13 @@ it("reports a fence deletion the live renderer refuses as a fatal host fault", (
   try {
     const value = direct(4, fault => faults.push(fault)); value.query(QOP_CREATE_FENCE, 7);
     value.native.gl.deleteSync = () => { value.native.errors.push(0x502); };
-    // host_gl_query turns the thrown fault into EIO; the kernel's host-fault
-    // callback has already latched it.
-    expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(-5);
-    expect(faults).toHaveLength(1);
-    expect(faults[0]).toBeInstanceOf(NativeGlFault);
-    expect(faults[0].message).toMatch(/live renderer refused deleteSync of an object the host retired/);
+    // The kernel's host-fault callback latches the fault, and host_gl_query
+    // rethrows it instead of converting it into an EIO reply.
+    let thrown: unknown;
+    try { value.query(QOP_RELEASE_FENCE, 7); } catch (error) { thrown = error; }
+    expect(thrown).toBeInstanceOf(NativeGlFault);
+    expect((thrown as Error).message).toMatch(/live renderer refused deleteSync of an object the host retired/);
+    expect(faults).toEqual([thrown]);
     expect(value.native.deleted).toHaveLength(0);
   } finally { setNativeGlFaultReporter(null); }
 });

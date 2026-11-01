@@ -25,7 +25,7 @@ export function gpuSourceStorage(storage: GpuStorageFormat | undefined): GlImage
 }
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { replaceTextureLevels } from "./texture-levels.js";
-import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { noteStorageWrite } from "./image-writes.js";
 
@@ -52,7 +52,7 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
   let entry = b.foreignTextures.get(bo);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
     try { b.retiredTextures.set(entry.tex, entry.texId); }
-    catch { return -12; }
+    catch (caught) { rethrowNativeGlFault(caught); return -12; }
     b.foreignTextures.delete(bo); entry = undefined;
   }
   const token = registerImageSource(b, bo, gpu.tex, gpu.w, gpu.h, undefined, gpuSourceStorage(gpu.storage));
@@ -85,7 +85,7 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
       [["activeTexture",active],["bindTexture",GL_TEXTURE_2D,previous]])});
     if (!initialized || !importImageStorage(b,1,name,token)) return -5;
     transferNativeRetirement(candidate); published = true; return name;
-  } catch { recordGlError(b,0x505); return -12; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -12; }
   finally {
     if (!published) {
       if (object && b.textures.get(name) === object) b.textures.delete(name);
@@ -135,7 +135,7 @@ export function bindForeignTexture(
   if (!repairNativeState(gl)) return -5;
   let entry = b.foreignTextures.get(bo_id);
   if (entry && b.textures.get(entry.texId) !== entry.tex) {
-    try { b.retiredTextures.set(entry.tex, entry.texId); } catch { return -12; }
+    try { b.retiredTextures.set(entry.tex, entry.texId); } catch (caught) { rethrowNativeGlFault(caught); return -12; }
     b.foreignTextures.delete(bo_id); entry = undefined;
   }
   const isNew = !entry, realloc = !entry || entry.w !== dims.w || entry.h !== dims.h;
@@ -173,7 +173,7 @@ export function bindForeignTexture(
     if (realloc) replaceTextureLevels(entry.tex, GL_TEXTURE_2D,
       {width: dims.w, height: dims.h, internalFormat: 0x1908, format: 0x1908, type: 0x1401, compressed: false});
     entry.w = dims.w; entry.h = dims.h; return entry.texId;
-  } catch { recordGlError(b,0x505); return -5; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return -5; }
   finally {
     if (isNew && !published) {
       if (entry && b.textures.get(entry.texId) === entry.tex) b.textures.delete(entry.texId);

@@ -26,7 +26,7 @@ import { allocateNativeBuffer, withBufferTransfer } from "./buffer-storage.js";
 import { packedVertexLayout } from "./vertex-data.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
-  type NativeCall, type NativeChange } from "./native-recovery.js";
+  type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 
 const ARRAY = 0x8892, COPY_READ = 0x8f36, COPY_WRITE = 0x8f37, FIXED = 0x140c, FLOAT = 0x1406;
 // Native buffer offsets and sizes travel as GLintptr/GLsizeiptr; a larger
@@ -88,7 +88,7 @@ function paddedView(b: GlBinding, a: GlVertexAttribute, layout: NativeLayout, re
       view = {native,valid:false};
       store.converted.set(layout.key,view); b.bufferViewOwners.set(native,a.buffer!);
       transferNativeRetirement(candidate); created = true;
-    } catch { recordGlError(b,0x505); return null; }
+    } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return null; }
     finally { if (!created) retireNativeRetirement(candidate); }
   }
   const padded = view;

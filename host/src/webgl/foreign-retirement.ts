@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import { applyNativeChanges, nativeInverse, repairNativeState, type NativeChange, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, type NativeChange, type NativeCall, rethrowNativeGlFault } from "./native-recovery.js";
 import { imageAttachmentCall, textureNative } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -15,7 +15,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     objects = new Set();
     for (const [object, owner] of b.foreignTextureBos) if (owner === bo) objects.add(object);
     if (cached) objects.add(cached.tex);
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   // Storage redefinition can remove the last public view while its old
   // native container still awaits cleanup. That pending renderer repair
   // must finish before its canonical BO backing can retire too.
@@ -61,7 +61,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     }
     for (const unit of physicalUnits) for (const [target,pname] of [[0x0de1,0x8069],[0x8513,0x8514]])
       captures.push({unit,target,pname,previous:null});
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   if (changes.length || captures.length) {
     if (!checkedGlCall(b, () => { active = Number(gl.getParameter(0x84e0)); })) return false;
     if (hasFramebuffers && (!checkedGlCall(b, () => { draw = gl.getParameter(0x8ca6); }) ||
@@ -85,7 +85,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
         ? [[["bindFramebuffer",0x8ca9,draw]],[["bindFramebuffer",0x8ca8,read]]] : [];
       finalizer.push([["activeTexture",active]]);
       if (!applyNativeChanges(b,changes,{shared:true,finalizer:nativeInverse(b,...finalizer)})) return false;
-    } catch { recordGlError(b,0x505); return false; }
+    } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
   for (const {owner,cube,unit} of units) setTextureUnit(owner,cube,unit,null);
   for (const {owner,framebuffer,point} of points) {

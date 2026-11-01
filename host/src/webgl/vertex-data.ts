@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 import { vertexAttribute } from "./buffer-references.js";
 import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
@@ -60,7 +60,7 @@ export function installVertexConstant(b: GlBinding, index: number,
     changes = [{apply: () => checkedGlCall(b,write),
       restore: nativeInverse(b,[["vertexAttrib4f",index,old[0],old[1],old[2],old[3]]])}];
     options = {shared:true};
-  } catch { recordGlError(b,0x505); return; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return; }
   if (!applyNativeChanges(b,changes,options)) return;
   // Existing tuples are private fixed-size arrays: replacing their scalar
   // slots publishes without a fallible Map.set/clone after native acceptance.
@@ -122,7 +122,7 @@ export function installVertexAttribute(b: GlBinding, index: number, a: GlVertexA
     if (!accepted) return false;
     if (a.buffer) transferNativeRetirement(candidate);
     installed = true; return true;
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   finally {
     if (!installed && created && view) { store!.converted.delete(key); b.bufferViewOwners.delete(view.native); }
     if (!installed || !a.buffer) retireNativeRetirement(candidate);
@@ -144,7 +144,7 @@ export function prepareConvertedVertexData(b: GlBinding, a: GlVertexAttribute): 
     const vertices = Math.min(count,perChunk);
     input = new Uint8Array(vertices ? (vertices-1)*stride+element : 0);
     output = new Uint8Array(vertices*element);
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   const gl = b.gl!;
   const accepted = withBufferTransfer(b,store.source,view.native,() => {
     if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,count*element,0x88e4))) return false;

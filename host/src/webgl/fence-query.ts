@@ -1,6 +1,7 @@
 import type { GlBinding } from "./registry.js";
 import type { GlFenceCandidate } from "./fences.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 export const FENCE_REPLY_BYTES = 16;
 const REPLY_MAGIC = 0x47514c33;
@@ -11,7 +12,7 @@ export function validFenceQuery(input: Uint8Array, outLength: number): boolean {
   try {
     return input.byteLength === 4 && outLength === FENCE_REPLY_BYTES
       && new DataView(input.buffer,input.byteOffset,4).getUint32(0,true) !== 0;
-  } catch { return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); return false; }
 }
 export type PreparedFenceQuery = { rc: number; candidate: GlFenceCandidate | null };
 
@@ -60,9 +61,9 @@ export function prepareFenceQuery(b: GlBinding, op: number, input: Uint8Array, o
     reply.setUint32(12, REPLY_MAGIC, true);
     result.rc = FENCE_REPLY_BYTES;
     return result;
-  } catch {
+  } catch (caught) {
     result.candidate?.cancel();
-    result.candidate = null;
+    result.candidate = null; rethrowNativeGlFault(caught);
     result.rc = -5;
     return result;
   }

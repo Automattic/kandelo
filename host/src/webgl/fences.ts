@@ -4,8 +4,7 @@ import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import {
   reserveNativeRetirement, repairNativeState, retireNativeRetirement,
-  type NativeRetirement, retainNativeRetirement, type NativeRetirementLease,
-} from "./native-recovery.js";
+  type NativeRetirement, retainNativeRetirement, type NativeRetirementLease, rethrowNativeGlFault } from "./native-recovery.js";
 
 type Fence = {
   token: number;
@@ -79,7 +78,7 @@ export class GlFenceLease {
       })) return null;
       if (status === 0x9119) return true; // SIGNALED
       if (status === 0x9118) return false; // UNSIGNALED
-    } catch { /* No successful completion was observed. */ }
+    } catch (caught) { rethrowNativeGlFault(caught); /* No successful completion was observed. */ }
     return null;
   }
   /** Native server waits may only consume a handle from the very same
@@ -91,7 +90,7 @@ export class GlFenceLease {
       if (!repairNativeState(destination) || destination.isContextLost()) return null;
       if (!checkedGlCall(this.fence.owner,()=>destination.waitSync(this.fence.deletion[1]!,0,-1))) return null;
       return true;
-    } catch(error) {if(isKernelExportFailure(error))throw error;return null;}
+    } catch (error) { rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;return null;}
   }
   release(): void {
     if (this.released) return;
@@ -145,8 +144,8 @@ export class GlFenceOwner {
       const accepted = checkedGlCall(owner,() => { deletion[1] = gl.fenceSync(0x9117,0); });
       fence.created = accepted && !!deletion[1]; result.accepted = fence.created;
       return result;
-    } catch {
-      if (!result.candidate && retirement) retireNativeRetirement(retirement);
+    } catch (caught) {
+      if (!result.candidate && retirement) retireNativeRetirement(retirement); rethrowNativeGlFault(caught);
       return result;
     }
   }
@@ -171,7 +170,7 @@ export class GlFenceOwner {
       const lease = new GlFenceLease(this, fence, fenceLeaseMint,native);
       fence.references++;
       return lease;
-    } catch {native.release(null);return null;}
+    } catch (caught) {native.release(null); rethrowNativeGlFault(caught);return null;}
   }
   contextFor(token: number): WebGL2RenderingContext | null {
     const fence=this.fences.get(token);

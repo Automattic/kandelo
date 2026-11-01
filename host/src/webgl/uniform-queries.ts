@@ -4,6 +4,7 @@ import type { GlUniformMetadata, GlUniformLocationRecord, GlObjectGroup } from "
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 export class GlUniformLookup {
   cursor=0;
@@ -113,7 +114,7 @@ export function reserveUniformLocation(b: GlBinding, name: number, text: string,
     const result=new GlUniformLocationReservation(b.objects,index,record);
     b.uniformLocationRecords.set(index,record);
     return result;
-  } catch (error) { if(isKernelExportFailure(error)) throw error; recordGlError(b,0x505); return null; }
+  } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error; recordGlError(b,0x505); return null; }
 }
 
 /** Immediate queries share the same reservation/publication authority. */
@@ -152,7 +153,7 @@ export function runUniformLookup(b: GlBinding, input: Uint8Array, out: Uint8Arra
         const storage=b.uniformLookupBudget.allocate(arg);
         if(!storage) {recordGlError(b,0x505);return -12;}
         try { b.uniformLookup=new GlUniformLookup(program,executable,programLinkGeneration(b,executable).value,token,storage); }
-        catch (error) { if(isKernelExportFailure(error)) throw error; storage.release();recordGlError(b,0x505);return -12; }
+        catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error; storage.release();recordGlError(b,0x505);return -12; }
       }
     } else {
       const pending = b.uniformLookup;

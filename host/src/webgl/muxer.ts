@@ -1,7 +1,7 @@
 // Replay each GLES2 texture target independently on the shared context.
 import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from "./image-storage.js";
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
-import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { knownTextureUnitLimit, knownVertexAttributeLimit, maxVertexAttributes } from "./limits.js";
 import { checkedGlSequence } from "./program-objects.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
@@ -189,7 +189,7 @@ export class GlMuxer {
    * Unlike unconditional teardown, refusal performs no native cleanup. */
   prepareRetirement(unknownVertexAttributes = false): boolean {
     try { this.captureCurrentErrors(); }
-    catch { return false; }
+    catch (caught) { rethrowNativeGlFault(caught); return false; }
     this.errorOwner = null;
     // A generic native writer can touch constants absent every guest shadow.
     // The sentinel is clamped to a checked native limit before any replay.
@@ -209,7 +209,7 @@ export class GlMuxer {
     try {
       captureNativeGlErrors(this.gl, this.errorOwner);
       this.errorOwner = null;
-    } catch {
+    } catch (caught) { rethrowNativeGlFault(caught);
       // Cleanup must still retire native objects. Keep the outgoing error
       // flags so a later switch must drain them before executing a new owner.
     }

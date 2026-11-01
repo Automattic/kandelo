@@ -1,4 +1,5 @@
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 /** The ordering owner is one kernel-authorized GL session, independent of a
  * reusable public context slot. Tickets retain scalars and this ledger only;
@@ -36,7 +37,7 @@ export class GlOperationStream {
       this.tickets.push(ticket);
       this.serial++;
       return ticket;
-    } catch { return null; }
+    } catch (caught) { rethrowNativeGlFault(caught); return null; }
   }
 
   /** Immediate results cannot outlive the caller's output authority. Refuse
@@ -55,7 +56,7 @@ export class GlOperationStream {
     if (!ticket) return immediateRefusals.allocationFailure;
     let entered:{state:"entered";ticket:GlOperationTicket};
     try { entered={state:"entered",ticket}; }
-    catch {ticket.cancel();return immediateRefusals.allocationFailure;}
+    catch (caught) {ticket.cancel(); rethrowNativeGlFault(caught);return immediateRefusals.allocationFailure;}
     if (!ticket.start()) { ticket.cancel(); return this.closed ? immediateRefusals.closed : immediateRefusals.allocationFailure; }
     return entered;
   }

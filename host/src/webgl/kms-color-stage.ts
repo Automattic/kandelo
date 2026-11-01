@@ -26,6 +26,7 @@
 import type { KmsCursor } from "../dri/cursor-plane.js";
 import type { KmsGamma } from "../dri/kms-gamma.js";
 import { ScanoutEncoding } from "../dri/scanout-format.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 /** The texture storage a captured frame keeps, by the source's sized
  *  internal format: a blit between identical formats copies every value,

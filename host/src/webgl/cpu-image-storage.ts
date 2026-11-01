@@ -3,7 +3,7 @@ import type { GbmBoRegistry } from "../dri/registry.js";
 import type { GlBinding } from "./registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { readGbmFront } from "./gbm-front-copy.js";
-import { applyNativeChanges, nativeInverse, retireNativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, retireNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./image-writes.js";
@@ -71,7 +71,7 @@ export class CpuImageStorage {
     try {
       snapshot = new Uint8Array(bytes);
       pixels = codec.pack(snapshot, mirror.layout.offset, mirror.layout.pitch, w, h);
-    } catch { return false; }
+    } catch (caught) { rethrowNativeGlFault(caught); return false; }
     // Typed-array uploads must not inherit a public unpack buffer, skips,
     // orientation, premultiplication, or browser color-space conversion.
     const owner = {gl, errors: [] as number[], shadow: {}};
@@ -184,7 +184,7 @@ export class CpuImageStorage {
         mirror.snapshot = alphaWritten ? null : represented;
         mirror.pending = null;
         mirror.dirty = false;
-      } catch { return false; }
+      } catch (caught) { rethrowNativeGlFault(caught); return false; }
       if (audited !== null)
         throw new Error(`CPU image mirror of BO ${audited} changed without a counted write: an image write path ` +
           "does not advance its storage's write count (image-writes.ts)");

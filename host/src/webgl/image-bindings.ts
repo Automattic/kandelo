@@ -2,6 +2,7 @@ import { textureNative, renderbufferNative } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { setTextureUnit } from "./depth-sampling.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 /** Native textures whose target an accepted bind has fixed. */
 const boundTargets = new WeakMap<WebGLTexture, number>();
@@ -23,7 +24,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
     // synchronous; a rejected bind removes the unpublished candidate again.
     if (allocate && texture) {
       try { b.textures.set(name,texture); }
-      catch { gl.deleteTexture(texture); recordGlError(b,0x505); return false; }
+      catch (caught) { gl.deleteTexture(texture); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
     }
     const native = texture ? textureNative(b,texture) : null;
     // A texture's target is fixed by its first successful bind, and binding
@@ -51,7 +52,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
     }
     if (allocate && renderbuffer) {
       try { b.rbos.set(name,renderbuffer); }
-      catch { gl.deleteRenderbuffer(renderbuffer); recordGlError(b,0x505); return false; }
+      catch (caught) { gl.deleteRenderbuffer(renderbuffer); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
     }
     if (!checkedGlCall(b, () => gl.bindRenderbuffer(target,renderbuffer ? renderbufferNative(b,renderbuffer) : null))) {
       if (allocate && renderbuffer) { b.rbos.delete(name); gl.deleteRenderbuffer(renderbuffer); }

@@ -1,4 +1,5 @@
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 /** Actual copied-byte accounting shared by one object group. The RPC chunk
  * limit is independent of this staging resource budget. */
 export class GlUniformLookupBudget {
@@ -12,7 +13,7 @@ export class GlUniformLookupBudget {
     try {
       const value=new GlUniformLookupBytes(this,new Uint8Array(length));
       this.usedBytes+=length;return value;
-    } catch (error) { if(isKernelExportFailure(error)) throw error; return null; }
+    } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error; return null; }
   }
   release(length: number): void {
     if(length>this.usedBytes) throw new Error("Uniform lookup byte charge lost");

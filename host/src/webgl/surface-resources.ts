@@ -1,5 +1,5 @@
 import type { GlBinding } from "./registry.js";
-import { retireNativeRetirement, retainNativeRetirement, type NativeRetirement, type NativeRetirementLease } from "./native-recovery.js";
+import { retireNativeRetirement, retainNativeRetirement, type NativeRetirement, type NativeRetirementLease, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlErrorState } from "./errors.js";
 import type { GlMultisampleTarget } from "./multisample.js";
 
@@ -117,7 +117,7 @@ export class GlSurfaceStorageLease {
       lease.#hold = retainNativeRetirement(target.retirement);
       if (ms && lease.#hold) lease.#multisampleHold = retainNativeRetirement(ms.retirement);
       if (lease.#hold && (!ms || lease.#multisampleHold)) return lease;
-    } catch { /* Release any partial hold below. */ }
+    } catch (caught) { rethrowNativeGlFault(caught); /* Release any partial hold below. */ }
     // A partial hold was never published; its release cannot be pending work.
     if (lease && lease.#hold) lease.#hold.release(null);
     return null;
@@ -140,7 +140,7 @@ export class GlSurfaceStorageLease {
       lease.#hold = this.#hold.clone();
       if (this.#multisampleHold && lease.#hold) lease.#multisampleHold = this.#multisampleHold.clone();
       if (lease.#hold && (!this.#multisampleHold || lease.#multisampleHold)) return lease;
-    } catch { /* Release any partial hold below. */ }
+    } catch (caught) { rethrowNativeGlFault(caught); /* Release any partial hold below. */ }
     if (lease && lease.#hold) lease.#hold.release(null);
     return null;
   }

@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 import { prepareConvertedVertexData } from "./vertex-data.js";
 import { activeVertexArray } from "./buffer-references.js";
@@ -70,7 +70,7 @@ function synchronizeView(b: GlBinding, store: GlBufferStore, view: BufferView): 
   const gl = b.gl!;
   let scratch: Uint8Array<ArrayBuffer>;
   try { scratch = new Uint8Array(Math.min(store.size,BUFFER_TRANSFER_BYTES)); }
-  catch { recordGlError(b,0x505); return false; }
+  catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   const accepted = withBufferTransfer(b,store.source,view.native,() => {
     if (!checkedGlCall(b, () => gl.bufferData(COPY_WRITE,store.size,store.usage))) return false;
     for (let offset=0; offset<store.size; offset+=BUFFER_TRANSFER_BYTES) {
@@ -127,8 +127,8 @@ export function bindBufferObject(b: GlBinding, target: number, name: number): bo
       if (newStore && object) b.bufferStores.set(object,store!);
       else if (newView) store!.views.set(target,view!);
       if (newStore || newView) b.bufferViewOwners.set(view!.native,object!);
-    } catch {
-      discard(); recordGlError(b,0x505); return false;
+    } catch (caught) {
+      discard(); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false;
     }
     const accepted = applyNativeChanges(b,[{apply: () => {
       // Classify before COPY_WRITE; otherwise WebGL classifies index data as
@@ -143,7 +143,7 @@ export function bindBufferObject(b: GlBinding, target: number, name: number): bo
     else vao!.element = object;
     transferNativeRetirement(candidate); committed = true;
     return true;
-  } catch { discardCandidate?.(); recordGlError(b,0x505); return false; }
+  } catch (caught) { discardCandidate?.(); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   finally { if (!committed) retireNativeRetirement(candidate); }
 }
 
@@ -220,8 +220,8 @@ export function retireBufferObjects(b: GlBinding, object: WebGLBuffer, natives: 
       retirement = reserveNativeRetirement(b,calls,dependencies) ?? undefined;
       if (!retirement) return false;
       try { b.bufferRetirements.set(object,retirement); }
-      catch { transferNativeRetirement(retirement); throw new RangeError("buffer cleanup ownership failed"); }
-    } catch { recordGlError(b,0x505); return false; }
+      catch (caught) { transferNativeRetirement(retirement); rethrowNativeGlFault(caught); throw new RangeError("buffer cleanup ownership failed"); }
+    } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
   return retireNativeRetirement(retirement);
 }

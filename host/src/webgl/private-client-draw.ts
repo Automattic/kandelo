@@ -11,8 +11,7 @@ import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_
 import {
   applyNativeChanges, batchedNativeInverse, nativeInverse, repairNativeState,
   reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
-  type NativeCall, type NativeChange,
-} from "./native-recovery.js";
+  type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 
 const ARRAY = 0x8892, FLOAT = 0x1406, FIXED = 0x140c;
 const STREAM_DRAW = 0x88e0;
@@ -61,7 +60,7 @@ function parseDraw(v: DataView): Draw | null {
 
 /** Whole-record shape validation precedes any native effect. */
 export function validPrivateClientDraw(v: DataView): boolean {
-  try { return parseDraw(v) !== null; } catch { return false; }
+  try { return parseDraw(v) !== null; } catch (caught) { rethrowNativeGlFault(caught); return false; }
 }
 
 /** Consume one admitted draw exactly once. A false acceptance/restoration result
@@ -152,7 +151,7 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
     applyNativeChanges(b,changes,{completion,finalizer:batchedNativeInverse(b,restore)});
     result.restored = completion.complete;
     return result;
-  } catch { recordGlError(b,0x505); return result; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return result; }
 }
 
 /** The context's client-array stream buffer, created on first use and

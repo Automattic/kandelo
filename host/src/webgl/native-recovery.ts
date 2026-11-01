@@ -40,6 +40,12 @@ export function nativeGlFault(message: string, cause?: unknown): never {
   catch (error) { if (isKernelExportFailure(error)) throw error; }
   throw fault;
 }
+/** Rethrow what a catch must never convert into an error result: a
+ * NativeGlFault (the fatal shutdown is already latched, and the operation
+ * did not happen) or a kernel export failure. */
+export function rethrowNativeGlFault(error: unknown): void {
+  if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+}
 /** True when the renderer is lost now or was lost at some point, so an
  * object created before that loss may already be gone. For a direct deletion
  * that has no recorded creation generation. */

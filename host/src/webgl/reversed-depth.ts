@@ -30,6 +30,7 @@ import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-samplin
 import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -134,7 +135,7 @@ const linkedSources = new WeakMap<WebGLProgram, LinkedSources>();
 export function recordCompiledShader(shader: WebGLShader, source: Uint8Array | undefined): void {
   if (!source) { compiledSources.delete(shader); return; }
   try { compiledSources.set(shader, new TextDecoder().decode(source)); }
-  catch { compiledSources.delete(shader); }
+  catch (caught) { rethrowNativeGlFault(caught); compiledSources.delete(shader); }
 }
 
 export function compiledShaderSource(shader: WebGLShader): string | undefined {

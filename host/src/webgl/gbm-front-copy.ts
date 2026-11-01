@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeInverse, repairNativeState, type NativeCall } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState, type NativeCall, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import type { GlSurfaceResources } from "./surface-resources.js";
 import { multisampleResolveStorage, resolveSurfaceMultisample } from "./multisample.js";
@@ -88,7 +88,7 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
         [[scissor ? "enable" : "disable", SCISSOR]])
     });
     return accepted ? 0 : owner.errors.includes(0x505) ? -12 : -5;
-  } catch { return -5; }
+  } catch (caught) { rethrowNativeGlFault(caught); return -5; }
 }
 
 /** Read the private render back into independent bottom-row-first RGBA bytes
@@ -104,7 +104,7 @@ export function readGbmFront<T extends ArrayBufferView = Uint8Array<ArrayBuffer>
   const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
   let pixels: T;
   try { pixels = read.buffer(size.width * size.height); }
-  catch { return {rc: -12}; }
+  catch (caught) { rethrowNativeGlFault(caught); return {rc: -12}; }
   const owner = {gl, errors: [] as number[], shadow: {}};
   const failed = () => ({rc: owner.errors.includes(0x505) ? -12 : -5});
   try {
@@ -144,7 +144,7 @@ export function readGbmFront<T extends ArrayBufferView = Uint8Array<ArrayBuffer>
       [["bindFramebuffer", READ, oldRead]], [["bindBuffer", 0x88eb, oldPack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});
     return accepted ? {rc: 0, pixels} : failed();
-  } catch { return {rc: -5}; }
+  } catch (caught) { rethrowNativeGlFault(caught); return {rc: -5}; }
 }
 
 /** Pack independent bottom-row-first RGBA readback into a top-row-first

@@ -5,17 +5,18 @@ import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 afterEach(() => setNativeGlFaultReporter(null));
-/** Query replies (checkedQueryReply) swallow a thrown fault into an error
- * status; the reporter is what latches it as fatal. */
-function collectFaults(): Error[] {
+/** Decision D-29: the reporter latches a refused restoration as fatal, and
+ * query replies (checkedQueryReply) rethrow the NativeGlFault instead of
+ * converting it into an error status. */
+function expectRestoreFault(run: () => unknown) {
   const faults: Error[] = [];
-  setNativeGlFaultReporter(fault => faults.push(fault));
-  return faults;
-}
-function expectRestoreFault(faults: Error[]) {
-  expect(faults).toHaveLength(1);
-  expect(faults[0]).toBeInstanceOf(NativeGlFault);
-  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
+  let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch (error) { thrown = error; }
+  finally { setNativeGlFaultReporter(null); }
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused to restore native state/);
+  expect(faults).toEqual([thrown]);
 }
 const TEX = 0x0de1, RBO = 0x8d41, FBO = 0x8d40, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0;
 class ImageTransactionsGl {
@@ -545,9 +546,7 @@ for (const kind of [1, 2]) it(`faults when the live renderer refuses failed cont
     if (rejected && name === attachment) { gl.errors.push(0x502); return false; }
     return before(name);
   };
-  const faults = collectFaults();
-  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[kind,17])).toEqual([1,0]);
-  expectRestoreFault(faults);
+  expectRestoreFault(() => query(O.QOP_IMAGE_OBJECT_DELETE,[kind,17]));
   expect(b.framebufferAttachments.get(framebuffer)!.get(COLOR)!.object).toBe(old);
   expect((kind === 1 ? b.textures : b.rbos).get(17)).toBe(old);
 });
@@ -560,9 +559,7 @@ it("faults when the live renderer refuses failed framebuffer deletion's selector
     if (rejected && name === "framebuffer") { gl.errors.push(0x502); return false; }
     return before(name);
   };
-  const faults = collectFaults();
-  expect(query(O.QOP_IMAGE_OBJECT_DELETE,[3,71])).toEqual([1,0]);
-  expectRestoreFault(faults);
+  expectRestoreFault(() => query(O.QOP_IMAGE_OBJECT_DELETE,[3,71]));
   expect(b.shadow.fbo).toBe(framebuffer); expect(b.shadow.readFbo).toBe(framebuffer);
 });
 

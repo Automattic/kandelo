@@ -328,11 +328,13 @@ it("keeps retired BO generations and cloned surface leases disjoint from ID reus
 it("faults when the live renderer refuses the selector restoration of a rejected GPU allocation",()=>{
   const {gl,state}=makeFakeGl(),reg=new GlContextRegistry();const bind=gl.bindFramebuffer.bind(gl);
   gl.bindFramebuffer=(target,framebuffer)=>{if(framebuffer===state.readBinding)throw new Error("read selector rejected");bind(target,framebuffer);};
-  // allocateGpuStorage swallows the thrown fault; the reporter still latches it.
+  // The reporter latches the fault and allocation rethrows it.
   const faults: Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
-  try{expect(reg.createGpuBo(41,gl,2,2)).toBeNull();}finally{setNativeGlFaultReporter(null);}
-  expect(faults).toHaveLength(1);expect(faults[0]).toBeInstanceOf(NativeGlFault);
-  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
+  let thrown: unknown;
+  try{reg.createGpuBo(41,gl,2,2);}catch(error){thrown=error;}finally{setNativeGlFaultReporter(null);}
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused to restore native state/);
+  expect(faults).toEqual([thrown]);
   expect(reg.gpuBo(41)).toBeUndefined();
 });
 it("faults when the live renderer refuses an unheld GPU BO framebuffer retirement",()=>{

@@ -25,7 +25,7 @@
 import type { GlBinding } from "./registry.js";
 import type { GlSurfaceResources } from "./surface-resources.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement,
-  type NativeCall, type NativeRetirement } from "./native-recovery.js";
+  type NativeCall, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { hostFramebufferColorStorage, noteStorageWrite } from "./image-writes.js";
@@ -121,7 +121,7 @@ export function allocateMultisampleTarget(owner: CheckedGlOwner, samples: number
       let status = 0;
       return checkedGlCall(owner, () => { status = gl.checkFramebufferStatus(DRAW); }) && status === 0x8cd5;
     } }], { shared: true, finalizer: nativeInverse(owner, ...restore.groups) });
-  } catch { accepted = false; }
+  } catch (caught) { rethrowNativeGlFault(caught); accepted = false; }
   if (!accepted) { retireNativeRetirement(retirement); return null; }
   return target;
 }
@@ -165,7 +165,7 @@ export function resolveMultisample(gl: WebGL2RenderingContext, source: WebGLFram
     ], { shared: true, finalizer: nativeInverse(owner, readGroup,
       [["bindFramebuffer", READ, oldRead]], [["bindFramebuffer", DRAW, oldDraw]],
       [[scissor ? "enable" : "disable", SCISSOR]]) });
-  } catch { return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); return false; }
 }
 
 /** The single-sampled storage that holds a multisampled surface's resolved

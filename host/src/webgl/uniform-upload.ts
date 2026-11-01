@@ -4,6 +4,7 @@ import type { GlUniformMetadata } from "./object-group.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { checkedGlCall, currentProgramName, recordGlError } from "./program-objects.js";
 import * as O from "./ops.js";
+import { rethrowNativeGlFault } from "./native-recovery.js";
 
 export type GlUniformUpload = {
   token: number; op: number; location: number; total: number; cursor: number; stride: number;
@@ -94,7 +95,7 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
       payload.set(new Uint8Array(original.buffer));
       new DataView(payload.buffer).setUint32(4,accepted,true);
       pending.payload=payload;
-    } catch {recordGlError(b,0x505);}
+    } catch (caught) { rethrowNativeGlFault(caught);recordGlError(b,0x505);}
     return;
   }
   const pending=b.uniformUpload;

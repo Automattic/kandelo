@@ -1,4 +1,4 @@
-import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
+import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 import { collectConvertedVertexData, packedVertexLayout } from "./vertex-data.js";
 import { canonicalBuffer, destroyBufferStorage } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
@@ -68,7 +68,7 @@ export function deleteBufferNames(b: GlBinding, names: number[]): boolean {
       changes.push({apply: () => checkedGlCall(b, () => gl.bindBuffer(0x8893,null)),
         restore: nativeInverse(owner, [["bindBuffer",0x8893,oldElement]])});
     }
-  } catch { recordGlError(b,0x505); return false; }
+  } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   if (!applyNativeChanges(b, changes)) return false;
   b.buffers = buffers; b.retiredBuffers = retired;
   b.shadow.arrayBuffer = nextArray; vao.element = nextElement; vao.attributes = nextAttributes;

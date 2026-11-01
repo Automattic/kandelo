@@ -9,8 +9,9 @@ import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "../src/d
 import { hasNativeRepair, NativeGlFault, reserveNativeRetirement, setNativeGlFaultReporter } from "../src/webgl/native-recovery";
 
 // A refused native restoration or deletion on a live renderer is a fatal
-// NativeGlFault (native-recovery.ts). Tests that observe a fault through a
-// path that turns it into an errno install a reporter; always reset it.
+// NativeGlFault (native-recovery.ts): reported once, then thrown through
+// every host catch. Tests that count reports install a reporter; always
+// reset it.
 afterEach(() => setNativeGlFaultReporter(null));
 function caught(call: () => unknown): Error | undefined {
   try { call(); } catch (error) { return error as Error; }
@@ -527,11 +528,11 @@ for (const kind of ["gpu","cpu"] as const) {
   it(`reports a ${kind} front inverse the live renderer refuses as a fatal host fault`,()=>{
     const r=selectedFront(kind),faults:Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
     r.failRestore();
-    // host_gl_update_surface turns the thrown fault into EIO; the reporter
-    // has already latched it.
-    expect(r.run()).toBe(-5);expect(r.publications()).toBe(0);
-    expect(faults).toHaveLength(1);expect(faults[0]).toBeInstanceOf(NativeGlFault);
-    expect(faults[0].message).toMatch(RESTORE_REFUSED);
+    // The reporter latches the fault and host_gl_update_surface rethrows it
+    // instead of converting it into EIO.
+    const fault=caught(()=>r.run());
+    expect(fault).toBeInstanceOf(NativeGlFault);expect(fault!.message).toMatch(RESTORE_REFUSED);
+    expect(faults).toEqual([fault]);expect(r.publications()).toBe(0);
   });
   it(`retains ${kind} front invalid-source errno before the private capture`,()=>{
     const r=selectedFront(kind),getError=r.gl.getError;let captures=0;

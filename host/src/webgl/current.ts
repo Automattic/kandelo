@@ -1,6 +1,6 @@
 import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
-import { hasNativeRepair, repairNativeState } from "./native-recovery.js";
+import { hasNativeRepair, repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { defaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { selectSurfaceResources, type GlSurfaceResources } from "./surface-resources.js";
