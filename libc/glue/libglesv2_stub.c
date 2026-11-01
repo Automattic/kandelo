@@ -282,6 +282,7 @@ struct wpk_gles_context {
     /* Unacknowledged flags transfer into the same host context error owner. */
     uint32_t client_errors;
     uint32_t error_reply;
+    struct gl_submit_query_info error_packet;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
@@ -1178,48 +1179,22 @@ void glDrawArrays(GLenum mode, GLint first, GLsizei count) {
  * The compound phase result also stays in this heap allocation. */
 /* Pre-dispatch failures keep their precise flag and own no native candidate. */
 enum { WPK_GL_QUERY_NOT_DISPATCHED = -2 };
-static int query_into_tracked(uint32_t op,
-                              const void *in, uint32_t in_len,
-                              void *dst, uint32_t dst_len, int *query_entered) {
+/* One synchronous execution path for malloc-owned replies and the context's
+ * persistent error reply/packet. Storage is reserved before any native effects;
+ * this helper neither allocates nor retries an entered operation. */
+static int query_owned_reply(struct wpk_gles_context *state, uint8_t *base, int fd,
+                             uint32_t op, const void *in, uint32_t in_len,
+                             void *reply, uint32_t out_len, uint32_t prefix,
+                             struct gl_submit_query_info *packet, int *query_entered) {
     if (query_entered) *query_entered = 0;
-    uint8_t *base = _wpk_gl_cmdbuf_base();
-    if (base == NULL) return -1;
-    int fd = _wpk_gl_fd();
-    if (fd < 0) return -1;
-    struct wpk_gles_context *state = _wpk_gl_current_encoder();
-    /* Preserve the acknowledged error trailer as one ordinary flush. A clean
-     * nonempty command prefix may use the compound transport below. */
-    if (state->client_errors && flush_commands() != 0)
-        return WPK_GL_QUERY_NOT_DISPATCHED;
-    uint32_t prefix = g_cursor && g_cursor != base ? (uint32_t)(g_cursor-base) : 0;
-    size_t reply_bytes = dst_len ? dst_len : 1;
-    const size_t alignment = _Alignof(struct gl_submit_query_info);
-    size_t header_offset = 0, bytes = reply_bytes;
-    if (prefix) {
-        if (reply_bytes > SIZE_MAX-(alignment-1)-sizeof(struct gl_submit_query_info)) {
-            if (flush_commands() != 0) return WPK_GL_QUERY_NOT_DISPATCHED;
-            raise_client_error(GL_OUT_OF_MEMORY); return WPK_GL_QUERY_NOT_DISPATCHED;
-        }
-        header_offset = (reply_bytes+alignment-1) & ~(alignment-1);
-        bytes = header_offset + sizeof(struct gl_submit_query_info);
-    }
-    void *heap = malloc(bytes);
-    if (!heap) {
-        // The old helper submitted before allocating its reply. Preserve
-        // that ordering on OOM, including the submit failure's GL flag.
-        if (prefix && flush_commands() != 0) return WPK_GL_QUERY_NOT_DISPATCHED;
-        raise_client_error(GL_OUT_OF_MEMORY); return WPK_GL_QUERY_NOT_DISPATCHED;
-    }
-    if (dst_len) memset(heap, 0, dst_len);
     struct gl_query_info qi = {
         .op = op,
         .in_buf_ptr = (uintptr_t)in, .in_buf_len = in_len,
-        .out_buf_ptr = (uintptr_t)heap, .out_buf_len = dst_len,
+        .out_buf_ptr = (uintptr_t)reply, .out_buf_len = out_len,
         .reserved = 0,
     };
     int rc;
     if (prefix) {
-        struct gl_submit_query_info *packet = (void *)((uint8_t *)heap+header_offset);
         memset(packet,0,sizeof *packet);
         packet->submit.length = prefix;
         packet->query = qi;
@@ -1259,6 +1234,44 @@ static int query_into_tracked(uint32_t op,
         if (query_entered) *query_entered = 1;
         rc = ioctl(fd,GLIO_QUERY,&qi);
     }
+    return rc;
+}
+
+static int query_into_tracked(uint32_t op,
+                              const void *in, uint32_t in_len,
+                              void *dst, uint32_t dst_len, int *query_entered) {
+    if (query_entered) *query_entered = 0;
+    uint8_t *base = _wpk_gl_cmdbuf_base();
+    if (base == NULL) return -1;
+    int fd = _wpk_gl_fd();
+    if (fd < 0) return -1;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    /* Preserve the acknowledged error trailer as one ordinary flush. A clean
+     * nonempty command prefix may use the compound transport below. */
+    if (state->client_errors && flush_commands() != 0)
+        return WPK_GL_QUERY_NOT_DISPATCHED;
+    uint32_t prefix = g_cursor && g_cursor != base ? (uint32_t)(g_cursor-base) : 0;
+    size_t reply_bytes = dst_len ? dst_len : 1;
+    const size_t alignment = _Alignof(struct gl_submit_query_info);
+    size_t header_offset = 0, bytes = reply_bytes;
+    if (prefix) {
+        if (reply_bytes > SIZE_MAX-(alignment-1)-sizeof(struct gl_submit_query_info)) {
+            if (flush_commands() != 0) return WPK_GL_QUERY_NOT_DISPATCHED;
+            raise_client_error(GL_OUT_OF_MEMORY); return WPK_GL_QUERY_NOT_DISPATCHED;
+        }
+        header_offset = (reply_bytes+alignment-1) & ~(alignment-1);
+        bytes = header_offset + sizeof(struct gl_submit_query_info);
+    }
+    void *heap = malloc(bytes);
+    if (!heap) {
+        // The old helper submitted before allocating its reply. Preserve
+        // that ordering on OOM, including the submit failure's GL flag.
+        if (prefix && flush_commands() != 0) return WPK_GL_QUERY_NOT_DISPATCHED;
+        raise_client_error(GL_OUT_OF_MEMORY); return WPK_GL_QUERY_NOT_DISPATCHED;
+    }
+    if (dst_len) memset(heap, 0, dst_len);
+    struct gl_submit_query_info *packet = prefix ? (void *)((uint8_t *)heap+header_offset) : NULL;
+    int rc = query_owned_reply(state,base,fd,op,in,in_len,heap,dst_len,prefix,packet,query_entered);
     if (rc == 0 && dst_len) memcpy(dst,heap,dst_len);
     free(heap);
     return rc;
@@ -1334,18 +1347,33 @@ abort:
 GLenum glGetError(void) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     if (!state) return GL_NO_ERROR;
-    if (_wpk_gl_cmdbuf_base() == NULL) return GL_NO_ERROR;
-    (void)flush_commands();
-    const uint32_t errors = state->client_errors;
-    /* The context itself is heap-owned. This fixed reply avoids allocating
-     * while draining OUT_OF_MEMORY and remains pinned by current ownership. */
+    uint8_t *base = _wpk_gl_cmdbuf_base();
+    if (base == NULL) return GL_NO_ERROR;
+    const int fd = _wpk_gl_fd();
     state->error_reply = GL_NO_ERROR;
-    struct gl_query_info info = {.op = QOP_GET_ERROR,
-        .in_buf_ptr = errors ? (uintptr_t)&state->client_errors : 0,
-        .in_buf_len = errors ? 4 : 0,
-        .out_buf_ptr = (uintptr_t)&state->error_reply, .out_buf_len = 4};
-    if (ioctl(_wpk_gl_fd(),GLIO_QUERY,&info) != 0) return GL_INVALID_OPERATION;
-    state->client_errors &= ~errors;
+    if (state->client_errors) {
+        /* Keep trailer ordering and the existing ability to drain local flags
+         * even after a failed ordinary submission. No reply allocation is
+         * needed while reporting OUT_OF_MEMORY. This is fresh error-drain
+         * work; the failed draw prefix is never submitted again. */
+        (void)flush_commands();
+        const uint32_t errors = state->client_errors;
+        if (query_owned_reply(state,base,fd,QOP_GET_ERROR,
+            errors ? &state->client_errors : NULL,errors ? 4 : 0,
+            &state->error_reply,4,0,NULL,NULL) != 0) return GL_INVALID_OPERATION;
+        state->client_errors &= ~errors;
+        return state->error_reply;
+    }
+    const uint32_t prefix = g_cursor && g_cursor != base ? (uint32_t)(g_cursor-base) : 0;
+    if (query_owned_reply(state,base,fd,QOP_GET_ERROR,NULL,0,&state->error_reply,4,
+        prefix,prefix ? &state->error_packet : NULL,NULL) != 0) {
+        /* There were no C flags at entry. Consume the transport flag returned
+         * by this call, without reissuing an error-consuming query whose
+         * completion may be unknown. Host copyout ambiguity remains a separate
+         * ordinary error-query custody gap. */
+        state->client_errors &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
+        return GL_INVALID_OPERATION;
+    }
     return state->error_reply;
 }
 

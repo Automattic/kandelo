@@ -18136,3 +18136,35 @@ upstream CTS, normal Node/browser/compositor consumers, browser-memory and
 required POSIX validation remain pending. Numeric versions stay in the single
 unpublished program56/host3/GL17/fork21 family; no canonical combined digest or
 new rendering/performance result is claimed by the merge.
+
+### Combined C transport reconciliation: native source controls
+
+The `bd571546734c68e08da69a859c5293d899c4995b` source integration initially
+passed 273 of 283 native UBSan C/device-double cases and failed 10. That raw run
+and a private reproduction retaining every original assertion remain preserved.
+One failure exposed the lost compound GET_ERROR path; nine required exact
+classification of the added error-only flag transfers rather than treating
+those transfers as duplicate command prefixes.
+
+GET_ERROR now keeps an aligned compound packet beside its context-owned heap
+reply and shares one phase executor with ordinary allocated query replies. A
+clean nonempty prefix retains compound transport without a new C reply
+allocation while reporting OOM. Pending C flags keep the acknowledged ordinary
+trailer path. Failed or uncertain prefixes do not replay; clean-entry transport
+INVALID_OPERATION is returned once without reissuing an error-consuming query.
+
+The 15 new controls cover uniform COMMIT-prefix acceptance/refusal/unknown
+outcomes and CANCEL before the next valid CLEAR, client-error trailer
+ACK/refusal/lost-ACK/OOM ownership, and persistent GET_ERROR allocation/refusal/
+unknown outcomes. Every original case remains selected. Focused 32/32 and full
+298/298 native UBSan cases passed with source hashes unchanged; there were no
+missing, duplicate or unexpected PASS lines. Exact error-only and non-error
+prefix counts, native effects, error flags and normal resource teardown remain
+asserted. Evidence: `.context/graphics-main-integration-review-r1/combined-native-r2/`.
+
+This is C encoder/device-double evidence. Actual host immediate GET_ERROR
+optional-mask/error-consumption/copyout custody remains an ordinary open gap;
+no atomic error publication, guest32/64 marshalling, normal product, browser,
+CTS or baseline completion is claimed. Canonical combined ABI/kernel/resolver,
+own SDK/program/image artifacts and broader consumer/conformance gates remain
+pending. Numeric program56/host3/GL17/fork21 is unchanged.

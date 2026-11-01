@@ -307,6 +307,13 @@ static unsigned mappings;
 static unsigned destroyed_contexts, destroyed_surfaces, submit_batches, clear_commands;
 static unsigned error_only_batches;
 static unsigned compound_batches, compound_failure;
+/* Bounded external device observations for cross-model transport controls. */
+static struct {
+    int enabled, require_retired_before_clear, lose_next_submit_ack;
+    unsigned sequence, commit_at, cancel_at, clear_at, bind_at, trailer_at;
+    unsigned error_trailers, error_queries;
+    uint32_t trailer_masks[4];
+} combined;
 static unsigned array_captures, array_restores;
 static int fail_make_current, fail_create_context;
 static int make_current_errno = EACCES;
@@ -889,8 +896,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (op == 0x001eu) {
                 assert(len == 4 && !(words[0] & ~0x67u));
                 client_error_masks[fd-10] |= words[0];
+                if (combined.enabled) {
+                    assert(combined.error_trailers < 4);
+                    combined.trailer_masks[combined.error_trailers++] = words[0];
+                    combined.trailer_at = ++combined.sequence;
+                }
             }
 #ifdef OP_UNIFORM_UPLOAD_BEGIN
+            if (combined.enabled && op == OP_CLEAR) {
+                if (combined.require_retired_before_clear) assert(!uniform_stream_total);
+                combined.clear_at = ++combined.sequence;
+            }
             if(op==OP_CLEAR && uniform_stream_expected)uniform_stream_recovery_clears++;
             if(op>=OP_UNIFORM_UPLOAD_BEGIN && op<=OP_UNIFORM_UPLOAD_CANCEL) {
                 uint32_t header[5]={0};memcpy(header,commands+at+4,len<20?len:20);
@@ -913,8 +929,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 } else if(op==OP_UNIFORM_UPLOAD_COMMIT) {
                     assert(len==4 && header[0]==uniform_stream_token && uniform_stream_cursor==uniform_stream_total);
                     uniform_stream_commits++;uniform_stream_total=0;
+                    if (combined.enabled) combined.commit_at = ++combined.sequence;
                 } else {
                     assert(len==4 && header[0]==uniform_stream_token);uniform_stream_cancels++;uniform_stream_total=0;
+                    if (combined.enabled) combined.cancel_at = ++combined.sequence;
                 }
             }
 #endif
@@ -1054,6 +1072,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             at += 4 + len;
         }
         if (only_client_errors) error_only_batches++;
+        if (combined.enabled && combined.lose_next_submit_ack) {
+            combined.lose_next_submit_ack = 0; errno = EIO; return -1;
+        }
     } else if (request == GLIO_CREATE_SURFACE) {
         struct gl_surface_create *request = arg;
         surface_create_attempts++;
@@ -1422,6 +1443,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             return 0;
         }
         if (q->op == 0x22) {
+            if (combined.enabled) combined.bind_at = ++combined.sequence;
             assert(q->in_buf_len == 12 && q->out_buf_len == 12);
             const uint32_t *input = allocation_for(q->in_buf_ptr, 12);
             uint32_t *reply = allocation_for(q->out_buf_ptr, 12);
@@ -1596,6 +1618,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
         if (q->op == QOP_GET_ERROR) {
+            if (combined.enabled) combined.error_queries++;
             assert(q->in_buf_len == 0 || q->in_buf_len == 4);
             if (q->in_buf_len) {
                 uint32_t pending; memcpy(&pending,allocation_for(q->in_buf_ptr,4),4);
@@ -3298,6 +3321,165 @@ int main(int argc, char **argv) {
         assert(destroyed_contexts == 2 && object_closes == 2 && display_closes == 2);
         printf("PASS %s\n",argv[1]); return 0;
     }
+    /* These cases use actual encoder/transport entry points. Observations below
+     * belong to the external device double, never private C helper state. */
+#ifdef OP_UNIFORM_UPLOAD_BEGIN
+    if (!strncmp(argv[1], "combined-uniform-", 17)) {
+        static const char *const modes[] = {
+            "success", "submit-reject", "query-reject", "inner-malformed",
+            "prefix-unknown", "result-malformed", "phase-malformed", "query-unknown",
+        };
+        unsigned mode = 0;
+        while (mode < 8 && strcmp(argv[1] + 17, modes[mode])) mode++;
+        assert(mode < 8);
+        (void)prepare_native_uniform_program();
+        glBindTexture(GL_TEXTURE_2D,17);
+        GLuint names[2] = {17,0}; glGenTextures(1,&names[1]); glFlush();
+        assert(glGetError() == GL_NO_ERROR);
+        const GLsizei count = 300000;
+        GLfloat *data = malloc((size_t)count * sizeof *data); assert(data);
+        for (GLsizei i = 0; i < count; i++) data[i] = (GLfloat)(i % 701) + .25f;
+        uniform_stream_expected = (const uint8_t *)data;
+        uniform_stream_expected_size = (size_t)count * sizeof *data;
+        glUniform1fv(37,count,data);
+        /* Prove this real call left a live staged upload whose final COMMIT
+         * has not reached the device, rather than synthesizing a raw prefix. */
+        assert(uniform_stream_begins == 1 && uniform_stream_total &&
+               uniform_stream_chunks >= 2 && !uniform_stream_commits && !uniform_stream_cancels);
+        const unsigned submits = submit_batches, compounds = compound_batches,
+                       queries = bind_queries, clears = clear_commands;
+        memset(&combined,0,sizeof combined);
+        combined.enabled = combined.require_retired_before_clear = 1;
+        if (mode == 1) fail_submit = 1;
+        if (mode == 2) bind_failure = 2;
+        if (mode == 3) bind_failure = 4;
+        if (mode >= 4) compound_failure = mode - 3;
+        glBindTexture(GL_TEXTURE_2D,names[1]);
+        fail_submit = 0;
+        assert(compound_batches == compounds + 1 && submit_batches == submits + 1);
+        assert(bind_queries == queries + (mode == 1 || mode == 4 ? 0u : 1u));
+        assert(uniform_stream_commits == (mode == 1 ? 0u : 1u));
+        assert(uniform_stream_cancels == 0 && clear_commands == clears);
+        const int needs_cancel = mode == 1 || mode >= 4;
+        /* The next valid command is not an error drain. A missing CANCEL must
+         * fail the device's live-upload guard before this clear can succeed. */
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(clear_commands == clears + 1 && !uniform_stream_total);
+        assert(uniform_stream_cancels == (unsigned)needs_cancel);
+        assert(combined.clear_at && (!needs_cancel ||
+            (combined.cancel_at && combined.cancel_at < combined.clear_at)));
+        if (mode != 1) assert(combined.commit_at && combined.commit_at < combined.clear_at);
+        if (mode == 1) assert(!combined.commit_at && !combined.bind_at);
+        const GLenum expected = mode == 0 ? GL_NO_ERROR : mode == 2 ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION;
+        assert(glGetError() == expected && glGetError() == GL_NO_ERROR);
+        const unsigned accepted_submits = submit_batches, commits = uniform_stream_commits,
+                       cancels = uniform_stream_cancels, completed_queries = bind_queries;
+        glFlush();
+        assert(submit_batches == accepted_submits && uniform_stream_commits == commits &&
+               uniform_stream_cancels == cancels && bind_queries == completed_queries &&
+               clear_commands == clears + 1);
+        /* A fresh checked rebind is explicit new work, not replay of the lost
+         * prefix/query. It must not repeat COMMIT/CANCEL or change clear count. */
+        glBindTexture(GL_TEXTURE_2D,17);
+        assert(bind_queries == completed_queries + 1 && uniform_stream_commits == commits &&
+               uniform_stream_cancels == cancels && clear_commands == clears + 1);
+        assert(glGetError() == GL_NO_ERROR);
+        combined.enabled = 0; uniform_stream_expected = NULL; free(data);
+        glDeleteTextures(2,names);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+#endif
+    if (!strncmp(argv[1], "combined-get-error-", 19)) {
+        const int noalloc = !strcmp(argv[1]+19,"no-allocation");
+        const int rejected = !strcmp(argv[1]+19,"submit-reject");
+        assert(noalloc || rejected || !strcmp(argv[1]+19,"query-unknown"));
+        const unsigned submits = submit_batches, compounds = compound_batches,
+                       clears = clear_commands;
+        memset(&combined,0,sizeof combined); combined.enabled = 1;
+        glClear(GL_COLOR_BUFFER_BIT);
+        const unsigned allocations_before = allocation_count();
+        if (noalloc) fail_malloc = fail_calloc = 1;
+        else if (rejected) fail_submit = 1;
+        else compound_failure = 4;
+        assert(glGetError() == (noalloc ? GL_NO_ERROR : GL_INVALID_OPERATION));
+        fail_malloc = fail_calloc = fail_submit = 0;
+        assert(compound_batches == compounds + 1 && submit_batches == submits + 1 &&
+               clear_commands == clears + (rejected ? 0u : 1u) &&
+               combined.error_queries == (rejected ? 0u : 1u) &&
+               allocation_count() == allocations_before);
+        /* Explicit later API call, not a transport retry hidden inside the
+         * first call. The first unknown query used only an empty error set;
+         * arbitrary host-error copyout custody is not established here. */
+        assert(glGetError() == GL_NO_ERROR);
+        assert(compound_batches == compounds + 1 && submit_batches == submits + 1 &&
+               clear_commands == clears + (rejected ? 0u : 1u) &&
+               combined.error_queries == (rejected ? 1u : 2u));
+        glFlush(); assert(submit_batches == submits + 1);
+        combined.enabled = 0;
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "combined-error-", 15)) {
+        const int rejected = !strcmp(argv[1]+15,"submit-reject");
+        const int lost = !strcmp(argv[1]+15,"submit-unknown");
+        const int oom = !strcmp(argv[1]+15,"query-oom");
+        assert(rejected || lost || oom || !strcmp(argv[1]+15,"success"));
+        glBindTexture(GL_TEXTURE_2D,17);
+        GLuint names[3] = {17,0,0}; glGenTextures(2,names+1); glFlush();
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned submits = submit_batches, compounds = compound_batches,
+                       queries = bind_queries, clears = clear_commands;
+        memset(&combined,0,sizeof combined); combined.enabled = 1;
+        glClear(GL_COLOR_BUFFER_BIT); glBindBuffer(0xdead,17);
+        if (rejected) fail_submit = 1;
+        if (lost) combined.lose_next_submit_ack = 1;
+        if (oom) malloc_before_failure = 1; /* Actual query input then reply allocation. */
+        glBindTexture(GL_TEXTURE_2D,names[1]);
+        fail_submit = 0; malloc_before_failure = -1;
+        assert(submit_batches == submits + 1 && compound_batches == compounds);
+        assert(clear_commands == clears + (rejected ? 0u : 1u));
+        assert(bind_queries == queries + (rejected || lost || oom ? 0u : 1u));
+        assert(combined.error_trailers == (rejected ? 0u : 1u));
+        if (!rejected) assert(combined.trailer_masks[0] == 1u);
+        if (!rejected && !lost && !oom)
+            assert(combined.trailer_at && combined.bind_at && combined.trailer_at < combined.bind_at);
+        /* Retry only fresh work: the first consumed CLEAR is never reissued.
+         * Failure retains C flags until an actual acknowledged trailer. */
+        if (rejected || lost || oom) {
+            glClear(GL_COLOR_BUFFER_BIT); glFlush();
+            assert(submit_batches == submits + 2);
+            assert(clear_commands == clears + (rejected ? 1u : 2u));
+            assert(combined.error_trailers == (rejected ? 1u : 2u));
+            const uint32_t expected_mask = oom ? (1u << (GL_OUT_OF_MEMORY-GL_INVALID_ENUM)) :
+                1u | (1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
+            assert(combined.trailer_masks[combined.error_trailers-1] == expected_mask);
+        }
+        const unsigned trailers = combined.error_trailers, prior_submits = submit_batches,
+                       prior_clears = clear_commands, prior_queries = bind_queries;
+        /* Do not drain host errors first: exactly one new compound proves the
+         * acknowledged C mask is clear even while the host owns those flags. */
+        glClear(GL_COLOR_BUFFER_BIT); glBindTexture(GL_TEXTURE_2D,names[2]);
+        assert(compound_batches == compounds + 1 && submit_batches == prior_submits + 1 &&
+               bind_queries == prior_queries + 1 && clear_commands == prior_clears + 1 &&
+               combined.error_trailers == trailers);
+        const GLenum first = glGetError(), second = glGetError();
+        if (rejected || lost || oom) {
+            const GLenum other = oom ? GL_OUT_OF_MEMORY : GL_INVALID_OPERATION;
+            assert((first == GL_INVALID_ENUM && second == other) ||
+                   (first == other && second == GL_INVALID_ENUM));
+            assert(glGetError() == GL_NO_ERROR);
+        } else assert(first == GL_INVALID_ENUM && second == GL_NO_ERROR);
+        const unsigned after_drain = submit_batches;
+        glFlush(); assert(submit_batches == after_drain && clear_commands == prior_clears + 1);
+        combined.enabled = 0;
+        glDeleteTextures(3,names);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
     if (!strcmp(argv[1], "compound-query-success")) {
         GLuint texture; glGenTextures(1,&texture);
         unsigned batches=submit_batches, compounds=compound_batches;
@@ -3409,6 +3591,7 @@ int main(int argc, char **argv) {
         glBindTexture(GL_TEXTURE_2D,17);
         GLuint texture;glGenTextures(1,&texture);
         unsigned batches=submit_batches,compounds=compound_batches,queries=bind_queries;
+        const unsigned error_batches = error_only_batches;
         GLenum expected=GL_INVALID_OPERATION;
         int oom=!strcmp(argv[1],"compound-query-heap-oom");
         if (!strcmp(argv[1],"compound-query-submit-reject")) fail_submit=1;
@@ -3431,7 +3614,11 @@ int main(int argc, char **argv) {
         assert(glGetError()==expected && glGetError()==GL_NO_ERROR);
         // Reading errors and an explicit empty flush must never resubmit an
         // accepted, rejected or unacknowledged prefix.
-        glFlush();assert(submit_batches==batches+1);
+        glFlush();
+        const unsigned error_transfers = !strcmp(argv[1],"compound-query-query-reject") ? 0u : 1u;
+        assert(error_only_batches == error_batches + error_transfers);
+        assert(submit_batches == batches + 1 + error_transfers);
+        assert(submit_batches - error_only_batches == batches - error_batches + 1);
         if (!strcmp(argv[1],"compound-query-query-reject")) {
             GLint bound=-1;glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);assert(bound==17);
         }
@@ -3933,15 +4120,21 @@ int main(int argc, char **argv) {
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(const void *)1); glEnableVertexAttribArray(0);
         glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,(const void *)(UINTPTR_MAX-3)); glEnableVertexAttribArray(1);
         glFlush(); const unsigned batches = submit_batches, allocations_before = allocation_count();
+        const unsigned error_batches = error_only_batches;
         // A valid-arithmetic but unreadable first attr must not be copied before
         // the later attribute's pointer overflow has been rejected.
         glDrawArrays(GL_POINTS,0,1); glFlush();
         assert(glGetError() == GL_OUT_OF_MEMORY && inline_draws == 0 && draw_commands == 0 &&
-               submit_batches == batches && buffer_uploads == 0 && allocation_count() == allocations_before);
+               submit_batches == batches + 1 && error_only_batches == error_batches + 1 &&
+               submit_batches - error_only_batches == batches - error_batches &&
+               buffer_uploads == 0 && allocation_count() == allocations_before);
         glVertexAttribPointer(1,2,GL_FLOAT,GL_FALSE,0,NULL); glFlush();
         const unsigned before_null = submit_batches;
+        const unsigned error_before_null = error_only_batches;
         glDrawArrays(GL_POINTS,0,1); glFlush();
-        assert(glGetError() == GL_INVALID_OPERATION && inline_draws == 0 && draw_commands == 0 && submit_batches == before_null);
+        assert(glGetError() == GL_INVALID_OPERATION && inline_draws == 0 && draw_commands == 0 &&
+               submit_batches == before_null + 1 && error_only_batches == error_before_null + 1 &&
+               submit_batches - error_only_batches == before_null - error_before_null);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
         puts("PASS encoder-inline-preflight"); return 0;
     }
