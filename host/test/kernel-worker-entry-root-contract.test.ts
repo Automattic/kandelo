@@ -13,6 +13,7 @@ const REQUIRED_KERNEL_CALLBACKS = [
   "onExec",
   "onExit",
   "onFork",
+  "onHostDiagnostic",
   "onKernelFatal",
   "onProcessMemoryTarget",
   "onSpawn",
