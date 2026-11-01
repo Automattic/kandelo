@@ -18994,3 +18994,83 @@ solution must retain one accepted readback and transfer its pixels through
 bounded chunks; issuing independent row reads could observe different contents
 under shared-context activity. Full format/extension semantics and the broader
 conformance inventory remain open.
+
+
+### Negative API source repairs and native getter validation
+
+Commit `9ac413ea6567f84f494e8e3093c08903155077ab` centralizes shader/program
+name validation for compile, attach/detach and attribute binding/location queries.
+Unknown names produce INVALID_VALUE; existing opposite-kind names produce
+INVALID_OPERATION. Attribute/uniform locations share link-state validation,
+retained delete-pending objects remain usable and errors belong to the calling
+context. Draws without an installed executable check the actual selected draw
+framebuffer after argument validation and before buffer/image uploads. Incomplete
+framebuffers report INVALID_FRAMEBUFFER_OPERATION; checked native refusal stops
+dependent work. Array, indexed and private-client draw paths use the same helper.
+
+The shader causal selection fails 14 controls before repair, and the draw
+selection fails three. The final three modified suites pass 273/273 and scoped
+strict production types pass. The broader 47-file source invocation remains
+red: 1,360 Pass / 22 Fail. Its exact-original seven-module control reproduces
+the same 22 KMS setup failures before drawable assertions, each involving an
+empty submit returning ENOMEM. Those failures remain visible, with no KMS
+assertion changes. Valid-program upload fixtures now explicitly install their
+modeled executable; separate no-program controls exercise the new FBO path.
+Exact source/log evidence is in the mutable worktree's
+`.context/cts-host-name-contracts-r1/HANDOFF.md` and source-manifest.json.
+
+Commit `04b52acda8ebee3cc41896ed440aaa558cf1ad5e` repairs the unchecked getter
+pname path identified in the WebKit trace. Numeric state, shader and program
+queries reject unsupported names before native access or output writes. The
+numeric inventory preserves existing WebGL2 names, derives GLES-only values as
+before, and reuses capability and extended pixel-store owners. It neither filters
+console messages nor advertises GLES3 completeness. Four causal controls fail
+before repair; 283 focused controls pass. Its broader invocation remains red
+at 1,456 Pass / 23 KMS failures, reproduced by the exact original-query control.
+Full raw TypeScript remains red with the same 200 structured diagnostics before
+and after; none names query.ts. Evidence is
+`.context/webkit-query-lifecycle-review-r1/HANDOFF.md` in the integration worktree.
+The original three-engine red result remains unchanged; no subsequent WebKit
+pass is claimed.
+
+
+### Texture destination admission before pixel-band publication
+
+Commit `646060be24` adds checked TexSubImage2D destination admission to the
+existing storage query family. C sends original rectangle metadata before
+reading a pixel pointer or publishing any upload band, including null and
+zero-area calls. Original packed-format mismatches are rejected before BGRA
+normalization. The host checks negative geometry and exact integer endpoint
+sums, then performs a zero-area update at that endpoint on the actual selected
+native texture. For nonnegative rectangles this applies the same GLES 2.0
+section 3.7.2 destination bounds without changing texels. Native level and
+format/internalformat validation still apply. Imported image views select their
+actual shared source without orphaning storage; selectors are restored through
+the existing native journal.
+
+The native unpack-buffer binding chooses the required WebGL2 overload: offset
+zero when a buffer is bound, otherwise an empty correctly typed array. No
+unpack binding changes are made. This checks destination metadata, not original
+client-source layout; actual row submissions retain their source checks. A
+standalone canonical headless Chromium observation confirms zero-area bounds,
+undefined-level and format rejection, no-null-pointer WebGL semantics, and a
+valid zero-area call with nondefault unpack row/skips. This is bounded native
+API evidence, not rebuilt Kandelo CTS acceptance.
+
+Nine host and four native causal controls fail before this repair. The final
+image-transaction suite passes 43/43, scoped strict production types pass and
+all 319 native graphics cases pass under UBSan. One interim native control
+expected the wrong injected error; its corrected assertion preserves the
+device double's actual INVALID_VALUE and original failed log. The mutable
+worktree retains `.context/cts-texture-admission-r1/source-release.json` and
+the complete before/after logs. Large texture-transfer transactions and large
+captured readbacks remain ordinary gaps.
+
+After integrating all these source repairs at `84182c8130638eb5d0deb30d5378b494ad49d10a`,
+all 459 controls in five focused host suites and their scoped strict production
+type closure pass. These are source controls, not the complete host suite or
+an upstream after-run. A separate frozen normal-artifact producer at
+`d75cb3febc4f7428e981063d950c56409d91c869` has been launched for the complete
+246-case upstream rerun. It includes the same GLES repairs with the previous
+cursor protocol 2 kernel cohort; source/artifact identities and actual outcomes
+must be recorded before claiming the upstream failures are closed.
