@@ -1922,6 +1922,7 @@ static void release_server_wait(void *value) {
     free(wire);
 }
 EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags) {
+    egl_call_begin();
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
     lock_context();

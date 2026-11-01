@@ -2548,7 +2548,10 @@ int main(int argc, char **argv) {
                 assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,destination));
             } else assert(!strcmp(argv[1],"server-wait-basic"));
             unsigned before=fence_polls;glClearColor(1,0,0,1);
-            assert(wait(dpy,sync,0) && wait_khr(dpy,(EGLSyncKHR)sync,0)==EGL_TRUE);
+            /* An unread earlier error must not survive a successful wait. */
+            assert(!wait(dpy,sync,1));
+            assert(wait(dpy,sync,0) && eglGetError()==EGL_SUCCESS);
+            assert(!wait(dpy,sync,1) && wait_khr(dpy,(EGLSyncKHR)sync,0)==EGL_TRUE);
             assert(server_wait_queries==2 && fence_polls==before && eglGetError()==EGL_SUCCESS);
             assert(destination?(server_wait_destination!=server_wait_source):(server_wait_destination==server_wait_source));
             if(destination)assert(eglDestroyContext(dpy,destination));
