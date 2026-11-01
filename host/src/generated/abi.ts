@@ -856,6 +856,7 @@ export const HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS = [
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
   "kernel_get_parent_pid",
+  "kernel_get_process_exec_generation",
   "kernel_get_process_exit_signal",
   "kernel_get_process_state",
   "kernel_get_socket_timeout_ms",

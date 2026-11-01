@@ -1884,6 +1884,17 @@ impl ProcessTable {
         self.processes.get(&pid)
     }
 
+    /// Identify the exact image a host registration is about to publish.
+    /// Pending spawn children must register before publication, while a limbo
+    /// group identity no longer owns any executable image or host registration.
+    pub fn exec_generation(&self, pid: u32) -> Result<u64, Errno> {
+        self.processes
+            .get(&pid)
+            .filter(|process| process.state != ProcessState::Limbo)
+            .map(|process| process.exec_generation)
+            .ok_or(Errno::ESRCH)
+    }
+
     /// Iterate live, ordinary processes from newest to oldest identity.
     ///
     /// Keeping lifecycle filtering here prevents kernel subsystems from
@@ -3260,6 +3271,33 @@ pub fn current_pid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exec_generation_preserves_unsigned_image_identity_and_pending_children() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        for generation in [0, 1, i64::MAX as u64, (i64::MAX as u64) + 1, u64::MAX] {
+            table.get_mut(pid).unwrap().exec_generation = generation;
+            for state in [ProcessState::Running, ProcessState::Stopped, ProcessState::Exited] {
+                let process = table.get_mut(pid).unwrap();
+                process.state = state;
+                process.spawn_publication_pending = true;
+                assert_eq!(table.exec_generation(pid), Ok(generation));
+                assert_eq!(table.get(pid).unwrap().exec_generation, generation);
+            }
+        }
+    }
+
+    #[test]
+    fn exec_generation_refuses_missing_and_reaped_group_identities() {
+        let mut table = ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        table.get_mut(pid).unwrap().exec_generation = u64::MAX;
+        table.get_mut(pid).unwrap().state = ProcessState::Limbo;
+        assert_eq!(table.exec_generation(pid), Err(Errno::ESRCH));
+        assert_eq!(table.exec_generation(u32::MAX), Err(Errno::ESRCH));
+        assert_eq!(table.get(pid).unwrap().exec_generation, u64::MAX);
+    }
 
     struct ResizeFixture {
         _guard: std::sync::MutexGuard<'static, ()>,

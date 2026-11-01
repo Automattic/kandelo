@@ -18448,3 +18448,36 @@ marshalling, actual browser rendering, full upstream conformance and
 whole-baseline acceptance remain unrun for this increment. It does not
 establish desktop responsiveness or resolve the server-wait, retained
 public-query scheduling, cleanup or other ordinary inventory gaps.
+
+
+### Exact exec-generation lookup for future cleanup admission
+
+The required kernel-host getter `kernel_get_process_exec_generation`
+returns a full unsigned 64-bit Rust image identity through an exact
+8-byte little-endian host scratch output. Its separate status avoids
+aliasing valid high-bit generations with negative error sentinels.
+Pending spawn children remain registrable before publication; absent and
+limbo group identities refuse without output mutation. The host scratch
+allowlist records the actual output-pointer position. Public retained
+query scheduling and physical cleanup admission remain disabled; this
+getter alone does not bind a registration or authorize cleanup.
+
+Four selected native runtime-core controls pass, including the two new
+unsigned-generation/pending-child/limbo controls; 2,701 cases are filtered,
+not reported as passing. The selected host semantic pointer-role audit
+passes (one case; nine filtered). Fresh canonical kernel compilation,
+ABI regeneration, both own SDKs, ABI/layout check, standalone resolver
+regeneration/check and program digest all complete with exit zero.
+Program56/host3/GL17/fork21 stay fixed and the program digest remains
+`cdd38c6387544155c1a25773a0a6f3bcae6a50548bf8e33341c87dfd48075cd8`.
+
+Primary evidence is
+`.context/graphics-main-integration-review-r1/exec-generation-r1/`.
+All guarded Rust, build and scratch-admission inputs remain identical
+across these eight stages. The original private driver exits1 only at
+its final receipt assertion: it compares the entire warning-bearing Cargo
+log to a bare digest. The corrected `seal-r2.py` verifies the single exact
+digest line, all eight zero statuses and unchanged source before writing
+the receipt, without rerunning those successful builds/checks. Both the
+original failure and correction are retained. This is canonical source/
+SDK evidence, not normal combined program/image, guest or browser proof.

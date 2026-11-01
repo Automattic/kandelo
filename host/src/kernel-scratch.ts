@@ -169,6 +169,7 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
   "kernel_get_fd_path",
+  "kernel_get_process_exec_generation",
   "kernel_getrusage",
   "kernel_getsockopt",
   "kernel_handle_channel",
@@ -317,6 +318,7 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_lazy_resource_limits":
       return REQUIRED_POINTER_1;
     case "kernel_get_cwd":
+    case "kernel_get_process_exec_generation":
     case "kernel_getrusage":
     case "kernel_pipe2":
     case "kernel_process_attach_exe_path":
@@ -421,6 +423,7 @@ function isKernelScratchExportName(
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
     case "kernel_get_fd_path":
+    case "kernel_get_process_exec_generation":
     case "kernel_getrusage":
     case "kernel_getsockopt":
     case "kernel_handle_channel":

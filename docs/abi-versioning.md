@@ -2400,6 +2400,18 @@ contract; rebuild them together. This completes the already-reserved
 successor to main's host2 rather than allocating another development ABI.
 The GL operation table stays 17 and fork-state record version stays 21.
 
+The required kernel-host export `kernel_get_process_exec_generation`
+copies the current image's unsigned 64-bit generation into an exact
+eight-byte host scratch lease, in little-endian order. Its arguments are
+`(pid: u32, output: *mut u8, capacity: u32)` and its result is eight on
+success or negative errno without output mutation. Pending spawn children
+may register before publication; absent and reaped limbo identities
+return ESRCH. Keep status separate from the generation's full 64 bits.
+The getter supports binding a host registration to its actual Rust image;
+it does not grant deferred cleanup authority or enable public retained
+query scheduling. This addition completes the same unpublished host3
+contract and requires matching regenerated kernel/host artifacts.
+
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver
 from the merged source. All normal SDK, kernel, program, package and image
 artifacts require rebuilding for the combined program surface. Historical

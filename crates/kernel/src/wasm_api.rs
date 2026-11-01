@@ -3485,6 +3485,33 @@ pub extern "C" fn kernel_get_process_state(pid: u32) -> i32 {
     }
 }
 
+/// Copy the exact unsigned image generation into an owned host scratch lease.
+/// Keep status separate from all 64 generation bits; negative i64 sentinels
+/// would alias valid generations after the high bit becomes set.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_get_process_exec_generation(
+    pid: u32,
+    out_ptr: *mut u8,
+    out_capacity: u32,
+) -> i32 {
+    if out_ptr.is_null() {
+        return -(Errno::EFAULT as i32);
+    }
+    if out_capacity != 8 {
+        return -(Errno::EINVAL as i32);
+    }
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    match table.exec_generation(pid) {
+        Ok(generation) => {
+            let output = unsafe { core::slice::from_raw_parts_mut(out_ptr, 8) };
+            output.copy_from_slice(&generation.to_le_bytes());
+            8
+        }
+        Err(error) => -(error as i32),
+    }
+}
+
 /// Pick the next live process/fd that should receive a host-bridged TCP
 /// connection for `port`.
 ///

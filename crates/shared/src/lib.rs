@@ -2361,6 +2361,7 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_dirfd_path"),
         HostAdapterKernelExport::required("kernel_get_fd_path"),
         HostAdapterKernelExport::required("kernel_get_parent_pid"),
+        HostAdapterKernelExport::required("kernel_get_process_exec_generation"),
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
