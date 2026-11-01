@@ -75,8 +75,6 @@ previous code):
 **Proposed hard boundaries** (WebGL 2 or host capability limits; each keeps a
 truthful error):
 
-- Blend factors pairing `CONSTANT_COLOR` with `CONSTANT_ALPHA` (WebGL 1.0
-  §6.13): `INVALID_OPERATION`, state unchanged.
 - Robust-access and lose-context-on-reset contexts (no WebGL robustness API):
   `EGL_BAD_MATCH`.
 - `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
@@ -96,7 +94,9 @@ separate expansion, so this case is expected to fail until GLES3 exists.
 
 **Unverified mechanisms to check first in the build phase.** The reversed-depth
 twin, attribute-alias executable and future depth-sampling variants rewrite
-GLSL that no real compiler has compiled yet. Per-face stencil splitting costs
+GLSL that no real compiler has compiled yet. The blend-factor fold variant
+(below) is newer than the real-compiler harness run and has not been compiled
+by a real compiler either. Per-face stencil splitting costs
 about one native draw per triangle when the faces differ; this is unmeasured.
 `OES_standard_derivatives` relies on WebGL 2 accepting `#extension` in GLSL ES
 1.00. The dEQP-EGL window cases run only with `--deqp-visibility=hidden`.
@@ -112,7 +112,15 @@ GBM RGB565 as CPU-tier storage; unconditional detachment of kernel-unmapped
 GBM mappings with lost writebacks recorded and reported; `eglInitialize`
 fails with `EGL_NOT_INITIALIZED` on any host without a GLES renderer (Node
 without an embedder WebGL 2 backend, or a browser without WebGL 2), documented
-in `docs/browser-support.md`.
+in `docs/browser-support.md`. Blend functions whose RGB factors pair
+`CONSTANT_COLOR`/`ONE_MINUS_CONSTANT_COLOR` with
+`CONSTANT_ALPHA`/`ONE_MINUS_CONSTANT_ALPHA` (ES 2.0 table 4.1; WebGL 1.0 §6.13
+refuses the pair) are accepted and queried as specified: the native RGB source
+factor is `ONE`, and a blended draw whose RGB equation uses factors runs a
+private fragment variant that multiplies the color by the logical source
+factor (clamped for fixed-point color buffers, unclamped for floating-point
+ones). Destination factors, alpha factors and the blend color stay native
+(`host/src/webgl/blend-constant.ts`).
 
 **Real-compiler evidence for the GLSL rewrites.** A headless harness
 (`tests/graphics/shader-rewrite-check/`) compiles, links, draws and reads back

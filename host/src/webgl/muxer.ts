@@ -7,6 +7,7 @@ import { checkedGlSequence } from "./program-objects.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { nativeDepthRange } from "./reversed-depth.js";
+import { nativeBlendFunc } from "./blend-constant.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -125,10 +126,9 @@ export class GlMuxer {
       if (s.blendEnabled) gl.enable(GL_BLEND); else gl.disable(GL_BLEND);
 
       gl.blendColor(...s.blendColor);
-      gl.blendFuncSeparate(
-        s.blendFunc.srcRGB, s.blendFunc.dstRGB,
-        s.blendFunc.srcA, s.blendFunc.dstA,
-      );
+      // The logical factors may pair constant color with constant alpha,
+      // which WebGL refuses; blend-constant.ts gives the native form.
+      gl.blendFuncSeparate(...nativeBlendFunc(s.blendFunc));
       gl.blendEquationSeparate(s.blendEquation.rgb, s.blendEquation.alpha);
 
       if (s.cullFaceEnabled) gl.enable(GL_CULL_FACE); else gl.disable(GL_CULL_FACE);

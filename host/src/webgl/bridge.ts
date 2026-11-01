@@ -40,6 +40,7 @@ import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFor
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
+import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { noteSamplerWrite } from "./depth-sampling.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
@@ -656,17 +657,18 @@ function dispatch(
       setCap(b.shadow, cap, false);
       return;
     }
-    case O.OP_BLEND_FUNC: {
-      const s = v.getUint32(p, true), d = v.getUint32(p + 4, true);
-      if (!checkedGlCall(b, () => gl.blendFunc(s, d))) return;
-      b.shadow.blendFunc = { srcRGB: s, dstRGB: d, srcA: s, dstA: d };
-      return;
-    }
+    case O.OP_BLEND_FUNC:
     case O.OP_BLEND_FUNC_SEPARATE: {
+      const separate = op === O.OP_BLEND_FUNC_SEPARATE;
       const srcRGB = v.getUint32(p, true), dstRGB = v.getUint32(p + 4, true);
-      const srcA = v.getUint32(p + 8, true), dstA = v.getUint32(p + 12, true);
-      if (!checkedGlCall(b, () => gl.blendFuncSeparate(srcRGB, dstRGB, srcA, dstA))) return;
-      b.shadow.blendFunc = { srcRGB, dstRGB, srcA, dstA };
+      const srcA = separate ? v.getUint32(p + 8, true) : srcRGB, dstA = separate ? v.getUint32(p + 12, true) : dstRGB;
+      const logical = { srcRGB, dstRGB, srcA, dstA };
+      // ES 2.0 table 4.1 allows constant color with constant alpha; WebGL
+      // does not, so that RGB source factor is applied by the draw
+      // (blend-constant.ts) and the native one is ONE.
+      if (!checkedGlCall(b, () => gl.blendFuncSeparate(...nativeBlendFunc(logical)))) return;
+      b.shadow.blendFunc = logical;
+      updateBlendSourceFactor(b.shadow);
       return;
     }
     case O.OP_BLEND_EQUATION: {
@@ -690,6 +692,7 @@ function dispatch(
         color(v.getFloat32(p + 8, true)), color(v.getFloat32(p + 12, true)),
       ];
       gl.blendColor(...b.shadow.blendColor);
+      updateBlendSourceFactor(b.shadow);
       return;
     }
     case O.OP_CLEAR_DEPTHF:

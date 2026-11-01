@@ -749,6 +749,12 @@ function queryParameter(b: GlBinding, pname: number): unknown {
   // The native range is the ordered (min, max) pair; ES 2.0 reports the
   // logical, possibly reversed, values given to glDepthRangef.
   if (pname === 0x0b70) return [...b.shadow.depthRange];
+  // The native RGB source factor can differ from the guest's (a constant
+  // color/constant alpha pair, blend-constant.ts); report the logical ones.
+  if (pname === 0x80c9) return b.shadow.blendFunc.srcRGB;
+  if (pname === 0x80c8) return b.shadow.blendFunc.dstRGB;
+  if (pname === 0x80cb) return b.shadow.blendFunc.srcA;
+  if (pname === 0x80ca) return b.shadow.blendFunc.dstA;
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING

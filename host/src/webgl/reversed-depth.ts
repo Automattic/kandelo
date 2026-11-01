@@ -29,6 +29,7 @@ import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-obj
 import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-sampling.js";
 import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
+import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -173,16 +174,21 @@ export function noteUniformWrite(program: WebGLProgram | null): void {
 // --- twins ----------------------------------------------------------------------
 
 /** One private draw executable of a guest executable. A draw may need a
- * reversed depth range and/or luminance sampling of depth textures
- * (depth-sampling.ts); each combination is one variant, keyed by both. */
+ * reversed depth range, luminance sampling of depth textures
+ * (depth-sampling.ts) and/or a folded blend source factor
+ * (blend-constant.ts); each combination is one variant, keyed by all. */
 export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[];
   /** [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] The vertex stage reads gl_DepthRange from a private uniform. */
-  vertexDepthRange?: boolean };
-type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null };
+  vertexDepthRange?: boolean;
+  /** The fragment color is multiplied by the RGB source blend factor, with
+   * fixed-point or floating-point color buffer clamping. */
+  blendFold?: "fixed" | "float" };
+type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null;
+  blendFold: boolean; blendFactor: readonly number[] | null };
 const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
 function variantKey(options: VariantOptions): string {
-  return `${options.reversedDepth ? 1 : 0}|${options.vertexDepthRange ? 1 : 0}|${options.depthSamplers.join(",")}`;
+  return `${options.reversedDepth ? 1 : 0}|${options.vertexDepthRange ? 1 : 0}|${options.blendFold ?? ""}|${options.depthSamplers.join(",")}`;
 }
 
 function deleteTwin(owner: CheckedGlOwner, twin: Twin): void {
@@ -206,6 +212,8 @@ export function variantStageSource(source: string, vertex: boolean, options: Var
   let result: string | null = source;
   if (options.depthSamplers.length) result = depthSamplingShaderSource(source, new Set(options.depthSamplers));
   if (result !== null && options.reversedDepth) result = reversedDepthShaderSource(result, vertex);
+  // Wraps the whole fragment stage, so it multiplies the final color.
+  if (result !== null && !vertex && options.blendFold) result = blendFoldShaderSource(result, options.blendFold === "fixed");
   // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] Outermost, so the
   // reversed-depth prologue's gl_DepthRange reads are redirected too.
   if (result !== null && vertex && options.vertexDepthRange) result = vertexDepthRangeShaderSource(result);
@@ -242,7 +250,8 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
       linked = !!gl.getProgramParameter(p, 0x8b82);
     })) return null;
     if (!linked) return null;
-    return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null };
+    return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null,
+      blendFold: !!options.blendFold, blendFactor: null };
   } finally {
     // Shaders stay alive while attached; the twin program owns them now.
     checkedGlCall(b, () => {
@@ -323,9 +332,12 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
   // meeting the reproduced trigger, and only on the affected engine.
   const vertexDepthRange = sources ? vertexDepthRangeWorkaround(b, primary, sources) : false;
   if (vertexDepthRange === null) return null;
+  // One shadow field test for draws without a constant color/alpha pair.
+  const blendFold = blendFoldNeeded(b.shadow) ? drawColorBufferKind(b) : undefined;
+  if (blendFold === null) return null;
   // Draws needing none of these run the guest executable itself.
-  if (!reversedDepth && !depthSamplers.length && !vertexDepthRange) return undefined;
-  const options = { reversedDepth, depthSamplers, vertexDepthRange }, key = variantKey(options);
+  if (!reversedDepth && !depthSamplers.length && !vertexDepthRange && !blendFold) return undefined;
+  const options = { reversedDepth, depthSamplers, vertexDepthRange, blendFold }, key = variantKey(options);
   let variants = twins.get(primary);
   if (variants && [...variants.values()].some(twin => twin.sources !== sources)) {
     releaseReversedDepthTwin(b, primary); variants = undefined;
@@ -362,6 +374,14 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
       if (!checkedGlCall(b, () => gl.uniform3f(gl.getUniformLocation(twin.program, NATIVE_DEPTH_RANGE_UNIFORM), ...values))) return false;
       twin.rangeValues = key;
     }
+  }
+  // The folded factor changes only with BlendFunc/BlendColor, which replace
+  // the shadow's array; an unchanged array needs no upload.
+  const factor = b.shadow.blendSourceFactor;
+  if (twin.blendFold && factor && twin.blendFactor !== factor) {
+    const gl = b.gl!;
+    if (!checkedGlCall(b, () => gl.uniform3f(gl.getUniformLocation(twin.program, BLEND_SOURCE_FACTOR_UNIFORM), ...factor))) return false;
+    twin.blendFactor = factor;
   }
   return true;
 }

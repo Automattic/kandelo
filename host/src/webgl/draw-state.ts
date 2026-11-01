@@ -3,7 +3,8 @@
  * cannot hold directly is realized here for the duration of one draw, and the
  * shadow-derived native state is restored through the journalled inverse.
  *
- * Reversed depth ranges run a private executable (reversed-depth.ts).
+ * Reversed depth ranges, depth-texture sampling and constant color/alpha
+ * blend factor pairs run a private executable (reversed-depth.ts).
  *
  * Separate stencil state: ES 2.0 section 4.1.4 gives front- and back-facing
  * primitives independent stencil ref, value mask and write mask. WebGL (1.0
@@ -132,7 +133,8 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   const gl = b.gl!;
   const stencil = stencilPlan(b, draw);
   if (!stencil) return false;
-  // Reversed depth ranges and depth-texture lookups run a private variant.
+  // Reversed depth ranges, depth-texture lookups and folded constant blend
+  // factors (blend-constant.ts) run a private variant.
   const twin = draw.empty ? undefined : drawVariantExecutable(b);
   if (twin === null) return false;
   // RGB color storage kept as RGBA: the native alpha is never written.

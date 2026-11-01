@@ -35,6 +35,10 @@ export interface GlShadowState {
   blendFunc: { srcRGB: number, dstRGB: number, srcA: number, dstA: number };
   blendEquation: { rgb: number, alpha: number };
   blendColor: [number, number, number, number];
+  /** Derived from blendFunc and blendColor (blend-constant.ts): the logical
+   * RGB source factor a draw folds into its fragment color while the RGB
+   * factors form a pair WebGL rejects; null otherwise. */
+  blendSourceFactor: [number, number, number] | null;
 
   cullFaceEnabled: boolean;
   cullFace: number;
@@ -117,6 +121,7 @@ export function defaultShadow(): GlShadowState {
     blendFunc: { srcRGB: 1, dstRGB: 0, srcA: 1, dstA: 0 },
     blendEquation: { rgb: 0x8006, alpha: 0x8006 },   // GL_FUNC_ADD
     blendColor: [0, 0, 0, 0],
+    blendSourceFactor: null,
     cullFaceEnabled: false,
     cullFace: 0x0405,    // GL_BACK
     frontFace: 0x0901,   // GL_CCW
