@@ -5,7 +5,10 @@ import {GlContextRegistry} from "../src/webgl/registry";
 import {registerImageSource} from "../src/webgl/image-storage";
 import {foreignTextureGl} from "./support/foreign-texture-gl";
 import {halfBits} from "../src/webgl/cpu-image-codec";
+import {noteStorageWrite} from "../src/webgl/image-writes";
 
+// Tests model accepted native rendering into a mirror by writing its pixels
+// and counting the write, as every renderer write path does (image-writes.ts).
 function renderer() {
   const f = foreignTextureGl(), gl = f.gl;
   const get = gl.getParameter.bind(gl), bind = gl.bindTexture.bind(gl);
@@ -71,7 +74,7 @@ it.each([0x34325241,0x34325258,0x34324241,0x34324258])("decodes and writes back 
   expect(f.prepare()).toBe(true);
   const bgra=format===0x34325241||format===0x34325258,opaque=format===0x34325258||format===0x34324258;
   expect([...f.textures.get(image.tex)!].slice(0,4)).toEqual([bgra?6:4,5,bgra?4:6,opaque?255:7]);
-  f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);
+  f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);noteStorageWrite(image.tex);
   expect(f.publish()).toBe(true);
   const expected=new Uint8Array(original);expected.set([bgra?102:100,101,bgra?100:102,opaque?7:103],4);
   expect(f.store.pixelView(41)).toEqual(expected);
@@ -81,14 +84,14 @@ it("merges changed sibling pixels without an unchanged view erasing the writer",
   const f=fixture(), first=f.images.acquire(f.b,41,f.store,f.layout)!;
   const second=f.images.acquire(f.b,41,f.store,{...f.layout,format:0x34325241})!;
   expect(first.tex).not.toBe(second.tex);expect(f.prepare()).toBe(true);
-  f.images.begin(f.b);f.textures.get(first.tex)!.set([100,101,102,103]);
+  f.images.begin(f.b);f.textures.get(first.tex)!.set([100,101,102,103]);noteStorageWrite(first.tex);
   expect(f.publish()).toBe(true);expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([100,101,102,103]);
   expect(f.prepare()).toBe(true);expect([...f.textures.get(second.tex)!].slice(0,4)).toEqual([102,101,100,103]);
 });
 
 it("keeps accepted native writes through failed readback before any CPU refresh",()=>{
   const f=fixture(), image=f.images.acquire(f.b,41,f.store,f.layout)!;
-  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);
+  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);noteStorageWrite(image.tex);
   f.rejectRead(true);expect(f.publish()).toBe(false);
   expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([4,5,6,7]);
   expect(f.prepare()).toBe(false);expect([...f.textures.get(image.tex)!].slice(0,4)).toEqual([100,101,102,103]);
@@ -98,7 +101,7 @@ it("keeps accepted native writes through failed readback before any CPU refresh"
 
 it("retries failed publication without rereading native pixels or losing unrelated CPU writes",()=>{
   const f=fixture(), image=f.images.acquire(f.b,41,f.store,f.layout)!;
-  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);
+  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,103]);noteStorageWrite(image.tex);
   const publish=f.store.publishDevicePixels.bind(f.store);let accept=false;
   f.store.publishDevicePixels=(...args)=>accept&&publish(...args);
   expect(f.publish()).toBe(false);f.rejectRead(true);f.store.pixelView(41)![0]=200;
@@ -124,7 +127,7 @@ it("distinguishes image-layout identities within one retained BO",()=>{
 
 it("restores implicit alpha one after rendering to an XRGB view",()=>{
   const f=fixture(), image=f.images.acquire(f.b,41,f.store,{...f.layout,format:0x34325258})!;
-  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,10]);
+  expect(f.prepare()).toBe(true);f.images.begin(f.b);f.textures.get(image.tex)!.set([100,101,102,10]);noteStorageWrite(image.tex);
   expect(f.publish()).toBe(true);expect(f.prepare()).toBe(true);
   expect([...f.textures.get(image.tex)!].slice(0,4)).toEqual([100,101,102,255]);
   expect(f.store.pixelView(41)![7]).toBe(7);
@@ -216,7 +219,7 @@ it.each([
   expect(images.prepare(b,store,()=>{})).toBe(true);
   expect([...f.typed.get(image.tex)!.data]).toEqual(texels);
   images.begin(b);
-  f.typed.get(image.tex)!.data.set(rendered);
+  f.typed.get(image.tex)!.data.set(rendered); noteStorageWrite(image.tex);
   expect(images.publish(b,store,()=>{})).toBe(true);
   const expected = new Uint8Array(before);
   for (let row = 0; row < rows; row++) expected.set(published.slice(row * cpp, (row + 1) * cpp), at(row));
@@ -242,4 +245,20 @@ it("converts every binary16 value read back as float32 to the same half", () => 
   view.setUint32(0, 0x3f803000); expect(halfBits(view.getFloat32(0))).toBe(0x3c02);
   expect(halfBits(65520)).toBe(0x7c00);
   expect(halfBits(2 ** -26)).toBe(0);
+});
+
+it("reads back only mirrors whose native image was written during the submission",()=>{
+  const f=fixture(), first=f.images.acquire(f.b,41,f.store,f.layout)!;
+  const second=f.images.acquire(f.b,41,f.store,{...f.layout,format:0x34325241})!;
+  expect(f.prepare()).toBe(true);
+  let reads=0;const read=f.gl.readPixels.bind(f.gl);
+  Object.assign(f.gl,{readPixels:(...args: Parameters<typeof read>)=>{reads++;return read(...args);}});
+  // A submission that only samples the mirrors publishes nothing.
+  f.images.begin(f.b);expect(f.publish()).toBe(true);expect(reads).toBe(0);
+  expect(f.prepare()).toBe(true);
+  // A written mirror is read back; its unwritten sibling is not.
+  f.images.begin(f.b);f.textures.get(first.tex)!.set([100,101,102,103]);noteStorageWrite(first.tex);
+  expect(f.publish()).toBe(true);expect(reads).toBe(1);
+  expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([100,101,102,103]);
+  expect(f.prepare()).toBe(true);expect([...f.textures.get(second.tex)!].slice(0,4)).toEqual([102,101,100,103]);
 });

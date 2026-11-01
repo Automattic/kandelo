@@ -7,7 +7,7 @@ import { readGbmFront } from "./gbm-front-copy.js";
 import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
-import { noteStorageWrite } from "./image-writes.js";
+import { noteStorageWrite, storageWrites } from "./image-writes.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
@@ -18,6 +18,9 @@ type Mirror = {
   snapshot: Uint8Array<ArrayBuffer> | null;
   /** Accepted GL work must reach CPU storage before another CPU upload. */
   dirty: boolean;
+  /** The native image's write count (image-writes.ts) when it last became
+   * dirty: publication reads it back only if a write happened since. */
+  begun?: number;
   pending: CpuImageReadback | null;
 };
 type MirrorContexts=Map<WebGL2RenderingContext,Map<string,Mirror>>;
@@ -195,14 +198,22 @@ export class CpuImageStorage {
 
   begin(b: GlBinding): void {
     if (!b.gl) return;
-    for (const [, mirror] of this.entries(b.gl))
-      if (!mirror.allocation.retirement.pending) mirror.dirty = true;
+    for (const [, mirror] of this.entries(b.gl)) {
+      if (mirror.allocation.retirement.pending) continue;
+      // A mirror still dirty from an unpublished submission keeps that
+      // earlier baseline, so its writes are not forgotten.
+      if (!mirror.dirty) mirror.begun = storageWrites(mirror.allocation.tex).count;
+      mirror.dirty = true;
+    }
   }
 
   publish(b: GlBinding, store: GbmBoRegistry, captureErrors: (gl: WebGL2RenderingContext) => void): boolean {
     if (!b.gl) return true;
     for (const [bo, mirror] of this.entries(b.gl)) {
       if (!mirror.dirty || mirror.allocation.retirement.pending) continue;
+      // Nothing wrote the native image since it became dirty: its pixels
+      // are the ones last represented, so there is nothing to read back.
+      if (mirror.snapshot && mirror.begun === storageWrites(mirror.allocation.tex).count) { mirror.dirty = false; continue; }
       const bytes = store.pixelView(bo);
       if (!bytes || !mirror.snapshot) return false;
       const codec = cpuImageCodec(mirror.layout.format);
