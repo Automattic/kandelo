@@ -42,6 +42,26 @@ export type GlesLevelFormat = {
 };
 
 const TEX = 0x0de1, CUBE = 0x8513, FACE0 = 0x8515;
+// GLES DEPTH_COMPONENT and DEPTH_STENCIL_OES, plus the sized forms a native
+// level may carry when the guest did not specify it.
+const DEPTH_FORMATS = new Set([0x1902, 0x84f9, 0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x88f0, 0x8cad]);
+
+/** A level that samples as depth (OES_depth_texture, OES_packed_depth_stencil). */
+export function levelSamplesDepth(level: GlTextureLevel | undefined): boolean {
+  return level !== undefined && DEPTH_FORMATS.has(level.gles?.internalFormat ?? level.internalFormat);
+}
+
+/** Depth sampling (depth-sampling.ts) depends on whether level 0 of a 2D
+ * texture, or of a cube map's first face, is a depth image. This revision
+ * advances whenever that changes for any texture, so per-context counts of
+ * depth-bound units stay exact without rescanning units on every draw. */
+let depthRevision = 0;
+export function depthLevelRevision(): number {
+  return depthRevision;
+}
+function samplesDepthAt(faces: Faces | undefined, face: number): boolean {
+  return levelSamplesDepth(faces?.get(face)?.get(0));
+}
 export const CUBE_FACES = [0x8515, 0x8516, 0x8517, 0x8518, 0x8519, 0x851a] as const;
 
 type Faces = Map<number, Map<number, GlTextureLevel>>;
@@ -76,17 +96,21 @@ export function recordTextureLevel(object: WebGLTexture | null | undefined, face
   if (!faces) levels.set(object, faces = new Map());
   let face_levels = faces.get(face);
   if (!face_levels) faces.set(face, face_levels = new Map());
+  const depthBefore = level === 0 && levelSamplesDepth(face_levels.get(0));
   if (spec.width === 0 || spec.height === 0) face_levels.delete(level);
   else face_levels.set(level, spec);
+  if (level === 0 && depthBefore !== levelSamplesDepth(face_levels.get(0))) depthRevision++;
   framebufferInputsChanged();
 }
 
 /** Install the complete image set an object has after its storage changed
  * wholesale (becoming an EGLImage target defines exactly level 0). */
 export function replaceTextureLevels(object: WebGLTexture, face: number, base: GlTextureLevel | null): void {
-  const faces: Faces = new Map();
+  const faces: Faces = new Map(), old = levels.get(object);
   if (base) faces.set(face, new Map([[0, base]]));
   levels.set(object, faces);
+  if (samplesDepthAt(old, TEX) !== samplesDepthAt(faces, TEX) || samplesDepthAt(old, FACE0) !== samplesDepthAt(faces, FACE0))
+    depthRevision++;
   framebufferInputsChanged();
 }
 

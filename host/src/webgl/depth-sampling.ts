@@ -17,7 +17,11 @@
  * a constant for a uniform sampler, a per-index function for a sampler
  * array, and an added bool parameter for a sampler passed into a user
  * function, so every call site resolves to the sampler it actually reads.
- * Draws that sample no depth texture use the guest executable unchanged.
+ * Draws that sample no depth texture use the guest executable unchanged, and
+ * a draw while no unit (nor texture zero) holds a depth texture pays one
+ * comparison: each context keeps the count of such unit bindings, updated
+ * when a binding changes and recounted only after some texture's level 0
+ * started or stopped being depth (texture-levels.ts).
  * Sources the rewrite cannot resolve exactly (a lookup inside a macro, or a
  * sampler inside a struct) yield no variant, and the draw is refused.
  */
@@ -25,14 +29,12 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, programLinkGeneration } from "./program-objects.js";
 import { glslTokens, type GlslToken } from "./attribute-aliasing.js";
 import { headerEnd } from "./reversed-depth.js";
-import { textureLevel } from "./texture-levels.js";
+import { depthLevelRevision, levelSamplesDepth, textureLevel } from "./texture-levels.js";
+import type { GlShadowState } from "./shadow.js";
 
 const LOOKUPS = new Set(["texture2D", "texture2DProj", "texture2DLod", "texture2DProjLod", "textureCube", "textureCubeLod"]);
 const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube"]);
 const TEXEL = "kandelo_depth_texel", ARG = "kandelo_depth_arg", ARRAY = "kandelo_depth_";
-// GLES DEPTH_COMPONENT and DEPTH_STENCIL_OES, plus the sized forms a native
-// level may carry when the guest did not specify it.
-const DEPTH_FORMATS = new Set([0x1902, 0x84f9, 0x81a5, 0x81a6, 0x81a7, 0x8cac, 0x88f0, 0x8cad]);
 
 type FunctionDeclaration = { name: number; open: number; close: number; body: [number, number] | null;
   params: number; samplers: { index: number; name?: string }[] };
@@ -190,25 +192,44 @@ export function noteSamplerWrite(program: WebGLProgram | null): void {
   if (program) samplerWrites.set(program, (samplerWrites.get(program) ?? 0) + 1);
 }
 
+/** Level 0 of the face a unit of that kind samples is a depth image. */
+function samplesDepth(object: WebGLTexture | null | undefined, cube: boolean): boolean {
+  return !!object && levelSamplesDepth(textureLevel(object, cube ? 0x8515 : 0x0de1, 0));
+}
+
+function recountDepthUnits(s: GlShadowState): void {
+  let count = 0;
+  for (const object of s.textureUnits) if (samplesDepth(object, false)) count++;
+  for (const object of s.cubeTextureUnits) if (samplesDepth(object, true)) count++;
+  s.depthUnits = { revision: depthLevelRevision(), count,
+    defaults: samplesDepth(s.defaultTextures.get(0x0de1), false) || samplesDepth(s.defaultTextures.get(0x8513), true) };
+}
+
+/** Every write of a texture-unit binding goes through here. A count that is
+ * current stays current; a stale one is recounted at the next draw. */
+export function setTextureUnit(s: GlShadowState, cube: boolean, unit: number, object: WebGLTexture | null): void {
+  const units = cube ? s.cubeTextureUnits : s.textureUnits, depth = s.depthUnits;
+  if (depth.revision === depthLevelRevision())
+    depth.count += Number(samplesDepth(object, cube)) - Number(samplesDepth(units[unit], cube));
+  units[unit] = object;
+}
+
+const NO_DEPTH_SAMPLERS: readonly string[] = Object.freeze([]);
+
 type SamplerCache = { link: number; writes: number; samplers: { name: string; cube: boolean; unit: number }[] };
 const caches = new WeakMap<WebGLProgram, SamplerCache>();
 
 /** Sampler elements of the installed executable that read a depth texture,
  * sorted (the variant key). Null means a native query failed (recorded). */
-export function depthSamplersForDraw(b: GlBinding): string[] | null {
+export function depthSamplersForDraw(b: GlBinding): readonly string[] | null {
   const program = b.currentProgram, gl = b.gl!;
-  if (!program) return [];
+  if (!program) return NO_DEPTH_SAMPLERS;
   const s = b.shadow;
-  const depthAt = (cube: boolean, unit: number) => {
-    const object = (cube ? s.cubeTextureUnits : s.textureUnits)[unit] ?? s.defaultTextures.get(cube ? 0x8513 : 0x0de1);
-    const level = object && textureLevel(object, cube ? 0x8515 : 0x0de1, 0);
-    return !!level && DEPTH_FORMATS.has(level.gles?.internalFormat ?? level.internalFormat);
-  };
-  // Fast path with no native work: no unit has a depth texture bound.
-  const units = Math.max(s.textureUnits.length, s.cubeTextureUnits.length);
-  let anyDepth = false;
-  for (let unit = 0; unit < units && !anyDepth; unit++) anyDepth = depthAt(false, unit) || depthAt(true, unit);
-  if (!anyDepth) return [];
+  if (s.depthUnits.revision !== depthLevelRevision()) recountDepthUnits(s);
+  // No unit, bound or texture zero, holds a depth texture: no native work.
+  if (s.depthUnits.count === 0 && !s.depthUnits.defaults) return NO_DEPTH_SAMPLERS;
+  const depthAt = (cube: boolean, unit: number) =>
+    samplesDepth((cube ? s.cubeTextureUnits : s.textureUnits)[unit] ?? s.defaultTextures.get(cube ? 0x8513 : 0x0de1), cube);
   const link = programLinkGeneration(b, program).value, writes = samplerWrites.get(program) ?? 0;
   let cache = caches.get(program);
   if (!cache || cache.link !== link || cache.writes !== writes) {

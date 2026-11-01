@@ -4,6 +4,7 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
+import { setTextureUnit } from "./depth-sampling.js";
 export type GlImageAttachment = {
   kind: "texture";
   object: WebGLTexture;
@@ -186,7 +187,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     framebuffer: WebGLFramebuffer;
     point: number;
   }>, units: Array<{
-    bindings: Array<WebGLTexture | null>;
+    cube: boolean;
     unit: number;
   }>;
   const previous = b.retiredTextures.get(texture);
@@ -204,7 +205,7 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
             return accepted && restored;
           };
           changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",target,oldNative]], [["activeTexture",0x84c0+active]]) });
-          units.push({ bindings, unit });
+          units.push({ cube: target === 0x8513, unit });
         }
     }
     b.retiredTextures.set(texture, name);
@@ -220,8 +221,8 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
       b.retiredTextures.set(texture, previous);
     return false;
   }
-  for (const { bindings, unit } of units)
-    bindings[unit] = null;
+  for (const { cube, unit } of units)
+    setTextureUnit(b.shadow, cube, unit, null);
   commitAttachmentDeletion(b, points);
   b.textures.delete(name);
   for (const [bo, entry] of b.foreignTextures)

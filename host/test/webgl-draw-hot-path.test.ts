@@ -270,6 +270,32 @@ describe("draws that use no exactness feature do no extra work", () => {
     expect(h.error()).toBe(0);
   });
 
+  // [C3]
+  it("depth-texture selection scans no texture units while none holds a depth texture", () => {
+    const h = setup();
+    h.renderbuffer(7, RGBA8);
+    h.framebuffer(9, 7);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    const { defaultTextureGets } = perDraw(h, 16, "buffer");
+    expect(defaultTextureGets).toBe(0);
+    expect(h.gl.draws.every(program => program === h.gl.current)).toBe(true);
+  });
+
+  // [C3]
+  it("client-array quads add nothing for completeness, alpha locking or depth sampling", () => {
+    const h = setup();
+    h.renderbuffer(7, RGB16F);
+    h.framebuffer(9, 7);
+    h.clientQuad();
+    const { calls, attachmentGets, defaultTextureGets } = perDraw(h, 16, "client");
+    expect(calls.colorMask ?? 0).toBe(0);
+    expect(calls.checkFramebufferStatus ?? 0).toBe(0);
+    expect(calls.getParameter ?? 0).toBe(0);
+    expect(attachmentGets).toBe(0);
+    expect(defaultTextureGets).toBe(0);
+    expect(h.gl.storage.get(h.b.rbos.get(7)!)!.alpha).toBe(1);
+    expect(h.error()).toBe(0);
+  });
 });
 
 describe("derived draw state follows every change it depends on", () => {
@@ -388,5 +414,51 @@ describe("derived draw state follows every change it depends on", () => {
     expect(h.error()).toBe(0);
   });
 
+  // [C3]
+  it("depth sampling follows texture bindings, respecification and deletion", () => {
+    const h = setup();
+    h.renderbuffer(7, RGBA8);
+    h.framebuffer(9, 7);
+    const primary = h.gl.current;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).toBe(primary);
+    // A depth texture bound to the sampled unit selects the variant.
+    h.texture(0, 50, 0x1902, 0x1403);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).not.toBe(primary);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 30]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).toBe(primary);
+    // A bound texture respecified as depth, then back to color.
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1902, 4, 4, 0, 0x1902, 0x1403, 0]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).not.toBe(primary);
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, 0]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).toBe(primary);
+    // Texture zero specified as depth is sampled by every unbound unit.
+    h.send(O.OP_BIND_TEXTURE, [TEX, 0]);
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1902, 4, 4, 0, 0x1902, 0x1403, 0]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).not.toBe(primary);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 31]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).toBe(primary);
+    // Deleting a bound depth texture rebinds texture zero (depth here).
+    h.send(O.OP_BIND_TEXTURE, [TEX, 50]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).not.toBe(primary);
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, 0]);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 0]);
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1908, 4, 4, 0, 0x1908, 0x1401, 0]);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 50]);
+    h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1902, 4, 4, 0, 0x1902, 0x1403, 0]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).not.toBe(primary);
+    expect(h.query(O.QOP_IMAGE_OBJECT_DELETE, [1, 50]).getUint32(0, true)).toBe(0);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.draws.at(-1)).toBe(primary);
+    expect(h.error()).toBe(0);
+  });
 });
 

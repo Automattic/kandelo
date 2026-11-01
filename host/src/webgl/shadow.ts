@@ -75,6 +75,10 @@ export interface GlShadowState {
    * derived for. The native COLOR_WRITEMASK is the guest mask with alpha
    * cleared while `locked`. */
   alphaWriteLock: { fbo: WebGLFramebuffer | null | undefined; revision: number; locked: boolean };
+  /** Derived: how many texture-unit bindings name a texture whose level 0
+   * is a depth image, and whether either texture zero is one, as of a depth
+   * level revision (depth-sampling.ts). */
+  depthUnits: { revision: number; count: number; defaults: boolean };
 }
 
 export interface GlStencilFaceState {
@@ -147,6 +151,7 @@ export function defaultShadow(): GlShadowState {
     unpackAlignment: 4,
     packAlignment: 4,
     alphaWriteLock: { fbo: undefined, revision: -1, locked: false },
+    depthUnits: { revision: -1, count: 0, defaults: false },
   };
 }
 

@@ -1,6 +1,7 @@
 import { textureNative, renderbufferNative } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { setTextureUnit } from "./depth-sampling.js";
 
 /** The queued and acknowledged paths share realization and native acceptance.
  * Failed candidates are removed before return and never replace a shadow binding. */
@@ -27,7 +28,7 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
     }
     const units = target === 0x0de1 ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
     const unit = b.shadow.activeTexture;
-    if (unit >= 0 && unit < units.length) units[unit] = name ? texture : null;
+    if (unit >= 0 && unit < units.length) setTextureUnit(b.shadow, target !== 0x0de1, unit, name ? texture : null);
     return true;
   }
   if (kind === 2) {
