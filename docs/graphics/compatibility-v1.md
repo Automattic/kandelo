@@ -18523,3 +18523,78 @@ actual whole-plan physical router or public scheduling acceptance is
 claimed. Partial mapping retirement, KMS cursor identity, native and
 forwarded receipts, pre-transition registration grants and all lifecycle
 entry points remain ordinary implementation work.
+
+
+### Full upstream EGL/GLES2 harness: normal builds and first guest inventory
+
+Package source `7b9abb8c40` adds the complete pinned upstream EGL/GLES2
+framework/modules as `graphics-cts`, separately from the older extracted
+`graphics-cts-egl` fixture. Pin remains
+`a119e62de3bb38dae67f05abee8acd011e0c729c`; archive SHA256 is
+`7f0a0601c96973a5919db369159d24557d9e4d82490e4bfad98180e3296dbedf`.
+Original main, registration, filters, assertions, comparisons, result
+handling and data are retained. Package CMake composes both original
+module graphs and copies upstream module/data macros verbatim, without
+configuring unrelated Vulkan/GLES3 compiler dependencies. No required
+test is removed or translated into a passing custom fixture.
+
+Distinct Wasm CPU identities retain the original pointer-width checks.
+Absent directed rounding fails before interval-reference calculations
+and throws an upstream InternalError, rather than producing nearest-only
+expected values or exempting tests. Original-header causal controls fail;
+patched capability/refusal/restoration controls pass, and supported native
+rounding behavior agrees before/after. Exact software directed reference
+arithmetic remains ordinary unfinished validation support. The loader
+uses the original static EGL1.4 table and real eglGetProcAddress for later
+functions; missing EGL1.5 eglWaitSync remains missing and required work.
+Native visible-screen/KMS service, pixmaps and resizing are incomplete
+adapter work, not demonstrated graphics platform boundaries. Unsupported
+required outcomes cannot satisfy the baseline.
+
+Normal SourceOnly build R8,
+`graphics-cts-normal-build-r8-1031-212840-de02`, completes0 in3m28s
+with unchanged guarded source. Both real executables link, receive normal
+fork instrumentation and publish alongside original data. Its five
+resolver dependency nodes are cache hits; actual compiler jobs are2.
+Both package-local positive-job helpers pass14 controls. No global SDK or
+unrelated recipe helper is changed. Cache key is
+`a2816f87251b3cc46059e8d5f9d3946c92c7140c70b404877a487c902b015c37`.
+
+| R8 resolved member | Bytes | SHA256 |
+|---|---:|---|
+| deqp-egl.wasm |2550293|499dd91d2df0fe849faa60ea5194c9d952a08f332a17f7b30527ff4f0e1b02dc|
+| deqp-gles2.wasm |5534773|408b5c3ac83f7edf26d73c831268063346ec667ea4e488dad822e0553e36f44b|
+| data ZIP |193507|fdfc40b91b6a304a2a4f0977336c5ffea4e49f18135fd9e7e7583a822ba2980c|
+
+R7 also built successfully. R8 differs only in each executable's exactly
+parsed32-byte normal build-key section; every other byte and the data ZIP
+agree. Both raw identities remain separate. Final runtime evidence is
+nevertheless freshly collected from actual R8 members, not relabeled R7.
+
+The final dedicated-worker Node inventory job,
+`graphics-cts-normal-caselist-r4-1031-213302-d8cf`, finishes FAILED1
+in13s with unchanged source: EGL exits0 and lists **4,117 unique cases
+and308 groups**; GLES2 default and standard upstream hidden-window
+routes both exit137 before listing any case. Default reports absent
+visible-window/KMS service. Hidden reports EGL_BAD_ALLOC from actual
+eglCreatePlatformWindowSurface. Neither zero-case route is success.
+The observed137 agrees with upstream's fatal-initialization Unix path
+explicitly raising SIGKILL; it is not an inferred host out-of-memory
+condition. Raw waitpid status is not captured. No fake renderer, dummy
+window or substitute surface is supplied.
+
+The actual selected own normal kernel is1839996bytes, SHA256
+`f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
+All three guests acknowledge destruction, with no host diagnostics or
+cleanup errors. The Node run has no browser renderer; missing native
+context acquisition is a source-supported hypothesis for BAD_ALLOC,
+not a traced inner-call diagnosis. Renderer-backed GLES2 inventory,
+actual full case execution and raw result assessment remain required.
+
+Exact helpers, sources, failed earlier attempts, final receipts and logs
+are retained in the mutable source worktree's
+`.context/vk-gl-cts-port-r1/HANDOFF.md` and
+`.context/vk-gl-cts-caselist-r4/`. This is wasm32 build and EGL inventory
+evidence, not conformance, browser/desktop acceptance, wasm64 support or
+baseline completion. It is integrated only into the graphics follow-up;
+the smaller desktop-ports PR remains separate.
