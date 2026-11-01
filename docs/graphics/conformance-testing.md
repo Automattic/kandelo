@@ -14,8 +14,11 @@ scripts/dev-shell.sh bash scripts/test-graphics-cts.sh --project chromium
 ```
 
 Omit the project argument to run Chromium, Firefox and WebKit. The script runs
-QPA parser controls first, then uses the application's normal Playwright
-configuration and browser projects. Browsers are headless; it does not open a
+QPA parser controls first, then uses a dedicated configuration inheriting the
+application's normal Playwright browser projects and Vite runtime plugins.
+It owns a strict local server and scans only the plain CTS fixture page,
+avoiding unrelated gallery image provisioning. Set `KANDELO_PLAYWRIGHT_PORT`
+to choose another port (default 5401). Browsers are headless; it does not open a
 desktop window. It resolves actual package outputs, builds a normal VFS image,
 boots `BrowserKernel` with dedicated workers and attaches the real WebGL2 KMS
 renderer. It uses upstream's standard hidden-window option, not a replacement

@@ -72,8 +72,10 @@ The full upstream harness builds normally; actual Node EGL enumeration lists
 4,117 cases. Renderer-backed headless Chromium now enumerates all 19,825 GLES2
 cases successfully. Actual CTS execution remains pending; enumeration is not
 conformance. On that earlier ports runtime, the first 31 upstream negative-
-state cases run with 25 Pass and six Fail. Broader source already fixes hint
-and string enums; shader/program query errors remain under repair. These are
+state cases run with 25 Pass and six Fail. Broader source fixes hint/string enums and now includes the validated shader/
+program query repair. The first complete negative-state group passes 31/31 on
+its own normal candidate cohort; combined cursor and three-engine gates remain
+pending. These are
 separate source cohorts, not combined acceptance.
 
 Earlier combined Rust checkpoint `b87e6eb971` passes 3,501 native workspace cases
@@ -18837,3 +18839,48 @@ under `.context/vk-gl-cts-browser-state-r2/`. See
 [conformance testing](conformance-testing.md) for the stable command and limits.
 Full CTS, three-engine combined rendering, browser-memory and required POSIX
 acceptance remain pending. Passing 31 cases does not close the inventory.
+
+
+### Integrated shader/program rejection and information-log semantics
+
+Commit `03fb8614528fd6e13cd30495fd5d6e965bcc6679`, merged without conflict,
+contains exactly the five reviewed source/test files from the validated query
+candidate. Unknown shader/program names record INVALID_VALUE and live opposite-
+kind names INVALID_OPERATION in the querying context. Delete-pending retained
+objects stay queryable; final retired names do not. Rejected queries preserve
+caller bytes and avoid native object calls. C negative log sizes preserve both
+outputs, and zero-size calls still validate the host object without dereferencing
+the destination. Empty INFO_LOG_LENGTH is zero; nonempty capacity matches the
+UTF-8 bytes emitted by the log protocol, including its terminator.
+
+Actual original-source controls fail 14 host cases, four native cases and four
+of six added empty/UTF-8 capacity cases. The candidate passes 263 host controls,
+13 focused native cases and all 307 default native cases under UBSan. It also
+passes the previously recorded full 31-case negative-state group. A separate
+actual upstream selection passes both
+`dEQP-GLES2.functional.state_query.shader.program_info_log_length` and
+`dEQP-GLES2.functional.state_query.shader.shader_info_log_length` through the
+same normal artifacts in canonical headless Chromium. Its job
+`graphics-cts-renderer-loglength-r2-1031-222313-b119` exits 0; both workers close,
+destroy returns, guards pass and the owned server is stopped/waited. Its first
+private fixture attempt failed collection due to duplicate Playwright package
+resolution before any browser/guest execution; that failure is retained.
+
+Separate two-case evidence SHA256:
+`2b879585dd8380d68a53f601a53cf419339528160356cac8c3df0071454c9d60`.
+QPA SHA256:
+`da1d063c5d9cf2951064f0152cde12c01bd4fb4bdb36b34a3a801dbf348ebcf4`.
+All 20 normal artifact receipt files rehash unchanged after both browser runs.
+The successful trace records 247 actual host HTTP responses, including the query
+module status/headers, but not JS response body bytes; no compiled-body SHA
+coverage is claimed. The mutable handoff is
+`.context/cts-negative-state-repair-r1/HANDOFF.md`, SHA256
+`121ecd692cd4c66c80f046819b0090db7d9979b0d6c93feca541dd7f69fda93a`.
+The fixed 1,024-byte C information-log response ceiling remains an ordinary gap.
+Full conformance, the combined cursor cohort and other engines remain open.
+
+The tracked browser runner now has dedicated source configurations inheriting
+normal Vite plugins and canonical Playwright projects. It owns a strict server
+and narrows dependency scanning to the actual plain fixture HTML, avoiding
+unrelated gallery image provisioning. Its collection finds exactly one consumer
+in each of Chromium, Firefox and WebKit; actual combined runtime checks follow.
