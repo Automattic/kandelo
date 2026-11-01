@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/KhronosGroup/VK-GL-CTS",
+  "revision": "a119e62de3bb38dae67f05abee8acd011e0c729c",
+  "archive_sha256": "7f0a0601c96973a5919db369159d24557d9e4d82490e4bfad98180e3296dbedf",
+  "files": {
+    "CMakeLists.txt": "d8065ff88831a6ef5524c2ac6df1cf0fe8cc83e006e2c1468b01facc8ed0071c",
+    "modules/gles2/CMakeLists.txt": "7c66224c1afb4f1ae90b7e074b8d14e309bd3029df455184c674493432e12821",
+    "modules/egl/CMakeLists.txt": "715c18ae97735453fd922b42085eb7b2e09e1da27bfa55a23ec6281a9459dff9",
+    "modules/gles2/tes2TestPackage.cpp": "77ba5d2c9f9d883e19a61766038f9bc8b616f467392a3a8b632ff9be98a4e855",
+    "modules/egl/teglTestPackage.cpp": "1899c196b970b00472778dd194a9ede26e421e67a35f6f8ec38c5b4b78b58abd",
+    "framework/delibs/debase/deDefs.h": "bc1e03b4afda3786ae8b2ac4b23c0aa8e1be94346ce7aaee5a7f15a8c31a7064",
+    "framework/delibs/debase/deDefs.c": "b1fc5477277b08fc76716f02a0f7aa001350292b84de2c6924f07d37a4d54d7d",
+    "framework/delibs/debase/deMath.c": "cf5356e2b81fc32f83e9da8cc9da4b767172c9acdb992222b68d255deb91e53f",
+    "framework/common/tcuInterval.hpp": "dbff0fe1b8cfb449c6129ed268047540f7ec1adfb5e73f946557a84b92c3e544"
+  }
+}

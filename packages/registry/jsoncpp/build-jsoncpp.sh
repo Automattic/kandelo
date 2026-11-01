@@ -20,6 +20,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+source "$SCRIPT_DIR/build-jobs.sh"
+JSONCPP_BUILD_JOBS="$(jsoncpp_build_jobs)"
 source "$REPO_ROOT/scripts/package-build-roots.sh"
 kandelo_package_load_source_metadata "$SCRIPT_DIR"
 # shellcheck source=/dev/null
@@ -91,7 +93,7 @@ cmake -S "$SRC_DIR" -B "$BUILD_DIR" \
     -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF
 
 echo "==> Building jsoncpp..."
-cmake --build "$BUILD_DIR" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+cmake --build "$BUILD_DIR" -j"$JSONCPP_BUILD_JOBS"
 
 echo "==> Installing to $INSTALL_DIR..."
 cmake --install "$BUILD_DIR"
