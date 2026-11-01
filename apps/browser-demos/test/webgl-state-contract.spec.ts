@@ -1,9 +1,17 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
+
+// Decision D-29: a native deletion or state restoration of host-owned GL
+// state that a live renderer refuses is a fatal host fault (NativeGlFault in
+// host/src/webgl/native-recovery.ts), reported before it is thrown. These
+// are its messages; a forward change the renderer rejects is still rolled
+// back and reported as an ordinary GL error.
+const REFUSED_RESTORE = "the live renderer refused to restore native state after a rejected change";
+const refusedDeletion = (method: string) => `the live renderer refused ${method} of an object the host retired`;
 
 // Actual WebGL rendering through the shared decoder and muxer. This checks
 // host execution pixels; guest ABI/compositor integration has separate tests.
@@ -1472,14 +1480,17 @@ for(const mode of ["native"] as const) {
 }
 
 for (const gpu of [false,true]) {
-test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and candidate cleanup`, async ({page}) => {
+// The upload's utility state (unpack state, unit and texture selection) is
+// restored after the accepted upload. A live renderer that refuses that
+// restoration is a fatal host fault, not a repair fenced until a later query.
+test(`raw ${gpu ? "GPU" : "CPU"} upload whose utility restoration a live renderer refuses is a fatal host fault`, async ({page}) => {
   await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,gpu}) => {
     const base = `/@fs/${root}host/src/webgl/`;
     const {GlContextRegistry} = await import(base+"registry.ts");
     const {bindForeignTexture,bindGpuForeignTexture} = await import(base+"foreign-texture.ts");
-    const {runGlQuery} = await import(base+"query.ts"), O = await import(base+"ops.ts");
+    const {NativeGlFault,setNativeGlFaultReporter} = await import(base+"native-recovery.ts");
     const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
     if (!gl) throw new Error("WebGL2 required");
     const require = (condition: unknown,label: string) => { if (!condition) throw new Error(label); };
@@ -1494,58 +1505,49 @@ test(`raw ${gpu ? "GPU" : "CPU"} upload retains failed utility restoration and c
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D,two);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH,5); gl.pixelStorei(gl.UNPACK_ALIGNMENT,8);
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS,2); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS,3);
-    const before = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
-      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
-    const create = gl.createTexture.bind(gl), destroy = gl.deleteTexture.bind(gl), bind = gl.bindTexture.bind(gl);
+    const create = gl.createTexture.bind(gl), bind = gl.bindTexture.bind(gl);
     const pixel = gl.pixelStorei.bind(gl), image = gl.texImage2D.bind(gl), parameter = gl.texParameteri.bind(gl);
-    const candidates: WebGLTexture[] = [], deleted: WebGLTexture[] = [];
-    let armed = false, block = true, blockCleanup = true, uploads = 0;
+    const candidates: WebGLTexture[] = [];
+    let armed = false, uploads = 0;
     gl.createTexture = () => { const object = create(); if (object) candidates.push(object); return object; };
-    gl.deleteTexture = object => {
-      if (object && candidates.includes(object) && blockCleanup) { bind(0xdead,null); return; }
-      if (object) deleted.push(object); destroy(object);
-    };
     gl.texImage2D = ((...args: Parameters<typeof gl.texImage2D>) => { image(...args); uploads++; armed = true; }) as typeof gl.texImage2D;
     gl.texParameteri = (target,pname,value) => { parameter(target,pname,value); if (gpu) armed = true; };
     gl.bindTexture = (target,object) => {
-      if (gpu && armed && block && object === two) { bind(0xdead,null); return; } bind(target,object);
+      if (gpu && armed && object === two) { bind(0xdead,null); return; } bind(target,object);
     };
     gl.pixelStorei = (pname,value) => {
-      if (!gpu && armed && block && pname === gl.UNPACK_ROW_LENGTH && value === 5) { bind(0xdead,null); return; } pixel(pname,value);
+      if (!gpu && armed && pname === gl.UNPACK_ROW_LENGTH && value === 5) { bind(0xdead,null); return; } pixel(pname,value);
     };
-    const first = gpu ? bindGpuForeignTexture(b,41,canonical)
-      : bindForeignTexture(b,41,new Uint8Array([17,29,41,255]),{w:1,h:1,stride:4});
-    require(first === -5 && armed && candidates.length === 1,"valid candidate then failed restoration");
+    const reported: Error[] = [];
+    setNativeGlFaultReporter((fault: Error) => { reported.push(fault); });
+    let thrown: unknown;
+    try {
+      gpu ? bindGpuForeignTexture(b,41,canonical) : bindForeignTexture(b,41,new Uint8Array([17,29,41,255]),{w:1,h:1,stride:4});
+    } catch (error) { thrown = error; }
+    finally {
+      setNativeGlFaultReporter(null);
+      gl.createTexture = create; gl.bindTexture = bind; gl.pixelStorei = pixel; gl.texImage2D = image; gl.texParameteri = parameter;
+    }
+    require(armed && candidates.length === 1,"valid candidate before the refused restoration");
     require(b.textures.size === 0 && b.foreignTextures.size === 0 && b.foreignTextureBos.size === 0,"unpublished namespace");
-    const output = new Uint8Array(4).fill(0xa5);
-    const blocked = runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output);
-    require(blocked === -5 && output.every(x => x === 165) && deleted.length === 0,"repair fence preserves output and candidate");
-    block = false;
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === -5,"cleanup has independent completion");
-    const after = [gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),
-      ...[gl.UNPACK_ROW_LENGTH,gl.UNPACK_ALIGNMENT,gl.UNPACK_SKIP_ROWS,gl.UNPACK_SKIP_PIXELS].map(p => gl.getParameter(p))];
-    require(before.every((value,i) => value === after[i]),"exact physical state restored");
-    blockCleanup = false;
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4,"cleanup retry completion");
-    require(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output) === 4 && deleted.length === 1 && deleted[0] === candidates[0],"candidate deleted once");
-    require(!gl.isTexture(candidates[0]) && (!gpu || gl.isTexture(canonical.tex)),"candidate gone, canonical source alive");
-    gl.createTexture = create; gl.deleteTexture = destroy; gl.bindTexture = bind; gl.pixelStorei = pixel; gl.texImage2D = image; gl.texParameteri = parameter;
+    // Nothing is retried or cleaned up after a fatal fault; the page is
+    // discarded. The textures this test owns keep their pixels.
     const frame = gl.createFramebuffer()!, colors: number[][] = [];
     for (const texture of [zero,two]) {
       gl.bindFramebuffer(gl.FRAMEBUFFER,frame); gl.framebufferTexture2D(gl.FRAMEBUFFER,gl.COLOR_ATTACHMENT0,gl.TEXTURE_2D,texture,0);
       require(gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE,"retained texture complete");
       const rgba = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba); colors.push([...rgba]);
     }
-    gl.deleteFramebuffer(frame); gl.deleteTexture(zero); gl.deleteTexture(two); if (gpu) reg.retireForeignBo(41);
-    return {first,blocked,colors,uploads,deleted:deleted.length,error:gl.getError()};
+    return {thrown:thrown instanceof Error && thrown instanceof NativeGlFault ? thrown.name : String(thrown),message:thrown instanceof Error ? thrown.message : null,
+      reported:reported.length === 1 && reported[0] === thrown,colors,uploads};
   },{root,gpu});
-  expect(result).toEqual({first:-5,blocked:-5,colors:[[0,0,255,255],[255,0,0,255]],uploads:gpu?0:1,deleted:1,error:0});
+  expect(result).toEqual({thrown:"NativeGlFault",message:REFUSED_RESTORE,reported:true,colors:[[0,0,255,255],[255,0,0,255]],uploads:gpu?0:1});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 }
 
 for (const fault of ["attachment","unit"]) {
-test(`raw BO revocation retains failed ${fault} inverses and shared native pixels`, async ({page}) => {
+test(`raw BO revocation whose ${fault} inverse a live renderer refuses is a fatal host fault`, async ({page}) => {
   await installBrowserMemoryBoundaryProbe(page); await page.goto("/trap-signal-test.html");
   const root = fileURLToPath(new URL("../../../",import.meta.url));
   const result = await page.evaluate(async ({root,fault}) => {
@@ -1558,33 +1560,56 @@ test(`raw BO revocation retains failed ${fault} inverses and shared native pixel
       const offscreen = canvas.transferControlToOffscreen(); worker.postMessage({canvas:offscreen,fault},[offscreen]);
     }); } finally { worker.terminate(); }
   },{root,fault});
-  expect(result).toEqual({type:"foreign_retirement_result",fault,colors:Array(fault === "attachment" ? 1 : 2).fill([0,255,0,255]),deadBinds:0,clean:true,error:0});
+  expect(result).toEqual({type:"foreign_retirement_result",fault,thrown:"NativeGlFault",message:REFUSED_RESTORE,
+    reported:true,ownership:true,dirty:true,otherRestored:true});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 }
 
 // Native source registration and logical image views; public C sharing and
 // normal guest ioctl marshalling are separate validation phases.
-test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
+const runImageStorageWorker=async(page:Page,fault?:string)=>{
   await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
   const root=process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? fileURLToPath(new URL("../../../",import.meta.url));
-  const result=await page.evaluate(async(root)=>{
+  return await page.evaluate(async({root,fault})=>{
     const canvas=document.createElement("canvas");canvas.width=canvas.height=4;document.body.replaceChildren(canvas);
     const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/image-storage-worker.ts`,location.href),{type:"module"});
     try{return await new Promise<any>((resolve,reject)=>{
       const timeout=setTimeout(()=>reject(new Error("image view replay timed out")),35000);
       worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
       worker.addEventListener("message",({data})=>{if(data.type==="image_storage_failed"){clearTimeout(timeout);reject(new Error(data.error));}
-        if(data.type==="image_storage_result"){clearTimeout(timeout);resolve(data);}});
-      const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen},[offscreen]);
+        if(data.type==="image_storage_result"||data.type==="image_storage_fault"){clearTimeout(timeout);resolve(data);}});
+      const offscreen=canvas.transferControlToOffscreen();worker.postMessage({canvas:offscreen,fault},[offscreen]);
     });}finally{worker.terminate();}
-  },root);
+  },{root,fault});
+};
+test("logical image views preserve sibling parameters, pixels and retained identity",async({page})=>{
+  const result=await runImageStorageWorker(page);
   expect(result).toEqual({type:"image_storage_result",namespace:[0,0,255,255],firstParam:0x2600,secondParam:0x2601,
     red:[[255,0,0,255],[255,0,0,255]],rboName:2,green:[[0,255,0,255],[0,255,0,255]],sampledGreen:[0,255,0,255],
     orphan:[[0,0,255,255],[0,255,0,255]],aSource:0,bSource:0,mipOrphan:[0,255,0,255],reimport:[255,0,0,255],rboSource:0,rboOrphan:[[0,0,255,255],[255,0,0,255]],
-    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255],[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],captureEnd:-5,captureBlocked:-5,captureOutput:[165,165,165,165],captureState:[200,0],capturePixels:[0,0,255,255],promotionSubmit:-5,promotionBlocked:-5,promotionDraws:1,promotionPixels:[0,0,255,255],pointerSubmit:-5,pointerBlocked:-5,pointerOutput:[165,165,165,165],pointerPixels:[0,0,255,255],convertedRetryPixels:[0,255,0,255],repairBlocked:-5,repairBlockedOutput:[165,165,165,165],repairPeerBlocked:-5,repairBatchBlocked:-5,repairRestored:[255,0,0,255],storageBlocked:-5,storageBlockedOutput:[165,165,165,165],storageRestored:[[255,0,0,255],[255,0,0,255]],storageState:[1,1],storageCommit:[1,0,2],storageCleanupBlocked:-5,storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawBlocked:-5,rawBlockedOutput:[165,165,165,165],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
+    rejected:[0,0,255,255],retargetRejected:[0,0,255,255],reused:[255,255,0,255],retained:[0,0,255,255],retainedState:[0,2],retainedImport:[1,3],retainedImported:[255,0,0,255],reusedAfterPeerImport:[255,255,0,255],afterSourceRetirement:[255,0,0,255],mutationRollback:[[255,255,0,255],[255,0,0,255],[0,0,255,255],[0,0,255,255],[255,255,0,255],[255,0,0,255]],storageReject:[[255,255,0,255],[0,0,255,255]],ownedStorageRetry:[0,0,255,255],framebufferBindReject:[[0,0,255,255],[0,0,255,255]],framebufferBindRetry:[0,0,255,255],bufferBindReject:[[100,11,22,33,44],[100,11,22,33,44],[102,11,22,33,44],[102,11,22,33,44]],bufferBindRetry:[101,103],bufferDeleteRollback:[[0,255,0,255],[0,255,0,255],[0,255,0,255]],bufferDeleteCleared:[0,0,0,0],bufferDeleteRetry:[0,0,255,255],convertedRetryPixels:[0,255,0,255],storageCommit:[1,0,2],storageOwned:[[0,0,255,255],[0,0,255,255]],rawNamespace:[0,0,255,255],rawParams:[0x2600,0x2601],rawGreen:[0,255,0,255],rawOrphan:[[255,0,0,255],[0,255,0,255]],rawRefresh:[0,255,0,255],rawInvalid:-14,rawAdmitted:[4,1],rawRevoked:[0,0,1],rawReplacement:[0,0,255,255],rawMissing:0x8cd7,errors:[0,0],clean:true,error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
+// Each refusal of a native restoration or deletion of host-owned state is a
+// fatal host fault: thrown out of the host import and reported once through
+// the kernel's onHostFault, never a -5 reply fencing later GL work while a
+// repair waits for a retry.
+for (const [fault,message,detail] of [
+  ["deleteBuffer",refusedDeletion("deleteBuffer"),{refused:true,logicalDeleted:true}],
+  ["capture",REFUSED_RESTORE,{}],
+  ["promotion",REFUSED_RESTORE,{draws:1}],
+  ["pointer",REFUSED_RESTORE,{precondition:{error:0,selected:true,installed:true},dirty:true}],
+  ["repair",REFUSED_RESTORE,{rejected:true,dirty:true}],
+  ["storage",REFUSED_RESTORE,{rejected:true,dirty:true}],
+  ["storageCleanup",refusedDeletion("deleteTexture"),{retained:true}],
+] as const) {
+  test(`logical image views make a refused ${fault} cleanup or restoration a fatal host fault`,async({page})=>{
+    const result=await runImageStorageWorker(page,fault);
+    expect(result).toEqual({type:"image_storage_fault",scenario:fault,fault:"NativeGlFault",message,reported:true,...detail});
+    expect(await memoryBoundaryFailures(page)).toEqual([]);
+  });
+}
 
 // Native fence ownership is a source model prerequisite for EGL sync APIs;
 // these checks do not execute the still-unimplemented guest entry points.
@@ -1711,13 +1736,15 @@ for (const mode of ["native"] as const) {
 }
 
 for(const partial of [false,true]) {
-  test(`retained surface allocation survives resize and owner retirement${partial?" with partial cleanup retry":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired texture. That is
+  // a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`retained surface allocation survives resize and owner retirement${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
       const base=new URL(`/@fs${root}host/src/webgl/`,location.href).href;
       const {GlContextRegistry}=await import(base+"registry.ts"),{resizeSurfaceTarget}=await import(base+"present-target.ts");
-      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{hasNativeRepair}=await import(base+"native-recovery.ts");
+      const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{hasNativeRepair,NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const deleted:object[]=[],attempts:object[]=[];
@@ -1737,6 +1764,7 @@ for(const partial of [false,true]) {
       if(!resizeSurfaceTarget(binding,4,3))throw new Error("initial allocation");
       const old=binding.presentTarget!,first=retainSurfaceStorage(binding.surface)!;if(!first)throw new Error("lease");
       const second=first.clone()!;if(!second)throw new Error("clone");
+      let faulted=false;
       try {
         paint(old.fbo,[1,0,0,1]);
         if(!resizeSurfaceTarget(binding,8,6))throw new Error("resize");
@@ -1747,23 +1775,36 @@ for(const partial of [false,true]) {
         const liveAfterFirst=gl.isFramebuffer(second.framebuffer);
         paint(second.framebuffer,[0,1,0,1]);const afterRetirement=read(second.framebuffer);
         gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-        if(partial)rejectTexture=old.tex;
+        if(partial) {
+          rejectTexture=old.tex;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release(null);} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {replacement,retained,dimensions,liveAfterFirst,afterRetirement,
+            thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),message:thrown instanceof Error?thrown.message:null,
+            reported:reported.length===1&&reported[0]===thrown,
+            textureAttempts:attempts.filter(value=>value===old.tex).length,textureAlive:gl.isTexture(old.tex)};
+        }
         const release=second.release(null),blocked=hasNativeRepair(gl);
-        if(!second.release(null))throw new Error("cleanup retry");
         return {replacement,retained,dimensions,liveAfterFirst,afterRetirement,release,blocked,
           oldDeleted:[old.fbo,old.tex,old.depthStencil].map(value=>deleted.filter(item=>item===value).length),
           textureAttempts:attempts.filter(value=>value===old.tex).length,
           clean:!gl.isFramebuffer(old.fbo)&&!gl.isTexture(old.tex)&&!gl.isRenderbuffer(old.depthStencil),error:gl.getError()};
-      } finally {rejectTexture=null;first.release(null);second.release(null);reg.unbind(7);}
+      } finally {rejectTexture=null;if(!faulted){first.release(null);second.release(null);reg.unbind(7);}}
     },{root,partial});
-    expect(result).toEqual({replacement:[0,0,255,255],retained:[255,0,0,255],dimensions:[4,3],liveAfterFirst:true,
-      afterRetirement:[0,255,0,255],release:!partial,blocked:partial,oldDeleted:[1,1,1],textureAttempts:partial?2:1,clean:true,error:0});
+    const common={replacement:[0,0,255,255],retained:[255,0,0,255],dimensions:[4,3],liveAfterFirst:true,afterRetirement:[0,255,0,255]};
+    expect(result).toEqual(partial
+      ? {...common,thrown:"NativeGlFault",message:refusedDeletion("deleteTexture"),reported:true,textureAttempts:1,textureAlive:true}
+      : {...common,release:true,blocked:false,oldDeleted:[1,1,1],textureAttempts:1,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
 
 for(const partial of [false,true]) {
-  test(`retained context execution stays independent of a replacement session${partial?" while cleanup retries":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired context's VAO.
+  // That is a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`retained context execution stays independent of a replacement session${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
@@ -1772,6 +1813,7 @@ for(const partial of [false,true]) {
       const {resizeSurfaceTarget}=await import(base+"present-target.ts"),{applyCurrentDrawable}=await import(base+"current.ts");
       const {retainSurfaceStorage}=await import(base+"surface-resources.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
       const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),{runGlQuery}=await import(base+"query.ts"),O=await import(base+"ops.ts");
+      const {NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const live:Array<()=>boolean>=[],deleted:object[]=[];
@@ -1807,7 +1849,7 @@ for(const partial of [false,true]) {
       select(old,31);const oldTexture=texture(old);send(old,[1,0,0,1]);
       const storage=retainSurfaceStorage(old.surface)!,first=reg.retainContextExecution(7,11,muxer)!;
       if(!storage||!first)throw new Error("lease");const second=first.clone()!;
-      const oldVao=old.shadow.defaultVao!;let output:any;
+      const oldVao=old.shadow.defaultVao!;let output:any,faulted=false;
       try {
         muxer.invalidateCurrent();reg.destroyContext(7,11);
         const next=reg.get(7,11)!;if(next===old||reg.getContext(7,1))throw new Error("public identity revived");
@@ -1816,8 +1858,17 @@ for(const partial of [false,true]) {
         send(first.binding,[0,1,0,1]);const green=read(storage.framebuffer);
         send(next,[0,0,1,1]);gl.enable(0xdead);
         if(!first.release())throw new Error("first release");const retained=gl.isTexture(oldTexture);
-        if(partial)rejectVao=oldVao;
-        const accepted=second.release();if(!second.release())throw new Error("retry");
+        if(partial) {
+          rejectVao=oldVao;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release();} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {blue,green,retained,thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),
+            message:thrown instanceof Error?thrown.message:null,reported:reported.length===1&&reported[0]===thrown,
+            vaoAlive:gl.isVertexArray(oldVao),oldVaoDeletes:deleted.filter(value=>value===oldVao).length};
+        }
+        const accepted=second.release();
         const out=new Uint8Array(4),errors:number[]=[];
         muxer.switchTo(next);
         for(let i=0;i<2;i++){if(runGlQuery(next,O.QOP_GET_ERROR,new Uint8Array(),out)!==4)throw new Error("error query");errors.push(new DataView(out.buffer).getUint32(0,true));}
@@ -1826,17 +1877,22 @@ for(const partial of [false,true]) {
         output={blue,green,preserved,retained,accepted,errors,oldGuestCleared:old.cmdbufView===null,
           oldDeleted:!gl.isTexture(oldTexture)&&!gl.isVertexArray(oldVao),freshAlive:gl.isTexture(fresh),
           oldTextureDeletes:deleted.filter(value=>value===oldTexture).length,oldVaoDeletes:deleted.filter(value=>value===oldVao).length};
-      } finally {rejectVao=null;first.release();second.release();storage.release(null);muxer.invalidateCurrent();reg.unbind(7);}
+      } finally {rejectVao=null;if(!faulted){first.release();second.release();storage.release(null);muxer.invalidateCurrent();reg.unbind(7);}}
       return {...output,clean:live.every(test=>!test()),error:gl.getError()};
     },{root,partial});
-    expect(result).toEqual({blue:[0,0,255,255],green:[0,255,0,255],preserved:[0,0,255,255],retained:true,
-      accepted:!partial,errors:[0x500,0],oldGuestCleared:true,oldDeleted:true,freshAlive:true,oldTextureDeletes:1,oldVaoDeletes:1,clean:true,error:0});
+    expect(result).toEqual(partial
+      ? {blue:[0,0,255,255],green:[0,255,0,255],retained:true,thrown:"NativeGlFault",message:refusedDeletion("deleteVertexArray"),
+        reported:true,vaoAlive:true,oldVaoDeletes:0}
+      : {blue:[0,0,255,255],green:[0,255,0,255],preserved:[0,0,255,255],retained:true,
+        accepted:true,errors:[0x500,0],oldGuestCleared:true,oldDeleted:true,freshAlive:true,oldTextureDeletes:1,oldVaoDeletes:1,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
 
 for (const partial of [false,true]) {
-  test(`borrowed GPU allocation survives BO identity reuse${partial?" with rejected cleanup":""}`,async({page})=>{
+  // partial: the live renderer refuses to delete the retired BO's texture.
+  // That is a fatal host fault (D-29), not a cleanup retried on a later release.
+  test(`borrowed GPU allocation survives BO identity reuse${partial?", and a refused cleanup is a fatal host fault":""}`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,partial})=>{
@@ -1845,6 +1901,7 @@ for (const partial of [false,true]) {
       const {prepareBorrowedSurfaceTarget,retainSurfaceStorage}=await import(base+"surface-resources.ts");
       const {applyCurrentDrawable}=await import(base+"current.ts"),{SubmitFrame}=await import(base+"submit-queue.ts");
       const {decodeAndDispatch,validateCommandBuffer}=await import(base+"bridge.ts"),O=await import(base+"ops.ts");
+      const {NativeGlFault,setNativeGlFaultReporter}=await import(base+"native-recovery.ts");
       const canvas=document.createElement("canvas");canvas.width=4;canvas.height=3;document.body.replaceChildren(canvas);
       const gl=canvas.getContext("webgl2",{antialias:false,preserveDrawingBuffer:true})!;if(!gl)throw new Error("no WebGL2");
       const live:Array<()=>boolean>=[],deleted:object[]=[];let reject:WebGLTexture|null=null;
@@ -1870,7 +1927,7 @@ for (const partial of [false,true]) {
       const read=(fbo:WebGLFramebuffer)=>{gl.bindFramebuffer(gl.FRAMEBUFFER,fbo);const out=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,out);return [...out];};
       send([1,0,0,1]);const first=retainSurfaceStorage(b.surface)!;if(!first)throw new Error("borrowed lease");
       if(!reg.destroyGpuBo(41))throw new Error("public retirement");const second=first.clone()!;if(!second)throw new Error("retired clone");
-      let output:any;
+      let output:any,faulted=false;
       try {
         const hidden=reg.gpuBo(41)===undefined;
         if(reg.createGpuBo(41,gl,4,3)===null)throw new Error("replacement BO allocation");const fresh=reg.gpuBo(41)!;
@@ -1881,17 +1938,28 @@ for (const partial of [false,true]) {
         gl.bindFramebuffer(gl.FRAMEBUFFER,first.framebuffer);gl.clearColor(0,1,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
         const green=read(first.framebuffer),oldAlive=gl.isTexture(old.tex);
         if(!first.release(null))throw new Error("first release");
-        if(partial)reject=old.tex;
-        const peer={errors:[] as number[]};gl.enable(0xdead);const accepted=second.release(peer);
-        if(!second.release(peer))throw new Error("cleanup retry");
+        const peer={errors:[] as number[]};gl.enable(0xdead);
+        if(partial) {
+          reject=old.tex;faulted=true;
+          const reported:Error[]=[];let thrown:unknown;
+          setNativeGlFaultReporter((fault:Error)=>{reported.push(fault);});
+          try {second.release(peer);} catch(error) {thrown=error;} finally {setNativeGlFaultReporter(null);}
+          // Nothing retries or cleans up after a fatal fault.
+          return {hidden,red,blue,green,oldAlive,thrown:thrown instanceof Error&&thrown instanceof NativeGlFault?thrown.name:String(thrown),
+            message:thrown instanceof Error?thrown.message:null,reported:reported.length===1&&reported[0]===thrown,
+            textureAlive:gl.isTexture(old.tex),textureDeletes:deleted.filter(value=>value===old.tex).length};
+        }
+        const accepted=second.release(peer);
         output={hidden,red,blue,green,oldAlive,accepted,errors:peer.errors,
           oldDeletes:[old.fbo,old.depthStencil,old.tex].map(object=>deleted.filter(value=>value===object).length),
           freshDeleted:!gl.isTexture(fresh.tex)&&!gl.isFramebuffer(fresh.fbo)};
-      } finally {reject=null;first.release(null);second.release(null);muxer.invalidateCurrent();reg.unbind(7);reg.destroyGpuBo(41);}
+      } finally {reject=null;if(!faulted){first.release(null);second.release(null);muxer.invalidateCurrent();reg.unbind(7);reg.destroyGpuBo(41);}}
       return {...output,clean:live.every(check=>!check()),error:gl.getError()};
     },{root,partial});
-    expect(result).toEqual({hidden:true,red:[255,0,0,255],blue:[0,0,255,255],green:[0,255,0,255],oldAlive:true,
-      accepted:!partial,errors:[0x500],oldDeletes:[1,1,1],freshDeleted:true,clean:true,error:0});
+    const common={hidden:true,red:[255,0,0,255],blue:[0,0,255,255],green:[0,255,0,255],oldAlive:true};
+    expect(result).toEqual(partial
+      ? {...common,thrown:"NativeGlFault",message:refusedDeletion("deleteTexture"),reported:true,textureAlive:true,textureDeletes:0}
+      : {...common,accepted:true,errors:[0x500],oldDeletes:[1,1,1],freshDeleted:true,clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
