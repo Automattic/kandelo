@@ -20,12 +20,11 @@ it("enables supported host extensions before advertising their GLES equivalents"
 
 // Every name a GLES 2 context advertises must be a GLES 2 extension the
 // platform implements completely. EXT_color_buffer_float and EXT_float_blend
-// require OpenGL ES 3.0; EXT_color_buffer_half_float's
-// FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT query is not implemented.
+// require OpenGL ES 3.0.
 it("advertises only implemented GLES 2 extensions whatever the browser offers", () => {
   const extensions = getGlesExtensionString({getExtension: () => ({})}).split(" ");
   expect(extensions.sort()).toEqual([
-    "GL_EXT_blend_minmax", "GL_EXT_texture_rg", "GL_OES_depth_texture", "GL_OES_packed_depth_stencil",
+    "GL_EXT_blend_minmax", "GL_EXT_color_buffer_half_float", "GL_EXT_texture_rg", "GL_OES_depth_texture", "GL_OES_packed_depth_stencil",
     "GL_OES_rgb8_rgba8", "GL_OES_standard_derivatives", "GL_OES_surfaceless_context", "GL_OES_texture_float",
     "GL_OES_texture_float_linear", "GL_OES_texture_half_float", "GL_OES_texture_half_float_linear",
     "GL_OES_texture_npot",

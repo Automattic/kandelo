@@ -79,6 +79,10 @@ truthful error):
   `EGL_BAD_MATCH`.
 - `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
 - Gamma LUT size 0; no format modifiers; no async or target page flips.
+- `GL_EXT_color_buffer_half_float` is advertised only when WebGL 2's
+  `EXT_color_buffer_float` or `EXT_color_buffer_half_float` exists. An
+  `RGB16F_EXT` renderbuffer, which WebGL 2 cannot render, makes its
+  framebuffer `FRAMEBUFFER_UNSUPPORTED` (extension issue 2).
 - A host with no GLES renderer (Node without an embedder WebGL2 or
   OffscreenCanvas, or a browser where WebGL2 context creation fails):
   `eglInitialize` fails with `EGL_NOT_INITIALIZED` (EGL 1.5 §3.2), on both
@@ -89,6 +93,13 @@ truthful error):
 context whenever `EGL_KHR_no_config_context` is advertised. The extension
 text does not require ES3, wlroots requires the extension, and GLES3 is a
 separate expansion, so this case is expected to fail until GLES3 exists.
+`dEQP-GLES2.functional.fbo.completeness.renderable.renderbuffer.color0.rgb16f`
+treats `RGB16F_EXT` as required-renderable when `GL_EXT_color_buffer_half_float`
+is advertised (`glsFboCompletenessTests.cpp` `s_extColorBufferHalfFloatFormats`).
+The extension text does not require any particular format to render (issue
+2), and WebGL 2 has no renderable `RGB16F`, so storage is accepted (as
+`RGBA16F`, reporting zero alpha bits) and the framebuffer reports
+`FRAMEBUFFER_UNSUPPORTED`. This case is expected to fail.
 
 **Unverified mechanisms to check first in the build phase.** The reversed-depth
 twin, attribute-alias executable and future depth-sampling variants rewrite

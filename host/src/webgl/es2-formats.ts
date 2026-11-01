@@ -25,7 +25,8 @@ const ALPHA = 0x1906, RGB = 0x1907, RGBA = 0x1908, LUMINANCE = 0x1909, LUMINANCE
 const RED = 0x1903, RG = 0x8227, DEPTH_COMPONENT = 0x1902, DEPTH_STENCIL = 0x84f9;
 const UNSIGNED_BYTE = 0x1401, UNSIGNED_SHORT = 0x1403, UNSIGNED_INT = 0x1405, FLOAT = 0x1406;
 const HALF_FLOAT_OES = 0x8d61, UNSIGNED_INT_24_8 = 0x84fa;
-const BGRA = 0x80e1, BGRA8 = 0x93a1;
+const BGRA = 0x80e1, BGRA8 = 0x93a1, RGBA16F = 0x881a, RGB16F = 0x881b;
+const HALF_COLOR = "GL_EXT_color_buffer_half_float";
 const UNSIGNED_SHORT_4_4_4_4 = 0x8033, UNSIGNED_SHORT_5_5_5_1 = 0x8034, UNSIGNED_SHORT_5_6_5 = 0x8363;
 
 const CORE: Requirement = [];
@@ -69,7 +70,11 @@ const RENDERBUFFER_ROWS: ReadonlyArray<readonly [number, Requirement]> = [
   // (glsFboCompletenessTests.cpp s_extTextureFormatBGRA8888Formats); the host
   // stores them as RGBA8.
   [BGRA, CORE], [BGRA8, CORE],
-  // No color-buffer float extension is advertised to GLES 2 (capabilities.ts).
+  // GL_EXT_color_buffer_half_float (requires OES_texture_half_float; R16F and
+  // RG16F also EXT_texture_rg). No 32-bit float color buffer is a GLES 2
+  // extension (issue 1).
+  [RGBA16F, [HALF_COLOR, HALF_EXT]], [RGB16F, [HALF_COLOR, HALF_EXT]],
+  [0x822f, [HALF_COLOR, HALF_EXT, RG_EXT]], [0x822d, [HALF_COLOR, HALF_EXT, RG_EXT]],
 ];
 
 /** Sized texture internal formats accepted with one unsized (format, type).
@@ -139,9 +144,15 @@ export function renderbufferFormatError(gl: GlesExtensionProvider, internal: num
  * no advertised GLES 2 extension makes them so, although the host may enable
  * WebGL EXT_color_buffer_float natively for its own render targets.
  */
-export function textureColorRenderable(internal: number, format: number, type: number): boolean {
+export function textureColorRenderable(internal: number, format: number, type: number,
+                                       halfFloatColor = false): boolean | undefined {
   if (internal === 0x8229 || internal === 0x822b) return true;
   if (format === RED || format === RG) return true;
+  // `type` is WebGL's HALF_FLOAT (0x140b) for HALF_FLOAT_OES.
+  // GL_EXT_color_buffer_half_float: RGBA/RGBA/HALF_FLOAT_OES textures are
+  // renderable. Its other half-float images may or may not be (issue 2);
+  // RGB16F completeness is left to the native renderer, never assumed.
+  if (type === 0x140b && halfFloatColor) return format === RGBA ? true : format === RGB ? undefined : false;
   if (format === RGBA) return type === UNSIGNED_BYTE || type === UNSIGNED_SHORT_4_4_4_4 || type === UNSIGNED_SHORT_5_5_5_1;
   if (format === RGB) return type === UNSIGNED_BYTE || type === UNSIGNED_SHORT_5_6_5;
   return false;
@@ -169,11 +180,27 @@ export function copiedTextureColorRenderable(internal: number): boolean {
 }
 
 export function renderbufferColorRenderable(internal: number): boolean {
-  return [0x8056, 0x8057, 0x8d62, 0x8051, 0x8058, 0x8229, 0x822b, BGRA, BGRA8].includes(internal);
+  return [0x8056, 0x8057, 0x8d62, 0x8051, 0x8058, 0x8229, 0x822b, BGRA, BGRA8,
+    RGBA16F, RGB16F, 0x822f, 0x822d].includes(internal);
+}
+
+/** Color-renderable formats the WebGL 2 renderer cannot render to. RGB16F
+ * is not color-renderable under WebGL 2's EXT_color_buffer_(half_)float, so a
+ * framebuffer using it is FRAMEBUFFER_UNSUPPORTED (EXT_color_buffer_half_float
+ * issue 2: applications must check completeness for each format). */
+export function renderbufferUnsupported(internal: number): boolean {
+  return internal === RGB16F;
+}
+
+/** Floating-point color storage (FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT). */
+export function renderbufferFloat(internal: number): boolean {
+  return [RGBA16F, RGB16F, 0x822f, 0x822d].includes(internal);
 }
 
 /** Native storage for a renderbuffer format: BGRA has no WebGL 2 format and
- * is stored as RGBA8 (the encoder swizzles BGRA texels the same way). */
+ * is stored as RGBA8 (the encoder swizzles BGRA texels the same way). RGB16F
+ * has no WebGL 2 renderbuffer format and is stored as RGBA16F; it reports
+ * zero alpha bits and its framebuffers are UNSUPPORTED. */
 export function nativeRenderbufferFormat(internal: number): number {
-  return internal === BGRA || internal === BGRA8 ? 0x8058 : internal;
+  return internal === BGRA || internal === BGRA8 ? 0x8058 : internal === RGB16F ? RGBA16F : internal;
 }

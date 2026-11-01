@@ -37,18 +37,20 @@ const WEBGL2_CORE_GLES2_EXTENSIONS = [
 ] as const;
 
 // Browser-dependent capabilities with a GLES 2 extension of their own.
-// Not advertised to a GLES 2 context although the host may enable the WebGL
-// extension natively:
-// - GL_EXT_color_buffer_float and GL_EXT_float_blend require OpenGL ES 3.0
-//   and define no GLES 2 interactions.
-// - GL_EXT_color_buffer_half_float is a GLES 2 extension, but its
-//   FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT query has no answer in the
-//   fixed QOP_GET_FB_ATTACHMENT reply, and WebGL 2 need not make its
-//   RGB16F_EXT renderbuffer format renderable.
+// GL_EXT_color_buffer_float and GL_EXT_float_blend are not advertised to a
+// GLES 2 context although the host may enable the WebGL extensions natively:
+// they require OpenGL ES 3.0 and define no GLES 2 interactions.
 const OPTIONAL_WEBGL_TO_GLES_EXTENSIONS = [
   {
     webgl: ["OES_texture_float_linear"],
     gles: ["GL_OES_texture_float_linear"],
+  },
+  {
+    // Either WebGL extension makes R16F, RG16F and RGBA16F color-renderable
+    // on WebGL 2. RGB16F stays unrenderable there, which the GLES extension
+    // permits (issue 2): such a framebuffer reports UNSUPPORTED.
+    webgl: ["EXT_color_buffer_float", "EXT_color_buffer_half_float"],
+    gles: ["GL_EXT_color_buffer_half_float"],
   },
 ] as const;
 

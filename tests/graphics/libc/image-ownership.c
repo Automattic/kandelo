@@ -420,7 +420,7 @@ static unsigned close_group_reservations;
 static unsigned scalar_queries;
 static unsigned precision_queries;
 static int precision_query_failure;
-static uint32_t core_total, core_offset, core_info[4];
+static uint32_t core_total, core_offset, core_info[5], core_component_queries;
 static unsigned core_calls, core_fail_at, validate_commands;
 static unsigned upload_queries, upload_chunks, upload_commits, upload_aborts;
 static uint32_t upload_token, upload_total, upload_cursor;
@@ -1925,7 +1925,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
                 core_offset += cap;
             } else if (q->op == 0x1b) {
-                assert(q->out_buf_len == 24); memcpy(reply+4,core_info,16);
+                /* 12-byte input: COMPONENT_TYPE_EXT variant, five reply words. */
+                assert(q->in_buf_len == 8 ? q->out_buf_len == 24 : q->in_buf_len == 12 && q->out_buf_len == 28);
+                if (q->in_buf_len == 12) {
+                    const uint32_t *input = allocation_for(q->in_buf_ptr,12);
+                    assert(input[2] == 0x8211); core_component_queries++;
+                }
+                memcpy(reply+4,core_info,q->out_buf_len-8);
             } else {
                 assert(q->out_buf_len == 12);
                 memcpy(reply + 4, &query_scalar, 4);
@@ -4793,6 +4799,16 @@ int main(int argc, char **argv) {
             fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_CUBE_MAP_FACE,&value); assert(value == GL_TEXTURE_CUBE_MAP_NEGATIVE_X);
             core_info[0] = GL_RENDERBUFFER; value = 87; fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LEVEL,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
             core_info[0] = GL_NONE; fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,GL_FRAMEBUFFER_ATTACHMENT_OBJECT_NAME,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+            /* GL_EXT_color_buffer_half_float: the component type travels in a
+             * fifth reply word; a NONE attachment has none (INVALID_ENUM). */
+            const unsigned component_queries = core_component_queries;
+            core_info[0] = GL_RENDERBUFFER; core_info[4] = GL_FLOAT;
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,0x8211,&value); assert(value == GL_FLOAT && glGetError() == GL_NO_ERROR);
+            core_info[0] = GL_TEXTURE; core_info[4] = 0x8C17;
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,0x8211,&value); assert(value == 0x8C17 && glGetError() == GL_NO_ERROR);
+            core_info[0] = GL_NONE; core_info[4] = 0; value = 87;
+            fbo(GL_FRAMEBUFFER,GL_COLOR_ATTACHMENT0,0x8211,&value); assert(value == 87 && glGetError() == GL_INVALID_ENUM);
+            assert(core_component_queries == component_queries + 3);
             numeric_queries = 3; texiv(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,&value); numeric_queries = 0; assert(value == 87 && glGetError() == GL_INVALID_OPERATION);
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy)); printf("PASS %s\n",argv[1]); return 0;
@@ -5894,21 +5910,24 @@ int main(int argc, char **argv) {
             assert(glGetError() == GL_NO_ERROR && copy_tex_image_commands == copies + 7);
         } else {
             assert(!strcmp(argv[1], "encoder-format-renderbuffer"));
-            /* The color-buffer float extensions are not advertised to GLES 2:
-             * RGBA16F and RGBA32F are rejected without a host round trip. */
+            /* No 32-bit float color buffer is a GLES 2 extension: RGBA32F
+             * and R11F_G11F_B10F are rejected without a host round trip. */
             const GLenum rejected[] = {0x81a6 /* DEPTH_COMPONENT24 */, 0x8059 /* RGB10_A2 */, 0x8c43, 0x8d7c, GL_RGBA, 0,
-                                       0x881a, 0x8814, 0x8c3a};
+                                       0x8814, 0x8c3a};
             for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
                 glRenderbufferStorage(GL_RENDERBUFFER,rejected[i],1,1);
                 assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
             }
             assert(image_mutation_queries == queries);
             /* Core and always-advertised formats reach the host. */
+            /* The half-float formats reach the host, which admits them only
+             * while GL_EXT_color_buffer_half_float is advertised. */
             const GLenum admitted[] = {GL_RGBA4, GL_RGB5_A1, GL_RGB565, GL_DEPTH_COMPONENT16, GL_STENCIL_INDEX8,
-                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b, GL_BGRA_EXT, GL_BGRA8_EXT};
+                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b, GL_BGRA_EXT, GL_BGRA8_EXT,
+                                       0x881a, 0x881b, 0x822f, 0x822d};
             for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++)
                 glRenderbufferStorage(GL_RENDERBUFFER,admitted[i],1,1);
-            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 12);
+            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 16);
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);

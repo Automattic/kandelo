@@ -34,7 +34,8 @@ export type GlesLevelFormat = {
   format: number;
   type: number;
   expanded: boolean;
-  colorRenderable: boolean;
+  /** undefined: the extension leaves renderability to the renderer. */
+  colorRenderable: boolean | undefined;
   depth: boolean;
   stencil: boolean;
 };

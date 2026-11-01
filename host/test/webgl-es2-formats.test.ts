@@ -178,9 +178,10 @@ describe("ES2 RenderbufferStorage internalformat admission (section 4.4.3)", () 
     expect(nativeCalls(log, "renderbufferStorage")).toEqual([[ "renderbufferStorage", [RENDERBUFFER, internal, 4, 4]]]);
   });
 
-  // The color-buffer float extensions are not advertised to a GLES 2
-  // context (webgl-capabilities.test.ts), even when the browser has them.
-  it.each([0x881a, 0x881b, 0x822f, 0x822d, 0x8814, 0x8230, 0x822e, 0x8c3a])(
+  // 32-bit float color buffers have no GLES 2 extension (EXT_color_buffer_float
+  // requires ES 3.0), even when the browser has them. The 16-bit formats of
+  // GL_EXT_color_buffer_half_float: webgl-color-buffer-half-float.test.ts.
+  it.each([0x8814, 0x8230, 0x822e, 0x8c3a])(
     "rejects float renderbuffer format %i although the browser could render it", internal => {
       const { b, log } = binding(["EXT_color_buffer_float", "EXT_color_buffer_half_float"]);
       expect(storage(b, rbStorage(internal))).toBe(0);

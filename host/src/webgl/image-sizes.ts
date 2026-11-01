@@ -27,7 +27,9 @@ import { textureLevel } from "./texture-levels.js";
 type Size = readonly [number, number];
 /** Renderability under ES 2.0 plus the advertised extensions; undefined
  * fields (imported storage) leave that attachment to native completeness. */
-type Image = { size: Size; colorRenderable?: boolean; depthRenderable?: boolean; stencilRenderable?: boolean };
+type Image = { size: Size; colorRenderable?: boolean; depthRenderable?: boolean; stencilRenderable?: boolean;
+  /** Color-renderable, but not by this renderer (FRAMEBUFFER_UNSUPPORTED). */
+  unsupported?: boolean };
 const renderbufferImages = new WeakMap<WebGLRenderbuffer, Image & { internal?: number }>();
 
 /** `internal` is the guest's requested format (for RENDERBUFFER_INTERNAL_FORMAT
@@ -64,6 +66,15 @@ export function framebufferAttachmentUnrenderable(b: GlBinding, framebuffer: Web
   return false;
 }
 
+/** An attachment the renderer cannot render although the format is
+ * color-renderable (section 4.4.5 FRAMEBUFFER_UNSUPPORTED). */
+export function framebufferAttachmentUnsupported(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
+  if (!framebuffer || isDefaultFramebuffer(b, framebuffer)) return false;
+  for (const image of b.framebufferAttachments.get(framebuffer)?.values() ?? [])
+    if (attachmentImage(image)?.unsupported) return true;
+  return false;
+}
+
 /** True when two attached images of a user framebuffer have different sizes.
  * An attachment without a recorded image is left to native completeness: a
  * missing image is FRAMEBUFFER_INCOMPLETE_ATTACHMENT, an earlier clause. */
@@ -85,7 +96,8 @@ export function framebufferDimensionsDiffer(b: GlBinding, framebuffer: WebGLFram
  * INVALID_FRAMEBUFFER_OPERATION before any native side effect. */
 export function requireGlesFramebufferComplete(b: GlBinding, read = false): boolean {
   const framebuffer = read ? b.shadow.readFbo : b.shadow.fbo;
-  if (!framebufferAttachmentUnrenderable(b, framebuffer) && !framebufferDimensionsDiffer(b, framebuffer)) return true;
+  if (!framebufferAttachmentUnrenderable(b, framebuffer) && !framebufferDimensionsDiffer(b, framebuffer)
+      && !framebufferAttachmentUnsupported(b, framebuffer)) return true;
   recordGlError(b, 0x506);
   return false;
 }
@@ -96,5 +108,6 @@ export function glesFramebufferStatus(b: GlBinding, framebuffer: WebGLFramebuffe
   const passes = nativeStatus === 0x8cd5 || nativeStatus === 0x8cdd;
   if (passes && framebufferAttachmentUnrenderable(b, framebuffer)) return 0x8cd6;
   if (passes && framebufferDimensionsDiffer(b, framebuffer)) return 0x8cd9;
+  if (passes && framebufferAttachmentUnsupported(b, framebuffer)) return 0x8cdd;
   return nativeStatus;
 }

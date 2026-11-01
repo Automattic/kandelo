@@ -32,7 +32,9 @@ import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestC
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
+import { glesExtensionAdvertised } from "./capabilities.js";
 import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
+  renderbufferUnsupported,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
@@ -91,6 +93,12 @@ function updateStencilFaces(
 ): void {
   if (face === GL_FRONT || face === GL_FRONT_AND_BACK) update(shadow.stencil.front);
   if (face === GL_BACK || face === GL_FRONT_AND_BACK) update(shadow.stencil.back);
+}
+
+/** ES 2.0 clamps ClearColor/BlendColor to [0,1]; with a floating-point
+ * color buffer extension the values are kept as specified. */
+function colorClamp(gl: WebGL2RenderingContext): (value: number) => number {
+  return glesExtensionAdvertised(gl, "GL_EXT_color_buffer_half_float") ? value => value : clampUnit;
 }
 
 function clampUnit(value: number): number {
@@ -593,13 +601,17 @@ function dispatch(
       if (!requireGlesFramebufferComplete(b)) return;
       gl.clear(v.getUint32(p, true));
       return;
-    case O.OP_CLEAR_COLOR:
+    case O.OP_CLEAR_COLOR: {
+      // GL_EXT_color_buffer_half_float issues 5 and 8: the clear color is not
+      // clamped when specified (fixed-point buffers clamp when cleared).
+      const color = colorClamp(gl);
       b.shadow.clearColor = [
-        clampUnit(v.getFloat32(p, true)), clampUnit(v.getFloat32(p + 4, true)),
-        clampUnit(v.getFloat32(p + 8, true)), clampUnit(v.getFloat32(p + 12, true)),
+        color(v.getFloat32(p, true)), color(v.getFloat32(p + 4, true)),
+        color(v.getFloat32(p + 8, true)), color(v.getFloat32(p + 12, true)),
       ];
       gl.clearColor(...b.shadow.clearColor);
       return;
+    }
     case O.OP_VIEWPORT: {
       const maximum = maxViewport(gl);
       b.shadow.viewport = [
@@ -659,15 +671,16 @@ function dispatch(
       b.shadow.blendEquation = { rgb: modeRGB, alpha: modeA };
       return;
     }
-    case O.OP_BLEND_COLOR:
+    case O.OP_BLEND_COLOR: {
+      // Issue 7: the constant blend color is not clamped when specified.
+      const color = colorClamp(gl);
       b.shadow.blendColor = [
-        clampUnit(v.getFloat32(p, true)),
-        clampUnit(v.getFloat32(p + 4, true)),
-        clampUnit(v.getFloat32(p + 8, true)),
-        clampUnit(v.getFloat32(p + 12, true)),
+        color(v.getFloat32(p, true)), color(v.getFloat32(p + 4, true)),
+        color(v.getFloat32(p + 8, true)), color(v.getFloat32(p + 12, true)),
       ];
       gl.blendColor(...b.shadow.blendColor);
       return;
+    }
     case O.OP_CLEAR_DEPTHF:
       b.shadow.clearDepth = Math.min(1, Math.max(0, v.getFloat32(p, true)));
       gl.clearDepth(b.shadow.clearDepth);
@@ -891,7 +904,8 @@ function dispatch(
       if (accepted) {
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat:native.internal,format:native.format,type,compressed:false,
-            gles:{internalFormat,format,type,expanded,colorRenderable:textureColorRenderable(internalFormat,format,type),
+            gles:{internalFormat,format,type,expanded,
+              colorRenderable:textureColorRenderable(internalFormat,format,type,glesExtensionAdvertised(gl,"GL_EXT_color_buffer_half_float")),
               depth:depthTextureFormat(format),stencil:format===0x84f9}});
       }
       return accepted;
@@ -1436,7 +1450,7 @@ function dispatch(
         v.getInt32(p + 12, true),
       ));
       if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true),
-        internal,{colorRenderable:renderbufferColorRenderable(internal),
+        internal,{colorRenderable:renderbufferColorRenderable(internal),unsupported:renderbufferUnsupported(internal),
           depthRenderable:renderbufferDepthRenderable(internal),stencilRenderable:renderbufferStencilRenderable(internal)});
       return accepted;
     }

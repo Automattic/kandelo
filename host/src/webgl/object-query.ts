@@ -1,3 +1,7 @@
+import { glesExtensionAdvertised } from "./capabilities.js";
+import { renderbufferFloat } from "./es2-formats.js";
+import { textureLevel } from "./texture-levels.js";
+import type { GlImageAttachment } from "./image-references.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
@@ -9,6 +13,15 @@ import * as O from "./ops.js";
 import { attributeAliasLayout, type GlReflectedAttribute } from "./attribute-aliasing.js";
 
 function fail(b: GlBinding, error: number): number { recordGlError(b,error); return -22; }
+
+/** Floating-point components: half-float (or float) texture levels and
+ * 16-bit float renderbuffers. Imported storage is RGBA8. */
+function attachmentFloat(image: GlImageAttachment): boolean {
+  if (image.kind === "renderbuffer") return renderbufferFloat(renderbufferLogicalFormat(image.object) ?? 0);
+  const level = textureLevel(image.object, image.target, image.level);
+  const type = level?.gles?.type ?? level?.type;
+  return type === 0x1406 || type === 0x140b;
+}
 function objectName<T>(names: Map<number,T>, retired: Map<T,number>, object: T): number {
   for (const [name,value] of names) if (value === object) return name;
   return retired.get(object) ?? 0;
@@ -24,7 +37,10 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
     case O.QOP_GET_ACTIVE_ATTRIB: inputSize = 16; header = 12; break;
     case O.QOP_GET_ATTACHED_SHADERS: inputSize = 12; header = 4; unit = 4; break;
     case O.QOP_GET_SHADER_SOURCE: inputSize = 12; header = 4; break;
-    case O.QOP_GET_FB_ATTACHMENT: inputSize = 8; size = 16; break;
+    // 8-byte input: (target, attachment) -> type, name, level, face.
+    // 12-byte input adds pname FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT and a
+    // fifth reply word (GL_EXT_color_buffer_half_float).
+    case O.QOP_GET_FB_ATTACHMENT: inputSize = input.length === 12 ? 12 : 8; size = inputSize === 12 ? 20 : 16; break;
     case O.QOP_GET_RENDERBUFFER_PARAMETER: case O.QOP_GET_TEX_PARAMETER: inputSize = 8; size = 4; break;
     default: return undefined;
   }
@@ -78,6 +94,9 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
       }
       case O.QOP_GET_FB_ATTACHMENT: {
         if (name !== 0x8d40 || ![0x8ce0,0x8d00,0x8d20].includes(arg)) return fail(b,0x500);
+        const componentQuery = inputSize === 12;
+        if (componentQuery && (v.getUint32(8,true) !== 0x8211 ||
+            !glesExtensionAdvertised(gl,"GL_EXT_color_buffer_half_float"))) return fail(b,0x500);
         const framebuffer = boundFramebuffer(b,name);
         if (isDefaultFramebuffer(b,framebuffer)) return fail(b,0x502);
         const image = b.framebufferAttachments.get(framebuffer!)?.get(arg);
@@ -90,6 +109,8 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
             result.setInt32(8,image.level,true);
             result.setUint32(12,image.target === 0x0de1 ? 0 : image.target,true);
           }
+          // FLOAT or UNSIGNED_NORMALIZED_EXT; a NONE attachment has no type.
+          if (componentQuery) result.setUint32(16,attachmentFloat(image) ? 0x1406 : 0x8c17,true);
         }
         return payload.length;
       }
@@ -104,8 +125,11 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         }
         let value = 0;
         if (!checkedGlCall(b, () => { value = Number(gl.getRenderbufferParameter(name,arg)); })) return -5;
-        // BGRA renderbuffers are stored as RGBA8; report the requested format.
-        if (arg === 0x8d44) value = renderbufferLogicalFormat(b.shadow.renderbuffer) ?? value;
+        // BGRA renderbuffers are stored as RGBA8 and RGB16F as RGBA16F; report
+        // the requested format and RGB16F's absent alpha.
+        const logical = renderbufferLogicalFormat(b.shadow.renderbuffer);
+        if (arg === 0x8d44) value = logical ?? value;
+        if (arg === 0x8d53 && logical === 0x881b) value = 0;
         result.setInt32(0,value,true); return 4;
       }
       case O.QOP_GET_TEX_PARAMETER: {

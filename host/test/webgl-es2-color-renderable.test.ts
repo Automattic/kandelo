@@ -87,8 +87,9 @@ const consumers = (log: Call[]) => log.filter(([name]) =>
 
 describe("ES2 color-renderability of texture attachments (section 4.4.5)", () => {
   it.each([
+    // Half-float rows: webgl-color-buffer-half-float.test.ts (this fake
+    // advertises GL_EXT_color_buffer_half_float).
     ["RGBA FLOAT", RGBA, FLOAT], ["RGB FLOAT", RGB, FLOAT],
-    ["RGBA HALF_FLOAT_OES", RGBA, HALF_OES], ["RGB HALF_FLOAT_OES", RGB, HALF_OES],
     ["LUMINANCE bytes", L, UB], ["LUMINANCE FLOAT", L, FLOAT], ["DEPTH_COMPONENT", DEPTH, US],
   ])("%s is attachment-incomplete although WebGL 2 reports complete", (_name, format, type) => {
     const { b, log, send, query, status, attachTexture } = binding();

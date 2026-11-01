@@ -2313,8 +2313,9 @@ static GLenum copy_texture_format_error(GLenum internal) {
 
 /* Section 4.4.3 RenderbufferStorage formats plus the extension formats the
  * host advertises: OES_rgb8_rgba8, OES_packed_depth_stencil and
- * EXT_texture_rg. No color-buffer float extension is advertised to GLES 2
- * (host/src/webgl/capabilities.ts), so 16F/32F formats are INVALID_ENUM.
+ * EXT_texture_rg, plus GL_EXT_color_buffer_half_float's 16-bit float formats
+ * when the host advertises it. 32-bit float formats have no GLES 2
+ * extension and are INVALID_ENUM.
  * BGRA and BGRA8_EXT follow the dEQP-GLES2 EXT_texture_format_BGRA8888
  * table (required color-renderable renderbuffers); the host stores them as
  * RGBA8 and reports the requested format. */
@@ -2323,6 +2324,9 @@ static GLenum renderbuffer_format_error(GLenum internal) {
         case GL_RGBA4: case GL_RGB5_A1: case GL_RGB565: case GL_DEPTH_COMPONENT16: case GL_STENCIL_INDEX8:
         case GL_RGB8_OES: case GL_RGBA8_OES: case GL_DEPTH24_STENCIL8_OES: case GL_R8_EXT: case GL_RG8_EXT:
         case GL_BGRA_EXT: case GL_BGRA8_EXT:
+        /* GL_EXT_color_buffer_half_float; the host admits these only while it
+         * advertises the extension (it depends on the browser's renderer). */
+        case GL_RGBA16F_EXT: case GL_RGB16F_EXT: case GL_RG16F_EXT: case GL_R16F_EXT:
             return GL_NO_ERROR;
         default:
             return GL_INVALID_ENUM;
@@ -4517,8 +4521,24 @@ void glGetRenderbufferParameteriv(GLenum target, GLenum pname, GLint *params) {
 void glGetFramebufferAttachmentParameteriv(GLenum target, GLenum attachment, GLenum pname, GLint *params) {
     if (!_wpk_gl_current_encoder()) return;
     if (!params) return;
-    uint32_t input[2] = {target,attachment}, info[4];
-    if (!checked_client_query(QOP_GET_FB_ATTACHMENT, input, sizeof input, info, sizeof info))
+    uint32_t input[3] = {target,attachment,pname}, info[5];
+    if (pname == GL_FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT) {
+        /* GL_EXT_color_buffer_half_float: the 12-byte request returns a fifth
+         * word, FLOAT or UNSIGNED_NORMALIZED_EXT. The host raises INVALID_ENUM
+         * while the extension is not advertised. */
+        uint32_t *request = malloc(sizeof input);
+        uint8_t *reply = malloc(28);
+        if (!request || !reply) { free(request); free(reply); raise_client_error(GL_OUT_OF_MEMORY); return; }
+        memcpy(request,input,sizeof input);
+        int accepted = checked_query_reply(QOP_GET_FB_ATTACHMENT,request,sizeof input,reply,20);
+        if (accepted) memcpy(info,reply+4,sizeof info);
+        free(request); free(reply);
+        if (!accepted) return;
+        if (info[0] == GL_NONE) { raise_client_error(GL_INVALID_ENUM); return; }
+        *params = (GLint)info[4];
+        return;
+    }
+    if (!checked_client_query(QOP_GET_FB_ATTACHMENT, input, 8, info, 16))
         return;
     switch (pname) {
         case GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE: *params = (GLint)info[0]; return;
