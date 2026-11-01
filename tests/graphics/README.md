@@ -714,8 +714,9 @@ spans, single admission/consumption, discard and no cached-view revival
 after rebind or teardown. Six browser cases render the original blue
 record despite rewriting input to green, using independent device-sized
 storage. Native/forwarded EGL core/KHR fence controls remain enabled.
-The submit drain is still synchronous; execution/drawable lifetime and
-server-wait barriers remain ordinary implementation work.
+The submit drain is still synchronous; execution/drawable lifetime remains
+ordinary implementation work. Server waits use that synchronous order (see
+`docs/architecture.md`).
 
 
 Owned drawable allocation leases supplement command snapshots. Eleven host

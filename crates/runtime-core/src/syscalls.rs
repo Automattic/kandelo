@@ -1649,6 +1649,10 @@ fn capture_gl_query_info(
         if info.in_buf_len != 0 || info.out_buf_len != 16 {
             return Err(Errno::EINVAL);
         }
+    } else if info.op == gl::QOP_SERVER_WAIT {
+        // in: [source session fd, fence token]; out: the 16-byte fence reply.
+        if info.in_buf_len != 8 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
+        require_gl_current_for_tid(proc, ofd_idx, tid)?;
     } else {
         require_gl_current_for_tid(proc, ofd_idx, tid)?;
     }
@@ -1678,6 +1682,27 @@ fn capture_gl_query_info(
     }
     if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
         return Err(Errno::EINVAL);
+    }
+    if info.op == gl::QOP_SERVER_WAIT {
+        // The guest names the fence's session by its own fd. The host must
+        // never interpret a guest fd number, so replace it with the session
+        // identity of an object session this process owns. The host completes
+        // the wait synchronously, so no reference outlives this request.
+        if u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 { return Err(Errno::EINVAL); }
+        let source_fd = i32::from_le_bytes(in_buf[..4].try_into().unwrap());
+        let source_idx = proc.fd_table.get(source_fd).map_err(|_| Errno::EBADF)?.ofd_ref.0;
+        let source = dri_state(proc, source_idx)?;
+        let source_gl = source.gl.as_ref().ok_or(Errno::EACCES)?;
+        if source_gl.role != gl::SESSION_OBJECTS || source_gl.owner_pid != pid
+            || !source.gl_resources.borrow().owner.is_some_and(|owner| {
+                owner.pid == pid && owner.session_id == source_gl.session_id
+                    && owner.role == gl::SESSION_OBJECTS && owner.native_live
+                    && owner.cmdbuf_range.is_some()
+            })
+        {
+            return Err(Errno::EACCES);
+        }
+        in_buf[..4].copy_from_slice(&source_gl.session_id.to_le_bytes());
     }
     let state = dri_state(proc, ofd_idx)?.gl.as_ref().ok_or(Errno::EINVAL)?;
     if state.session_id != session { return Err(Errno::EACCES); }
@@ -59866,6 +59891,51 @@ impl HostIO for RelSymlinkMock {
         let info = gl::GlQueryInfo { op, in_buf_ptr: 32, in_buf_len: 4,
             out_buf_ptr: 64, out_buf_len: 16, ..Default::default() };
         sys_ioctl(proc, host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info))
+    }
+
+    fn glio_server_wait_test(proc: &mut Process, host: &mut MockHostIO, fd: i32, source_fd: i32, token: u32)
+        -> Result<(), Errno>
+    {
+        use wasm_posix_shared::gl;
+        host.proc_memory[32..36].copy_from_slice(&(source_fd as u32).to_le_bytes());
+        host.proc_memory[36..40].copy_from_slice(&token.to_le_bytes());
+        let info = gl::GlQueryInfo { op: gl::QOP_SERVER_WAIT, in_buf_ptr: 32, in_buf_len: 8,
+            out_buf_ptr: 64, out_buf_len: 16, ..Default::default() };
+        sys_ioctl(proc, host, fd, gl::GLIO_QUERY, &mut glio_query_bytes(info))
+    }
+
+    #[test]
+    fn glio_server_wait_names_the_source_session_never_the_guest_fd() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        let session = gl_session_id(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+        host.gl_query_inputs.clear();
+        glio_server_wait_test(&mut proc, &mut host, fd, fd, 9).unwrap();
+        let (op, input, out) = host.gl_query_inputs.last().unwrap().clone();
+        assert_eq!((op, out), (gl::QOP_SERVER_WAIT, 16));
+        assert_eq!(input[..4], session.to_le_bytes());
+        assert_eq!(input[4..8], 9u32.to_le_bytes());
+    }
+
+    #[test]
+    fn glio_server_wait_rejects_sources_that_are_not_owned_object_sessions() {
+        use wasm_posix_shared::gl;
+        let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+        host.gl_query_inputs.clear();
+        // Not an open descriptor, a non-DRI descriptor, and a zero token.
+        assert_eq!(glio_server_wait_test(&mut proc, &mut host, fd, 999, 9), Err(Errno::EBADF));
+        let plain = sys_open(&mut proc, &mut host, b"/dev/null", O_RDWR, 0).unwrap();
+        assert_eq!(glio_server_wait_test(&mut proc, &mut host, fd, plain, 9), Err(Errno::EBADF));
+        assert_eq!(glio_server_wait_test(&mut proc, &mut host, fd, fd, 0), Err(Errno::EINVAL));
+        // A DRI file without an object session cannot name a fence.
+        let bare = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        assert_eq!(glio_server_wait_test(&mut proc, &mut host, fd, bare, 9), Err(Errno::EACCES));
+        assert!(host.gl_query_inputs.is_empty());
+        // The destination still needs a current context on this thread.
+        let mut release = [0u8; 12];
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_MAKE_CURRENT, &mut release).unwrap();
+        assert_eq!(glio_server_wait_test(&mut proc, &mut host, fd, fd, 9), Err(Errno::EACCES));
+        assert!(host.gl_query_inputs.is_empty());
     }
 
     #[test]

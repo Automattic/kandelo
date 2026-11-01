@@ -7,7 +7,7 @@ import type { HostFb } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, KERNEL_GL_QUERY_CONTROL } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, KERNEL_GL_QUERY_CONTROL } from "./webgl/ops.js";
 import { GlKernelQueryControls } from "./webgl/kernel-query-controls.js";
 import { QUERY_RECEIPT_REQUEST_HEADER, QUERY_RECEIPT_REPLY_HEADER } from "./webgl/query-receipt-codec.js";
 /**
@@ -50,7 +50,7 @@ import { GlContextRegistry, type GlBinding } from "./webgl/registry";
 import { prepareDrawableTransition, applyCurrentDrawable, resolveDrawableSurfaces, validCurrentDrawable } from "./webgl/current";
 import { decodeAndDispatch, validateCommandBuffer } from "./webgl/bridge";
 import { runGlQuery } from "./webgl/query";
-import { isFenceQuery, validFenceQuery, prepareFenceQuery, type PreparedFenceQuery } from "./webgl/fence-query";
+import { isFenceQuery, validFenceQuery, prepareFenceQuery, runServerWait, type PreparedFenceQuery } from "./webgl/fence-query";
 import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
@@ -3282,6 +3282,13 @@ export class WasmPosixKernel {
                   gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
                   () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
                 written = preparedFence.rc;
+              } else if (op === QOP_SERVER_WAIT) {
+                const source = inBuf.byteLength === 8
+                  ? this.gl.get(pid, new DataView(inBuf.buffer, inBuf.byteOffset, 8).getUint32(0, true))
+                  : undefined;
+                written = runServerWait(b, source, inBuf, outBuf,
+                  gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
+                  () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
               } else if (op === QOP_SURFACE_CAPABILITIES) {
                 let canvas = b.canvas;
                 if (!canvas && this.#isMasterGlBinding(b)) {

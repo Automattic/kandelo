@@ -1806,9 +1806,10 @@ EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags, EGLTime t
     return result;
 }
 
-/* Waiting in the server is a destination command, not a client polling
- * loop. The kernel captures the source OFD from this fd once, and the host
- * owns the actual fence and destination ordering ticket after admission. */
+/* Waiting in the server is a destination command. The kernel resolves the
+ * source fd to its object session, and the host issues the native barrier
+ * when both sessions share one physical renderer. Only a fence on another
+ * renderer falls back to observing the signal here (see QOP_SERVER_WAIT). */
 struct egl_server_wait_wire {
     struct egl_sync_record *sync;
     uint32_t input[2],reply[4];
@@ -1851,8 +1852,13 @@ EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags) {
             .in_buf_ptr=(uintptr_t)wire->input,.in_buf_len=sizeof wire->input,
             .out_buf_ptr=(uintptr_t)wire->reply,.out_buf_len=sizeof wire->reply,.reserved=0};
         if(ioctl(destination_fd,GLIO_QUERY,&info)!=0 || wire->reply[0]!=0 ||
-            wire->reply[1]!=wire->input[1] || wire->reply[2]!=0 ||
+            wire->reply[1]!=wire->input[1] || wire->reply[2]>WPK_SERVER_WAIT_CLIENT_SIGNAL ||
             wire->reply[3]!=WPK_GL_QUERY_REPLY_MAGIC)g_last_error=EGL_BAD_ACCESS;
+        /* A fence on another physical renderer shares no native command
+         * stream with this context. Observing its signal before returning
+         * keeps every later destination command after the source work. */
+        else if(wire->reply[2]==WPK_SERVER_WAIT_CLIENT_SIGNAL)
+            result=wait_sync(wire->sync,0,EGL_FOREVER)==EGL_CONDITION_SATISFIED;
         else result=EGL_TRUE;
     }
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,NULL);
@@ -1913,7 +1919,8 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
             return "EGL_EXT_image_dma_buf_import "
                    "EGL_EXT_image_dma_buf_import_modifiers "
                    "EGL_KHR_image_base EGL_KHR_no_config_context "
-                   "EGL_KHR_surfaceless_context EGL_KHR_fence_sync";
+                   "EGL_KHR_surfaceless_context EGL_KHR_fence_sync "
+                   "EGL_KHR_wait_sync";
         default:              return NULL;
     }
 }

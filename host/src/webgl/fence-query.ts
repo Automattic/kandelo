@@ -67,3 +67,55 @@ export function prepareFenceQuery(b: GlBinding, op: number, input: Uint8Array, o
     return result;
   }
 }
+
+export const SERVER_WAIT_REPLY_BYTES = 16;
+/** Reply word 2 of a server wait: the destination may proceed immediately. */
+export const SERVER_WAIT_ORDERED = 0;
+/** Reply word 2: the fence lives on another physical context, so the caller
+ * must observe the signal before issuing its later destination commands. */
+export const SERVER_WAIT_CLIENT_SIGNAL = 1;
+
+/** eglWaitSync on the synchronous kernel-worker host.
+ *
+ * Every accepted submission is executed before host_gl_submit returns, and a
+ * fence is created only while its session has no queued work, so the fence
+ * already follows all of the source's earlier commands in host order. When
+ * source and destination share one physical WebGL context, the native
+ * waitSync is the exact server-side barrier. Separate physical contexts have
+ * no shared native command stream; there the caller must wait for the signal
+ * itself before it issues later commands, which is the observable contract
+ * of a server wait without inventing a queue the host cannot drive.
+ *
+ * in: [source session id, fence token] (the kernel replaced the guest fd);
+ * out: [status, token, SERVER_WAIT_*, magic]. Status 2 = unknown fence. */
+export function runServerWait(destination: GlBinding, source: GlBinding | undefined,
+  input: Uint8Array, out: Uint8Array,
+  captureErrors: (gl: WebGL2RenderingContext) => void,
+  selectCurrent: () => void): number {
+  if (input.byteLength !== 8 || out.byteLength !== SERVER_WAIT_REPLY_BYTES) return -22;
+  const token = new DataView(input.buffer, input.byteOffset, 8).getUint32(4, true);
+  if (!token) return -22;
+  const gl = destination.gl;
+  if (!gl || destination.contextId === null) return -1;
+  let status = 0, disposition = SERVER_WAIT_ORDERED;
+  if (!source || !source.fences.has(token)) status = 2;
+  else {
+    const lease = source.fences.acquire(token);
+    if (!lease) return -5;
+    try {
+      if (lease.context === gl) {
+        // Pending flags belong to the outgoing owner; move them there before
+        // the destination becomes current and the barrier is issued.
+        captureErrors(gl);
+        selectCurrent();
+        if (lease.enqueueNativeWait(gl, null) !== true) return -5;
+      } else disposition = SERVER_WAIT_CLIENT_SIGNAL;
+    } finally { lease.release(); }
+  }
+  const reply = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  reply.setUint32(0, status, true);
+  reply.setUint32(4, token, true);
+  reply.setUint32(8, disposition, true);
+  reply.setUint32(12, REPLY_MAGIC, true);
+  return SERVER_WAIT_REPLY_BYTES;
+}

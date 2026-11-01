@@ -4843,16 +4843,27 @@ reply, and use monotonic elapsed time for finite waits. They yield between
 polls, implement zero/FOREVER timeouts, and flush the waiting thread's
 current context only when requested and initially unsignaled. Cancellation
 releases the waiter reference. Metadata retirement disables cancellation
-until unlocking, so a cleanup ioctl cannot strand peers. Server-side
-ordering through eglWaitSync remains an implementation gap. The four
+until unlocking, so a cleanup ioctl cannot strand peers. The four
 KHR_fence_sync spellings share these records, retain 64-bit timeout values,
 validate their narrow input lists independently and copy only EGLint-sized
 attribute outputs. Unsupported types produce KHR's BAD_ATTRIBUTE rather
 than core's BAD_PARAMETER. EGL advertises EGL_KHR_fence_sync and the C GLES
 extension layer adds GL_OES_EGL_sync, indicating that this client API can
-place fences. EGL_KHR_wait_sync and eglWaitSyncKHR remain unavailable.
-The definitions still require the normal combined graphics build and
-conformance phase.
+place fences.
+
+eglWaitSync and EGL_KHR_wait_sync (`QOP_SERVER_WAIT`) rely on the host
+executing every accepted submission before `host_gl_submit` returns, and on
+fences being created only while their session has no queued work. The guest
+names the fence's session by its own fd; the kernel replaces that fd with
+the session identity of an object session the same process owns, so the host
+never interprets a guest fd number. When the fence and the waiting context
+share one physical WebGL context, the host issues the native `waitSync`
+barrier. Separate physical contexts share no native command stream, so the
+host answers `CLIENT_SIGNAL` and the C facade observes the fence's signal
+before eglWaitSync returns; later destination commands therefore follow the
+source work. That is stronger than the minimum server-wait contract and
+never passes one context's sync handle to another. The definitions still
+require the normal combined graphics build and conformance phase.
 
 Owned drawable allocation leases now retain the native framebuffer,
 dimensions and private retirement receipt independently of the mutable

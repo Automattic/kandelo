@@ -220,7 +220,14 @@
 #define QOP_FLUSH 0x0031u
 #define QOP_COMPRESSED_UPLOAD 0x0032u
 #define WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES 16777216u
+/* eglWaitSync. in: u32 source session fd (the kernel substitutes the
+ * session identity), u32 fence token. out: u32 status, u32 token,
+ * u32 disposition, u32 magic. Disposition ORDERED means the destination may
+ * continue; CLIENT_SIGNAL means the fence is on another physical renderer and
+ * the caller must observe its signal before issuing later commands. */
 #define QOP_SERVER_WAIT 0x0035u
+#define WPK_SERVER_WAIT_ORDERED 0u
+#define WPK_SERVER_WAIT_CLIENT_SIGNAL 1u
 #define QOP_OBJECT_CAPTURE 0x0034u
 #define QOP_READBACK_CAPTURE 0x0033u
 /* Private mode of the existing BO bind ioctl, returning a source token. */

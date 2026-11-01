@@ -330,6 +330,8 @@ static pthread_mutex_t fence_driver_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fence_driver_changed = PTHREAD_COND_INITIALIZER;
 static unsigned server_wait_queries;
 static int server_wait_failure,server_wait_destination,server_wait_source;
+static uint32_t server_wait_disposition;
+static _Atomic int server_wait_signal_ready;
 static unsigned fence_creates, fence_polls, fence_releases, flush_queries;
 static _Thread_local int *fence_wait_started;
 static int fence_create_failure, fence_status_failure, fence_release_failure, flush_failure;
@@ -341,6 +343,11 @@ static void signal_fences(void) {
         if (device_slots[fd].fence_tokens[i]) device_slots[fd].fence_signaled[i] = 1;
     pthread_cond_broadcast(&fence_driver_changed);
     pthread_mutex_unlock(&fence_driver_mutex);
+}
+static void *server_wait_signal_thread(void *value) {
+    volatile int *started=value;
+    while(!*started){struct timespec pause={0,100000};nanosleep(&pause,NULL);}
+    server_wait_signal_ready=1;signal_fences();return NULL;
 }
 static int surface_present_failure;
 static uint32_t surface_target;
@@ -1218,7 +1225,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             while(index<32 && source->fence_tokens[index]!=input[1])index++;
             assert(index<32);server_wait_queries++;server_wait_destination=fd;server_wait_source=(int)input[0];
             if(server_wait_failure==1){errno=EIO;return -1;}
-            reply[0]=server_wait_failure==2?1:0;reply[1]=input[1];reply[2]=0;
+            reply[0]=server_wait_failure==2?1:0;reply[1]=input[1];reply[2]=server_wait_disposition;
             reply[3]=server_wait_failure==3?0:WPK_GL_QUERY_REPLY_MAGIC;return 0;
         }
         if (q->op >= 0x2e && q->op <= 0x30) {
@@ -2237,6 +2244,19 @@ int main(int argc, char **argv) {
         } else if(!strcmp(argv[1],"server-wait-prefix")) {
             glClearColor(1,0,0,1);fail_submit=1;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ACCESS && !server_wait_queries);
             fail_submit=0;assert(glGetError()==GL_INVALID_OPERATION);
+        } else if(!strcmp(argv[1],"server-wait-disposition")) {
+            server_wait_disposition=2;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ACCESS && server_wait_queries==1);
+            server_wait_disposition=0;
+        } else if(!strcmp(argv[1],"server-wait-client-signal")) {
+            /* A fence on another physical renderer must be observed signaled
+             * before the destination may continue: the call polls until the
+             * peer thread signals, after observing at least one poll. */
+            int started=0;fence_wait_started=&started;server_wait_disposition=1;
+            pthread_t thread;assert(!pthread_create(&thread,NULL,server_wait_signal_thread,&started));
+            unsigned before=fence_polls;
+            assert(wait(dpy,sync,0) && eglGetError()==EGL_SUCCESS && server_wait_queries==1);
+            assert(fence_polls>=before+2 && server_wait_signal_ready);
+            assert(!pthread_join(thread,NULL));fence_wait_started=NULL;server_wait_disposition=0;
         } else if(!strcmp(argv[1],"server-wait-receipts")) {
             for(int failure=1;failure<=3;failure++){server_wait_failure=failure;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ACCESS);}
             assert(server_wait_queries==3);server_wait_failure=0;
@@ -2278,7 +2298,7 @@ int main(int argc, char **argv) {
             PFNEGLCLIENTWAITSYNCKHRPROC await = (PFNEGLCLIENTWAITSYNCKHRPROC)eglGetProcAddress("eglClientWaitSyncKHR");
             assert(make && drop && get && await);
             assert(strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_fence_sync"));
-            assert(!strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_wait_sync"));
+            assert(strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_wait_sync"));
             assert(eglGetProcAddress("eglWaitSyncKHR") != NULL);
             string_generation = 1;
             const char *extensions = (const char *)glGetString(GL_EXTENSIONS); assert(extensions);
