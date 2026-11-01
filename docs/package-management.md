@@ -1212,7 +1212,10 @@ libdrm.
 PHP, libiconv, and libxml2 remain wasm32-only because their current recipes
 invoke the wasm32 SDK explicitly. Adding a manifest to the wasm64 set is one
 line, but the corresponding recipe and runtime/link validation must support
-that architecture truthfully:
+that architecture truthfully. The recipe side is listing both architectures
+to `kandelo_package_prepare_build_roots` and taking tool names, the Meson
+cross file, and the sysroot from the variables it sets (see "Recipes build
+only in their work root" below):
 
 ```toml
 arches = ["wasm32", "wasm64"]
@@ -1581,6 +1584,37 @@ fi
 A standalone run (no resolver variables) keeps its trees beside the script,
 as before. `"${WASM_POSIX_DEP_WORK_DIR:-$SCRIPT_DIR}"` is the equivalent
 one-line form for recipes that do not use the helper.
+
+The arguments after the work root list every architecture the recipe builds,
+matching the manifest's `arches`. The helper takes the resolver's
+`WASM_POSIX_DEP_TARGET_ARCH` (a standalone run takes the first listed
+architecture) and fails before creating any root when the request is not in
+the list, so a recipe never builds one architecture under the other's name.
+From that one value it sets:
+
+| Variable | wasm32 | wasm64 |
+|---|---|---|
+| `KANDELO_PACKAGE_TARGET_ARCH` | `wasm32` | `wasm64` |
+| `KANDELO_PACKAGE_SDK_TARGET` | `wasm32posix` | `wasm64posix` |
+| `KANDELO_PACKAGE_MESON_CROSS_FILE` | `<checkout>/sdk/meson/wasm32posix.ini` | `<checkout>/sdk/meson/wasm64posix.ini` |
+| `KANDELO_PACKAGE_SYSROOT` | `$WASM_POSIX_SYSROOT`, else `<checkout>/sysroot` | `$WASM_POSIX_SYSROOT`, else `<checkout>/sysroot64` |
+
+A recipe that builds both uses these instead of spelling `wasm32` itself:
+
+```bash
+kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32 wasm64
+CC="$KANDELO_PACKAGE_SDK_TARGET-cc"
+meson setup --cross-file "$KANDELO_PACKAGE_MESON_CROSS_FILE" "$BUILD_DIR" "$SRC_DIR"
+```
+
+The sysroot choice is the one the SDK driver makes, so a recipe that passes
+`$KANDELO_PACKAGE_SYSROOT` on to a build system names the same libc the
+wrappers link. A Meson recipe lists every cross file it can select in
+`build.toml` `inputs` (`sdk/meson/wasm32posix.ini` and
+`sdk/meson/wasm64posix.ini`), because the cross file is part of its build
+closure. A single-architecture recipe keeps the one-argument form
+(`kandelo_package_prepare_build_roots "$SCRIPT_DIR" wasm32`); its roots and
+its rejection of the other architecture are unchanged.
 
 The SDK compiler driver maps `WASM_POSIX_DEP_WORK_DIR` to
 `/usr/src/kandelo-build/<name>` in `-ffile-prefix-map`, so a work root whose

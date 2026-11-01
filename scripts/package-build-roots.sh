@@ -603,15 +603,58 @@ kandelo_package_require_source_disjoint_from_build_roots() {
     fi
 }
 
+# kandelo_package_prepare_build_roots <direct-work-dir> <arch> [<arch>...]
+#
+# Select the caller-owned work and output roots and the target architecture.
+# The recipe lists every architecture it builds (wasm32, wasm64); the
+# resolver's WASM_POSIX_DEP_TARGET_ARCH picks one, and a standalone run takes
+# the first listed. Everything arch-specific is derived from that one value
+# so a recipe does not hard-code wasm32 tool names, cross files, or sysroots:
+#
+#   KANDELO_PACKAGE_TARGET_ARCH       wasm32 | wasm64
+#   KANDELO_PACKAGE_SDK_TARGET        wasm32posix | wasm64posix (SDK tool
+#                                     prefix: "$KANDELO_PACKAGE_SDK_TARGET-cc")
+#   KANDELO_PACKAGE_MESON_CROSS_FILE  sdk/meson/<sdk-target>.ini
+#   KANDELO_PACKAGE_SYSROOT           WASM_POSIX_SYSROOT when set, else this
+#                                     checkout's sysroot or sysroot64 (the
+#                                     same choice the SDK driver makes)
+#
+# A request outside the list fails before any root is created: building the
+# wrong architecture under the right name would publish a mislabeled artifact.
 kandelo_package_prepare_build_roots() {
+    if [ "$#" -lt 2 ]; then
+        echo "ERROR: kandelo_package_prepare_build_roots requires a work root and at least one architecture" >&2
+        return 2
+    fi
     local direct_work_dir="$1"
-    local supported_arch="$2"
-    local target_arch="${WASM_POSIX_DEP_TARGET_ARCH:-$supported_arch}"
+    shift
+    local -a supported_arches=("$@")
+    local arch
+    for arch in "${supported_arches[@]}"; do
+        case "$arch" in
+            wasm32|wasm64) ;;
+            *)
+                echo "ERROR: unknown package architecture: $arch" >&2
+                return 2
+                ;;
+        esac
+    done
+    local target_arch="${WASM_POSIX_DEP_TARGET_ARCH:-${supported_arches[0]}}"
     local work_candidate="${WASM_POSIX_DEP_WORK_DIR:-$direct_work_dir}"
     local out_candidate="${WASM_POSIX_DEP_OUT_DIR:-}"
 
-    if [ "$target_arch" != "$supported_arch" ]; then
-        echo "ERROR: package is currently built for $supported_arch only, got $target_arch" >&2
+    unset KANDELO_PACKAGE_TARGET_ARCH KANDELO_PACKAGE_SDK_TARGET \
+        KANDELO_PACKAGE_MESON_CROSS_FILE KANDELO_PACKAGE_SYSROOT
+    local selected=""
+    for arch in "${supported_arches[@]}"; do
+        [ "$arch" = "$target_arch" ] && selected="$arch"
+    done
+    if [ -z "$selected" ]; then
+        if [ "${#supported_arches[@]}" -eq 1 ]; then
+            echo "ERROR: package is currently built for ${supported_arches[0]} only, got $target_arch" >&2
+        else
+            echo "ERROR: package is built for ${supported_arches[*]}, got $target_arch" >&2
+        fi
         return 2
     fi
 
@@ -656,6 +699,17 @@ kandelo_package_prepare_build_roots() {
         WASM_POSIX_DEP_OUT_DIR="$KANDELO_PACKAGE_OUT_DIR"
         export WASM_POSIX_DEP_OUT_DIR
     fi
+
+    local repo_root sysroot_name
+    repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return
+    KANDELO_PACKAGE_TARGET_ARCH="$selected"
+    KANDELO_PACKAGE_SDK_TARGET="${selected}posix"
+    KANDELO_PACKAGE_MESON_CROSS_FILE="$repo_root/sdk/meson/${KANDELO_PACKAGE_SDK_TARGET}.ini"
+    case "$selected" in
+        wasm32) sysroot_name=sysroot ;;
+        wasm64) sysroot_name=sysroot64 ;;
+    esac
+    KANDELO_PACKAGE_SYSROOT="${WASM_POSIX_SYSROOT:-$repo_root/$sysroot_name}"
 }
 
 kandelo_package_select_source_root() {

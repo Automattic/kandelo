@@ -688,8 +688,8 @@ See `packages/registry/redis/build-redis.sh` for the complete build script.
 
 ## Meson Projects
 
-The dev shell provides `meson`, and the SDK ships a cross file that points
-Meson at the target instead of the build machine:
+The dev shell provides `meson`, and the SDK ships one cross file per target
+that points Meson at the target instead of the build machine:
 
 ```bash
 source sdk/activate.sh   # or run inside scripts/dev-shell.sh
@@ -698,14 +698,34 @@ PKG_CONFIG_PATH=<dep-prefix>/lib/pkgconfig \
 ninja -C build
 ```
 
-`sdk/meson/wasm32posix.ini` uses the SDK wrappers as its `[binaries]`, so the
-compile and link contract is the same as every other build path. It declares
-`system = 'linux'` / `cpu_family = 'wasm32'` (the same musl/POSIX identity
-`sdk/config.site` and the CMake toolchains use; it does not define
-`__linux__`), sets `needs_exe_wrapper = true`, builds static libraries, and
-disables `b_lundef`/`b_asneeded`/`b_pie`. It deliberately does not set
-`sys_root`: Meson would export `PKG_CONFIG_SYSROOT_DIR`, which corrupts the
-absolute-prefix `.pc` files.
+| Cross file | Wrappers | `cpu_family` / `cpu` | Data model | Sysroot |
+|---|---|---|---|---|
+| `sdk/meson/wasm32posix.ini` | `wasm32posix-*` | `wasm32` | ILP32 | `sysroot` |
+| `sdk/meson/wasm64posix.ini` | `wasm64posix-*` | `wasm64` | LP64, memory64 | `sysroot64` |
+
+Both use the SDK wrappers as their `[binaries]`, so the compile and link
+contract is the same as every other build path. They declare
+`system = 'linux'`, `endian = 'little'` and the `cpu_family` above (the same
+musl/POSIX identity `sdk/config.site` and the CMake toolchains use; it does
+not define `__linux__`), set `needs_exe_wrapper = true`, build static
+libraries, and disable `b_lundef`/`b_asneeded`/`b_pie`. They deliberately do
+not set `sys_root`: Meson would export `PKG_CONFIG_SYSROOT_DIR`, which
+corrupts the absolute-prefix `.pc` files. The two files differ only in the
+wrapper names and the cpu identity; everything architecture-specific beyond
+that comes from the wrapper.
+
+Meson has no cross-file property for pointer width. `cc.sizeof()` and
+`cc.alignment()` are compile-only probes through the wrapper, so under
+`wasm64posix.ini` they report 8 for `long`, `size_t` and pointers without
+running anything. A wasm64 executable links against `sysroot64`, imports a
+shared 64-bit (`i64`) `env.memory`, and exports `__abi_version` like a wasm32
+program. Build that sysroot first with
+`scripts/build-musl.sh --arch wasm64posix`.
+
+A package recipe should not name either file. `kandelo_package_prepare_build_roots`
+selects the one that matches the resolver's target architecture as
+`$KANDELO_PACKAGE_MESON_CROSS_FILE` (see "Recipes build only in their work
+root" in `docs/package-management.md`).
 
 Two options keep dependency resolution on the package path:
 
