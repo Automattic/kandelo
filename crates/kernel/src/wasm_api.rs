@@ -1467,12 +1467,7 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
             let table = unsafe { &*PROCESS_TABLE.0.get() };
             table.get(pid).is_some()
         };
-        let log = unsafe {
-            &mut *runtime_core::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG
-                .0
-                .get()
-        };
-        runtime_core::writeback_loss::resolve_process_memory_len(log, seeded, process_is_live)
+        runtime_core::writeback_loss::resolve_process_memory_len(pid, seeded, process_is_live)
     }
 
     fn pread(&mut self, handle: i64, offset: u64, dst: &mut [u8]) -> Result<usize, Errno> {
@@ -1545,11 +1540,17 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         Ok(())
     }
 
-    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str) {
         // Recorded as kernel state, readable through the ordinary `read(2)`
         // path at `/proc/kandelo/writeback_losses`, rather than written to a
         // host console where it would scroll away and could not be counted.
         runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, reason);
+        // And reported to the program, as Linux reports a writeback error:
+        // every open description of the file answers EIO once from its next
+        // fsync, fdatasync or close. Reading the process table is safe here;
+        // see the CONTRACT on `process_memory_len`.
+        let table = unsafe { &*PROCESS_TABLE.0.get() };
+        runtime_core::writeback_loss::note_file_writeback_error(table, file_key);
     }
 }
 
@@ -7234,10 +7235,20 @@ fn dispatch_channel_syscall(nr: u32, args: &[i64; 6], scratch_region: ChannelScr
         273 => 0, // SYS_SYNC: no-op (all I/O is synchronous to host)
         274 => 0, // SYS_SYNCFS: no-op
         278 => {
-            let _address = process_address!(0);
-            let _length = process_size!(1);
-            0
-        } // SYS_MSYNC: no-op (MAP_PRIVATE changes are private, file-backed writes go through write())
+            let address = process_address!(0);
+            let length = process_size!(1);
+            // The host publishes and persists the range after this returns.
+            // A writeback of a kernel-owned mapped file that failed since
+            // these mappings last reported one is answered here, once, as
+            // Linux's msync reports its file's writeback error.
+            let table = unsafe { crate::memory::global_shared_mapping_table() };
+            let pid = crate::process_table::current_pid();
+            if table.take_writeback_error(pid, address as u64, length as u64) {
+                -(Errno::EIO as i32)
+            } else {
+                0
+            }
+        } // SYS_MSYNC
 
         // -- Process stubs --
         287 => 0, // SYS_PERSONALITY: return 0 (current personality, PER_LINUX)

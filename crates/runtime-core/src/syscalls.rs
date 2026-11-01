@@ -7160,9 +7160,9 @@ fn sys_close_impl(
 
     // Snapshot the fields needed for POSIX process-lock cleanup. Final backing
     // cleanup is shared with kernel-owned blocked-retry pin release below.
-    let (host_handle, file_type, mut file_id) = {
+    let (host_handle, file_type, mut file_id, ofd_id) = {
         let ofd = proc.ofd_table.get(idx).ok_or(Errno::EBADF)?;
-        (ofd.host_handle, ofd.file_type, ofd.file_id)
+        (ofd.host_handle, ofd.file_type, ofd.file_id, ofd.ofd_id)
     };
 
     // Most regular-file OFDs receive their lock identity during open, but a
@@ -7189,9 +7189,14 @@ fn sys_close_impl(
     }
 
     let release_result = release_ofd_reference_impl(proc, locks, host, idx);
+    // A writeback of this file that failed since the description last
+    // reported one is reported now; the descriptor is closed either way
+    // (POSIX close may fail with EIO for a deferred write; Linux errseq).
+    let writeback_error = crate::writeback_loss::take_ofd_writeback_error(ofd_id.0);
     match (release_result, deferred_pcm_error) {
         (Err(err), _) => Err(err),
         (Ok(()), Some(err)) => Err(err),
+        (Ok(()), None) if writeback_error => Err(Errno::EIO),
         (Ok(()), None) => Ok(()),
     }
 }
@@ -23135,6 +23140,12 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
+    // A mapped-file writeback that failed since this description last
+    // reported one: the data never reached the file, so fsync cannot claim
+    // it is durable. Reported once per description (Linux errseq).
+    if crate::writeback_loss::take_ofd_writeback_error(ofd.ofd_id.0) {
+        return Err(Errno::EIO);
+    }
 
     match ofd.file_type {
         FileType::Regular | FileType::Directory => {
@@ -23155,6 +23166,9 @@ pub fn sys_fsync(proc: &mut Process, host: &mut dyn HostIO, fd: i32) -> Result<(
             }
             host.host_fsync(ofd.host_handle)
         }
+        // A memfd is a kernel-owned in-memory file with no durable backing:
+        // like the tmpfs files above (and Linux's shmem), syncing it succeeds.
+        FileType::MemFd => Ok(()),
         _ => Err(Errno::EINVAL),
     }
 }
@@ -27373,6 +27387,37 @@ mod tests {
             }
         }
         table_addr
+    }
+
+    /// A failed writeback of a mapped kernel file is reported, as Linux
+    /// reports a writeback error: once, from the next fsync, fdatasync or
+    /// close of each open description that existed when it happened.
+    #[test]
+    fn a_mapped_file_writeback_error_is_reported_once_per_open_description() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let (fd, other, key) = {
+            let proc = table.get_mut(pid).unwrap();
+            let fd = sys_memfd_create(proc, b"wb", 0).unwrap();
+            let other = sys_dup(proc, fd).unwrap();
+            let ofd = proc.ofd_table.get(proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap();
+            let handle = crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle).unwrap();
+            (fd, other, crate::kernel_file_mapping::identity_key(handle).unwrap())
+        };
+        crate::writeback_loss::note_file_writeback_error(&table, &key);
+        let mut host = MockHostIO::new();
+        let proc = table.get_mut(pid).unwrap();
+        // A description opened after the error never sees it.
+        let later = sys_memfd_create(proc, b"later", 0).unwrap();
+        assert_eq!(sys_fsync(proc, &mut host, later), Ok(()));
+        // dup shares the description: one report between both descriptors.
+        assert_eq!(sys_fsync(proc, &mut host, fd), Err(Errno::EIO));
+        assert_eq!(sys_fdatasync(proc, &mut host, other), Ok(()));
+        assert_eq!(sys_close(proc, &mut host, other), Ok(()));
+        crate::writeback_loss::note_file_writeback_error(&table, &key);
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(sys_close(proc, &mut host, fd), Err(Errno::EIO), "close reports it");
+        assert_eq!(sys_fsync(proc, &mut host, fd), Err(Errno::EBADF), "and still closes");
     }
 
     mod dri_cleanup_status {

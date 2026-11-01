@@ -246,8 +246,8 @@ mod wasm_api_source_guards {
             ),
             (
                 r#"278 => {
-            let _address = process_address!(0);
-            let _length = process_size!(1);"#,
+            let address = process_address!(0);
+            let length = process_size!(1);"#,
                 1,
             ),
         ];

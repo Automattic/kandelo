@@ -1648,8 +1648,12 @@ pub trait SharedMappingIo {
     /// Write into a SysV shared-memory segment the kernel owns.
     fn shm_write(&mut self, seg_id: i32, offset: u64, src: &[u8]) -> Result<(), Errno>;
 
-    /// Report a refused or failed writeback so the loss is never silent.
-    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str);
+    /// Report a refused or failed writeback of the file whose backing key is
+    /// `file_key`, so the loss is never silent: record it, and make every
+    /// open file description of that file report `EIO` once from its next
+    /// `fsync`, `fdatasync` or `close` (Linux errseq semantics; see
+    /// `crate::writeback_loss::note_file_writeback_error`).
+    fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str);
 }
 
 /// The backing key for a file object, or `None` when it has no stable
@@ -1783,6 +1787,10 @@ pub struct SharedMapping {
     /// two mappings publish disjoint writes without clobbering each other.
     pub snapshot: Option<Vec<u8>>,
     pub seen_version: u64,
+    /// A writeback of this mapping's file failed since this mapping last
+    /// reported one; its next `msync` fails with `EIO` (Linux reports a
+    /// writeback error to `msync` through the mapping's file).
+    pub writeback_error: bool,
 }
 
 impl SharedMapping {
@@ -1798,6 +1806,7 @@ impl SharedMapping {
             backing_key: Some(key),
             snapshot: Some(snapshot),
             seen_version: 0,
+            writeback_error: false,
         }
     }
 
@@ -1822,6 +1831,7 @@ impl SharedMapping {
             backing_key: Some(key),
             snapshot: Some(snapshot),
             seen_version,
+            writeback_error: false,
         }
     }
 }
@@ -2997,7 +3007,8 @@ impl SharedMappingTable {
             // descriptor `read` sees what the mapping stored. The pages stay
             // dirty, and reported, if the file refuses them.
             if changed && backing.writes_through() && !backing.flush_all(io) {
-                io.report_writeback_loss(pid, *map_addr, "write failed");
+                let (addr, key) = (*map_addr, key.clone());
+                self.report_writeback_loss(pid, addr, &key, "write failed", io);
                 return Err(Errno::EIO);
             }
         }
@@ -3163,14 +3174,42 @@ impl SharedMappingTable {
     /// gone because it would now make the kernel's own running total saturate —
     /// reporting fifty losses after ten thousand is a false statement about
     /// system state, and data corruption is the last thing to be quiet about.
+    ///
+    /// Every current mapping of the file is told too, so its next `msync`
+    /// fails with `EIO` (see [`Self::take_writeback_error`]).
     fn report_writeback_loss(
         &mut self,
         pid: u32,
         map_addr: u64,
+        key: &str,
         reason: &str,
         io: &mut dyn SharedMappingIo,
     ) {
-        io.report_writeback_loss(pid, map_addr, reason);
+        for pid_map in self.mappings.values_mut() {
+            for mapping in pid_map.values_mut() {
+                if mapping.backing_kind == Some(BackingKind::File) && mapping.backing_key.as_deref() == Some(key) {
+                    mapping.writeback_error = true;
+                }
+            }
+        }
+        io.report_writeback_loss(pid, map_addr, key, reason);
+    }
+
+    /// Consume the writeback errors pending on `pid`'s file mappings that
+    /// overlap `[addr, addr + len)`. True means `msync` must fail with `EIO`.
+    pub fn take_writeback_error(&mut self, pid: u32, addr: u64, len: u64) -> bool {
+        let end = addr.saturating_add(len);
+        let mut pending = false;
+        if let Some(pid_map) = self.mappings.get_mut(&pid) {
+            for (map_addr, mapping) in pid_map.iter_mut() {
+                let map_end = map_addr.saturating_add(mapping.len as u64);
+                if *map_addr < end && addr < map_end && mapping.writeback_error {
+                    mapping.writeback_error = false;
+                    pending = true;
+                }
+            }
+        }
+        pending
     }
 
     // -- SysV shared-memory byte-coherence mirror -------------------------
@@ -3532,6 +3571,8 @@ impl SharedMappingTable {
             return false;
         }
         if self.sync_file_from_process(pid, true, io).is_err() {
+            // The failure is reported to this caller now (see below).
+            self.take_writeback_error(pid, sync_addr, sync_len);
             return false;
         }
         let Some(pid_map) = self.mappings.get(&pid) else {
@@ -3566,15 +3607,25 @@ impl SharedMappingTable {
             let file_offset_base = file_offset + (flush_start - map_addr);
             match key.as_deref().and_then(|k| self.file_backings.get_mut(k)) {
                 Some(backing) => {
-                    if !backing.flush_range(file_offset_base, flush_len, io) {
-                        success = false;
-                    }
+                    let flushed = backing.flush_range(file_offset_base, flush_len, io);
                     backing.settle();
+                    if !flushed {
+                        success = false;
+                        // munmap and MAP_FIXED discard this result, so the
+                        // loss must be recorded and reported here.
+                        let key = key.clone().unwrap_or_default();
+                        self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
+                    }
                 }
                 // A file mapping whose backing has vanished cannot publish
                 // its bytes; report the failure rather than dropping it.
                 None => success = false,
             }
+        }
+        // This caller is told about the failure now (msync answers EIO), so
+        // its mappings have seen it; other observers keep theirs.
+        if !success {
+            self.take_writeback_error(pid, sync_addr, sync_len);
         }
         success
     }
@@ -3897,7 +3948,8 @@ impl SharedMappingTable {
                     // process's stores are no longer guaranteed to reach the
                     // file, so the loss is recorded rather than left silent.
                     if !backing.flush_range(file_offset, len as u64, io) {
-                        self.report_writeback_loss(pid, addr, "write failed", io);
+                        let key = key.clone().unwrap_or_default();
+                        self.report_writeback_loss(pid, addr, &key, "write failed", io);
                     }
                 }
             }
@@ -4308,7 +4360,7 @@ mod shared_mapping_tests {
             Ok(())
         }
 
-        fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, reason: &str) {
+        fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, _file_key: &str, reason: &str) {
             self.losses.push((pid, map_addr, reason.to_string()));
         }
     }
@@ -5107,6 +5159,49 @@ mod shared_mapping_tests {
         io.fail_pwrite = false;
         assert!(table.flush_mappings(1, 0, 8, &mut io));
         assert_eq!(io.files[&10], b"AAAA....".to_vec());
+    }
+
+    /// A refused writeback is reported to every mapping of the file, once:
+    /// each observer's next msync over it answers EIO (Linux reports a
+    /// writeback error through the mapping's file), and only that once.
+    #[test]
+    fn a_refused_write_through_is_reported_once_to_every_mapping_of_the_file() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+
+        io.fail_pwrite = true;
+        io.poke(1, 0, b"AAAA....");
+        assert_eq!(table.sync_file_from_process(1, false, &mut io), Err(Errno::EIO));
+        io.fail_pwrite = false;
+        assert!(table.take_writeback_error(1, 0, 8), "the writer's mapping is told");
+        assert!(table.take_writeback_error(2, 0, 8), "a reader's mapping is told");
+        assert!(!table.take_writeback_error(1, 0, 8), "each mapping is told once");
+        assert!(!table.take_writeback_error(2, 0, 8));
+        // A later successful flush reports nothing new.
+        assert!(table.flush_mappings(1, 0, 8, &mut io));
+        assert!(!table.take_writeback_error(2, 0, 8));
+    }
+
+    /// msync itself reports the failure it hit, so the caller's mapping has
+    /// seen it; a peer mapping of the same file still reports it once.
+    #[test]
+    fn a_failed_msync_reports_its_own_failure_and_leaves_peers_told() {
+        let mut io = MockIo::new()
+            .with_process(1, 64)
+            .with_process(2, 64)
+            .with_kernel_file(10, 1, 2, b"........".to_vec());
+        let key = io.key_of(10);
+        let mut table = file_table_with_two_observers(&mut io, &key);
+        io.fail_pwrite = true;
+        io.poke(1, 0, b"BBBB....");
+        assert!(!table.flush_mappings(1, 0, 8, &mut io));
+        assert!(!table.take_writeback_error(1, 0, 8));
+        assert!(table.take_writeback_error(2, 0, 8));
+        assert!(!io.losses.is_empty(), "the loss is recorded");
     }
 
     #[test]

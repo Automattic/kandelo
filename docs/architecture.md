@@ -2186,6 +2186,25 @@ cache policy: the kernel pins the inode for its mappings, observes
 descriptor writes through a content generation its filesystem advances on
 every write and truncation, and writes each publication through to the file.
 
+When a kernel-owned file refuses a mapping's bytes (for example a full
+tmpfs), the loss is real data the program believed it stored, so it is
+never quiet. The dirty pages stay on the backing for a later attempt, the
+loss is recorded in `/proc/kandelo/writeback_losses`, and it is reported to
+the program the way Linux reports a writeback error (errseq): once to every
+open file description of the file that existed when it happened, from its
+next `fsync`, `fdatasync` or `close`, and once to every mapping of the file,
+from its next `msync` (`writeback_loss::note_file_writeback_error`,
+`SharedMappingTable::take_writeback_error`). A description opened later does
+not see it. The mapping layer's other two inconsistencies, releasing a file
+pin that no backing held and a publication pass reaching a live process
+without its memory length, can only come from Kandelo's own bookkeeping,
+never from a file or a program, so they are fatal kernel faults
+(`writeback_loss::shared_mapping_fault`): continuing would free a file under
+a live mapping, leak it, or silently skip a process's `MAP_SHARED`
+coherence. Host-mounted files' mappings are kept by the host
+(`host/src/kernel-worker.ts`) and do not yet report their writeback errors
+this way.
+
 A failed kernel-owned synchronization is not successful boundary completion.
 Entry failure prevents syscall dispatch and follows the existing recoverable
 `EIO` completion path. If synchronization fails after completion output bytes
