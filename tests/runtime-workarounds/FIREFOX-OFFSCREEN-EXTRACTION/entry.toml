@@ -1,0 +1,28 @@
+id = "FIREFOX-OFFSCREEN-EXTRACTION"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "Worker canvas extraction can stall and return transparent pixels"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox"]
+self_judging = true
+attempts = 3
+min_reproduced = 1
+timeout_seconds = 120
+
+[[sites_without_tags]]
+path = "docs/browser-support.md"
+note = "Evidence-only disclosure; no product workaround is implemented."
+
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-10-30
+source = "suite"
+released = false

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { KernelHostProvider } from "../../pages/kandelo/kernel-host/react";
 import { Shell, createShellTerminal } from "../../pages/kandelo/panes/Shell";
 import type { KernelHost } from "../../../../web-libs/kandelo-session/src/kernel-host";
+import { ExchangeSession } from "../../../../web-libs/kandelo-session/src/exchange-session";
 
 const encoder = new TextEncoder();
 const sessions = new Map<string, {
@@ -11,10 +12,15 @@ const sessions = new Map<string, {
 }>();
 const attachments: string[] = [];
 const inputs: string[] = [];
+const exchange = new ExchangeSession();
 const host = {
   getStatus: () => "running",
   subscribeStatus: () => () => {},
   getWebPreview: () => null,
+  // Shell's drop target reads the machine's exchange while rendering. No
+  // kernel backs this fixture, so give it an exchange attached to none (no
+  // consumer) rather than omitting the method.
+  getExchange: () => exchange,
   attachPty: async (path: string) => {
     attachments.push(path);
     let session = sessions.get(path);

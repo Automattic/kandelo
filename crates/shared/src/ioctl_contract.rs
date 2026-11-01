@@ -312,6 +312,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // Registered caller width selects native addresses, never the kernel's width.
     pointer!(crate::gl::GLIO_QUERY, In, 24, 40),
     pointer!(crate::gl::GLIO_UPDATE_SURFACE, In, 32),
+    pointer!(crate::gl::GLIO_SUBMIT_QUERY, InOut, 48, 64),
     pointer!(crate::fbdev::FBIOGET_VSCREENINFO, Out, 160),
     pointer!(crate::fbdev::FBIOPUT_VSCREENINFO, In, 160),
     pointer!(crate::fbdev::FBIOGET_FSCREENINFO, Out, 80),
@@ -527,6 +528,10 @@ mod tests {
         let query = request_contract(crate::gl::GLIO_QUERY).unwrap();
         assert_eq!(query.size_for_pointer_width(4), Some(24));
         assert_eq!(query.size_for_pointer_width(8), Some(40));
+        let compound=request_contract(crate::gl::GLIO_SUBMIT_QUERY).unwrap();
+        assert_eq!(compound.direction,IoctlDirection::InOut);
+        assert_eq!(compound.size_for_pointer_width(4),Some(48));
+        assert_eq!(compound.size_for_pointer_width(8),Some(64));
     }
 
     /// An ioctl handled in syscalls.rs but absent from this table is

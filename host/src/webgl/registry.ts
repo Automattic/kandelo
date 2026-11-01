@@ -362,6 +362,14 @@ export class GlContextRegistry {
     } catch { return null; }
   }
 
+  /** Cleanup can mutate native selectors even when its own guard is not the
+   * caller's muxer. Let a device-state borrower invalidate before that work. */
+  hasExecutionRetirements(gl: WebGL2RenderingContext): boolean {
+    for (const record of this.executionRecords)
+      if (record.retired && record.references === 0 && record.gl === gl) return true;
+    return false;
+  }
+
   /** Only failed, unreferenced retirement blocks admission on its physical
    * context. Retained execution is deliberate ownership, not a repair error. */
   retryExecutionRetirements(gl?: WebGL2RenderingContext): boolean {

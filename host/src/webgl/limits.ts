@@ -1,3 +1,5 @@
+import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
+
 /** Immutable limits belong to the native context, independently of whichever
  * guest currently owns its mutable state. Weak keys do not retain a retired
  * browser context. Do not cache null results from a lost context. */
@@ -30,9 +32,19 @@ export function maxViewport(gl: WebGL2RenderingContext): readonly [number, numbe
 }
 
 const vertexLimits = new WeakMap<WebGL2RenderingContext,number>();
-export function maxVertexAttributes(gl: WebGL2RenderingContext): number {
-  const cached = vertexLimits.get(gl); if (cached !== undefined) return cached;
-  const count: unknown = gl.getParameter(0x8869);
+/** Only accepted native queries may admit a limit used to bound replay. */
+export function knownVertexAttributeLimit(gl: WebGL2RenderingContext): number {
+  return vertexLimits.get(gl) ?? 0;
+}
+
+/** null means native refusal; zero means an unavailable/invalid limit. Keep
+ * the existing caller's checked entry/post checks even for a cached value. */
+export function maxVertexAttributes(owner: CheckedGlOwner): number | null {
+  const gl = owner.gl;
+  if (!gl) return null;
+  let count: unknown = vertexLimits.get(gl);
+  if (!checkedGlCall(owner, () => { count ??= gl.getParameter(0x8869); })) return null;
   if (typeof count !== "number" || !Number.isInteger(count) || count <= 0) return 0;
-  vertexLimits.set(gl,count); return count;
+  vertexLimits.set(gl,count);
+  return count;
 }

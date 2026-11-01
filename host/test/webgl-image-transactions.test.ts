@@ -117,7 +117,7 @@ function setup(kind = 1) {
 it("validates complete image attachment/deletion request and reply spans before native effects", () => {
   const { b, gl, query } = setup();
   for (const [op, size] of [[O.QOP_IMAGE_OBJECT_DELETE, 8], [O.QOP_IMAGE_ATTACHMENT, 24]]) {
-    for (const [inputLength, replyLength] of [[size - 4, 12], [size + 4, 12], [size, 8], [size, 16]]) {
+    for (const [inputLength, replyLength] of [[size - 4, 12], [size + 4, 12], [size, 8], [size, op === O.QOP_IMAGE_ATTACHMENT ? 20 : 16]]) {
       const out = new Uint8Array(replyLength).fill(0xa5);
       expect(runGlQuery(b, op, new Uint8Array(inputLength), out)).toBe(-22);
       expect([...out]).toEqual(Array(replyLength).fill(0xa5));
@@ -462,4 +462,68 @@ it("retires context-local repair targets without reviving dead containers or los
   expect(restores).toBe(attempts);
   registry.destroyContext(1,2);
   expect(gl.deleted).toContain(old);
+});
+
+function containerReply(b: ReturnType<typeof setup>["b"], op: number, words: number[], length: number) {
+  const out = new Uint8Array(length).fill(0xa5);
+  expect(runGlQuery(b,op,new Uint8Array(new Uint32Array(words).buffer),out)).toBe(length);
+  const reply = [...new Uint32Array(out.buffer)];
+  expect(reply.at(-1)).toBe(0x47514c33);
+  return reply.slice(0,-1);
+}
+for (const kind of [1,2]) {
+  it(`returns actual accepted attachment container without changing legacy receipts (kind ${kind})`,() => {
+    const {b,gl,framebuffer,query,queued} = setup(kind), target = kind === 1 ? TEX : RBO;
+    const args = [kind,FBO,COLOR,target,18,0];
+    expect(query(O.QOP_IMAGE_ATTACHMENT,args)).toEqual([0,1]);
+    const rejected = {}; b.fbos.set(92,rejected);
+    gl.reject = "framebuffer"; queued(O.OP_BIND_FRAMEBUFFER,[FBO,92]);
+    expect(b.shadow.fbo).toBe(framebuffer);
+    expect(containerReply(b,O.QOP_IMAGE_ATTACHMENT,args,16)).toEqual([0,1,71]);
+    gl.reject = kind === 1 ? "attach-texture" : "attach-renderbuffer";
+    expect(containerReply(b,O.QOP_IMAGE_ATTACHMENT,[kind,FBO,COLOR,target,17,0],16)).toEqual([1,0,0]);
+    expect(b.framebufferAttachments.get(framebuffer)!.get(COLOR)!.object).toBe(kind === 1 ? b.textures.get(18) : b.rbos.get(18));
+  });
+  it(`acknowledges exact deletion selection and retains unbound/peer containers (kind ${kind})`,() => {
+    const {registry,b,gl,old,framebuffer} = setup(kind), read = {}, unbound = {};
+    b.fbos.set(72,read); b.fbos.set(73,unbound); b.shadow.readFbo = gl.read = read;
+    const image = kind === 1 ? {kind:"texture" as const,object:old,target:TEX,level:0} : {kind:"renderbuffer" as const,object:old};
+    for (const fbo of [read,unbound]) {
+      b.framebufferAttachments.set(fbo,new Map([[COLOR,image]])); gl.attachments.set(fbo,new Map([[COLOR,old]]));
+    }
+    registry.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = registry.get(1,2)!; peer.gl = b.gl; b.contextId = 11; peer.contextId = 12;
+    expect(registry.shareObjects(1,2,0)).toBe(true); peer.fbos.set(71,{});
+    peer.framebufferAttachments.set(peer.fbos.get(71)!,new Map([[COLOR,image]]));
+    gl.reject = kind === 1 ? "texture" : "renderbuffer";
+    expect(containerReply(b,O.QOP_IMAGE_OBJECT_DELETE,[kind,17],20)).toEqual([1,0,0,0]);
+    expect(b.framebufferAttachments.get(framebuffer)!.get(COLOR)!.object).toBe(old);
+    expect(containerReply(b,O.QOP_IMAGE_OBJECT_DELETE,[kind,17],20)).toEqual([0,1,71,72]);
+    expect(b.framebufferAttachments.has(framebuffer)).toBe(false); expect(b.framebufferAttachments.has(read)).toBe(false);
+    expect(b.framebufferAttachments.get(unbound)!.get(COLOR)!.object).toBe(old);
+    expect(peer.framebufferAttachments.get(peer.fbos.get(71)!)!.get(COLOR)!.object).toBe(old);
+  });
+}
+it("does not invent container zero for unknown named logical selection",() => {
+  const {b,gl} = setup(); b.shadow.fbo = gl.draw = {};
+  expect(containerReply(b,O.QOP_IMAGE_ATTACHMENT,[1,FBO,COLOR,TEX,18,0],16)).toEqual([1,0,0]);
+  expect(containerReply(b,O.QOP_IMAGE_OBJECT_DELETE,[1,17],20)).toEqual([1,0,0,0]);
+  expect(gl.calls).toEqual([]); expect(b.textures.has(17)).toBe(true);
+});
+
+it("distinguishes native default storage from a missing named container in deletion receipts",() => {
+  const {b,gl,framebuffer} = setup(), drawDefault = {};
+  b.drawSurface = {renderTargetFbo:drawDefault} as any; b.shadow.fbo = gl.draw = drawDefault;
+  expect(containerReply(b,O.QOP_IMAGE_OBJECT_DELETE,[1,17],20)).toEqual([0,1,0,71]);
+  expect(b.framebufferAttachments.has(framebuffer)).toBe(false);
+});
+it("stages receipt metadata before effects and preserves the actual error owner on allocation failure",() => {
+  const {b,gl} = setup(), iterator = b.fbos[Symbol.iterator]; b.errors.push(0x500);
+  b.fbos[Symbol.iterator] = () => { throw new RangeError("receipt iterator allocation refused"); };
+  try {
+    expect(containerReply(b,O.QOP_IMAGE_ATTACHMENT,[1,FBO,COLOR,TEX,18,0],16)).toEqual([1,0,0]);
+    expect(containerReply(b,O.QOP_IMAGE_OBJECT_DELETE,[1,17],20)).toEqual([1,0,0,0]);
+  } finally { b.fbos[Symbol.iterator] = iterator; }
+  expect(gl.calls).toEqual([]); expect(b.errors).toEqual([0x500,0x505]);
+  expect(b.textures.has(17)).toBe(true);
 });

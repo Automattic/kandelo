@@ -454,6 +454,9 @@ async function main() {
                 ? {}
                 : { rootfsMountSpec: runnerFilesystem.rootfsMountSpec }),
             sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
+            ...(runnerNetwork() === "offline-egress"
+                ? { offlineEgressLink: true }
+                : {}),
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
         });
@@ -516,3 +519,17 @@ main().catch((e) => {
     console.error(e);
     process.exit(1);
 });
+
+/**
+ * The machine's network, from `KANDELO_RUNNER_NETWORK`. Unset is a
+ * loopback-only machine. `offline-egress` is the machine the browser host
+ * boots (eth0 behind the internet egress gateway) with nothing behind the
+ * gateway, so the conformance runners observe the browser's machine without
+ * ever reaching the host's network.
+ */
+function runnerNetwork(): "loopback" | "offline-egress" {
+    const value = process.env.KANDELO_RUNNER_NETWORK;
+    if (value === undefined || value === "") return "loopback";
+    if (value === "offline-egress") return value;
+    throw new Error('KANDELO_RUNNER_NETWORK must be unset or "offline-egress"');
+}

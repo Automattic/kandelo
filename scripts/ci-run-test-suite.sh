@@ -427,7 +427,8 @@ NODE
     if [ -s "$source_shared_declared" ]; then
         (
             cd host
-            npx vitest run \
+            bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                npx vitest run \
                 "${prepared_excludes[@]}" \
                 "${disabled_software_vitest_excludes[@]}"
         )
@@ -442,7 +443,8 @@ NODE
         test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
         (
             cd host
-            npx vitest run "$selected_path" \
+            bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                npx vitest run "$selected_path" \
                 --testNamePattern="$test_pattern"
         )
     done
@@ -726,7 +728,8 @@ case "$suite" in
             # memory from one case into the next.
             (
                 cd host
-                npx vitest run \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                    npx vitest run \
                     "${vitest_args[@]}" \
                     "${resource_excludes[@]}" \
                     "${disabled_software_vitest_excludes[@]}"
@@ -742,7 +745,8 @@ case "$suite" in
                 test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
                 (
                     cd host
-                    npx vitest run \
+                    bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                        npx vitest run \
                         "../${resource_files[$index]}" \
                         --testNamePattern="$test_pattern"
                 )
@@ -761,7 +765,8 @@ case "$suite" in
         if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
             (
                 cd host
-                KANDELO_VITEST_RUNTIME=bun bun x --bun vitest run \
+                KANDELO_VITEST_RUNTIME=bun bash "$REPO_ROOT/scripts/record-test-report.sh" vitest \
+                    bun x --bun vitest run \
                     test/teardown-reclaim.test.ts \
                     test/pthread.test.ts \
                     test/heap-safepoint.test.ts
@@ -799,10 +804,12 @@ case "$suite" in
                     npx playwright install chromium firefox webkit
             fi
             run_timed 20m "Run Chromium browser demo smoke suite" \
-                npx playwright test --grep-invert "@slow|@trap-signal" \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" playwright \
+                    npx playwright test --grep-invert "@slow|@trap-signal" \
                     --project=chromium
             run_timed 10m "Run cross-browser contract smoke suite" \
-                npx playwright test \
+                bash "$REPO_ROOT/scripts/record-test-report.sh" playwright \
+                    npx playwright test \
                     test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \

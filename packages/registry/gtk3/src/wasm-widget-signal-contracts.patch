@@ -1,0 +1,1789 @@
+--- a/gtk/a11y/gtkcolorswatchaccessible.c
++++ b/gtk/a11y/gtkcolorswatchaccessible.c
+@@ -29,6 +29,18 @@
+
+ static void
+ state_changed_cb (GtkWidget     *widget,
++                  GtkStateFlags  previous_flags);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++state_changed_cb_signal_cb (GtkWidget *widget, GtkStateFlags previous_flags, gpointer data)
++{
++  (void) data;
++  state_changed_cb (widget, previous_flags);
++}
++
++static void
++state_changed_cb (GtkWidget     *widget,
+                   GtkStateFlags  previous_flags)
+ {
+   AtkObject *accessible;
+@@ -55,7 +67,7 @@
+   ATK_OBJECT_CLASS (_gtk_color_swatch_accessible_parent_class)->initialize (obj, data);
+
+   g_signal_connect (data, "state-flags-changed",
+-                    G_CALLBACK (state_changed_cb), NULL);
++                    G_CALLBACK (state_changed_cb_signal_cb), NULL);
+
+   atk_object_set_role (obj, ATK_ROLE_RADIO_BUTTON);
+ }
+--- a/gtk/a11y/gtkiconviewaccessible.c
++++ b/gtk/a11y/gtkiconviewaccessible.c
+@@ -1265,6 +1265,18 @@
+
+ static void
+ gtk_icon_view_accessible_notify_gtk (GObject    *obj,
++                                     GParamSpec *pspec);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_icon_view_accessible_notify_gtk_notify_cb (GObject *obj, GParamSpec *pspec, gpointer data)
++{
++  (void) data;
++  gtk_icon_view_accessible_notify_gtk (obj, pspec);
++}
++
++static void
++gtk_icon_view_accessible_notify_gtk (GObject    *obj,
+                                      GParamSpec *pspec)
+ {
+   GtkIconView *icon_view;
+@@ -1312,7 +1324,7 @@
+   view = (GtkIconViewAccessible*)accessible;
+
+   g_signal_connect (data, "notify",
+-                    G_CALLBACK (gtk_icon_view_accessible_notify_gtk), NULL);
++                    G_CALLBACK (gtk_icon_view_accessible_notify_gtk_notify_cb), NULL);
+
+   view->priv->model = icon_view->priv->model;
+   if (view->priv->model)
+--- a/gtk/a11y/gtkpanedaccessible.c
++++ b/gtk/a11y/gtkpanedaccessible.c
+@@ -28,6 +28,18 @@
+
+ static void
+ gtk_paned_accessible_size_allocate_gtk (GtkWidget     *widget,
++                                        GtkAllocation *allocation);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_paned_accessible_size_allocate_gtk_signal_cb (GtkWidget *widget, GtkAllocation *allocation, gpointer data)
++{
++  (void) data;
++  gtk_paned_accessible_size_allocate_gtk (widget, allocation);
++}
++
++static void
++gtk_paned_accessible_size_allocate_gtk (GtkWidget     *widget,
+                                         GtkAllocation *allocation)
+ {
+   AtkObject *obj = gtk_widget_get_accessible (widget);
+@@ -42,7 +54,7 @@
+   ATK_OBJECT_CLASS (gtk_paned_accessible_parent_class)->initialize (obj, data);
+
+   g_signal_connect (data, "size-allocate",
+-                    G_CALLBACK (gtk_paned_accessible_size_allocate_gtk), NULL);
++                    G_CALLBACK (gtk_paned_accessible_size_allocate_gtk_signal_cb), NULL);
+
+   obj->role = ATK_ROLE_SPLIT_PANE;
+ }
+--- a/gtk/deprecated/gtkcolorsel.c
++++ b/gtk/deprecated/gtkcolorsel.c
+@@ -301,6 +301,15 @@
+
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkColorSelection, gtk_color_selection, GTK_TYPE_BOX)
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  gtk_widget_destroy (widget);
++}
++
+ static void
+ gtk_color_selection_class_init (GtkColorSelectionClass *klass)
+ {
+@@ -1453,7 +1462,7 @@
+                      colorsel);
+
+   menu = gtk_menu_new ();
+-  g_signal_connect (menu, "hide", G_CALLBACK (gtk_widget_destroy), NULL);
++  g_signal_connect (menu, "hide", G_CALLBACK (gtk_widget_destroy_signal_cb), NULL);
+
+   mi = gtk_menu_item_new_with_mnemonic (_("_Save color here"));
+
+--- a/gtk/deprecated/gtkimagemenuitem.c
++++ b/gtk/deprecated/gtkimagemenuitem.c
+@@ -1230,6 +1230,18 @@
+ }
+
+ static void
++gtk_image_menu_item_setting_changed (GtkSettings *settings);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_image_menu_item_setting_changed_notify_cb (GtkSettings *settings, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  (void) data;
++  gtk_image_menu_item_setting_changed (settings);
++}
++
++static void
+ gtk_image_menu_item_setting_changed (GtkSettings *settings)
+ {
+   GList *list, *l;
+@@ -1257,13 +1269,13 @@
+
+   show_image_connection =
+     g_signal_handler_find (settings, G_SIGNAL_MATCH_FUNC, 0, 0,
+-                           NULL, gtk_image_menu_item_setting_changed, NULL);
++                           NULL, gtk_image_menu_item_setting_changed_notify_cb, NULL);
+
+   if (show_image_connection)
+     return;
+
+   g_signal_connect (settings, "notify::gtk-menu-images",
+-                    G_CALLBACK (gtk_image_menu_item_setting_changed), NULL);
++                    G_CALLBACK (gtk_image_menu_item_setting_changed_notify_cb), NULL);
+
+   show_image_change_notify (GTK_IMAGE_MENU_ITEM (widget));
+ }
+--- a/gtk/deprecated/gtkuimanager.c
++++ b/gtk/deprecated/gtkuimanager.c
+@@ -2439,6 +2439,18 @@
+ };
+
+ static void
++update_smart_separators (GtkWidget *proxy);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_smart_separators_notify_cb (GtkWidget *proxy, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  (void) data;
++  update_smart_separators (proxy);
++}
++
++static void
+ update_smart_separators (GtkWidget *proxy)
+ {
+   GtkWidget *parent = NULL;
+@@ -2732,7 +2744,7 @@
+ 		     info->proxy = gtk_action_create_menu_item (action);
+ 		     g_object_ref_sink (info->proxy);
+ 		     g_signal_connect (info->proxy, "notify::visible",
+-		   		       G_CALLBACK (update_smart_separators), NULL);
++		   		       G_CALLBACK (update_smart_separators_notify_cb), NULL);
+ 		     gtk_widget_set_name (info->proxy, info->name);
+
+ 		     gtk_menu_item_set_submenu (GTK_MENU_ITEM (info->proxy), menu);
+@@ -2888,7 +2900,7 @@
+ 	  G_OBJECT_TYPE (info->proxy) != GTK_ACTION_GET_CLASS (action)->menu_item_type)
+ 	{
+ 	  g_signal_handlers_disconnect_by_func (info->proxy,
+-						G_CALLBACK (update_smart_separators),
++						G_CALLBACK (update_smart_separators_notify_cb),
+ 						NULL);  
+           gtk_activatable_set_related_action (GTK_ACTIVATABLE (info->proxy), NULL);
+ 	  gtk_container_remove (GTK_CONTAINER (gtk_widget_get_parent (info->proxy)),
+@@ -2924,7 +2936,7 @@
+       else
+ 	{
+ 	  g_signal_handlers_disconnect_by_func (info->proxy,
+-						G_CALLBACK (update_smart_separators),
++						G_CALLBACK (update_smart_separators_notify_cb),
+ 						NULL);
+ 	  gtk_menu_item_set_submenu (GTK_MENU_ITEM (info->proxy), NULL);
+           gtk_activatable_set_related_action (GTK_ACTIVATABLE (info->proxy), action);
+@@ -2933,7 +2945,7 @@
+       if (info->proxy)
+         {
+           g_signal_connect (info->proxy, "notify::visible",
+-			    G_CALLBACK (update_smart_separators), NULL);
++			    G_CALLBACK (update_smart_separators_notify_cb), NULL);
+           if (in_popup && !popup_accels)
+ 	    {
+ 	      /* don't show accels in popups */
+@@ -2950,7 +2962,7 @@
+ 	  G_OBJECT_TYPE (info->proxy) != GTK_ACTION_GET_CLASS (action)->toolbar_item_type)
+ 	{
+ 	  g_signal_handlers_disconnect_by_func (info->proxy,
+-						G_CALLBACK (update_smart_separators),
++						G_CALLBACK (update_smart_separators_notify_cb),
+ 						NULL);
+           gtk_activatable_set_related_action (GTK_ACTIVATABLE (info->proxy), NULL);
+ 	  gtk_container_remove (GTK_CONTAINER (gtk_widget_get_parent (info->proxy)),
+@@ -2977,7 +2989,7 @@
+       else
+ 	{
+ 	  g_signal_handlers_disconnect_by_func (info->proxy,
+-						G_CALLBACK (update_smart_separators),
++						G_CALLBACK (update_smart_separators_notify_cb),
+ 						NULL);
+ 	  gtk_activatable_set_related_action (GTK_ACTIVATABLE (info->proxy), action);
+ 	}
+@@ -2985,7 +2997,7 @@
+       if (info->proxy)
+         {
+           g_signal_connect (info->proxy, "notify::visible",
+-			    G_CALLBACK (update_smart_separators), NULL);
++			    G_CALLBACK (update_smart_separators_notify_cb), NULL);
+         }
+       break;
+     case NODE_TYPE_SEPARATOR:
+--- a/gtk/gtkaboutdialog.c
++++ b/gtk/gtkaboutdialog.c
+@@ -265,6 +265,16 @@
+
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkAboutDialog, gtk_about_dialog, GTK_TYPE_DIALOG)
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_response_cb (GtkDialog *dialog, gint response_id, gpointer data)
++{
++  (void) response_id;
++  (void) data;
++  gtk_widget_destroy (GTK_WIDGET (dialog));
++}
++
+ static gboolean
+ stack_visible_child_notify (GtkStack       *stack,
+                             GParamSpec     *pspec,
+@@ -1007,7 +1017,7 @@
+       g_error_free (error);
+
+       g_signal_connect (dialog, "response",
+-                        G_CALLBACK (gtk_widget_destroy), NULL);
++                        G_CALLBACK (gtk_widget_destroy_response_cb), NULL);
+
+       G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+       gtk_window_present (GTK_WINDOW (dialog));
+--- a/gtk/gtkappchooserdialog.c
++++ b/gtk/gtkappchooserdialog.c
+@@ -98,6 +98,16 @@
+                                                 gtk_app_chooser_dialog_iface_init));
+
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_response_cb (GtkDialog *dialog, gint response_id, gpointer data)
++{
++  (void) response_id;
++  (void) data;
++  gtk_widget_destroy (GTK_WIDGET (dialog));
++}
++
+ static void
+ add_or_find_application (GtkAppChooserDialog *self)
+ {
+@@ -431,7 +441,7 @@
+   gtk_widget_show (message_dialog);
+
+   g_signal_connect (message_dialog, "response",
+-                    G_CALLBACK (gtk_widget_destroy), NULL);
++                    G_CALLBACK (gtk_widget_destroy_response_cb), NULL);
+ }
+
+ static void
+--- a/gtk/gtkbutton.c
++++ b/gtk/gtkbutton.c
+@@ -2465,6 +2465,18 @@
+ }
+
+ static void
++gtk_button_setting_changed (GtkSettings *settings);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_button_setting_changed_notify_cb (GtkSettings *settings, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  (void) data;
++  gtk_button_setting_changed (settings);
++}
++
++static void
+ gtk_button_setting_changed (GtkSettings *settings)
+ {
+   GList *list, *l;
+@@ -2505,13 +2517,13 @@
+
+   show_image_connection = 
+     g_signal_handler_find (settings, G_SIGNAL_MATCH_FUNC, 0, 0,
+-                           NULL, gtk_button_setting_changed, NULL);
++                           NULL, gtk_button_setting_changed_notify_cb, NULL);
+   
+   if (show_image_connection)
+     return;
+
+   g_signal_connect (settings, "notify::gtk-button-images",
+-                    G_CALLBACK (gtk_button_setting_changed), NULL);
++                    G_CALLBACK (gtk_button_setting_changed_notify_cb), NULL);
+
+   show_image_change_notify (button);
+ }
+--- a/gtk/gtkcolorbutton.c
++++ b/gtk/gtkcolorbutton.c
+@@ -506,6 +506,17 @@
+
+ static gboolean
+ dialog_destroy (GtkWidget *widget,
++                gpointer   data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++dialog_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  dialog_destroy (widget, data);
++}
++
++static gboolean
++dialog_destroy (GtkWidget *widget,
+                 gpointer   data)
+ {
+   GtkColorButton *button = GTK_COLOR_BUTTON (data);
+@@ -570,7 +581,7 @@
+   g_signal_connect (dialog, "response",
+                     G_CALLBACK (dialog_response), button);
+   g_signal_connect (dialog, "destroy",
+-                    G_CALLBACK (dialog_destroy), button);
++                    G_CALLBACK (dialog_destroy_signal_cb), button);
+   g_signal_connect (dialog, "delete-event",
+                     G_CALLBACK (dialog_delete_event), button);
+ }
+--- a/gtk/gtkcolorchooserwidget.c
++++ b/gtk/gtkcolorchooserwidget.c
+@@ -189,6 +189,18 @@
+ }
+
+ static void
++save_custom_colors (GtkColorChooserWidget *cc);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++save_custom_colors_notify_cb (GtkColorChooserWidget *cc, GParamSpec *pspec, GtkWidget *swatch)
++{
++  (void) pspec;
++  (void) swatch;
++  save_custom_colors (cc);
++}
++
++static void
+ save_custom_colors (GtkColorChooserWidget *cc)
+ {
+   GVariantBuilder builder;
+@@ -220,7 +232,7 @@
+ {
+   connect_swatch_signals (p, data);
+   g_signal_connect_swapped (p, "notify::rgba",
+-                            G_CALLBACK (save_custom_colors), data);
++                            G_CALLBACK (save_custom_colors_notify_cb), data);
+ }
+
+ static void
+--- a/gtk/gtkdnd.c
++++ b/gtk/gtkdnd.c
+@@ -2156,10 +2156,36 @@
+ static void
+ gtk_drag_draw_icon_pattern (GtkWidget *window,
+                             cairo_t   *cr,
++                            gpointer   pattern);
++
++/* Connected signals preserve every declared argument and return type. */
++static gboolean
++gtk_drag_draw_icon_pattern_cb (GtkWidget *window, cairo_t *cr, gpointer pattern)
++{
++  gtk_drag_draw_icon_pattern (window, cr, pattern);
++  return FALSE;
++}
++
++static void
++gtk_drag_draw_icon_pattern (GtkWidget *window,
++                            cairo_t   *cr,
+                             gpointer   pattern)
+ {
+   cairo_set_source (cr, pattern);
+   cairo_paint (cr);
++}
++
++static void
++gtk_drag_draw_icon_pattern_and_background (GtkWidget *window,
++                                           cairo_t   *cr,
++                                           gpointer   pattern);
++
++/* Connected signals preserve every declared argument and return type. */
++static gboolean
++gtk_drag_draw_icon_pattern_and_background_cb (GtkWidget *window, cairo_t *cr, gpointer pattern)
++{
++  gtk_drag_draw_icon_pattern_and_background (window, cr, pattern);
++  return FALSE;
+ }
+
+ static void
+@@ -2179,6 +2205,13 @@
+
+   cairo_set_source (cr, pattern);
+   cairo_paint (cr);
++}
++
++static void
++gtk_drag_icon_pattern_destroy (gpointer pattern, GClosure *closure)
++{
++  (void) closure;
++  cairo_pattern_destroy (pattern);
+ }
+
+ static void
+@@ -2360,10 +2393,10 @@
+
+   g_signal_connect_data (window,
+                          "draw",
+-                         has_rgba ? G_CALLBACK (gtk_drag_draw_icon_pattern)
+-                                  : G_CALLBACK (gtk_drag_draw_icon_pattern_and_background),
++                         has_rgba ? G_CALLBACK (gtk_drag_draw_icon_pattern_cb)
++                                  : G_CALLBACK (gtk_drag_draw_icon_pattern_and_background_cb),
+                          pattern,
+-                         (GClosureNotify) cairo_pattern_destroy,
++                         gtk_drag_icon_pattern_destroy,
+                          G_CONNECT_AFTER);
+
+   gtk_drag_set_icon_widget_internal (context, window, extents.x, extents.y, TRUE);
+--- a/gtk/gtkdragdest.c
++++ b/gtk/gtkdragdest.c
+@@ -51,6 +51,24 @@
+     gdk_window_register_dnd (gtk_widget_get_window (toplevel));
+ }
+
++/* Connected signal handlers include closure data; direct helpers do not. */
++static void
++gtk_drag_dest_realized_cb (GtkWidget *widget,
++                           gpointer   user_data)
++{
++  (void) user_data;
++  gtk_drag_dest_realized (widget);
++}
++
++static void
++gtk_drag_dest_hierarchy_changed_cb (GtkWidget *widget,
++                                    GtkWidget *previous_toplevel,
++                                    gpointer   user_data)
++{
++  (void) user_data;
++  gtk_drag_dest_hierarchy_changed (widget, previous_toplevel);
++}
++
+ static void
+ gtk_drag_dest_site_destroy (gpointer data)
+ {
+@@ -75,10 +93,10 @@
+   if (old_site)
+     {
+       g_signal_handlers_disconnect_by_func (widget,
+-                                            gtk_drag_dest_realized,
++                                            gtk_drag_dest_realized_cb,
+                                             old_site);
+       g_signal_handlers_disconnect_by_func (widget,
+-                                            gtk_drag_dest_hierarchy_changed,
++                                            gtk_drag_dest_hierarchy_changed_cb,
+                                             old_site);
+
+       site->track_motion = old_site->track_motion;
+@@ -88,9 +106,9 @@
+     gtk_drag_dest_realized (widget);
+
+   g_signal_connect (widget, "realize",
+-                    G_CALLBACK (gtk_drag_dest_realized), site);
++                    G_CALLBACK (gtk_drag_dest_realized_cb), site);
+   g_signal_connect (widget, "hierarchy-changed",
+-                    G_CALLBACK (gtk_drag_dest_hierarchy_changed), site);
++                    G_CALLBACK (gtk_drag_dest_hierarchy_changed_cb), site);
+
+   g_object_set_data_full (G_OBJECT (widget), I_("gtk-drag-dest"),
+                           site, gtk_drag_dest_site_destroy);
+@@ -235,10 +253,10 @@
+   if (old_site)
+     {
+       g_signal_handlers_disconnect_by_func (widget,
+-                                            gtk_drag_dest_realized,
++                                            gtk_drag_dest_realized_cb,
+                                             old_site);
+       g_signal_handlers_disconnect_by_func (widget,
+-                                            gtk_drag_dest_hierarchy_changed,
++                                            gtk_drag_dest_hierarchy_changed_cb,
+                                             old_site);
+     }
+
+--- a/gtk/gtkemojicompletion.c
++++ b/gtk/gtkemojicompletion.c
+@@ -399,6 +399,18 @@
+ static gboolean
+ entry_focus_out (GtkWidget *entry,
+                  GParamSpec *pspec,
++                 GtkEmojiCompletion *completion);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++entry_focus_out_signal_cb (GtkWidget *entry, GParamSpec *pspec, GtkEmojiCompletion *completion)
++{
++  entry_focus_out (entry, pspec, completion);
++}
++
++static gboolean
++entry_focus_out (GtkWidget *entry,
++                 GParamSpec *pspec,
+                  GtkEmojiCompletion *completion)
+ {
+   if (!gtk_widget_has_focus (entry))
+@@ -414,7 +426,7 @@
+
+   completion->changed_id = g_signal_connect (entry, "changed", G_CALLBACK (entry_changed), completion);
+   g_signal_connect (entry, "key-press-event", G_CALLBACK (entry_key_press), completion);
+-  g_signal_connect (entry, "notify::has-focus", G_CALLBACK (entry_focus_out), completion);
++  g_signal_connect (entry, "notify::has-focus", G_CALLBACK (entry_focus_out_signal_cb), completion);
+ }
+
+ static void
+@@ -422,7 +434,7 @@
+ {
+   g_signal_handlers_disconnect_by_func (completion->entry, entry_changed, completion);
+   g_signal_handlers_disconnect_by_func (completion->entry, entry_key_press, completion);
+-  g_signal_handlers_disconnect_by_func (completion->entry, entry_focus_out, completion);
++  g_signal_handlers_disconnect_by_func (completion->entry, entry_focus_out_signal_cb, completion);
+
+   completion->entry = NULL;
+ }
+--- a/gtk/gtkentrycompletion.c
++++ b/gtk/gtkentrycompletion.c
+@@ -2561,6 +2561,18 @@
+
+ static void
+ clear_completion_callback (GtkEntry   *entry,
++                           GParamSpec *pspec);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++clear_completion_callback_notify_cb (GtkEntry *entry, GParamSpec *pspec, gpointer data)
++{
++  (void) data;
++  clear_completion_callback (entry, pspec);
++}
++
++static void
++clear_completion_callback (GtkEntry   *entry,
+                            GParamSpec *pspec)
+ {
+   GtkEntryCompletion *completion = gtk_entry_get_completion (entry);
+@@ -2623,7 +2635,7 @@
+       g_signal_connect (completion->priv->entry, "insert-text",
+                         G_CALLBACK (completion_insert_text_callback), completion);
+     g_signal_connect (completion->priv->entry, "notify",
+-                      G_CALLBACK (clear_completion_callback), completion);
++                      G_CALLBACK (clear_completion_callback_notify_cb), completion);
+     g_signal_connect (completion->priv->entry, "activate",
+                       G_CALLBACK (accept_completion_callback), completion);
+     g_signal_connect (completion->priv->entry, "focus-out-event",
+@@ -2684,7 +2696,7 @@
+   g_signal_handlers_disconnect_by_func (completion->priv->entry,
+                                         G_CALLBACK (completion_insert_text_callback), completion);
+   g_signal_handlers_disconnect_by_func (completion->priv->entry,
+-                                        G_CALLBACK (clear_completion_callback), completion);
++                                        G_CALLBACK (clear_completion_callback_notify_cb), completion);
+   g_signal_handlers_disconnect_by_func (completion->priv->entry,
+                                         G_CALLBACK (accept_completion_callback), completion);
+ }
+--- a/gtk/gtkfontchooserdialog.c
++++ b/gtk/gtkfontchooserdialog.c
+@@ -143,6 +143,18 @@
+ }
+
+ static void
++update_tweak_button (GtkFontChooserDialog *dialog);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_tweak_button_notify_cb (GtkFontChooserDialog *dialog, GParamSpec *pspec, GtkWidget *fontchooser)
++{
++  (void) pspec;
++  (void) fontchooser;
++  update_tweak_button (dialog);
++}
++
++static void
+ update_tweak_button (GtkFontChooserDialog *dialog)
+ {
+   GtkFontChooserLevel level;
+@@ -228,6 +240,18 @@
+   gtk_widget_class_bind_template_child_private (widget_class, GtkFontChooserDialog, select_button);
+   gtk_widget_class_bind_template_child_private (widget_class, GtkFontChooserDialog, cancel_button);
+   gtk_widget_class_bind_template_callback (widget_class, font_activated_cb);
++}
++
++static void
++update_button (GtkFontChooserDialog *dialog);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_button_notify_cb (GtkFontChooserDialog *dialog, GParamSpec *pspec, GtkWidget *fontchooser)
++{
++  (void) pspec;
++  (void) fontchooser;
++  update_button (dialog);
+ }
+
+ static void
+@@ -265,11 +289,11 @@
+                                   GTK_FONT_CHOOSER (priv->fontchooser));
+
+   g_signal_connect_swapped (priv->fontchooser, "notify::font-desc",
+-                            G_CALLBACK (update_button), fontchooserdiag);
++                            G_CALLBACK (update_button_notify_cb), fontchooserdiag);
+   update_button (fontchooserdiag);
+
+   g_signal_connect_swapped (priv->fontchooser, "notify::level",
+-                            G_CALLBACK (update_tweak_button), fontchooserdiag);
++                            G_CALLBACK (update_tweak_button_notify_cb), fontchooserdiag);
+ }
+
+ /**
+--- a/gtk/gtkfontchooserwidget.c
++++ b/gtk/gtkfontchooserwidget.c
+@@ -237,6 +237,7 @@
+ static void selection_changed (GtkTreeSelection *selection,
+                                GtkFontChooserWidget *fontchooser);
+ static void update_font_features (GtkFontChooserWidget *fontchooser);
++static void update_font_features_notify_cb (GtkFontChooserWidget *fontchooser, GParamSpec *pspec, GtkWidget *feat);
+
+
+ static void                gtk_font_chooser_widget_set_level (GtkFontChooserWidget *fontchooser,
+@@ -1283,6 +1284,18 @@
+ }
+
+ static void
++fontconfig_changed (GtkFontChooserWidget *fontchooser);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++fontconfig_changed_notify_cb (GtkFontChooserWidget *fontchooser, GParamSpec *pspec, GtkSettings *settings)
++{
++  (void) pspec;
++  (void) settings;
++  fontconfig_changed (fontchooser);
++}
++
++static void
+ fontconfig_changed (GtkFontChooserWidget *fontchooser)
+ {
+   gtk_font_chooser_widget_load_fonts (fontchooser, TRUE);
+@@ -1301,11 +1314,11 @@
+   if (previous_screen)
+     {
+       settings = gtk_settings_get_for_screen (previous_screen);
+-      g_signal_handlers_disconnect_by_func (settings, fontconfig_changed, widget);
++      g_signal_handlers_disconnect_by_func (settings, fontconfig_changed_notify_cb, widget);
+     }
+   settings = gtk_widget_get_settings (widget);
+   g_signal_connect_object (settings, "notify::gtk-fontconfig-timestamp",
+-                           G_CALLBACK (fontconfig_changed), widget, G_CONNECT_SWAPPED);
++                           G_CALLBACK (fontconfig_changed_notify_cb), widget, G_CONNECT_SWAPPED);
+
+   if (previous_screen == NULL)
+     previous_screen = gdk_screen_get_default ();
+@@ -2228,8 +2241,8 @@
+       feat = gtk_check_button_new_with_label (get_feature_display_name (tag));
+       gtk_widget_show (feat);
+       set_inconsistent (GTK_CHECK_BUTTON (feat), TRUE);
+-      g_signal_connect_swapped (feat, "notify::active", G_CALLBACK (update_font_features), fontchooser);
+-      g_signal_connect_swapped (feat, "notify::inconsistent", G_CALLBACK (update_font_features), fontchooser);
++      g_signal_connect_swapped (feat, "notify::active", G_CALLBACK (update_font_features_notify_cb), fontchooser);
++      g_signal_connect_swapped (feat, "notify::inconsistent", G_CALLBACK (update_font_features_notify_cb), fontchooser);
+       g_signal_connect (feat, "clicked", G_CALLBACK (feat_clicked), NULL);
+
+       gesture = gtk_gesture_multi_press_new (feat);
+@@ -2308,7 +2321,7 @@
+       if (group_button == NULL)
+         group_button = feat;
+
+-      g_signal_connect_swapped (feat, "notify::active", G_CALLBACK (update_font_features), fontchooser);
++      g_signal_connect_swapped (feat, "notify::active", G_CALLBACK (update_font_features_notify_cb), fontchooser);
+       g_object_set_data (G_OBJECT (feat), "default", group_button);
+
+       example = gtk_label_new ("");
+@@ -2478,6 +2491,18 @@
+   g_object_unref (pango_font);
+
+   return has_feature;
++}
++
++static void
++update_font_features (GtkFontChooserWidget *fontchooser);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_font_features_notify_cb (GtkFontChooserWidget *fontchooser, GParamSpec *pspec, GtkWidget *feat)
++{
++  (void) pspec;
++  (void) feat;
++  update_font_features (fontchooser);
+ }
+
+ static void
+--- a/gtk/gtkheaderbar.c
++++ b/gtk/gtkheaderbar.c
+@@ -283,6 +283,18 @@
+
+   if (priv->titlebar_end_separator != NULL)
+     gtk_widget_set_visible (priv->titlebar_end_separator, have_visible_at_end);
++}
++
++void
++_gtk_header_bar_update_window_buttons (GtkHeaderBar *bar);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++_gtk_header_bar_update_window_buttons_notify_cb (GtkHeaderBar *bar, GParamSpec *pspec, GtkSettings *settings)
++{
++  (void) pspec;
++  (void) settings;
++  _gtk_header_bar_update_window_buttons (bar);
+ }
+
+ void
+@@ -1928,9 +1940,9 @@
+
+   settings = gtk_widget_get_settings (widget);
+   g_signal_connect_swapped (settings, "notify::gtk-shell-shows-app-menu",
+-                            G_CALLBACK (_gtk_header_bar_update_window_buttons), widget);
++                            G_CALLBACK (_gtk_header_bar_update_window_buttons_notify_cb), widget);
+   g_signal_connect_swapped (settings, "notify::gtk-decoration-layout",
+-                            G_CALLBACK (_gtk_header_bar_update_window_buttons), widget);
++                            G_CALLBACK (_gtk_header_bar_update_window_buttons_notify_cb), widget);
+   _gtk_header_bar_update_window_buttons (GTK_HEADER_BAR (widget));
+ }
+
+@@ -1941,7 +1953,7 @@
+
+   settings = gtk_widget_get_settings (widget);
+
+-  g_signal_handlers_disconnect_by_func (settings, _gtk_header_bar_update_window_buttons, widget);
++  g_signal_handlers_disconnect_by_func (settings, _gtk_header_bar_update_window_buttons_notify_cb, widget);
+
+   GTK_WIDGET_CLASS (gtk_header_bar_parent_class)->unrealize (widget);
+ }
+--- a/gtk/gtkiconhelper.c
++++ b/gtk/gtkiconhelper.c
+@@ -50,6 +50,30 @@
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkIconHelper, gtk_icon_helper, GTK_TYPE_CSS_GADGET)
+
+ static void
++gtk_icon_helper_invalidate (GtkIconHelper *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_icon_helper_direction_changed_cb (GtkIconHelper *self, GtkTextDirection previous_direction, GtkWidget *widget)
++{
++  (void) previous_direction;
++  (void) widget;
++  gtk_icon_helper_invalidate (self);
++}
++
++static void
++gtk_icon_helper_invalidate (GtkIconHelper *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_icon_helper_invalidate_notify_cb (GtkIconHelper *self, GParamSpec *pspec, GtkWidget *widget)
++{
++  (void) pspec;
++  (void) widget;
++  gtk_icon_helper_invalidate (self);
++}
++
++static void
+ gtk_icon_helper_invalidate (GtkIconHelper *self)
+ {
+   if (self->priv->rendered_surface != NULL)
+@@ -174,8 +198,8 @@
+
+   widget = gtk_css_gadget_get_owner (GTK_CSS_GADGET (self));
+
+-  g_signal_connect_swapped (widget, "direction-changed", G_CALLBACK (gtk_icon_helper_invalidate), self);
+-  g_signal_connect_swapped (widget, "notify::scale-factor", G_CALLBACK (gtk_icon_helper_invalidate), self);
++  g_signal_connect_swapped (widget, "direction-changed", G_CALLBACK (gtk_icon_helper_direction_changed_cb), self);
++  g_signal_connect_swapped (widget, "notify::scale-factor", G_CALLBACK (gtk_icon_helper_invalidate_notify_cb), self);
+
+   G_OBJECT_CLASS (gtk_icon_helper_parent_class)->constructed (object);
+ }
+@@ -187,7 +211,8 @@
+   GtkWidget *widget;
+
+   widget = gtk_css_gadget_get_owner (GTK_CSS_GADGET (self));
+-  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (gtk_icon_helper_invalidate), self);
++  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (gtk_icon_helper_invalidate_notify_cb), self);
++  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (gtk_icon_helper_direction_changed_cb), self);
+
+   _gtk_icon_helper_clear (self);
+   gtk_image_definition_unref (self->priv->def);
+--- a/gtk/gtkimmulticontext.c
++++ b/gtk/gtkimmulticontext.c
+@@ -291,6 +291,18 @@
+
+ static void
+ im_module_setting_changed (GtkSettings *settings, 
++                           gpointer     data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++im_module_setting_changed_notify_cb (GtkSettings *settings, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  im_module_setting_changed (settings, data);
++}
++
++static void
++im_module_setting_changed (GtkSettings *settings, 
+                            gpointer     data)
+ {
+   global_context_id = NULL;
+@@ -320,7 +332,7 @@
+       if (!connected)
+         {
+           g_signal_connect (settings, "notify::gtk-im-module",
+-                            G_CALLBACK (im_module_setting_changed), NULL);
++                            G_CALLBACK (im_module_setting_changed_notify_cb), NULL);
+           g_object_set_data (G_OBJECT (settings), "gtk-im-module-connected",
+                              GINT_TO_POINTER (TRUE));
+
+--- a/gtk/gtklabel.c
++++ b/gtk/gtklabel.c
+@@ -1930,6 +1930,18 @@
+ }
+
+ static void
++label_shortcut_setting_changed (GtkSettings *settings);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++label_shortcut_setting_changed_notify_cb (GtkSettings *settings, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  (void) data;
++  label_shortcut_setting_changed (settings);
++}
++
++static void
+ label_shortcut_setting_changed (GtkSettings *settings)
+ {
+   GList *list, *l;
+@@ -2021,10 +2033,10 @@
+   if (! shortcuts_connected)
+     {
+       g_signal_connect (settings, "notify::gtk-enable-mnemonics",
+-                        G_CALLBACK (label_shortcut_setting_changed),
++                        G_CALLBACK (label_shortcut_setting_changed_notify_cb),
+                         NULL);
+       g_signal_connect (settings, "notify::gtk-enable-accels",
+-                        G_CALLBACK (label_shortcut_setting_changed),
++                        G_CALLBACK (label_shortcut_setting_changed_notify_cb),
+                         NULL);
+
+       g_object_set_qdata (G_OBJECT (settings), quark_shortcuts_connected,
+--- a/gtk/gtkmenubutton.c
++++ b/gtk/gtkmenubutton.c
+@@ -970,6 +970,17 @@
+ }
+
+ static void
++popover_destroy_cb (GtkMenuButton *menu_button);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++popover_destroy_cb_signal_cb (GtkMenuButton *menu_button, GtkWidget *popover)
++{
++  (void) popover;
++  popover_destroy_cb (menu_button);
++}
++
++static void
+ popover_destroy_cb (GtkMenuButton *menu_button)
+ {
+   gtk_menu_button_set_popover (menu_button, NULL);
+@@ -1054,7 +1065,7 @@
+                                             menu_deactivate_cb,
+                                             object);
+       g_signal_handlers_disconnect_by_func (priv->popover,
+-                                            popover_destroy_cb,
++                                            popover_destroy_cb_signal_cb,
+                                             object);
+       gtk_popover_set_relative_to (GTK_POPOVER (priv->popover), NULL);
+       priv->popover = NULL;
+@@ -1159,7 +1170,7 @@
+                                             menu_deactivate_cb,
+                                             menu_button);
+       g_signal_handlers_disconnect_by_func (priv->popover,
+-                                            popover_destroy_cb,
++                                            popover_destroy_cb_signal_cb,
+                                             menu_button);
+
+       gtk_popover_set_relative_to (GTK_POPOVER (priv->popover), NULL);
+@@ -1173,7 +1184,7 @@
+       g_signal_connect_swapped (priv->popover, "closed",
+                                 G_CALLBACK (menu_deactivate_cb), menu_button);
+       g_signal_connect_swapped (priv->popover, "destroy",
+-                                G_CALLBACK (popover_destroy_cb), menu_button);
++                                G_CALLBACK (popover_destroy_cb_signal_cb), menu_button);
+       update_popover_direction (menu_button);
+       gtk_style_context_remove_class (gtk_widget_get_style_context (GTK_WIDGET (menu_button)), "menu-button");
+     }
+--- a/gtk/gtkplacessidebar.c
++++ b/gtk/gtkplacessidebar.c
+@@ -2795,12 +2795,34 @@
+ }
+
+ static void
++set_prelight (GtkPopover *popover);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++set_prelight_signal_cb (GtkPopover *popover, gpointer data)
++{
++  (void) data;
++  set_prelight (popover);
++}
++
++static void
+ set_prelight (GtkPopover *popover)
+ {
+   update_popover_shadowing (gtk_popover_get_relative_to (popover), TRUE);
+ }
+
+ static void
++unset_prelight (GtkPopover *popover);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++unset_prelight_signal_cb (GtkPopover *popover, gpointer data)
++{
++  (void) data;
++  unset_prelight (popover);
++}
++
++static void
+ unset_prelight (GtkPopover *popover)
+ {
+   update_popover_shadowing (gtk_popover_get_relative_to (popover), FALSE);
+@@ -2809,8 +2831,8 @@
+ static void
+ setup_popover_shadowing (GtkWidget *popover)
+ {
+-  g_signal_connect (popover, "map", G_CALLBACK (set_prelight), NULL);
+-  g_signal_connect (popover, "unmap", G_CALLBACK (unset_prelight), NULL);
++  g_signal_connect (popover, "map", G_CALLBACK (set_prelight_signal_cb), NULL);
++  g_signal_connect (popover, "unmap", G_CALLBACK (unset_prelight_signal_cb), NULL);
+ }
+
+ static void
+--- a/gtk/gtkpopover.c
++++ b/gtk/gtkpopover.c
+@@ -2488,6 +2488,17 @@
+
+
+ static void
++back_to_main (GtkWidget *popover);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++back_to_main_signal_cb (GtkWidget *popover, gpointer data)
++{
++  (void) data;
++  back_to_main (popover);
++}
++
++static void
+ back_to_main (GtkWidget *popover)
+ {
+   GtkWidget *stack;
+@@ -2563,8 +2574,8 @@
+                                          popover);
+       gtk_stack_set_visible_child_name (GTK_STACK (stack), "main");
+
+-      g_signal_connect (popover, "unmap", G_CALLBACK (back_to_main), NULL);
+-      g_signal_connect (popover, "map", G_CALLBACK (back_to_main), NULL);
++      g_signal_connect (popover, "unmap", G_CALLBACK (back_to_main_signal_cb), NULL);
++      g_signal_connect (popover, "map", G_CALLBACK (back_to_main_signal_cb), NULL);
+
+       gtk_style_context_add_class (style_context, GTK_STYLE_CLASS_MENU);
+     }
+--- a/gtk/gtkprintoperation.c
++++ b/gtk/gtkprintoperation.c
+@@ -180,6 +180,16 @@
+   return quark;
+ }
+      
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_response_cb (GtkDialog *dialog, gint response_id, gpointer data)
++{
++  (void) response_id;
++  (void) data;
++  gtk_widget_destroy (GTK_WIDGET (dialog));
++}
++
+ static void
+ gtk_print_operation_finalize (GObject *object)
+ {
+@@ -3045,7 +3055,7 @@
+                                          GTK_WINDOW (error_dialog));
+
+           g_signal_connect (error_dialog, "response",
+-                            G_CALLBACK (gtk_widget_destroy), NULL);
++                            G_CALLBACK (gtk_widget_destroy_response_cb), NULL);
+
+           gtk_widget_show (error_dialog);
+
+--- a/gtk/gtkrecentmanager.c
++++ b/gtk/gtkrecentmanager.c
+@@ -218,6 +218,7 @@
+                                                         const gint         size);
+
+ static void     gtk_recent_manager_enabled_changed     (GtkRecentManager  *manager);
++static void gtk_recent_manager_enabled_changed_notify_cb (GtkRecentManager *manager, GParamSpec *pspec, GtkSettings *settings);
+
+
+ static void     build_recent_items_list                (GtkRecentManager  *manager);
+@@ -345,7 +346,7 @@
+   settings = gtk_settings_get_default ();
+   if (settings)
+     g_signal_connect_swapped (settings, "notify::gtk-recent-files-enabled",
+-                              G_CALLBACK (gtk_recent_manager_enabled_changed), manager);
++                              G_CALLBACK (gtk_recent_manager_enabled_changed_notify_cb), manager);
+ }
+
+ static void
+@@ -433,6 +434,18 @@
+     }
+
+   G_OBJECT_CLASS (gtk_recent_manager_parent_class)->dispose (gobject);
++}
++
++static void
++gtk_recent_manager_enabled_changed (GtkRecentManager *manager);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_recent_manager_enabled_changed_notify_cb (GtkRecentManager *manager, GParamSpec *pspec, GtkSettings *settings)
++{
++  (void) pspec;
++  (void) settings;
++  gtk_recent_manager_enabled_changed (manager);
+ }
+
+ static void
+--- a/gtk/gtkshortcutswindow.c
++++ b/gtk/gtkshortcutswindow.c
+@@ -144,6 +144,18 @@
+   g_list_free (children);
+
+   return n;
++}
++
++static void
++update_title_stack (GtkShortcutsWindow *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_title_stack_notify_cb (GtkShortcutsWindow *self, GParamSpec *pspec, GtkStack *stack)
++{
++  (void) pspec;
++  (void) stack;
++  update_title_stack (self);
+ }
+
+ static void
+@@ -593,6 +605,18 @@
+ }
+
+ static void
++gtk_shortcuts_window__search_mode__changed (GtkShortcutsWindow *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_shortcuts_window__search_mode__changed_notify_cb (GtkShortcutsWindow *self, GParamSpec *pspec, GtkSearchBar *search_bar)
++{
++  (void) pspec;
++  (void) search_bar;
++  gtk_shortcuts_window__search_mode__changed (self);
++}
++
++static void
+ gtk_shortcuts_window__search_mode__changed (GtkShortcutsWindow *self)
+ {
+   GtkShortcutsWindowPrivate *priv = gtk_shortcuts_window_get_instance_private (self);
+@@ -654,7 +678,7 @@
+   GtkShortcutsWindow *self = (GtkShortcutsWindow *)object;
+   GtkShortcutsWindowPrivate *priv = gtk_shortcuts_window_get_instance_private (self);
+
+-  g_signal_handlers_disconnect_by_func (priv->stack, G_CALLBACK (update_title_stack), self);
++  g_signal_handlers_disconnect_by_func (priv->stack, G_CALLBACK (update_title_stack_notify_cb), self);
+
+   gtk_shortcuts_window_set_window (self, NULL);
+
+@@ -995,7 +1019,7 @@
+                            G_CONNECT_SWAPPED);
+   g_signal_connect_object (priv->search_bar,
+                            "notify::search-mode-enabled",
+-                           G_CALLBACK (gtk_shortcuts_window__search_mode__changed),
++                           G_CALLBACK (gtk_shortcuts_window__search_mode__changed_notify_cb),
+                            self,
+                            G_CONNECT_SWAPPED);
+
+@@ -1064,6 +1088,6 @@
+   gtk_stack_add_named (priv->stack, empty, "no-search-results");
+
+   g_signal_connect_object (priv->stack, "notify::visible-child",
+-                           G_CALLBACK (update_title_stack), self, G_CONNECT_SWAPPED);
+-
+-}
++                           G_CALLBACK (update_title_stack_notify_cb), self, G_CONNECT_SWAPPED);
++
++}
+--- a/gtk/gtkstacksidebar.c
++++ b/gtk/gtkstacksidebar.c
+@@ -388,6 +388,17 @@
+ }
+
+ static void
++disconnect_stack_signals (GtkStackSidebar *sidebar);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++disconnect_stack_signals_signal_cb (GtkStackSidebar *sidebar, GtkWidget *stack)
++{
++  (void) stack;
++  disconnect_stack_signals (sidebar);
++}
++
++static void
+ disconnect_stack_signals (GtkStackSidebar *sidebar)
+ {
+   GtkStackSidebarPrivate *priv = gtk_stack_sidebar_get_instance_private (sidebar);
+@@ -395,7 +406,7 @@
+   g_signal_handlers_disconnect_by_func (priv->stack, on_stack_child_added, sidebar);
+   g_signal_handlers_disconnect_by_func (priv->stack, on_stack_child_removed, sidebar);
+   g_signal_handlers_disconnect_by_func (priv->stack, on_child_changed, sidebar);
+-  g_signal_handlers_disconnect_by_func (priv->stack, disconnect_stack_signals, sidebar);
++  g_signal_handlers_disconnect_by_func (priv->stack, disconnect_stack_signals_signal_cb, sidebar);
+ }
+
+ static void
+@@ -410,7 +421,7 @@
+   g_signal_connect (priv->stack, "notify::visible-child",
+                     G_CALLBACK (on_child_changed), sidebar);
+   g_signal_connect_swapped (priv->stack, "destroy",
+-                            G_CALLBACK (disconnect_stack_signals), sidebar);
++                            G_CALLBACK (disconnect_stack_signals_signal_cb), sidebar);
+ }
+
+ static void
+--- a/gtk/gtkstackswitcher.c
++++ b/gtk/gtkstackswitcher.c
+@@ -471,6 +471,17 @@
+ }
+
+ static void
++disconnect_stack_signals (GtkStackSwitcher *switcher);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++disconnect_stack_signals_signal_cb (GtkStackSwitcher *switcher, GtkWidget *stack)
++{
++  (void) stack;
++  disconnect_stack_signals (switcher);
++}
++
++static void
+ disconnect_stack_signals (GtkStackSwitcher *switcher)
+ {
+   GtkStackSwitcherPrivate *priv;
+@@ -479,7 +490,7 @@
+   g_signal_handlers_disconnect_by_func (priv->stack, on_stack_child_added, switcher);
+   g_signal_handlers_disconnect_by_func (priv->stack, on_stack_child_removed, switcher);
+   g_signal_handlers_disconnect_by_func (priv->stack, on_child_changed, switcher);
+-  g_signal_handlers_disconnect_by_func (priv->stack, disconnect_stack_signals, switcher);
++  g_signal_handlers_disconnect_by_func (priv->stack, disconnect_stack_signals_signal_cb, switcher);
+ }
+
+ static void
+@@ -495,7 +506,7 @@
+   g_signal_connect (priv->stack, "notify::visible-child",
+                     G_CALLBACK (on_child_changed), switcher);
+   g_signal_connect_swapped (priv->stack, "destroy",
+-                            G_CALLBACK (disconnect_stack_signals), switcher);
++                            G_CALLBACK (disconnect_stack_signals_signal_cb), switcher);
+ }
+
+ /**
+--- a/gtk/gtktestutils.c
++++ b/gtk/gtktestutils.c
+@@ -621,6 +621,18 @@
+ }
+
+ static void
++try_main_quit (void);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++try_main_quit_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) widget;
++  (void) data;
++  try_main_quit ();
++}
++
++static void
+ try_main_quit (void)
+ {
+   if (gtk_main_level())
+@@ -671,7 +683,7 @@
+   vbox = gtk_test_create_widget (GTK_TYPE_BOX, "parent", window, "orientation", GTK_ORIENTATION_VERTICAL, NULL);
+   gtk_test_create_widget (GTK_TYPE_LABEL, "label", dialog_text, "parent", vbox, NULL);
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+-  g_signal_connect (window, "destroy", G_CALLBACK (try_main_quit), NULL);
++  g_signal_connect (window, "destroy", G_CALLBACK (try_main_quit_signal_cb), NULL);
+   va_start (var_args, dialog_text);
+   arg1 = va_arg (var_args, const char*);
+   while (arg1)
+@@ -718,7 +730,7 @@
+   vbox = gtk_test_create_widget (GTK_TYPE_BOX, "parent", window, "orientation", GTK_ORIENTATION_VERTICAL, NULL);
+   gtk_test_create_widget (GTK_TYPE_LABEL, "label", dialog_text, "parent", vbox, NULL);
+ G_GNUC_END_IGNORE_DEPRECATIONS;
+-  g_signal_connect (window, "destroy", G_CALLBACK (try_main_quit), NULL);
++  g_signal_connect (window, "destroy", G_CALLBACK (try_main_quit_signal_cb), NULL);
+   gtk_widget_show_all (vbox);
+   return window;
+ }
+--- a/gtk/gtktreeselection.c
++++ b/gtk/gtktreeselection.c
+@@ -717,6 +717,57 @@
+
+ /* gtk_tree_selection_selected_foreach helper */
+ static void
++model_changed (gpointer data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++model_rows_reordered_cb (gpointer data, GtkTreePath *path, GtkTreeIter *iter, gint *new_order, GtkTreeModel *model)
++{
++  (void) path;
++  (void) iter;
++  (void) new_order;
++  (void) model;
++  model_changed (data);
++}
++
++static void
++model_changed (gpointer data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++model_row_deleted_cb (gpointer data, GtkTreePath *path, GtkTreeModel *model)
++{
++  (void) path;
++  (void) model;
++  model_changed (data);
++}
++
++static void
++model_changed (gpointer data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++model_row_inserted_cb (gpointer data, GtkTreePath *path, GtkTreeIter *iter, GtkTreeModel *model)
++{
++  (void) path;
++  (void) iter;
++  (void) model;
++  model_changed (data);
++}
++
++static void
++model_changed (gpointer data);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++model_changed_notify_cb (gpointer data, GParamSpec *pspec, GtkTreeView *tree_view)
++{
++  (void) pspec;
++  (void) tree_view;
++  model_changed (data);
++}
++
++static void
+ model_changed (gpointer data)
+ {
+   gboolean *stop = (gboolean *)data;
+@@ -782,16 +833,16 @@
+
+   /* connect to signals to monitor changes in treemodel */
+   inserted_id = g_signal_connect_swapped (model, "row-inserted",
+-					  G_CALLBACK (model_changed),
++					  G_CALLBACK (model_row_inserted_cb),
+ 				          &stop);
+   deleted_id = g_signal_connect_swapped (model, "row-deleted",
+-					 G_CALLBACK (model_changed),
++					 G_CALLBACK (model_row_deleted_cb),
+ 				         &stop);
+   reordered_id = g_signal_connect_swapped (model, "rows-reordered",
+-					   G_CALLBACK (model_changed),
++					   G_CALLBACK (model_rows_reordered_cb),
+ 				           &stop);
+   changed_id = g_signal_connect_swapped (priv->tree_view, "notify::model",
+-					 G_CALLBACK (model_changed), 
++					 G_CALLBACK (model_changed_notify_cb), 
+ 					 &stop);
+
+   /* find the node internally */
+--- a/gtk/gtktreeviewcolumn.c
++++ b/gtk/gtktreeviewcolumn.c
+@@ -116,6 +116,7 @@
+ static void gtk_tree_view_column_sort                          (GtkTreeViewColumn       *tree_column,
+ 								gpointer                 data);
+ static void gtk_tree_view_column_setup_sort_column_id_callback (GtkTreeViewColumn       *tree_column);
++static void gtk_tree_view_column_setup_sort_column_id_callback_notify_cb (GtkTreeViewColumn *tree_column, GParamSpec *pspec, GtkTreeView *tree_view);
+ static void gtk_tree_view_column_set_attributesv               (GtkTreeViewColumn       *tree_column,
+ 								GtkCellRenderer         *cell_renderer,
+ 								va_list                  args);
+@@ -1200,6 +1201,18 @@
+ }
+
+ static void
++gtk_tree_view_column_setup_sort_column_id_callback (GtkTreeViewColumn *tree_column);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_tree_view_column_setup_sort_column_id_callback_notify_cb (GtkTreeViewColumn *tree_column, GParamSpec *pspec, GtkTreeView *tree_view)
++{
++  (void) pspec;
++  (void) tree_view;
++  gtk_tree_view_column_setup_sort_column_id_callback (tree_column);
++}
++
++static void
+ gtk_tree_view_column_setup_sort_column_id_callback (GtkTreeViewColumn *tree_column)
+ {
+   GtkTreeViewColumnPrivate *priv = tree_column->priv;
+@@ -1402,7 +1415,7 @@
+   priv->property_changed_signal =
+     g_signal_connect_swapped (tree_view,
+ 			      "notify::model",
+-			      G_CALLBACK (gtk_tree_view_column_setup_sort_column_id_callback),
++			      G_CALLBACK (gtk_tree_view_column_setup_sort_column_id_callback_notify_cb),
+ 			      column);
+
+   gtk_tree_view_column_setup_sort_column_id_callback (column);
+--- a/gtk/inspector/actions.c
++++ b/gtk/inspector/actions.c
+@@ -48,6 +48,15 @@
+
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkInspectorActions, gtk_inspector_actions, GTK_TYPE_BOX)
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  gtk_widget_destroy (widget);
++}
++
+ static void
+ gtk_inspector_actions_init (GtkInspectorActions *sl)
+ {
+@@ -265,7 +274,7 @@
+   gtk_container_add (GTK_CONTAINER (popover), editor);
+   gtk_popover_popup (GTK_POPOVER (popover));
+
+-  g_signal_connect (popover, "hide", G_CALLBACK (gtk_widget_destroy), NULL);
++  g_signal_connect (popover, "hide", G_CALLBACK (gtk_widget_destroy_signal_cb), NULL);
+
+   g_free (name);
+   g_free (prefix);
+--- a/gtk/inspector/css-editor.c
++++ b/gtk/inspector/css-editor.c
+@@ -53,6 +53,16 @@
+   GtkTextIter end;
+ } CssError;
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_response_cb (GtkDialog *dialog, gint response_id, gpointer data)
++{
++  (void) response_id;
++  (void) data;
++  gtk_widget_destroy (GTK_WIDGET (dialog));
++}
++
+ static void
+ css_error_free (gpointer data)
+ {
+@@ -162,7 +172,7 @@
+                                        _("Saving CSS failed"));
+       gtk_message_dialog_format_secondary_text (GTK_MESSAGE_DIALOG (dialog),
+                                                 "%s", error->message);
+-      g_signal_connect (dialog, "response", G_CALLBACK (gtk_widget_destroy), NULL);
++      g_signal_connect (dialog, "response", G_CALLBACK (gtk_widget_destroy_response_cb), NULL);
+       gtk_widget_show (dialog);
+       g_error_free (error);
+     }
+--- a/gtk/inspector/css-node-tree.c
++++ b/gtk/inspector/css-node-tree.c
+@@ -85,6 +85,15 @@
+   GtkInspectorCssNodeTree *cnt;
+ } NodePropEditor;
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  gtk_widget_destroy (widget);
++}
++
+ static void
+ show_node_prop_editor (NodePropEditor *npe)
+ {
+@@ -104,7 +113,7 @@
+
+   gtk_popover_popup (GTK_POPOVER (popover));
+
+-  g_signal_connect (popover, "unmap", G_CALLBACK (gtk_widget_destroy), NULL);
++  g_signal_connect (popover, "unmap", G_CALLBACK (gtk_widget_destroy_signal_cb), NULL);
+ }
+
+ static void
+--- a/gtk/inspector/gtkstackcombo.c
++++ b/gtk/inspector/gtkstackcombo.c
+@@ -64,6 +64,18 @@
+ }
+
+ static void
++on_child_visible_changed (GtkStackCombo *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++on_child_visible_changed_notify_cb (GtkStackCombo *self, GParamSpec *pspec, GtkWidget *widget)
++{
++  (void) pspec;
++  (void) widget;
++  on_child_visible_changed (self);
++}
++
++static void
+ on_child_visible_changed (GtkStackCombo *self)
+ {
+   rebuild_combo (self);
+@@ -73,8 +85,8 @@
+ add_child (GtkWidget     *widget,
+            GtkStackCombo *self)
+ {
+-  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (on_child_visible_changed), self);
+-  g_signal_connect_swapped (widget, "notify::visible", G_CALLBACK (on_child_visible_changed), self);
++  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (on_child_visible_changed_notify_cb), self);
++  g_signal_connect_swapped (widget, "notify::visible", G_CALLBACK (on_child_visible_changed_notify_cb), self);
+
+   if (gtk_widget_get_visible (widget))
+     {
+@@ -117,8 +129,19 @@
+                         GtkWidget     *widget,
+                         GtkStackCombo *self)
+ {
+-  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (on_child_visible_changed), self);
++  g_signal_handlers_disconnect_by_func (widget, G_CALLBACK (on_child_visible_changed_notify_cb), self);
+   rebuild_combo (self);
++}
++
++static void
++disconnect_stack_signals (GtkStackCombo *self);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++disconnect_stack_signals_signal_cb (GtkStackCombo *self, GtkWidget *stack)
++{
++  (void) stack;
++  disconnect_stack_signals (self);
+ }
+
+ static void
+@@ -128,7 +151,7 @@
+   self->binding = NULL;
+   g_signal_handlers_disconnect_by_func (self->stack, on_stack_child_added, self);
+   g_signal_handlers_disconnect_by_func (self->stack, on_stack_child_removed, self);
+-  g_signal_handlers_disconnect_by_func (self->stack, disconnect_stack_signals, self);
++  g_signal_handlers_disconnect_by_func (self->stack, disconnect_stack_signals_signal_cb, self);
+ }
+
+ static void
+@@ -136,7 +159,7 @@
+ {
+   g_signal_connect_after (self->stack, "add", G_CALLBACK (on_stack_child_added), self);
+   g_signal_connect_after (self->stack, "remove", G_CALLBACK (on_stack_child_removed), self);
+-  g_signal_connect_swapped (self->stack, "destroy", G_CALLBACK (disconnect_stack_signals), self);
++  g_signal_connect_swapped (self->stack, "destroy", G_CALLBACK (disconnect_stack_signals_signal_cb), self);
+   self->binding = g_object_bind_property (self->stack, "visible-child-name", self->combo, "active-id", G_BINDING_BIDIRECTIONAL | G_BINDING_SYNC_CREATE);
+ }
+
+--- a/gtk/inspector/inspect-button.c
++++ b/gtk/inspector/inspect-button.c
+@@ -185,13 +185,24 @@
+                             GtkInspectorWindow *iw);
+
+ static void
++clear_flash (GtkInspectorWindow *iw);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++clear_flash_signal_cb (GtkInspectorWindow *iw, GtkWidget *widget)
++{
++  (void) widget;
++  clear_flash (iw);
++}
++
++static void
+ clear_flash (GtkInspectorWindow *iw)
+ {
+   if (iw->flash_widget)
+     {
+       gtk_widget_queue_draw (iw->flash_widget);
+       g_signal_handlers_disconnect_by_func (iw->flash_widget, draw_flash, iw);
+-      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash, iw);
++      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash_signal_cb, iw);
+       iw->flash_widget = NULL;
+     }
+ }
+@@ -205,7 +216,7 @@
+   iw->flash_count = 1;
+   iw->flash_widget = widget;
+   g_signal_connect_after (widget, "draw", G_CALLBACK (draw_flash), iw);
+-  g_signal_connect_swapped (widget, "unmap", G_CALLBACK (clear_flash), iw);
++  g_signal_connect_swapped (widget, "unmap", G_CALLBACK (clear_flash_signal_cb), iw);
+   gtk_widget_queue_draw (widget);
+ }
+
+@@ -434,7 +445,7 @@
+   if (iw->flash_count == 6)
+     {
+       g_signal_handlers_disconnect_by_func (iw->flash_widget, draw_flash, iw);
+-      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash, iw);
++      g_signal_handlers_disconnect_by_func (iw->flash_widget, clear_flash_signal_cb, iw);
+       iw->flash_widget = NULL;
+       iw->flash_cnx = 0;
+
+@@ -472,7 +483,7 @@
+ gtk_inspector_stop_highlight (GtkWidget *widget)
+ {
+   g_signal_handlers_disconnect_by_func (widget, draw_flash, NULL);
+-  g_signal_handlers_disconnect_by_func (widget, clear_flash, NULL);
++  g_signal_handlers_disconnect_by_func (widget, clear_flash_signal_cb, NULL);
+   gtk_widget_queue_draw (widget);
+ }
+
+--- a/gtk/inspector/misc-info.c
++++ b/gtk/inspector/misc-info.c
+@@ -95,6 +95,15 @@
+
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkInspectorMiscInfo, gtk_inspector_misc_info, GTK_TYPE_SCROLLED_WINDOW)
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  gtk_widget_destroy (widget);
++}
++
+ static gchar *
+ format_state_flags (GtkStateFlags state)
+ {
+@@ -341,7 +350,7 @@
+       AtkRole role;
+       GList *list, *l;
+
+-      gtk_container_forall (GTK_CONTAINER (sl->priv->mnemonic_label), (GtkCallback)gtk_widget_destroy, NULL);
++      gtk_container_forall (GTK_CONTAINER (sl->priv->mnemonic_label), gtk_widget_destroy_signal_cb, NULL);
+       list = gtk_widget_list_mnemonic_labels (GTK_WIDGET (sl->priv->object));
+       for (l = list; l; l = l->next)
+         {
+--- a/gtk/inspector/prop-list.c
++++ b/gtk/inspector/prop-list.c
+@@ -73,6 +73,15 @@
+
+ G_DEFINE_TYPE_WITH_PRIVATE (GtkInspectorPropList, gtk_inspector_prop_list, GTK_TYPE_BOX)
+
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++gtk_widget_destroy_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  gtk_widget_destroy (widget);
++}
++
+ static void
+ search_close_clicked (GtkWidget            *button,
+                       GtkInspectorPropList *pl)
+@@ -238,12 +247,13 @@
+
+   gtk_popover_popup (GTK_POPOVER (popover));
+
+-  g_signal_connect (popover, "unmap", G_CALLBACK (gtk_widget_destroy), NULL);
++  g_signal_connect (popover, "unmap", G_CALLBACK (gtk_widget_destroy_signal_cb), NULL);
+
+   g_free (name);
+ }
+
+ static void cleanup_object (GtkInspectorPropList *pl);
++static void cleanup_object_signal_cb (GtkInspectorPropList *pl, GtkWidget *widget);
+
+ static void
+ finalize (GObject *object)
+@@ -483,6 +493,17 @@
+ }
+
+ static void
++cleanup_object (GtkInspectorPropList *pl);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++cleanup_object_signal_cb (GtkInspectorPropList *pl, GtkWidget *widget)
++{
++  (void) widget;
++  cleanup_object (pl);
++}
++
++static void
+ cleanup_object (GtkInspectorPropList *pl)
+ {
+   if (pl->priv->object &&
+@@ -563,7 +584,7 @@
+   g_free (props);
+
+   if (GTK_IS_WIDGET (object))
+-    g_signal_connect_object (object, "destroy", G_CALLBACK (cleanup_object), pl, G_CONNECT_SWAPPED);
++    g_signal_connect_object (object, "destroy", G_CALLBACK (cleanup_object_signal_cb), pl, G_CONNECT_SWAPPED);
+
+   /* Listen for updates */
+   pl->priv->notify_handler_id =
+--- a/gtk/inspector/resource-list.c
++++ b/gtk/inspector/resource-list.c
+@@ -366,6 +366,17 @@
+ }
+
+ static void
++on_map (GtkWidget *widget);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++on_map_signal_cb (GtkWidget *widget, gpointer data)
++{
++  (void) data;
++  on_map (widget);
++}
++
++static void
+ on_map (GtkWidget *widget)
+ {
+   GtkInspectorResourceList *sl = GTK_INSPECTOR_RESOURCE_LIST (widget);
+@@ -594,7 +605,7 @@
+                                            sl->priv->size_renderer,
+                                            size_data_func, sl, NULL);
+
+-  g_signal_connect (sl, "map", G_CALLBACK (on_map), NULL);
++  g_signal_connect (sl, "map", G_CALLBACK (on_map_signal_cb), NULL);
+
+   gtk_search_bar_connect_entry (GTK_SEARCH_BAR (sl->priv->search_bar),
+                                 GTK_ENTRY (sl->priv->search_entry));
+--- a/gtk/inspector/statistics.c
++++ b/gtk/inspector/statistics.c
+@@ -325,8 +325,10 @@
+
+ static void
+ hierarchy_changed (GtkWidget *widget,
+-                   GtkWidget *previous_toplevel)
+-{
++                   GtkWidget *previous_toplevel,
++                   gpointer   user_data)
++{
++  (void) user_data;
+   if (previous_toplevel)
+     g_signal_handlers_disconnect_by_func (previous_toplevel, key_press_event, widget);
+   g_signal_connect (gtk_widget_get_toplevel (widget), "key-press-event",
+--- a/gtk/inspector/strv-editor.c
++++ b/gtk/inspector/strv-editor.c
+@@ -37,6 +37,18 @@
+ G_DEFINE_TYPE (GtkInspectorStrvEditor, gtk_inspector_strv_editor, GTK_TYPE_BOX);
+
+ static void
++emit_changed (GtkInspectorStrvEditor *editor);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++emit_changed_notify_cb (GtkInspectorStrvEditor *editor, GParamSpec *pspec, GtkEntry *entry)
++{
++  (void) pspec;
++  (void) entry;
++  emit_changed (editor);
++}
++
++static void
+ emit_changed (GtkInspectorStrvEditor *editor)
+ {
+   if (editor->blocked)
+@@ -70,7 +82,7 @@
+   gtk_widget_show (entry);
+   gtk_box_pack_start (GTK_BOX (box), entry, FALSE, TRUE, 0);
+   g_object_set_data (G_OBJECT (box), "entry", entry);
+-  g_signal_connect_swapped (entry, "notify::text", G_CALLBACK (emit_changed), editor);
++  g_signal_connect_swapped (entry, "notify::text", G_CALLBACK (emit_changed_notify_cb), editor);
+
+   button = gtk_button_new_from_icon_name ("user-trash-symbolic", GTK_ICON_SIZE_MENU);
+   gtk_style_context_add_class (gtk_widget_get_style_context (button), "image-button");
+--- a/gtk/inspector/visual.c
++++ b/gtk/inspector/visual.c
+@@ -725,6 +725,18 @@
+ }
+
+ static void
++update_touchscreen (GtkSwitch *sw);
++
++/* Connected signals preserve every declared argument and return type. */
++static void
++update_touchscreen_notify_cb (GtkSwitch *sw, GParamSpec *pspec, gpointer data)
++{
++  (void) pspec;
++  (void) data;
++  update_touchscreen (sw);
++}
++
++static void
+ update_touchscreen (GtkSwitch *sw)
+ {
+   GtkDebugFlag flags;
+@@ -744,7 +756,7 @@
+ {
+   gtk_switch_set_active (GTK_SWITCH (vis->priv->touchscreen_switch), (gtk_get_debug_flags () & GTK_DEBUG_TOUCHSCREEN) != 0);
+   g_signal_connect (vis->priv->touchscreen_switch, "notify::active",
+-                    G_CALLBACK (update_touchscreen), NULL);
++                    G_CALLBACK (update_touchscreen_notify_cb), NULL);
+
+   if (g_getenv ("GTK_TEST_TOUCHSCREEN") != 0)
+     {

@@ -59,6 +59,10 @@ The kernel-memory ownership audit excludes the fork instrumenter's offline
 JavaScript fixtures and `scripts/check-fork-memory-artifact.ts`: they create
 private synthetic module memories, never views into a live kernel. Production
 host sources, other scripts, and browser runtime fixtures remain in scope.
+The import-free GLib/GTK callback source fixtures remain audited with exact
+private-memory origin classifications. A direct awaited instantiate result
+may bind only one static `instance` property (optionally renamed); unknown
+or unstable bindings must still fail rather than lose authority tracking.
 
 Keep authored-source audits separate from generated reports and private
 worktrees. Exclude those evidence directories explicitly while retaining
@@ -71,6 +75,32 @@ proxy session can copy the browser's `Headers` object. Check final URLs,
 header values, credentials, and referrer policy; copies do not replay a
 test subclass's `append` calls. Preserve checks for dropped fields and
 the order of repeated values.
+
+## Recorded failures and anomalies
+
+`tests/baselines/` keeps failure evidence, not test allowances. See its
+[recording workflow](../../tests/baselines/README.md). Record failures,
+expected failures, unexpected passes, skips, timeouts, runner errors and
+intermittent results; omit ordinary passes and success counters. Store each
+main run or targeted rerun separately; never replace unrelated evidence
+with a partial report. Existing conformance expectation lists still own
+accepted failures and reasons.
+
+Consult recorded failures before repeating an expensive main run. Compare
+names, reasons, host, command and recorded commit; a known name alone does
+not establish the same defect. If the evidence is insufficient, rerun only
+the relevant failures on main through the normal build path. Historical
+results must be described as historical. Records never turn a failed run
+green, and there is no freshness check or merge requirement.
+
+Use `KANDELO_TEST_REPORT_DIR` inside the dev shell to record JSON and
+console output from each normal Vitest/browser suite process. Keep the
+recorded exit code: JSON alone can omit Vitest unhandled errors.
+Keep raw logs and record provenance: commit, date, selection/command,
+host/runtime versions and load when available. Do not fill unknown historical
+fields from today's environment. Treat load-related failures as anomalies
+to investigate. Preserve observed retry outcomes and report mixed outcomes
+as intermittent; do not select a favorable retry and call it a pass.
 
 ## Validation scope and suite selection
 
@@ -93,7 +123,20 @@ Core validation surface:
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
 | Sortix os-test | `scripts/run-sortix-tests.sh --all` | Broad POSIX/kernel regression coverage |
+| Browser conformance | `scripts/run-browser-libc-tests.sh`, `scripts/run-browser-posix-tests.sh`, `scripts/run-browser-sortix-tests.sh --all` | The same suites through the browser host (Chromium) |
 | ABI snapshot | `bash scripts/check-abi-version.sh` | ABI-adjacent changes |
+
+The browser conformance wrappers start their own Vite server on a free
+loopback port each run, so concurrent worktrees do not collide; set
+`KANDELO_BROWSER_TEST_RUNNER_PORT` only to pin one (a pinned port that is
+taken fails the run), inside `scripts/dev-shell.sh bash -c '...'`, since the
+dev shell does not pass it through. A section whose browser runner cannot start counts
+every test in it as an ERROR and fails the run;
+`scripts/test-browser-runner-accounting.sh` checks that for all three
+wrappers. The Node and browser Sortix runners share their expected
+failures, failure reasons and expectation lookup through
+`scripts/sortix-expectations.sh`, so an XPASS or a test that fails on one
+host only is a host divergence to explain, not a list to edit.
 
 For CI-shaped local runs, prefer:
 

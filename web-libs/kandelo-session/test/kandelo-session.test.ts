@@ -3129,6 +3129,80 @@ describe("LiveKernelHost: KMS display size lifecycle", () => {
     });
   });
 
+  it("batches complete pointer frames with the kernel receiver and preserves every update", () => {
+    const injectInputEvent = vi.fn();
+    const kernel = {
+      ...makeKmsKernel(),
+      injectInputEvent,
+      injectInputEventBatch: vi.fn(function (this: unknown) {
+        expect(this).toBe(kernel);
+      }),
+    };
+    const host = new LiveKernelHost();
+    host.attachKernel(kernel);
+    const handle = host.attachKmsDisplay(makeCanvas())!;
+    Atomics.store(handle.stats, 2, 960);
+    Atomics.store(handle.stats, 3, 540);
+    handle.sendPointerAbs(959, 0, 2);
+    handle.sendPointerAbs(0, 539, 1);
+    handle.sendPointerAbs(0, 539, 1);
+    const record = (ev_type: number, code: number, value: number) =>
+      ({ device: 1, ev_type, code, value });
+    const syn = record(0, 0, 0);
+    expect(kernel.injectInputEventBatch.mock.calls).toEqual([
+      [[record(3, 0, 65535), record(3, 1, 0), syn]],
+      [[record(1, 0x111, 1), syn]],
+      [[record(3, 0, 0), record(3, 1, 65535), syn]],
+      [[record(1, 0x111, 0), record(1, 0x110, 1), syn]],
+      [[record(3, 0, 0), record(3, 1, 65535), syn]],
+    ]);
+    expect(injectInputEvent).not.toHaveBeenCalled();
+  });
+
+  it("uses a batch-only adapter without guessing pre-scanout coordinates or caching a mode", () => {
+    const injectInputEventBatch = vi.fn();
+    const host = new LiveKernelHost();
+    host.attachKernel({ ...makeKmsKernel(), injectInputEventBatch });
+    const handle = host.attachKmsDisplay(makeCanvas())!;
+    handle.sendPointerAbs(100, 100, 1);
+    expect(injectInputEventBatch).not.toHaveBeenCalled();
+    for (const [width, height] of [[960, 540], [800, 600], [1280, 720], [1, 1]]) {
+      Atomics.store(handle.stats, 2, width);
+      Atomics.store(handle.stats, 3, height);
+      handle.sendPointerAbs(NaN, Infinity, 1);
+      expect(injectInputEventBatch).not.toHaveBeenCalled();
+      handle.sendPointerAbs(width + 10, height + 10, 0);
+      expect(injectInputEventBatch.mock.calls).toEqual([[[
+        { device: 1, ev_type: 3, code: 0, value: width > 1 ? 65535 : 0 },
+        { device: 1, ev_type: 3, code: 1, value: height > 1 ? 65535 : 0 },
+        { device: 1, ev_type: 0, code: 0, value: 0 },
+      ]]]);
+      injectInputEventBatch.mockClear();
+    }
+  });
+
+  it("preserves pointer batch failures without fallback duplication or losing a button edge", () => {
+    const failure = new Error("input transport closed");
+    const injectInputEvent = vi.fn();
+    const injectInputEventBatch = vi.fn()
+      .mockImplementationOnce(() => {})
+      .mockImplementationOnce(() => { throw failure; });
+    const host = new LiveKernelHost();
+    host.attachKernel({ ...makeKmsKernel(), injectInputEvent, injectInputEventBatch });
+    const handle = host.attachKmsDisplay(makeCanvas())!;
+    Atomics.store(handle.stats, 2, 960);
+    Atomics.store(handle.stats, 3, 540);
+    expect(() => handle.sendPointerAbs(0, 0, 1)).toThrow(failure);
+    expect(injectInputEvent).not.toHaveBeenCalled();
+    injectInputEventBatch.mockClear();
+    handle.sendPointerAbs(0, 0, 1);
+    expect(injectInputEventBatch).toHaveBeenCalledTimes(2);
+    expect(injectInputEventBatch.mock.calls[1]).toEqual([[
+      { device: 1, ev_type: 1, code: 0x110, value: 1 },
+      { device: 1, ev_type: 0, code: 0, value: 0 },
+    ]]);
+  });
+
   it("ignores pointer input before scanout and confines it to valid pixels afterwards", () => {
     withFakeResizeObserver(() => {
       const injectInputEvent = vi.fn();

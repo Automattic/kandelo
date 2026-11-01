@@ -136,7 +136,7 @@ export class KmsRegistry {
   }
 
   setCursor(_pid: number, flags: number, boId: number, width: number, height: number,
-    x: number, y: number, hotX: number, hotY: number): void {
+    x: number, y: number, hotX: number, hotY: number): KmsCursor {
     const next = { ...this.cursor, version: this.cursor.version + 1 };
     if (flags & 1) {
       this.cursorBo = boId;
@@ -149,11 +149,11 @@ export class KmsRegistry {
     }
     if (flags & 2) { next.x = x; next.y = y; }
     this.cursor = next;
-    this.cursorSnapshot();
+    return this.cursorSnapshot();
   }
 
   /** A queued observer record cannot cross a drop/reacquire boundary. */
-  applyCursorRecord(bytes: Uint8Array): void {
+  applyCursorRecord(bytes: Uint8Array): KmsCursor | undefined {
     if (bytes.byteLength !== KMS_CURSOR_RECORD_BYTES) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (view.getBigUint64(0, true) !== this.masterLeaseId) return;
@@ -167,7 +167,7 @@ export class KmsRegistry {
     }
     const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
       || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
-    this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
+    return this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
   }
 
   constructor(private gbm: GbmBoRegistry,

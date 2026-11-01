@@ -1,0 +1,90 @@
+Subject: [PATCH] Retain exact popup associations through teardown
+
+GObject data destroy notifiers receive the stored datum. Bind signal
+receivers to their actual GObject lifetime, retire an association once,
+and retain an independent traversal across synchronous unmap callbacks.
+
+--- a/src/window.c
++++ b/src/window.c
+@@ -5,18 +5,12 @@
+ 
+ #include "window.h"
+ 
+-void window_ref_free ( GtkWidget *self )
++static void window_ref_free ( gpointer data )
+ {
+-  GList **refs;
+-
+-  refs = g_object_get_data(G_OBJECT(self),"window_refs");
+-
+-  if(!refs)
+-    return;
++  GList **refs = data;
+ 
+   g_list_free(*refs);
+   g_free(refs);
+-  g_object_set_data(G_OBJECT(self),"window_refs", NULL);
+ }
+ 
+ void window_ref ( GtkWidget *self, GtkWidget *ref )
+@@ -27,13 +21,20 @@
+   if(!refs)
+   {
+     g_object_set_data_full(G_OBJECT(self),"window_refs",
+-        g_malloc0(sizeof(GList *)),(GDestroyNotify)window_ref_free);
++        g_malloc0(sizeof(GList *)),window_ref_free);
+     refs = g_object_get_data(G_OBJECT(self),"window_refs");
+   }
+ 
+-  if(refs && !g_list_find(*refs, ref))
+-    *refs = g_list_prepend(*refs ,ref);
+-  g_signal_connect(G_OBJECT(ref),"unmap",G_CALLBACK(window_unref),self);
++  if(!refs)
++    return;
++
++  if(!g_list_find(*refs, ref))
++    *refs = g_list_prepend(*refs, ref);
++  /* One association owns one pair of handlers. Also replace callers' older
++   * unbound registrations before publishing the object-bound connection. */
++  g_signal_handlers_disconnect_by_func(ref, G_CALLBACK(window_unref), self);
++  g_signal_connect_object(ref, "unmap", G_CALLBACK(window_unref), self, 0);
++  g_signal_connect_object(ref, "destroy", G_CALLBACK(window_unref), self, 0);
+ }
+ 
+ void window_unref ( GtkWidget *ref, GtkWidget *self )
+@@ -45,6 +46,10 @@
+   if(!refs)
+     return;
+ 
++  /* An explicit release and a destroy following unmap are idempotent. */
++  g_signal_handlers_disconnect_by_func(ref, G_CALLBACK(window_unref), self);
++  if(!g_list_find(*refs, ref))
++    return;
+   *refs = g_list_remove(*refs, ref);
+   if(!*refs && (unref_func = g_object_get_data(G_OBJECT(self), "unref_func")))
+     unref_func(self);
+@@ -72,7 +77,12 @@
+   if(!refs)
+     return;
+ 
+-  for(iter=*refs; iter; iter=g_list_next(iter))
++  /* Hiding a child emits unmap synchronously, which removes its live-list
++   * node and can also destroy siblings. Retain an independent traversal. */
++  GList *snapshot = g_list_copy(*refs);
++  for(iter=snapshot; iter; iter=g_list_next(iter))
++    g_object_ref(iter->data);
++  for(iter=snapshot; iter; iter=g_list_next(iter))
+   {
+     if(iter->data == self)
+       continue;
+@@ -83,9 +93,7 @@
+     if(GTK_IS_WINDOW(iter->data))
+       gtk_widget_hide(iter->data);
+     if(GTK_IS_MENU(iter->data))
+-    {
+       gtk_menu_popdown(iter->data);
+-      iter = *refs;
+-    }
+   }
++  g_list_free_full(snapshot, g_object_unref);
+ }

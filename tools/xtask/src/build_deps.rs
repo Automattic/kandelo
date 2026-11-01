@@ -8058,6 +8058,47 @@ fn repository_source_authority_root(
     })
 }
 
+/// Canonical declared-input payload encoding, independent of filesystem access.
+/// Keep these bytes stable: generic and strict source policies differ in what
+/// they may open, not in the identity of the regular payload they both admit.
+enum BuildInputEntry<'a> {
+    File(&'a [u8]),
+    Directory,
+    Symlink(&'a Path),
+}
+
+fn encode_build_input_entry(hasher: &mut Sha256, relative: &Path, entry: BuildInputEntry<'_>) {
+    let tag: &[u8] = match entry {
+        BuildInputEntry::File(_) => b"file\0",
+        BuildInputEntry::Directory => b"dir\0",
+        BuildInputEntry::Symlink(_) => b"symlink\0",
+    };
+    hasher.update(tag);
+    hasher.update(relative.to_string_lossy().as_bytes());
+    hasher.update(b"\0");
+    match entry {
+        BuildInputEntry::File(bytes) => {
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(b"\0");
+            hasher.update(bytes);
+            hasher.update(b"\0");
+        }
+        BuildInputEntry::Directory => {}
+        BuildInputEntry::Symlink(target) => {
+            hasher.update(target.to_string_lossy().as_bytes());
+            hasher.update(b"\0");
+        }
+    }
+}
+
+/// Directory payload selection shared by both access policies. Git's exact
+/// administrative child name is not source, whether a directory or worktree
+/// pointer; never follow it. Other hidden/ignored/untracked files remain inputs.
+/// Explicit metadata inputs enter the walkers directly and are still hashed.
+fn build_input_source_child(name: &std::ffi::OsStr) -> bool {
+    !matches!(name.to_str(), Some("." | ".." | ".git"))
+}
+
 #[cfg(unix)]
 fn strict_source_build_input_digest(root: &Path, input: &Path) -> Result<[u8; 32], String> {
     strict_source_build_input_digest_with(root, input, &mut |_| {})
@@ -8328,7 +8369,7 @@ fn strict_source_hash_entry_unix<BeforeRead>(
 where
     BeforeRead: FnMut(&Path),
 {
-    use std::os::unix::ffi::OsStringExt;
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
 
     let mut opened = strict_source_open_at(parent, name, path, "open")?;
     let initial = opened
@@ -8342,22 +8383,13 @@ where
     }
     before_read(path);
     strict_source_reopen_unchanged(parent, name, &initial, path)?;
-    let relative_text = relative.to_string_lossy();
     if initial.is_file() {
         let mut bytes = Vec::new();
         std::io::Read::read_to_end(&mut opened, &mut bytes)
             .map_err(|error| format!("read source-only build input {}: {error}", path.display()))?;
-        hasher.update(b"file\0");
-        hasher.update(relative_text.as_bytes());
-        hasher.update(b"\0");
-        hasher.update((bytes.len() as u64).to_le_bytes());
-        hasher.update(b"\0");
-        hasher.update(bytes);
-        hasher.update(b"\0");
+        encode_build_input_entry(hasher, relative, BuildInputEntry::File(&bytes));
     } else {
-        hasher.update(b"dir\0");
-        hasher.update(relative_text.as_bytes());
-        hasher.update(b"\0");
+        encode_build_input_entry(hasher, relative, BuildInputEntry::Directory);
         let mut directory = rustix::fs::Dir::read_from(&opened).map_err(|error| {
             format!("read source-only build input directory {}: {error}", path.display())
         })?;
@@ -8367,7 +8399,7 @@ where
                 format!("read source-only build input entry below {}: {error}", path.display())
             })?;
             let bytes = entry.file_name().to_bytes();
-            if matches!(bytes, b"." | b"..") {
+            if !build_input_source_child(std::ffi::OsStr::from_bytes(bytes)) {
                 continue;
             }
             entries.push(OsString::from_vec(bytes.to_vec()));
@@ -8901,41 +8933,31 @@ fn hash_build_input_entry(h: &mut Sha256, root: &Path, path: &Path) -> Result<()
     let meta =
         std::fs::symlink_metadata(path).map_err(|e| format!("stat {}: {e}", path.display()))?;
     let rel = path.strip_prefix(root).unwrap_or(path);
-    let rel = rel.to_string_lossy();
 
     if meta.file_type().is_symlink() {
         let target =
             std::fs::read_link(path).map_err(|e| format!("readlink {}: {e}", path.display()))?;
-        h.update(b"symlink\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
-        h.update(target.to_string_lossy().as_bytes());
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::Symlink(&target));
         return Ok(());
     }
 
     if meta.is_file() {
         let bytes = std::fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        h.update(b"file\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
-        h.update((bytes.len() as u64).to_le_bytes());
-        h.update(b"\0");
-        h.update(bytes);
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::File(&bytes));
         return Ok(());
     }
 
     if meta.is_dir() {
-        h.update(b"dir\0");
-        h.update(rel.as_bytes());
-        h.update(b"\0");
+        encode_build_input_entry(h, rel, BuildInputEntry::Directory);
         let mut entries = std::fs::read_dir(path)
             .map_err(|e| format!("read_dir {}: {e}", path.display()))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("read_dir {}: {e}", path.display()))?;
         entries.sort_by_key(|entry| entry.path());
         for entry in entries {
+            if !build_input_source_child(&entry.file_name()) {
+                continue;
+            }
             hash_build_input_entry(h, root, &entry.path())?;
         }
         return Ok(());
@@ -23136,6 +23158,270 @@ wasm = "second.wasm"
         fixture_git(&repo, &["commit", "--quiet", "-m", "fixture"]);
         let commit = fixture_git(&repo, &["rev-parse", "HEAD"]);
         (repo, commit)
+    }
+
+    fn git_admin_hash_fixture(label: &str) -> (PathBuf, PathBuf, PathBuf, PathBuf) {
+        let (source, commit) = immutable_git_fixture(label);
+        let root = source.parent().unwrap().to_path_buf();
+        let first = root.join("first-worktree");
+        let second = root.join("second-worktree");
+        for worktree in [&first, &second] {
+            fixture_git(
+                &source,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "--detach",
+                    worktree.to_str().unwrap(),
+                    &commit,
+                ],
+            );
+        }
+        (root, source, first, second)
+    }
+
+    #[test]
+    fn build_input_git_admin_generic_ignores_checkout_administration() {
+        let (_, source, first, second) = git_admin_hash_fixture("hash-git-admin-generic");
+        assert!(source.join(".git").is_dir());
+        assert!(first.join(".git").is_file());
+        assert_ne!(
+            fs::read(first.join(".git")).unwrap(),
+            fs::read(second.join(".git")).unwrap()
+        );
+        let expected = hash_build_input(&first).unwrap();
+        assert_eq!(
+            hash_build_input(&second).unwrap(),
+            expected,
+            "worktree paths are not source inputs"
+        );
+        assert_eq!(
+            hash_build_input(&source).unwrap(),
+            expected,
+            "a private .git directory is not source payload"
+        );
+        fixture_git(&source, &["config", "kandelo.test-admin", "changed"]);
+        assert_eq!(hash_build_input(&source).unwrap(), expected);
+        // Explicit metadata inputs still request those bytes, not a directory walk.
+        assert_ne!(
+            hash_build_input(&first.join(".git")).unwrap(),
+            hash_build_input(&second.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_strict_ignores_checkout_administration() {
+        let (root, source, first, second) = git_admin_hash_fixture("hash-git-admin-strict");
+        let expected = strict_source_build_input_digest(&root, &first).unwrap();
+        assert_eq!(
+            strict_source_build_input_digest(&root, &second).unwrap(),
+            expected
+        );
+        assert_eq!(
+            strict_source_build_input_digest(&root, &source).unwrap(),
+            expected
+        );
+        assert_eq!(
+            hash_build_input(&first).unwrap(),
+            expected,
+            "both input policies hash the same payload"
+        );
+        assert_ne!(
+            strict_source_build_input_digest(&root, &first.join(".git")).unwrap(),
+            strict_source_build_input_digest(&root, &second.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_nested_metadata_does_not_rekey_source() {
+        let root = tempdir("hash-git-admin-nested");
+        let input = root.join("sdk");
+        let nested = input.join("rust/libc");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("lib.rs"), "source\n").unwrap();
+        let clean = hash_build_input(&input).unwrap();
+        fs::write(nested.join(".git"), "gitdir: /checkout-one/admin\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        fs::write(nested.join(".git"), "gitdir: /checkout-two/admin\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        fs::remove_file(nested.join(".git")).unwrap();
+        fs::create_dir(nested.join(".git")).unwrap();
+        fs::write(nested.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        assert_eq!(hash_build_input(&input).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &input).unwrap(),
+            clean
+        );
+        let explicit = hash_build_input(&nested.join(".git")).unwrap();
+        fs::write(nested.join(".git/HEAD"), "changed pin\n").unwrap();
+        assert_ne!(hash_build_input(&nested.join(".git")).unwrap(), explicit);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &nested.join(".git")).unwrap(),
+            hash_build_input(&nested.join(".git")).unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_preserves_dirty_hidden_and_untracked_source() {
+        let (root, _, first, _) = git_admin_hash_fixture("hash-git-admin-source");
+        let digest = || {
+            let generic = hash_build_input(&first).unwrap();
+            assert_eq!(
+                strict_source_build_input_digest(&root, &first).unwrap(),
+                generic
+            );
+            generic
+        };
+        let clean = digest();
+        for name in [
+            "payload.txt",
+            ".gitignore",
+            ".gitmodules",
+            ".gitdir",
+            ".hidden-source",
+            "untracked.c",
+            "generated.tmp",
+        ] {
+            let path = first.join(name);
+            let old = fs::read(&path).ok();
+            fs::write(&path, "new source bytes\n").unwrap();
+            assert_ne!(digest(), clean, "must hash actual source {name}");
+            if let Some(old) = old {
+                fs::write(&path, old).unwrap();
+            } else {
+                fs::remove_file(&path).unwrap();
+            }
+            assert_eq!(digest(), clean);
+        }
+        // A pin/HEAD alone cannot stand in for the checked-out source bytes.
+        fs::write(first.join("payload.txt"), "dirty despite unchanged HEAD\n").unwrap();
+        assert_ne!(digest(), clean);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_preserves_symlink_and_mode_contracts() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let (root, _, first, _) = git_admin_hash_fixture("hash-git-admin-links-modes");
+        let clean = hash_build_input(&first).unwrap();
+        let payload = first.join("payload.txt");
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o700)).unwrap();
+        // Legacy declared-input identity hashes payload bytes, not executable bits.
+        // Do not silently invalidate every cache key as part of the admin fix.
+        assert_eq!(hash_build_input(&first).unwrap(), clean);
+        assert_eq!(
+            strict_source_build_input_digest(&root, &first).unwrap(),
+            clean
+        );
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o000)).unwrap();
+        let error = strict_source_build_input_digest(&root, &first).unwrap_err();
+        fs::set_permissions(&payload, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(error.contains("open"), "{error}");
+        let link = first.join("source-link");
+        symlink("payload.txt", &link).unwrap();
+        let linked = hash_build_input(&first).unwrap();
+        assert_ne!(linked, clean);
+        assert!(strict_source_build_input_digest(&root, &first)
+            .unwrap_err()
+            .contains("symlink"));
+        fs::remove_file(&link).unwrap();
+        symlink(".gitignore", &link).unwrap();
+        assert_ne!(hash_build_input(&first).unwrap(), linked);
+        assert!(strict_source_build_input_digest(&root, &first)
+            .unwrap_err()
+            .contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_payload_encoding_matches_legacy_goldens() {
+        use std::os::unix::fs::symlink;
+        let root = tempdir("hash-git-admin-goldens");
+        let file = root.join("file.bin");
+        fs::write(&file, b"golden\0\xff\n").unwrap();
+        let file_golden = "a5e0f5357199ace4ea59bdcb69f8ff46375b29381db7713739f107d6740466cd";
+        assert_eq!(hex(&hash_build_input(&file).unwrap()), file_golden);
+        assert_eq!(
+            hex(&strict_source_build_input_digest(&root, &file).unwrap()),
+            file_golden
+        );
+        let tree = root.join("tree");
+        fs::create_dir_all(tree.join("deep")).unwrap();
+        fs::create_dir(tree.join("empty")).unwrap();
+        fs::write(tree.join(".hidden"), b"H\n").unwrap();
+        fs::write(tree.join("deep/payload.bin"), b"\0\xffx").unwrap();
+        let tree_golden = "e3fd25e550dcfe68db619a3b5646d074dbe96dcd0d0be353b497bb9388cf6713";
+        assert_eq!(hex(&hash_build_input(&tree).unwrap()), tree_golden);
+        assert_eq!(
+            hex(&strict_source_build_input_digest(&root, &tree).unwrap()),
+            tree_golden
+        );
+        let link = root.join("link");
+        symlink("../target", &link).unwrap();
+        assert_eq!(
+            hex(&hash_build_input(&link).unwrap()),
+            "5cb614baca681b2925ca2b53692859785770ecf3d791abe4879e1522538756b4"
+        );
+        assert!(strict_source_build_input_digest(&root, &link)
+            .unwrap_err()
+            .contains("symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_input_git_admin_backends_agree_for_unicode_source_names() {
+        let root = tempdir("hash-git-admin-unicode");
+        let tree = root.join("tree");
+        fs::create_dir(&tree).unwrap();
+        for (name, data) in [(".源", b"hidden".as_slice()), ("aé", b"source".as_slice())] {
+            fs::write(tree.join(name), data).unwrap();
+        }
+        assert_eq!(
+            hash_build_input(&tree).unwrap(),
+            strict_source_build_input_digest(&root, &tree).unwrap()
+        );
+    }
+
+    #[test]
+    fn build_input_git_admin_child_selection_is_exact() {
+        for name in [".", "..", ".git"] {
+            assert!(
+                !build_input_source_child(std::ffi::OsStr::new(name)),
+                "{name}"
+            );
+        }
+        for name in [
+            ".gitignore",
+            ".gitmodules",
+            ".gitdir",
+            ".GIT",
+            ".hidden",
+            "untracked.c",
+        ] {
+            assert!(
+                build_input_source_child(std::ffi::OsStr::new(name)),
+                "{name}"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            assert!(build_input_source_child(std::ffi::OsStr::from_bytes(
+                b".git\xff"
+            )));
+        }
     }
 
     fn uleb(mut n: u32) -> Vec<u8> {

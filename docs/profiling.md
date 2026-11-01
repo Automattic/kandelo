@@ -2,6 +2,43 @@
 
 This document covers Kandelo's performance measurement tools: a runtime syscall profiler for detailed per-syscall analysis, and a benchmark suite for repeatable cross-host comparisons.
 
+## Incremental performance investigations
+
+Start with a profile of an already built, identified runtime. A suspected
+copy, comparison, allocation, scheduling or presentation cost can often be
+isolated with the production helper and representative inputs before any
+kernel, SDK or package rebuild. Keep profiling separate from uninstrumented
+timing. Capture input sizes, equal/changed cases, warm-up, round order,
+clock resolution, engine version, source hashes and concurrent load. Include
+per-call setup such as native instance construction when production pays it.
+These observations select candidates; they do not establish desktop latency,
+memory reclamation or a benefit over the merge destination.
+
+Reuse one provisioned experimental checkout. For a host-only theory, use its
+existing compatible kernel and guest fixtures. Vite consumes the source
+without rebuilding the SDK; tests that load the distribution use:
+
+```bash
+scripts/dev-shell.sh npm --prefix host run build
+```
+
+For a kernel-body change, build the normal kernel target and check the ABI
+and generated outputs appropriate to that change. A changed program contract
+requires rebuilding the affected SDK/program/image artifacts. An unchanged
+contract does not authorize serving an outdated package cache key: resolve
+freshness normally, or identify a deliberately retained compatible input as
+an explicit test fixture. Keep its original source and artifact identities.
+When SDK provisioning is necessary and inputs are unchanged, the supported
+`build-musl.sh --ensure --arch wasm32posix` / `--arch wasm64posix` paths check
+freshness before building; do not unconditionally rebuild an installed SDK
+for a host-only experiment.
+
+Freeze source while a run is active, and stop the temporary experimental
+server before the next edit. Keep user previews immutable. Promote promising
+candidates through a complete normal preview build, real desktop workloads,
+Node/browser benchmarks and required correctness/memory/conformance gates.
+State experimental availability separately from completed validation.
+
 ## Fork instrumenter package comparisons
 
 Use the SDK's original linked Wasm, preserving compiler facts and instruction

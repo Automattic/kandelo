@@ -1,0 +1,170 @@
+--- a/gtk/gtktextutil.c
++++ b/gtk/gtktextutil.c
+@@ -86,6 +86,15 @@
+   g_slice_free (GtkTextUtilCallbackInfo, info);
+ }
+
++/* Signal closure cleanup supplies the closure as its second argument. */
++static void
++callback_info_closure_notify (gpointer  data,
++                              GClosure *closure)
++{
++  (void) closure;
++  callback_info_free (data);
++}
++
+ static void
+ activate_cb (GtkWidget *menu_item,
+              gpointer   data)
+@@ -136,7 +145,7 @@
+
+       g_signal_connect_data (menuitem, "activate",
+                              G_CALLBACK (activate_cb),
+-                             info, (GClosureNotify) callback_info_free, 0);
++                             info, callback_info_closure_notify, 0);
+
+       gtk_widget_show (menuitem);
+       gtk_menu_shell_append (menushell, menuitem);
+--- a/gtk/deprecated/gtkactiongroup.c
++++ b/gtk/deprecated/gtkactiongroup.c
+@@ -1150,6 +1150,15 @@
+ }
+
+
++/* Preserve the unary helper and the application's GDestroyNotify contract. */
++static void
++shared_data_closure_notify (gpointer  data,
++                            GClosure *closure)
++{
++  (void) closure;
++  shared_data_unref (data);
++}
++
+ /**
+  * gtk_action_group_add_actions_full: (skip)
+  * @action_group: the action group
+@@ -1217,7 +1226,7 @@
+
+ 	  closure = g_cclosure_new (entries[i].callback, user_data, NULL);
+ 	  g_closure_add_finalize_notifier (closure, shared_data, 
+-					   (GClosureNotify)shared_data_unref);
++					   shared_data_closure_notify);
+ 	  shared_data->ref_count++;
+
+ 	  g_signal_connect_closure (action, "activate", closure, FALSE);
+@@ -1333,7 +1342,7 @@
+
+ 	  closure = g_cclosure_new (entries[i].callback, user_data, NULL);
+ 	  g_closure_add_finalize_notifier (closure, shared_data, 
+-					   (GClosureNotify)shared_data_unref);
++					   shared_data_closure_notify);
+ 	  shared_data->ref_count++;
+
+ 	  g_signal_connect_closure (action, "activate", closure, FALSE);
+@@ -1465,9 +1474,24 @@
+     }
+
+   if (on_change && first_action)
+-    g_signal_connect_data (first_action, "changed",
+-			   on_change, user_data, 
+-			   (GClosureNotify)destroy, 0);
++    {
++      GClosure *closure;
++
++      /* Keep application callbacks' original user_data. The independent
++       * notifier owns the unary destroy callback and runs it exactly once. */
++      closure = g_cclosure_new (on_change, user_data, NULL);
++      if (destroy)
++        {
++          SharedData *shared_data = g_slice_new0 (SharedData);
++
++          shared_data->ref_count = 1;
++          shared_data->data = user_data;
++          shared_data->destroy = destroy;
++          g_closure_add_finalize_notifier (closure, shared_data,
++                                           shared_data_closure_notify);
++        }
++      g_signal_connect_closure (first_action, "changed", closure, FALSE);
++    }
+ }
+
+ /**
+--- a/gtk/inspector/prop-editor.c
++++ b/gtk/inspector/prop-editor.c
+@@ -185,6 +185,14 @@
+ }
+
+ static void
++object_property_closure_notify (gpointer  data,
++                                GClosure *closure)
++{
++  (void) closure;
++  free_object_property (data);
++}
++
++static void
+ connect_controller (GObject     *controller,
+                     const gchar *signal,
+                     GObject     *model,
+@@ -198,7 +206,7 @@
+   p->spec = spec;
+
+   p->modified_id = g_signal_connect_data (controller, signal, func, p,
+-                                          (GClosureNotify)free_object_property, 0);
++                                          object_property_closure_notify, 0);
+   g_object_set_data (controller, "object-property", p);
+ }
+
+--- a/gtk/gtktextbuffer.c
++++ b/gtk/gtktextbuffer.c
+@@ -3258,6 +3258,15 @@
+     }
+ }
+
++/* Keep the source buffer alive until the clipboard buffer is finalized. */
++static void
++clipboard_source_weak_notify (gpointer data,
++                              GObject *where_the_object_was)
++{
++  (void) where_the_object_was;
++  g_object_unref (data);
++}
++
+ static GtkTextBuffer *
+ create_clipboard_contents_buffer (GtkTextBuffer *buffer)
+ {
+@@ -3275,7 +3284,7 @@
+    *  See http://bugzilla.gnome.org/show_bug.cgi?id=339195
+    */
+   g_object_ref (buffer);
+-  g_object_weak_ref (G_OBJECT (contents), (GWeakNotify) g_object_unref, buffer);
++  g_object_weak_ref (G_OBJECT (contents), clipboard_source_weak_notify, buffer);
+
+   return contents;
+ }
+--- a/gtk/gtkpathbar.c
++++ b/gtk/gtkpathbar.c
+@@ -1542,6 +1542,14 @@
+   g_free (uris[0]);
+ }
+
++static void
++button_data_weak_notify (gpointer data,
++                         GObject *where_the_object_was)
++{
++  (void) where_the_object_was;
++  button_data_free (data);
++}
++
+ static ButtonData *
+ make_directory_button (GtkPathBar  *path_bar,
+ 		       const char  *dir_name,
+@@ -1598,7 +1606,7 @@
+ 		    G_CALLBACK (button_clicked_cb),
+ 		    button_data);
+   g_object_weak_ref (G_OBJECT (button_data->button),
+-		     (GWeakNotify) button_data_free, button_data);
++		     button_data_weak_notify, button_data);
+
+   gtk_drag_source_set (button_data->button,
+ 		       GDK_BUTTON1_MASK,

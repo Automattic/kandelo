@@ -1,0 +1,69 @@
+--- a/gobject/gclosure.c
++++ b/gobject/gclosure.c
+@@ -1164,2 +1164,46 @@
+
++/* Direct class handlers, unlike connected C callbacks, have no trailing
++ * closure-data argument. Keep the GCClosure ownership/callback storage and
++ * reuse the exact-arity path already used by class/interface vtable slots.
++ * As with that path, the signal's GValue/GType signature drives libffi;
++ * arbitrary custom C-marshaller representation/side effects are not modeled. */
++static void
++g_wasm_class_handler_meta_marshal (GClosure       *closure,
++                                   GValue         *return_value,
++                                   guint           n_param_values,
++                                   const GValue   *param_values,
++                                   gpointer        invocation_hint,
++                                   gpointer        marshal_data)
++{
++  (void) invocation_hint;
++  (void) marshal_data;
++  g_wasm_vtable_meta_marshal (return_value, n_param_values, param_values,
++                               ((GCClosure *) closure)->callback);
++}
++
++static void
++g_wasm_class_handler_meta_marshalv (GClosure *closure,
++                                    GValue   *return_value,
++                                    gpointer  instance,
++                                    va_list   args,
++                                    gpointer  marshal_data,
++                                    int       n_params,
++                                    GType    *param_types)
++{
++  (void) marshal_data;
++  g_wasm_vtable_meta_marshal_va (return_value, instance, args,
++                                  ((GCClosure *) closure)->callback,
++                                  n_params, param_types);
++}
++
++GClosure *
++_g_cclosure_new_class_handler (GCallback callback_func)
++{
++  GClosure *closure = g_cclosure_new (callback_func, NULL, NULL);
++
++  g_closure_set_meta_marshal (closure, NULL, g_wasm_class_handler_meta_marshal);
++  g_closure_set_meta_va_marshal (closure, g_wasm_class_handler_meta_marshalv);
++  return closure;
++}
++
+ /**
+--- a/gobject/gtype-private.h
++++ b/gobject/gtype-private.h
+@@ -85,2 +85,5 @@
+
++/* Exact no-user-data closure for the direct class-handler signal APIs. */
++GClosure *  _g_cclosure_new_class_handler (GCallback callback_func);
++
+ gboolean    _g_closure_is_void (GClosure       *closure,
+--- a/gobject/gsignal.c
++++ b/gobject/gsignal.c
+@@ -1487,3 +1487,3 @@
+   signal_id = g_signal_new_valist (signal_name, itype, signal_flags,
+-                                   class_handler ? g_cclosure_new (class_handler, NULL, NULL) : NULL,
++                                   class_handler ? _g_cclosure_new_class_handler (class_handler) : NULL,
+                                    accumulator, accu_data, c_marshaller,
+@@ -2025,3 +2025,3 @@
+     g_signal_override_class_closure (signal_id, instance_type,
+-                                     g_cclosure_new (class_handler, NULL, NULL));
++                                     _g_cclosure_new_class_handler (class_handler));
+   else

@@ -112,9 +112,17 @@ function signatures(
       parameters: [i32, i32],
       result: i32,
     },
+    kernel_epoll_wake_indices: {
+      parameters: [i32, i32, i32, pointer, i32],
+      result: i32,
+    },
     kernel_epoll_wait_token: {
       parameters: [i32, i32],
       result: i64,
+    },
+    kernel_epoll_wait_retry_state: {
+      parameters: [i32, i32, i64, i64],
+      result: i32,
     },
     kernel_epoll_wait_finish: {
       parameters: [i32, i32, i64],

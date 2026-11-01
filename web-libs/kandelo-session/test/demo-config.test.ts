@@ -526,9 +526,9 @@ describe("profile-only schema", () => {
 
 describe("tracked demo-config sources", () => {
   it("declares every tracked source", () => {
-    // 9 = seven single-source builders plus the shell image's base config
+    // 10 = eight single-source builders plus the shell image's base config
     // and its profile overlay, which are two separate tracked files.
-    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(9);
+    expect(TRACKED_DEMO_CONFIG_SOURCES.length).toBe(10);
   });
 
   it.each(TRACKED_DEMO_CONFIG_SOURCES)("%s parses and validates", (relPath) => {

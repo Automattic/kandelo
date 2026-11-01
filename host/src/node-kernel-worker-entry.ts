@@ -54,6 +54,7 @@ import {
   createClosedLazyAssetSourceFetcher,
 } from "./vfs/closed-lazy-assets";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
+import { OfflineEgressBackend } from "./networking/offline-egress-backend";
 import { NodeLazyAssetResolver } from "./node-lazy-asset-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
@@ -949,8 +950,13 @@ async function handleInit(msg: InitMessage) {
     )
     : new NodePlatformIO();
   vfsExecIO = msg.rootfsImage ? io : null;
+  if (msg.enableTcpNetwork && msg.offlineEgressLink) {
+    throw new Error("enableTcpNetwork and offlineEgressLink are exclusive: a machine has one egress link");
+  }
   if (msg.enableTcpNetwork) {
     io.network = new TcpNetworkBackend();
+  } else if (msg.offlineEgressLink) {
+    io.network = new OfflineEgressBackend();
   }
   // The session network wraps the configured backend (or none) for the
   // machine's life, so a session can start or end under running programs.
@@ -3598,16 +3604,16 @@ function handleInjectConnection(
 
 async function handleHttpRequest(msg: HttpRequestMessage) {
   try {
-    const response = await (msg.hostname === undefined
-      ? kernelWorker.sendHttpRequest.bind(kernelWorker)
-      : remoteSegmentRuntime.fetchHttp.bind(remoteSegmentRuntime, msg.hostname))(
-      msg.port,
-      msg.request,
-      {
-        timeoutMs: msg.timeoutMs,
-        maxResponseBytes: msg.maxResponseBytes,
-      },
-    );
+    const options = {
+      timeoutMs: msg.timeoutMs,
+      maxResponseBytes: msg.maxResponseBytes,
+    };
+    // A hostname names a machine on the Kandelo network; without one the
+    // request is for this machine. Call each directly: binding kernelWorker
+    // into a free function would let it escape the entry root.
+    const response = msg.hostname === undefined
+      ? await kernelWorker.sendHttpRequest(msg.port, msg.request, options)
+      : await remoteSegmentRuntime.fetchHttp(msg.hostname, msg.port, msg.request, options);
     respond(msg.requestId, response);
   } catch (e) {
     respondError(msg.requestId, String(e));

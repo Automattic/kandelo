@@ -1264,6 +1264,30 @@ cache lookup. The declared Repository/DevShell byte traversal is currently a
 Unix-only capability: native non-Unix hosts return the documented
 unsupported-platform error rather than using a weaker pathname-based digest.
 
+Directory build inputs hash their actual working-tree payload, including
+untracked and ignored source files and hidden files such as `.gitignore`,
+`.gitmodules`, and `.gitdir`. One payload encoder and child-selection rule
+serve both the generic and strict Repository/DevShell filesystem access
+policies. They omit only child entries named exactly `.git`: Git
+administration, either an ordinary repository directory or a linked
+worktree/submodule pointer file. Their checkout-specific paths, refs and maintenance
+state must not re-key identical source in another worktree. The traversal
+does not replace source bytes with a gitlink or HEAD: dirty or newly pinned
+source bytes still change identity. An explicit build input naming `.git`
+or a file inside it continues to hash that metadata; recipes that actually
+consume Git metadata must declare it explicitly. Other hidden paths are not
+excluded, and symlink policy is unchanged: the generic walker hashes source
+symlink target spellings without following them, while the strict walker
+rejects source symlinks. The two filesystem walkers remain distinct so the
+strict policy keeps descriptor-relative opens, no-follow validation, and
+file/directory/ancestor reopen checks; it does not delegate source reads to
+the pathname-based generic policy. Both encode admitted regular payload
+with the same tags, relative paths, lengths and bytes. Existing
+declared-input hashing is byte-based and does not include executable bits;
+this differs from the immutable external Git export digest, which includes
+them. Strict source traversal still requires readable regular files and real
+directories and retains descriptor-relative mutation checks.
+
 Program packages that use fork instrumentation also hash the
 fork-instrument host tool inputs (`crates/fork-instrument`, the
 target-unfiltered non-dev Cargo dependency closure selected from the
