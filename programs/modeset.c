@@ -59,11 +59,17 @@
 #define GL_HALF_FLOAT              0x140B
 #define GL_COLOR_ATTACHMENT0_EXT   0x8CE0   /* same as GL_COLOR_ATTACHMENT0 */
 
-/* Canvas dims hardcoded to match the Modeset.tsx pane (1920×1080).
- * drain_mouse() clamps the accumulated cursor against these; the
- * display pass viewport is also CANVAS_W/H. */
-#define CANVAS_W 1920
-#define CANVAS_H 1080
+/* Canvas dims: the scanout buffers are sized to the connector mode the
+ * CRTC is set to (a CRTC scans exactly its mode's active area, so a
+ * fixed-size buffer smaller than the mode is refused with ENOSPC and a
+ * larger one would be cropped). setup_kms() fills these from the mode;
+ * drain_mouse() clamps the accumulated cursor against them and the
+ * display pass viewport is also CANVAS_W/H. The simulation resolutions
+ * below stay those of Pavel's landscape 1920×1080 presets. */
+static int canvas_w = 1920;
+static int canvas_h = 1080;
+#define CANVAS_W canvas_w
+#define CANVAS_H canvas_h
 
 /* Pavel's getResolution(N) for landscape 1920×1080:
  *   aspect  = 1920/1080 = 1.7778
@@ -1170,6 +1176,8 @@ static int setup_kms(void) {
         return 1;
     }
     kms_mode = conn->modes[0];
+    canvas_w = kms_mode.hdisplay;
+    canvas_h = kms_mode.vdisplay;
 
     drmModeFreeConnector(conn);
     drmModeFreeResources(res);
