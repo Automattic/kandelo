@@ -132,8 +132,9 @@ const compiledSources = new WeakMap<WebGLShader, string>();
 type LinkedSources = { vertex: string; fragment: string };
 const linkedSources = new WeakMap<WebGLProgram, LinkedSources>();
 
-export function recordCompiledShader(shader: WebGLShader, source: Uint8Array | undefined): void {
-  if (!source) { compiledSources.delete(shader); return; }
+export function recordCompiledShader(shader: WebGLShader, source: Uint8Array | string | undefined): void {
+  if (source === undefined) { compiledSources.delete(shader); return; }
+  if (typeof source === "string") { compiledSources.set(shader, source); return; }
   try { compiledSources.set(shader, new TextDecoder().decode(source)); }
   catch (caught) { rethrowNativeGlFault(caught); compiledSources.delete(shader); }
 }

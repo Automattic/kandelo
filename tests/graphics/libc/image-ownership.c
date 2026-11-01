@@ -233,7 +233,7 @@ struct device_slot {
     uint32_t fence_tokens[32], fence_signaled[32];
     uint32_t array_binding, element_binding, saved_array_binding;
     int array_saved;
-    uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
+    uint32_t texture_active, texture_2d[128], texture_cube[128], texture_external[128], renderbuffer_binding;
     uint32_t current_program;
     uint32_t framebuffer_draw, framebuffer_read;
     uint8_t *compressed_bytes;
@@ -443,6 +443,7 @@ static uint32_t texel_capture_width, texel_capture_height, texel_capture_bpp, te
 static uint32_t double_unpack_alignment = 4;
 static unsigned pixel_store_commands, framebuffer_bind_commands, framebuffer_status_queries;
 static unsigned bind_failure, bind_queries;
+static uint32_t last_image_target; /* QOP_BOUND_IMAGE_TARGET's target */
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
 static unsigned framebuffer_bind_queries;
@@ -650,6 +651,8 @@ static int native_image_bind(struct device_slot *slot, unsigned kind, GLenum tar
         slot->texture_2d[slot->texture_active] = name;
     } else if (target == GL_TEXTURE_CUBE_MAP)
         slot->texture_cube[slot->texture_active] = name;
+    else if (target == GL_TEXTURE_EXTERNAL_OES)
+        slot->texture_external[slot->texture_active] = name;
     return 1;
 }
 
@@ -1656,10 +1659,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t *input = allocation_for(q->in_buf_ptr, q->in_buf_len);
             uint32_t *reply = allocation_for(q->out_buf_ptr, 16);
             assert((input[0] == 1 && input[1] == GL_TEXTURE_2D) ||
+                   (input[0] == 1 && input[1] == GL_TEXTURE_EXTERNAL_OES && q->op == 0x25) ||
                    (input[0] == 1 && input[1] == GL_TEXTURE_CUBE_MAP && q->op == 0x26) ||
                    (input[0] == 2 && input[1] == GL_RENDERBUFFER));
+            last_image_target = input[1];
             uint32_t name = input[0] == 2 ? slot->renderbuffer_binding
                 : input[1] == GL_TEXTURE_CUBE_MAP ? slot->texture_cube[slot->texture_active]
+                : input[1] == GL_TEXTURE_EXTERNAL_OES ? slot->texture_external[slot->texture_active]
                 : slot->texture_2d[slot->texture_active];
             assert(name);
             unsigned failure = image_failure;
@@ -7899,6 +7905,49 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
                allocation_count() == 0);
         puts("PASS image-bind-ack");
+        return 0;
+    }
+    if (!strcmp(argv[1], "image-external-texture")) {
+        /* OES_EGL_image_external: TEXTURE_EXTERNAL_OES is a third binding
+         * point per unit, its objects keep their target, and an EGLImage
+         * becomes an external texture's sibling through that target. */
+        binding_model = 1;
+        const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+        assert(extensions && strstr(extensions, "GL_OES_EGL_image_external"));
+        glBindTexture(GL_TEXTURE_2D, 17);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 18);
+        assert(glGetError() == GL_NO_ERROR);
+        glBindTexture(GL_TEXTURE_2D, 18);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 17);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        /* One texture image unit for every texture target. */
+        const GLenum targets[] = {GL_TEXTURE_2D, GL_TEXTURE_CUBE_MAP, GL_TEXTURE_EXTERNAL_OES};
+        for (unsigned i = 0; i < 3; i++) {
+            GLint units = 0; GLfloat unitsf = 0;
+            glGetTexParameteriv(targets[i], GL_REQUIRED_TEXTURE_IMAGE_UNITS_OES, &units);
+            glGetTexParameterfv(targets[i], GL_REQUIRED_TEXTURE_IMAGE_UNITS_OES, &unitsf);
+            assert(units == 1 && unitsf == 1.0f && glGetError() == GL_NO_ERROR);
+        }
+        GLint untouched = 7;
+        glGetTexParameteriv(GL_RENDERBUFFER, GL_REQUIRED_TEXTURE_IMAGE_UNITS_OES, &untouched);
+        assert(untouched == 7 && glGetError() == GL_INVALID_ENUM);
+        /* The external binding takes the image; TEXTURE_2D is unchanged. */
+        EGLImageKHR img = image(dpy);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, img);
+        assert(glGetError() == GL_NO_ERROR && last_image_target == GL_TEXTURE_EXTERNAL_OES);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_CUBE_MAP, img);
+        assert(glGetError() == GL_INVALID_ENUM);
+        /* The external texture zero has no image target. */
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+        glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, img);
+        assert(glGetError() == GL_INVALID_OPERATION);
+        GLuint textures[2] = {17, 18};
+        glDeleteTextures(2, textures);
+        assert(eglDestroyImageKHR(dpy, img));
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS image-external-texture");
         return 0;
     }
     if (!strcmp(argv[1], "image-bind-errors")) {

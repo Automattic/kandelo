@@ -263,9 +263,11 @@ struct wpk_image_attachment {
     struct wpk_object_name *object;
     struct wpk_image_attachment *next;
 };
+/* A unit's TEXTURE_2D, TEXTURE_CUBE_MAP and (OES_EGL_image_external)
+ * TEXTURE_EXTERNAL_OES bindings. */
 struct wpk_texture_unit {
-    GLuint texture, cube;
-    struct wpk_object_name *texture_object, *cube_object;
+    GLuint texture, cube, external;
+    struct wpk_object_name *texture_object, *cube_object, *external_object;
 };
 struct wpk_array_capture {
     struct wpk_object_name *object;
@@ -1798,6 +1800,7 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     for (unsigned unit = 0; unit < state->texture_unit_count; unit++) {
         object_release(state->objects, state->texture_units[unit].texture_object);
         object_release(state->objects, state->texture_units[unit].cube_object);
+        object_release(state->objects, state->texture_units[unit].external_object);
     }
     object_release(state->objects, state->renderbuffer_object);
     if (state->texture_units != state->initial_texture_units)
@@ -1888,6 +1891,11 @@ static int external_texture_live(struct wpk_gles_context *state, struct wpk_obje
             binding->cube = 0;
             release_object_locked(group, object);
         }
+        if (binding->external_object == object) {
+            binding->external_object = NULL;
+            binding->external = 0;
+            release_object_locked(group, object);
+        }
     }
     pthread_mutex_unlock(&group->mutex);
     return 0;
@@ -1920,8 +1928,8 @@ static int bind_image_object(uint32_t kind, GLenum target, GLuint name) {
 }
 /* Retain both the selected record and input image before native mutation.
  * Unknown completion keeps those candidates with the entire shared group. */
-static int import_image_object(uint32_t kind, struct wpk_object_name *object, GLuint source,
-                               struct wpk_egl_image *image) {
+static int import_image_object(uint32_t kind, GLenum target, struct wpk_object_name *object,
+                               GLuint source, struct wpk_egl_image *image) {
     if (!object) {
         raise_client_error(GL_INVALID_OPERATION);
         return 0;
@@ -1939,7 +1947,7 @@ static int import_image_object(uint32_t kind, struct wpk_object_name *object, GL
     pending->image = image;
     _wpk_egl_image_retain(image);
     input[0] = kind;
-    input[1] = kind == 1 ? GL_TEXTURE_2D : GL_RENDERBUFFER;
+    input[1] = target;
     input[2] = source;
     uint32_t reply[4] = {0};
     int rc = _wpk_gl_query_into(QOP_BOUND_IMAGE_TARGET, input, 12, reply, 16);
@@ -2099,6 +2107,11 @@ void glDeleteTextures(GLsizei n, const GLuint *names) {
                 binding->cube = 0;
                 release_object_locked(group, object);
             }
+            if (binding->external_object == object) {
+                binding->external_object = NULL;
+                binding->external = 0;
+                release_object_locked(group, object);
+            }
         }
         pthread_mutex_unlock(&group->mutex);
         object_release(group, object);
@@ -2114,7 +2127,9 @@ static void emit_bind_texture(GLenum target, GLuint host) {
 
 void glBindTexture(GLenum target, GLuint tex) {
     if (!_wpk_gl_command_encoder()) return;
-    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP) {
+    /* OES_EGL_image_external: an object first bound to TEXTURE_EXTERNAL_OES
+     * is and remains an external texture (image_target_error below). */
+    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_CUBE_MAP && target != GL_TEXTURE_EXTERNAL_OES) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
@@ -2149,15 +2164,18 @@ void glBindTexture(GLenum target, GLuint tex) {
         return;
     }
     (void)realize_image_object(state->objects, object, target);
-    struct wpk_object_name **slot = target == GL_TEXTURE_2D
-                                        ? &state->texture_units[g_active_unit].texture_object
-                                        : &state->texture_units[g_active_unit].cube_object;
+    struct wpk_texture_unit *unit = &state->texture_units[g_active_unit];
+    struct wpk_object_name **slot = target == GL_TEXTURE_2D ? &unit->texture_object
+                                  : target == GL_TEXTURE_CUBE_MAP ? &unit->cube_object
+                                  : &unit->external_object;
     object_release(state->objects, *slot);
     *slot = object;
     if (target == GL_TEXTURE_2D)
-        g_texture_units[g_active_unit].texture = tex;
+        unit->texture = tex;
+    else if (target == GL_TEXTURE_CUBE_MAP)
+        unit->cube = tex;
     else
-        g_texture_units[g_active_unit].cube = tex;
+        unit->external = tex;
 }
 
 void glActiveTexture(GLenum unit) {
@@ -3276,6 +3294,10 @@ static const char *const k_client_extensions[] = {
     "GL_EXT_texture_format_BGRA8888",
     "GL_EXT_unpack_subimage",
     "GL_OES_EGL_image",
+    /* TEXTURE_EXTERNAL_OES bindings and samplerExternalOES: the host keeps
+     * each unit's external binding and binds it for the draws whose
+     * program samples it (host/src/webgl/external-texture.ts). */
+    "GL_OES_EGL_image_external",
     /* Fence placement is supplied by the EGL client facade, rather than a
      * WebGL getExtension name. It adds no GLES entry points. */
     "GL_OES_EGL_sync",
@@ -4106,15 +4128,19 @@ void glFramebufferRenderbuffer(GLenum target, GLenum attachment,
 /* ----- GL_OES_EGL_image --------------------------------------------- */
 
 /* Both storage tiers use retained canonical sources. The host publishes CPU
- * mappings and native sibling writes at ordered command boundaries. */
+ * mappings and native sibling writes at ordered command boundaries.
+ * OES_EGL_image_external: TEXTURE_EXTERNAL_OES makes the bound external
+ * texture a sibling the same way; its sampling is read-only. */
 void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
     if (!_wpk_gl_command_encoder()) return;
-    if (target != GL_TEXTURE_2D) {
+    if (target != GL_TEXTURE_2D && target != GL_TEXTURE_EXTERNAL_OES) {
         raise_client_error(GL_INVALID_ENUM);
         return;
     }
     struct wpk_egl_image *img = _wpk_egl_image_lookup(image);
-    GLuint name = g_texture_units[g_active_unit].texture;
+    struct wpk_texture_unit *unit = &g_texture_units[g_active_unit];
+    GLuint name = target == GL_TEXTURE_2D ? unit->texture : unit->external;
+    struct wpk_object_name *object = target == GL_TEXTURE_2D ? unit->texture_object : unit->external_object;
     if (!img) {
         raise_client_error(GL_INVALID_VALUE);
         return;
@@ -4130,7 +4156,7 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         _wpk_egl_image_release(img);
         return;
     }
-    (void)import_image_object(1, g_texture_units[g_active_unit].texture_object, source, img);
+    (void)import_image_object(1, target, object, source, img);
     _wpk_egl_image_release(img);
 }
 
@@ -4157,7 +4183,7 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         _wpk_egl_image_release(img);
         return;
     }
-    (void)import_image_object(2, _wpk_gl_current_encoder()->renderbuffer_object, source, img);
+    (void)import_image_object(2, GL_RENDERBUFFER, _wpk_gl_current_encoder()->renderbuffer_object, source, img);
     _wpk_egl_image_release(img);
 }
 
@@ -4649,15 +4675,28 @@ void glValidateProgram(GLuint program) {
     if (!_wpk_gl_command_encoder()) return;
     EMIT_BEGIN(OP_VALIDATE_PROGRAM,4) w_u32(&_c,program); EMIT_END()
 }
+/* OES_EGL_image_external: every texture of a valid target needs one texture
+ * image unit. An external texture samples one converted RGBA image, never
+ * separate planes, so it needs one as well. */
+static int required_texture_units(GLenum target, GLenum pname, GLint *value) {
+    if (pname != GL_REQUIRED_TEXTURE_IMAGE_UNITS_OES) return 0;
+    if (target == GL_TEXTURE_2D || target == GL_TEXTURE_CUBE_MAP || target == GL_TEXTURE_EXTERNAL_OES) *value = 1;
+    else raise_client_error(GL_INVALID_ENUM);
+    return 1;
+}
 void glGetTexParameteriv(GLenum target, GLenum pname, GLint *params) {
     if (!_wpk_gl_command_encoder()) return;
     if (!params) return;
+    GLint required = 0;
+    if (required_texture_units(target, pname, &required)) { if (required) *params = required; return; }
     uint32_t input[2] = {target,pname}; GLint value;
     if (checked_client_query(QOP_GET_TEX_PARAMETER,input,sizeof input,&value,4)) *params = value;
 }
 void glGetTexParameterfv(GLenum target, GLenum pname, GLfloat *params) {
     if (!_wpk_gl_command_encoder()) return;
     if (!params) return;
+    GLint required = 0;
+    if (required_texture_units(target, pname, &required)) { if (required) *params = (GLfloat)required; return; }
     uint32_t input[2] = {target,pname}; GLint value;
     if (checked_client_query(QOP_GET_TEX_PARAMETER,input,sizeof input,&value,4)) *params = (GLfloat)value;
 }

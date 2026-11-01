@@ -2,6 +2,14 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
+import { externalShaderSource, type ExternalShaderSource } from "./external-texture.js";
+
+/** The source WebGL was given for a shader whose guest source names
+ * OES_EGL_image_external (external-texture.ts); absent otherwise. */
+const nativeSources = new WeakMap<WebGLShader, ExternalShaderSource>();
+export function nativeShaderSource(shader: WebGLShader): ExternalShaderSource | undefined {
+  return nativeSources.get(shader);
+}
 
 export type GlShaderSourceUpload = {
   name: number;
@@ -23,11 +31,16 @@ export function installShaderSource(b: GlBinding, shader: WebGLShader, bytes: Ui
   let source: string;
   try { source = new TextDecoder().decode(bytes); }
   catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
-  const prior = b.shaderSources.get(shader);
-  try { b.shaderSources.set(shader,bytes); }
+  const prior = b.shaderSources.get(shader), priorNative = nativeSources.get(shader);
+  // GetShaderSource returns the guest's bytes; WebGL compiles the external
+  // sampler rewrite, made once here (external-texture.ts).
+  let native: ExternalShaderSource;
+  try { native = externalShaderSource(source); b.shaderSources.set(shader,bytes); }
   catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
-  if (!checkedGlCall(b, () => b.gl!.shaderSource(shader,source))) {
+  if (native.text !== source) nativeSources.set(shader,native); else nativeSources.delete(shader);
+  if (!checkedGlCall(b, () => b.gl!.shaderSource(shader,native.text))) {
     if (prior) b.shaderSources.set(shader,prior); else b.shaderSources.delete(shader);
+    if (priorNative) nativeSources.set(shader,priorNative); else nativeSources.delete(shader);
     return false;
   }
   return true;

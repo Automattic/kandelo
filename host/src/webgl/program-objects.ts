@@ -1,3 +1,4 @@
+import { copyExternalSamplers, recordLinkedExternalSamplers } from "./external-texture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // Deferred shader/program ownership adapted from Brandon Payton's
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
@@ -351,12 +352,13 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
       if (shader) attached.push(shader);
     }
     recordLinkedProgram(b, program, queried && linked, attached);
+    recordLinkedExternalSamplers(program, queried && linked, attached);
     // ES 2.0 allows attribute aliasing that WebGL rejects at link time. The
     // private executable then replaces the failed native object, which is
     // retired with the candidate or the released previous executable.
     const aliased = queried && !linked ? linkAliasedExecutable(b, name, attached) : null;
     const executable = aliased ?? program;
-    if (aliased) programLinkGeneration(b, aliased).value++;
+    if (aliased) { programLinkGeneration(b, aliased).value++; copyExternalSamplers(program, aliased); }
     b.programs.set(name, executable);
     if (candidate && !aliased) transferNativeRetirement(candidate);
     if (currentName === name) b.currentProgramId = name;

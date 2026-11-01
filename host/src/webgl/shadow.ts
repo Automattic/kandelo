@@ -64,6 +64,10 @@ export interface GlShadowState {
   defaultTextures: Map<number, WebGLTexture>;
   textureUnits: (WebGLTexture | null)[];
   cubeTextureUnits: (WebGLTexture | null)[];
+  /** OES_EGL_image_external bindings. An external texture has no native
+   * target of its own: its native texture is bound to a unit's TEXTURE_2D
+   * only for the draws whose program samples it (external-texture.ts). */
+  externalTextureUnits: (WebGLTexture | null)[];
   pixelStore: Map<number, number>;
 
   unpackAlignment: number;
@@ -152,6 +156,7 @@ export function defaultShadow(): GlShadowState {
     defaultTextures: new Map(),
     textureUnits: new Array(32).fill(null),
     cubeTextureUnits: new Array(32).fill(null),
+    externalTextureUnits: new Array(32).fill(null),
     pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
     unpackAlignment: 4,
     packAlignment: 4,

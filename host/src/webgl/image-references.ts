@@ -223,6 +223,8 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
   }
   for (const { cube, unit } of units)
     setTextureUnit(b, cube, unit, null);
+  // External bindings have no native target: the shadow alone binds zero.
+  b.shadow.externalTextureUnits.forEach((object, unit, list) => { if (object === texture) list[unit] = null; });
   commitAttachmentDeletion(b, points);
   b.textures.delete(name);
   for (const [bo, entry] of b.foreignTextures)
@@ -304,7 +306,8 @@ export function deleteImageObject(b: GlBinding, kind: number, name: number): boo
 function imageReferenced(b: GlBinding, kind: GlImageAttachment["kind"], object: object): boolean {
   for (const member of b.objects.members) {
     if (kind === "texture" && (member.shadow.textureUnits.includes(object as WebGLTexture)
-      || member.shadow.cubeTextureUnits.includes(object as WebGLTexture)))
+      || member.shadow.cubeTextureUnits.includes(object as WebGLTexture)
+      || member.shadow.externalTextureUnits.includes(object as WebGLTexture)))
       return true;
     if (kind === "renderbuffer" && member.shadow.renderbuffer === object)
       return true;

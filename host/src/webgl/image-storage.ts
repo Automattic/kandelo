@@ -48,7 +48,7 @@ export type GlRenderbufferView = {
   native: WebGLRenderbuffer;
   source: GlImageSource | null;
 };
-const TEX = 0x0de1, CUBE = 0x8513, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0;
+const TEX = 0x0de1, CUBE = 0x8513, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0, EXTERNAL = 0x8d65;
 export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture | null, width: number, height: number, key?: string, storage: GlImageStorage = {}): number {
   for (const source of b.imageSources.values())
     if (source.bo === bo && source.key === key)
@@ -439,12 +439,16 @@ export type GlBoundImageState = {
   revision: number;
 };
 function boundImageObject(b: GlBinding, kind: number, target: number, cube = false): WebGLTexture | WebGLRenderbuffer | null {
-  if ((kind !== 1 && kind !== 2) || (kind === 1 ? target !== TEX && !(cube && target === CUBE) : target !== RBO)) {
+  if ((kind !== 1 && kind !== 2)
+      || (kind === 1 ? target !== TEX && target !== EXTERNAL && !(cube && target === CUBE) : target !== RBO)) {
     recordGlError(b, 0x500);
     return null;
   }
-  const object = kind === 1 ? (target === CUBE ? b.shadow.cubeTextureUnits : b.shadow.textureUnits)[b.shadow.activeTexture]
-    : b.shadow.renderbuffer;
+  // OES_EGL_image_external: an external texture becomes a sibling the same
+  // way a 2D texture does; its native storage is a 2D texture.
+  const units = target === CUBE ? b.shadow.cubeTextureUnits
+    : target === EXTERNAL ? b.shadow.externalTextureUnits : b.shadow.textureUnits;
+  const object = kind === 1 ? units[b.shadow.activeTexture] : b.shadow.renderbuffer;
   if (!object)
     recordGlError(b, 0x502);
   return object ?? null;
@@ -478,6 +482,16 @@ export function prepareImageDraw(b: GlBinding): boolean {
       return false;
   }
   return true;
+}
+/** Copy the canonical image into `object`'s sibling view if its storage was
+ * written since the view last copied it (an external texture's view before
+ * a draw samples it). True when there is nothing to copy. */
+export function refreshTextureView(b: GlBinding, object: WebGLTexture): boolean {
+  const view = b.textureViews.get(object);
+  if (!view?.source) return true;
+  const storage = sourceStorage(view.source);
+  if (storage && view.synced === storageWrites(storage).count) return true;
+  return copySource(b, view);
 }
 /** Views gain and lose sources only through view replacement and
  * destruction, which advance the framebuffer-inputs revision. */

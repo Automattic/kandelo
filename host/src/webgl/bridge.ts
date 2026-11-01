@@ -38,11 +38,12 @@ import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFor
   renderbufferOpaqueAlpha,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
-import { installShaderSource } from "./shader-source.js";
+import { installShaderSource, nativeShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { noteSamplerWrite } from "./depth-sampling.js";
+import { externalTexParameter, recordCompiledExternalSamplers, TEXTURE_EXTERNAL_OES, validateExternalSamplers } from "./external-texture.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
@@ -588,7 +589,8 @@ function dispatch(
       break;
     case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:
       if (!validGlesTextureParameter(v.getUint32(p+4,true))) { recordGlError(b,0x500); return; }
-      if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+      // An external texture has no native target (external-texture.ts).
+      if (v.getUint32(p,true) !== TEXTURE_EXTERNAL_OES && !prepareTextureOperation(b,v.getUint32(p,true))) return;
       break;
     case O.OP_GENERATE_MIPMAP:
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
@@ -986,6 +988,10 @@ function dispatch(
       ));
     }
     case O.OP_TEX_PARAMETERI:
+      if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
+        externalTexParameter(b, v.getUint32(p + 4, true), v.getInt32(p + 8, true));
+        return;
+      }
       gl.texParameteri(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
@@ -993,6 +999,12 @@ function dispatch(
       );
       return;
     case O.OP_TEX_PARAMETERF:
+      // An external texture's parameters are enums, which a float names
+      // after conversion to the nearest integer (ES 2.0 section 2.3.1).
+      if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
+        externalTexParameter(b, v.getUint32(p + 4, true), Math.round(v.getFloat32(p + 8, true)));
+        return;
+      }
       gl.texParameterf(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
@@ -1010,6 +1022,7 @@ function dispatch(
       b.shadow.activeTexture = index;
       while (b.shadow.textureUnits.length <= index) b.shadow.textureUnits.push(null);
       while (b.shadow.cubeTextureUnits.length <= index) b.shadow.cubeTextureUnits.push(null);
+      while (b.shadow.externalTextureUnits.length <= index) b.shadow.externalTextureUnits.push(null);
       return;
     }
     case O.OP_GENERATE_MIPMAP: {
@@ -1124,13 +1137,18 @@ function dispatch(
     }
     case O.OP_COMPILE_SHADER: {
       const sh = requireShaderObject(b, v.getUint32(p, true));
-      if (sh && checkedGlCall(b, () => gl.compileShader(sh))) recordCompiledShader(sh, b.shaderSources.get(sh));
+      // Twins and private executables rebuild from the source WebGL compiled.
+      if (sh && checkedGlCall(b, () => gl.compileShader(sh))) {
+        const native = nativeShaderSource(sh);
+        recordCompiledShader(sh, native ? native.text : b.shaderSources.get(sh));
+        recordCompiledExternalSamplers(sh, native?.samplers);
+      }
       return;
     }
     case O.OP_VALIDATE_PROGRAM: {
       const name = v.getUint32(p,true), program = b.programs.get(name);
       if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return; }
-      checkedGlCall(b, () => gl.validateProgram(program));
+      if (checkedGlCall(b, () => gl.validateProgram(program))) validateExternalSamplers(b, program);
       return;
     }
     case O.OP_DELETE_SHADER: {

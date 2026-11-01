@@ -88,6 +88,8 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   }
   for (const {owner,cube,unit} of units) setTextureUnit(owner,cube,unit,null);
+  for (const owner of b.objects.members)
+    owner.shadow.externalTextureUnits.forEach((object, unit, list) => { if (object && objects.has(object)) list[unit] = null; });
   for (const {owner,framebuffer,point} of points) {
     const attachments = owner.framebufferAttachments.get(framebuffer)!; attachments.delete(point);
     if (!attachments.size) owner.framebufferAttachments.delete(framebuffer);

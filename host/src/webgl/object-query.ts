@@ -1,3 +1,4 @@
+import { externalTexParameterValue, guestUniformType, TEXTURE_EXTERNAL_OES } from "./external-texture.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
 import { renderbufferFloat } from "./es2-formats.js";
 import { textureLevel } from "./texture-levels.js";
@@ -79,7 +80,9 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         const active = info as GlReflectedAttribute, bytes = new TextEncoder().encode(active.name);
         const offset = v.getUint32(8,true), capacity = v.getUint32(12,true);
         if (offset > bytes.length) return fail(b,0x501);
-        result.setUint32(0,bytes.length,true); result.setInt32(4,active.size,true); result.setUint32(8,active.type,true);
+        // samplerExternalOES compiles as sampler2D (external-texture.ts).
+        const type = op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? guestUniformType(program,active.name,active.type) : active.type;
+        result.setUint32(0,bytes.length,true); result.setInt32(4,active.size,true); result.setUint32(8,type,true);
         payload.set(bytes.subarray(offset,offset+capacity),12);
         return payload.length;
       }
@@ -133,6 +136,11 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         result.setInt32(0,value,true); return 4;
       }
       case O.QOP_GET_TEX_PARAMETER: {
+        if (name === TEXTURE_EXTERNAL_OES && validGlesTextureParameter(arg)) {
+          const value = externalTexParameterValue(b,arg);
+          if (value === null) return -5;
+          result.setInt32(0,value,true); return 4;
+        }
         if ((name !== 0x0de1 && name !== 0x8513) || !validGlesTextureParameter(arg)) return fail(b,0x500);
         if (!prepareTextureOperation(b,name)) return -5;
         let value = 0;

@@ -3760,6 +3760,39 @@ and image siblings retain their own references; public image/handle deletion
 does not authorize deletion of a surviving sibling's storage. GPU BOs include
 color, 24-bit depth and 8-bit stencil attachments.
 
+`GL_OES_EGL_image_external` gives every texture unit a third binding,
+`TEXTURE_EXTERNAL_OES`, whose textures take only EGLImages and are sampled
+through `samplerExternalOES` (wlroots samples external-only dma-bufs this
+way). WebGL 2 has no such target, so the host
+(`host/src/webgl/external-texture.ts`) keeps each unit's external binding in
+its shadow state, separate from the unit's TEXTURE_2D binding, and an
+external texture's storage is an ordinary native 2D texture (the image
+sibling view) that only the draws of a program sampling it bind, to that
+unit's native TEXTURE_2D, restoring the unit's 2D binding after the draw.
+Why: one native binding point cannot hold both of a unit's bindings, and
+binding per draw only for programs that sample external textures costs
+every other draw one lookup. When `glShaderSource` gives the host a
+shader that names the extension, the host compiles a rewrite once: the
+shader's own `#extension GL_OES_EGL_image_external` directive defines a
+private type macro as `sampler2D` (`disable` undefines it), so the type
+exists exactly where the extension is enabled, even under conditional
+compilation, `GL_OES_EGL_image_external` is defined as 1, and `#line`
+keeps the guest's line numbers; `glGetShaderSource` still returns the
+guest's text. Reflection reports `SAMPLER_EXTERNAL_OES` for those samplers.
+A sampler2D and a samplerExternalOES reading one unit are two sampler
+types on one unit, which ES 2.0 section 2.10.4 makes `INVALID_OPERATION`
+at draw and a `glValidateProgram` failure; WebGL compiles both as
+sampler2D, so the host checks that itself, from sampler units cached per
+link and per `glUniform1i`. An external texture starts with LINEAR
+filters and CLAMP_TO_EDGE wraps, accepts only NEAREST or LINEAR filters
+and CLAMP_TO_EDGE wraps (`INVALID_ENUM` otherwise), takes no image or
+mipmap command, and its object keeps the external target
+(`INVALID_OPERATION` for a 2D or cube bind, and the reverse). It samples
+one RGBA image, so `REQUIRED_TEXTURE_IMAGE_UNITS_OES` is 1 for every
+target and no texture unit or uniform is taken from the advertised
+limits. Its sibling view copies the image only when the image's storage
+write count moved (`host/src/webgl/image-writes.ts`), as 2D siblings do.
+
 GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
 single-plane formats, each stored exactly: R8, GR88, RGB565, the four
 8888 orders, the four 2101010 orders, and ABGR/XBGR16161616F. A GPU-tier

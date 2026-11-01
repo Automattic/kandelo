@@ -1,3 +1,4 @@
+import { externalValidationFailed, guestUniformType } from "./external-texture.js";
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
@@ -154,6 +155,7 @@ const numericParameterNames = new Set([
   0x0d50, // SUBPIXEL_BITS
   0x8069, // TEXTURE_BINDING_2D
   0x8514, // TEXTURE_BINDING_CUBE_MAP
+  0x8d67, // TEXTURE_BINDING_EXTERNAL_OES (GL_OES_EGL_image_external)
   0x0cf5, // UNPACK_ALIGNMENT
   0x0ba2, // VIEWPORT
   0x8df8, 0x8df9, 0x8dfa, 0x86a2, // GLES compiler and format counts
@@ -574,6 +576,10 @@ export function runGlQuery(
             if (info) max = Math.max(max, info.name.length + 1);
           }
           v = max;
+        } else if (pname === 0x8b83 && externalValidationFailed(prog)) {
+          // A sampler2D and a samplerExternalOES share a unit (ES 2.0
+          // 2.10.4); WebGL validated two sampler2Ds.
+          v = false;
         } else {
           v = gl.getProgramParameter(prog, pname);
         }
@@ -682,7 +688,7 @@ export function runGlQuery(
       const nameLen = Math.min(nameBytes.byteLength, cap, out.byteLength - 12);
       outDv.setUint32(0, nameLen, true);
       outDv.setInt32(4, info.size, true);
-      outDv.setUint32(8, info.type, true);
+      outDv.setUint32(8, guestUniformType(prog!, info.name, info.type), true);
       out.set(nameBytes.subarray(0, nameLen), 12);
       return 12 + nameLen;
     }
@@ -763,6 +769,11 @@ function queryParameter(b: GlBinding, pname: number): unknown {
   // The native mask holds alpha off for RGB storage kept as RGBA
   // (opaque-alpha.ts); ES 2.0 reports the guest's COLOR_WRITEMASK.
   if (pname === 0x0c23) return [...b.shadow.colorMask];
+  // External bindings have no native target (external-texture.ts).
+  if (pname === 0x8d67) {
+    const object = b.shadow.externalTextureUnits[b.shadow.activeTexture] ?? null;
+    return nameForObject(b.textures, object) || (object ? b.retiredTextures.get(object) : 0) || 0;
+  }
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING

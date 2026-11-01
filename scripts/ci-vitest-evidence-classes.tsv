@@ -499,6 +499,7 @@ host/test/webgl-error-sequence.test.ts	source-only
 host/test/webgl-es2-color-renderable.test.ts	source-only
 host/test/webgl-es2-enums.test.ts	source-only
 host/test/webgl-es2-formats.test.ts	source-only
+host/test/webgl-external-texture.test.ts	source-only
 host/test/webgl-fence-export.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only

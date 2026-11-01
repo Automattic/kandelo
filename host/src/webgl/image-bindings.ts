@@ -3,6 +3,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { setTextureUnit } from "./depth-sampling.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
+import { bindExternalTexture, isExternalTexture, TEXTURE_EXTERNAL_OES } from "./external-texture.js";
 
 /** Native textures whose target an accepted bind has fixed. */
 const boundTargets = new WeakMap<WebGLTexture, number>();
@@ -13,8 +14,12 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
   const gl = b.gl;
   if (!gl) return false;
   if (kind === 1) {
+    if (target === TEXTURE_EXTERNAL_OES) return bindExternalTexture(b,name);
     if (target !== 0x0de1 && target !== 0x8513) { recordGlError(b,0x500); return false; }
     let texture = name ? b.textures.get(name) ?? null : b.shadow.defaultTextures.get(target) ?? null;
+    // An external texture's native storage is a 2D texture, but the object
+    // is no 2D or cube texture (OES_EGL_image_external).
+    if (isExternalTexture(texture)) { recordGlError(b,0x502); return false; }
     const allocate = name !== 0 && texture === null;
     if (allocate && (!checkedGlCall(b, () => { texture = gl.createTexture(); }) || !texture)) {
       if (texture) gl.deleteTexture(texture);

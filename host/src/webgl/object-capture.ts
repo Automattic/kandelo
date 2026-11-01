@@ -1,3 +1,4 @@
+import { guestUniformType } from "./external-texture.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
@@ -53,7 +54,8 @@ function captureValue(b: GlBinding, op: number, name: number, index: number): Ob
   if(!checkedGlCall(b,()=>{info=aliased?aliased[index]:uniform?gl.getActiveUniform(program,index):gl.getActiveAttrib(program,index);}))return -5;
   if(!info)return fail(0x502);
   const active=info as GlReflectedAttribute,bytes=new TextEncoder().encode(active.name);
-  return {header:[bytes.length,active.size,active.type],bytes,unit:1};
+  // samplerExternalOES compiles as sampler2D (external-texture.ts).
+  return {header:[bytes.length,active.size,uniform?guestUniformType(program,active.name,active.type):active.type],bytes,unit:1};
 }
 
 /** BEGIN reads one original value. CHUNK never re-queries mutable objects.

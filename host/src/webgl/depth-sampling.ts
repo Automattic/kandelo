@@ -192,6 +192,10 @@ const samplerWrites = new WeakMap<WebGLProgram, number>();
 export function noteSamplerWrite(program: WebGLProgram | null): void {
   if (program) samplerWrites.set(program, (samplerWrites.get(program) ?? 0) + 1);
 }
+/** Changes when a sampler unit of `program` may have changed. */
+export function samplerWriteGeneration(program: WebGLProgram): number {
+  return samplerWrites.get(program) ?? 0;
+}
 
 /** Level 0 of the face a unit of that kind samples is a depth image. */
 function samplesDepth(object: WebGLTexture | null | undefined, cube: boolean): boolean {
