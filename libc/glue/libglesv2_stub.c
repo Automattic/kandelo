@@ -2555,15 +2555,16 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
     uint32_t s = shader, p = (uint32_t)pname;
     memcpy(in, &s, 4); memcpy(in + 4, &p, 4);
     int32_t out = 0;
-    if (_wpk_gl_query_into(QOP_GET_SHADERIV, in, 8, &out, 4) != 0) { *params = 0; return; }
+    if (_wpk_gl_query_into(QOP_GET_SHADERIV, in, 8, &out, 4) != 0) return;
     *params = out;
 }
 
 void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
     if (!_wpk_gl_current_encoder()) return;
-    if (length) *length = 0;
-    if (!infoLog || bufSize <= 0) return;
-    infoLog[0] = '\0';
+    if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    if (bufSize > 0 && !infoLog) return;
+    /* Even a zero-size destination must validate the object at the host.
+     * Publish caller bytes only after that query has been accepted. */
     uint32_t s = shader;
     uint8_t out[1024 + 4];
     if (_wpk_gl_query_into(QOP_GET_SHADER_INFO_LOG, &s, 4, out, sizeof out) != 0) return;
@@ -2571,9 +2572,12 @@ void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar 
     memcpy(&slen, out, 4);
     if (slen > sizeof out - 4) slen = sizeof out - 4;
     GLsizei copy = (GLsizei)slen;
-    if (copy > bufSize - 1) copy = bufSize - 1;
-    memcpy(infoLog, out + 4, (size_t)copy);
-    infoLog[copy] = '\0';
+    if (bufSize == 0) copy = 0;
+    else {
+        if (copy > bufSize - 1) copy = bufSize - 1;
+        memcpy(infoLog, out + 4, (size_t)copy);
+        infoLog[copy] = '\0';
+    }
     if (length) *length = copy;
 }
 
@@ -2584,15 +2588,16 @@ void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
     uint32_t s = program, p = (uint32_t)pname;
     memcpy(in, &s, 4); memcpy(in + 4, &p, 4);
     int32_t out = 0;
-    if (_wpk_gl_query_into(QOP_GET_PROGRAMIV, in, 8, &out, 4) != 0) { *params = 0; return; }
+    if (_wpk_gl_query_into(QOP_GET_PROGRAMIV, in, 8, &out, 4) != 0) return;
     *params = out;
 }
 
 void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
     if (!_wpk_gl_current_encoder()) return;
-    if (length) *length = 0;
-    if (!infoLog || bufSize <= 0) return;
-    infoLog[0] = '\0';
+    if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
+    if (bufSize > 0 && !infoLog) return;
+    /* Even a zero-size destination must validate the object at the host.
+     * Publish caller bytes only after that query has been accepted. */
     uint32_t s = program;
     uint8_t out[1024 + 4];
     if (_wpk_gl_query_into(QOP_GET_PROGRAM_INFO_LOG, &s, 4, out, sizeof out) != 0) return;
@@ -2600,9 +2605,12 @@ void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLcha
     memcpy(&slen, out, 4);
     if (slen > sizeof out - 4) slen = sizeof out - 4;
     GLsizei copy = (GLsizei)slen;
-    if (copy > bufSize - 1) copy = bufSize - 1;
-    memcpy(infoLog, out + 4, (size_t)copy);
-    infoLog[copy] = '\0';
+    if (bufSize == 0) copy = 0;
+    else {
+        if (copy > bufSize - 1) copy = bufSize - 1;
+        memcpy(infoLog, out + 4, (size_t)copy);
+        infoLog[copy] = '\0';
+    }
     if (length) *length = copy;
 }
 

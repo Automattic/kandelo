@@ -699,6 +699,9 @@ int graphics_munmap(void *a, size_t len) {
     assert(found && len == WPK_GL_CMDBUF_LEN);
     return 0;
 }
+static unsigned log_queries;
+static int log_query_failure;
+
 int graphics_ioctl(int fd, unsigned long request, ...) {
     va_list args; va_start(args, request);
     void *arg = va_arg(args, void *); va_end(args);
@@ -1607,6 +1610,18 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 memcpy(latest_allocation, &result, 4);
             } else
                 memcpy(latest_allocation, &value, 4);
+            return 0;
+        }
+        if ((q->op == QOP_GET_SHADERIV || q->op == QOP_GET_PROGRAMIV) && log_query_failure) {
+            log_queries++;query_gl_error=GL_INVALID_VALUE;errno=EINVAL;return -1;
+        }
+        if (q->op == QOP_GET_SHADER_INFO_LOG || q->op == QOP_GET_PROGRAM_INFO_LOG) {
+            log_queries++;
+            assert(q->in_buf_len == 4 && q->out_buf_len >= 4 && latest_allocation);
+            if (log_query_failure) { query_gl_error=GL_INVALID_VALUE; errno=EINVAL; return -1; }
+            const uint32_t size=4;
+            assert(q->out_buf_len >= 8);
+            memcpy(latest_allocation,&size,4);memcpy((uint8_t *)latest_allocation+4,"abcd",4);
             return 0;
         }
         if (q->op == QOP_GET_STRING) string_queries++;
@@ -4811,6 +4826,51 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         puts("PASS encoder-generation-counts"); return 0;
+    }
+    if (!strcmp(argv[1],"encoder-params-reject")) {
+        void (*const getters[])(GLuint,GLenum,GLint *)={glGetShaderiv,glGetProgramiv};
+        for(unsigned i=0;i<2;i++) {
+            GLint value=91;const unsigned before=log_queries;log_query_failure=1;
+            getters[i](42,i?GL_LINK_STATUS:GL_COMPILE_STATUS,&value);
+            assert(value==91 && log_queries==before+1);
+            assert(glGetError()==GL_INVALID_VALUE && glGetError()==GL_NO_ERROR);
+        }
+        log_query_failure=0;
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0);puts("PASS encoder-params-reject");return 0;
+    }
+    if (!strncmp(argv[1],"encoder-log-",12)) {
+        void (*const getters[])(GLuint,GLsizei,GLsizei *,GLchar *)={glGetShaderInfoLog,glGetProgramInfoLog};
+        for(unsigned i=0;i<2;i++) {
+            GLsizei length=91; char output[8]="KEEP";
+            const unsigned before=log_queries;
+            if (!strcmp(argv[1],"encoder-log-negative")) {
+                getters[i](42,-1,&length,output);
+                assert(length==91 && !strcmp(output,"KEEP") && log_queries==before);
+                assert(glGetError()==GL_INVALID_VALUE && glGetError()==GL_NO_ERROR);
+                getters[i](42,INT_MIN,&length,NULL);
+                assert(length==91 && log_queries==before && glGetError()==GL_INVALID_VALUE);
+            } else if (!strcmp(argv[1],"encoder-log-zero")) {
+                getters[i](42,0,&length,output);
+                assert(length==0 && !strcmp(output,"KEEP") && log_queries==before+1);
+                getters[i](42,0,NULL,(void *)(uintptr_t)1);
+                assert(log_queries==before+2 && glGetError()==GL_NO_ERROR);
+                getters[i](42,3,&length,output);
+                assert(length==2 && !memcmp(output,"ab\0P",4) && glGetError()==GL_NO_ERROR);
+            } else {
+                assert(!strcmp(argv[1],"encoder-log-reject"));
+                log_query_failure=1;
+                getters[i](42,4,&length,output);
+                assert(length==91 && !strcmp(output,"KEEP") && log_queries==before+1);
+                assert(glGetError()==GL_INVALID_VALUE && glGetError()==GL_NO_ERROR);
+                getters[i](42,0,&length,output);
+                assert(length==91 && !strcmp(output,"KEEP") && log_queries==before+2);
+                assert(glGetError()==GL_INVALID_VALUE && glGetError()==GL_NO_ERROR);
+                log_query_failure=0;
+            }
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0);printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strcmp(argv[1], "encoder-string-errors")) {
         string_generation = 1;

@@ -932,3 +932,75 @@ describe("program link attempts and installed executables", () => {
     expect(native.current).toBeNull();
   });
 });
+
+
+describe("shader and program query name errors", () => {
+  const families = [
+    [O.QOP_GET_SHADERIV, "shader", 0x8b4f],
+    [O.QOP_GET_SHADER_INFO_LOG, "shader", undefined],
+    [O.QOP_GET_PROGRAMIV, "program", 0x8b82],
+    [O.QOP_GET_PROGRAM_INFO_LOG, "program", undefined],
+  ] as const;
+  function invoke(b: ReturnType<typeof setup>["b"], op: number, name: number, pname?: number) {
+    const input = new Uint8Array(new Uint32Array(pname === undefined ? [name] : [name,pname]).buffer);
+    const output = new Uint8Array(128).fill(0xa7);
+    return {rc:runGlQuery(b,op,input,output),output};
+  }
+  for (const [op,kind,pname] of families) for (const name of [0,0xffff_ffff,"wrong-kind"] as const)
+    it(`rejects ${kind} query ${op} name ${name} without touching output/native objects`, () => {
+      const {b,native} = setup();
+      const calls = vi.fn();
+      Object.assign(native,{getShaderParameter:calls,getShaderInfoLog:calls,getProgramInfoLog:calls});
+      const programRead = vi.spyOn(native,"getProgramParameter");
+      const result = invoke(b,op,name === "wrong-kind" ? (kind === "shader" ? 20 : 10) : name,pname);
+      expect(result.rc).toBe(-22);
+      expect([...result.output]).toEqual(new Array(128).fill(0xa7));
+      expect(b.errors).toEqual([name === "wrong-kind" ? 0x502 : 0x501]);
+      expect(calls).not.toHaveBeenCalled(); expect(programRead).not.toHaveBeenCalled();
+      expect(b.shaders.size).toBe(2); expect(b.programs.size).toBe(1);
+    });
+  for(const [op,kind,pname] of families) for(const failure of ["native","throw"] as const)
+    it(`preserves ${kind} query ${op} output on ${failure} rejection and keeps prior flags`, () => {
+      const {b,native} = setup();
+      b.errors.push(0x505);
+      const reject=()=>{if(failure==="throw")throw new Error("query refused");native.error=0x500;return 7;};
+      Object.assign(native,{getShaderParameter:reject,getShaderInfoLog:reject,getProgramParameter:reject,getProgramInfoLog:reject});
+      const result=invoke(b,op,kind==="shader"?10:20,pname);
+      expect(result.rc).toBe(-5); expect([...result.output]).toEqual(new Array(128).fill(0xa7));
+      expect(b.errors).toEqual([0x505,failure==="throw"?0x502:0x500]);
+    });
+  for(const kind of ["shader","program"] as const) for(const log of ["","warning","é⚠"])
+    it(`reports the ${kind} info log byte capacity for ${JSON.stringify(log)}`, () => {
+      const {b,native}=setup();
+      Object.assign(native,{getShaderInfoLog:()=>log,getProgramInfoLog:()=>log});
+      const scalar=invoke(b,kind==="shader"?O.QOP_GET_SHADERIV:O.QOP_GET_PROGRAMIV,kind==="shader"?10:20,0x8b84);
+      const string=invoke(b,kind==="shader"?O.QOP_GET_SHADER_INFO_LOG:O.QOP_GET_PROGRAM_INFO_LOG,kind==="shader"?10:20);
+      const bytes=new TextEncoder().encode(log),length=new DataView(scalar.output.buffer).getUint32(0,true);
+      expect(scalar.rc).toBe(4);expect(length).toBe(bytes.length?bytes.length+1:0);
+      expect(new DataView(string.output.buffer).getUint32(0,true)).toBe(bytes.length);
+      expect([...string.output.subarray(4,4+bytes.length)]).toEqual([...bytes]);expect(b.errors).toEqual([]);
+    });
+  it("accepts delete-pending attached shaders and current programs, then rejects final retired names", () => {
+    const {b,native,send} = setup();
+    Object.assign(native,{getShaderParameter:()=>0x8b31,getShaderInfoLog:()=>"shader",getProgramInfoLog:()=>"program"});
+    send(O.OP_DELETE_SHADER,[10]); send(O.OP_DELETE_PROGRAM,[20]);
+    expect(b.shaderDeletePending.has(10)).toBe(true); expect(b.programDeletePending.has(20)).toBe(true);
+    for(const [op,kind,pname] of families) expect(invoke(b,op,kind === "shader" ? 10 : 20,pname).rc).toBeGreaterThan(0);
+    expect(b.errors).toEqual([]);
+    send(O.OP_USE_PROGRAM,[0]);
+    for(const [op,kind,pname] of families) { expect(invoke(b,op,kind === "shader" ? 10 : 20,pname).rc).toBe(-22); expect(b.errors.splice(0)).toEqual([0x501]); }
+  });
+  it("uses shared names but records rejection flags only in the querying context", () => {
+    const parent=setup(); parent.b.contextId=21;
+    parent.registry.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:32});
+    const peer=parent.registry.get(1,12)!; peer.gl=parent.gl; peer.contextId=22;
+    expect(parent.registry.shareObjects(1,12,0)).toBe(true);
+    parent.b.errors.push(0x505); peer.errors.push(0x500);
+    expect(invoke(peer,O.QOP_GET_PROGRAMIV,10,0x8b82).rc).toBe(-22);
+    expect(peer.errors).toEqual([0x500,0x502]); expect(parent.b.errors).toEqual([0x505]);
+    expect(invoke(peer,O.QOP_GET_PROGRAMIV,0xffff_ffff,0x8b82).rc).toBe(-22);
+    expect(invoke(peer,O.QOP_GET_PROGRAMIV,0xffff_ffff,0x8b82).rc).toBe(-22);
+    expect(peer.errors).toEqual([0x500,0x502,0x501]);
+    expect(invoke(peer,O.QOP_GET_PROGRAMIV,20,0x8b82).rc).toBe(4);
+  });
+});
