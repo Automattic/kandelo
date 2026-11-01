@@ -44,7 +44,7 @@ export function depthRangeReversed(range: readonly [number, number]): boolean {
 /** Rename identifiers outside comments; GLSL ES has no string literals.
  * Renaming every `main` token (including inside #define bodies) keeps a
  * macro-produced entry point consistent and preserves every line number. */
-function renameIdentifiers(source: string, names: ReadonlyMap<string, string>): { text: string; found: Set<string> } {
+export function renameIdentifiers(source: string, names: ReadonlyMap<string, string>): { text: string; found: Set<string> } {
   let out = "", from = 0, i = 0;
   const found = new Set<string>();
   const n = source.length;
@@ -131,6 +131,16 @@ export function recordCompiledShader(shader: WebGLShader, source: Uint8Array | u
   if (!source) { compiledSources.delete(shader); return; }
   try { compiledSources.set(shader, new TextDecoder().decode(source)); }
   catch { compiledSources.delete(shader); }
+}
+
+export function compiledShaderSource(shader: WebGLShader): string | undefined {
+  return compiledSources.get(shader);
+}
+
+/** A private executable built from rewritten sources (attribute aliasing)
+ * records the sources its native link actually used. */
+export function recordLinkedSources(program: WebGLProgram, vertex: string, fragment: string): void {
+  linkedSources.set(program, { vertex, fragment });
 }
 
 /** Called after every native link attempt of `program`. A stale twin built

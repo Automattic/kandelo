@@ -7,6 +7,7 @@ import { reserveNativeRetirement, retireNativeRetirement, transferNativeRetireme
   type NativeDeletion, type NativeRetirement } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
+import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable } from "./attribute-aliasing.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */
@@ -66,6 +67,9 @@ export function linkedProgramForQuery(b: GlBinding, name: number): WebGLProgram 
  * one still asks the engine, whose limit error is the real boundary. */
 export function attributeLocation(b: GlBinding, program: WebGLProgram, text: string): number | null {
   if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*$/.test(text)) return -1;
+  // Aliasing executables answer from the guest's declarations and bindings.
+  const aliased = aliasedAttributeLocation(program, text);
+  if (aliased !== undefined) return aliased;
   const gl = b.gl!;
   if (text.length > 256) {
     let count = 0, found = false;
@@ -254,7 +258,9 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
   }
   const currentName = currentProgramName(b), installed = b.currentProgram;
-  const clone = b.programQueryPins.has(previous) ||
+  // An aliasing executable holds a private vertex shader, never the guest's
+  // attachments, so it is never relinked in place.
+  const clone = attributeAliasLayout(previous) !== undefined || b.programQueryPins.has(previous) ||
     [...b.objects.members].some(member => previous === member.currentProgram);
   const released = reserveExecutableRelease(b, previous, installed);
   if (!released) return;
@@ -287,9 +293,6 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     if (generation.value >= Number.MAX_SAFE_INTEGER) { recordGlError(b, 0x505); return; }
     if (!checkedGlCall(b, () => gl.linkProgram(program))) return;
     generation.value++;
-    b.programs.set(name, program);
-    if (candidate) transferNativeRetirement(candidate);
-    if (currentName === name) b.currentProgramId = name;
     let linked = false;
     const queried = checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); });
     const attached: WebGLShader[] = [];
@@ -298,10 +301,19 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
       if (shader) attached.push(shader);
     }
     recordLinkedProgram(b, program, queried && linked, attached);
-    if (queried && linked) {
+    // ES 2.0 allows attribute aliasing that WebGL rejects at link time. The
+    // private executable then replaces the failed native object, which is
+    // retired with the candidate or the released previous executable.
+    const aliased = queried && !linked ? linkAliasedExecutable(b, name, attached) : null;
+    const executable = aliased ?? program;
+    if (aliased) programLinkGeneration(b, aliased).value++;
+    b.programs.set(name, executable);
+    if (candidate && !aliased) transferNativeRetirement(candidate);
+    if (currentName === name) b.currentProgramId = name;
+    if ((queried && linked) || aliased) {
       invalidateProgramLocations(b, name);
-      if (currentName === name && checkedGlCall(b, () => gl.useProgram(program))) {
-        b.shadow.currentProgram = b.currentProgram = program;
+      if (currentName === name && checkedGlCall(b, () => gl.useProgram(executable))) {
+        b.shadow.currentProgram = b.currentProgram = executable;
       }
     }
   } catch (error) {

@@ -2,6 +2,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import * as O from "./ops.js";
+import { attributeAliasLayout, type GlReflectedAttribute } from "./attribute-aliasing.js";
 
 /** Independent query bytes survive changes to shared program/shader objects.
  * They carry no native object or guest-memory lifetime beyond capture. */
@@ -44,12 +45,14 @@ function captureValue(b: GlBinding, op: number, name: number, index: number): Ob
     return {header:[names.size],bytes,unit:4};
   }
   const uniform=op===O.QOP_GET_ACTIVE_UNIFORM_INFO;
-  let count=0,info:WebGLActiveInfo|null=null;
-  if(!checkedGlCall(b,()=>{count=Number(gl.getProgramParameter(program,uniform?0x8b86:0x8b89));}))return -5;
+  // Aliasing executables reflect the guest's declared attributes.
+  const aliased=uniform?undefined:attributeAliasLayout(program)?.attributes;
+  let count=0,info:GlReflectedAttribute|null=null;
+  if(!checkedGlCall(b,()=>{count=aliased?aliased.length:Number(gl.getProgramParameter(program,uniform?0x8b86:0x8b89));}))return -5;
   if(index>=count)return fail(0x501);
-  if(!checkedGlCall(b,()=>{info=uniform?gl.getActiveUniform(program,index):gl.getActiveAttrib(program,index);}))return -5;
+  if(!checkedGlCall(b,()=>{info=aliased?aliased[index]:uniform?gl.getActiveUniform(program,index):gl.getActiveAttrib(program,index);}))return -5;
   if(!info)return fail(0x502);
-  const active=info as WebGLActiveInfo,bytes=new TextEncoder().encode(active.name);
+  const active=info as GlReflectedAttribute,bytes=new TextEncoder().encode(active.name);
   return {header:[bytes.length,active.size,active.type],bytes,unit:1};
 }
 

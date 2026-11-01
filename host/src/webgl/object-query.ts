@@ -6,6 +6,7 @@ import { renderbufferLogicalFormat } from "./image-sizes.js";
 import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
+import { attributeAliasLayout, type GlReflectedAttribute } from "./attribute-aliasing.js";
 
 function fail(b: GlBinding, error: number): number { recordGlError(b,error); return -22; }
 function objectName<T>(names: Map<number,T>, retired: Map<T,number>, object: T): number {
@@ -52,12 +53,14 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
           names.slice(offset,offset+capacity).forEach((value,i) => result.setUint32(4+4*i,value,true));
           return payload.length;
         }
-        let count = 0, info: WebGLActiveInfo | null = null;
-        if (!checkedGlCall(b, () => { count = Number(gl.getProgramParameter(program,op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? 0x8b86 : 0x8b89)); })) return -5;
+        let count = 0, info: GlReflectedAttribute | null = null;
+        // Aliasing executables reflect the guest's declared attributes.
+        const aliased = op === O.QOP_GET_ACTIVE_ATTRIB ? attributeAliasLayout(program)?.attributes : undefined;
+        if (!checkedGlCall(b, () => { count = aliased ? aliased.length : Number(gl.getProgramParameter(program,op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? 0x8b86 : 0x8b89)); })) return -5;
         if (arg >= count) return fail(b,0x501);
-        if (!checkedGlCall(b, () => { info = op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? gl.getActiveUniform(program,arg) : gl.getActiveAttrib(program,arg); })) return -5;
+        if (!checkedGlCall(b, () => { info = aliased ? aliased[arg] : op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? gl.getActiveUniform(program,arg) : gl.getActiveAttrib(program,arg); })) return -5;
         if (!info) return fail(b,0x502);
-        const active = info as WebGLActiveInfo, bytes = new TextEncoder().encode(active.name);
+        const active = info as GlReflectedAttribute, bytes = new TextEncoder().encode(active.name);
         const offset = v.getUint32(8,true), capacity = v.getUint32(12,true);
         if (offset > bytes.length) return fail(b,0x501);
         result.setUint32(0,bytes.length,true); result.setInt32(4,active.size,true); result.setUint32(8,active.type,true);

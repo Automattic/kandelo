@@ -478,6 +478,7 @@ host/test/wasm64.test.ts	prepared-product
 host/test/waybar-smoke.test.ts	prepared-product
 host/test/wayland-protocols-scanner.test.ts	prepared-product
 host/test/webgl-attrib-location.test.ts	source-only
+host/test/webgl-attribute-aliasing.test.ts	source-only
 host/test/webgl-blend-constant-pairing.test.ts	source-only
 host/test/webgl-bridge.test.ts	source-only
 host/test/webgl-buffer-bindings.test.ts	source-only

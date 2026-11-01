@@ -1,6 +1,7 @@
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
+import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { glesFramebufferStatus, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
@@ -553,6 +554,11 @@ export function runGlQuery(
           v = b.programDeletePending.has(inDv.getUint32(0, true));
         } else if (pname === GL_INFO_LOG_LENGTH) {
           v = infoLogByteCapacity(gl.getProgramInfoLog(prog));
+        } else if (attributeAliasLayout(prog) && (pname === 0x8b89 || pname === 0x8b8a || pname === 0x8b85)) {
+          // Aliasing executables reflect the guest's attributes and attachments.
+          const attributes = attributeAliasLayout(prog)!.attributes;
+          v = pname === 0x8b89 ? attributes.length : pname === 0x8b85 ? b.programShaders.get(name)?.size ?? 0
+            : Math.max(0, ...attributes.map(info => info.name.length + 1));
         } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH || pname === 0x8b8a) {
           const attributes = pname === 0x8b8a;
           const n = Number(gl.getProgramParameter(prog, attributes ? 0x8b89 : GL_ACTIVE_UNIFORMS) ?? 0);

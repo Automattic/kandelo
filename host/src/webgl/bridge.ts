@@ -37,6 +37,7 @@ import { copiedTextureColorRenderable, nativeRenderbufferFormat, renderbufferCol
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
+import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
@@ -1081,7 +1082,8 @@ function dispatch(
       const sh = requireShaderObject(b, shaderName);
       if (!sh) return;
       if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
-      if (checkedGlCall(b, () => gl.attachShader(prog, sh))) {
+      // Aliasing executables keep attachments logical (attribute-aliasing.ts).
+      if (attributeAliasLayout(prog) || checkedGlCall(b, () => gl.attachShader(prog, sh))) {
         let attached = b.programShaders.get(programName);
         if (!attached) { attached = new Set(); b.programShaders.set(programName, attached); }
         attached.add(shaderName);
@@ -1131,7 +1133,7 @@ function dispatch(
       const sh = requireShaderObject(b, shaderName);
       if (!sh) return;
       if (!b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
-      if (checkedGlCall(b, () => gl.detachShader(prog, sh))) {
+      if (attributeAliasLayout(prog) || checkedGlCall(b, () => gl.detachShader(prog, sh))) {
         b.programShaders.get(programName)!.delete(shaderName);
         finalizeShader(b, shaderName);
       }
