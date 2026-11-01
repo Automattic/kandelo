@@ -794,7 +794,9 @@ fn install_dri_state_on_open(
             Some(crate::ofd::DriOfdState::Card {
                 dri: crate::ofd::DriFdState::default(),
                 kms: crate::ofd::KmsFdState {
-                    master_identity: Some(ofd_id), holds_master, ..Default::default()
+                    master_identity: Some(ofd_id), holds_master,
+                    was_master: holds_master, opener_pid: proc.pid,
+                    ..Default::default()
                 }.into(),
             })
         }
@@ -2861,6 +2863,20 @@ fn collect_cursor_framebuffer_release(fb_id: u32) -> Result<Vec<DriReleaseEffect
     Ok(effects)
 }
 
+/// `drm_master_check_perm`: SET_MASTER and DROP_MASTER need either a file
+/// that was master before, used by the process that opened it, or
+/// CAP_SYS_ADMIN (an effective uid of 0; Kandelo has no finer capability
+/// model). Otherwise EACCES, so a non-root client that never held master,
+/// or a forked child sharing the master's file, cannot take it.
+fn kms_master_check_perm(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
+    let kms = kms_state(proc, ofd_idx)?;
+    if (kms.was_master && kms.opener_pid == proc.pid) || proc.effective_uid() == 0 {
+        Ok(())
+    } else {
+        Err(Errno::EACCES)
+    }
+}
+
 /// Card0-specific KMS ioctls (SET/DROP_MASTER, MODE_GET*, ADDFB2/RMFB,
 /// SETCRTC, PAGE_FLIP, WAIT_VBLANK). Unknown requests fall through to
 /// `handle_dri_ioctl` so the per-fd GEM/PRIME path stays in one place.
@@ -2876,7 +2892,7 @@ fn handle_dri_card_ioctl(
     let pid = proc.pid as i32;
     match request {
         DRM_IOCTL_SET_MASTER => {
-            kms_state(proc, ofd_idx)?;
+            kms_master_check_perm(proc, ofd_idx)?;
             let ofd_id = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id;
             {
                 let mut kms = kms_state_mut(proc, ofd_idx)?;
@@ -2888,6 +2904,7 @@ fn handle_dri_card_ioctl(
             let changed = crate::dri::master::try_set_master(pid, ofd_id)?;
             if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
                 kms.holds_master = true;
+                kms.was_master = true;
             }
             if changed {
                 let grant = crate::dri::master::current().expect("admitted DRM master grant");
@@ -2896,7 +2913,7 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         DRM_IOCTL_DROP_MASTER => {
-            kms_state(proc, ofd_idx)?;
+            kms_master_check_perm(proc, ofd_idx)?;
             let ofd_id = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?.ofd_id;
             if let Some(grant) = crate::dri::master::drop_master(ofd_id) {
                 if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
@@ -55764,6 +55781,44 @@ impl HostIO for RelSymlinkMock {
         assert_eq!(links(&mut proc, &mut host), (kms::CRTC_ID, kms::ENCODER_ID, 1));
         sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb.to_le_bytes()).unwrap();
         assert_eq!(links(&mut proc, &mut host), (0, 0, 1));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_set_and_drop_master_need_a_former_master_opener_or_root() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        proc.seteuid(1000).unwrap();
+        // core_setmaster master-drop-set-user: the first opener became master
+        // and may drop and re-take it without privileges.
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        // A file that never held master cannot become master unprivileged,
+        // even while no master exists.
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        assert_eq!(sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_SET_MASTER, &mut []), Err(Errno::EACCES));
+        assert_eq!(sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_DROP_MASTER, &mut []), Err(Errno::EACCES));
+        // master-drop-set-shared-fd: another process sharing the master's
+        // file is not its opener.
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        let mut image = alloc::vec![0u8; 64 * 1024];
+        let written = crate::fork::serialize_fork_state(&proc, &mut image).unwrap();
+        let mut child = crate::fork::deserialize_fork_state(&image[..written], 2).unwrap();
+        child.ofd_table.link_shared_states_from(&proc.ofd_table, |_| {}).unwrap();
+        assert_eq!(child.effective_uid(), 1000);
+        assert_eq!(sys_ioctl(&mut child, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []), Err(Errno::EACCES));
+        assert_eq!(sys_ioctl(&mut child, &mut host, fd, DRM_IOCTL_SET_MASTER, &mut []), Err(Errno::EACCES));
+        // master-drop-set-root: root may take master on any file.
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        proc.seteuid(0).unwrap();
+        sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
         kms::reset_for_test();
     }
 

@@ -484,6 +484,12 @@ pub struct KmsFdState {
     /// Bound by kernel open/restore to the exact containing description.
     pub master_identity: Option<OfdId>,
     pub holds_master: bool,
+    /// `drm_file.was_master`: this file held master at some point. With
+    /// `opener_pid` it is what lets a non-root compositor drop and re-take
+    /// master (`drm_master_check_perm`).
+    pub was_master: bool,
+    /// Thread-group id of the process that opened the file (`drm_file.pid`).
+    pub opener_pid: u32,
     /// A visible cursor owns a BO reference independently of GEM handles.
     pub cursor_bo: Option<u32>,
     /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor
