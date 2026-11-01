@@ -87,3 +87,23 @@ normal centralized Node runtime. Its package-source patch list and build
 inputs include the direct class-handler patch. This real guest test must
 pass separately; the source-isolated and native reference runs do not
 substitute for it.
+
+## Child-watch callback contracts
+
+The native `GChildWatchFunc` returns void with `(GPid, gint, gpointer)`.
+The source's inner GClosure separately returns BOOLEAN and marshals the
+Unix PID as ULONG. `wasm-child-watch-contract.patch` keeps that inner
+protocol and uses an exact public void adapter at the native dispatch edge.
+The existing source ref/unref and closure-notification adapters remain.
+
+The normal `gobject-child-watch-contract.wasm` fixture starts a real child
+that exits 7 and exercises both public callbacks and source closures. It
+checks PID, status, userdata, exactly-once notification, closure finalization
+and the already-reaped child's ECHILD result. The host test uses the normal
+dedicated-worker runtime and ordinary spawn/exec; it does not synthesize a
+child exit. Its two new cases require a rebuilt normal package cohort.
+
+The upstream tests also adapt their own known unary class initializers and
+connected signal callbacks to the registered types. All upstream assertions,
+test registrations and targets remain. These explicit adapters do not change
+the full public class/interface contracts or default vtable signatures.

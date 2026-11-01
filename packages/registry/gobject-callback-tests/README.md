@@ -55,11 +55,25 @@ once. All new callback signatures are statically checked, with callback and
 caller code in separate translation units. The public GObject APIs supply all
 binding behavior; this is not a private binding implementation or widget mock.
 
-The focused gate now contains74 cases, plus the ten unchanged upstream targets.
-The new twelve require a normal revision3 build and run; previous62-case
+The revision3 focused gate contains74 cases, plus the ten upstream targets.
+Those twelve require a normal revision3 build and run; previous62-case
 evidence does not validate them. Native host controls are not Kandelo Wasm
 acceptance. The shared closure-notifier patch is a declared source input and
 is applied alongside the other normal GLib patches to upstream test sources.
+
+Revision4 adds the actual installed-library direct class-handler control.
+Revision5 adds two real child-watch lifecycle cases. Each starts a child
+through ordinary spawn/exec, checks its exit7 status and userdata, requires
+exactly one callback and closure cleanup, and checks ECHILD after reaping.
+The public native callback is void(GPid,int,ptr); the inner Unix GClosure
+callback is boolean(ulong,int,ptr). Both boundaries remain explicit.
+
+The fixture now contains77 focused cases and ten upstream targets. The
+recorded normal75-case pass does not validate the two new child-watch
+cases. Upstream callbacks also receive explicit adapters for their actual
+class/connected-signal/inner-closure types; no assertions or targets are
+removed. The shared child-watch patch is declared by both owning recipes,
+while the upstream test adapters belong only to this test package.
 
 Ten pinned upstream GObject targets use original assertions/test selection:
 type, basic-signals, signals, closure, defaultiface, dynamictype, accumulator,
@@ -72,7 +86,7 @@ the normal guest VFS and syscall path. Upstream skipped/debug branches remain
 visible limitations; passing this selection is not a whole-GLib claim.
 
 Known unclosed obligations: arbitrary ffi signature families/closure pool
-admission, raw unary registrations in upstream testcommon.h, interface signal
+admission, other raw unary users of upstream testcommon.h, interface signal
 paths, complete notifications/GTest fixture lifecycle, GIO async/cancellation,
 module/listener dispatch and actual compositor lifecycle. Failures are ordinary
 gaps to resolve; do not remove targets or weaken upstream assertions for green.

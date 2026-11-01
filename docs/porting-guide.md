@@ -1156,6 +1156,11 @@ every callback boundary in the dependency stack is correct:
 - Source closure lifetime callbacks use matching `void(gpointer)`
   adapters. `g_closure_ref` returns a pointer, so it cannot be invoked
   directly through the source table's void-returning callback type.
+- Native child-watch dispatch uses the public void
+  `GChildWatchFunc(GPid, gint, gpointer)` callback. An explicit adapter
+  discards the separate inner GClosure boolean result, retaining its
+  existing Unix ULONG PID representation. Do not change one boundary's
+  return or argument types to resemble the other.
 - Generic signal return conversion reads `G_TYPE_INT64` and
   `G_TYPE_UINT64` at their full width. `ffi_arg` is only 32 bits on
   wasm32; reading a 64-bit result through it discards the upper bits.
@@ -1236,12 +1241,15 @@ coverage, or describe these limits as unavoidable Wasm boundaries.
 
 The `gobject-callback-tests` package and
 `host/test/gobject-callback-contract.test.ts` provide a durable CPU gate:
-fifty separate-unit argument/return/source cases plus ten pinned upstream
-GObject targets. Build through the normal resolver using the commands in
+separate-unit argument/return/source cases, binding/class-handler/child-watch
+lifecycle cases, and ten pinned upstream GObject targets. Build through the
+normal resolver using the commands in
 `packages/registry/gobject-callback-tests/README.md` before running the
 host test in the declared dev shell. Missing artifacts fail.
-The normal SourceOnly run passes all fifty focused cases and four upstream
-targets; six upstream targets still fail, so the combined gate remains red. Upstream
+The normal SourceOnly run at source `540b2fd5e2` passes all 75 focused
+callback/binding/class-handler cases and four upstream targets. Six upstream
+targets still fail; the child-watch and upstream callback adaptations have
+not yet run in the normal guest, so the combined gate remains red. Upstream
 generic-marshaller and all-types cases already reproduce accepted
 signatures that abort in the current libffi dispatcher. Keep those
 failures and original assertions visible until their contracts work.

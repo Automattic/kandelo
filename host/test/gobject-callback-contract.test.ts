@@ -74,14 +74,27 @@ describe("actual GObject property-binding lifecycle",()=>{
   }
 });
 
+describe("actual GObject child-watch lifecycle",()=>{
+ for(const mode of ["public","closure"]){
+  it(`${mode} callback preserves child status, userdata and reaping`,async()=>{
+   const path=program("child-watch-contract"),guest="/bin/gobject-child-watch-contract";
+   const result=await runCentralizedProgram({programPath:path,argv:[guest,mode],
+    env:[],execPrograms:new Map([[guest,path]]),useDefaultRootfs:false,timeout:20_000});
+   expect(result.exitCode,`${result.stdout}\n${result.stderr}\n${JSON.stringify(result.hostDiagnostics)}`).toBe(0);
+   expect(result.stdout).toContain(`CHILD_WATCH_OK ${mode}: exact callback, exit7, one notification, cleanup and reap`);
+   expect(result.hostDiagnostics).toEqual([]);
+  },30_000);
+ }
+});
+
 describe("pinned upstream GObject CPU tests with original assertions",()=>{
  for(const name of ["type","basic-signals","signals","closure","defaultiface","dynamictype","accumulator","object","references","signal-handler"]){
   it(name,async()=>{
    const guest=`/bin/gobject-${name}`;
    const result=await runCentralizedProgram({programPath:program(name),argv:[guest,"--tap"],
-    env:["G_TEST_BUILDDIR=/bin"],execPrograms:new Map([[guest,program(name)]]),
+   env:["G_TEST_BUILDDIR=/bin"],execPrograms:new Map([[guest,program(name)]]),
     useDefaultRootfs:false,timeout:60_000});
-   expect(result.exitCode,`${result.stdout}\n${result.stderr}`).toBe(0);
+   expect(result.exitCode,`${result.stdout}\n${result.stderr}\n${JSON.stringify(result.hostDiagnostics)}`).toBe(0);
    expect(result.stdout).not.toMatch(/^not ok\b/m);
    expect(result.stdout).toMatch(/^1\.\.[1-9]/m);
    expect(result.hostDiagnostics).toEqual([]);

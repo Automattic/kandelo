@@ -15758,3 +15758,44 @@ The diagnostic collector completing six captures is not six passing
 upstream tests. Its first launch fails before loading tests because its
 private configuration inherits a relative reporter path; the corrected
 absolute reporter path completes capture without changing guest code.
+
+### Shared child-watch dispatch and upstream callback typing, source stage
+
+Source review identifies a second shared GLib callback contract violation:
+the native child-watch dispatcher calls a public void `GChildWatchFunc`,
+while its source-closure bridge returns gboolean. The new
+`wasm-child-watch-contract.patch` supplies an exact void adapter, retaining
+the separate inner GClosure BOOLEAN/Unix ULONG protocol. GLib remains
+2.84.4 with recipe revision 9; no numeric ABI increment is introduced.
+The original signature traps remain recorded without claiming that stripped
+indirect targets have been recovered.
+
+The upstream test fixture separately adapts its own unary class/default
+interface callbacks and missing connected-userdata parameters to their
+registered signatures. Original helper bodies, assertions, test ordering
+and selection remain. A dedicated inner child-closure callback matches
+the actual GValue protocol instead of reusing an IO-channel callback.
+The twenty-argument mixed libffi family remains unsupported and unmodified.
+
+Recipe revision 5 adds `gobject-child-watch-contract.wasm`, which starts a
+real child exiting 7 through ordinary spawn/exec. Its public and GClosure
+routes check PID/status/userdata, exactly-once notification, closure cleanup
+and ECHILD after reaping. These normal Kandelo cases are prepared, not run.
+A native GLib 2.86.3 reference compiles with strict warnings and passes both
+routes; that does not validate rebuilt Kandelo GLib 2.84.4.
+
+Seventeen focused actual-target header type checks meet their expected
+outcomes: six adapter groups compile, ten incompatible old callback shapes
+reject, and one unchanged public/default-vtable contract group compiles.
+Strict production patch composition matches all seven reviewed complete
+source files. Evidence is under primary
+`.context/gobject-upstream-callback-review-r1/` and
+`.context/gobject-child-watch-integration-r1/`. The first native compiler
+wrapper attempt fails on injected cross-target flags before source parsing;
+the successful type check uses the declared unwrapped LLVM compiler.
+The complete new C fixture also passes strict Wasm32 syntax against those
+recorded normal headers. Its first syntax invocation used an incorrect
+sysroot path and failed at missing time.h; the corrected command derives
+the exact sysroot/compiler/header arguments from the existing type report.
+This source stage is separate from the frozen primary540b normal build;
+it claims no new menu, browser, application or POSIX acceptance.
