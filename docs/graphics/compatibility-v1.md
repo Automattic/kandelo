@@ -18962,3 +18962,35 @@ evidence attachment SHA256
 `3a9512a737ac1548ed306cc2c9a0e759d2d88792f5d827e473b8e9effbad44b4`.
 The optional public group selector preserves all 246 outcomes and remains
 strictly failing while these gaps are open.
+
+
+### Client readback validation, packing and rejected-output preservation
+
+Commit `f9d039be5e` repairs the C encoder's ReadPixels contract. Negative
+dimensions produce INVALID_VALUE before pointer access. Packed component/format
+mismatches produce INVALID_OPERATION, as required by GLES 2.0 sections 3.6.2
+and 4.3.1. Zero-area calls still reach the host to validate their remaining
+arguments and framebuffer. Accepted replies copy only pixel rows into caller
+memory, preserving alignment padding; refused replies publish no pixels.
+PACK_ALIGNMENT is tracked per context, starts at four, survives context
+switching and is updated only after command reservation. Invalid pack/unpack
+alignment changes preserve the previous layout. Checked arithmetic prevents
+overflow before temporary allocation or output access.
+
+Five of the first six causal controls fail on the original source; the existing
+rejected-output path passes. All eight final focused controls and all 315 native
+graphics cases pass under UBSan, including allocation failure, context layout
+isolation, zero-area validation and guarded overflow. Evidence is retained in
+the mutable worktree at `.context/cts-readpixels-repair-r1/`, including the
+original failures, final complete run and source/log hashes in release.json.
+The repair is shared C glue for both Node and browser, with no ABI change.
+Rebuilt upstream execution is still pending and is not implied by these native
+controls.
+
+Readback replies larger than the existing 64 KiB query capacity remain an
+ordinary implementation gap. This repair reports OUT_OF_MEMORY without
+allocating an oversized transport reply or touching caller pixels. A complete
+solution must retain one accepted readback and transfer its pixels through
+bounded chunks; issuing independent row reads could observe different contents
+under shared-context activity. Full format/extension semantics and the broader
+conformance inventory remain open.
