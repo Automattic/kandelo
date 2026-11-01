@@ -4302,6 +4302,15 @@ pub mod gl {
     pub const QOP_RELEASE_FENCE: u32 = 0x0030;
     /// V17 server flush acknowledgement: no input or output bytes.
     pub const QOP_FLUSH: u32 = 0x0031;
+    /// Checked opaque compressed image upload. BEGIN=1/CHUNK=2/COMMIT=3/ABORT=4;
+    /// checked 12-byte reply echoes the monotonic context-local token. BEGIN
+    /// admits custody only; COMMIT performs the single original native call.
+    pub const QOP_COMPRESSED_UPLOAD: u32 = 0x0032;
+    pub mod compressed_upload {
+        pub const MAX_BYTES: u32 = 16 * 1024 * 1024;
+        pub const BEGIN_BYTES: u32 = 52;
+        pub const HEADER_BYTES: u32 = 12;
+    }
     /// Reserved ABI56: one native read followed by immutable copied-byte chunks.
     /// BEGIN(action1,token,total,x,y,w,h,format,type)=36 bytes;
     /// CHUNK(action2,token,offset,count)=16; RELEASE(action3,token)=8.
@@ -6194,6 +6203,7 @@ mod gl_tests {
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,
             QOP_FLUSH,
+            QOP_COMPRESSED_UPLOAD,
             QOP_READBACK_CAPTURE,
         ];
         for (i, &a) in qops.iter().enumerate() {

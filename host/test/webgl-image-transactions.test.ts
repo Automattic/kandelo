@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
@@ -653,4 +653,187 @@ it("stages receipt metadata before effects and preserves the actual error owner 
   } finally { b.fbos[Symbol.iterator] = iterator; }
   expect(gl.calls).toEqual([]); expect(b.errors).toEqual([0x500,0x505]);
   expect(b.textures.has(17)).toBe(true);
+});
+
+// Full opaque compressed uploads must not be approximated by zero-area calls.
+const COMPRESSED_UPLOAD = 0x0032, COMPRESSED_FORMAT = 0x83f1;
+function compressedFixture() {
+  const state = setup(), {b,gl} = state;
+  const writes: {op:number; args:unknown[]; bytes:number[]}[] = [];
+  Object.assign(gl, {
+    getParameter: (pname:number) => {
+      if (pname === 0x86a3) return new Uint32Array([COMPRESSED_FORMAT]);
+      if (pname === 0x8b4d) return 8;
+      if (pname === 0x84e0) return 0x84c0+gl.active;
+      if (pname === 0x8069) return gl.textures.get(gl.active) ?? null;
+      if (pname === 0x8ca6) return gl.draw;
+      if (pname === 0x8caa) return gl.read;
+      if (pname === 0x8ca7) return gl.renderbuffer;
+      return null;
+    },
+    getTexParameter: ()=>0x2601, texParameteri: ()=>{}, createTexture: ()=>({}),
+    compressedTexImage2D: (...args:unknown[]) => { writes.push({op:O.OP_COMPRESSED_TEX_IMAGE_2D,args,bytes:[...(args[6] as Uint8Array)]}); },
+    compressedTexSubImage2D: (...args:unknown[]) => { writes.push({op:O.OP_COMPRESSED_TEX_SUB_IMAGE_2D,args,bytes:[...(args[7] as Uint8Array)]}); },
+  });
+  const request = (words:number[], data:number[]=[]): number[] => {
+    const input = new Uint8Array(words.length*4+data.length), v = new DataView(input.buffer);
+    words.forEach((x,i)=>v.setUint32(i*4,x,true));input.set(data,words.length*4);
+    const out=new Uint8Array(12).fill(0xa5);
+    expect(runGlQuery(b,COMPRESSED_UPLOAD,input,out)).toBe(12);
+    return [...new Uint32Array(out.buffer)].slice(0,2);
+  };
+  const begin = (token=1, size=4, present=1, op=O.OP_COMPRESSED_TEX_SUB_IMAGE_2D,
+      format=COMPRESSED_FORMAT, level=0) => request([1,token,op,TEX,level,format,0,0,4,4,0,size,present]);
+  return {...state,writes,request,begin};
+}
+it("stages compressed bytes independently and invokes exactly one full original native operation",()=>{
+  const {b,old,gl,begin,request,writes}=compressedFixture();
+  expect(begin()).toEqual([0,1]); expect(writes).toEqual([]);
+  expect(request([2,1,0],[11,12])).toEqual([0,1]);expect(writes).toEqual([]);
+  expect(request([2,1,2],[13,14])).toEqual([0,1]);
+  expect(request([3,1,0])).toEqual([0,1]);
+  expect(writes).toEqual([{op:O.OP_COMPRESSED_TEX_SUB_IMAGE_2D,args:[TEX,0,0,0,4,4,COMPRESSED_FORMAT,expect.any(Uint8Array)],bytes:[11,12,13,14]}]);
+  expect(b.textures.get(17)).toBe(old);expect(gl.textures.get(0)).toBe(old);
+  expect(request([3,1,0])).toEqual([1,0]);expect(writes).toHaveLength(1);
+});
+it("checks signed size and unsupported formats before allocation/source admission, retaining exact empty operations",()=>{
+  const {b,begin,request,writes}=compressedFixture();
+  expect(begin(1,-1)).toEqual([1,0]);expect(b.errors.splice(0)).toEqual([0x501]);
+  expect(begin(2,0,0,O.OP_COMPRESSED_TEX_SUB_IMAGE_2D,0)).toEqual([1,0]);expect(b.errors.splice(0)).toEqual([0x500]);
+  expect(begin(3,4,0)).toEqual([1,0]);expect(b.errors.splice(0)).toEqual([0x501]);
+  expect(begin(4,0,0)).toEqual([0,4]);expect(request([3,4,0])).toEqual([0,4]);
+  expect(writes[0].args.slice(0,7)).toEqual([TEX,0,0,0,4,4,COMPRESSED_FORMAT]);expect(writes[0].bytes).toEqual([]);
+});
+it("rejects missing/reordered chunks and stale destination/context authority without native writes",()=>{
+  const {b,begin,request,writes}=compressedFixture();
+  expect(begin()).toEqual([0,1]);expect(request([2,1,1],[1])).toEqual([1,0]);
+  expect(request([3,1,0])).toEqual([1,0]);
+  expect(begin(2)).toEqual([0,2]);expect(request([2,2,0],[1,2,3,4])).toEqual([0,2]);
+  b.shadow.textureUnits[0]={};expect(request([3,2,0])).toEqual([1,0]);expect(writes).toEqual([]);
+});
+it("retires cancelled and incomplete uploads and consumes native commit refusal exactly once",()=>{
+  const {b,gl,begin,request,writes}=compressedFixture();
+  expect(begin()).toEqual([0,1]);expect(request([3,1,0])).toEqual([1,0]);expect(writes).toEqual([]);
+  expect(begin(2)).toEqual([0,2]);expect(request([4,2,0])).toEqual([0,2]);expect(request([4,2,0])).toEqual([0,2]);
+  expect(begin(2)).toEqual([1,0]);
+  expect(begin(3)).toEqual([0,3]);expect(request([2,3,0],[1,2,3,4])).toEqual([0,3]);
+  Object.assign(gl,{compressedTexSubImage2D:()=>{gl.errors.push(0x501);}});
+  expect(request([3,3,0])).toEqual([1,0]);expect(request([3,3,0])).toEqual([1,0]);expect(writes).toEqual([]);
+  expect(b.errors).toContain(0x501);
+});
+it("does not impose universal nonnegative levels on advertised compressed extension formats",()=>{
+  const {begin,request,writes}=compressedFixture();
+  expect(begin(1,0,0,O.OP_COMPRESSED_TEX_IMAGE_2D,COMPRESSED_FORMAT,-1)).toEqual([0,1]);
+  expect(request([3,1,0])).toEqual([0,1]);expect(writes[0].args[1]).toBe(-1);
+});
+
+it.each(["context","gl","objects","shadow","unit","view","revision"])("rejects compressed commit after %s authority changes",which=>{
+  const {b,begin,request,writes}=compressedFixture();
+  expect(begin()).toEqual([0,1]);expect(request([2,1,0],[1,2,3,4])).toEqual([0,1]);
+  if(which==="context") b.contextId=123 as typeof b.contextId;
+  if(which==="gl") b.gl={getError:()=>0} as WebGL2RenderingContext;
+  if(which==="objects") b.objects={...b.objects};
+  if(which==="shadow") b.shadow={...b.shadow};
+  if(which==="unit") {b.shadow.activeTexture=1;b.shadow.textureUnits[1]=b.shadow.textureUnits[0];}
+  if(which==="view") b.textureViews.set(b.shadow.textureUnits[0]!,{native:{},source:null,read:null});
+  if(which==="revision") b.imageRevisions.set(b.shadow.textureUnits[0]!,1);
+  expect(request([3,1,0])).toEqual([1,0]);expect(writes).toEqual([]);expect(b.compressedUpload).toBeNull();
+});
+it("copies compressed chunk bytes before returning and preserves a newer upload against a stale cancellation",()=>{
+  const {b,begin,request,writes}=compressedFixture();
+  expect(begin(2)).toEqual([0,2]);expect(request([4,1,0])).toEqual([1,0]);
+  const raw=new Uint8Array(16),v=new DataView(raw.buffer);v.setUint32(0,2,true);v.setUint32(4,2,true);raw.set([21,22,23,24],12);
+  expect(runGlQuery(b,COMPRESSED_UPLOAD,raw,new Uint8Array(12))).toBe(12);raw.fill(0);
+  expect(request([3,2,0])).toEqual([0,2]);expect(writes[0].bytes).toEqual([21,22,23,24]);
+});
+it("cleans abandoned compressed custody on an unrelated query without executing that query",()=>{
+  const {b,begin,writes}=compressedFixture();expect(begin()).toEqual([0,1]);
+  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(0),new Uint8Array(4))).toBe(-5);
+  expect(b.compressedUpload).toBeNull();expect(b.errors).toEqual([0x502]);expect(writes).toEqual([]);
+});
+it("rejects malformed compressed envelopes before touching outputs or native state",()=>{
+  const {b,gl}=compressedFixture();
+  for(const words of [[],[1,0,0],[1,1,0],[2,1,0],[3,1,1],[4,1,1],[5,1,0],
+      [1,1,O.OP_COMPRESSED_TEX_IMAGE_2D,TEX,0,COMPRESSED_FORMAT,0,0,4,4,0,4,2]]) {
+    const out=new Uint8Array(12).fill(0xa5);
+    expect(runGlQuery(b,COMPRESSED_UPLOAD,new Uint8Array(new Uint32Array(words).buffer),out)).toBe(-22);
+    expect([...out]).toEqual(Array(12).fill(0xa5));
+  }
+  expect(gl.calls).toEqual([]);
+});
+it("preserves native capability query failures and refuses oversize custody visibly",()=>{
+  const {b,gl,begin}=compressedFixture();
+  expect(begin(1,16*1024*1024+1)).toEqual([1,0]);expect(b.errors.splice(0)).toEqual([0x505]);expect(b.compressedUpload).toBeNull();
+  Object.assign(gl,{getParameter:()=>{gl.errors.push(0x502);return new Uint32Array([COMPRESSED_FORMAT]);}});
+  expect(begin(2)).toEqual([1,0]);expect(b.errors).toEqual([0x502]);expect(b.compressedUpload).toBeNull();
+});
+it("drops compressed custody on actual context resource destruction",()=>{
+  const {registry,b,gl,begin}=compressedFixture();expect(begin()).toEqual([0,1]);
+  Object.assign(gl,{deleteBuffer:()=>{},deleteProgram:()=>{},deleteShader:()=>{},deleteVertexArray:()=>{}});
+  registry.unbind(1);expect(b.compressedUpload).toBeNull();
+});
+
+it("drops staged compressed bytes on observed native loss without pretending COMMIT succeeded",()=>{
+  const {b,gl,begin,request,writes}=compressedFixture();expect(begin()).toEqual([0,1]);
+  Object.assign(gl,{isContextLost:()=>true});
+  const out=new Uint8Array(12).fill(0xa5),input=new Uint8Array(new Uint32Array([3,1,0]).buffer);
+  expect(runGlQuery(b,COMPRESSED_UPLOAD,input,out)).toBe(-5);
+  expect([...out]).toEqual(Array(12).fill(0xa5));expect(b.compressedUpload).toBeNull();expect(writes).toEqual([]);
+});
+it("uses the canonical imported source for subimage commit without detaching it",()=>{
+  const {b,gl,old,begin,request,writes}=compressedFixture(),source={token:1,bo:7,texture:{},width:4,height:4};
+  const view={native:old,source,read:{}};b.textureViews.set(old,view);
+  Object.assign(gl,{compressedTexSubImage2D:()=>{expect(gl.textures.get(gl.active)).toBe(source.texture);}});
+  expect(begin()).toEqual([0,1]);expect(request([2,1,0],[1,2,3,4])).toEqual([0,1]);
+  expect(request([3,1,0])).toEqual([0,1]);expect(b.textureViews.get(old)).toBe(view);
+  expect(view.source).toBe(source);expect(gl.textures.get(gl.active)).toBe(old);expect(writes).toEqual([]);
+});
+
+it("releases compressed custody when a public slot retires while an older accepted execution remains leased",()=>{
+  const {registry,b,gl,begin}=compressedFixture();b.contextId=77;
+  const guard={context:gl as unknown as WebGL2RenderingContext,prepareRetirement:()=>true};
+  const lease=registry.retainContextExecution(1,b.sessionId,guard)!;expect(lease).not.toBeNull();
+  expect(begin()).toEqual([0,1]);registry.destroyContext(1,b.sessionId);
+  expect(lease.retired).toBe(true);expect(b.compressedUpload).toBeNull();
+  expect(registry.get(1,b.sessionId)).not.toBe(b);expect(registry.get(1,b.sessionId)!.compressedUpload).toBeNull();
+  expect(lease.release()).toBe(true);
+  // Native resource disposal is already covered by the execution-retirement
+  // tests; this case proves staging leaves the old owner before that fence.
+});
+it("consumes a compressed native commit that throws after its effect and never replays it",()=>{
+  const {gl,begin,request}=compressedFixture();let calls=0;
+  expect(begin()).toEqual([0,1]);expect(request([2,1,0],[1,2,3,4])).toEqual([0,1]);
+  Object.assign(gl,{compressedTexSubImage2D:()=>{calls++;throw new Error("post-effect driver exception");}});
+  expect(request([3,1,0])).toEqual([1,0]);expect(request([3,1,0])).toEqual([1,0]);
+  expect(request([4,1,0])).toEqual([0,1]);expect(calls).toBe(1);
+});
+it("catches detached compressed staging allocation failure without retaining bytes or accepting BEGIN",()=>{
+  const {b,begin}=compressedFixture();const original=Uint8Array;
+  vi.stubGlobal("Uint8Array",new Proxy(original,{construct(target,args){
+    if(args[0]===9) throw new RangeError("staging allocation denied");
+    return Reflect.construct(target,args);
+  }}));
+  try {expect(begin(1,9)).toEqual([1,0]);expect(b.compressedUpload).toBeNull();expect(b.errors).toEqual([0x505]);}
+  finally {vi.unstubAllGlobals();}
+});
+it("commits a complete compressed respecification only after native acceptance, preserving imported ownership on refusal",()=>{
+  const {b,gl,old,begin,request,writes}=compressedFixture(),source={token:1,bo:7,texture:{},width:4,height:4};
+  const prior={native:old,source,read:{}};b.textureViews.set(old,prior);
+  const native=gl as unknown as {compressedTexImage2D:(...args:unknown[])=>void}, original=native.compressedTexImage2D;
+  native.compressedTexImage2D=(...args)=>{original(...args);gl.errors.push(0x501);};
+  expect(begin(1,0,0,O.OP_COMPRESSED_TEX_IMAGE_2D)).toEqual([0,1]);expect(writes).toEqual([]);
+  expect(request([3,1,0])).toEqual([1,0]);expect(b.textureViews.get(old)).toBe(prior);
+  native.compressedTexImage2D=original;
+  expect(begin(2,0,0,O.OP_COMPRESSED_TEX_IMAGE_2D)).toEqual([0,2]);expect(request([3,2,0])).toEqual([0,2]);
+  expect(writes).toHaveLength(2);expect(b.textureViews.get(old)!.source).toBeNull();expect(b.imageRevisions.get(old)).toBe(1);
+});
+
+it("releases compressed ABORT custody even when its checked reply allocation fails",()=>{
+  const {b,begin,request}=compressedFixture();expect(begin()).toEqual([0,1]);const original=Uint8Array;
+  vi.stubGlobal("Uint8Array",new Proxy(original,{construct(target,args){
+    if(args[0]===4) throw new RangeError("checked reply allocation denied");
+    return Reflect.construct(target,args);
+  }}));
+  try {expect(request([4,1,0])).toEqual([1,0]);expect(b.compressedUpload).toBeNull();expect(b.compressedUploadSerial).toBe(1);}
+  finally {vi.unstubAllGlobals();}
 });

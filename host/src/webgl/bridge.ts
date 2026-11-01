@@ -1,3 +1,4 @@
+import { interruptCompressedUpload } from "./compressed-upload.js";
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { publishedUniformLocation } from "./object-group.js";
 /**
@@ -104,7 +105,7 @@ export function decodeAndDispatch(
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
-  if (validation !== GL_SUBMIT_OK) {b.uniformUpload=null;return validation;}
+  if (validation !== GL_SUBMIT_OK) {b.compressedUpload=null;b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
     // Flags have no native effects and may accompany a partial upload batch.
     // Merge before repair/utility work without interrupting that transaction.
@@ -112,6 +113,7 @@ export function decodeAndDispatch(
       mergeClientGlErrors(b,payload.getUint32(0,true));
       return GL_SUBMIT_OK;
     }
+    if (interruptCompressedUpload(b)) return GL_SUBMIT_OK;
     if (!uniformUploadOp(op) && interruptUniformUpload(b)) return GL_SUBMIT_OK;
     try {
       if (!repairNativeState(b.gl!) || !reconcileClientArrayRestore(b,b.gl!)) return GL_SUBMIT_EIO;

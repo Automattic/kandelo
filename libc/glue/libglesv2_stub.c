@@ -285,6 +285,7 @@ struct wpk_gles_context {
     uint32_t error_reply;
     struct gl_submit_query_info error_packet;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
+    uint32_t next_compressed_upload;
     uint32_t next_shader_upload;
     uint32_t next_uniform_lookup;
     uint32_t next_uniform_upload;
@@ -3158,45 +3159,75 @@ void glTexParameterfv(GLenum target, GLenum pname, const GLfloat *params) {
     if (params) glTexParameterf(target, pname, params[0]);
 }
 
+/* One compressed API call owns an opaque checked transaction. No row/band
+ * operation is equivalent to a compressed full-image validation. BEGIN can
+ * reject metadata before touching source bytes; COMMIT alone mutates native
+ * storage. Unknown completion is never replayed. */
+static int compressed_upload_query(int fd, uint8_t *request, uint32_t length,
+                                    uint8_t *reply, uint32_t token, int quiet) {
+    memset(reply,0,12);
+    struct gl_query_info info = {.op=QOP_COMPRESSED_UPLOAD,
+        .in_buf_ptr=(uintptr_t)request,.in_buf_len=length,
+        .out_buf_ptr=(uintptr_t)reply,.out_buf_len=12};
+    if (ioctl(fd,GLIO_QUERY,&info) == 0) {
+        uint32_t status,echoed,footer;
+        memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&footer,reply+8,4);
+        if (footer==WPK_GL_QUERY_REPLY_MAGIC && status<=1) {
+            if (status==1 && echoed==0) return 0;
+            if (status==0 && echoed==token) return 1;
+        }
+    }
+    if (!quiet) raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+static void compressed_upload(uint32_t op, GLenum target, GLint level, GLenum format,
+                                GLint x, GLint y, GLsizei width, GLsizei height,
+                                GLint border, GLsizei imageSize, const void *data) {
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    if (!state) return;
+    if (imageSize<0) {raise_client_error(GL_INVALID_VALUE);return;}
+    if (state->next_compressed_upload==UINT32_MAX) {raise_client_error(GL_OUT_OF_MEMORY);return;}
+    uint8_t *request=malloc(65536), *reply=malloc(12);
+    if (!request || !reply) {free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return;}
+    if (flush_commands()!=0) {free(request);free(reply);return;}
+    const int fd=_wpk_gl_fd();
+    const uint32_t token=++state->next_compressed_upload;
+    uint32_t header[13]={1,token,op,target,(uint32_t)level,format,(uint32_t)x,(uint32_t)y,
+        (uint32_t)width,(uint32_t)height,(uint32_t)border,(uint32_t)imageSize,data!=NULL};
+    memcpy(request,header,sizeof header);
+    if (!compressed_upload_query(fd,request,sizeof header,reply,token,0)) goto cancel;
+    if (imageSize>0 && !data) {raise_client_error(GL_INVALID_VALUE);goto cancel;}
+    if ((uint32_t)imageSize>WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES) {raise_client_error(GL_OUT_OF_MEMORY);goto cancel;}
+    if ((uintptr_t)data>UINTPTR_MAX-(uintptr_t)imageSize) {raise_client_error(GL_OUT_OF_MEMORY);goto cancel;}
+    for (uint32_t offset=0;offset<(uint32_t)imageSize;) {
+        uint32_t bytes=(uint32_t)imageSize-offset;
+        if (bytes>65524u) bytes=65524u;
+        header[0]=2;header[2]=offset;memcpy(request,header,12);
+        memcpy(request+12,(const uint8_t *)data+offset,bytes);
+        if (!compressed_upload_query(fd,request,12+bytes,reply,token,0)) goto cancel;
+        offset+=bytes;
+    }
+    header[0]=3;header[2]=0;memcpy(request,header,12);
+    if (!compressed_upload_query(fd,request,12,reply,token,0)) goto cancel;
+    if (op==OP_COMPRESSED_TEX_IMAGE_2D && target==GL_TEXTURE_2D)
+        sync_object_image(1,g_texture_units[g_active_unit].texture_object);
+    free(request);free(reply);return;
+cancel:
+    /* ABORT drops staged bytes only. It cannot undo or repeat an uncertain
+     * accepted native COMMIT; image input ownership stays conservatively held. */
+    header[0]=4;header[2]=0;memcpy(request,header,12);
+    (void)compressed_upload_query(fd,request,12,reply,token,1);
+    free(request);free(reply);
+}
 void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat,
                             GLsizei width, GLsizei height, GLint border,
                             GLsizei imageSize, const void *data) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (imageSize < 0 || (imageSize > 0 && !data)) return;
-    uint32_t dlen = (uint32_t)imageSize;
-    if (28u + dlen > WPK_GL_MAX_TLV_PAYLOAD) return;
-    EMIT_BEGIN(OP_COMPRESSED_TEX_IMAGE_2D, 28u + dlen)
-    w_u32(&_c, (uint32_t)target);
-    w_i32(&_c, level);
-    w_u32(&_c, (uint32_t)internalformat);
-    w_i32(&_c, width);
-    w_i32(&_c, height);
-    w_i32(&_c, border);
-    w_u32(&_c, dlen);
-    if (dlen > 0) { memcpy(_c, data, dlen); _c += dlen; }
-    EMIT_END()
-    if (target == GL_TEXTURE_2D)
-        sync_object_image(1, g_texture_units[g_active_unit].texture_object);
+    compressed_upload(OP_COMPRESSED_TEX_IMAGE_2D,target,level,internalformat,0,0,width,height,border,imageSize,data);
 }
-
 void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
                                GLsizei width, GLsizei height, GLenum format,
                                GLsizei imageSize, const void *data) {
-    if (!_wpk_gl_current_encoder()) return;
-    if (imageSize <= 0 || !data) return;
-    uint32_t dlen = (uint32_t)imageSize;
-    if (32u + dlen > WPK_GL_MAX_TLV_PAYLOAD) return;
-    EMIT_BEGIN(OP_COMPRESSED_TEX_SUB_IMAGE_2D, 32u + dlen)
-    w_u32(&_c, (uint32_t)target);
-    w_i32(&_c, level);
-    w_i32(&_c, xoffset);
-    w_i32(&_c, yoffset);
-    w_i32(&_c, width);
-    w_i32(&_c, height);
-    w_u32(&_c, (uint32_t)format);
-    w_u32(&_c, dlen);
-    memcpy(_c, data, dlen); _c += dlen;
-    EMIT_END()
+    compressed_upload(OP_COMPRESSED_TEX_SUB_IMAGE_2D,target,level,format,xoffset,yoffset,width,height,0,imageSize,data);
 }
 
 void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,

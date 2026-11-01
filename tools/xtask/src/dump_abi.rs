@@ -4390,6 +4390,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
+    s.add(Program, "gl_compressed_upload", gl_compressed_upload());
     s.add(Program, "gl_readback_capture", json!({
         "opcode": shared::gl::QOP_READBACK_CAPTURE,
         "byte_order": "little-endian",
@@ -4459,6 +4460,29 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
+}
+
+fn gl_compressed_upload() -> Value {
+    use shared::gl;
+    json!({
+        "query": gl::QOP_COMPRESSED_UPLOAD,
+        "byte_order": "little-endian",
+        "begin_bytes": gl::compressed_upload::BEGIN_BYTES,
+        "begin_words": ["action=1", "token", "original_opcode", "target", "level_i32", "format",
+            "xoffset_i32", "yoffset_i32", "width_i32", "height_i32", "border_i32", "image_size_i32", "source_present_bool"],
+        "continuation_header_bytes": gl::compressed_upload::HEADER_BYTES,
+        "continuation_words": ["action", "token", "offset_or_zero"],
+        "actions": {"begin": 1, "chunk": 2, "commit": 3, "abort": 4},
+        "max_staged_bytes": gl::compressed_upload::MAX_BYTES,
+        "max_request_bytes": gl::MAX_QUERY_IN_LEN,
+        "reply_words": ["status", "echoed_token_or_zero", "completion_magic"],
+        "reply_magic": gl::QUERY_REPLY_MAGIC,
+        "begin_acceptance": "custody-only-not-native-storage-validation",
+        "commit": "complete-original-native-operation-once-no-bands",
+        "authority": "same-context-shadow-object-view-revision-and-selected-unit",
+        "unknown_commit": "no-replay-abort-drops-staging-only",
+        "failure_payload": "zero",
+    })
 }
 
 fn kms_cursor_transport() -> Value {
@@ -8697,6 +8721,18 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn compressed_upload_serializes_one_native_commit_and_signed_metadata() {
+        let value = gl_compressed_upload();
+        assert_eq!(value["query"], json!(shared::gl::QOP_COMPRESSED_UPLOAD));
+        assert_eq!(value["begin_bytes"], json!(52));
+        assert_eq!(value["max_staged_bytes"], json!(16 * 1024 * 1024));
+        assert_eq!(value["begin_words"][11], json!("image_size_i32"));
+        assert_eq!(value["begin_acceptance"], json!("custody-only-not-native-storage-validation"));
+        assert_eq!(value["commit"], json!("complete-original-native-operation-once-no-bands"));
+        assert_eq!(value["unknown_commit"], json!("no-replay-abort-drops-staging-only"));
+    }
 
     #[test]
     fn kms_cursor_transport_serializes_exact_framebuffer_identity_and_constants() {

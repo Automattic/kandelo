@@ -3714,6 +3714,24 @@ Deleted buffer names and backing-storage retirement remain separate, so
 another context or an unbound vertex array can retain the old storage.
 
 
+Compressed texture uploads use checked opaque staging rather than texture
+row bands. A context admits the original signed metadata and a monotonic
+upload token, copies consecutive chunks into independently owned host bytes,
+then consumes that token for one full native compressed image/subimage call.
+The staging acknowledgement does not promise native storage acceptance;
+format-specific sizing, level and block rules remain native COMMIT checks.
+The selected context, logical texture, view, storage revision and unit must
+still match. Cancellation drops bytes, and an uncertain COMMIT is never
+replayed. Context retirement releases staged bytes before native retirement.
+The resource policy bounds one staged upload to 16 MiB per context; larger
+uploads or allocation failure report `GL_OUT_OF_MEMORY`, not success or
+truncation. Empty uploads still validate through the full native operation.
+Positive-size NULL compressed sources are refused without synthesizing data;
+ES2 defines no compressed NULL-allocation counterpart to `TexImage2D`.
+Actual native compressed-format enumeration is unchanged, and no compression
+extension is enabled merely by this transport. Normal rebuilt guests and
+native browser compressed-format validation remain separate evidence gates.
+
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` (a WPK extension, `'d'` nr `0xE1`) bridges the two tiers: it (re)uploads a CPU-tier bo's current pixels into a `WebGLTexture` in the calling fd's GL context — the host reads the bo's canonical SAB storage directly, so window-sized textures never squeeze through the 64 KB-capped cmdbuf TLV records. The bo handle and the GL session must live on the same fd; `libEGL` exposes the flow as `wpkEglImportDmabufHandle(prime_fd)` (PRIME import on the EGL fd) + `wpkEglBindBoTexture(handle, GL_TEXTURE_2D)` (idempotent per bo; re-call to refresh after the producer commits). Texture lifetime is tied to the bo: the last GEM_CLOSE deletes it.
 
 `DRM_IOCTL_WPK_CREATE_GPU_BO` (`'d'` nr `0xE0`) allocates host-native

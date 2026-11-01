@@ -1,3 +1,4 @@
+import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
 import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
 import { publishedUniformLocation } from "./object-group.js";
@@ -300,6 +301,7 @@ export function runGlQuery(
   const errorMask = op === O.QOP_GET_ERROR ? readGlErrorQueryMask(input) : 0;
   if (op === O.QOP_GET_ERROR && (errorMask === null || out.byteLength < 4)) return -22;
   if (interruptUniformUpload(b)) return -5;
+  if (op !== O.QOP_COMPRESSED_UPLOAD && interruptCompressedUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
     if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
@@ -309,9 +311,17 @@ export function runGlQuery(
   }
   if (!b.gl) return -1;
   const gl = b.gl;
-  if (!repairNativeState(gl) || !reconcileClientArrayRestore(b,gl)) return -5;
+  if (op === O.QOP_COMPRESSED_UPLOAD && gl.isContextLost?.()) {
+    b.compressedUpload = null;
+    return -5;
+  }
+  if (!repairNativeState(gl) || !reconcileClientArrayRestore(b,gl)) {
+    if (op === O.QOP_COMPRESSED_UPLOAD) b.compressedUpload = null;
+    return -5;
+  }
   if (op === O.QOP_READBACK_CAPTURE) return runReadbackCapture(b,input,out,(metadata,bytes)=>readNativePixels(b,metadata,bytes));
   if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
+  if (op === O.QOP_COMPRESSED_UPLOAD) return runCompressedUpload(b,input,out);
   if (op === O.QOP_SHADER_SOURCE_UPLOAD) return runShaderSourceUpload(b,input,out);
   const inDv = new DataView(input.buffer, input.byteOffset, input.byteLength);
   const outDv = new DataView(out.buffer, out.byteOffset, out.byteLength);

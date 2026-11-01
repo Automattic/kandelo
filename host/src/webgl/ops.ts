@@ -229,5 +229,7 @@ export const QOP_FLUSH = 0x0031;
 export const KERNEL_GL_QUERY_CONTROL = 0x7fff_fffe;
 export const GL_QUERY_NEEDS_OWNED_ADMISSION = -2147483647;
 
+// Checked opaque compressed-image staging; full native call only at COMMIT.
+export const QOP_COMPRESSED_UPLOAD = 0x0032;
 // Reserved ABI56: one native read followed by independent copied-byte chunks.
 export const QOP_READBACK_CAPTURE = 0x0033;

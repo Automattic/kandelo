@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { expect, it } from "vitest";
+import { COMPRESSED_UPLOAD_MAX_BYTES } from "../src/webgl/compressed-upload.js";
 import { WPK_IMAGE_SOURCE_TARGET } from "../src/webgl/image-storage.js";
 import * as hostOps from "../src/webgl/ops.js";
 
@@ -30,4 +31,16 @@ it("keeps GLES command and query tags identical in Rust, C and TypeScript", () =
     expect(hostOps[hostName]).toBe(value);
     expect(c).toMatch(new RegExp(`#define WPK_GL_INLINE_DRAW_${rustName}\\s+${value}u?\\b`));
   }
+});
+
+it("binds opaque compressed staging to the shared Program contract and exact source limits",()=>{
+  const root=resolve(import.meta.dirname,"../.."),snapshot=JSON.parse(readFileSync(resolve(root,"abi/snapshot.json"),"utf8"));
+  const wire=snapshot.gl_compressed_upload;
+  expect(wire.query).toBe(hostOps.QOP_COMPRESSED_UPLOAD);
+  expect(wire.max_staged_bytes).toBe(COMPRESSED_UPLOAD_MAX_BYTES);
+  const c=readFileSync(resolve(root,"libc/glue/gl_abi.h"),"utf8");
+  expect(c).toContain(`#define WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES ${wire.max_staged_bytes}u`);
+  expect(wire.begin_bytes).toBe(13*4);expect(wire.continuation_header_bytes).toBe(3*4);
+  expect(wire.begin_acceptance).toBe("custody-only-not-native-storage-validation");
+  expect(snapshot.abi_surfaces.program).toContain("gl_compressed_upload");
 });

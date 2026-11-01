@@ -21,6 +21,7 @@
       "channel_status_codes",
       "clipboard_device_abi",
       "custom_sections",
+      "gl_compressed_upload",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_readback_capture",
@@ -1373,6 +1374,51 @@
     "value_capture_prefixes": [
       "__abi_"
     ]
+  },
+  "gl_compressed_upload": {
+    "actions": {
+      "abort": 4,
+      "begin": 1,
+      "chunk": 2,
+      "commit": 3
+    },
+    "authority": "same-context-shadow-object-view-revision-and-selected-unit",
+    "begin_acceptance": "custody-only-not-native-storage-validation",
+    "begin_bytes": 52,
+    "begin_words": [
+      "action=1",
+      "token",
+      "original_opcode",
+      "target",
+      "level_i32",
+      "format",
+      "xoffset_i32",
+      "yoffset_i32",
+      "width_i32",
+      "height_i32",
+      "border_i32",
+      "image_size_i32",
+      "source_present_bool"
+    ],
+    "byte_order": "little-endian",
+    "commit": "complete-original-native-operation-once-no-bands",
+    "continuation_header_bytes": 12,
+    "continuation_words": [
+      "action",
+      "token",
+      "offset_or_zero"
+    ],
+    "failure_payload": "zero",
+    "max_request_bytes": 65536,
+    "max_staged_bytes": 16777216,
+    "query": 50,
+    "reply_magic": 1196510259,
+    "reply_words": [
+      "status",
+      "echoed_token_or_zero",
+      "completion_magic"
+    ],
+    "unknown_commit": "no-replay-abort-drops-staging-only"
   },
   "gl_image_container_receipts": {
     "accepted_payload": 1,

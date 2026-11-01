@@ -230,6 +230,8 @@ struct device_slot {
     uint32_t texture_active, texture_2d[128], texture_cube[128], renderbuffer_binding;
     uint32_t current_program;
     uint32_t framebuffer_draw, framebuffer_read;
+    uint8_t *compressed_bytes;
+    uint32_t compressed_token, compressed_total, compressed_cursor, compressed_op;
 
     struct {
         GLuint name;
@@ -382,6 +384,10 @@ static unsigned uniform_stream_begins,uniform_stream_chunks,uniform_stream_commi
 static const uint8_t *uniform_stream_expected;
 static size_t uniform_stream_expected_size;
 #endif
+static unsigned compressed_begins, compressed_chunks, compressed_commits, compressed_cancels;
+static int compressed_supported, compressed_fail_action, compressed_fail_mode;
+static const uint8_t *compressed_expected;
+static uint32_t compressed_expected_size;
 static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
@@ -1180,6 +1186,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             const uint32_t header[2] = {(uint32_t)fd,0};
             assert(fwrite(header,1,8,trace) == 8 && !fclose(trace));
         }
+        free(slot->compressed_bytes); slot->compressed_bytes = NULL;
         free(upload_pending); upload_pending = NULL;
     } else if (request == GLIO_DESTROY_SURFACE) {
         for (unsigned i = 0; i < 8; i++)
@@ -1262,6 +1269,50 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (surface_limit_failure == 3) reply[0] = 0;
             if (surface_limit_failure == 4) reply[2] = UINT32_MAX;
             egl_trace(14,fd,reply,16);
+            return 0;
+        }
+        if (q->op == 0x32) {
+            assert(q->in_buf_len >= 12 && q->in_buf_len <= 65536 && q->out_buf_len == 12);
+            const uint32_t *h=allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint32_t *reply=allocation_for(q->out_buf_ptr,12), error=0;
+            const uint32_t action=h[0],token=h[1];
+            assert(action>=1 && action<=4 && token);
+            if (action==1) {
+                assert(q->in_buf_len==52);compressed_begins++;
+                free(slot->compressed_bytes);slot->compressed_bytes=NULL;
+                if ((int32_t)h[11]<0 || (int32_t)h[8]<0 || (int32_t)h[9]<0 ||
+                    (h[2]==OP_COMPRESSED_TEX_IMAGE_2D ? h[10]!=0 : (int32_t)h[6]<0 || (int32_t)h[7]<0)) error=GL_INVALID_VALUE;
+                else if (h[3]!=GL_TEXTURE_2D) error=GL_INVALID_ENUM;
+                else if (!compressed_supported || h[5]!=0x83f1) error=GL_INVALID_ENUM;
+                else if (h[11] && !h[12]) error=GL_INVALID_VALUE;
+                else if (h[11]>16u*1024u*1024u) error=GL_OUT_OF_MEMORY;
+                if (!error) {
+                    slot->compressed_bytes=malloc(h[11] ? h[11] : 1);assert(slot->compressed_bytes);
+                    slot->compressed_total=h[11];slot->compressed_cursor=0;slot->compressed_token=token;slot->compressed_op=h[2];
+                }
+            } else if (action==4) {
+                compressed_cancels++;free(slot->compressed_bytes);slot->compressed_bytes=NULL;
+            } else {
+                assert(slot->compressed_bytes && token==slot->compressed_token);
+                if (action==2) {
+                    assert(h[2]==slot->compressed_cursor && q->in_buf_len-12<=slot->compressed_total-slot->compressed_cursor);
+                    memcpy(slot->compressed_bytes+slot->compressed_cursor,(const uint8_t *)h+12,q->in_buf_len-12);
+                    slot->compressed_cursor+=q->in_buf_len-12;compressed_chunks++;
+                } else {
+                    assert(slot->compressed_cursor==slot->compressed_total);
+                    assert(slot->compressed_total==compressed_expected_size);
+                    assert(!slot->compressed_total || !memcmp(slot->compressed_bytes,compressed_expected,slot->compressed_total));
+                    compressed_commits++;
+                    if (slot->compressed_op==OP_COMPRESSED_TEX_IMAGE_2D) orphan_image_source(slot,1,slot->texture_2d[slot->texture_active]);
+                    free(slot->compressed_bytes);slot->compressed_bytes=NULL;
+                }
+            }
+            int failure=action==(uint32_t)compressed_fail_action ? compressed_fail_mode : 0;
+            if (failure) compressed_fail_action=0;
+            if (failure==1) {errno=EIO;return -1;}
+            if (failure==2) error=GL_INVALID_OPERATION;
+            if (error) query_gl_error=error;
+            reply[0]=error ? 1 : 0;reply[1]=error ? 0 : token;reply[2]=failure==3 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             return 0;
         }
         if (q->op == 0x2a) framebuffer_bind_queries++;
@@ -4875,6 +4926,76 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         puts("PASS encoder-generation-counts"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-compressed-", 19)) {
+        if (!strcmp(argv[1], "encoder-compressed-negative")) {
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,4,4,0,-1,(void *)(uintptr_t)1);
+            assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0x83f1,-1,(void *)(uintptr_t)1);
+            assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+            assert(!compressed_begins);
+        } else if (!strcmp(argv[1], "encoder-compressed-geometry")) {
+            compressed_supported=1;
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,-1,4,0,8,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_VALUE);
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,4,4,1,8,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_VALUE);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,-1,0,4,4,0x83f1,8,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_VALUE);
+            glCompressedTexSubImage2D(0,0,0,0,4,4,0x83f1,8,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_ENUM && !compressed_chunks && !compressed_commits);
+        } else if (!strcmp(argv[1], "encoder-compressed-allocation")) {
+            fail_malloc=1;
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0x83f1,8,(void *)(uintptr_t)1);
+            fail_malloc=0;
+            assert(glGetError()==GL_OUT_OF_MEMORY && !compressed_begins);
+        } else if (!strcmp(argv[1], "encoder-compressed-reject")) {
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0,4,4,0,70000,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_ENUM);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0,70000,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_INVALID_ENUM);
+            assert(compressed_begins==2 && !compressed_chunks && !compressed_commits);
+        } else if (!strcmp(argv[1], "encoder-compressed-zero")) {
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0,0,NULL);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            compressed_supported=1;
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,0,0,0,0,NULL);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,0x83f1,0,NULL);
+            assert(glGetError()==GL_NO_ERROR && compressed_commits==2 && !compressed_chunks);
+        } else if (!strcmp(argv[1], "encoder-compressed-null")) {
+            compressed_supported=1;
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,4,4,0,8,NULL);
+            assert(glGetError()==GL_INVALID_VALUE);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0x83f1,8,NULL);
+            assert(glGetError()==GL_INVALID_VALUE && !compressed_chunks && !compressed_commits);
+        } else if (!strcmp(argv[1], "encoder-compressed-large")) {
+            compressed_supported=1;
+            uint8_t *bytes=malloc(131077);assert(bytes);
+            for (uint32_t i=0;i<131077;i++) bytes[i]=(uint8_t)(i*17u+3u);
+            compressed_expected=bytes;compressed_expected_size=131077;
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,512,512,0,131077,bytes);
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,512,512,0x83f1,131077,bytes);
+            assert(glGetError()==GL_NO_ERROR && compressed_commits==2 && compressed_chunks==6);
+            free(bytes);
+        } else if (!strcmp(argv[1], "encoder-compressed-cancel")) {
+            compressed_supported=1;const uint8_t bytes[4]={1,2,3,4};
+            compressed_expected=bytes;compressed_expected_size=4;
+            compressed_fail_action=2;compressed_fail_mode=1;
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0x83f1,4,bytes);
+            assert(glGetError()==GL_INVALID_OPERATION && !compressed_commits && !device_slots[_wpk_gl_fd()-10].compressed_bytes);
+        } else if (!strcmp(argv[1], "encoder-compressed-commit-unknown")) {
+            compressed_supported=1;const uint8_t bytes[4]={1,2,3,4};
+            compressed_expected=bytes;compressed_expected_size=4;
+            compressed_fail_action=3;compressed_fail_mode=3;
+            glCompressedTexSubImage2D(GL_TEXTURE_2D,0,0,0,4,4,0x83f1,4,bytes);
+            assert(glGetError()==GL_INVALID_OPERATION && compressed_commits==1 && compressed_cancels==1);
+        } else {
+            assert(!strcmp(argv[1], "encoder-compressed-oom"));compressed_supported=1;
+            glCompressedTexImage2D(GL_TEXTURE_2D,0,0x83f1,4,4,0,16*1024*1024+1,(void *)(uintptr_t)1);
+            assert(glGetError()==GL_OUT_OF_MEMORY && !compressed_chunks && !compressed_commits);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strncmp(argv[1], "encoder-subimage-", 17)) {
         const unsigned queries = image_mutation_queries, updates = image_pixel_updates;
