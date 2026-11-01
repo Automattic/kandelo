@@ -2684,13 +2684,23 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_NOT_INITIALIZED;
         return EGL_NO_IMAGE_KHR;
     }
-    if (!g_next_object_handle) {
-        g_last_error = EGL_BAD_ALLOC;
+    /* KHR_image_base and EGL 1.5 section 3.9.1 validate the context before
+     * the target: a ctx that is neither EGL_NO_CONTEXT nor a live context
+     * of this display is EGL_BAD_CONTEXT, whatever the target. */
+    if (ctx != EGL_NO_CONTEXT && !find_context(generation, ctx)) {
+        g_last_error = EGL_BAD_CONTEXT;
         return EGL_NO_IMAGE_KHR;
     }
+    /* GL texture and renderbuffer sources (EGL 1.5 Table 3.10) are not
+     * implemented; their targets stay EGL_BAD_PARAMETER. The dma-buf
+     * target requires EGL_NO_CONTEXT and a NULL buffer. */
     if (target != EGL_LINUX_DMA_BUF_EXT || ctx != EGL_NO_CONTEXT
         || buffer != NULL) {
         g_last_error = EGL_BAD_PARAMETER;
+        return EGL_NO_IMAGE_KHR;
+    }
+    if (!g_next_object_handle) {
+        g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_IMAGE_KHR;
     }
     EGLAttrib width = -1, height = -1, fourcc = 0, fd = -1, offset = 0, pitch = -1;

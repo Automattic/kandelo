@@ -2220,6 +2220,32 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         /* eglGetError itself still reads and clears. */
         leave_egl_error();
         assert(eglGetError() == EGL_BAD_PARAMETER && eglGetError() == EGL_SUCCESS);
+    } else if (!strcmp(name, "egl-spec-image-context")) {
+        /* KHR_image_base: an invalid context is EGL_BAD_CONTEXT, checked
+         * before the target. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLint list[] = {EGL_NONE};
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context != EGL_NO_CONTEXT);
+        assert(!eglCreateImageKHR(dpy, (EGLContext)-1, EGL_NONE, NULL, list));
+        assert(eglGetError() == EGL_BAD_CONTEXT);
+        assert(!eglCreateImage(dpy, (EGLContext)-1, EGL_LINUX_DMA_BUF_EXT, NULL, NULL));
+        assert(eglGetError() == EGL_BAD_CONTEXT);
+        assert(!eglCreateImageKHR(dpy, (EGLContext)(uintptr_t)1, EGL_NONE, NULL, list));
+        assert(eglGetError() == EGL_BAD_CONTEXT);
+        /* A valid context still cannot name a dma-buf, and an unknown target
+         * stays EGL_BAD_PARAMETER. */
+        assert(!eglCreateImageKHR(dpy, context, EGL_LINUX_DMA_BUF_EXT, NULL, list));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglCreateImageKHR(dpy, EGL_NO_CONTEXT, EGL_NONE, NULL, list));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglCreateImageKHR(dpy, context, EGL_NONE, NULL, list));
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        /* A context destroyed by the caller is no longer a valid handle. */
+        assert(eglDestroyContext(dpy, context));
+        assert(!eglCreateImageKHR(dpy, context, EGL_NONE, NULL, list));
+        assert(eglGetError() == EGL_BAD_CONTEXT);
+        assert(eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
