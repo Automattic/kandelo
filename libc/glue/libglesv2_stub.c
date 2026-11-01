@@ -35,6 +35,7 @@
 
 #define WPK_GL_MAX_ATTRIBS 16u
 #define WPK_GL_INITIAL_TEXTURE_UNITS 32
+#define WPK_GL_INITIAL_FRAMEBUFFER_NAMES 16
 
 enum wpk_name_space {
     WPK_NAMES_BUFFER,
@@ -295,7 +296,13 @@ struct wpk_gles_context {
     uint64_t array_serial;
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
+    /* Framebuffers are per-context container objects, so their names never
+     * join the shared object group. This sorted set holds every name in use:
+     * returned by glGenFramebuffers or created by binding an unused name. */
     uint32_t next_framebuffer;
+    GLuint initial_framebuffer_names[WPK_GL_INITIAL_FRAMEBUFFER_NAMES];
+    GLuint *framebuffer_names;
+    size_t framebuffer_name_count, framebuffer_name_capacity;
     GLuint active_unit;
     struct wpk_texture_unit initial_texture_units[WPK_GL_INITIAL_TEXTURE_UNITS];
     struct wpk_texture_unit *texture_units;
@@ -320,7 +327,6 @@ struct wpk_gles_context {
 #define g_array_buffer (_wpk_gl_current_encoder()->array_buffer)
 #define g_element_buffer (_wpk_gl_current_encoder()->current_vertex_array->element_buffer)
 #define g_attribs (_wpk_gl_current_encoder()->current_vertex_array->attribs)
-#define g_next_framebuffer (_wpk_gl_current_encoder()->next_framebuffer)
 #define g_active_unit (_wpk_gl_current_encoder()->active_unit)
 #define g_texture_units (_wpk_gl_current_encoder()->texture_units)
 #define g_bound_renderbuffer (_wpk_gl_current_encoder()->bound_renderbuffer)
@@ -362,6 +368,8 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     }
     state->texture_units = state->initial_texture_units;
     state->texture_unit_count = WPK_GL_INITIAL_TEXTURE_UNITS;
+    state->framebuffer_names = state->initial_framebuffer_names;
+    state->framebuffer_name_capacity = WPK_GL_INITIAL_FRAMEBUFFER_NAMES;
     state->unpack_alignment = 4;
     state->pack_alignment = 4;
     state->generate_mipmap_hint = state->fragment_derivative_hint = GL_DONT_CARE;
@@ -1654,6 +1662,8 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
     object_release(state->objects, state->renderbuffer_object);
     if (state->texture_units != state->initial_texture_units)
         free(state->texture_units);
+    if (state->framebuffer_names != state->initial_framebuffer_names)
+        free(state->framebuffer_names);
     release_vertex_array_objects(state, &state->default_vertex_array);
     object_release(state->objects, state->array_object);
     object_release(state->objects, state->array_capture.object);
@@ -2480,6 +2490,38 @@ void glUniform4f(GLint location, GLfloat x, GLfloat y, GLfloat z, GLfloat w) {
 
 /* ----- framebuffers ------------------------------------------------- */
 
+/* First slot whose name is not below `name`. */
+static size_t framebuffer_name_slot(const struct wpk_gles_context *state, GLuint name) {
+    size_t low = 0, high = state->framebuffer_name_count;
+    while (low < high) {
+        size_t middle = low + (high - low) / 2;
+        if (state->framebuffer_names[middle] < name) low = middle + 1;
+        else high = middle;
+    }
+    return low;
+}
+static int framebuffer_name_used(const struct wpk_gles_context *state, GLuint name) {
+    size_t slot = framebuffer_name_slot(state, name);
+    return slot < state->framebuffer_name_count && state->framebuffer_names[slot] == name;
+}
+/* Reserve capacity before choosing or publishing any name. */
+static int framebuffer_names_reserve(struct wpk_gles_context *state, size_t extra) {
+    const size_t count = state->framebuffer_name_count;
+    if (state->framebuffer_name_capacity - count >= extra) return 1;
+    if (extra > SIZE_MAX / sizeof(GLuint) - count) return 0;
+    size_t capacity = state->framebuffer_name_capacity;
+    while (capacity < count + extra)
+        capacity = capacity > SIZE_MAX / sizeof(GLuint) / 2 ? count + extra : capacity * 2;
+    GLuint *names = malloc(capacity * sizeof *names);
+    if (!names) return 0;
+    if (count) memcpy(names, state->framebuffer_names, count * sizeof *names);
+    if (state->framebuffer_names != state->initial_framebuffer_names)
+        free(state->framebuffer_names);
+    state->framebuffer_names = names;
+    state->framebuffer_name_capacity = capacity;
+    return 1;
+}
+
 void glGenFramebuffers(GLsizei n, GLuint *out) {
     if (!_wpk_gl_current_encoder()) return;
     if (n < 0) {
@@ -2487,7 +2529,41 @@ void glGenFramebuffers(GLsizei n, GLuint *out) {
         return;
     }
     if (!n || !out) return;
-    for (GLsizei i = 0; i < n; i++) out[i] = g_next_framebuffer++;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (!framebuffer_names_reserve(state, (size_t)n)) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    /* Skip names already in use, including names a bind created, and never
+     * wrap through reserved zero. Check the whole batch before publishing. */
+    const size_t first_used = framebuffer_name_slot(state, state->next_framebuffer);
+    for (int publish = 0; publish < 2; publish++) {
+        GLuint candidate = state->next_framebuffer;
+        size_t used = first_used;
+        for (GLsizei i = 0; i < n; i++, candidate++) {
+            while (candidate && used < state->framebuffer_name_count &&
+                   state->framebuffer_names[used] <= candidate) {
+                if (state->framebuffer_names[used] == candidate) candidate++;
+                used++;
+            }
+            if (!candidate) {
+                raise_client_error(GL_OUT_OF_MEMORY);
+                return;
+            }
+            if (publish) out[i] = candidate;
+        }
+        if (publish) state->next_framebuffer = candidate;
+    }
+    /* Both runs are ascending; merge from the end into reserved capacity. */
+    size_t existing = state->framebuffer_name_count, added = (size_t)n;
+    for (size_t at = existing + added; added; ) {
+        if (existing && state->framebuffer_names[existing - 1] > out[added - 1])
+            state->framebuffer_names[--at] = state->framebuffer_names[--existing];
+        else
+            state->framebuffer_names[--at] = out[--added];
+    }
+    state->framebuffer_name_count += (size_t)n;
+    /* The renderer only reserves; the first bind creates the object. */
     emit_name_array(OP_GEN_FRAMEBUFFERS, n, out);
 }
 
@@ -2499,10 +2575,17 @@ void glDeleteFramebuffers(GLsizei n, const GLuint *names) {
     }
     if (!n || !names)
         return;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
     for (GLsizei i = 0; i < n; i++) {
         if (!delete_image_object(3, names[i], NULL))
             continue;
         retire_image_attachments(names[i]);
+        size_t slot = framebuffer_name_slot(state, names[i]);
+        if (names[i] && slot < state->framebuffer_name_count && state->framebuffer_names[slot] == names[i]) {
+            memmove(state->framebuffer_names + slot, state->framebuffer_names + slot + 1,
+                    (state->framebuffer_name_count - slot - 1) * sizeof *state->framebuffer_names);
+            state->framebuffer_name_count--;
+        }
     }
 }
 
@@ -2512,6 +2595,21 @@ void glBindFramebuffer(GLenum target, GLuint fb) {
     if (target != GL_FRAMEBUFFER) {
         raise_client_error(GL_INVALID_ENUM);
         return;
+    }
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    /* Binding an unused name creates a framebuffer, so later generation must
+     * skip it. Mark it before the unchecked bind: if the renderer rejects the
+     * bind, the name merely stays unused by generation, which is harmless. */
+    if (fb && !framebuffer_name_used(state, fb)) {
+        if (!framebuffer_names_reserve(state, 1)) {
+            raise_client_error(GL_OUT_OF_MEMORY);
+            return;
+        }
+        size_t slot = framebuffer_name_slot(state, fb);
+        memmove(state->framebuffer_names + slot + 1, state->framebuffer_names + slot,
+                (state->framebuffer_name_count - slot) * sizeof *state->framebuffer_names);
+        state->framebuffer_names[slot] = fb;
+        state->framebuffer_name_count++;
     }
     EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)
     w_u32(&_c,target); w_u32(&_c,fb);

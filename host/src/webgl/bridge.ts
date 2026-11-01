@@ -1278,15 +1278,11 @@ function dispatch(
     }
 
     // ----- framebuffers / renderbuffers -----------------------------------
-    case O.OP_GEN_FRAMEBUFFERS: {
-      const n = v.getUint32(p, true);
-      for (let i = 0; i < n; i++) {
-        const name = v.getUint32(p + 4 + i * 4, true);
-        const fbo = gl.createFramebuffer();
-        if (fbo) b.fbos.set(name, fbo);
-      }
-      return;
-    }
+    // A generated name is not a framebuffer until its first bind (ES 2.0
+    // section 4.4.1), which bindFramebufferObject realizes. Creating one here
+    // would also replace an object a bind already created for that name,
+    // orphaning it and its attachments. The encoder owns name reservation.
+    case O.OP_GEN_FRAMEBUFFERS: return;
     case O.OP_DELETE_FRAMEBUFFERS: {
       const n = v.getUint32(p, true);
       for (let i = 0; i < n; i++) deleteFramebufferName(b,v.getUint32(p+4+i*4,true));

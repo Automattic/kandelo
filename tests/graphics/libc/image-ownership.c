@@ -447,6 +447,7 @@ int graphics_pthread_mutex_lock(pthread_mutex_t *mutex) {
 static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride, captured_offset, captured_pointers;
+static unsigned framebuffer_bind_commands, framebuffer_gen_names;
 static unsigned captured_chunks;
 static unsigned inline_draws, buffer_binds, buffer_deletes;
 static uint32_t inline_first, inline_count, inline_attributes, inline_payload_size;
@@ -996,6 +997,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 continue;
             }
             if (op == OP_BIND_FRAMEBUFFER) { framebuffer_bind_commands++; (void)native_framebuffer_bind(slot,words[0],words[1]); }
+            if (op == OP_GEN_FRAMEBUFFERS) framebuffer_gen_names += words[0];
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
             if (op == OP_DELETE_BUFFERS)
@@ -5953,6 +5955,50 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
                allocation_count() == 0);
         puts("PASS names-render");
+        return 0;
+    }
+    if (!strcmp(argv[1], "framebuffer-names-implicit")) {
+        /* ES 2.0 section 4.4.1: GenFramebuffers returns only names not in
+         * use, and binding an unused name creates a framebuffer. */
+        glBindFramebuffer(GL_FRAMEBUFFER, 1);
+        glBindFramebuffer(GL_FRAMEBUFFER, 3);
+        GLuint names[3] = {99, 99, 99};
+        glGenFramebuffers(3, names);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(names[0] == 2 && names[1] == 4 && names[2] == 5);
+        glBindFramebuffer(GL_FRAMEBUFFER, 7);
+        GLuint more[3] = {99, 99, 99};
+        glGenFramebuffers(3, more);
+        assert(more[0] == 6 && more[1] == 8 && more[2] == 9);
+        /* Allocation failure publishes nothing and reserves nothing. */
+        GLuint failed[40];
+        for (unsigned i = 0; i < 40; i++) failed[i] = 99;
+        fail_malloc = 1;
+        glGenFramebuffers(40, failed);
+        fail_malloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        for (unsigned i = 0; i < 40; i++) assert(failed[i] == 99);
+        glFlush();
+        const unsigned binds = framebuffer_bind_commands, generated = framebuffer_gen_names;
+        assert(generated == 6);
+        fail_malloc = 1;
+        for (GLuint name = 100; name < 140; name++) glBindFramebuffer(GL_FRAMEBUFFER, name);
+        fail_malloc = 0;
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        glFlush();
+        assert(framebuffer_bind_commands < binds + 40);
+        glGenFramebuffers(40, failed);
+        assert(glGetError() == GL_NO_ERROR && failed[0] == 10);
+        for (unsigned i = 0; i < 40; i++)
+            for (GLuint used = 1; used <= 9; used++) assert(failed[i] != used);
+        /* A deleted name is no longer in use; a later bind recreates it. */
+        GLuint three = 3;
+        glDeleteFramebuffers(1, &three);
+        glBindFramebuffer(GL_FRAMEBUFFER, 3);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy) &&
+               allocation_count() == 0);
+        puts("PASS framebuffer-names-implicit");
         return 0;
     }
     if (!strcmp(argv[1], "names-implicit")) {
