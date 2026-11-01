@@ -22,6 +22,7 @@ export default {
       'test/node-tcp-server.test.ts',
       'test/node-timers.test.ts',
       'test/node-sync-processes.test.ts',
+      'test/node-socket-timeouts.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

@@ -4403,10 +4403,20 @@ const net = (() => {
             },
         };
     };
-    class Socket extends stream.Duplex {
+    const socketTimeout = Symbol('socketTimeout');
+    const socketHandleState = Symbol('socketHandleState');
+    class SocketCore extends stream.Duplex {
         constructor(options) {
             super(options);
-            this._fd = options?.fd ?? -1;
+            this._fd = -1;
+            this._handle = null;
+            this[socketHandleState] = null;
+            if (options?.fd != null) {
+                if (typeof options.fd !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "fd" option must be of type number');
+                if (!Number.isInteger(options.fd) || options.fd < 0 || options.fd > 2147483647) throw argumentError('ERR_OUT_OF_RANGE', 'The "fd" option must be a non-negative int32', true);
+                fs.fstatSync(options.fd);
+                this._ownSocketFd(options.fd);
+            }
             this._socketDestroyed = false;
             this._reading = false;
             this._writeQueue = [];
@@ -4416,6 +4426,8 @@ const net = (() => {
             this.localAddress = undefined;
             this.localPort = undefined;
             this._connectOperation = null;
+            this[socketTimeout] = null;
+            this._lastWriteQueueSize = 0;
             this._referenced = true;
             this.allowHalfOpen = !!options?.allowHalfOpen;
             this.destroyed = false;
@@ -4428,8 +4440,24 @@ const net = (() => {
             this.on('finish', () => this._maybeCloseSocket());
         }
 
-        _adoptFd(fd) {
+        _ownSocketFd(fd) {
+            if (this[socketHandleState]) this[socketHandleState].fd = -1;
+            // Own the fd before allocating metadata, so adoption failure
+            // still closes it through destroy().
             this._fd = fd;
+            this._handle = null;
+            this[socketHandleState] = null;
+            const state = {fd};
+            this[socketHandleState] = state;
+            // This metadata belongs to one owned descriptor. A retained old
+            // handle must not start reporting a newly reused descriptor.
+            this._handle = {
+                get fd() { return state.fd; },
+                get writeQueueSize() { return state.fd < 0 ? 0 : nat.socketWriteQueueSize(state.fd); },
+            };
+        }
+        _adoptFd(fd) {
+            this._ownSocketFd(fd);
             const peer = nat.socketAddress(fd, true), local = nat.socketAddress(fd);
             this.remoteAddress = peer.address; this.remoteFamily = peer.family; this.remotePort = peer.port;
             this.localAddress = local.address; this.localFamily = local.family; this.localPort = local.port;
@@ -4449,7 +4477,9 @@ const net = (() => {
             if (this.connecting) throw argumentError('ERR_SOCKET_CONNECTION_IN_PROGRESS', 'Socket is already connecting');
             if (this._fd >= 0) throw argumentError('ERR_SOCKET_ALREADY_CONNECTED', 'Socket is already connected');
             this._socketDestroyed = false;
+            this._unrefTimer();
             const operation = _nodeBeginSocketConnection(options, (event, ...values) => {
+                if (event === 'lookup' && values[0] === null) this._unrefTimer();
                 if (event === '_attemptsStarted') this.autoSelectFamilyAttemptedAddresses = [];
                 else if (event === '_attemptedAddress') this.autoSelectFamilyAttemptedAddresses.push(values[0]);
                 else this.emit(event, ...values);
@@ -4463,6 +4493,7 @@ const net = (() => {
                 try { this._adoptFd(fd); }
                 catch (error) { this.destroy(error); return; }
                 this.connecting = false;
+                this._unrefTimer();
                 this.emit('connect');
                 if (this._socketDestroyed) return;
                 this.emit('ready');
@@ -4491,6 +4522,7 @@ const net = (() => {
                 (ab) => {
                     this._reading = false;
                     if (this._socketDestroyed) return;
+                    this._unrefTimer();
                     if (ab.byteLength === 0) {
                         this.push(null); /* EOF — peer closed */
                         return;
@@ -4513,21 +4545,48 @@ const net = (() => {
                 this._writeQueue.push({ buf, cb });
                 return;
             }
-            nat.socketWrite(this._fd, buf).then(() => cb(null), cb);
-            if (!this._referenced) nat.socketRef(this._fd, false);
+            this._writeToSocket(buf, cb);
         }
 
         _flushWriteQueue() {
             const q = this._writeQueue;
             this._writeQueue = [];
             for (const { buf, cb } of q) {
-                nat.socketWrite(this._fd, buf).then(() => cb(null), cb);
-                if (!this._referenced) nat.socketRef(this._fd, false);
+                this._writeToSocket(buf, cb);
             }
+        }
+
+        _writeToSocket(buf, cb) {
+            this._unrefTimer();
+            const pending = nat.socketWrite(this._fd, buf);
+            this._lastWriteQueueSize = nat.socketWriteQueueSize(this._fd);
+            pending.then(() => { this._unrefTimer(); cb(null); }, cb);
+            if (!this._referenced) nat.socketRef(this._fd, false);
+        }
+
+        _unrefTimer() {
+            for (let socket = this; socket != null; socket = socket._parent) {
+                if (socket[socketTimeout]) socket[socketTimeout].refresh();
+            }
+        }
+        _onTimeout() {
+            if (this._socketDestroyed) return;
+            if (this._lastWriteQueueSize > 0 && this._fd >= 0) {
+                const remaining = nat.socketWriteQueueSize(this._fd);
+                if (remaining !== this._lastWriteQueueSize) {
+                    this._lastWriteQueueSize = remaining;
+                    this._unrefTimer();
+                    return;
+                }
+            }
+            this.emit('timeout');
         }
 
         destroy(err) {
             if (this._socketDestroyed) return this;
+            for (let socket = this; socket != null; socket = socket._parent) {
+                if (socket[socketTimeout]) timers.clearTimeout(socket[socketTimeout]);
+            }
             this._socketDestroyed = true;
             this.destroyed = true;
             this.readable = false; this.writable = false;
@@ -4536,8 +4595,12 @@ const net = (() => {
             this._connectOperation = null;
             if (operation) operation.cancel();
             if (this._fd >= 0) {
-                nat.socketClose(this._fd);
-                this._fd = -1;
+                try { nat.socketClose(this._fd); }
+                finally {
+                    this._fd = -1;
+                    if (this[socketHandleState]) this[socketHandleState].fd = -1;
+                    this._handle = null;
+                }
             }
             for (const { cb } of this._writeQueue) cb(err || new Error('socket destroyed'));
             this._writeQueue = [];
@@ -4551,7 +4614,24 @@ const net = (() => {
 
         resume() { super.resume(); this._scheduleRead(); return this; }
         setEncoding(enc) { this._encoding = enc; return this; }
-        setTimeout(ms, cb) { if (cb) this.once('timeout', cb); return this; }
+        setTimeout(ms, cb) {
+            if (this.destroyed) return this;
+            this.timeout = ms;
+            if (typeof ms !== 'number') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "msecs" argument must be of type number');
+            if (ms < 0 || !Number.isFinite(ms)) throw argumentError('ERR_OUT_OF_RANGE', 'The "msecs" argument must be a non-negative finite number', true);
+            if (ms > 2147483647) {
+                process.emitWarning(ms + ' does not fit into a 32-bit signed integer.\nTimer duration was truncated to 2147483647.', 'TimeoutOverflowWarning');
+                ms = 2147483647;
+            }
+            timers.clearTimeout(this[socketTimeout]);
+            if (ms !== 0) this[socketTimeout] = timers.setTimeout(() => this._onTimeout(), ms).unref();
+            if (cb !== undefined) {
+                if (typeof cb !== 'function') throw argumentError('ERR_INVALID_ARG_TYPE', 'The "callback" argument must be of type function');
+                if (ms === 0) this.removeListener('timeout', cb);
+                else this.once('timeout', cb);
+            }
+            return this;
+        }
         setNoDelay() { return this; }
         setKeepAlive() { return this; }
         address() { return this._fd < 0 ? {} : nat.socketAddress(this._fd); }
@@ -4561,7 +4641,7 @@ const net = (() => {
 
     // Listeners own real kernel fds. A close stops accept immediately and
     // waits for accepted sockets before reporting the server's close event.
-    class Server extends events.EventEmitter {
+    class ServerCore extends events.EventEmitter {
         constructor(options, connectionListener) {
             super();
             if (typeof options === 'function') { connectionListener = options; options = {}; }
@@ -4683,11 +4763,27 @@ const net = (() => {
         unref() { this._referenced = false; if (this._fd >= 0) nat.socketRef(this._fd, false); return this; }
     }
 
+    // Node accepts both call and construct forms, including subclasses.
+    const construct = Reflect.construct;
+    function Socket(options) { return construct(SocketCore, [options], new.target || Socket); }
+    Socket.prototype = SocketCore.prototype;
+    Object.defineProperty(Socket.prototype, 'constructor', {value:Socket, writable:true, configurable:true});
+    Object.setPrototypeOf(Socket, stream.Duplex);
+    function Server(options, listener) { return construct(ServerCore, [options, listener], new.target || Server); }
+    Server.prototype = ServerCore.prototype;
+    Object.defineProperty(Server.prototype, 'constructor', {value:Server, writable:true, configurable:true});
+    Object.setPrototypeOf(Server, events.EventEmitter);
+    function createConnection(...args) {
+        const [options, cb] = normalizeArgs(args);
+        const socket = new Socket(options);
+        if (options.timeout) socket.setTimeout(options.timeout);
+        return socket.connect(options, cb);
+    }
     return {
         Socket, Server,
         createServer(options, listener) { return new Server(options, listener); },
-        createConnection(...args) { return new Socket().connect(...args); },
-        connect(...args) { return new Socket().connect(...args); },
+        createConnection,
+        connect: createConnection,
         isIP, isIPv4, isIPv6,
         getDefaultAutoSelectFamily() { return autoSelectFamilyDefault; },
         setDefaultAutoSelectFamily(value) { autoSelectFamilyDefault = boolean(value, 'value'); },

@@ -1,0 +1,794 @@
+{
+  "schema": 1,
+  "module": "node:net",
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "document": {
+    "path": "doc/api/net.md",
+    "sha256": "936b2c80963b118b4c7359c1730b36d5a552019d2d534515b3c4630912d4bba8"
+  },
+  "surfaceReview": "Seven selected API headings reviewed for socket inactivity timers and construction. This is not a full net audit; export presence and selected file passes do not prove complete behavior.",
+  "fullCompatibility": false,
+  "controls": {
+    "path": "host/test/fixtures/node-socket-timeouts.ts",
+    "sha256": "cd122302ad017895819df29e483009f310411896a6c3c1a140ba3dbd1f5f8740",
+    "sourceTest": "host/test/node-socket-timeouts.test.ts",
+    "nodeProductTest": "host/test/node-core-compat.test.ts",
+    "browserProductTest": "apps/browser-demos/test/node-socket-timeouts.spec.ts",
+    "allHostRunner": "scripts/run-nodejs-socket-timeout-tests.ts",
+    "writeProgressControl": "host/test/fixtures/node-socket-write-progress.ts",
+    "independentPeer": "host/test/fixtures/node-socket-write-peer.c"
+  },
+  "upstreamSelection": "tests/nodejs/selections/socket-timeouts.json",
+  "rows": [
+    {
+      "api": "socket.setTimeout(timeout[, callback])",
+      "status": "partial",
+      "review": "Real unreferenced inactivity deadlines, notification without auto-close, callback registration/cancellation, validation and activity refresh. TLS/parent integration, full listener and reconnect matrices remain unreviewed."
+    },
+    {
+      "api": "net.Socket timeout event",
+      "status": "partial",
+      "review": "Notifications exercised for connected and unconnected sockets; complete event ordering, listener mutation and unusual lifecycle combinations remain unreviewed."
+    },
+    {
+      "api": "socket.timeout",
+      "status": "partial",
+      "review": "Undefined initially and raw value assigned before validation, matching the pinned implementation; descriptor and full mutation matrices remain unreviewed."
+    },
+    {
+      "api": "new net.Socket([options])",
+      "status": "partial",
+      "review": "Bare call, construction and modern subclasses; actual descriptor metadata and selected fd validation. Legacy constructor.call inheritance, full fd kind validation, options and signal matrices remain incomplete."
+    },
+    {
+      "api": "new net.Server([options][, connectionListener])",
+      "status": "partial",
+      "review": "Bare call, construction and modern subclasses exercised through real listeners; full inheritance, options, descriptor and lifecycle matrices remain incomplete."
+    },
+    {
+      "api": "net.createConnection(options[, connectListener])",
+      "status": "partial",
+      "review": "Passes options into Socket and applies connection timeout; full option/overload/validation matrices remain incomplete."
+    },
+    {
+      "api": "net.connect()",
+      "status": "partial",
+      "review": "Shares identity with createConnection; alias descriptors and complete overload behavior remain unreviewed."
+    }
+  ],
+  "remainingReview": [
+    "DNS/Resolver, accurate IPv6/interface metadata, socket controls, paused reads, backpressure and stream behavior remain incomplete.",
+    "EventEmitter.removeListener currently removes all equal callbacks rather than one; duplicate timeout-listener cancellation is therefore incomplete.",
+    "Socket legacy constructor.call inheritance, reconnect state and option/signal/error/descriptor matrices remain incomplete.",
+    "Handle metadata reports the actual owned descriptor and native pending-write bytes. It does not implement the V8/libuv private handle API.",
+    "The complete net public surface, including newer Node 26 APIs, has not been audited.",
+    "The original broader WebKit core/PATH spawn ENOMEM observation remains unresolved. Selected passing runs do not establish its cause or a fix.",
+    "Full product, broad POSIX, application-switching memory and performance gates remain deferred."
+  ],
+  "evidence": {
+    "productionHead": "2a56f7d8d1da8a659c14920292fa3ecebd1e1a7e",
+    "validatedWorkingTreeBase": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+    "runtimeInputs": {
+      "revision": 43,
+      "inputs": {
+        "kernel.wasm": {
+          "source": "local-binaries/source-only-v1/kernel.wasm",
+          "sha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "bytes": 1762814
+        },
+        "node.zip": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/node.zip",
+          "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc",
+          "bytes": 17444238
+        },
+        "coreutils.wasm": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/coreutils.wasm",
+          "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc",
+          "bytes": 1777079
+        },
+        "shell.vfs.zst": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/shell.vfs.zst",
+          "sha256": "80a36126a7f1fd72c46862119bd567a96c32a442dad046ce1b37af827a1b8dcd",
+          "bytes": 1051082
+        }
+      },
+      "sources": {
+        "packages/registry/node-compat/bootstrap.js": "a60edb99770c1dcf8ff6547091a3cb8516b9c7cc88441bdcee1ff5fd0c708420",
+        "packages/registry/spidermonkey/node-compat/adapter.js": "ff42b36a75265d4919cec2dc1a9542b88a02204f79d25d97bac36b1c9727b647",
+        "packages/registry/spidermonkey/patches/0037-kandelo-socket-write-progress.patch": "d3148e3db2eb7f9d27af87307f4d1a9554840aeac522a759cabcf9cc621f22bc",
+        "packages/registry/spidermonkey/build.toml": "18166bf2bbefda5470bc49600332a50f59f4c472721cdf177e429c051cf80515"
+      }
+    },
+    "sourceReference": {
+      "path": ".context/node26-socket-source-strong.log",
+      "sha256": "48f345724eca1b1a5978d9b19a734d9aa28c47d9eb19a24d4cc9cec3afa74e86",
+      "passed": 171,
+      "skipped": 0
+    },
+    "nativeWriteProgress": {
+      "path": ".context/node26-socket-native-write-progress/result.json",
+      "sha256": "3251398ed0e53608665a7de15d75924270405d2c9ac06cca67e856ac34e5018f"
+    },
+    "nodeProduct": {
+      "path": ".context/node-prepared-reports/vitest.B9LiZ1/report.json",
+      "sha256": "db5545333f360cd713b7baf79bbd61535811876dd3bd58d36e90178ddc09e408",
+      "passed": 19,
+      "skipped": 0,
+      "context": {
+        "path": ".context/node-prepared-reports/vitest.B9LiZ1/context.json",
+        "sha256": "6be7cae3baea2a86795d6887f1d26bf68d165b780cf9f3bdd70b467d508738f5"
+      }
+    },
+    "strengthenedNodeSocketControl": {
+      "path": ".context/node26-socket-prepared-strong-reports/vitest.VvrPNb/report.json",
+      "sha256": "d7a1842a4e7b78444558c0f0636f5583a533e2550a6d45e052fd31873ba7883d",
+      "passed": 1,
+      "excludedByNameFilter": 18,
+      "context": {
+        "path": ".context/node26-socket-prepared-strong-reports/vitest.VvrPNb/context.json",
+        "sha256": "e88dea8185210b0635995329f9054a3edcb806fac3df9500e2efb77cacc3955f"
+      }
+    },
+    "browserProduct": {
+      "path": ".context/node26-socket-browser-reports/playwright.lLnz7z/report.json",
+      "sha256": "a1d11e1978ac7769c2fed7f85d299e58aca6af254f29c2793e00d884ad37fba8",
+      "counts": {
+        "startTime": "2026-11-01T03:44:45.689Z",
+        "duration": 108917.96399999999,
+        "expected": 3,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "retries": 0,
+      "context": {
+        "path": ".context/node26-socket-browser-reports/playwright.lLnz7z/context.json",
+        "sha256": "ce9a95c0eecc932817e77777fdca9dc3dc9f755fb2d1ce901d07fc39bc16d889"
+      }
+    },
+    "runtimeControls": {
+      "node": {
+        "report": {
+          "path": ".context/node26-socket-runtime-r3-node/result.json",
+          "sha256": "e2861b24ff7a4ea49d0b31aeebc8a8bee5757a2ea424041f1d493483dabadfeb"
+        },
+        "counts": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "identity": {
+          "host": "node",
+          "imageSha256": "9e9faaf921932e896f3bc2def9a04cd4c2099f05573df4fbfedd1492bf54bd15",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ]
+        },
+        "provenance": {
+          "target": {
+            "schema": 1,
+            "version": "26.13.0",
+            "lts": "Lithium",
+            "verifiedOn": "2026-10-31",
+            "releaseIndex": "https://nodejs.org/dist/index.json",
+            "source": {
+              "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+              "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+              "tag": "v26.13.0",
+              "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+            },
+            "references": {
+              "darwin-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+                "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+              },
+              "darwin-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+                "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+              },
+              "linux-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+                "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+              },
+              "linux-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+                "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+              }
+            }
+          },
+          "gitHead": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "sourceSha256": "cd122302ad017895819df29e483009f310411896a6c3c1a140ba3dbd1f5f8740",
+          "progressSourceSha256": "5dc278e92bbc40883fe5a826ba1e686897869c33b4b1f9dd2c82089b8c40e730",
+          "peerSourceSha256": "23950bc28e111b80a0c153aa5c16a8c15d61a687b90f71ad26fd8cac03043408",
+          "peerSha256": "31ead02740ff45ae61c222a18b8b67ec89750a754f8cf43775e89917da1a70fd",
+          "bootstrapSha256": "a60edb99770c1dcf8ff6547091a3cb8516b9c7cc88441bdcee1ff5fd0c708420",
+          "adapterSha256": "ff42b36a75265d4919cec2dc1a9542b88a02204f79d25d97bac36b1c9727b647"
+        }
+      },
+      "chromium": {
+        "report": {
+          "path": ".context/node26-socket-runtime-r3-chromium/result.json",
+          "sha256": "8ea1896ab82f6a4d03f2dd87a744ea5f7d5836fc0f1fa18088ca19ef035ef96d"
+        },
+        "counts": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "identity": {
+          "host": "chromium",
+          "imageSha256": "9e9faaf921932e896f3bc2def9a04cd4c2099f05573df4fbfedd1492bf54bd15",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "153.0.8010.12"
+        },
+        "provenance": {
+          "target": {
+            "schema": 1,
+            "version": "26.13.0",
+            "lts": "Lithium",
+            "verifiedOn": "2026-10-31",
+            "releaseIndex": "https://nodejs.org/dist/index.json",
+            "source": {
+              "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+              "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+              "tag": "v26.13.0",
+              "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+            },
+            "references": {
+              "darwin-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+                "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+              },
+              "darwin-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+                "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+              },
+              "linux-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+                "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+              },
+              "linux-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+                "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+              }
+            }
+          },
+          "gitHead": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "sourceSha256": "cd122302ad017895819df29e483009f310411896a6c3c1a140ba3dbd1f5f8740",
+          "progressSourceSha256": "5dc278e92bbc40883fe5a826ba1e686897869c33b4b1f9dd2c82089b8c40e730",
+          "peerSourceSha256": "23950bc28e111b80a0c153aa5c16a8c15d61a687b90f71ad26fd8cac03043408",
+          "peerSha256": "31ead02740ff45ae61c222a18b8b67ec89750a754f8cf43775e89917da1a70fd",
+          "bootstrapSha256": "a60edb99770c1dcf8ff6547091a3cb8516b9c7cc88441bdcee1ff5fd0c708420",
+          "adapterSha256": "ff42b36a75265d4919cec2dc1a9542b88a02204f79d25d97bac36b1c9727b647"
+        }
+      },
+      "firefox": {
+        "report": {
+          "path": ".context/node26-socket-runtime-r3-firefox/result.json",
+          "sha256": "a9e3404b0465125d1a87d54f34450fcecf65df89a5d41dbc3a555a48d6471136"
+        },
+        "counts": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "identity": {
+          "host": "firefox",
+          "imageSha256": "9e9faaf921932e896f3bc2def9a04cd4c2099f05573df4fbfedd1492bf54bd15",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "155.0"
+        },
+        "provenance": {
+          "target": {
+            "schema": 1,
+            "version": "26.13.0",
+            "lts": "Lithium",
+            "verifiedOn": "2026-10-31",
+            "releaseIndex": "https://nodejs.org/dist/index.json",
+            "source": {
+              "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+              "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+              "tag": "v26.13.0",
+              "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+            },
+            "references": {
+              "darwin-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+                "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+              },
+              "darwin-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+                "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+              },
+              "linux-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+                "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+              },
+              "linux-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+                "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+              }
+            }
+          },
+          "gitHead": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "sourceSha256": "cd122302ad017895819df29e483009f310411896a6c3c1a140ba3dbd1f5f8740",
+          "progressSourceSha256": "5dc278e92bbc40883fe5a826ba1e686897869c33b4b1f9dd2c82089b8c40e730",
+          "peerSourceSha256": "23950bc28e111b80a0c153aa5c16a8c15d61a687b90f71ad26fd8cac03043408",
+          "peerSha256": "31ead02740ff45ae61c222a18b8b67ec89750a754f8cf43775e89917da1a70fd",
+          "bootstrapSha256": "a60edb99770c1dcf8ff6547091a3cb8516b9c7cc88441bdcee1ff5fd0c708420",
+          "adapterSha256": "ff42b36a75265d4919cec2dc1a9542b88a02204f79d25d97bac36b1c9727b647"
+        }
+      },
+      "webkit": {
+        "report": {
+          "path": ".context/node26-socket-runtime-r3-webkit/result.json",
+          "sha256": "00b475624fe633d626a42b80dc18131f92eeb6009bedbac6f2b830b697e64a3d"
+        },
+        "counts": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "identity": {
+          "host": "webkit",
+          "imageSha256": "9e9faaf921932e896f3bc2def9a04cd4c2099f05573df4fbfedd1492bf54bd15",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "26.6"
+        },
+        "provenance": {
+          "target": {
+            "schema": 1,
+            "version": "26.13.0",
+            "lts": "Lithium",
+            "verifiedOn": "2026-10-31",
+            "releaseIndex": "https://nodejs.org/dist/index.json",
+            "source": {
+              "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0.tar.gz",
+              "sha256": "986ead18ef18256831bae3e57d94aef680a7b84cfd4044f3e8471f833fbd7191",
+              "tag": "v26.13.0",
+              "commit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b"
+            },
+            "references": {
+              "darwin-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz",
+                "sha256": "d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
+              },
+              "darwin-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz",
+                "sha256": "525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
+              },
+              "linux-arm64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-arm64.tar.gz",
+                "sha256": "439e9c438acdf6a6ffe47418da709153d66c4bed812e30a473faacb107dd2791"
+              },
+              "linux-x64": {
+                "url": "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz",
+                "sha256": "5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
+              }
+            }
+          },
+          "gitHead": "9254e99aab3c7aba2ed4ae96e20e2f0a2a752d9c",
+          "sourceSha256": "cd122302ad017895819df29e483009f310411896a6c3c1a140ba3dbd1f5f8740",
+          "progressSourceSha256": "5dc278e92bbc40883fe5a826ba1e686897869c33b4b1f9dd2c82089b8c40e730",
+          "peerSourceSha256": "23950bc28e111b80a0c153aa5c16a8c15d61a687b90f71ad26fd8cac03043408",
+          "peerSha256": "31ead02740ff45ae61c222a18b8b67ec89750a754f8cf43775e89917da1a70fd",
+          "bootstrapSha256": "a60edb99770c1dcf8ff6547091a3cb8516b9c7cc88441bdcee1ff5fd0c708420",
+          "adapterSha256": "ff42b36a75265d4919cec2dc1a9542b88a02204f79d25d97bac36b1c9727b647"
+        }
+      }
+    },
+    "tcpRegressionControls": {
+      "node": {
+        "report": {
+          "path": ".context/node26-socket-tcp-node/result.json",
+          "sha256": "661eb2fb0acf6609a4a1d8bd67113809776a896fbfc8fefa099593be65cfc38b"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "node",
+          "imageSha256": "5c5c522661758b8de420618f22d63a323c4ee126ac5342df954f3b5db289f3e1",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ]
+        }
+      },
+      "chromium": {
+        "report": {
+          "path": ".context/node26-socket-tcp-chromium/result.json",
+          "sha256": "af11151f39fe5beb451e1dab54683abacdb4c0ddda4447f52f3ad1e769038be9"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "chromium",
+          "imageSha256": "5c5c522661758b8de420618f22d63a323c4ee126ac5342df954f3b5db289f3e1",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "153.0.8010.12"
+        }
+      },
+      "firefox": {
+        "report": {
+          "path": ".context/node26-socket-tcp-firefox/result.json",
+          "sha256": "18a56d4a2ea960952d4d9663960a87a1ad28f852d932db4306e2371a8e56dbdb"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "firefox",
+          "imageSha256": "5c5c522661758b8de420618f22d63a323c4ee126ac5342df954f3b5db289f3e1",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "155.0"
+        }
+      },
+      "webkit": {
+        "report": {
+          "path": ".context/node26-socket-tcp-webkit/result.json",
+          "sha256": "75e9cd9bc7244f03c0026a5acbeb5609997cbca971ab5c545c55e9fadd50e6c2"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "webkit",
+          "imageSha256": "5c5c522661758b8de420618f22d63a323c4ee126ac5342df954f3b5db289f3e1",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "570cc9ce02b4a239bee7fcbc3307e03a80d188aaa91e08002971697fcb2d12cc"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "26.6"
+        }
+      }
+    },
+    "upstream": {
+      "reports": {
+        "native": {
+          "counts": {
+            "pass": 6,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "manifest": {
+            "path": ".context/node26-socket-upstream-r2-native/manifest.json",
+            "sha256": "5d74ffb1207e68ff01c040c5fcaec633481f767c4e5b8f96ed8c21b5c06ff06b"
+          },
+          "results": {
+            "path": ".context/node26-socket-upstream-r2-native/results.jsonl",
+            "sha256": "860901b58ae72e85692f0f1da0fad54a8fd17f9870d95cac041a3fa6fb84d016"
+          },
+          "fingerprint": "e362af221f77069cb5c20c3a0f23b5c2cfd459fc1f9ca3d1f5370f118d30342c"
+        },
+        "node": {
+          "counts": {
+            "pass": 6,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "manifest": {
+            "path": ".context/node26-socket-upstream-r2-node/manifest.json",
+            "sha256": "0e4b21c2fd8c799d1c1095a8076c88d09b1fce3d3e03f5b31b0c6c6983489572"
+          },
+          "results": {
+            "path": ".context/node26-socket-upstream-r2-node/results.jsonl",
+            "sha256": "b9830b01febf07e54ab14f321ff7b8178134ae8a0799f0c2488a4dcb15e5b9ff"
+          },
+          "fingerprint": "446c764e79236816e5b48341e54a50c023dfd4bddb37ea76a023551e4cb0d1aa"
+        },
+        "chromium": {
+          "counts": {
+            "pass": 6,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "manifest": {
+            "path": ".context/node26-socket-upstream-r2-chromium/manifest.json",
+            "sha256": "5388952be0127562e374eb2a63f6bd63212cede9d126d6cf800071fa757d0c76"
+          },
+          "results": {
+            "path": ".context/node26-socket-upstream-r2-chromium/results.jsonl",
+            "sha256": "0a5f4c6476d2e854545fd6fb004de028f77ca7aa869bfadae35f44bb5aeaed50"
+          },
+          "fingerprint": "1e52f9da492b989dda2eaed61b967219b17c7dd72407e0f38574717cc279a464"
+        },
+        "firefox": {
+          "counts": {
+            "pass": 6,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "manifest": {
+            "path": ".context/node26-socket-upstream-r2-firefox/manifest.json",
+            "sha256": "7a8ac773e8c54065a7d5f1529ecfc333999ac56fb9032bfecf85d2a01299accb"
+          },
+          "results": {
+            "path": ".context/node26-socket-upstream-r2-firefox/results.jsonl",
+            "sha256": "07a9f6c0b9df0304d73e99a95de8521f0e6ab0cd4695b682be937fed7d4bad7e"
+          },
+          "fingerprint": "da1be7d4b42a7c8a66b62c15496cb183c5639f4377221c3ccccb2b66bdfe43a4"
+        },
+        "webkit": {
+          "counts": {
+            "pass": 6,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "manifest": {
+            "path": ".context/node26-socket-upstream-r2-webkit/manifest.json",
+            "sha256": "1f00d8ea1992176f9348f8ec5e71640839bca45b31051a7297fbeac1e15090bf"
+          },
+          "results": {
+            "path": ".context/node26-socket-upstream-r2-webkit/results.jsonl",
+            "sha256": "01dcd06591599584b1510869a97ecaf1ff1ed69afa03d58a98685d8595799050"
+          },
+          "fingerprint": "47d88d67722effca70551cf5ea104f15a83b39ac8d2c785d0ab9e3521edd5dc6"
+        }
+      },
+      "outcomesByHost": {
+        "native": {
+          "parallel/test-net-can-reset-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-settimeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout-unref.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-timeout-no-handle.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "node": {
+          "parallel/test-net-can-reset-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-settimeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout-unref.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-timeout-no-handle.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "chromium": {
+          "parallel/test-net-can-reset-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-settimeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout-unref.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-timeout-no-handle.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "firefox": {
+          "parallel/test-net-can-reset-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-settimeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout-unref.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-timeout-no-handle.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "webkit": {
+          "parallel/test-net-can-reset-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-settimeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout-unref.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-socket-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-net-timeout-no-handle.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        }
+      },
+      "identicalGuestStatusesExitCodes": true,
+      "pendingEachHost": 0
+    },
+    "identicalGuestInputs": true,
+    "audit": {
+      "path": ".context/node26-socket-audit.json",
+      "sha256": "a2b03c213f325b34e2fd5710ac7252505d0584117cad93cf94f8284b03051cd7"
+    },
+    "readControlSensitivity": {
+      "before": {
+        "path": ".context/node26-socket-read-sensitivity-before.json",
+        "sha256": "9c94561b39069bef38309266a3aaf3f253cd9c5a4d660f4210208c4e83effb7b"
+      },
+      "after": {
+        "path": ".context/node26-socket-read-sensitivity-after.json",
+        "sha256": "159db3295c2f2801b2b182f66c21e148b6199661f6ea3cc93afa5db54d02e44c"
+      },
+      "result": "Intentional native fault injection disables activity refresh: old control passes; strengthened control fails with AssertionError. Normal controls pass without fault injection."
+    },
+    "patchArtifactValidation": {
+      "path": ".context/node26-socket-patch-validation/result.json",
+      "sha256": "37de54f83742e8345fae51c2e0c5f8db7c3dda8de21264051f0f413dd8e47c40"
+    },
+    "abi": {
+      "path": ".context/node26-socket-abi.log",
+      "sha256": "36f3f4d72510c8dd6562c4c052360d845cc686ee0427d5d5be45e38a0ae6ea06"
+    },
+    "evidenceRegistry": {
+      "path": ".context/node26-socket-evidence.log",
+      "sha256": "4dd2f6116019714586774af83205ece6a72e4213c3b0f0fe9acc7de65b456edc"
+    },
+    "fullProductRebuild": "deferred; normal targeted engine/Node/shell build at revision43 succeeded",
+    "fullBaselineRefreshed": false,
+    "intermediateEvidence": {
+      "revision42FailedUpstream": ".context/node26-socket-upstream-node",
+      "revision42Inputs": ".context/node26-socket-r1-inputs/manifest.json",
+      "initialUnhandledSource": ".context/node26-socket-source-r1.log",
+      "initialAllHostAudit": ".context/node26-socket-r2-audit.json"
+    }
+  }
+}

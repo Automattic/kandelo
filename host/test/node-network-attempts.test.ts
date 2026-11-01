@@ -206,6 +206,7 @@ function realBoundary() {
     socketWrite(fd: number, data: Uint8Array) {
       return new Promise<void>((resolve, reject) => sockets.get(fd)!.write(data, error => error ? reject(error) : resolve()));
     },
+    socketWriteQueueSize(fd: number) { return sockets.get(fd)?.bufferSize ?? 0; },
     socketClose(fd: number) { sockets.get(fd)?.destroy(); sockets.delete(fd); },
   };
   return { bridge, sockets, pending };

@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "scope": "Unchanged socket inactivity timeout validation, refresh, cancellation, unref, no-handle and timer-mutation regressions; focused selection, not full net coverage.",
+  "tests": [
+    "parallel/test-net-can-reset-timeout.js",
+    "parallel/test-net-settimeout.js",
+    "parallel/test-net-socket-timeout-unref.js",
+    "parallel/test-net-socket-timeout.js",
+    "parallel/test-net-timeout-no-handle.js",
+    "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js"
+  ]
+}
