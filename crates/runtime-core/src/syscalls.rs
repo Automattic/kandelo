@@ -3076,84 +3076,9 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         DRM_IOCTL_MODE_ADDFB2 => {
-            if buf.len() < core::mem::size_of::<WpkDrmModeFbCmd2>() {
-                return Err(Errno::EINVAL);
-            }
-            let mut req: WpkDrmModeFbCmd2 =
-                unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.width == 0 || req.height == 0 {
-                return Err(Errno::EINVAL);
-            }
-            if req.handles[1..].iter().any(|&h| h != 0) {
-                return Err(Errno::EINVAL);
-            }
-            if !kms::PRIMARY_PLANE_FORMATS.contains(&req.pixel_format) {
-                return Err(Errno::EINVAL);
-            }
-            let bo_id = *dri_state(proc, ofd_idx)?
-                .gem.borrow().handles
-                .get(&req.handles[0])
-                .ok_or(Errno::ENOENT)?;
-            let (bo_stride, bo_size, bo_width, bo_height, tier) = crate::dri::with_registry(|r|
-                r.get(bo_id).map(|b| (b.stride, b.size, b.width, b.height, b.tier)))
-                .ok_or(Errno::ENOENT)?;
-            if req.pitches[0] != bo_stride {
-                return Err(Errno::EINVAL);
-            }
-            let bytes_per_pixel = if req.pixel_format == DRM_FORMAT_RGB565 { 2 } else { 4 };
-            let row_bytes = u64::from(req.width) * bytes_per_pixel;
-            let visible_end = u64::from(req.height - 1)
-                .checked_mul(u64::from(req.pitches[0]))
-                .and_then(|rows| rows.checked_add(u64::from(req.offsets[0])))
-                .and_then(|start| start.checked_add(row_bytes));
-            // Reject before retaining backing or publishing an FB. A bad
-            // view must not reach a presenter as an internal GPU failure.
-            if row_bytes > u64::from(req.pitches[0])
-                || visible_end.is_none_or(|end| end > bo_size)
-                || (tier == crate::dri::BoTier::GpuTexture
-                    && (req.width > bo_width || req.height > bo_height))
-            {
-                return Err(Errno::EINVAL);
-            }
-            let fb_id = {
-                let kms = kms_state_mut(proc, ofd_idx)?;
-                let id = kms::allocate_fb_id()?;
-                kms.fbs.borrow_mut().insert(
-                    id,
-                    crate::ofd::KmsFb {
-                        bo_id,
-                        width: req.width,
-                        height: req.height,
-                        pixel_format: req.pixel_format,
-                        stride: req.pitches[0],
-                        offset: req.offsets[0],
-                    },
-                );
-                kms::register_framebuffer(id, kms.fbs.downgrade());
-                id
-            };
-            crate::dri::with_registry(|r| r.incref(bo_id));
-            let rc = host.kms_addfb(
-                pid,
-                fb_id,
-                bo_id,
-                req.width,
-                req.height,
-                req.pixel_format,
-                req.pitches[0],
-            );
-            if rc < 0 {
-                kms::unregister_framebuffer(fb_id);
-                if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
-                    kms.fbs.borrow_mut().remove(&fb_id);
-                }
-                let _ = crate::dri::with_registry(|r| r.decref(bo_id));
-                return Err(Errno::ENOMEM);
-            }
-            req.fb_id = fb_id;
-            unsafe {
-                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req);
-            }
+            let mut req: WpkDrmModeFbCmd2 = read_dri_struct(buf)?;
+            req.fb_id = kms_add_framebuffer(proc, host, ofd_idx, &req)?;
+            write_dri_struct(buf, req);
             Ok(())
         }
         DRM_IOCTL_MODE_RMFB => {
@@ -3576,6 +3501,111 @@ fn handle_dri_card_ioctl(
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
     }
+}
+
+/// Largest framebuffer dimension, as `GETRESOURCES` reports
+/// (`mode_config.max_width` / `max_height`).
+const KMS_MAX_FB_DIMENSION: u32 = 16384;
+
+/// Bytes per pixel of a scanout format (`drm_format_info.cpp[0]`).
+fn kms_format_cpp(format: u32) -> Option<u32> {
+    use wasm_posix_shared::dri::*;
+    match format {
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 | DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => Some(4),
+        DRM_FORMAT_RGB565 => Some(2),
+        _ => None,
+    }
+}
+
+/// The shared ADDFB/ADDFB2 core: `drm_internal_framebuffer_create`,
+/// `framebuffer_check` and `drm_gem_fb_init_with_funcs` for the single-plane
+/// formats the primary plane scans out. Returns the new fb id.
+///
+/// Two Kandelo boundaries are reported as Linux reports an unsupported
+/// configuration (EINVAL): format modifiers (`DRM_CAP_ADDFB2_MODIFIERS` is
+/// 0, so `DRM_MODE_FB_MODIFIERS` is refused exactly as on a driver without
+/// modifier support), and a nonzero `offsets[0]`, because the host scanout
+/// interface (`host_kms_addfb`) has no offset and would show the wrong
+/// bytes.
+fn kms_add_framebuffer(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    req: &wasm_posix_shared::dri::WpkDrmModeFbCmd2,
+) -> Result<u32, Errno> {
+    use wasm_posix_shared::dri::*;
+    let pid = proc.pid as i32;
+    if req.flags & !(DRM_MODE_FB_INTERLACED | DRM_MODE_FB_MODIFIERS) != 0
+        || req.flags & DRM_MODE_FB_MODIFIERS != 0
+        || !(1..=KMS_MAX_FB_DIMENSION).contains(&req.width)
+        || !(1..=KMS_MAX_FB_DIMENSION).contains(&req.height)
+        || !kms::PRIMARY_PLANE_FORMATS.contains(&req.pixel_format)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let cpp = kms_format_cpp(req.pixel_format).ok_or(Errno::EINVAL)?;
+    let pitch = u64::from(req.pitches[0]);
+    let offset = u64::from(req.offsets[0]);
+    let min_pitch = u64::from(req.width) * u64::from(cpp);
+    // framebuffer_check, plane 0, then the unused planes. Without
+    // DRM_MODE_FB_MODIFIERS, Linux ignores unused handles/pitches/offsets
+    // (pre-modifier userspace left them uninitialized) but not modifiers.
+    if req.handles[0] == 0
+        || u64::from(req.height) * pitch + offset > u64::from(u32::MAX)
+        || pitch < min_pitch
+        || req.modifier.iter().any(|&modifier| modifier != DRM_FORMAT_MOD_LINEAR)
+    {
+        return Err(Errno::EINVAL);
+    }
+    let bo_id = *dri_state(proc, ofd_idx)?
+        .gem.borrow().handles
+        .get(&req.handles[0])
+        .ok_or(Errno::ENOENT)?;
+    let (bo_stride, bo_size, bo_width, bo_height, tier) = crate::dri::with_registry(|r|
+        r.get(bo_id).map(|b| (b.stride, b.size, b.width, b.height, b.tier)))
+        .ok_or(Errno::ENOENT)?;
+    // drm_gem_fb_init_with_funcs: the last row's visible bytes must lie
+    // inside the object.
+    let min_size = u64::from(req.height - 1) * pitch + min_pitch + offset;
+    // Reject before retaining backing or publishing an FB. A bad view must
+    // not reach a presenter as an internal GPU failure. A GPU-tier BO is a
+    // fixed native texture: its view must keep the allocation's row pitch
+    // and fit its extent.
+    if min_size > bo_size
+        || offset != 0
+        || (tier == crate::dri::BoTier::GpuTexture
+            && (req.pitches[0] != bo_stride || req.width > bo_width || req.height > bo_height))
+    {
+        return Err(Errno::EINVAL);
+    }
+    let fb_id = {
+        let kms = kms_state_mut(proc, ofd_idx)?;
+        let id = kms::allocate_fb_id()?;
+        kms.fbs.borrow_mut().insert(
+            id,
+            crate::ofd::KmsFb {
+                bo_id,
+                width: req.width,
+                height: req.height,
+                pixel_format: req.pixel_format,
+                stride: req.pitches[0],
+                offset: req.offsets[0],
+            },
+        );
+        kms::register_framebuffer(id, kms.fbs.downgrade());
+        id
+    };
+    crate::dri::with_registry(|r| r.incref(bo_id));
+    let rc = host.kms_addfb(pid, fb_id, bo_id, req.width, req.height, req.pixel_format, req.pitches[0]);
+    if rc < 0 {
+        kms::unregister_framebuffer(fb_id);
+        if let Ok(kms) = kms_state_mut(proc, ofd_idx) {
+            kms.fbs.borrow_mut().remove(&fb_id);
+        }
+        let _ = crate::dri::with_registry(|r| r.decref(bo_id));
+        return Err(Errno::ENOMEM);
+    }
+    Ok(fb_id)
 }
 
 /// `drm_crtc_check_viewport`: the mode's active area placed at `(x, y)` must
@@ -52740,13 +52770,12 @@ impl HostIO for RelSymlinkMock {
             crtc_id: kms::CRTC_ID, fb_id: valid, crtc_w: 64, crtc_h: 64,
             src_w: 64 << 16, src_h: 64 << 16, ..Default::default() };
         kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE, set).unwrap();
-        let (offset, _, offset_bo) = kms_cursor_fb(&mut proc, &mut host, fd, 60, 63, 16);
+        // An offset view cannot exist: ADDFB2 refuses a nonzero offset the
+        // host scanout cannot honor.
         let mut invalid = alloc::vec![
             WpkDrmModeSetPlane { src_x: 1, ..set },
             WpkDrmModeSetPlane { src_w: 63 << 16, ..set },
             WpkDrmModeSetPlane { crtc_w: 63, ..set },
-            WpkDrmModeSetPlane { fb_id: offset, crtc_w: 60, crtc_h: 63,
-                src_w: 60 << 16, src_h: 63 << 16, ..set },
         ];
         let (padded, _, padded_bo) = kms_cursor_fb(&mut proc, &mut host, fd, 60, 63, 0);
         invalid.push(WpkDrmModeSetPlane { fb_id: padded, crtc_w: 60, crtc_h: 63,
@@ -52757,7 +52786,6 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(host.cursor_calls.len(), effects);
             assert_eq!(kms_cursor_plane(&mut proc, &mut host, fd).fb_id, valid);
             assert_eq!(bo_refcount(bo), Some(3));
-            assert_eq!(bo_refcount(offset_bo), Some(2));
             assert_eq!(bo_refcount(padded_bo), Some(2));
         }
         sys_close(&mut proc, &mut host, fd).unwrap();
@@ -55362,6 +55390,101 @@ impl HostIO for RelSymlinkMock {
             WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() }).unwrap();
         assert!(wait_vblank(&mut proc, &mut host, fd, wait).is_ok());
         assert_eq!(wait_vblank(&mut proc, &mut host, fd, wait).map(|_| ()), Err(Errno::EINVAL));
+        kms::reset_for_test();
+    }
+
+    // -----------------------------------------------------------------
+    // DRM_IOCTL_MODE_ADDFB2 validation (framebuffer_check and
+    // drm_gem_fb_init_with_funcs; IGT kms_addfb_basic).
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn kms_addfb2_follows_linux_flag_modifier_pitch_and_size_rules() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        // A 1024x1024 XRGB8888 object, as kms_addfb_basic allocates.
+        let bo = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 1024, height: 1024, bpp: 32, ..Default::default() }).unwrap();
+        let small = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 1024, height: 1023, bpp: 32, ..Default::default() }).unwrap();
+        let mut base = WpkDrmModeFbCmd2 { width: 512, height: 512, pixel_format: DRM_FORMAT_XRGB8888, ..Default::default() };
+        base.handles[0] = bo.handle;
+        base.pitches[0] = 1024 * 4;
+        let addfb = |proc: &mut Process, host: &mut MockHostIO, req: WpkDrmModeFbCmd2| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_ADDFB2, req).map(|fb| fb.fb_id)
+        };
+        let rmfb = |proc: &mut Process, host: &mut MockHostIO, fb_id: u32| {
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_RMFB, &mut fb_id.to_le_bytes()).unwrap();
+        };
+        let reject = |proc: &mut Process, host: &mut MockHostIO, req: WpkDrmModeFbCmd2, why: &str| {
+            assert_eq!(addfb(proc, host, req), Err(Errno::EINVAL), "{why}");
+        };
+
+        // basic: a pitch wider than the fb (here the object's own stride).
+        let fb = addfb(&mut proc, &mut host, base).unwrap();
+        rmfb(&mut proc, &mut host, fb);
+        // no-handle, bad-pitch-*: below the format's minimum pitch, or a
+        // pitch whose rows run past the object.
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { handles: [0; 4], ..base }, "no-handle");
+        for pitch in [0, 32, 63, 128, 256, 256 * 4, 999, 64 * 1024] {
+            let mut req = base;
+            req.pitches[0] = pitch;
+            reject(&mut proc, &mut host, req, "bad pitch");
+        }
+        // Unknown flags; modifiers are unsupported (DRM_CAP_ADDFB2_MODIFIERS
+        // is 0), so the flag and any nonzero modifier are refused.
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { flags: 1 << 2, ..base }, "unknown flag");
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { flags: DRM_MODE_FB_MODIFIERS, ..base }, "modifiers flag");
+        let mut modifier = base;
+        modifier.modifier[0] = 1;
+        reject(&mut proc, &mut host, modifier, "addfb25-modifier-no-flag");
+        let mut unused_modifier = base;
+        unused_modifier.modifier[1] = 1;
+        reject(&mut proc, &mut host, unused_modifier, "unused-modifier");
+        // Pre-modifier userspace may leave unused planes uninitialized.
+        let mut stale = base;
+        stale.handles[1] = small.handle;
+        stale.pitches[1] = 512;
+        stale.offsets[1] = 512;
+        let fb = addfb(&mut proc, &mut host, stale).unwrap();
+        rmfb(&mut proc, &mut host, fb);
+
+        // size-max / too-wide / too-high / bo-too-small / small-bo.
+        let mut max = base;
+        max.width = 1024;
+        max.height = 1024;
+        let fb = addfb(&mut proc, &mut host, max).unwrap();
+        rmfb(&mut proc, &mut host, fb);
+        let mut rgb565 = WpkDrmModeFbCmd2 { width: 1024, height: 2048, pixel_format: DRM_FORMAT_RGB565, ..max };
+        rgb565.pitches[0] = 1024 * 2;
+        let fb = addfb(&mut proc, &mut host, rgb565).unwrap();
+        rmfb(&mut proc, &mut host, fb);
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { width: 1025, ..max }, "too-wide");
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { height: 1025, ..max }, "too-high");
+        reject(&mut proc, &mut host, WpkDrmModeFbCmd2 { width: KMS_MAX_FB_DIMENSION + 1, ..max }, "beyond max_width");
+        let mut too_small = max;
+        too_small.handles[0] = small.handle;
+        reject(&mut proc, &mut host, too_small, "bo-too-small");
+        let fb = addfb(&mut proc, &mut host, WpkDrmModeFbCmd2 { height: 1020, ..too_small }).unwrap();
+        rmfb(&mut proc, &mut host, fb);
+
+        // An unknown handle is ENOENT; an offset the host scanout cannot
+        // honor is refused rather than scanned out from the wrong bytes.
+        let mut unknown = base;
+        unknown.handles[0] = 999;
+        assert_eq!(addfb(&mut proc, &mut host, unknown), Err(Errno::ENOENT));
+        let mut offset = base;
+        offset.offsets[0] = 4096;
+        reject(&mut proc, &mut host, offset, "offset");
+        assert!(kms_state(&proc, proc.fd_table.get(fd).unwrap().ofd_ref.0).unwrap().fbs.borrow().is_empty());
+        sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
     }
 
