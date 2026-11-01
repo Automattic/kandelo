@@ -1,4 +1,5 @@
 import { mergeChangedByteRuns } from "../shared-byte-runs";
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 
 /**
  * The kernel owns BO lifetime through GEM, PRIME, framebuffer and cursor
@@ -71,6 +72,27 @@ type InternalEntry = {
   pendingReaders: Set<number>;
 };
 
+type MappingRetirement = {
+  owner: WeakRef<GbmBoRegistry>;
+  backing: SharedArrayBuffer | null;
+  binding: InternalBinding | null;
+  memory: WebAssembly.Memory | null;
+  pid: number;
+  bo: number;
+  started: boolean;
+  state: "captured" | "retired" | "abandoned";
+  notificationFault: boolean;
+};
+const mappingRetirements = new WeakMap<GbmMappingRetirement, MappingRetirement>();
+
+/** Exact CPU mapping custody. A fabricated token has no registry authority.
+ * Completed/abandoned tokens retain no Memory, BO entry or mapping object. */
+export class GbmMappingRetirement {
+  constructor() { Object.freeze(this); }
+  get complete(): boolean { return mappingRetirements.get(this)?.state === "retired"; }
+  get notificationFault(): boolean { return mappingRetirements.get(this)?.notificationFault ?? false; }
+}
+
 /** Per-pid Memory resolver. Returning `undefined` for a pid that
  *  currently has a binding signals the bind/unbind path that the
  *  process has gone away (post-exit) and the sync should be
@@ -93,6 +115,7 @@ export class GbmBoRegistry {
    *  process's poll/epoll/select return; this lets a process that maps no bo
    *  at all -- nearly every process -- answer without scanning every bo. */
   private bindingCounts = new Map<number, number>();
+  private mappingRetirements = new Map<InternalBinding, GbmMappingRetirement>();
 
   private setBinding(e: InternalEntry, pid: number, binding: InternalBinding): void {
     let aliases = e.bindingsByPid.get(pid);
@@ -285,6 +308,82 @@ export class GbmBoRegistry {
     for (const l of this.listeners) l(pid, bo_id, "unbind");
   }
 
+  /** Capture one whole kernel-recorded mapping from a removal vector. The
+   * caller supplies its already authenticated original Memory registration;
+   * retirement never resolves a possibly replaced pid. Partial-range legacy
+   * munmap remains outside this narrow retained receiver. No bytes are written
+   * and no public mapping is detached during capture. */
+  captureMappingRetirement(pid: number, bo: number, addr: number, len: number,
+    memory: WebAssembly.Memory | null): GbmMappingRetirement | null {
+    const entry = this.bos.get(bo), binding = entry?.bindingsByPid.get(pid)?.get(addr);
+    if (!entry || !binding || binding.len !== len || this.mappingRetirements.has(binding)) return null;
+    const length = Math.min(binding.len, entry.size - binding.boOffset);
+    if (binding.primed && (!memory || binding.snapshot.byteLength !== length ||
+        binding.addr + length > memory.buffer.byteLength)) return null;
+    const capability = new GbmMappingRetirement();
+    try {
+      mappingRetirements.set(capability, {owner: new WeakRef(this), backing: entry.sab, binding, memory,
+        pid, bo, started: false, state: "captured", notificationFault: false});
+      this.mappingRetirements.set(binding, capability);
+      return capability;
+    } catch {
+      if (this.mappingRetirements.get(binding) === capability) this.mappingRetirements.delete(binding);
+      const record = mappingRetirements.get(capability);
+      if (record) { record.memory = null; record.backing = null; record.binding = null; }
+      mappingRetirements.delete(capability);
+      return null;
+    }
+  }
+
+  /** Publish this exact old mapping and detach it once. Source replacement
+   * refuses before reading any process bytes. Listener failure after detach
+   * is a notification fault, never authority to replay publication/removal. */
+  retireCapturedMapping(capability: GbmMappingRetirement): boolean {
+    const record = mappingRetirements.get(capability);
+    if (!record || record.owner.deref() !== this || record.state === "abandoned") return false;
+    if (record.state === "retired") return true;
+    // bind() may replace metadata while preserving the actual BO allocation
+    // and this mapping. Select current metadata so publication wakes newly
+    // admitted peers and removal updates the live alias inventory.
+    const entry = this.bos.get(record.bo), binding = record.binding;
+    if (!entry || !binding || entry.sab !== record.backing ||
+        entry.bindingsByPid.get(record.pid)?.get(binding.addr) !== binding ||
+        this.mappingRetirements.get(binding) !== capability) return false;
+    record.started = true;
+    try {
+      if (!this.flushMemoryToSab(entry, binding, Infinity, record.memory)) return false;
+      this.deleteBinding(entry, record.pid, binding.addr);
+      this.mappingRetirements.delete(binding);
+      record.state = "retired";
+      // Sever guest-address-space and backing roots before external observers.
+      record.memory = null; record.binding = null; record.backing = null;
+      for (const listener of this.listeners) {
+        try { listener(record.pid, record.bo, "unbind"); }
+        catch (error) {
+          record.notificationFault = true;
+          if (isKernelExportFailure(error)) throw error;
+        }
+      }
+      return true;
+    } catch (error) {
+      if (isKernelExportFailure(error)) throw error;
+      return false;
+    }
+  }
+
+  /** Roll back only a capture which has never begun publishing. This releases
+   * our reservation, not the actual mapping, and is not retirement proof. */
+  abandonMappingRetirement(capability: GbmMappingRetirement): boolean {
+    const record = mappingRetirements.get(capability);
+    if (!record || record.owner.deref() !== this || record.state === "retired" || record.started) return false;
+    if (record.state === "abandoned") return true;
+    if (record.binding && this.mappingRetirements.get(record.binding) === capability)
+      this.mappingRetirements.delete(record.binding);
+    record.state = "abandoned";
+    record.memory = null; record.binding = null; record.backing = null;
+    return true;
+  }
+
   /** Exec replaces mappings, while non-CLOEXEC GEM handles remain open.
    * Flush the retiring address space without discarding kernel-owned BOs. */
   releaseProcessMappings(pid: number): void {
@@ -377,13 +476,14 @@ export class GbmBoRegistry {
     e: InternalEntry,
     binding: InternalBinding,
     byteLimit = Infinity,
-  ): void {
+    capturedMemory?: WebAssembly.Memory | null,
+  ): boolean {
     const resolver = this.getProcessMemory;
-    if (!resolver || !binding.primed) return;
-    const mem = resolver(binding.pid);
-    if (!mem) return;
+    if (!binding.primed) return true;
+    const mem = capturedMemory === undefined ? resolver?.(binding.pid) : capturedMemory;
+    if (!mem) return false;
     const copyLen = Math.max(0, Math.min(binding.len, e.size - binding.boOffset, byteLimit - binding.boOffset));
-    if (binding.addr + copyLen > mem.buffer.byteLength) return;
+    if (binding.addr + copyLen > mem.buffer.byteLength) return false;
     const dst = new Uint8Array(e.sab, binding.boOffset, copyLen);
     const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
     const snapshot = binding.snapshot;
@@ -395,6 +495,7 @@ export class GbmBoRegistry {
     }
     // An unchanged scan already agrees with this independent baseline. Do
     // not copy the whole mapping again or capture later, unpublished stores.
+    return true;
   }
 
   get(pid: number, bo_id: number): GbmBoEntry | undefined {

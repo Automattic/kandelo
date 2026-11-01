@@ -18481,3 +18481,45 @@ digest line, all eight zero statuses and unchanged source before writing
 the receipt, without rerunning those successful builds/checks. Both the
 original failure and correction are retained. This is canonical source/
 SDK evidence, not normal combined program/image, guest or browser proof.
+
+
+### Private original-mapping capability and cleanup wire codec
+
+The inactive host cleanup foundation captures actual original Memory,
+canonical independent buffer backing and the exact mapping object before
+retirement. It publishes that mapping's final changed bytes and removes
+only that mapping without consulting a later PID-to-memory resolver.
+Completed and safely abandoned capabilities sever their Memory and
+backing roots. Abandonment before entry is distinct from retirement;
+notification faults after physical detach never authorize replay.
+
+Review found that ordinary peer alias admission replaces registry
+metadata while preserving the allocation and old mapping. A new control
+fails the initial candidate at exactly that false refusal. The repaired
+capability follows stable backing and exact mapping identity, uses the
+current alias metadata to publish/wake/remove, and still refuses actual
+mapping or backing replacements. **52/52** registry controls and the
+narrow strict typecheck pass. Evidence is in integration
+`.context/physical-router-r2/mapping-peer-release.json`; earlier failed
+candidate and corrected source results remain retained.
+
+A separate inactive codec copies and validates the complete ordered
+cleanup plan. It distinguishes reservation, safe reservation release,
+entry, polling and terminal metadata release, retains full unsigned
+image generations, and preserves foreign GL-session ownership. Its
+seal comparison is not registration authority; reply encoding is not a
+native retirement acknowledgment. All **37/37** pure codec controls and
+its narrow strict typecheck pass, including a valid 1,600-effect plan
+larger than the GL query mailbox. Constants remain provisional and
+local until the actual kernel-host encoder/import is integrated.
+
+The initial narrow type configurations/incorrect compiler-path attempts
+and full-host TS6059 failures remain recorded in
+`.context/physical-router-r2/HANDOFF.md`; no unchanged-source baseline
+establishes that full-host type failure as pre-existing. The source-only
+CI registry now includes the new codec and precision-query test files;
+its exact live-inventory check passes. No normal product, browser-memory,
+actual whole-plan physical router or public scheduling acceptance is
+claimed. Partial mapping retirement, KMS cursor identity, native and
+forwarded receipts, pre-transition registration grants and all lifecycle
+entry points remain ordinary implementation work.

@@ -10,11 +10,162 @@
  * failed somewhere in a fork."
  */
 import { describe, expect, it, vi } from "vitest";
-import { GbmBoRegistry } from "../src/dri/registry.js";
+import { GbmBoRegistry, GbmMappingRetirement } from "../src/dri/registry.js";
 import { mergeChangedByteRuns } from "../src/shared-byte-runs.js";
 
 const BO_SIZE = 4096;
 const BO_ADDR = 0;
+
+describe("retained whole-mapping cleanup", () => {
+  function fixture(shared = true) {
+    const old = new WebAssembly.Memory({initial: 1, maximum: 3, shared});
+    const memories = new Map([[100, old]]);
+    const resolver = vi.fn((pid: number) => memories.get(pid));
+    const reg = new GbmBoRegistry({getProcessMemory: resolver});
+    reg.create({pid: 100, bo_id: 7, size: 64, w: 4, h: 4, stride: 16});
+    reg.bind(100, 7, 1024, 64);
+    reg.primeBindFromSab(100, 7, old, 1024);
+    return {old, reg, resolver,
+      replace(memory: WebAssembly.Memory) { memories.set(100, memory); },
+      addPeer(pid: number, memory: WebAssembly.Memory) { memories.set(pid, memory); }};
+  }
+
+  it("publishes only the captured original Memory after a pid resolver replacement", () => {
+    const f = fixture();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    expect(cap).not.toBeNull();
+    new Uint8Array(f.old.buffer)[1024 + 17] = 91;
+    const replacement = newMemory();
+    new Uint8Array(replacement.buffer)[1024 + 17] = 44;
+    f.replace(replacement);
+    f.resolver.mockClear();
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.reg.pixelView(7)![17]).toBe(91);
+    expect(new Uint8Array(replacement.buffer)[1024 + 17]).toBe(44);
+    expect(f.reg.get(100, 7)!.binding).toBeNull();
+    expect(cap.complete).toBe(true);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+  });
+
+  it("leaves another alias live and stale until it imports the retiring writer", () => {
+    const f = fixture();
+    const peer = newMemory();
+    f.addPeer(200, peer);
+    f.reg.bind(200, 7, 4096, 64);
+    f.reg.primeBindFromSab(200, 7, peer, 4096);
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(f.reg.get(200, 7)!.binding).toEqual({addr: 4096, len: 64});
+    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(0);
+    f.reg.syncImportsForPid(200, peer);
+    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(73);
+    expect(f.reg.pixelView(7)![3]).toBe(73);
+  });
+
+  it("retires the same captured allocation after a peer alias is admitted", () => {
+    const f = fixture();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    const peer = newMemory();
+    f.addPeer(200, peer);
+    expect(f.reg.bind(200, 7, 4096, 64)).toBe(0);
+    f.reg.primeBindFromSab(200, 7, peer, 4096);
+    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(cap.complete).toBe(true);
+    expect(f.reg.get(100, 7)!.binding).toBeNull();
+    expect(f.reg.get(200, 7)!.binding).toEqual({addr: 4096, len: 64});
+    expect(f.reg.pixelView(7)![3]).toBe(73);
+    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(0);
+    // The survivor is now the only alias: its pending-reader obligation must
+    // be recorded in current metadata, not the pre-bind metadata snapshot.
+    expect(f.reg.hasStaleableImports(200)).toBe(true);
+    f.reg.syncImportsForPid(200, peer);
+    expect(new Uint8Array(peer.buffer)[4096 + 3]).toBe(73);
+    expect(f.reg.hasStaleableImports(200)).toBe(false);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+  });
+
+  it("refuses a new backing allocation under the same BO and mapping numbers", () => {
+    const f = fixture();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    const originalBacking = f.reg.pixelView(7)!.buffer;
+    f.reg.destroy(100, 7);
+    f.reg.create({pid: 100, bo_id: 7, size: 64, w: 4, h: 4, stride: 16});
+    f.reg.bind(100, 7, 1024, 64);
+    f.reg.primeBindFromSab(100, 7, f.old, 1024);
+    new Uint8Array(f.old.buffer)[1024 + 3] = 73;
+    f.resolver.mockClear();
+    expect(f.reg.pixelView(7)!.buffer).not.toBe(originalBacking);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(false);
+    expect(cap.complete).toBe(false);
+    expect(f.reg.pixelView(7)![3]).toBe(0);
+    expect(f.reg.get(100, 7)!.binding).toEqual({addr: 1024, len: 64});
+    expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
+  });
+
+  it.each([true, false])("uses fresh original buffers after growth, shared=%s", shared => {
+    const f = fixture(shared);
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    const oldView = new Uint8Array(f.old.buffer);
+    f.old.grow(1);
+    if (!shared) expect(oldView.byteLength).toBe(0);
+    new Uint8Array(f.old.buffer)[1024 + 63] = 99;
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(f.reg.pixelView(7)![63]).toBe(99);
+  });
+
+  it("refuses forged, foreign-registry and replaced-source capabilities without a new flush", () => {
+    const f = fixture();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)).toBeNull();
+    expect(f.reg.retireCapturedMapping(new GbmMappingRetirement())).toBe(false);
+    expect(new GbmBoRegistry().retireCapturedMapping(cap)).toBe(false);
+    new Uint8Array(f.old.buffer)[1024] = 71;
+    f.reg.bind(100, 7, 1024, 64);
+    const before = f.reg.pixelView(7)!.slice();
+    new Uint8Array(f.old.buffer)[1024] = 88;
+    f.resolver.mockClear();
+    expect(f.reg.retireCapturedMapping(cap)).toBe(false);
+    expect(cap.complete).toBe(false);
+    expect(f.resolver).not.toHaveBeenCalled();
+    expect(f.reg.pixelView(7)).toEqual(before);
+    expect(f.reg.get(100, 7)!.binding).not.toBeNull();
+    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
+    expect(cap.complete).toBe(false);
+  });
+
+  it("distinguishes safe preparation abandonment from actual mapping retirement", () => {
+    const f = fixture();
+    expect(f.reg.captureMappingRetirement(100, 7, 1025, 63, f.old)).toBeNull();
+    expect(f.reg.captureMappingRetirement(100, 7, 1024, 32, f.old)).toBeNull();
+    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, null)).toBeNull();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
+    expect(f.reg.abandonMappingRetirement(cap)).toBe(true);
+    expect(cap.complete).toBe(false);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(false);
+    expect(f.reg.get(100, 7)!.binding).not.toBeNull();
+    expect(f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)).not.toBeNull();
+  });
+
+  it("retains notification failure separately without repeating physical detach", () => {
+    const f = fixture();
+    const cap = f.reg.captureMappingRetirement(100, 7, 1024, 64, f.old)!;
+    const observer = vi.fn(() => { throw new Error("observer failed after detach"); });
+    const unsubscribe = f.reg.onChange(observer);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(cap.complete).toBe(true);
+    expect(cap.notificationFault).toBe(true);
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(f.reg.retireCapturedMapping(cap)).toBe(true);
+    expect(observer).toHaveBeenCalledTimes(1);
+    expect(f.reg.abandonMappingRetirement(cap)).toBe(false);
+    unsubscribe();
+  });
+});
 
 describe("BO publication copies", () => {
   it.each([0, 1])("does not copy an unchanged mapping at address %i", (addr) => {
