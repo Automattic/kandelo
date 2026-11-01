@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { snapshotScanout, scanoutRgba } from "../src/dri/scanout-format";
+import { reduce10, reduceFloat, reduceHalf, snapshotScanout, scanoutRgba } from "../src/dri/scanout-format";
 import { KmsCursorPlane } from "../src/dri/cursor-plane.js";
 import { GbmBoRegistry } from "../src/dri/registry.js";
 import { KmsRegistry, buildVirtualConnectorMode } from "../src/dri/kms-registry.js";
@@ -355,6 +355,46 @@ describe("DRM scanout pixel layouts", () => {
       new Uint8Array([7, 8, 255, 1, 99, 99]));
     expect(Array.from(scanoutRgba(0x38385247, gr88))).toEqual([7, 8, 0, 255, 255, 1, 0, 255]);
     expect(() => scanoutRgba(0x38385247, new Uint8Array(3))).toThrow(RangeError);
+  });
+
+  it("reduces 10-bit channels to 8 bits by rounding, in all four channel orders", () => {
+    // Channels 1023, 512, 2 (and alpha bits 3): 255, round(130.6) = 128, round(0.5) = 0... exactly
+    // round(v * 255 / 1023): 1023 -> 255, 512 -> 128, 2 -> 0, 3 -> 1.
+    const word = (low: number, mid: number, high: number) => (3 << 30 | high << 20 | mid << 10 | low) >>> 0;
+    const bytes = (w: number) => [w & 255, (w >>> 8) & 255, (w >>> 16) & 255, w >>> 24];
+    const pixel = [...bytes(word(1023, 512, 2)), ...bytes(word(3, 0, 1022))];
+    for (const [fourcc, bgr] of [[0x30334241, false], [0x30334258, false], [0x30335241, true], [0x30335258, true]] as const) {
+      const rgba = Array.from(scanoutRgba(fourcc, Uint8Array.from(pixel)));
+      expect(rgba).toEqual(bgr ? [0, 128, 255, 255, 255, 0, 1, 255] : [255, 128, 0, 255, 1, 0, 255, 255]);
+    }
+  });
+
+  it("reduces half floats to 8 bits: [0, 1] rounded, NaN 0, out of range clamped", () => {
+    const half = [0x3c00, 0x3800, 0x0000, 0x0000, /* 1, 0.5, 0 */ 0x7e00, 0xbc00, 0x7c00, 0x3c00, /* NaN, -1, inf */
+      0x4000, 0x1c00, 0x2400, 0x0000 /* 2, 2^-8 (0.996 -> 1), 2^-6 (3.98 -> 4) */];
+    const packed = new Uint8Array(new Uint16Array(half).buffer);
+    for (const fourcc of [0x48344241, 0x48344258])
+      expect(Array.from(scanoutRgba(fourcc, packed))).toEqual([255, 128, 0, 255, 0, 0, 255, 255, 255, 1, 4, 255]);
+  });
+
+  it("rounds exactly as the presenter shader's float32 arithmetic does, for every 10-bit and half value", () => {
+    const f = Math.fround;
+    for (let v = 0; v < 1024; v++) {
+      expect(reduce10(v)).toBe(Math.round(v * 255 / 1023));
+      // floor((v * 510 + 1023) / 2046) in float32 (kms-color-stage.ts).
+      expect(Math.floor(f(f(f(v * 510) + 1023) / 2046))).toBe(reduce10(v));
+      // v recovered from the normalized texel v / 1023.
+      expect(Math.floor(f(f(f(v / 1023) * 1023) + 0.5))).toBe(v);
+    }
+    for (let bits = 0; bits < 0x10000; bits++) {
+      const reduced = reduceHalf(bits);
+      // floor(clamp(f, 0, 1) * 255 + 0.5) in float32.
+      const sign = bits & 0x8000 ? -1 : 1, e = (bits >>> 10) & 31, m = bits & 1023;
+      const half = e === 31 ? (m ? NaN : sign * Infinity) : sign * (e ? (1 + m / 1024) * 2 ** (e - 15) : m * 2 ** -24);
+      const clamped = Number.isNaN(half) ? 0 : Math.min(Math.max(half, 0), 1);
+      expect(Math.floor(f(f(f(clamped) * 255) + 0.5))).toBe(reduced);
+      expect(reduceFloat(half)).toBe(reduced);
+    }
   });
 
   it("rejects unknown formats and incomplete geometry before copying", () => {

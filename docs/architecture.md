@@ -3652,7 +3652,7 @@ This section is the implementation walk-through; [Linux-compatible graphics devi
 
 `crates/runtime-core/src/syscalls.rs` (with the buffer registry in `crates/runtime-core/src/dri/`) handles DRM_IOCTL_VERSION, GET_CAP, SET_CLIENT_CAP, GET_MAGIC / AUTH_MAGIC, SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANERESOURCES, MODE_GETPLANE, MODE_OBJ_GETPROPERTIES, MODE_GETPROPERTY, MODE_GETPROPBLOB, MODE_OBJ_SETPROPERTY / MODE_SETPROPERTY, MODE_CURSOR / CURSOR2, MODE_ADDFB / ADDFB2 / GETFB / GETFB2 / RMFB / CLOSEFB, MODE_DIRTYFB, MODE_GETGAMMA / SETGAMMA, MODE_CREATEPROPBLOB / DESTROYPROPBLOB, GET_UNIQUE, MODE_PAGE_FLIP, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. This is the legacy (non-atomic) KMS interface a wlroots compositor such as cage drives:
 
-- **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565, ABGR8888, XBGR8888, R8, GR88): those whose every value the 8-bit-per-channel presenters show exactly, R8 and GR88 with the channels they lack zero. The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
+- **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565, ABGR8888, XBGR8888, R8, GR88, the four 2101010 orders, ABGR16161616F and XBGR16161616F). R8 and GR88 show their channels with the channels they lack zero; 10-bit and half-float planes are reduced to 8 bits per channel (see the scanout formats below). The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
 - **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS`, `ASYNC_PAGE_FLIP`, `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 0. SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES` and `ASPECT_RATIO`; `ATOMIC` fails with `EOPNOTSUPP` because the card has no atomic interface.
 - **Properties.** The plane carries the immutable `type` enum (Primary). The connector carries `EDID` (an immutable blob with no value: the virtual display has no EDID, so MODE_GETPROPBLOB finds no blob), `DPMS`, `link-status` (Good) and `non-desktop` (0). The CRTC carries `GAMMA_LUT` and the immutable `GAMMA_LUT_SIZE` (256). Through the legacy interface `DPMS` and `GAMMA_LUT` are settable, and only by the master; the `DPMS` value is recorded and reported back, and the virtual display has no power state to change. Properties Linux marks atomic-only are not listed.
 - **Legacy gamma.** The CRTC has a 256-entry gamma ramp per channel, as common 8-bit legacy drivers report through MODE_GETCRTC's `gamma_size`, following `drivers/gpu/drm/drm_color_mgmt.c`. The ramp (`gamma_store`) starts as the identity `i << 8`. MODE_GETGAMMA copies it to anyone; MODE_SETGAMMA needs the master. Both fail with `ENOENT` for another CRTC and `EINVAL` for another size, and copy red, green and blue in turn, so a fault is `EFAULT` after the channels before it moved. A complete SETGAMMA then does what `drm_atomic_helper_legacy_gamma_set` does: it makes `GAMMA_LUT` a new kernel-owned blob of 256 `drm_color_lut` entries (no file may destroy it), which `kms_color`'s legacy-gamma-reset reads back. `OBJ_SETPROPERTY` sets `GAMMA_LUT` to 0 (no LUT) or to any blob of exactly 256 entries (`EINVAL` otherwise) without touching the ramp. The CRTC holds a reference on the blob it uses, so it outlives its creator's DESTROYPROPBLOB or close and is freed when replaced. Each change of the LUT reaches the host through `host_kms_set_gamma(crtc, lut, entries)` (0 entries: none).
@@ -5064,8 +5064,20 @@ selects its active generation under the context lock. The default display
 chooses a primary DRM file. Each initialized generation owns a CLOEXEC
 duplicate of its native file until final context/surface/sync retirement,
 including after public termination. Display metadata has process lifetime.
-KMS scanout advertises the same seven formats accepted by ADDFB2:
-XRGB8888, ARGB8888, XBGR8888, ABGR8888, RGB565, R8 and GR88. Framebuffer admission
+KMS scanout advertises the same thirteen formats accepted by ADDFB2:
+XRGB8888, ARGB8888, XBGR8888, ABGR8888, RGB565, R8, GR88, the four
+2101010 orders, and ABGR/XBGR16161616F. Every presenter (a 2D canvas or a
+WebGL canvas) outputs 8 bits per channel, so the CRTC behaves like one
+connected to a monitor at 8 bpc: a 10-bit channel is shown as
+round(v * 255 / 1023) and a half float clamped to [0, 1] (NaN as 0) as
+round(f * 255). The reduction is defined once and applied identically on
+every presentation path, on the CPU for the 2D blit
+(`host/src/dri/scanout-format.ts`) and in the CRTC output stage's shader
+for every WebGL path (`host/src/webgl/kms-color-stage.ts`), because a
+blit or a readback would leave the rounding to the driver (and refuses
+float-to-fixed blits outright): the same framebuffer must look the same
+whichever presenter shows it. The gamma LUT is indexed by the reduced
+8-bit value, as an 8-bpc legacy LUT is. Framebuffer admission
 checks complete visible row extents against BO backing before retaining or
 publishing an FB. GPU views also remain within the native texture extent;
 valid padded RGB565 CPU views remain admitted. Nonzero-offset presentation

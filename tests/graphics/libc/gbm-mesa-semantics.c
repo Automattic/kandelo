@@ -552,14 +552,14 @@ static void rgb565(void) {
  * the usages it can serve. */
 static void widened_formats(void) {
     struct gbm_device *device = open_device();
-    /* scanout: the primary plane shows every value exactly (R8 and GR88
-     * with their missing channels zero); 10-bit and half-float values do
-     * not fit the 8-bit presenters. */
+    /* scanout: every format scans out on the primary plane (R8 and GR88
+     * with their missing channels zero; 10-bit and half-float values
+     * reduced to the 8-bpc output). */
     static const struct { uint32_t format, bpp, stride; int scanout; } formats[] = {
         {GBM_FORMAT_R8, 8, 8, 1}, {GBM_FORMAT_GR88, 16, 12, 1},
-        {GBM_FORMAT_XRGB2101010, 32, 20, 0}, {GBM_FORMAT_ARGB2101010, 32, 20, 0},
-        {GBM_FORMAT_XBGR2101010, 32, 20, 0}, {GBM_FORMAT_ABGR2101010, 32, 20, 0},
-        {GBM_FORMAT_XBGR16161616F, 64, 40, 0}, {GBM_FORMAT_ABGR16161616F, 64, 40, 0},
+        {GBM_FORMAT_XRGB2101010, 32, 20, 1}, {GBM_FORMAT_ARGB2101010, 32, 20, 1},
+        {GBM_FORMAT_XBGR2101010, 32, 20, 1}, {GBM_FORMAT_ABGR2101010, 32, 20, 1},
+        {GBM_FORMAT_XBGR16161616F, 64, 40, 1}, {GBM_FORMAT_ABGR16161616F, 64, 40, 1},
     };
     const uint64_t linear = DRM_FORMAT_MOD_LINEAR;
     for (unsigned i = 0; i < sizeof formats / sizeof formats[0]; ++i) {

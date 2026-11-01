@@ -15,6 +15,8 @@ export type GlGpuAllocation = {
   retirement: NativeRetirement;
   /** The texture's texImage2D triple; sibling views are made with it. */
   storage: GpuStorageFormat;
+  /** `storage.internalFormat`, as KMS scanout storage reports it. */
+  internalFormat: number;
 };
 
 /** Reserve native ownership before creating any member. Publication follows
@@ -34,7 +36,7 @@ export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: num
   if (!retirement) return false;
   let published = false;
   try {
-    const allocation = {gl,w,h,texId,retirement,storage,tex:null,fbo:null,depthStencil:null} as unknown as GlGpuAllocation;
+    const allocation = {gl,w,h,texId,retirement,storage,internalFormat:storage.internalFormat,tex:null,fbo:null,depthStencil:null} as unknown as GlGpuAllocation;
     const restore = nativeInverse(owner,
       [["activeTexture",active],["bindTexture",0x0de1,texture]],
       [["bindRenderbuffer",0x8d41,renderbuffer]],

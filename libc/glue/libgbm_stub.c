@@ -277,7 +277,8 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *h
  * and windows that can use them:
  * - bpp: drm_format_info's bytes per pixel, times 8. CREATE_DUMB accepts
  *   any bpp, so every format has CPU-tier (dumb) storage.
- * - scanout: the KMS primary plane scans it out (kms::PRIMARY_PLANE_FORMATS).
+ * - scanout: the KMS primary plane scans it out (kms::PRIMARY_PLANE_FORMATS;
+ *   10-bit and half-float planes reduced to the 8-bpc output).
  * - window: an EGL window surface can render to it. Kandelo's EGL configs
  *   name 32-bpp 8888 windows, whose fronts are RGBA8 renders.
  * Every format is a GL render target in both tiers: GPU-tier storage is a
@@ -294,12 +295,12 @@ static const struct wpk_gbm_format k_formats[] = {
     {DRM_FORMAT_ARGB8888, 32, 1, 1},
     {DRM_FORMAT_XBGR8888, 32, 1, 1},
     {DRM_FORMAT_ABGR8888, 32, 1, 1},
-    {DRM_FORMAT_XRGB2101010, 32, 0, 0},
-    {DRM_FORMAT_ARGB2101010, 32, 0, 0},
-    {DRM_FORMAT_XBGR2101010, 32, 0, 0},
-    {DRM_FORMAT_ABGR2101010, 32, 0, 0},
-    {DRM_FORMAT_XBGR16161616F, 64, 0, 0},
-    {DRM_FORMAT_ABGR16161616F, 64, 0, 0},
+    {DRM_FORMAT_XRGB2101010, 32, 1, 0},
+    {DRM_FORMAT_ARGB2101010, 32, 1, 0},
+    {DRM_FORMAT_XBGR2101010, 32, 1, 0},
+    {DRM_FORMAT_ABGR2101010, 32, 1, 0},
+    {DRM_FORMAT_XBGR16161616F, 64, 1, 0},
+    {DRM_FORMAT_ABGR16161616F, 64, 1, 0},
 };
 
 static const struct wpk_gbm_format *format_info(uint32_t fourcc) {

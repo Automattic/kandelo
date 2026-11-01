@@ -816,9 +816,10 @@ export function registerExportedSource(b: GlBinding, record: GlExportedImage): n
     record.width, record.height, undefined, record.storage);
 }
 
-/** Normalized fixed-point color formats: a framebuffer over one is read and
- * blitted as RGBA bytes, as KMS scanout of a GPU-tier bo does. */
-const SCANOUT_FORMATS = new Set([0x8058, 0x8051, 0x93a1, 0x8d62, 0x8056, 0x8057, 0x8229, 0x822b]);
+/** Color formats KMS can scan out: normalized fixed-point formats, read and
+ * blitted as RGBA bytes as KMS scanout of a GPU-tier bo does, and RGB10_A2
+ * and RGBA16F, which KMS reduces to 8 bits per channel (kms-scanout.ts). */
+const SCANOUT_FORMATS = new Set([0x8058, 0x8051, 0x93a1, 0x8d62, 0x8056, 0x8057, 0x8229, 0x822b, 0x8059, 0x881a]);
 
 /** KMS scanout storage for an exported image's bo. DRM_IOCTL_MODE_ADDFB2
  * accepts any GPU-tier bo, so the presenter reads this image's own storage
@@ -847,7 +848,7 @@ export function exportedImageScanout(record: GlExportedImage): GpuScanoutStorage
           : gl.framebufferTexture2D(0x8ca8, 0x8ce0, target, record.native as WebGLTexture, level))
         && checkedGlCall(owner, () => { status = gl.checkFramebufferStatus(0x8ca8); }) && status === 0x8cd5;
     } }], { shared: true, finalizer: restore })) return null;
-    record.scanout = { gl, fbo: fbo!, w: record.width, h: record.height, retirement };
+    record.scanout = { gl, fbo: fbo!, w: record.width, h: record.height, retirement, internalFormat: record.format };
     published = true;
     return record.scanout;
   } catch { return null; }

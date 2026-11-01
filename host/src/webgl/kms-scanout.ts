@@ -1,7 +1,19 @@
 import { checkedGlCall, checkedGlSequence } from "./program-objects.js";
 import { applyNativeChanges, nativeInverse, type NativeCall } from "./native-recovery.js";
 
-export type GpuScanoutStorage = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
+import { reduce10, reduceFloat } from "../dri/scanout-format.js";
+
+/** `internalFormat`: the storage's sized format (RGBA8 when absent). A
+ * 10-bit or half-float scanout is shown at 8 bits per channel exactly as
+ * every presenter reduces it (scanout-format.ts). */
+export type GpuScanoutStorage = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number;
+  internalFormat?: number };
+
+/** Whether showing this storage needs the CRTC output stage's reduction to
+ * 8 bits (a blit would round, or for floats refuse, by the driver's rules). */
+export function scanoutNeedsReduction(storage: GpuScanoutStorage): boolean {
+  return storage.internalFormat === 0x8059 || storage.internalFormat === 0x881a;
+}
 
 /** The caller retains the selected framebuffer/storage through this synchronous
  * operation. All changed native selectors have retryable inverse records. */
@@ -54,6 +66,12 @@ export function readGpuScanout(storage: GpuScanoutStorage, width: number, height
   const length = width * height * 4;
   if (![x, y, width, height, length].every(Number.isSafeInteger) || width <= 0 || height <= 0
       || x < 0 || y < 0 || x + width > storage.w || y + height > storage.h) return null;
+  // RGB10_A2 and RGBA16F read back in their own precision (the readPixels
+  // pairs WebGL 2 accepts for them) and are reduced here; all others are
+  // normalized 8-bit-or-less storage read as RGBA bytes.
+  const tenBit = storage.internalFormat === 0x8059, float = storage.internalFormat === 0x881a;
+  const type = tenBit ? 0x8368 : float ? 0x1406 : 0x1401;
+  const raw = tenBit ? new Uint32Array(width * height) : float ? new Float32Array(length) : null;
   const pixels = new Uint8Array(length);
   let read: WebGLFramebuffer | null = null, pack: WebGLBuffer | null = null;
   const fields = [0x0d05, 0x0d02, 0x0d04, 0x0d03]; // alignment, row length, skip pixels/rows
@@ -65,7 +83,7 @@ export function readGpuScanout(storage: GpuScanoutStorage, width: number, height
   // RGBA/UNSIGNED_BYTE rows are width*4 bytes. A captured alignment that
   // divides that row already produces tightly packed rows (including 8 at even
   // widths); retain it. Odd-width rows with alignment 8 need alignment 4.
-  const rowBytes = width * 4;
+  const rowBytes = width * (float ? 16 : 4);
   const alignment = [1, 2, 4, 8].includes(values[0]) && rowBytes % values[0] === 0 ? values[0] : 4;
   const desired = [alignment, 0, 0, 0];
   const readChanged = read !== storage.fbo, packChanged = pack !== null;
@@ -81,9 +99,19 @@ export function readGpuScanout(storage: GpuScanoutStorage, width: number, height
   const restore = nativeInverse(owner,
     readChanged ? [["bindFramebuffer", 0x8ca8, read]] : [],
     packChanged ? [["bindBuffer", 0x88eb, pack]] : [], layoutRestore);
-  calls.push(() => gl.readPixels(x, y, width, height, 0x1908, 0x1401, pixels));
+  calls.push(() => gl.readPixels(x, y, width, height, 0x1908, type, raw ?? pixels));
   const accepted = applyNativeChanges({ ...owner, shadow: {} }, [{ restore,
     apply: () => checkedGlSequence(owner, calls),
   }], { shared: true, finalizer: restore });
-  return accepted ? pixels : null;
+  if (!accepted) return null;
+  if (raw instanceof Uint32Array) {
+    for (let i = 0; i < raw.length; i++) {
+      const word = raw[i];
+      pixels.set([reduce10(word & 1023), reduce10((word >>> 10) & 1023), reduce10((word >>> 20) & 1023), 255], i * 4);
+    }
+  } else if (raw) {
+    for (let i = 0; i < length; i += 4)
+      pixels.set([reduceFloat(raw[i]), reduceFloat(raw[i + 1]), reduceFloat(raw[i + 2]), 255], i);
+  }
+  return pixels;
 }

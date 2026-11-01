@@ -164,6 +164,32 @@ describe("CRTC color stage in the host presentation paths", () => {
     expect(lutUploads(corrected2), "the LUT is uploaded once per change, not per present").toBe(1);
   });
 
+  it.each([
+    // 2x1 BO pixels (one row): 10-bit words, or half floats R,G,B,A.
+    ["RGB10_A2", 0x8059, [0xff, 0x03, 0x08, 0x00, 0x02, 0x00, 0xf0, 0xff], [255, 128, 0, 0, 0, 255]],
+    ["RGBA16F", 0x881a, [0x00, 0x3c, 0x00, 0x38, 0x00, 0x7e, 0x00, 0x3c, 0x00, 0x40, 0x00, 0x1c, 0x00, 0xbc, 0x00, 0x3c],
+      [255, 128, 0, 255, 1, 0]],
+  ])("reduces a %s GPU scanout to 8 bits through the output stage, directly and by readback", (_name, internal, bo, rgb) => {
+    for (const gamma of [false, true]) {
+      const r = pixelGl(2, 1);
+      const { kernel, setGamma } = kernelHarness(r.gl, { width: 2, height: 1 });
+      vi.spyOn(kernel.gl, "gpuBo").mockReturnValue(
+        { gl: r.gl, fbo: r.framebuffer(2, 1, bo, internal), w: 2, h: 1, internalFormat: internal } as any);
+      vi.spyOn(kernel.kms, "currentCursor").mockReturnValue(cursorAt(5, 0, [255, 255, 255, 255]));
+      if (gamma) setGamma(testLut());
+      const fb = { bo_id: 42, width: 2, height: 1, x: 0, y: 0 } as any;
+      const canvas = { width: 2, height: 1, getContext: () => r.gl } as any;
+      expect(getKernelGraphicsAccess(kernel).gpuScanout(fb, canvas, true, 1)).toEqual({ direct: true });
+      const expected = [rgb.slice(0, 3), rgb.slice(3)].flatMap(([red, green, blue]) =>
+        gamma ? [...corrected(red, green, blue), 255] : [red, green, blue, 255]);
+      expect([...r.screen.data], gamma ? "through the LUT" : "reduced").toEqual(expected);
+      expect(r.counts.readPixels).toBe(0);
+      // Another display context reads the BO back and gets the same bytes.
+      const frame = getKernelGraphicsAccess(kernel).gpuScanout(fb, canvas, false, 1);
+      expect(frame && !frame.direct && [...frame.pixels]).toEqual([...rgb.slice(0, 3), 255, ...rgb.slice(3), 255]);
+    }
+  });
+
   /** A KMS-master GL session presenting its EGL window on CRTC 1's canvas. */
   function windowSession(width = 2, height = 2) {
     const r = pixelGl(width, height);

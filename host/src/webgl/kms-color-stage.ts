@@ -6,8 +6,10 @@
  * LUT costs one extra draw per present and never reads the frame back.
  *
  * The shader reproduces the CPU stage (kmsCrtcOutput) bit for bit:
- * - every channel is first recovered as its 8-bit value (an RGB565 channel
- *   by bit replication, as scanoutRgba expands it);
+ * - every channel is first recovered as its 8-bit value: an RGB565 channel
+ *   by bit replication, a 10-bit channel as round(v * 255 / 1023) (never a
+ *   tie), a half float clamped to [0, 1] (NaN as 0) as floor(f * 255 + 0.5),
+ *   exactly as scanoutRgba reduces them (an 8-bpc output; scanout-format.ts);
  * - the premultiplied cursor blends as round(c + p * (255 - a) / 255),
  *   clamped to 255; the fractional part of p * (255 - a) / 255 is k / 255,
  *   never one half, so floor(x + 0.5) rounds exactly as Math.round does;
@@ -23,6 +25,20 @@
  */
 import type { KmsCursor } from "../dri/cursor-plane.js";
 import type { KmsGamma } from "../dri/kms-gamma.js";
+import { ScanoutEncoding } from "../dri/scanout-format.js";
+
+/** The texture storage a captured frame keeps, by the source's sized
+ *  internal format: a blit between identical formats copies every value,
+ *  so a 10-bit or half-float frame reaches the shader's reduction intact. */
+const FRAME_STORAGE: Record<number, { format: number; type: number; encoding: ScanoutEncoding }> = {
+  0x8058: { format: 0x1908, type: 0x1401, encoding: ScanoutEncoding.Unorm8 },   // RGBA8
+  0x8229: { format: 0x1903, type: 0x1401, encoding: ScanoutEncoding.Unorm8 },   // R8
+  0x822b: { format: 0x8227, type: 0x1401, encoding: ScanoutEncoding.Unorm8 },   // RG8
+  0x8d62: { format: 0x1907, type: 0x8363, encoding: ScanoutEncoding.Rgb565 },   // RGB565
+  0x8059: { format: 0x1908, type: 0x8368, encoding: ScanoutEncoding.Unorm10 },  // RGB10_A2
+  0x881a: { format: 0x1908, type: 0x140b, encoding: ScanoutEncoding.Float },    // RGBA16F
+};
+const RGBA8 = 0x8058;
 
 /** Texture units the stage samples: the frame, the LUT and the cursor. */
 const FRAME_UNIT = 0, LUT_UNIT = 1, CURSOR_UNIT = 2;
@@ -48,7 +64,7 @@ uniform ivec4 u_cursor_rect;
 uniform bool u_frame_top_first;
 uniform bool u_target_top_first;
 uniform bool u_bgr;
-uniform bool u_rgb565;
+uniform int u_encoding;
 uniform bool u_opaque;
 uniform bool u_lut_enabled;
 out vec4 o_color;
@@ -58,9 +74,15 @@ void main() {
   ivec2 crtc = ivec2(frag.x, row);
   vec4 texel = texelFetch(u_frame, ivec2(crtc.x, u_frame_top_first ? row : u_size.y - 1 - row), 0);
   vec3 color;
-  if (u_rgb565) {
+  if (u_encoding == 1) {
     vec3 q = floor(texel.rgb * vec3(31.0, 63.0, 31.0) + 0.5);
     color = vec3(q.r * 8.0 + floor(q.r / 4.0), q.g * 4.0 + floor(q.g / 16.0), q.b * 8.0 + floor(q.b / 4.0));
+  } else if (u_encoding == 2) {
+    vec3 v = floor(texel.rgb * 1023.0 + 0.5);
+    color = floor((v * 510.0 + 1023.0) / 2046.0);
+  } else if (u_encoding == 3) {
+    vec3 f = vec3(isnan(texel.r) ? 0.0 : texel.r, isnan(texel.g) ? 0.0 : texel.g, isnan(texel.b) ? 0.0 : texel.b);
+    color = floor(clamp(f, 0.0, 1.0) * 255.0 + 0.5);
   } else {
     color = floor(texel.rgb * 255.0 + 0.5);
   }
@@ -88,8 +110,8 @@ export interface KmsColorStageSource {
   topFirst: boolean;
   /** The texture holds DRM XRGB/ARGB8888 bytes uploaded as RGBA. */
   bgr: boolean;
-  /** The texture is RGB565: channels are 5/6/5-bit values. */
-  rgb565: boolean;
+  /** How the texture holds each channel (ScanoutEncoding). */
+  encoding: ScanoutEncoding;
   /** The primary plane is opaque: alpha is not taken from the texture. */
   opaque: boolean;
 }
@@ -169,9 +191,9 @@ function compileProgram(gl: WebGL2RenderingContext, vertex: string, fragment: st
   return program;
 }
 
-type StageTarget = { texture: WebGLTexture; fbo: WebGLFramebuffer; width: number; height: number };
+type StageTarget = { texture: WebGLTexture; fbo: WebGLFramebuffer; width: number; height: number; internalFormat: number };
 
-type Uniforms = Record<"size" | "cursorRect" | "frameTopFirst" | "targetTopFirst" | "bgr" | "rgb565"
+type Uniforms = Record<"size" | "cursorRect" | "frameTopFirst" | "targetTopFirst" | "bgr" | "encoding"
   | "opaque" | "lutEnabled", WebGLUniformLocation | null>;
 
 /** The color stage's GPU objects on one WebGL2 context. */
@@ -191,7 +213,7 @@ export class KmsColorStage {
   /** The CRTC's last frame before the stage (GL row order), kept so a new
    *  LUT or cursor can be shown when the guest presents nothing more, and
    *  the frame restored when the stage ends. */
-  private frame: (StageTarget & { opaque: boolean }) | null = null;
+  private frame: (StageTarget & { opaque: boolean; encoding: ScanoutEncoding }) | null = null;
   private output: StageTarget | null = null;
   /** The LUT and cursor versions the last present showed; "" for none. */
   shown = "";
@@ -215,7 +237,7 @@ export class KmsColorStage {
       const at = (name: string) => gl.getUniformLocation(this.program, name);
       this.uniforms = {
         size: at("u_size"), cursorRect: at("u_cursor_rect"), frameTopFirst: at("u_frame_top_first"),
-        targetTopFirst: at("u_target_top_first"), bgr: at("u_bgr"), rgb565: at("u_rgb565"),
+        targetTopFirst: at("u_target_top_first"), bgr: at("u_bgr"), encoding: at("u_encoding"),
         opaque: at("u_opaque"), lutEnabled: at("u_lut_enabled"),
       };
       gl.useProgram(this.program);
@@ -256,13 +278,16 @@ export class KmsColorStage {
    *  row order. `topFirst`: the source's row `y` is the CRTC's top row (a
    *  KMS buffer), so the copy flips it. */
   capture(read: WebGLFramebuffer | null, x: number, y: number, width: number, height: number,
-      topFirst: boolean, opaque: boolean): void {
+      topFirst: boolean, opaque: boolean, internalFormat = RGBA8): void {
     const gl = this.gl;
     if (![x, y, width, height].every(Number.isSafeInteger) || width <= 0 || height <= 0)
       throw new RangeError(`Invalid KMS color stage frame ${width}x${height}+${x}+${y}`);
+    // Any other normalized source blits exactly into RGBA8.
+    const storage = FRAME_STORAGE[internalFormat] ? internalFormat : RGBA8;
     let frame = this.frame;
-    if (!frame || frame.width !== width || frame.height !== height) {
-      frame = this.frame = { ...this.target(frame, width, height), opaque };
+    if (!frame || frame.width !== width || frame.height !== height || frame.internalFormat !== storage) {
+      frame = this.frame = { ...this.target(frame, width, height, storage), opaque,
+        encoding: FRAME_STORAGE[storage].encoding };
     }
     frame.opaque = opaque;
     resetKmsGlState(gl);
@@ -288,7 +313,7 @@ export class KmsColorStage {
   present(gamma: KmsGamma | null, cursor: KmsCursor | null): void {
     const frame = this.frame;
     if (!frame) throw new Error("KMS color stage has no frame");
-    this.draw({ texture: frame.texture, topFirst: false, bgr: false, rgb565: false, opaque: frame.opaque },
+    this.draw({ texture: frame.texture, topFirst: false, bgr: false, encoding: frame.encoding, opaque: frame.opaque },
       frame.width, frame.height, null, false, gamma, cursor);
     this.shown = KmsColorStage.key(gamma, cursor);
   }
@@ -297,7 +322,7 @@ export class KmsColorStage {
    *  `height` texture whose row zero is the CRTC's top row, for a presenter
    *  that scales the CRTC output (the scanout presenter's mip chain). */
   render(source: KmsColorStageSource, width: number, height: number,
-      gamma: KmsGamma, cursor: KmsCursor | null): WebGLTexture {
+      gamma: KmsGamma | null, cursor: KmsCursor | null): WebGLTexture {
     const output = this.output = this.target(this.output, width, height);
     this.draw(source, width, height, output.fbo, true, gamma, cursor);
     this.shown = KmsColorStage.key(gamma, cursor);
@@ -319,11 +344,12 @@ export class KmsColorStage {
     gl.deleteProgram(this.program);
   }
 
-  /** An RGBA8 render target of the given size, reusing `existing` when it
-   *  already has that size. */
-  private target(existing: StageTarget | null, width: number, height: number): StageTarget {
+  /** A render target of the given size and storage (RGBA8 by default),
+   *  reusing `existing` when it already matches. */
+  private target(existing: StageTarget | null, width: number, height: number, internalFormat = RGBA8): StageTarget {
     const gl = this.gl;
-    if (existing && existing.width === width && existing.height === height) return existing;
+    if (existing && existing.width === width && existing.height === height
+        && existing.internalFormat === internalFormat) return existing;
     if (existing) {
       gl.deleteFramebuffer(existing.fbo);
       gl.deleteTexture(existing.texture);
@@ -335,7 +361,8 @@ export class KmsColorStage {
     }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const { format, type } = FRAME_STORAGE[internalFormat];
+    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, width, height, 0, format, type, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -346,7 +373,7 @@ export class KmsColorStage {
       gl.deleteFramebuffer(fbo); gl.deleteTexture(texture);
       throw new Error("KMS color stage: render target incomplete");
     }
-    return { texture, fbo, width, height };
+    return { texture, fbo, width, height, internalFormat };
   }
 
   /** Upload the LUT (once per table version) and the cursor image (once per
@@ -400,7 +427,7 @@ export class KmsColorStage {
     gl.uniform1i(u.frameTopFirst, source.topFirst ? 1 : 0);
     gl.uniform1i(u.targetTopFirst, targetTopFirst ? 1 : 0);
     gl.uniform1i(u.bgr, source.bgr ? 1 : 0);
-    gl.uniform1i(u.rgb565, source.rgb565 ? 1 : 0);
+    gl.uniform1i(u.encoding, source.encoding);
     gl.uniform1i(u.opaque, source.opaque ? 1 : 0);
     gl.uniform1i(u.lutEnabled, gamma ? 1 : 0);
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, target);

@@ -3,7 +3,7 @@ import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
-import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
+import { scanoutFormat, snapshotScanout, scanoutRgba, ScanoutEncoding } from "./dri/scanout-format";
 import { kmsCrtcOutput, type KmsGamma } from "./dri/kms-gamma";
 import { KmsColorStage, resetKmsGlState } from "./webgl/kms-color-stage";
 import type { HostScanout } from "./dri/kms-registry";
@@ -31523,8 +31523,11 @@ export class CentralizedKernelWorker {
       }
       const format = scanoutFormat(fb.pixel_format);
       const scratch = this.kmsScratchFor(crtc_id, pixels, pixels.byteLength);
-      const rgb565 = format.rgb565;
-      const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
+      // Packed and half-float types upload from views of their element size.
+      const data = format.encoding === ScanoutEncoding.Rgb565 || format.encoding === ScanoutEncoding.Float
+        ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2)
+        : format.encoding === ScanoutEncoding.Unorm10
+          ? new Uint32Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 4) : scratch;
       gl.bindTexture(gl.TEXTURE_2D, tex);
       // R8 and GR88 sample as (r, 0, 0) and (r, g, 0), their scanout colors.
       const { internalFormat, format: external, type } = format.gl;
@@ -31537,14 +31540,17 @@ export class CentralizedKernelWorker {
       } else {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, external, type, data);
       }
-      // The CRTC color stage: the cursor blended over the scanout, then the
-      // LUT, computed per scanout pixel at framebuffer size (the CRTC's
-      // output) before the scaled draw filters it for the display.
-      if (gamma) {
+      // The CRTC output stage, computed per scanout pixel at framebuffer
+      // size before the scaled draw filters it for the display: a 10-bit or
+      // half-float scanout reduced to 8 bits as every presenter reduces it
+      // (scanout-format.ts), then with a LUT the cursor blended over it and
+      // the LUT applied. Other formats without a LUT draw directly.
+      const reduced = format.encoding === ScanoutEncoding.Unorm10 || format.encoding === ScanoutEncoding.Float;
+      if (gamma || reduced) {
         if (presenter.stage && !presenter.stage.usable(gl)) presenter.stage = null;
         presenter.stage ??= KmsColorStage.create(gl);
-        const output = presenter.stage.render({ texture: tex, topFirst: true, bgr: format.bgr, rgb565, opaque: true },
-          fb.width, fb.height, gamma, cursor);
+        const output = presenter.stage.render({ texture: tex, topFirst: true, bgr: format.bgr,
+          encoding: format.encoding, opaque: true }, fb.width, fb.height, gamma, cursor);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         gl.useProgram(presenter.prog);
         gl.bindVertexArray(presenter.vao);

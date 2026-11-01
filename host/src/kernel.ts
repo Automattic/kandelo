@@ -2,7 +2,7 @@ import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
-import { drawGpuScanout, readGpuScanout, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
+import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
 import { observeRendererLoss, rendererLost, RENDERER_LOST } from "./webgl/renderer-loss.js";
@@ -1188,12 +1188,15 @@ export class WasmPosixKernel {
   /** Copy a frame into the CRTC's stage and show it through the stage on
    * `gl`'s default framebuffer: cursor blended, then the LUT. `read` is the
    * frame's framebuffer (null: the default framebuffer itself); `topFirst`
-   * says its rows are in KMS order; `opaque` that it is a primary plane. */
+   * says its rows are in KMS order; `opaque` that it is a primary plane;
+   * `internalFormat` the frame's storage (a 10-bit or half-float frame is
+   * reduced to 8 bits by the stage, as every presenter reduces it). */
   #presentThroughStage(crtcId: number, gl: WebGL2RenderingContext, read: WebGLFramebuffer | null,
-      x: number, y: number, width: number, height: number, topFirst: boolean, opaque: boolean): void {
+      x: number, y: number, width: number, height: number, topFirst: boolean, opaque: boolean,
+      internalFormat?: number): void {
     this.withGraphicsState(gl, () => {
       const stage = this.#colorStage(crtcId, gl);
-      stage.capture(read, x, y, width, height, topFirst, opaque);
+      stage.capture(read, x, y, width, height, topFirst, opaque, internalFormat);
       stage.present(this.kms.gamma(crtcId), this.kms.currentCursor());
     });
   }
@@ -1272,12 +1275,15 @@ export class WasmPosixKernel {
     if (fb.x + fb.width > storage.w || fb.y + fb.height > storage.h)
       throw new Error("Invalid GPU scanout storage dimensions");
     const direct = allowDirect && canvas.getContext("webgl2") === storage.gl;
-    if (direct && this.kms.gamma(crtcId)) {
+    // A LUT, or a 10-bit/half-float buffer reduced to the 8-bit output,
+    // needs the CRTC output stage; any other buffer blits as it is.
+    if (direct && (this.kms.gamma(crtcId) || scanoutNeedsReduction(storage))) {
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width; canvas.height = fb.height;
       }
       // KMS buffers hold the top row first; the primary plane is opaque.
-      this.#presentThroughStage(crtcId, storage.gl, storage.fbo, fb.x, fb.y, fb.width, fb.height, true, true);
+      this.#presentThroughStage(crtcId, storage.gl, storage.fbo, fb.x, fb.y, fb.width, fb.height, true, true,
+        storage.internalFormat);
       return { direct: true };
     }
     if (direct) this.#releaseColorStage(crtcId);
@@ -3840,12 +3846,13 @@ export class WasmPosixKernel {
             fb && gpu && b?.gl && gpu.gl === b.gl &&
             b.claimedKmsCrtc === crtc_id && !b.gl.isContextLost()
           ) {
-            if (!this.kms.gamma(crtc_id)) {
+            if (!this.kms.gamma(crtc_id) && !scanoutNeedsReduction(gpu)) {
               this.#releaseColorStage(crtc_id);
               blitGpuScanout(b, gpu, fb.width, fb.height, fb.x, fb.y);
             } else {
               try {
-                this.#presentThroughStage(crtc_id, b.gl, gpu.fbo, fb.x, fb.y, fb.width, fb.height, true, true);
+                this.#presentThroughStage(crtc_id, b.gl, gpu.fbo, fb.x, fb.y, fb.width, fb.height, true, true,
+                  gpu.internalFormat);
               } catch {
                 // The vblank pump presents this framebuffer again on its next
                 // tick, through the same color stage, and reports a failure.

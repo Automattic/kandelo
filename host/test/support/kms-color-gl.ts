@@ -20,7 +20,12 @@ type Image = {
 };
 type Program = { fragment: string; uniforms: Map<string, number[]> };
 
-const bytesPerTexel = (internal: number) => internal === 0x8229 ? 1 : internal === 0x8d62 || internal === 0x822b ? 2 : 4;
+const bytesPerTexel = (internal: number) => internal === 0x8229 ? 1 : internal === 0x8d62 || internal === 0x822b ? 2
+  : internal === 0x881a ? 8 : 4;
+const halfValue = (bits: number) => {
+  const sign = bits & 0x8000 ? -1 : 1, e = (bits >>> 10) & 31, m = bits & 1023;
+  return e === 0 ? sign * m * 2 ** -24 : e === 31 ? (m ? NaN : sign * Infinity) : sign * (1 + m / 1024) * 2 ** (e - 15);
+};
 
 export function pixelGl(width: number, height: number) {
   const textures = new Map<object, Image>();
@@ -77,6 +82,17 @@ export function pixelGl(width: number, height: number) {
       const at = (y * found.w + x) * 2;
       return [found.data[at], found.data[at + 1], 0, 255];
     }
+    if (found.internal === 0x8059) {
+      // Normalized 10-bit channels and 2-bit alpha, as fractions of 255.
+      const at = (y * found.w + x) * 4;
+      const word = (found.data[at] | found.data[at + 1] << 8 | found.data[at + 2] << 16 | found.data[at + 3] << 24) >>> 0;
+      return [(word & 1023) / 1023 * 255, ((word >>> 10) & 1023) / 1023 * 255, ((word >>> 20) & 1023) / 1023 * 255,
+        (word >>> 30) / 3 * 255];
+    }
+    if (found.internal === 0x881a) {
+      const at = (y * found.w + x) * 8;
+      return [0, 1, 2, 3].map(c => halfValue(found.data[at + c * 2] | found.data[at + c * 2 + 1] << 8) * 255);
+    }
     if (found.internal === 0x8d62) {
       const at = (y * found.w + x) * 2;
       const word = found.data[at] | (found.data[at + 1] << 8);
@@ -95,9 +111,14 @@ export function pixelGl(width: number, height: number) {
     const row = flag("u_target_top_first") ? fy : sizeY - 1 - fy;
     const t = texel(unitOf("u_frame"), fx, flag("u_frame_top_first") ? row : sizeY - 1 - row);
     let color: number[];
-    if (flag("u_rgb565")) {
+    const encoding = uniform(program, "u_encoding")[0];
+    if (encoding === 1) {
       const q = [Math.floor(t[0] / 255 * 31 + 0.5), Math.floor(t[1] / 255 * 63 + 0.5), Math.floor(t[2] / 255 * 31 + 0.5)];
       color = [q[0] * 8 + Math.floor(q[0] / 4), q[1] * 4 + Math.floor(q[1] / 16), q[2] * 8 + Math.floor(q[2] / 4)];
+    } else if (encoding === 2) {
+      color = t.slice(0, 3).map(c => Math.floor((Math.floor(c / 255 * 1023 + 0.5) * 510 + 1023) / 2046));
+    } else if (encoding === 3) {
+      color = t.slice(0, 3).map(c => Math.floor(Math.min(Math.max(Number.isNaN(c) ? 0 : c / 255, 0), 1) * 255 + 0.5));
     } else {
       color = t.slice(0, 3).map(v => Math.floor(v + 0.5));
     }
@@ -231,16 +252,39 @@ export function pixelGl(width: number, height: number) {
       framebuffers.get(fbo)!.color = tex;
     },
     checkFramebufferStatus: () => 0x8cd5,
-    readPixels: (x: number, y: number, w: number, h: number, _f: number, _t: number, out: Uint8Array) => {
+    readPixels: (x: number, y: number, w: number, h: number, format: number, type: number, out: ArrayBufferView) => {
       counts.readPixels++;
       expect(state.get(0x88ed)).toBeNull();
       expect([0x0d02, 0x0d04, 0x0d03].map(p => state.get(p))).toEqual([0, 0, 0]);
       const read = state.get(0x8caa);
       if (read === null && defaultReadBuffer !== 0x0405) throw new Error("no read buffer");
       const source = image(read);
+      expect(format).toBe(0x1908);
+      // The pairs WebGL 2 accepts: RGB10_A2 as packed words, RGBA16F as floats.
+      if (source.internal === 0x8059) {
+        expect(type).toBe(0x8368);
+        const words = out as Uint32Array;
+        for (let row = 0; row < h; row++) for (let col = 0; col < w; col++) {
+          const at = ((y + row) * source.w + x + col) * 4;
+          words[row * w + col] = (source.data[at] | source.data[at + 1] << 8 | source.data[at + 2] << 16
+            | source.data[at + 3] << 24) >>> 0;
+        }
+        return;
+      }
+      if (source.internal === 0x881a) {
+        expect(type).toBe(0x1406);
+        const floats = out as Float32Array;
+        for (let row = 0; row < h; row++) for (let col = 0; col < w * 4; col++) {
+          const at = ((y + row) * source.w + x) * 8 + col * 2;
+          floats[row * w * 4 + col] = halfValue(source.data[at] | source.data[at + 1] << 8);
+        }
+        return;
+      }
+      expect(type).toBe(0x1401);
+      const bytes = out as Uint8Array;
       for (let row = 0; row < h; row++) {
         const at = ((y + row) * source.w + x) * 4;
-        out.set(source.data.subarray(at, at + w * 4), row * w * 4);
+        bytes.set(source.data.subarray(at, at + w * 4), row * w * 4);
       }
     },
     blitFramebuffer: (sx0: number, sy0: number, sx1: number, sy1: number,
@@ -250,12 +294,18 @@ export function pixelGl(width: number, height: number) {
       const read = state.get(0x8caa);
       if (read === null && defaultReadBuffer !== 0x0405) throw new Error("no read buffer");
       const source = image(read), target = image(state.get(0x8ca6));
+      // A 10-bit or float source would be rounded (or, for floats, refused)
+      // by a blit into 8-bit storage: only an identical format copies it.
+      const wide = (internal: number) => internal === 0x8059 || internal === 0x881a;
+      if ((wide(source.internal) || wide(target.internal)) && source.internal !== target.internal)
+        throw new Error(`blit ${source.internal.toString(16)} -> ${target.internal.toString(16)} changes precision`);
+      const bpp = bytesPerTexel(source.internal);
       const w = Math.abs(dx1 - dx0), h = Math.abs(dy1 - dy0);
       const step = (from: number, to: number, i: number) => from < to ? from + i : from - 1 - i;
       for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
-        const s = (step(sy0, sy1, j) * source.w + step(sx0, sx1, i)) * 4;
-        const d = (step(dy0, dy1, j) * target.w + step(dx0, dx1, i)) * 4;
-        target.data.set(source.data.subarray(s, s + 4), d);
+        const s = (step(sy0, sy1, j) * source.w + step(sx0, sx1, i)) * bpp;
+        const d = (step(dy0, dy1, j) * target.w + step(dx0, dx1, i)) * bpp;
+        target.data.set(source.data.subarray(s, s + bpp), d);
       }
     },
     drawArrays: (_mode: number, _first: number, count: number) => {
@@ -284,10 +334,11 @@ export function pixelGl(width: number, height: number) {
       : typeof key === "string" && /^[A-Z0-9_]+$/.test(key) ? GL_CONSTANTS[key] ?? (() => { throw new Error(`fake GL constant ${key}`); })()
       : () => {},
   }) as unknown as WebGL2RenderingContext;
-  /** A texture-backed framebuffer holding `data` (GL order: bottom row first). */
-  const framebuffer = (w: number, h: number, data: number[]) => {
+  /** A texture-backed framebuffer holding `data` bytes in `internal`
+   *  storage (GL order: bottom row first). */
+  const framebuffer = (w: number, h: number, data: number[], internal = 0x8058) => {
     const tex = {}, fbo = {};
-    textures.set(tex, { w, h, data: Uint8Array.from(data), internal: 0x8058, minFilter: 0x2600, mipmaps: false });
+    textures.set(tex, { w, h, data: Uint8Array.from(data), internal, minFilter: 0x2600, mipmaps: false });
     framebuffers.set(fbo, { color: tex });
     return fbo as WebGLFramebuffer;
   };

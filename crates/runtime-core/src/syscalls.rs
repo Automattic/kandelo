@@ -3886,7 +3886,10 @@ const KMS_MAX_FB_DIMENSION: u32 = 16384;
 fn kms_format_cpp(format: u32) -> Option<u32> {
     use wasm_posix_shared::dri::*;
     match format {
-        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 | DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888 => Some(4),
+        DRM_FORMAT_XRGB8888 | DRM_FORMAT_ARGB8888 | DRM_FORMAT_XBGR8888 | DRM_FORMAT_ABGR8888
+        | DRM_FORMAT_XRGB2101010 | DRM_FORMAT_ARGB2101010 | DRM_FORMAT_XBGR2101010
+        | DRM_FORMAT_ABGR2101010 => Some(4),
+        DRM_FORMAT_XBGR16161616F | DRM_FORMAT_ABGR16161616F => Some(8),
         DRM_FORMAT_RGB565 | DRM_FORMAT_GR88 => Some(2),
         DRM_FORMAT_R8 => Some(1),
         _ => None,
@@ -52944,7 +52947,7 @@ impl HostIO for RelSymlinkMock {
             DRM_IOCTL_MODE_GETPLANE,
             WpkDrmModeGetPlane {
                 plane_id: crate::dri::kms::PRIMARY_PLANE_ID,
-                count_format_types: 8,
+                count_format_types: 16,
                 format_type_ptr: 0x2000,
                 ..Default::default()
             },
@@ -53423,8 +53426,9 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = kms_master_card0(&mut proc, &mut host);
+        // 64 bpp: rows wide enough for every format, half floats included.
         let dumb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
-            WpkDrmModeCreateDumb { width: 2, height: 2, bpp: 32, ..Default::default() }).unwrap();
+            WpkDrmModeCreateDumb { width: 2, height: 2, bpp: 64, ..Default::default() }).unwrap();
         for pixel_format in crate::dri::kms::PRIMARY_PLANE_FORMATS {
             let mut request = WpkDrmModeFbCmd2 { width: 2, height: 2, pixel_format, ..Default::default() };
             request.handles[0] = dumb.handle;
@@ -53462,13 +53466,19 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, request).map(|_| ()),
                 Err(Errno::EINVAL), "{pixel_format:#x} below its minimum pitch");
         }
-        // Formats without an exact 8-bit presentation are not primary-plane formats.
-        for pixel_format in [DRM_FORMAT_XRGB2101010, DRM_FORMAT_ABGR16161616F] {
+        // 10-bit and half-float planes, which the 8-bpc output reduces, at
+        // their own minimum pitch.
+        for (pixel_format, min_pitch) in [(DRM_FORMAT_XRGB2101010, 4), (DRM_FORMAT_ABGR16161616F, 8)] {
             let mut request = WpkDrmModeFbCmd2 { width: 1, height: 1, pixel_format, ..Default::default() };
             request.handles[0] = dumb.handle;
-            request.pitches[0] = 8;
+            request.pitches[0] = min_pitch;
+            let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, request).unwrap();
+            assert_eq!(fb.pixel_format, pixel_format);
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_RMFB, &mut fb.fb_id.to_le_bytes()).unwrap();
+            request.width = 2;
+            request.pitches[0] = 2 * min_pitch - 1;
             assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, request).map(|_| ()),
-                Err(Errno::EINVAL));
+                Err(Errno::EINVAL), "{pixel_format:#x} below its minimum pitch");
         }
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
