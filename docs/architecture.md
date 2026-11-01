@@ -526,6 +526,18 @@ the same exact-generation ledger used by exit, termination, and destroy.
 Overlapping cleanup paths therefore consume the lease once without removing
 or reaping the replacement's persistent process ID.
 
+Each host process registration also captures Rust's full unsigned 64-bit exec
+generation through `kernel_get_process_exec_generation`, using exactly eight
+bytes of leased kernel scratch under the canonical entry. The host publishes
+the complete registration only after that entry ends. Its generation field is
+immutable; exec replaces the record, while fork and vfork read the child's own
+generation. Thread-channel attachment compares the current Rust generation
+against that record before changing channel or thread maps. A mismatch during
+the exec commit window refuses attachment and retains the existing allocated-
+task rollback. A missing getter or invalid result refuses registration without
+publishing partial state. This identity check does not itself grant authority
+to retire an old image or acknowledge physical graphics cleanup.
+
 The login program disables password echo and flushes earlier input before
 showing its password prompt. Input sent in response to that prompt therefore
 is not discarded by a later terminal-mode change.

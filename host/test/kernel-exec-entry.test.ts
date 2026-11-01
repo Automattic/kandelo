@@ -21,6 +21,7 @@ import type { PlatformIO } from "../src/types";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const KERNEL_EXPORT_NAMES = [
+  "kernel_get_process_exec_generation",
   "kernel_drain_wakeup_events",
   "kernel_exec_commit",
   "kernel_exec_target_cancel",

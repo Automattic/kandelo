@@ -60,6 +60,7 @@ function makeCloneHarness(
   onClone: (...args: unknown[]) => Promise<unknown>,
   kernelTid = KERNEL_TID,
   autoAttach = true,
+  beforeAttach?: () => void,
 ) {
   const memory = new WebAssembly.Memory({
     initial: 16,
@@ -82,11 +83,13 @@ function makeCloneHarness(
     return 0;
   });
   const notifyThreadExit = vi.fn(() => 0);
+  let execGeneration = 0n;
   let worker!: CentralizedKernelWorker;
   worker = createCentralizedKernelWorkerTestDouble({
     callbacks: {
       onClone: (attachment) => {
         if (autoAttach) {
+          beforeAttach?.();
           worker.attachThreadChannel(
             attachment,
             2 * WASM_PAGE_SIZE,
@@ -104,6 +107,7 @@ function makeCloneHarness(
     hostReaped: new Set<number>(),
     processes: new Map([[PID, {
       pid: PID,
+      execGeneration: 0n,
       channels: [channel],
       memory,
       explicitMaxAddr: true,
@@ -121,6 +125,10 @@ function makeCloneHarness(
         kernel_drain_wakeup_events: vi.fn(() => 0),
         kernel_get_process_exit_signal: vi.fn(() => -1),
         kernel_get_process_state: vi.fn(() => 0),
+        kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+          new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), execGeneration, true);
+          return 8;
+        },
         kernel_handle_channel: kernelHandleChannel,
         kernel_set_current_tid: vi.fn(() => 0),
         kernel_thread_exit: notifyThreadExit,
@@ -131,6 +139,7 @@ function makeCloneHarness(
 
   return {
     channel,
+    setGeneration(value: bigint) { execGeneration = value; },
     dispatch(args: readonly number[] = CLONE_ARGS) {
       writeCloneRequest(channel, args);
       (worker as any).handleSyscall(channel);
@@ -158,6 +167,7 @@ function makeChannelOwnershipHarness() {
   const validateTask = vi.fn(() => 0);
   const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   let nextKernelTid = 0;
+  let execGeneration = 0n;
   let receiveAttachment:
     | ((
         attachment: Parameters<
@@ -184,6 +194,7 @@ function makeChannelOwnershipHarness() {
     processes: new Map([
       [PID, {
         pid: PID,
+        execGeneration: 0n,
         memory,
         channels: [mainChannel],
         explicitMaxAddr: true,
@@ -202,6 +213,10 @@ function makeChannelOwnershipHarness() {
         kernel_drain_wakeup_events: vi.fn(() => 0),
         kernel_get_process_exit_signal: vi.fn(() => -1),
         kernel_get_process_state: vi.fn(() => 0),
+        kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+          new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), execGeneration, true);
+          return 8;
+        },
         kernel_handle_channel: vi.fn((offset: number | bigint) => {
           const kernelView = new DataView(kernelMemory.buffer, Number(offset));
           kernelView.setBigInt64(CH_RETURN, BigInt(nextKernelTid), true);
@@ -217,6 +232,7 @@ function makeChannelOwnershipHarness() {
 
   return {
     mainChannel,
+    setGeneration(value: bigint) { execGeneration = value; },
     memory,
     validateTask,
     worker,
@@ -331,7 +347,7 @@ describe("kernel TID authority", () => {
   });
 
   it("does not track an unflagged child-TID pointer as clear-on-exit state", async () => {
-    const onClone = vi.fn(async () => {});
+    const onClone = vi.fn(async (_attachment: unknown) => {});
     const harness = makeCloneHarness(onClone);
     const args = [...CLONE_ARGS];
     args[0] &= ~0x0020_0000;
@@ -408,6 +424,26 @@ describe("kernel TID authority", () => {
     }
   });
 
+  it("rolls back the actual allocated task after controlled stale-generation launch refusal", async () => {
+    const onClone = vi.fn(async () => {});
+    let h!: ReturnType<typeof makeCloneHarness>;
+    h = makeCloneHarness(onClone, KERNEL_TID, true, () => h.setGeneration(1n));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      h.dispatch();
+      await flushCloneContinuation();
+      expect(onClone).not.toHaveBeenCalled();
+      expect(h.notifyThreadExit).toHaveBeenCalledTimes(1);
+      expect(h.notifyThreadExit).toHaveBeenCalledWith(PID, KERNEL_TID, 0);
+      expect(readCloneCompletion(h.channel)).toEqual({status: CHANNEL_STATUS_COMPLETE, retVal: -1, errno: 12});
+      expect((h.worker as any).processes.get(PID).channels).toEqual([h.channel]);
+      expect((h.worker as any).activeChannels).toEqual([h.channel]);
+      expect((h.worker as any).channelTids.size).toBe(0);
+      expect((h.worker as any).threadForkContexts.size).toBe(0);
+      expect(consoleError).toHaveBeenCalledWith(expect.stringContaining("changed exec generation"));
+    } finally { consoleError.mockRestore(); }
+  });
+
   it("does not complete clone when the callback fails to consume its attachment", async () => {
     const onClone = vi.fn(async () => {});
     const harness = makeCloneHarness(onClone, KERNEL_TID, false);
@@ -433,6 +469,25 @@ describe("thread channel ownership", () => {
   const firstThreadOffset = 2 * WASM_PAGE_SIZE;
   const secondThreadOffset = 3 * WASM_PAGE_SIZE;
   const thirdThreadOffset = 4 * WASM_PAGE_SIZE;
+
+  it("refuses the exec commit window before attaching a stale generation's channel", async () => {
+    const h = makeChannelOwnershipHarness();
+    const attachment = await h.issueThreadAttachment(KERNEL_TID);
+    const original = (h.worker as any).processes.get(PID);
+    h.setGeneration(1n); // Rust committed; the old host registration still occupies this PID.
+    expect(() => h.worker.attachThreadChannel(attachment, firstThreadOffset))
+      .toThrow(`Process ${PID} changed exec generation`);
+    expect(h.validateTask).not.toHaveBeenCalled();
+    expect(original.execGeneration).toBe(0n);
+    expect(original.channels).toEqual([h.mainChannel]);
+    expect((h.worker as any).activeChannels).toEqual([h.mainChannel]);
+    expect((h.worker as any).threadForkContexts.size).toBe(0);
+    // A refused attempt consumes its exact attachment; it cannot later be
+    // redirected after the apparent generation mismatch is removed.
+    h.setGeneration(0n);
+    expectIngressFailureCause(() => h.worker.attachThreadChannel(attachment, firstThreadOffset),
+      "Unknown, expired, or already consumed thread attachment");
+  });
 
   it("rejects a duplicate channel offset instead of remapping its TID", async () => {
     const { issueThreadAttachment, validateTask, worker } =

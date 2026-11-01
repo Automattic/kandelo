@@ -192,6 +192,10 @@ function signatures(
       parameters: [i32, i32, i32],
       result: i64,
     },
+    kernel_get_process_exec_generation: {
+      parameters: [i32, pointer, i32],
+      result: i32,
+    },
     kernel_get_process_state: {
       parameters: [i32],
       result: i32,
@@ -819,6 +823,14 @@ export function createKernelScratchTestInstance(
       // readiness to consume. Explicit mocks still support fault injection.
       if (name === "kernel_take_pty_readiness_changed" && implementation === undefined) {
         return 0;
+      }
+      // Neutral fresh-process generation for fixtures not modeling exec.
+      // Generation/exec tests override this real scratch-writing export;
+      // excluding the export still proves mandatory-export refusal.
+      if (name === "kernel_get_process_exec_generation" && implementation === undefined) {
+        if (Number(args[2]) !== 8) return -22;
+        new DataView(memory.buffer).setBigUint64(Number(args[1]), 0n, true);
+        return 8;
       }
       if (typeof implementation !== "function") {
         throw new Error(`missing test implementation for ${name}`);

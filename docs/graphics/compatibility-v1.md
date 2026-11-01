@@ -28,58 +28,60 @@ follow-up; no missing API is reclassified as a platform boundary.
 
 ## Latest desktop checkpoint, 2026-10-31
 
-The active goal now prioritizes complete graphics/desktop compatibility.
-Start-menu ScummVM launch/rendering and SFWBar failures come first;
-standalone performance experiments are deferred, with their evidence
-preserved. Reviewable progress is on draft
-[PR #1601](https://github.com/Automattic/kandelo/pull/1601). Numeric program
-ABI remains 56, host 3 / GL table 17 / fork 21.
+The user's latest sequencing is graphics-platform completion and validation
+first, followed by ScummVM-specific troubleshooting and remaining application
+failures. Standalone performance experiments follow compatibility and
+correctness; their evidence is preserved. The pending Start-to-ScummVM
+reproduction is deferred. Numeric program ABI remains 56, host 3 / GL table 17 /
+fork 21. Desktop progress is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601);
+the remaining baseline is in [PR #1594](https://github.com/Automattic/kandelo/pull/1594).
 
-All 25 prior preview servers, including 5682, are intentionally retired at
-the user's request. There is **no currently available preview**. Old build
-products are deleted; sources and recorded evidence remain. The captured
-cleanup window recovers 182.9 GiB of filesystem free space, leaving about
-219 GiB. The supported cache collector separately reports 31.3 GiB removed;
-these measurements are not added together. One current SDK/toolchain is
-retained. Exact cleanup evidence is under `.context/build-retirement-r1/`.
+A new normal desktop preview is available at
+http://127.0.0.1:5683/pages/kandelo/ from frozen source
+`540b2fd5e2423589f6cd94c4e4d5e4b1ac66e829`. Its normal producer exits 0
+in 9,112.3 seconds, with all 12 SDK/kernel/program/image/host, freshness, actual 93-owner
+identity and selected-kernel ABI stages zero. This source includes the shared
+GLib class-handler repair, not later child-watch or broader graphics changes.
+Actual root/gallery HTTP 200, isolation headers, source/job identities and all 86
+host output identities are recorded in primary
+`.context/compatibility-preview-5683-r1/availability.json`. Availability is not
+application or full graphics validation. Its kernel/host must remain together;
+the later unpublished host 3 contract is not interchangeable by numeric version.
 
-The latest normal Sway Start-menu reproduction reaches painted categories,
-then SFWBar traps with a function-signature mismatch and exits 132 during
-Home/Right navigation, before ScummVM activation. The exact normal binary,
-process events, screenshots and stack are preserved in
-`.context/scummvm-start-repro-r1/`. The shared class-handler repair and
-child-watch/callback adapters now pass 77 focused normal Node guest cases.
-A separate upstream selection passes nine of ten targets; its signals
-target still fails on an unsupported twenty-argument mixed libffi
-signature. Normal Start-menu and ScummVM rendering acceptance remains
-pending. These lower-level results do not explain the separately reported
-blank client or establish a working menu launch. Browser-memory, full CTS
-and the remaining inventory remain open.
+All 25 earlier preview servers, including 5682, are retired. Old testing products
+and the final obsolete SDK/toolchain are removed; sources, traces and recorded
+failures remain. The initial cleanup window recovers 182.9 GiB of filesystem free
+space; the supported collector separately reports 31.3 GiB removed. These are not
+added together. After the fresh desktop build, observed free space is 186.2 GiB.
+Current SDKs/artifacts in use remain retained. Exact cleanup evidence is in
+`.context/build-retirement-r1/`.
 
-Broader combined progress is pushed to draft
-[PR #1594](https://github.com/Automattic/kandelo/pull/1594), including
-ports/main integration and repaired C submit/query/error interactions.
-It passes all 298 native C controls and 154 focused host model cases.
-The actual combined kernel, own SDK32/64, canonical ABI/layout and
-standalone resolver checks pass without changing numeric versions or
-the program contract digest. These are separate from the still-running
-primary540b desktop producer and do not establish combined guest,
-application, browser or full conformance acceptance. Exact source cuts,
-commands, failures and identities appear in the dated entries below.
+The last actual normal Start-menu reproduction is the historical R1 failure:
+painted categories, then SFWBar function-signature trap/exit 132 on Home/Right,
+before ScummVM activation. Its binary, events, screenshots and stack remain in
+`.context/scummvm-start-repro-r1/`. Later callback artifacts pass 77 focused
+normal Node guest cases and 9/10 upstream targets; a twenty-argument mixed libffi
+signature remains an ordinary gap. Neither those lower-level controls nor the
+newly available preview establish a working menu or ScummVM client rendering.
 
-At `b87e6eb971`, the combined native Rust workspace passes 3,501 tests
-with no failed, ignored or filtered cases. Normal host bundles and
-declarations also build successfully. The separate xtask suite passes 833 unit cases and
-all eight integration cases. The full host inventory and graphics,
-browser and POSIX acceptance gates remain pending.
+Broader source repairs pass 303 native C UBSan controls and 179 focused host
+model cases. Its own kernel/SDK32/64, canonical ABI/layout and resolver checks
+pass with unchanged program digest. The private mapping capability passes 52
+controls; its separate cleanup codec passes 37, both with narrow strict types.
+The full upstream harness builds normally; actual Node EGL enumeration lists
+4,117 cases. Renderer-backed headless Chromium now enumerates all 19,825 GLES2
+cases successfully. Actual CTS execution remains pending; enumeration is not
+conformance. These are separate source cohorts, not combined acceptance.
 
-Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated by
-merge `bc182981fb`. The combined resolver bundle regenerates and passes its
-standalone check; all ten SDL recipe source checks pass. Normal combined
-artifacts and integration acceptance remain pending. The paragraphs below
-and subsequent dated entries preserve historical checkpoints, artifact
-identities and their originally observed availability; none reinstates a
-retired URL.
+Earlier combined Rust checkpoint `b87e6eb971` passes 3,501 native workspace cases
+without failures/ignores/filters, plus normal host bundles/declarations. The
+separate xtask suite passes 833 unit and 8 integration cases. Later source changes
+still require broad reruns. Full host, real three-engine rendering, browser-
+memory, actual CTS execution and required POSIX acceptance remain open.
+
+Main cut `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated through
+`bc182981fb`. Later dated sections retain exact original source cuts, artifact
+identities and failures; historical URLs below do not revive retired previews.
 
 ### Historical performance checkpoint, 2026-10-31
 
@@ -18598,3 +18600,84 @@ are retained in the mutable source worktree's
 evidence, not conformance, browser/desktop acceptance, wasm64 support or
 baseline completion. It is integrated only into the graphics follow-up;
 the smaller desktop-ports PR remains separate.
+
+
+### Immutable Rust image generation in shared host registration
+
+The shared Node/browser worker now reads actual full-u64 Rust generation under
+the canonical kernel entry, before layout mutations or host publication. It
+constructs the complete registration and publishes it through the existing
+protocol effect. The generation field is readonly and non-writable/non-
+configurable because existing weak retirement telemetry can observe the record.
+Fork/vfork children read their own actual generation; exec publishes a new
+record without advancing the retained old record. Clone attachment refuses a
+Rust/host generation mismatch before channel/layout mutation, with its existing
+allocated-task rollback preserved.
+
+Missing exports, negative errno and malformed byte counts use controlled
+post-entry refusal, preserving retry and prior registration. Genuine export
+traps retain branded fatal propagation. No getter is called from a host import;
+this change creates no cleanup grant or public scheduling activation.
+
+Evidence is in integration
+`.context/process-registration-generation-r1/HANDOFF.md`. Both new unsigned-
+generation cases fail the original production worker. Initial candidate and
+restricted-fixture failures are retained. Final nine source suites pass 100/100,
+with strict scoped worker/type closure green. An initial existing clone-mock
+TS2493 is reproduced against exact parent `11433daeb0`, then corrected by declaring
+its truthful unused attachment parameter. Root review tightens the fixture's
+neutral getter to the production exact eight-byte capacity rule; the fresh root
+rescreen again passes 100/100 and strict types (`root-adjacent-r4.log`,
+`root-types-r4.log`). Full normal combined artifacts, browser-memory, actual
+physical receivers and public retained-query scheduling remain pending.
+
+### Normal primary desktop producer completion and preview availability
+
+Job `compatibility-normal-r1-1031-191858-948c` exits 0 after 9,112.3 seconds.
+All 12 recorded stages are zero and the final source guard passes. Its coherent
+normal source is `540b2fd5e2`, with 93 actual selected owners; no historic fixed count
+was substituted into the collector. Receipt SHA256:
+`1fe3e88fab2aa225136aff65d746c48d7342f73970b8ed1571764471eacb80ca`.
+Owner manifest SHA256:
+`bd86737b23dc2f7236d965f5d45b896dc4c89de972b46248a708d41b8dac7841`.
+Kernel remains 1,839,996 bytes, SHA256
+`f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
+
+Owned strict/no-HMR server `compatibility-preview-5683-r1-1031-215215-5b22`
+serves the unchanged primary source. Both root and gallery return HTTP 200
+with COOP `same-origin`, COEP `require-corp` and CORP `same-origin`. The preview is announced
+immediately after observed availability; no browser application check is
+inferred. The separate planned Start-to-ScummVM workload is not launched,
+following the user's graphics-platform-first sequencing. The preview does
+not include the broader follow-up's later kernel-host or C changes and cannot
+validate that source. Exact availability/host-output identities remain in
+primary `.context/compatibility-preview-5683-r1/availability.json`.
+
+
+### Renderer-backed full upstream GLES2 inventory
+
+The normal R8 executable enumerates 19,825 unique tests in 941 groups through
+actual `BrowserKernel`, dedicated kernel/process workers, `KandeloImageFs`
+and the WebGL2 KMS renderer. Canonical full headless Chromium
+153.0.8010.12 uses ANGLE Metal with no GPU override. Guest exit is 0, stderr
+is empty, and no recorded runtime, page, console, cleanup or memory-boundary
+errors occur. Standard hidden visibility is selected; no case filter is used.
+This is inventory evidence only: no upstream test cases are executed.
+
+Job `graphics-cts-renderer-caselist-r3-1031-215558-fa20` exits 0 in nine
+seconds. All ten sealed inputs and artifact/projection/package identities
+match before and after; mutable source HEAD remains `7b9abb8c40`. Destroy
+returns, both workers close, and the owned Vite server is stopped and waited.
+The raw report captures three response bodies; process-worker URL observation
+is not evidence of its response body hash. The failed prerequisite and
+command-line-observer attempts remain preserved separately.
+
+Evidence is in the mutable worktree's
+`.context/vk-gl-cts-browser-inventory-r3/results/HANDOFF.md`, SHA256
+`9fe987dec7c3dd2e33d06337a4e1085f7bb3e2e2523037403feb763959cdd63f`.
+Raw report SHA256:
+`cba5cb87bef85a05b0e75010335d1caf3e6c0672597bc8c2291c03e31ae5aa39`.
+Release summary SHA256:
+`9a963847047f1af83c85fa8dcbe1223d8348cae850130dcd42303bf4f11fec0d`.
+Full conformance execution, visible-window adapter support, exact directed
+reference arithmetic and the remaining three-engine/baseline gates stay open.

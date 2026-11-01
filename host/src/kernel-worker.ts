@@ -1669,6 +1669,8 @@ function isWakeableCancellationPoint<
 /** Info about a registered process. */
 interface ProcessRegistration {
   pid: number;
+  /** Exact Rust exec generation captured before publishing this registration. */
+  readonly execGeneration: bigint;
   memory: WebAssembly.Memory;
   channels: ChannelInfo[];
   /** True only while a vfork child borrows its suspended parent's Memory. */
@@ -4729,7 +4731,7 @@ export class CentralizedKernelWorker {
         let listener:
           | Readonly<{ fd: number; port: number }>
           | undefined;
-        const channels = this.#kernelEntryGate.runSerializedHostOperation(
+        const staged = this.#kernelEntryGate.runSerializedHostOperation(
           "lifecycle test process registration replacement",
           () => {
             if (!this.#initialized || this.#kernelInstance === null) {
@@ -4806,26 +4808,6 @@ export class CentralizedKernelWorker {
                 } satisfies ChannelInfo],
               );
             }
-            const previous = this.processes.get(pid);
-            for (const channel of previous?.channels ?? []) {
-              this.channelTids.delete(
-                `${channel.pid}:${channel.channelOffset}`,
-              );
-            }
-            this.processes.set(pid, {
-              pid,
-              memory,
-              channels,
-              borrowedAddressSpace: false,
-              ptrWidth: pointerWidth,
-              explicitMaxAddr: false,
-            });
-            for (const channel of channels) {
-              this.channelTids.set(
-                `${channel.pid}:${channel.channelOffset}`,
-                pid,
-              );
-            }
             const exposedChannels: ChannelInfo[] = [];
             for (let index = 0; index < channels.length; index++) {
               kernelEntryIntrinsicApply(
@@ -4841,9 +4823,46 @@ export class CentralizedKernelWorker {
                   fd: requestedListener.fd,
                   port: requestedListener.port,
                 });
-            return kernelEntryIntrinsicObjectFreeze(exposedChannels);
+            return {
+              pid, memory, pointerWidth, channels,
+              exposedChannels: kernelEntryIntrinsicObjectFreeze(exposedChannels),
+            };
           },
         );
+        let generationError: Error | undefined;
+        this.#runImmediateKernelEntry(
+          "lifecycle test process generation registration",
+          (entry) => {
+            const execGeneration = this.#processExecGenerationWithinKernelEntry(
+              staged.pid, entry,
+            );
+            if (execGeneration instanceof Error) {
+              generationError = execGeneration;
+              return undefined;
+            }
+            const registration: ProcessRegistration = {
+              pid: staged.pid, memory: staged.memory, channels: staged.channels,
+              execGeneration, borrowedAddressSpace: false,
+              ptrWidth: staged.pointerWidth, explicitMaxAddr: false,
+            };
+            kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
+              value: execGeneration,
+              writable: false, configurable: false, enumerable: true,
+            });
+            entry.deferProtocolEffect(() => {
+              const previous = this.processes.get(staged.pid);
+              for (const channel of previous?.channels ?? []) {
+                this.channelTids.delete(`${channel.pid}:${channel.channelOffset}`);
+              }
+              this.processes.set(staged.pid, registration);
+              for (const channel of staged.channels) {
+                this.channelTids.set(`${channel.pid}:${channel.channelOffset}`, staged.pid);
+              }
+            });
+          },
+        );
+        if (generationError !== undefined) throw generationError;
+        const channels = staged.exposedChannels;
         if (listener !== undefined) {
           const exactListener = listener;
           // WHY: the optional listener setup carries only validated scalars
@@ -7144,14 +7163,7 @@ export class CentralizedKernelWorker {
       consecutiveSyscalls: 0,
     }));
 
-    const registration: ProcessRegistration = {
-      pid,
-      memory,
-      channels,
-      borrowedAddressSpace: options?.borrowedAddressSpace === true,
-      ptrWidth,
-      explicitMaxAddr: explicitMaxAddr !== undefined,
-    };
+    const borrowedAddressSpace = options?.borrowedAddressSpace === true;
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       // Registration is an acknowledged protocol transition: callers launch
@@ -7183,6 +7195,22 @@ export class CentralizedKernelWorker {
           );
           return undefined;
         }
+
+        const execGeneration = this.#processExecGenerationWithinKernelEntry(
+          pid, entry,
+        );
+        if (execGeneration instanceof Error) {
+          registrationPreconditionError = execGeneration;
+          return undefined;
+        }
+        const registration: ProcessRegistration = {
+          pid, memory, channels, execGeneration, borrowedAddressSpace,
+          ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
+        };
+        kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
+          value: execGeneration,
+          writable: false, configurable: false, enumerable: true,
+        });
 
         if (argv !== undefined && env !== undefined) {
           registrationPreconditionError =
@@ -7309,6 +7337,35 @@ export class CentralizedKernelWorker {
         `kernel process registration pid=${pid}`,
       );
     }
+  }
+
+  /**
+   * Read only under a canonical entry, never from a host import. The getter
+   * has no callbacks and returns full unsigned generation bytes in exact leased
+   * kernel scratch; neither a signed sentinel nor a process-memory view is used.
+   */
+  #processExecGenerationWithinKernelEntry(
+    pid: number,
+    entry: KernelWorkerEntryContext,
+  ): bigint | Error {
+    const getter = this.#kernelInstanceForEntry(entry).exports
+      .kernel_get_process_exec_generation;
+    if (typeof getter !== "function") {
+      return new Error("Kernel missing required kernel_get_process_exec_generation export");
+    }
+    return this.#requireMainScratchRegion().withLease((lease) => {
+      const result = this.#invokeEntryScratchExport(
+        entry, lease, "kernel_get_process_exec_generation",
+        [pid, lease.exportPointer(0, 8), 8],
+      );
+      if (result !== 8) {
+        return new Error(result < 0
+          ? `Cannot read kernel process ${pid} exec generation: errno ${-result}`
+          : `Invalid kernel process ${pid} exec generation byte count ${result}`);
+      }
+      const bytes = lease.copyOut(0, 8);
+      return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(0, true);
+    });
   }
 
   /**
@@ -9938,10 +9995,11 @@ export class CentralizedKernelWorker {
     if (this.#kernelEntryGate.shouldDeferVoidIngress) {
       throw new KernelReentrantEntryError("thread channel attachment");
     }
+    let attachmentError: Error | undefined;
     const deferred = this.#runOrDeferKernelEntry(
       "thread channel attachment",
       (entry) => {
-        this.#attachThreadChannelWithinKernelEntry(
+        attachmentError = this.#attachThreadChannelWithinKernelEntry(
           attachment,
           channelOffset,
           entry,
@@ -9952,13 +10010,14 @@ export class CentralizedKernelWorker {
     if (deferred) {
       throw new KernelReentrantEntryError("thread channel attachment");
     }
+    if (attachmentError !== undefined) throw attachmentError;
   }
 
   #attachThreadChannelWithinKernelEntry(
     attachment: ThreadChannelAttachment,
     channelOffset: number,
     entry: KernelWorkerEntryContext,
-  ): void {
+  ): Error | undefined {
     const pending = pendingThreadChannelAttachments.get(attachment);
     if (!pending || pending.owner !== this) {
       throw new Error("Unknown, expired, or already consumed thread attachment");
@@ -9978,6 +10037,11 @@ export class CentralizedKernelWorker {
     if (!registration) throw new Error(`Process ${pid} not registered`);
     if (registration.memory !== memory) {
       throw new Error(`Process ${pid} changed memory generation`);
+    }
+    const execGeneration = this.#processExecGenerationWithinKernelEntry(pid, entry);
+    if (execGeneration instanceof Error) return execGeneration;
+    if (execGeneration !== registration.execGeneration) {
+      return new Error(`Process ${pid} changed exec generation`);
     }
     if (
       !Number.isSafeInteger(tid)
