@@ -788,3 +788,33 @@ fn kms_atomic_legacy_property_updates_take_the_atomic_check() {
     assert!(!kms::flip_pending(), "a legacy update completes when it returns");
     igt.close();
 }
+
+/// D-14: the connector's EDID property names a Kandelo-identified E-EDID
+/// 1.4 blob whose preferred timing is the connector's first mode, and a
+/// repeated probe keeps the same blob.
+#[test]
+fn kms_connector_reports_a_kandelo_edid() {
+    let _locks = locks();
+    let mut igt = Igt::open();
+    let edid = igt.value(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR, "EDID") as u32;
+    assert_ne!(edid, 0, "the connector has an EDID");
+    let reply = kms_ioctl(&mut igt.proc, &mut igt.host, igt.fd, DRM_IOCTL_MODE_GETPROPBLOB,
+        WpkDrmModeGetBlob { blob_id: edid, length: 128, data: BLOB_DATA }).unwrap();
+    assert_eq!(reply.length, 128);
+    let bytes = igt.host.proc_memory[BLOB_DATA as usize..][..128].to_vec();
+    assert_eq!(&bytes[..8], &[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0]);
+    assert_eq!(bytes.iter().fold(0u8, |a, &b| a.wrapping_add(b)), 0);
+    assert_eq!((bytes[18], bytes[19]), (1, 4));
+    let mode = kms_test_mode();
+    let hactive = u16::from(bytes[56]) | u16::from(bytes[58] >> 4) << 8;
+    let vactive = u16::from(bytes[59]) | u16::from(bytes[61] >> 4) << 8;
+    assert_eq!((hactive, vactive), (mode.hdisplay, mode.vdisplay));
+    let _ = kms_ioctl(&mut igt.proc, &mut igt.host, igt.fd, DRM_IOCTL_MODE_GETCONNECTOR,
+        WpkDrmModeGetConnector { connector_id: kms::CONNECTOR_ID, ..Default::default() }).unwrap();
+    assert_eq!(igt.value(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR, "EDID") as u32, edid,
+        "an unchanged display keeps its EDID blob");
+    // The EDID is immutable to clients.
+    let prop = igt.connector("EDID");
+    assert_eq!(igt.commit(0, &[(kms::CONNECTOR_ID, &[(prop, 0)])]), Err(Errno::EINVAL));
+    igt.close();
+}

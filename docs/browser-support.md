@@ -995,8 +995,9 @@ follow-ups, not as the end state.
   beyond `swapwindow`, animations, the full dispatcher set). **Deferred:
   port real Hyprland.** It needs platform work first: Hyprland renders
   only with OpenGL ES 3 through its `aquamarine` backend, and Kandelo's
-  GLES bridge is ES 2.0 with no fence or explicit sync; aquamarine also
-  expects an EDID blob from the kernel's connector. The device side is in
+  GLES bridge is ES 2.0 with no fence or explicit sync. (aquamarine also
+  expects an EDID blob from the kernel's connector, which the connector
+  now reports.) The device side is in
   place: the kernel reports KMS properties and the primary plane, `/sys`
   describes the card and the input devices, and upstream libseat and
   libudev-zero use them. Kandelo's EGL imports dmabufs as EGLImages, and

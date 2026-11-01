@@ -8,6 +8,7 @@
 pub mod atomic;
 pub mod bo;
 pub mod cursor;
+pub mod edid;
 pub mod ioctl_kms;
 pub mod kms;
 pub mod master;

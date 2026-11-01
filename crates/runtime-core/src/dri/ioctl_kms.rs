@@ -343,6 +343,8 @@ pub(crate) fn handle_dri_card_ioctl(
             if req.connector_id != kms::CONNECTOR_ID {
                 return Err(Errno::ENOENT);
             }
+            // Probing the connector refreshes its EDID, as fill_modes does.
+            kms::refresh_edid(host)?;
             let props = kms::listed_properties(
                 kms::object_properties(kms::CONNECTOR_ID, DRM_MODE_OBJECT_CONNECTOR)?,
                 kms_state(proc, ofd_idx)?.atomic);
@@ -844,6 +846,9 @@ pub(crate) fn handle_dri_card_ioctl(
             }
             let props = kms::listed_properties(kms::object_properties(req.obj_id, req.obj_type)?,
                 kms_state(proc, ofd_idx)?.atomic);
+            if req.obj_id == kms::CONNECTOR_ID {
+                kms::refresh_edid(host)?;
+            }
             if req.count_props > 0 && !props.is_empty() {
                 let ids = req.props_ptr;
                 let values = req.prop_values_ptr;

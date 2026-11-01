@@ -422,7 +422,8 @@ pub struct KmsDevice {
     blobs: BTreeMap<u32, BlobEntry>,
     closed_scanout: Option<ClosedScanout>,
     framebuffers: BTreeMap<u32, crate::ofd::WeakKmsFbs>,
-    /// The connector's `EDID` blob (device-owned), 0 before the first probe.
+    /// The connector's `EDID` blob (device-owned, see `dri::edid`), 0
+    /// before the first probe.
     pub(crate) edid_blob: u32,
 }
 
@@ -717,6 +718,35 @@ pub fn create_device_blob(data: alloc::vec::Vec<u8>) -> Result<u32, Errno> {
     let id = allocate_fb_id()?;
     dev().blobs.insert(id, BlobEntry { owner: None, data: data.into(), holds: 0, pinned: false });
     Ok(id)
+}
+
+/// Replace the device-kept blob in `slot` with one holding `data` unless it
+/// already holds exactly that (`drm_property_replace_global_blob`).
+pub(crate) fn replace_pinned_blob(slot: u32, data: &[u8]) -> Result<u32, Errno> {
+    if blob(slot).is_some_and(|current| &*current == data) {
+        return Ok(slot);
+    }
+    let id = allocate_fb_id()?;
+    let blobs = &mut dev().blobs;
+    blobs.insert(id, BlobEntry { owner: None, data: data.into(), holds: 0, pinned: true });
+    if let Some(entry) = blobs.get_mut(&slot) {
+        entry.pinned = false;
+        if entry.holds == 0 && entry.owner.is_none() {
+            blobs.remove(&slot);
+        }
+    }
+    Ok(id)
+}
+
+/// Probe the connector's EDID (`drm_connector_update_edid_property`): the
+/// blob describes the host's current preferred mode and physical size, so
+/// it is rebuilt when they change and kept (same id) when they do not.
+pub fn refresh_edid(host: &mut dyn crate::process::HostIO) -> Result<(), Errno> {
+    let modes = crate::dri::modes::connector_modes(host.kms_mode_info(CONNECTOR_ID));
+    let edid = crate::dri::edid::build(&modes, host.kms_connector_mm(CONNECTOR_ID));
+    let id = replace_pinned_blob(dev().edid_blob, &edid)?;
+    dev().edid_blob = id;
+    Ok(())
 }
 
 pub fn blob(id: u32) -> Option<alloc::rc::Rc<[u8]>> {
