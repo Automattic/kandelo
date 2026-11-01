@@ -29,6 +29,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <poll.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -123,6 +124,14 @@ struct egl_sync_record {
     uint32_t token;
     unsigned waiters;
     int delete_pending;
+    /* EGL_SYNC_FENCE or EGL_SYNC_NATIVE_FENCE_ANDROID. */
+    EGLenum type;
+    /* A native fence sync created from a sync_file fd has no GL fence: its
+     * status is the fd's (EGL_ANDROID_native_fence_sync). */
+    int imported;
+    /* The record's sync_file: the imported fd it owns, or the GL fence's
+     * export, made once by eglDupNativeFenceFDANDROID. -1 until then. */
+    int native_fd;
     pthread_mutex_t wire_mutex;
     uint32_t *request, *reply;
     struct egl_sync_record *next;
@@ -1925,6 +1934,7 @@ static int sync_query(struct egl_sync_record *sync, uint32_t op, uint32_t *statu
     return rc;
 }
 static void free_sync(struct egl_sync_record *sync) {
+    if (sync->native_fd >= 0) close(sync->native_fd);
     sync->session->sync_references--;
     pthread_mutex_destroy(&sync->wire_mutex);
     free(sync->request);
@@ -1937,7 +1947,7 @@ static void retire_syncs_locked(struct egl_generation *generation) {
         struct egl_sync_record *sync = *link;
         uint32_t status, signaled;
         if (!sync->delete_pending || sync->waiters ||
-            sync_query(sync, QOP_RELEASE_FENCE, &status, &signaled) != 0) {
+            (!sync->imported && sync_query(sync, QOP_RELEASE_FENCE, &status, &signaled) != 0)) {
             link = &sync->next;
             continue;
         }
@@ -1956,7 +1966,45 @@ static struct egl_sync_record *find_sync_locked(EGLDisplay dpy, EGLSync handle) 
     g_last_error = EGL_BAD_PARAMETER;
     return NULL;
 }
-static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib *list) {
+/* EGL_ANDROID_native_fence_sync with a native fence fd: the sync object takes
+ * ownership of the sync_file and reports its fence's state. Only a sync_file
+ * is a native fence; anything else is EGL_BAD_ATTRIBUTE and stays the
+ * caller's. No GL fence is created. */
+static EGLSync import_native_sync_locked(struct egl_generation *generation,
+                                         struct egl_session *session, int fd) {
+    struct wpk_sync_file_info info;
+    memset(&info, 0, sizeof info);
+    if (fd < 0 || ioctl(fd, WPK_SYNC_IOC_FILE_INFO, &info) != 0) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_SYNC;
+    }
+    if (!g_next_object_handle || session->sync_references == UINT32_MAX) {
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_NO_SYNC;
+    }
+    struct egl_sync_record *sync = calloc(1, sizeof *sync);
+    if (!sync) { g_last_error = EGL_BAD_ALLOC; return EGL_NO_SYNC; }
+    sync->request = malloc(4);
+    sync->reply = malloc(16);
+    if (!sync->request || !sync->reply || pthread_mutex_init(&sync->wire_mutex, NULL) != 0) {
+        free(sync->request); free(sync->reply); free(sync);
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_NO_SYNC;
+    }
+    sync->session = session;
+    session->sync_references++;
+    sync->type = EGL_SYNC_NATIVE_FENCE_ANDROID;
+    sync->imported = 1;
+    sync->native_fd = fd;
+    sync->handle = (EGLSync)g_next_object_handle++;
+    sync->next = generation->syncs;
+    generation->syncs = sync;
+    return sync->handle;
+}
+/* `list` is the core EGLAttrib list, `int_list` the KHR EGLint list; at most
+ * one is non-NULL. */
+static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib *list,
+                                  const EGLint *int_list) {
     struct egl_generation *generation = active_generation(dpy);
     if (!display_record(dpy) || !generation || !generation->initialized) {
         g_last_error = EGL_BAD_DISPLAY;
@@ -1970,15 +2018,22 @@ static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib 
         g_last_error = EGL_BAD_ATTRIBUTE;
         return EGL_NO_SYNC;
     }
-    if (type != EGL_SYNC_FENCE) {
+    if (type != EGL_SYNC_FENCE && type != EGL_SYNC_NATIVE_FENCE_ANDROID) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_SYNC;
     }
-    /* Fence objects define no attributes. Compare the full EGLAttrib before
-     * reading a value, including when the key is at the end of a mapping. */
-    if (list && *list != EGL_NONE) {
-        g_last_error = EGL_BAD_ATTRIBUTE;
-        return EGL_NO_SYNC;
+    /* Fence objects define no attributes; a native fence sync accepts only
+     * EGL_SYNC_NATIVE_FENCE_FD_ANDROID. Compare the full key before reading
+     * a value, including when the key is at the end of a mapping. */
+    int native_fd = EGL_NO_NATIVE_FENCE_FD_ANDROID;
+    for (size_t i = 0;; i += 2) {
+        EGLAttrib key = list ? list[i] : int_list ? (EGLAttrib)int_list[i] : EGL_NONE;
+        if (key == EGL_NONE) break;
+        if (type != EGL_SYNC_NATIVE_FENCE_ANDROID || key != EGL_SYNC_NATIVE_FENCE_FD_ANDROID) {
+            g_last_error = EGL_BAD_ATTRIBUTE;
+            return EGL_NO_SYNC;
+        }
+        native_fd = list ? (int)list[i + 1] : (int)int_list[i + 1];
     }
     struct egl_context_record *context = g_thread_binding.object;
     if (g_bound_api != EGL_OPENGL_ES_API || !context ||
@@ -1987,6 +2042,8 @@ static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib 
         return EGL_NO_SYNC;
     }
     struct egl_session *session = context->session;
+    if (native_fd != EGL_NO_NATIVE_FENCE_FD_ANDROID)
+        return import_native_sync_locked(generation, session, native_fd);
     retire_syncs_locked(generation);
     for (struct egl_sync_record *p = generation->syncs; p; p = p->next)
         if (p->session == session && p->delete_pending && !p->waiters) {
@@ -2010,6 +2067,8 @@ static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib 
         return EGL_NO_SYNC;
     }
     sync->session = session;
+    sync->type = type;
+    sync->native_fd = -1;
     session->sync_references++;
     if (_wpk_gl_flush_checked() != 0) {
         free_sync(sync);
@@ -2042,7 +2101,7 @@ EGLSync eglCreateSync(EGLDisplay dpy, EGLenum type, const EGLAttrib *list) {
     int cancel_state;
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
     lock_context();
-    EGLSync result = create_sync_locked(dpy, type, list);
+    EGLSync result = create_sync_locked(dpy, type, list, NULL);
     unlock_context();
     pthread_setcancelstate(cancel_state, NULL);
     return result;
@@ -2073,9 +2132,19 @@ EGLBoolean eglGetSyncAttrib(EGLDisplay dpy, EGLSync handle, EGLint attribute, EG
     EGLAttrib output = 0;
     if (!sync) { }
     else if (!value) g_last_error = EGL_BAD_PARAMETER;
-    else if (attribute == EGL_SYNC_TYPE) { output = EGL_SYNC_FENCE; result = EGL_TRUE; }
-    else if (attribute == EGL_SYNC_CONDITION) { output = EGL_SYNC_PRIOR_COMMANDS_COMPLETE; result = EGL_TRUE; }
+    else if (attribute == EGL_SYNC_TYPE) { output = sync->type; result = EGL_TRUE; }
+    else if (attribute == EGL_SYNC_CONDITION) {
+        output = sync->imported ? EGL_SYNC_NATIVE_FENCE_SIGNALED_ANDROID
+                                : EGL_SYNC_PRIOR_COMMANDS_COMPLETE;
+        result = EGL_TRUE;
+    }
     else if (attribute != EGL_SYNC_STATUS) g_last_error = EGL_BAD_ATTRIBUTE;
+    else if (sync->imported) {
+        struct pollfd pfd = {.fd = sync->native_fd, .events = POLLIN};
+        int ready = poll(&pfd, 1, 0);
+        if (ready < 0 || (pfd.revents & (POLLERR | POLLNVAL))) g_last_error = EGL_BAD_ACCESS;
+        else { output = ready ? EGL_SIGNALED : EGL_UNSIGNALED; result = EGL_TRUE; }
+    }
     else {
         uint32_t status, signaled;
         if (sync_query(sync, QOP_FENCE_STATUS, &status, &signaled) != 0 || status != 0)
@@ -2102,7 +2171,44 @@ static uint64_t sync_elapsed(const struct timespec *start, const struct timespec
     if (seconds > (UINT64_MAX - (uint64_t)nanoseconds) / 1000000000u) return UINT64_MAX;
     return seconds * 1000000000u + (uint64_t)nanoseconds;
 }
+/* A native fence fd signals by becoming readable (sync_file_poll). poll()'s
+ * millisecond timeout is rounded up, so the wait never ends early. */
+static EGLint wait_native(struct egl_sync_record *sync, EGLint flags, EGLTime timeout) {
+    struct timespec start, now;
+    if (timeout != 0 && timeout != EGL_FOREVER && clock_gettime(CLOCK_MONOTONIC, &start) != 0)
+        goto fail;
+    if ((flags & EGL_SYNC_FLUSH_COMMANDS_BIT) && _wpk_gl_current_encoder() &&
+        !_wpk_gl_context_reset() && _wpk_gl_server_flush_checked() != 0)
+        goto fail;
+    for (;;) {
+        int timeout_ms = -1;
+        if (timeout != EGL_FOREVER) {
+            uint64_t left = 0;
+            if (timeout != 0) {
+                if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) goto fail;
+                uint64_t elapsed = sync_elapsed(&start, &now);
+                left = elapsed < timeout ? timeout - elapsed : 0;
+            }
+            uint64_t ms = (left + 999999u) / 1000000u;
+            timeout_ms = ms > INT32_MAX ? INT32_MAX : (int)ms;
+        }
+        struct pollfd pfd = {.fd = sync->native_fd, .events = POLLIN};
+        int ready = poll(&pfd, 1, timeout_ms);
+        if (ready > 0 && (pfd.revents & POLLIN)) return EGL_CONDITION_SATISFIED;
+        if (ready > 0) goto fail;
+        if (ready == 0) {
+            if (timeout_ms == 0) return EGL_TIMEOUT_EXPIRED;
+            continue; /* recheck the clock: poll may wake before the deadline */
+        }
+        if (errno != EINTR) goto fail;
+        pthread_testcancel();
+    }
+fail:
+    g_last_error = EGL_BAD_ACCESS;
+    return EGL_FALSE;
+}
 static EGLint wait_sync(struct egl_sync_record *sync, EGLint flags, EGLTime timeout) {
+    if (sync->imported) return wait_native(sync, flags, timeout);
     struct timespec start, now;
     if (timeout != 0 && timeout != EGL_FOREVER && clock_gettime(CLOCK_MONOTONIC, &start) != 0)
         goto fail;
@@ -2186,7 +2292,10 @@ EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags) {
             wire=calloc(1,sizeof *wire);
             if(!wire)g_last_error=EGL_BAD_ALLOC;
             else {
-                wire->sync=sync;wire->input[0]=(uint32_t)sync->session->fd;wire->input[1]=sync->token;
+                /* A native fence fd names its sync_file with token 0. */
+                wire->sync=sync;
+                wire->input[0]=(uint32_t)(sync->imported?sync->native_fd:sync->session->fd);
+                wire->input[1]=sync->imported?0:sync->token;
                 destination_fd=context->session->fd;sync->waiters++;
             }
         }
@@ -2229,9 +2338,11 @@ EGLSyncKHR eglCreateSyncKHR(EGLDisplay dpy, EGLenum type, const EGLint *list) {
     EGLSyncKHR result = EGL_NO_SYNC_KHR;
     if (!display_record(dpy) || !active_generation(dpy) || !active_generation(dpy)->initialized)
         g_last_error = EGL_BAD_DISPLAY;
+    else if (type == EGL_SYNC_NATIVE_FENCE_ANDROID)
+        result = (EGLSyncKHR)create_sync_locked(dpy, type, NULL, list);
     else if (type != EGL_SYNC_FENCE_KHR || (list && *list != EGL_NONE))
         g_last_error = EGL_BAD_ATTRIBUTE;
-    else result = (EGLSyncKHR)create_sync_locked(dpy, EGL_SYNC_FENCE, NULL);
+    else result = (EGLSyncKHR)create_sync_locked(dpy, EGL_SYNC_FENCE, NULL, NULL);
     unlock_context();
     return result;
 }
@@ -2250,6 +2361,39 @@ EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute
     /* Every supported fence attribute is an enum representable in EGLint.
      * Copy only after success, preserving the caller's neighboring bytes. */
     if (result) *value = (EGLint)output;
+    return result;
+}
+
+/* EGL_ANDROID_native_fence_sync. A sync made from a GL fence exports it as a
+ * sync_file once, through the kernel (DRM_IOCTL_WPK_EXPORT_FENCE on the
+ * fence's object session); the record keeps that fd and every call returns
+ * a close-on-exec duplicate, as Mesa's dri2_dup_native_fence_fd does. */
+EGLint eglDupNativeFenceFDANDROID(EGLDisplay dpy, EGLSyncKHR handle) {
+    egl_call_begin();
+    int cancel_state;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cancel_state);
+    lock_context();
+    struct egl_sync_record *sync = find_sync_locked(dpy, (EGLSync)handle);
+    EGLint result = EGL_NO_NATIVE_FENCE_FD_ANDROID;
+    if (!sync) { }
+    else if (sync->type != EGL_SYNC_NATIVE_FENCE_ANDROID) g_last_error = EGL_BAD_PARAMETER;
+    else {
+        if (sync->native_fd < 0) {
+            struct wpk_drm_export_fence request = {.token = sync->token, .flags = O_CLOEXEC,
+                                                   .fd = -1, .pad = 0};
+            if (ioctl(sync->session->fd, WPK_DRM_IOCTL_EXPORT_FENCE, &request) == 0 &&
+                request.fd >= 0)
+                sync->native_fd = request.fd;
+        }
+        /* No native fence: EGL_NO_NATIVE_FENCE_FD_ANDROID, EGL_BAD_PARAMETER. */
+        if (sync->native_fd < 0) g_last_error = EGL_BAD_PARAMETER;
+        else if ((result = fcntl(sync->native_fd, F_DUPFD_CLOEXEC, 0)) < 0) {
+            result = EGL_NO_NATIVE_FENCE_FD_ANDROID;
+            g_last_error = EGL_BAD_ALLOC;
+        }
+    }
+    unlock_context();
+    pthread_setcancelstate(cancel_state, NULL);
     return result;
 }
 
@@ -2290,7 +2434,7 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
                    "EGL_KHR_no_config_context "
                    "EGL_EXT_create_context_robustness "
                    "EGL_KHR_surfaceless_context EGL_KHR_fence_sync "
-                   "EGL_KHR_wait_sync";
+                   "EGL_KHR_wait_sync EGL_ANDROID_native_fence_sync";
         default:
             g_last_error = EGL_BAD_PARAMETER;
             return NULL;
@@ -2317,6 +2461,7 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(eglDestroySyncKHR);
     WPK_MAP_GL(eglClientWaitSyncKHR);
     WPK_MAP_GL(eglGetSyncAttribKHR);
+    WPK_MAP_GL(eglDupNativeFenceFDANDROID);
     WPK_MAP_GL(eglQueryString);
     WPK_MAP_GL(eglGetError);
     WPK_MAP_GL(eglBindAPI);

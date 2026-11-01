@@ -350,6 +350,35 @@ static void signal_fences(void) {
     pthread_cond_broadcast(&fence_driver_changed);
     pthread_mutex_unlock(&fence_driver_mutex);
 }
+/* sync_file doubles (fds 300..315): each names one fence state, either a
+ * standalone flag or a GL fence slot exported by DRM_IOCTL_WPK_EXPORT_FENCE.
+ * fd 299 is an open descriptor that is not a sync_file. */
+static struct { int open; volatile uint32_t *signaled; } sync_files[16];
+static uint32_t standalone_fences[16];
+static unsigned fence_exports, native_server_waits;
+static int last_native_server_wait_fd = -1;
+static int sync_file_alloc(volatile uint32_t *signaled) {
+    for (int i = 0; i < 16; i++)
+        if (!sync_files[i].open) { sync_files[i].open = 1; sync_files[i].signaled = signaled; return 300 + i; }
+    assert(0 && "sync_file double table exhausted");
+    return -1;
+}
+static int is_sync_file(int fd) { return fd >= 300 && fd < 316 && sync_files[fd - 300].open; }
+int graphics_poll(struct pollfd *fds, nfds_t count, int timeout) {
+    int ready = 0;
+    for (nfds_t i = 0; i < count; i++) {
+        assert(is_sync_file(fds[i].fd));
+        fds[i].revents = *sync_files[fds[i].fd - 300].signaled ? (fds[i].events & POLLIN) : 0;
+        ready += fds[i].revents != 0;
+    }
+    /* A blocking wait in these cases only follows a signal. */
+    assert(ready || timeout == 0);
+    return ready;
+}
+int graphics_fcntl(int fd, int command, ...) {
+    assert(is_sync_file(fd) && command == F_DUPFD_CLOEXEC);
+    return sync_file_alloc(sync_files[fd - 300].signaled);
+}
 static void *server_wait_signal_thread(void *value) {
     volatile int *started=value;
     while(!*started){struct timespec pause={0,100000};nanosleep(&pause,NULL);}
@@ -683,6 +712,9 @@ int graphics_open(const char *path, int flags, ...) {
 #endif
 }
 int graphics_close(int fd) {
+    if (fd >= 300 && fd < 316) {
+        assert(sync_files[fd - 300].open); sync_files[fd - 300].open = 0; return 0;
+    }
     if (fd >= 40 && fd < 48) {
         assert(native_files[fd - 40]); native_files[fd - 40] = 0; return 0;
     }
@@ -798,6 +830,25 @@ static unsigned read_align(unsigned bytes, unsigned alignment) {
 int graphics_ioctl(int fd, unsigned long request, ...) {
     va_list args; va_start(args, request);
     void *arg = va_arg(args, void *); va_end(args);
+    if (fd == 299 || is_sync_file(fd)) {
+        if (fd == 299 || request != WPK_SYNC_IOC_FILE_INFO) { errno = ENOTTY; return -1; }
+        struct wpk_sync_file_info *info = arg;
+        assert(!info->num_fences && !info->flags && !info->pad);
+        info->status = *sync_files[fd - 300].signaled ? 1 : 0; info->num_fences = 1;
+        return 0;
+    }
+    if (request == WPK_DRM_IOCTL_EXPORT_FENCE) {
+        assert(fd >= 10 && fd < 18);
+        struct wpk_drm_export_fence *export = arg;
+        assert(export->flags == O_CLOEXEC && export->fd == -1 && !export->pad);
+        struct device_slot *slot = &device_slots[fd - 10];
+        unsigned index = 0;
+        while (index < 32 && slot->fence_tokens[index] != export->token) index++;
+        if (index == 32) { errno = EINVAL; return -1; }
+        fence_exports++;
+        export->fd = sync_file_alloc(&slot->fence_signaled[index]);
+        return 0;
+    }
 #ifdef WPK_GL_SESSION_DISPLAY
     if (request == GLIO_INIT) {
         struct gl_init_info *info = arg;
@@ -1349,6 +1400,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if(q->op==0x35) {
             assert(q->in_buf_len==8 && q->out_buf_len==16 && q->reserved==0);
             const uint32_t *input=allocation_for(q->in_buf_ptr,8);uint32_t *reply=allocation_for(q->out_buf_ptr,16);
+            if(!input[1]) {
+                /* An imported native fence names its sync_file by fd. */
+                assert(is_sync_file((int)input[0]));
+                native_server_waits++;last_native_server_wait_fd=(int)input[0];
+                reply[0]=0;reply[1]=0;reply[2]=server_wait_disposition;reply[3]=WPK_GL_QUERY_REPLY_MAGIC;return 0;
+            }
             assert(input[0]>=10 && input[0]<18 && input[1]);
             struct device_slot *source=&device_slots[input[0]-10];unsigned index=0;
             while(index<32 && source->fence_tokens[index]!=input[1])index++;
@@ -3236,6 +3293,63 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if (!strcmp(argv[1], "native-fence-sync")) {
+        PFNEGLDUPNATIVEFENCEFDANDROIDPROC dup_fd =
+            (PFNEGLDUPNATIVEFENCEFDANDROIDPROC)eglGetProcAddress("eglDupNativeFenceFDANDROID");
+        assert(dup_fd && strstr(eglQueryString(dpy, EGL_EXTENSIONS), "EGL_ANDROID_native_fence_sync"));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)(uintptr_t)1, EGL_NO_CONTEXT, attrs);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        /* A GL fence: condition PRIOR_COMMANDS_COMPLETE, exported once. */
+        EGLSyncKHR gl_sync = eglCreateSyncKHR(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, NULL);
+        assert(gl_sync != EGL_NO_SYNC_KHR);
+        EGLint value = 0;
+        assert(eglGetSyncAttribKHR(dpy, gl_sync, EGL_SYNC_TYPE_KHR, &value) && value == EGL_SYNC_NATIVE_FENCE_ANDROID);
+        assert(eglGetSyncAttribKHR(dpy, gl_sync, EGL_SYNC_CONDITION_KHR, &value) && value == EGL_SYNC_PRIOR_COMMANDS_COMPLETE_KHR);
+        int first = dup_fd(dpy, gl_sync), second = dup_fd(dpy, gl_sync);
+        assert(first >= 300 && second >= 300 && first != second && fence_exports == 1);
+        /* Only native fence syncs have a native fence. */
+        EGLSyncKHR plain = eglCreateSyncKHR(dpy, EGL_SYNC_FENCE_KHR, NULL);
+        assert(plain && dup_fd(dpy, plain) == EGL_NO_NATIVE_FENCE_FD_ANDROID && eglGetError() == EGL_BAD_PARAMETER);
+        assert(dup_fd(dpy, (EGLSyncKHR)(uintptr_t)0x7777) == EGL_NO_NATIVE_FENCE_FD_ANDROID && eglGetError() == EGL_BAD_PARAMETER);
+        /* Malformed creation keeps the caller's fd. */
+        const EGLint not_a_fence[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, 299, EGL_NONE};
+        assert(!eglCreateSyncKHR(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, not_a_fence) && eglGetError() == EGL_BAD_ATTRIBUTE);
+        const EGLint wrong_key[] = {EGL_SYNC_STATUS_KHR, EGL_SIGNALED_KHR, EGL_NONE};
+        assert(!eglCreateSyncKHR(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, wrong_key) && eglGetError() == EGL_BAD_ATTRIBUTE);
+        const EGLAttrib fence_with_fd[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, first, EGL_NONE};
+        assert(!eglCreateSync(dpy, EGL_SYNC_FENCE, fence_with_fd) && eglGetError() == EGL_BAD_ATTRIBUTE);
+        /* Importing the fd: the sync owns it and reports its fence. */
+        const EGLint import_attrs[] = {EGL_SYNC_NATIVE_FENCE_FD_ANDROID, first, EGL_NONE};
+        EGLSyncKHR imported = eglCreateSyncKHR(dpy, EGL_SYNC_NATIVE_FENCE_ANDROID, import_attrs);
+        assert(imported != EGL_NO_SYNC_KHR);
+        assert(eglGetSyncAttribKHR(dpy, imported, EGL_SYNC_CONDITION_KHR, &value) && value == EGL_SYNC_NATIVE_FENCE_SIGNALED_ANDROID);
+        assert(eglGetSyncAttribKHR(dpy, imported, EGL_SYNC_STATUS_KHR, &value) && value == EGL_UNSIGNALED_KHR);
+        assert(eglClientWaitSyncKHR(dpy, imported, 0, 0) == EGL_TIMEOUT_EXPIRED_KHR);
+        /* A server wait names the sync_file with token 0; ORDERED returns. */
+        server_wait_disposition = 0;
+        assert(eglWaitSyncKHR(dpy, imported, 0) == EGL_TRUE && native_server_waits == 1 &&
+               last_native_server_wait_fd == first);
+        /* The fence signals: the import observes it through its fd. */
+        signal_fences();
+        assert(eglGetSyncAttribKHR(dpy, imported, EGL_SYNC_STATUS_KHR, &value) && value == EGL_SIGNALED_KHR);
+        assert(eglClientWaitSyncKHR(dpy, imported, 0, EGL_FOREVER_KHR) == EGL_CONDITION_SATISFIED_KHR);
+        /* CLIENT_SIGNAL: the caller observes the (now signaled) fd itself. */
+        server_wait_disposition = 1;
+        assert(eglWaitSyncKHR(dpy, imported, 0) == EGL_TRUE && native_server_waits == 2);
+        server_wait_disposition = 0;
+        int third = dup_fd(dpy, imported);
+        assert(third >= 300 && third != first && fence_exports == 1);
+        /* Destruction closes the descriptors each sync owns. */
+        assert(eglDestroySyncKHR(dpy, imported) && !sync_files[first - 300].open);
+        assert(eglDestroySyncKHR(dpy, plain) && eglDestroySyncKHR(dpy, gl_sync));
+        assert(eglReleaseThread() && eglDestroyContext(dpy, context) && eglTerminate(dpy));
+        int exported_fd = -1;
+        for (int i = 0; i < 16; i++) if (sync_files[i].open && 300 + i != second && 300 + i != third) exported_fd = 300 + i;
+        assert(exported_fd == -1);
+        assert(!close(second) && !close(third));
+        assert(allocation_count() == 0);
+        puts("PASS native-fence-sync"); return 0;
+    }
     if(!strncmp(argv[1],"server-wait-",12)) {
         EGLBoolean (*wait)(EGLDisplay,EGLSync,EGLint)=(void *)eglGetProcAddress("eglWaitSync");
         EGLint (*wait_khr)(EGLDisplay,EGLSyncKHR,EGLint)=(void *)eglGetProcAddress("eglWaitSyncKHR");
