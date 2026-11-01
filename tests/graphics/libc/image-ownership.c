@@ -2246,6 +2246,25 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(!eglCreateImageKHR(dpy, context, EGL_NONE, NULL, list));
         assert(eglGetError() == EGL_BAD_CONTEXT);
         assert(eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-query-string")) {
+        /* EGL 1.5 section 3.3. */
+        const char *version = eglQueryString(EGL_NO_DISPLAY, EGL_VERSION);
+        assert(version && !strcmp(version, "1.5 wpk") && eglGetError() == EGL_SUCCESS);
+        assert(!eglQueryString(EGL_NO_DISPLAY, EGL_VENDOR) && eglGetError() == EGL_BAD_DISPLAY);
+        assert(!eglQueryString((EGLDisplay)-1, EGL_VENDOR) && eglGetError() == EGL_BAD_DISPLAY);
+        const EGLint names[] = {EGL_VENDOR, EGL_VERSION, EGL_EXTENSIONS, EGL_CLIENT_APIS, 0};
+        for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++) {
+            assert(!eglQueryString(dpy, names[i]));
+            assert(eglGetError() == EGL_NOT_INITIALIZED);
+        }
+        assert(eglInitialize(dpy, NULL, NULL));
+        assert(!eglQueryString(dpy, 0) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglQueryString(dpy, -1) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglQueryString(dpy, EGL_RED_SIZE) && eglGetError() == EGL_BAD_PARAMETER);
+        version = eglQueryString(dpy, EGL_VERSION);
+        assert(version && !strcmp(version, "1.5 wpk") && eglGetError() == EGL_SUCCESS);
+        assert(eglTerminate(dpy));
+        assert(!eglQueryString(dpy, EGL_VENDOR) && eglGetError() == EGL_NOT_INITIALIZED);
     } else return 0;
     printf("PASS %s\n", name);
     return 1;

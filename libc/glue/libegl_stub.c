@@ -1944,22 +1944,34 @@ EGLBoolean eglGetSyncAttribKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint attribute
     return result;
 }
 
+#define WPK_EGL_VERSION_STRING "1.5 wpk"
 const char *eglQueryString(EGLDisplay dpy, EGLint name) {
     egl_call_begin();
-    /* EGL_EXT_client_extensions: EGL_NO_DISPLAY answers the extensions
-     * that exist before a display does. The GBM platform is the one this
+    /* EGL 1.5 section 3.3: EGL_NO_DISPLAY answers only the client library
+     * version and, through EGL_EXT_client_extensions, the extensions that
+     * exist before a display does. The GBM platform is the one this
      * backend is (see eglGetPlatformDisplay). */
     if (dpy == EGL_NO_DISPLAY && name == EGL_EXTENSIONS) {
         return "EGL_EXT_client_extensions EGL_EXT_platform_base "
                "EGL_KHR_platform_gbm EGL_MESA_platform_gbm";
     }
+    if (dpy == EGL_NO_DISPLAY && name == EGL_VERSION) return WPK_EGL_VERSION_STRING;
     if (!display_record(dpy)) {
         g_last_error = EGL_BAD_DISPLAY;
         return NULL;
     }
+    /* Display strings describe an initialized display, never a handle
+     * that was not yet initialized or has been terminated. */
+    lock_context();
+    int initialized = active_generation(dpy) && active_generation(dpy)->initialized;
+    unlock_context();
+    if (!initialized) {
+        g_last_error = EGL_NOT_INITIALIZED;
+        return NULL;
+    }
     switch (name) {
         case EGL_VENDOR:      return "wasm-posix-kernel";
-        case EGL_VERSION:     return "1.5 wpk";
+        case EGL_VERSION:     return WPK_EGL_VERSION_STRING;
         case EGL_CLIENT_APIS: return "OpenGL_ES";
         case EGL_EXTENSIONS:
             return "EGL_EXT_image_dma_buf_import "
@@ -1967,7 +1979,9 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
                    "EGL_KHR_image_base EGL_KHR_no_config_context "
                    "EGL_KHR_surfaceless_context EGL_KHR_fence_sync "
                    "EGL_KHR_wait_sync";
-        default:              return NULL;
+        default:
+            g_last_error = EGL_BAD_PARAMETER;
+            return NULL;
     }
 }
 
