@@ -776,7 +776,18 @@ pub(crate) fn handle_dri_card_ioctl(
                     kms_state_mut(proc, ofd_idx)?.universal_planes = req.value == 1;
                     Ok(())
                 }
-                DRM_CLIENT_CAP_ATOMIC => Err(Errno::EOPNOTSUPP),
+                // drm_setclientcap: 1 and 2 enable atomic (2 also lets a
+                // client see writeback connectors, of which there are none),
+                // 0 disables it; the cap sets universal planes alike.
+                DRM_CLIENT_CAP_ATOMIC => {
+                    if req.value > 2 {
+                        return Err(Errno::EINVAL);
+                    }
+                    let mut kms_file = kms_state_mut(proc, ofd_idx)?;
+                    kms_file.atomic = req.value != 0;
+                    kms_file.universal_planes = req.value != 0;
+                    Ok(())
+                }
                 // Writeback connectors need the atomic cap; there are none
                 // to list, so accepting the cap changes no listing.
                 DRM_CLIENT_CAP_WRITEBACK_CONNECTORS => {

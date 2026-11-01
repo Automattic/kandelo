@@ -51520,7 +51520,10 @@ impl HostIO for RelSymlinkMock {
         };
         assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 1), Ok(()));
         assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_UNIVERSAL_PLANES, 2), Err(Errno::EINVAL));
-        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ATOMIC, 1), Err(Errno::EOPNOTSUPP));
+        // Atomic modesetting is implemented: the cap is accepted (and
+        // implies universal planes); values past 2 are EINVAL.
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ATOMIC, 3), Err(Errno::EINVAL));
+        assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ATOMIC, 1), Ok(()));
         assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_STEREO_3D, 1), Ok(()));
         assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ASPECT_RATIO, 1), Ok(()));
         assert_eq!(set(&mut proc, &mut host, DRM_CLIENT_CAP_ASPECT_RATIO, 2), Err(Errno::EINVAL));

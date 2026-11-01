@@ -61,13 +61,9 @@ impl Igt {
         let mut host = MockHostIO::new();
         host.cursor_supported = true;
         let fd = kms_master_card0(&mut proc, &mut host);
-        // The cap is not advertised yet: enable it on the file directly.
-        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
-        let mut kms_file = crate::dri::ioctl_kms::kms_state_mut(&mut proc, ofd).unwrap();
-        kms_file.atomic = true;
-        kms_file.universal_planes = true;
-        drop(kms_file);
-        Self { proc, host, fd }
+        let mut igt = Self { proc, host, fd };
+        assert_eq!(igt.set_cap(CLIENT_CAP_ATOMIC, 1), Ok(()), "DRM_CLIENT_CAP_ATOMIC");
+        igt
     }
 
     fn set_cap(&mut self, capability: u64, value: u64) -> Result<(), Errno> {
@@ -676,6 +672,43 @@ fn kms_atomic_primary_plane_neither_scales_nor_moves() {
     igt.close();
 }
 
+/// The atomic cap and ioctl permissions (drm_ioctl.c, drm_mode_atomic_ioctl).
+#[test]
+fn kms_atomic_needs_the_client_cap_and_master() {
+    let _locks = locks();
+    let mut proc = Process::new(1);
+    let mut host = MockHostIO::new();
+    let fd = kms_master_card0(&mut proc, &mut host);
+    let empty = DrmModeAtomic::default();
+    assert_eq!(kms_ioctl(&mut proc, &mut host, fd, IOCTL_MODE_ATOMIC, empty).map(|_| ()), Err(Errno::EINVAL),
+        "atomic cap not enabled");
+    let cap = |proc: &mut Process, host: &mut MockHostIO, fd, capability, value| {
+        kms_ioctl(proc, host, fd, DRM_IOCTL_SET_CLIENT_CAP, WpkDrmSetClientCap { capability, value }).map(|_| ())
+    };
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_WRITEBACK_CONNECTORS, 1), Err(Errno::EINVAL));
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_ATOMIC, 3), Err(Errno::EINVAL));
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_ATOMIC, 1), Ok(()));
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_WRITEBACK_CONNECTORS, 1), Ok(()));
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_WRITEBACK_CONNECTORS, 2), Err(Errno::EINVAL));
+    // Atomic implies universal planes.
+    let planes = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANERESOURCES,
+        WpkDrmModeGetPlaneRes { plane_id_ptr: 0x1000, count_planes: 4, pad: 0 }).unwrap();
+    assert_eq!(planes.count_planes, 1);
+    assert_eq!(kms_ioctl(&mut proc, &mut host, fd, IOCTL_MODE_ATOMIC, empty).map(|_| ()), Ok(()));
+    // DRM_MASTER on the primary node, refused on the render node.
+    let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+    cap(&mut proc, &mut host, plain, CLIENT_CAP_ATOMIC, 1).unwrap();
+    assert_eq!(kms_ioctl(&mut proc, &mut host, plain, IOCTL_MODE_ATOMIC, empty).map(|_| ()), Err(Errno::EACCES));
+    let render = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+    assert_eq!(kms_ioctl(&mut proc, &mut host, render, IOCTL_MODE_ATOMIC, empty).map(|_| ()), Err(Errno::EACCES));
+    // Clearing the cap clears universal planes too.
+    assert_eq!(cap(&mut proc, &mut host, fd, CLIENT_CAP_ATOMIC, 0), Ok(()));
+    let planes = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPLANERESOURCES,
+        WpkDrmModeGetPlaneRes { plane_id_ptr: 0x1000, count_planes: 4, pad: 0 }).unwrap();
+    assert_eq!(planes.count_planes, 0);
+    kms::reset_for_test();
+}
+
 /// igt@kms_properties@get_properties-sanity-atomic: the atomic properties
 /// are listed only with the cap, with Linux's types and flags, and no
 /// IN_FORMATS (no format modifiers are advertised, D-15).
@@ -708,8 +741,7 @@ fn kms_properties_get_properties_sanity_atomic() {
     assert_eq!(igt.value(kms::PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE, "IN_FENCE_FD"), -1i64 as u64);
     let _ = in_fence;
     // Without the cap, none of them are listed.
-    let ofd = igt.proc.fd_table.get(igt.fd).unwrap().ofd_ref.0;
-    crate::dri::ioctl_kms::kms_state_mut(&mut igt.proc, ofd).unwrap().atomic = false;
+    assert_eq!(igt.set_cap(CLIENT_CAP_ATOMIC, 0), Ok(()));
     assert_eq!(names(&mut igt, kms::PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE), ["type"]);
     assert_eq!(names(&mut igt, kms::CRTC_ID, DRM_MODE_OBJECT_CRTC), ["GAMMA_LUT", "GAMMA_LUT_SIZE"]);
     igt.close();
