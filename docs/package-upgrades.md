@@ -15,19 +15,29 @@ Both deployments use the same current trusted runtime and program ABI 55.
 This does not establish upgrades across program-contract changes. Keep the
 first-release compatibility warning until that broader path is proven.
 
-Native and Node tests now cover a base declaring an older contract: its data
-mounts with guests closed, and native tests upgrade it on the unchanged base,
-reopen, roll back and reapply. No running application has crossed a real
-program-contract change yet, so this is not evidence for that path.
+A separate acceptance test crosses a real program contract change. Two
+deployments with different kernels, program contracts (ABI 55 and 56) and
+package sets share one origin. A WordPress and MariaDB computer is created on
+the first with a post and an upload, then reloaded onto the second, where it
+boots blocked. It updates through a page interruption, runs on the new contract,
+reopens, rolls back and is refused a start, then reapplies and runs, keeping
+both the post and the exact upload bytes. This passes in Chromium, Firefox and
+WebKit. `apps/browser-demos/test/cross-contract-software.spec.ts` needs a
+fixture made from two full builds, so it is skipped otherwise.
+
+The computers it covers must carry a software inventory. A computer saved by a
+preview built before inventories existed has no ownership baseline and cannot be
+updated. It keeps running while its image's declared contract still matches the
+runtime. Once that differs it stays stopped with its files preserved, and the
+panel says it cannot be updated rather than offering an update.
 
 A native positioned-file probe now verifies, stages, atomically publishes,
 reopens and rolls back a complete 14,487-path pristine WordPress software-set
 comparison without increasing memory budgets. Reopen checks the complete
 inventory and unmanaged user data. This is filesystem/package evidence, not
 an executing WordPress upgrade demo. The later running app result above is
-separate evidence. Deferred-source availability after old assets disappear,
-a running cross-contract upgrade and final release gates remain open. Actual
-results and limitations are in the [persistence plan](persistence-plan.md).
+separate evidence. Actual results and limitations are in the
+[persistence plan](persistence-plan.md).
 
 Rust owns package inventories, conflict checks, staging, activation,
 recovery selection and rollback. Hosts supply bounded byte transport; the
@@ -35,6 +45,52 @@ application must stop/retire guest workers before requesting maintenance.
 The native process-table gate does not by itself prove host-worker retirement.
 Automatic browser re-instrumentation is outside this iteration; see
 [program compatibility](persistent-program-compatibility.md).
+
+## Architecture and compromises
+
+A saved computer is an immutable base image plus a Rust-owned journal. An
+upgrade never replaces that base. It stops guests, checks the installed files
+against an inventory of what the package set owns, stages the replacement
+files in private journal paths, then switches names and the inventory in one
+journal transaction. Crash recovery therefore sees the complete old set or the
+complete new set. The previous files stay in the journal so that rollback can
+switch back the same way. User files are outside the inventory and are never
+touched. There is one trusted runtime, the current one, and no older kernel or
+host is ever kept or loaded.
+
+These are deliberate choices with real costs:
+
+| Choice | What it costs |
+| --- | --- |
+| Update inside the journal instead of rebasing the base | The base header keeps describing the original software forever, so an installed inventory overrides it when deciding what may run. |
+| One rollback per computer | Installing another update replaces the earlier rollback once the target has passed verification. A refused update leaves it in place. It verifies twice, because a full plan leaves no room for the inventories a discard reads. |
+| Refuse the whole update on any conflict | One edited package file blocks the update until the user resolves it. |
+| Rollback restores packaged files only | Database contents and schema are not rolled back. Migrations stay explicit and separate. |
+| No old runtime after a contract change | Rollback restores the old files, but they cannot run. The computer stays stopped until a current set is applied. |
+| Lazy files stay references | Rollback downloads nothing, but reading a never-fetched old file needs its old asset to still be hosted. |
+| Maintenance needs a saved browser computer or the Node host API | Other persistent mounts stay closed when blocked and have no recovery view. |
+
+The program contract is the most important limit. Kandelo declares an exact
+ABI 55 baseline and refuses to change it by accident. It does not yet have a way
+to keep old programs running across a deliberate contract change: there are no
+adapters and no required-extension mechanism. Packaged software crosses a change
+by being replaced with the release's prebuilt set. Every user-built program,
+forking or not, is preserved but refused until it is rebuilt. Fork
+instrumentation has its own version so that a fork-only change refuses only
+forking programs, but only `program_artifact.fork_instrumentation` is separated.
+
+Boot checks protect against accidents and interrupted work, not a hostile guest.
+A guest is root in its own computer and can edit the inventory, so the inventory
+is not a security boundary. Ordinary boot reads only the bounded inventory; full
+file verification happens in maintenance. Execution is still checked per program
+before launch, whatever the inventory says, and boot configuration comes from
+records guests cannot reach.
+
+This is an experimental source candidate. See the
+[persistence plan](persistence-plan.md) for what has actually been validated.
+The storage contract is in
+[the durability contract](persistence-durability.md), and version boundaries are
+in [persistent program compatibility](persistent-program-compatibility.md).
 
 ## Inventory and compatible sets
 
@@ -157,11 +213,13 @@ about the same virtual name. No second host-owned source registry or filesystem
 inventory is introduced. The image-module export is additive; filesystem,
 journal, package-format, userspace and kernel-host versions are unchanged.
 
-Source identity is not source availability. A never-fetched lazy resource
-still needs its retained server, or separately retained local bytes. These
-bindings do not promise complete offline operation after a deployment deletes
-old assets. Missing sources remain explicit read failures; they must not fall
-through to another release. These resources are package bytes, not archives
+Rollback restores the previous state, including its lazy references. It needs
+no package server and downloads nothing, so a lazy file that was never fetched
+before an update is simply never fetched again after rollback. Reading that
+file then has the dependency it always had: the server for its old asset. Old
+bytes are not retained to make rollback offline, because the previous state was
+not offline either. Missing sources remain explicit read failures; they must
+not fall through to another release. These resources are package bytes, not archives
 of privileged host/kernel runtimes. Application bundle selection is verified
 against the current deployment's content-addressed manifest; each computer's
 bounded software-product identifier selects a product, not execution authority.
@@ -238,6 +296,11 @@ all leave guests closed without writing to storage. Unsupported old images are
 still refused by ordinary loading, composition and publication; only the
 explicit persistent mount tolerates them. Replacing a filesystem while tasks
 exist or during maintenance returns `EBUSY` before the old one is touched.
+
+Maintenance needs resizable persistence and, in the browser, a saved computer.
+Other persistent mounts that end up blocked keep their files readable and stay
+closed: the app reports that at boot, and Node callers can query `bootBlocked`,
+because a guest launch there otherwise fails with a bare `EBUSY`.
 
 Only the set being activated must be runnable. Rollback restores files without
 running them, so it succeeds when the old set uses an older contract; leaving
@@ -345,7 +408,8 @@ before replay can run, so a boot assumes the newest record, confirms it after
 replay, and on a mismatch retires that kernel and boots once more with the
 correct configuration. Checkpoints use the same selection, so a replacement
 base stores the configuration of the software it actually contains. A target
-that no longer declares the computer's profile is refused before native work.
+is judged before any native work: one that no longer declares the computer's
+profile, or whose record later boots could not read, is refused.
 
 ## Staging, activation and recovery
 
@@ -499,11 +563,10 @@ old versus new state.
   be reopened as a new operation before rollback. One transaction is
   retained per computer; discard it before starting another upgrade.
 - Incoming sets must match the current supported program contract.
-  Rollback refuses an old set unsupported by the current runtime. No
-  privileged old runtime is retained or loaded.
-- Incompatible immutable-base program declarations still need explicit
-  non-executing recovery admission. Legitimately upgraded boot metadata,
-  supported userspace compatibility, missing old lazy sources and final
+  Rollback may restore an old set the current runtime cannot execute, and
+  leaving maintenance then refuses it. No privileged old runtime is retained
+  or loaded.
+- A running application crossing a real program-contract change and final
   complete conformance/memory gates remain release work. Guest network and
   retirement-time memory/thread diagnostics remain under investigation.
   Database migrations stay explicit.

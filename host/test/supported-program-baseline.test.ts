@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { resolveBinary } from "../src/binary-resolver";
+import { describeWasmForkArtifactContractFailures } from "../src/constants";
 import { KandeloImageFs } from "../../images/vfs/lib/kandelo-image-fs";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -115,6 +116,13 @@ describe("supported program baseline: unchanged previously compiled programs", (
       uid: 1000, gid: 1000, ownedJob: { id: "other-contract-echo", timeoutMs: 30_000 },
     });
     await expect(process.exit).resolves.toBe(0);
+  });
+
+  it("does not let a second fork contract stamp hide the first", async () => {
+    const source = readFileSync(new URL("environment-lifecycle.wasm", directory));
+    const twice = stampForkContract(stampForkContract(source, 1), 2);
+    expect(describeWasmForkArtifactContractFailures(Uint8Array.from(twice).buffer).join(" ")).toContain("duplicate");
+    expect(describeWasmForkArtifactContractFailures(Uint8Array.from(stampForkContract(source, 1)).buffer)).toEqual([]);
   });
 
   it("launches retained initial paths with requested credentials, cwd and shebang argv", async () => {

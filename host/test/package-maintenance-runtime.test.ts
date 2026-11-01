@@ -76,9 +76,10 @@ describe("real Node maintenance transport", () => {
     const oldPath = `/${"1".repeat(64)}/assets/programs/wasm32/upgrade-fixture.wasm`;
     const newPath = `/${"2".repeat(64)}/assets/programs/wasm32/upgrade-fixture.wasm`;
     let corrupt = false;
+    let outage = false;
     const server = createServer((request, response) => {
       requests.push(request.url ?? "");
-      const version = request.url === oldPath ? 1 : request.url === newPath ? 2 : 0;
+      const version = outage ? 0 : request.url === oldPath ? 1 : request.url === newPath ? 2 : 0;
       const body = encoder.encode(`lazy package ${version === 2 && corrupt ? "x" : version}`);
       response.writeHead(version === 0 ? 404 : 200, { "Content-Length": body.length });
       response.end(body);
@@ -120,11 +121,14 @@ describe("real Node maintenance transport", () => {
       corrupt = false;
       expect(await host.readFileFromVfs("/software/lazy")).toEqual(after.lazy);
       expect(requests).toEqual([newPath, newPath]);
+      outage = true;
       await host.packageMaintenance({ action: "enter" });
       await client().run("rollback");
       await host.packageMaintenance({ action: "leave" });
       await host.destroy();
       host = await start(true);
+      expect(requests).toEqual([newPath, newPath]);
+      outage = false;
       expect(await host.readFileFromVfs("/software/lazy")).toEqual(before.lazy);
       expect(requests).toEqual([newPath, newPath, oldPath]);
       expect(await host.readFileFromVfs("/user/notes")).toEqual(encoder.encode("user data"));

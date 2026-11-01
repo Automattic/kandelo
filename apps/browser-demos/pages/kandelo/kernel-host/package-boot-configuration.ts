@@ -95,8 +95,11 @@ export async function readBootConfigurations(computerId: string): Promise<BootCo
 }
 
 async function writeRecord(computerId: string, entries: BootConfiguration[]): Promise<void> {
-  const bytes = new TextEncoder().encode(JSON.stringify({ version: 1, entries }));
+  const text = JSON.stringify({ version: 1, entries });
+  const bytes = new TextEncoder().encode(text);
   if (bytes.length > MAX_RECORD_BYTES) throw new Error("Software boot configuration exceeds its bound");
+  // Readers refuse a record they cannot parse, and every boot reads this one.
+  parseRecord(JSON.parse(text));
   const directory = await softwareDirectory(computerId);
   const writer = await (await directory.getFileHandle(FILE, { create: true })).createWritable();
   try { await writer.write(bytes); await writer.close(); }

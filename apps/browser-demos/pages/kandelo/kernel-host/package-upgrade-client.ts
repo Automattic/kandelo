@@ -24,6 +24,8 @@ interface Hooks {
   signal?: AbortSignal;
   onProgress?: (progress: PackageUpgradeProgress) => void;
   onTransfer?: (progress: { path: string | null; accepted: number; total: number }) => void;
+  /** Installing over a finished transaction, which this replaces once the target passes. */
+  replacesRollback?: boolean;
 }
 
 function view(bytes: Uint8Array, minimum: number): DataView {
@@ -66,7 +68,12 @@ export class PackageUpgradeClient {
   private async call(request: PackageMaintenanceRequest, hooks: Hooks): Promise<PackageMaintenanceResponse> {
     hooks.signal?.throwIfAborted();
     this.touched = true;
-    const response = checkedPackageMaintenanceResponse(await this.transport(request));
+    let response: PackageMaintenanceResponse;
+    try { response = checkedPackageMaintenanceResponse(await this.transport(request)); }
+    catch (error) {
+      if (error instanceof Error) error.message += ` during ${request.action}`;
+      throw error;
+    }
     hooks.signal?.throwIfAborted();
     return response;
   }
@@ -121,6 +128,21 @@ export class PackageUpgradeClient {
     }
   }
 
+  private async upload(source: PackageUpgradeSource, hooks: Hooks): Promise<void> {
+    const size = source.inventoryBytes;
+    if (!Number.isSafeInteger(size) || size < 1 || size > 8 * 1024 * 1024) throw new Error("Invalid package inventory length");
+    for (let offset = 0; offset < size;) {
+      hooks.signal?.throwIfAborted();
+      const amount = Math.min(wire.MAX_BUFFER_BYTES, size - offset);
+      const bytes = await source.readInventory(offset, amount);
+      checkChunk(bytes, amount);
+      const response = await this.call({ action: "uploadInventory", offset, data: bytes }, hooks);
+      if (response.status !== offset + bytes.length) throw new Error("Package inventory made invalid progress");
+      offset = response.status;
+      hooks.onTransfer?.({ path: null, accepted: offset, total: size });
+    }
+  }
+
   async run(operation: "install" | "resume" | "rollback", source?: PackageUpgradeSource, hooks: Hooks = {}): Promise<PackageUpgradeProgress> {
     if (this.busy) throw new Error("A package operation is already running");
     if (this.cleanupFailed) throw new Error("Maintenance cleanup is unconfirmed; reopen the computer before retrying");
@@ -134,18 +156,7 @@ export class PackageUpgradeClient {
     try {
       if (operation !== "rollback") {
         if (operation === "resume") await this.call({ action: "cancel" }, hooks);
-        const size = source!.inventoryBytes;
-        if (!Number.isSafeInteger(size) || size < 1 || size > 8 * 1024 * 1024) throw new Error("Invalid package inventory length");
-        for (let offset = 0; offset < size;) {
-          hooks.signal?.throwIfAborted();
-          const amount = Math.min(wire.MAX_BUFFER_BYTES, size - offset);
-          const bytes = await source!.readInventory(offset, amount);
-          checkChunk(bytes, amount);
-          const response = await this.call({ action: "uploadInventory", offset, data: bytes }, hooks);
-          if (response.status !== offset + bytes.length) throw new Error("Package inventory made invalid progress");
-          offset = response.status;
-          hooks.onTransfer?.({ path: null, accepted: offset, total: size });
-        }
+        await this.upload(source!, hooks);
         await this.call({ action: operation === "install" ? "begin" : "resumeFromSource" }, hooks);
       } else {
         await this.call({ action: "cancel" }, hooks);
@@ -155,6 +166,17 @@ export class PackageUpgradeClient {
       const phase = operation === "rollback" ? wire.PHASE_ACTIVE : wire.PHASE_PENDING;
       if (progress.phase !== phase) throw new Error("The recovered package phase does not permit this operation");
       await this.verify("verifyInstalled", hooks);
+      if (operation === "install" && hooks.replacesRollback) {
+        // The target passed, so the existing rollback can go. A complete plan
+        // leaves no room for the inventories that recovery and discard read,
+        // so release the plan first and build it again.
+        await this.call({ action: "cancel" }, hooks);
+        await this.call({ action: "discard" }, hooks);
+        await this.upload(source!, hooks);
+        await this.call({ action: "begin" }, hooks);
+        await this.progress(hooks);
+        await this.verify("verifyInstalled", hooks);
+      }
       if (operation !== "rollback") {
         if (operation === "install") await this.call({ action: "prepare" }, hooks);
         await this.stage(source!, progress.files, operation === "resume", hooks);

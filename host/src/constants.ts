@@ -2174,11 +2174,18 @@ function describeForkArtifactContractFailures(
  * the artifact. This is shared by program admission and the dynamic linker so
  * a side module cannot defer a malformed reconstruction recipe until replay.
  */
+export const FORK_REBUILD_GUIDANCE =
+  "Fork instrumentation is versioned but not stable across Kandelo releases. " +
+  "Rebuild user-built forking programs with the current Kandelo SDK, " +
+  "or install a compatible package update. Automatic re-instrumentation is unavailable.";
+
 // Programs built before the contract was versioned carry no stamp. Their
 // meaning is fixed: they are contract 1, whatever the current version is.
 const UNSTAMPED_FORK_CONTRACT_VERSION = 1;
 
 function describeForkContractVersionFailures(programBytes: ArrayBuffer): string[] {
+  const stamps = readWasmCustomSectionNames(programBytes).filter((name) => name === WPK_FORK_CONTRACT_SECTION);
+  if (stamps.length > 1) return [`duplicate ${WPK_FORK_CONTRACT_SECTION} sections`];
   const stamp = readWasmCustomSectionPayload(programBytes, WPK_FORK_CONTRACT_SECTION);
   if (stamp !== null && stamp.byteLength !== 4) {
     return [`invalid ${WPK_FORK_CONTRACT_SECTION} section (${stamp.byteLength} bytes)`];
@@ -2672,13 +2679,7 @@ export function describeWasmArtifactPolicyFailures(
         }`,
       );
     }
-    if (failures.length > failureCount) {
-      failures.push(
-        "Fork instrumentation is versioned but not stable across Kandelo releases. " +
-          "Rebuild user-built forking programs with the current Kandelo SDK, " +
-          "or install a compatible package update. Automatic re-instrumentation is unavailable.",
-      );
-    }
+    if (failures.length > failureCount) failures.push(FORK_REBUILD_GUIDANCE);
   }
 
   return failures;

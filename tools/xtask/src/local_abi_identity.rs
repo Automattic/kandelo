@@ -83,12 +83,22 @@ fn bind_baseline_fork_surface(surface: &mut serde_json::Map<String, Value>) -> R
     Ok(())
 }
 
+pub(crate) fn baseline_fork_surface_digest() -> Result<[u8; 32], String> {
+    let surface = serde_json::from_str(BASELINE_FORK_SURFACE)
+        .map_err(|error| format!("parse baseline fork surface: {error}"))?;
+    digest_fork_surface(&surface)
+}
+
 /// Digest of the live fork surface, which `abi/fork-contract.json` versions.
 pub(crate) fn fork_surface_digest(snapshot: &Value) -> Result<[u8; 32], String> {
     let surface = snapshot
         .get("program_artifact")
         .and_then(|artifact| artifact.get(FORK_SURFACE_KEY))
         .ok_or("must declare the fork instrumentation surface")?;
+    digest_fork_surface(surface)
+}
+
+fn digest_fork_surface(surface: &Value) -> Result<[u8; 32], String> {
     let mut canonical = Vec::new();
     write_canonical_json(surface, &mut canonical)?;
     let mut hasher = Sha256::new();

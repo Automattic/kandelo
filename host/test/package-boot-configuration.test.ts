@@ -128,6 +128,14 @@ describe("boot configuration of upgraded computers", () => {
     expect(state.writes).toBe(0);
   });
 
+  it("refuses a target whose record later boots could not read", async () => {
+    const services = Array.from({ length: 65 }, (_, index) => `s${index}`);
+    const wide = { ...target, "/etc/dinit.d/web": encoder.encode(`type = process\n${services.map(name => `depends-on = ${name}`).join("\n")}\n`),
+      ...Object.fromEntries(services.map(name => [`/etc/dinit.d/${name}`, encoder.encode("type = process\n")])) };
+    await expect(recordBootConfiguration(computer, reader(liveOld), base as never, source(wide, newInventory))).rejects.toThrow();
+    expect(state.writes).toBe(0);
+  });
+
   it("refuses an installed set it cannot read rather than recording a rollback guess", async () => {
     await expect(recordBootConfiguration(computer, reader({}), base as never, source(target, newInventory)))
       .rejects.toThrow(/installed software inventory/);

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { PACKAGE_MAINTENANCE_WIRE as wire } from "../src/generated/abi";
-import type { PackageMaintenanceRequest, PackageMaintenanceResponse } from "../src/package-maintenance";
+import { ERRNO, PACKAGE_MAINTENANCE_WIRE as wire } from "../src/generated/abi";
+import { PackageMaintenanceError, type PackageMaintenanceRequest, type PackageMaintenanceResponse } from "../src/package-maintenance";
+import { INCOMPATIBLE_SOFTWARE, NOT_UPDATABLE_SOFTWARE } from "../../web-libs/kandelo-session/src/computer-software";
 import { PackageMaintenanceSession, type OwnedPackageSource } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-maintenance-session";
 
 function fixture(recovery: number = wire.RECOVERY_NONE) {
@@ -34,6 +35,67 @@ function fixture(recovery: number = wire.RECOVERY_NONE) {
 }
 
 describe("application maintenance session ownership", () => {
+  it("tells the owner a blocked computer needs an update and clears that once one is installed", async () => {
+    const { runtime, source } = fixture();
+    const session = await PackageMaintenanceSession.open(runtime, () => {}, true);
+    expect(session.getSnapshot().incompatible).toBe(true);
+    await session.run("install", async () => source);
+    expect(session.getSnapshot().incompatible).toBe(false);
+  });
+
+  it("discards an existing rollback only after the target has passed verification", async () => {
+    const { runtime, requests, source } = fixture(wire.RECOVERY_ACTIVE);
+    const session = await PackageMaintenanceSession.open(runtime, () => {});
+    await session.run("install", async () => source);
+    const discard = requests.indexOf("discard");
+    expect(discard).toBeGreaterThan(requests.indexOf("verifyInstalled"));
+    expect(requests.lastIndexOf("begin")).toBeGreaterThan(discard);
+    expect(requests.lastIndexOf("verifyInstalled")).toBeGreaterThan(discard);
+    expect(requests.indexOf("prepare")).toBeGreaterThan(requests.lastIndexOf("verifyInstalled"));
+  });
+
+  it("keeps the rollback when verification refuses the target", async () => {
+    const { runtime, requests, source } = fixture(wire.RECOVERY_ACTIVE);
+    const invoke = runtime.packageMaintenance.getMockImplementation()!;
+    runtime.packageMaintenance.mockImplementation(async request => {
+      if (request.action === "verifyInstalled") throw new PackageMaintenanceError(ERRNO.EIO, wire.ERROR_CONTENTS);
+      return invoke(request);
+    });
+    const session = await PackageMaintenanceSession.open(runtime, () => {});
+    await expect(session.run("install", async () => source)).rejects.toBeInstanceOf(PackageMaintenanceError);
+    expect(requests).not.toContain("discard");
+  });
+
+  it("offers no update to a blocked computer without an inventory and explains a refused start", async () => {
+    const { runtime } = fixture();
+    const invoke = runtime.packageMaintenance.getMockImplementation()!;
+    runtime.packageMaintenance.mockImplementation(async request => {
+      if (request.action === "leave") throw new PackageMaintenanceError(ERRNO.ENOENT, wire.ERROR_NONE);
+      return invoke(request);
+    });
+    const session = await PackageMaintenanceSession.open(runtime, () => {}, true, false);
+    expect(session.getSnapshot()).toMatchObject({ incompatible: true, updatable: false });
+    await expect(session.release()).rejects.toThrow(NOT_UPDATABLE_SOFTWARE);
+  });
+
+  it("does not call an unfinished update incompatible", async () => {
+    const { runtime } = fixture(wire.RECOVERY_PENDING);
+    const session = await PackageMaintenanceSession.open(runtime, () => {}, true);
+    expect(session.getSnapshot().incompatible).toBeUndefined();
+  });
+
+  it("explains a refused start and stays in maintenance", async () => {
+    const { runtime } = fixture(wire.RECOVERY_ROLLED_BACK);
+    const invoke = runtime.packageMaintenance.getMockImplementation()!;
+    runtime.packageMaintenance.mockImplementation(async request => {
+      if (request.action === "leave") throw new PackageMaintenanceError(ERRNO.ENOEXEC, wire.ERROR_NONE);
+      return invoke(request);
+    });
+    const session = await PackageMaintenanceSession.open(runtime, () => {});
+    await expect(session.release()).rejects.toThrow(INCOMPATIBLE_SOFTWARE);
+    expect(session.getSnapshot()).toMatchObject({ maintenance: true, incompatible: true });
+  });
+
   it("enters native maintenance before inspection and never implicitly releases guests after install or rollback", async () => {
     const { runtime, requests, source } = fixture();
     const session = await PackageMaintenanceSession.open(runtime, () => {});

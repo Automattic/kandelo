@@ -6,11 +6,14 @@ programs the current kernel can execute. These are separate admission checks.
 Do not fix an executable mismatch by rebinding a journal to another base,
 discarding the journal, selecting an older generation, or removing ABI checks.
 
-**First-release boundary:** persistence and the computer UX ship before
-transactional software upgrades. Saved computers from this release will not
-work in the next release; export important files before updating Kandelo.
-The UI shows this warning during creation, retention and reopen. This policy
-does not permit deleting incompatible storage or claiming upgrades exist.
+**Preview boundary:** saved computers can cross a program contract change
+through a software update, keeping files, posts and media. This covers computers
+whose image carries a software inventory. Computers saved by earlier previews
+have none and are never adopted: they cannot be updated, and they stop being
+runnable when their declared contract no longer matches, with their files
+preserved. The UI says so during creation, retention and reopen, along with the
+rebuild requirement for user-built programs. This does not permit deleting
+incompatible storage.
 
 ## Independently versioned formats
 
@@ -61,8 +64,8 @@ the image-builder descriptor setters cannot silently edit such a live inode.
 
 The native coordinator can stage and activate these bindings with package
 inventory and rollback references. Node/browser transports and the app
-exercise package updates and recovery within program ABI 55; cross-contract
-release admission remains open. See [package upgrades](package-upgrades.md).
+exercise package updates and recovery, including across a program contract
+change. See [package upgrades](package-upgrades.md).
 
 Privileged regular/base/provider metadata now uses inode-record version 3.
 It preserves the same bounded metadata fields and provider descriptions;
@@ -168,15 +171,19 @@ The contract is independent of the program digest. That digest covers the
 frozen copy in `abi/program-fork-surface-v1.json`, which is never updated, so
 it keeps its ABI-55 value and existing programs stay valid. Changing the live
 fork surface fails `xtask check-program-baseline` until the version in
-`abi/fork-contract.json` is bumped. Ordinary programs are then unaffected,
+`abi/fork-contract.json` is bumped, and version 1 can only ever mean the frozen
+surface. Later versions are tracked by recorded digest alone, so refreshing the
+digest without bumping becomes a review matter there. Ordinary programs are then
+unaffected,
 while a forking program built for another contract is refused before execution
 with rebuild guidance and its file is left unchanged.
 
 Programs carry their contract in an optional `kandelo.wpk_fork.contract`
 section holding a little-endian `u32`. No stamp means contract 1, so nothing
 needed rebuilding when this was introduced. `wasm-fork-instrument` does not
-stamp yet, because version 1 needs no stamp: a guard test fails if the version
-rises before the instrumenter does. Only the
+stamp yet; see
+[before raising the fork contract](#before-raising-the-fork-contract-to-version-2).
+Only the
 `program_artifact.fork_instrumentation` snapshot key is separated this way.
 Fork-related layouts in other program sections, such as the save-buffer sizes
 in the process memory layout, still move the program digest.
@@ -202,6 +209,33 @@ the original as the authoritative source and prepare it on next use; eager
 preparation is optional. Activation and invalidation must be recoverable and
 must not overwrite user replacements. Existing explicit preparer prototypes
 do not implement this automatic lifecycle.
+
+### Before raising the fork contract to version 2
+
+> **Do this first, or contract 2 will not work.** `wasm-fork-instrument` does not
+> stamp programs today. Version 1 needs no stamp, because an unstamped program
+> means contract 1 by definition. Contract 2 is the first version that needs one.
+
+Without a stamp, every forking program built for contract 2 would read as
+contract 1 and be refused, including all packaged ones. So the order is fixed:
+
+1. Make `wasm-fork-instrument` write a `kandelo.wpk_fork.contract` section (a
+   little-endian `u32`) into every program it prepares. This changes the tool,
+   so every forking package rebuilds.
+2. Change the fork surface.
+3. Bump `version` and `surface_sha256` in `abi/fork-contract.json`. Never edit
+   `abi/program-fork-surface-v1.json`: the digest of every ABI 55 program covers
+   it.
+4. Update the guard test below, which exists to stop this list being skipped.
+
+`fork_contract_above_one_requires_the_instrumenter_to_stamp_programs` in
+`tools/xtask/src/supported_program_baseline.rs` fails as soon as the version
+rises. Passing it by changing the expected value alone is wrong unless step 1 is
+done. Later versions are protected only by that recorded digest, so review any
+change to `surface_sha256` that does not also bump the version.
+
+This leaves one honest gap for this release: "explicitly versioned" is true of
+the host and the repository, not of the programs themselves.
 
 ## Original-program retention prototype
 
@@ -706,9 +740,7 @@ operation. An unresolved reference still names expected content, size, archive
 membership and dependencies. A new location can supply the same verified
 content; replacing that content requires a package upgrade. Retaining resolved
 files while changing unresolved references must not mix incompatible package
-versions or overwrite user edits. Durable provider/inode activation and native
-coordination now exist; distribution and host integration remain pending.
-Missing old providers must fail explicitly rather than fetching unrelated
+versions or overwrite user edits. Missing old providers must fail explicitly rather than fetching unrelated
 latest bytes.
 
 The upgrade policy must distinguish three operations:

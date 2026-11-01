@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { ComputerSoftwareController, ComputerSoftwareSnapshot } from "../../../../../web-libs/kandelo-session/src/computer-software";
+import { INCOMPATIBLE_SOFTWARE, NOT_UPDATABLE_SOFTWARE, type ComputerSoftwareController, type ComputerSoftwareSnapshot } from "../../../../../web-libs/kandelo-session/src/computer-software";
 import { useDialogDismiss } from "./use-dialog-dismiss";
 
 const EMPTY: ComputerSoftwareSnapshot = { available: false, targetAvailable: false, maintenance: false,
@@ -33,12 +33,13 @@ export const SoftwarePanel: React.FC<{ controller: ComputerSoftwareController; s
     <p>Update packaged programs together while this computer is stopped. User files, posts and media stay in place. Changes to packaged files can prevent an update.</p>
     <p className="knetwork-note">Database migrations are separate. Software rollback cannot undo a database migration. Save your work before stopping programs.</p>
     <p className="knetwork-note">User-built programs that use fork may need rebuilding when the instrumentation contract changes. Their files are preserved, not automatically upgraded.</p>
+    {state.incompatible && <p className="knetwork-note">{state.updatable === false ? NOT_UPDATABLE_SOFTWARE : INCOMPATIBLE_SOFTWARE}</p>}
     {(error || state.error) && <p role="alert">{error ?? state.error}</p>}
     {!state.maintenance ? <button type="button" className="kshare-btn" disabled={state.busy || !state.available} onClick={() => void run(() => controller.enter())}>Stop programs and enter maintenance</button> : <>
       <p role="status">Maintenance mode: guest programs are stopped. Update state: <strong>{state.recovery}</strong>.</p>
       {progress && <div aria-label="Software update progress"><p>{progress.path || "Checking packaged files"}</p><progress max={Math.max(1, Number(progress.total))} value={Number(progress.completed)} /><small>{progress.installedVerified} installed and {progress.stagedVerified} staged files verified of {progress.files}</small></div>}
       {state.busy ? <button type="button" className="kshare-btn" onClick={() => controller.cancel()}>Cancel operation</button> : <div className="kservices-actions">
-        {!blocked && <button type="button" className="kshare-btn" disabled={!state.targetAvailable} onClick={() => {
+        {!blocked && state.updatable !== false && <button type="button" className="kshare-btn" disabled={!state.targetAvailable} onClick={() => {
           if (state.recovery !== "active" && state.recovery !== "rolled-back" || window.confirm("Replace the previous update's rollback history with this release's software? User data is not removed.")) void run(() => controller.install());
         }}>Update from this release</button>}
         {state.recovery === "pending" && <button type="button" className="kshare-btn" onClick={() => void run(() => controller.resume())}>Resume saved update</button>}

@@ -762,8 +762,13 @@ impl Upgrade {
     ) -> Result<Self, Error> {
         require(table, token)?;
         private_directory(STATE_ROOT)?;
-        if recovery(table, token, source)? != Recovery::None {
-            return Err(Errno::EBUSY.into());
+        // A finished transaction is the computer's rollback. Planning and
+        // verification leave it alone so a refused update cannot cost it. The
+        // caller discards it only after that passes, then plans again, because
+        // a complete plan leaves no room for the inventories discard reads.
+        match recovery(table, token, source)? {
+            Recovery::None | Recovery::Transaction(Phase::Active | Phase::RolledBack) => {}
+            _ => return Err(Errno::EBUSY.into()),
         }
         if incoming.len() > MAX_BYTES {
             return Err(Errno::E2BIG.into());
@@ -970,6 +975,9 @@ impl Upgrade {
                 .as_ref()
                 .ok_or(Error::InvalidState)?
                 .revalidate(table, token)?;
+        }
+        if recovery(table, token, source)? != Recovery::None {
+            return Err(Errno::EBUSY.into());
         }
         mkdir(TRANSACTION, 0o700, 0, 0)?;
         mkdir(NEW, 0o700, 0, 0)?;

@@ -52,6 +52,14 @@ pub(crate) fn fork_contract() -> Result<ForkContract, String> {
 
 fn require_recorded_fork_surface(contract: &ForkContract, digest: &[u8; 32]) -> Result<(), String> {
     let actual: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    // Version 1 is the frozen surface by definition, so refreshing the recorded
+    // hash in place cannot stand in for a version bump.
+    let frozen = crate::local_abi_identity::baseline_fork_surface_digest()?;
+    if contract.version == 1 && digest != &frozen {
+        return Err(format!(
+            "fork instrumentation surface changed: contract version 1 is the frozen surface in abi/program-fork-surface-v1.json, found {actual}; bump the version in abi/fork-contract.json so forking programs built against the earlier contract are refused with rebuild guidance. See docs/persistent-program-compatibility.md",
+        ));
+    }
     if contract.surface_sha256 != actual {
         return Err(format!(
             "fork instrumentation surface changed: abi/fork-contract.json records {} for version {}, found {actual}; bump its version so forking programs built against the earlier contract are refused with rebuild guidance. See docs/persistent-program-compatibility.md",
@@ -113,7 +121,19 @@ mod tests {
     fn a_changed_fork_surface_requires_a_new_contract_record() {
         let contract = fork_contract().unwrap();
         let error = require_recorded_fork_surface(&contract, &[0; 32]).err().unwrap();
-        assert!(error.contains("bump its version"), "{error}");
+        assert!(error.contains("bump the version"), "{error}");
+    }
+
+    #[test]
+    fn refreshing_the_recorded_hash_cannot_replace_a_version_bump() {
+        let changed = [7; 32];
+        let refreshed = super::ForkContract {
+            format: 1,
+            version: 1,
+            surface_sha256: changed.iter().map(|byte| format!("{byte:02x}")).collect(),
+        };
+        let error = require_recorded_fork_surface(&refreshed, &changed).err().unwrap();
+        assert!(error.contains("bump the version"), "{error}");
     }
 
     #[test]

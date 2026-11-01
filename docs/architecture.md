@@ -2361,6 +2361,7 @@ directory limits removal and rename to the entry's or directory's owner. On
 the ephemeral in-kernel filesystems `fsync` succeeds without host work: they
 have no separate durable backing. An opt-in persistent root instead flushes
 its Rust-owned journal through the host storage adapter and reports failures.
+See the [persistent storage overview](persistent-storage.md).
 
 Persistent-root `statfs` computes the canonical composed-checkpoint footprint
 from live inodes, retaining allocations held by open descriptions or

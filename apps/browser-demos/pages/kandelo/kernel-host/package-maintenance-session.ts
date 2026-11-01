@@ -1,6 +1,7 @@
-import { checkedPackageMaintenanceResponse, type PackageMaintenanceRequest, type PackageMaintenanceResponse } from "../../../../../host/src/package-maintenance";
+import { checkedPackageMaintenanceResponse, PackageMaintenanceError, type PackageMaintenanceRequest, type PackageMaintenanceResponse } from "../../../../../host/src/package-maintenance";
+import { ERRNO } from "../../../../../host/src/generated/abi";
 import { PACKAGE_MAINTENANCE_WIRE as wire } from "../../../../../host/src/generated/abi";
-import type { ComputerSoftwareSnapshot, SoftwareOperation, SoftwareRecovery } from "../../../../../web-libs/kandelo-session/src/computer-software";
+import { INCOMPATIBLE_SOFTWARE, NOT_UPDATABLE_SOFTWARE, type ComputerSoftwareSnapshot, type SoftwareOperation, type SoftwareRecovery } from "../../../../../web-libs/kandelo-session/src/computer-software";
 import { PackageUpgradeClient, PackageUpgradeFinalizationError, type PackageUpgradeSource } from "./package-upgrade-client";
 
 export interface OwnedPackageSource {
@@ -36,11 +37,13 @@ export class PackageMaintenanceSession {
 
   private constructor(private readonly runtime: Runtime, private readonly assertCurrent: () => void) {}
 
-  static async open(runtime: Runtime, assertCurrent: () => void): Promise<PackageMaintenanceSession> {
+  static async open(runtime: Runtime, assertCurrent: () => void, bootBlocked = false, updatable = true): Promise<PackageMaintenanceSession> {
     const session = new PackageMaintenanceSession(runtime, assertCurrent);
     await session.call({ action: "enter" });
     try { await session.inspect(); }
     catch { }
+    const { recovery } = session.state;
+    if (bootBlocked && (recovery === "none" || recovery === "active" || recovery === "rolled-back")) session.publish({ incompatible: true, updatable });
     return session;
   }
 
@@ -83,6 +86,7 @@ export class PackageMaintenanceSession {
         const client = new PackageUpgradeClient(request => this.call(request));
         await client.run(operation, source?.source, {
           signal,
+          replacesRollback: this.state.recovery === "active" || this.state.recovery === "rolled-back",
           onProgress: progress => this.publish({ progress: {
             files: progress.files, installedVerified: progress.installedVerified, stagedVerified: progress.stagedVerified,
             path: progress.path, completed: progress.verifiedBytes.toString(), total: progress.totalBytes.toString(),
@@ -91,6 +95,7 @@ export class PackageMaintenanceSession {
             files: 0, installedVerified: 0, stagedVerified: 0, path: "", completed: "0", total: "0" }),
             path: progress.path ?? "Software inventory", completed: String(progress.accepted), total: String(progress.total) } }),
         });
+        if (operation !== "rollback") this.publish({ incompatible: false });
       } catch (error) {
         failure = { error };
         if (error instanceof PackageUpgradeFinalizationError || (error as { retainTarget?: unknown } | null)?.retainTarget === true) this.poisoned = true;
@@ -114,7 +119,13 @@ export class PackageMaintenanceSession {
 
   release(): Promise<void> {
     return this.perform("release", async () => {
-      await this.call({ action: "leave" });
+      try { await this.call({ action: "leave" }); }
+      catch (error) {
+        const notUpdatable = this.state.updatable === false;
+        if (!(error instanceof PackageMaintenanceError) || (error.errno !== ERRNO.ENOEXEC && !notUpdatable)) throw error;
+        this.publish({ incompatible: true });
+        throw new Error(notUpdatable ? NOT_UPDATABLE_SOFTWARE : INCOMPATIBLE_SOFTWARE, { cause: error });
+      }
       this.released = true;
       this.publish({ maintenance: false });
     });

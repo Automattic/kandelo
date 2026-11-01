@@ -273,7 +273,7 @@ Library also reopens, renames, keeps, and deletes local computers. Reloading a
 `?computer=<UUID>` URL reopens the same filesystem automatically. **Temporary**
 computers also use OPFS disk storage, but become eligible for cleanup after
 24 hours without opening them. Checkpoints are optional, and browser storage
-is not a backup. See [computer retention](docs/browser-support.md#computer-library-and-retention).
+is not a backup. See the [storage overview](docs/persistent-storage.md) and [computer retention](docs/browser-support.md#computer-library-and-retention).
 
 > **Experimental persistence — not upgradeable:** saved computers from this
 > release will not work in the next release. Export important files before

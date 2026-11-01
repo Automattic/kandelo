@@ -1043,6 +1043,55 @@ impl OverlayStorage for Interruptible {
 }
 
 #[test]
+fn a_refused_update_keeps_the_existing_rollback_until_a_new_one_is_prepared() {
+    let _guard = TestGuard::acquire();
+    let (image, _journal, before) = computer();
+    let first = manifest(b"2", &[file(b"/hello.txt", b"updated software")]);
+    let mut source = image_host(&image);
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let mut upgrade = Upgrade::begin(&first, &table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut upgrade, &table, &token, &mut source);
+    upgrade.prepare(&table, &token, &mut source).unwrap();
+    upgrade.stage(0, 0, b"updated software", &table, &token, &mut source).unwrap();
+    verify_staged(&mut upgrade, &table, &token, &mut source);
+    upgrade.commit(&table, &token).unwrap();
+    drop(upgrade);
+
+    // The same target and an edited package file are both refused before
+    // anything durable changes, so the first update can still be rolled back.
+    assert!(matches!(Upgrade::begin(&first, &table, &token, 55, [7; 32], &mut source), Err(Error::Storage(Errno::EALREADY))));
+    let second = manifest(b"3", &[file(b"/hello.txt", b"third software")]);
+    let intact = contents(b"/hello.txt", &mut source);
+    unlink(b"/hello.txt").unwrap();
+    stage_leaf_bytes(b"/hello.txt", b"edited by the user", &mut source);
+    let mut refused = Upgrade::begin(&second, &table, &token, 55, [7; 32], &mut source).unwrap();
+    assert!(matches!(refused.verify_next(&table, &token, 1024 * 1024, &mut source), Err(Error::Verification(_))));
+    drop(refused);
+    assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::Transaction(Phase::Active));
+    unlink(b"/hello.txt").unwrap();
+    stage_leaf_bytes(b"/hello.txt", &intact, &mut source);
+
+    // Verification alone never replaces the rollback, and preparing refuses to
+    // write over one. The caller discards it once the target has passed.
+    let mut preflight = Upgrade::begin(&second, &table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut preflight, &table, &token, &mut source);
+    assert_eq!(preflight.prepare(&table, &token, &mut source), Err(Error::Storage(Errno::EBUSY)));
+    assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::Transaction(Phase::Active));
+    drop(preflight);
+    package_upgrade::discard_transaction(&table, &token, &mut source).unwrap();
+    let mut replacing = Upgrade::begin(&second, &table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut replacing, &table, &token, &mut source);
+    replacing.prepare(&table, &token, &mut source).unwrap();
+    assert_eq!(package_upgrade::recovery(&table, &token, &mut source).unwrap(), Recovery::Transaction(Phase::Pending));
+    replacing.stage(0, 0, b"third software", &table, &token, &mut source).unwrap();
+    verify_staged(&mut replacing, &table, &token, &mut source);
+    replacing.commit(&table, &token).unwrap();
+    assert_eq!(contents(b"/hello.txt", &mut source), b"third software");
+    let _ = before;
+}
+
+#[test]
 fn unusable_committed_authority_keeps_guests_closed_without_touching_storage() {
     let _guard = TestGuard::acquire();
     let (image, journal, _before) = computer();

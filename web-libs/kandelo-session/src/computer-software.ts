@@ -10,7 +10,15 @@ export interface ComputerSoftwareProgress {
   total: string;
 }
 
+export const INCOMPATIBLE_SOFTWARE = "This computer's installed software cannot run on this version of Kandelo. Your files are preserved. Update from this release to start it.";
+
+export const NOT_UPDATABLE_SOFTWARE = "This computer's software cannot run on this version of Kandelo, and it was saved before software updates existed, so it cannot be updated. Your files are preserved.";
+
 export interface ComputerSoftwareSnapshot {
+  /** The installed software targets a program contract this runtime cannot run. */
+  incompatible?: boolean;
+  /** False when the computer has no software inventory to update from. */
+  updatable?: boolean;
   available: boolean;
   targetAvailable: boolean;
   maintenance: boolean;

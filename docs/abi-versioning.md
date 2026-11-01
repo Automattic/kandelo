@@ -244,6 +244,9 @@ kernel requires an `ABI_VERSION` bump. Specifically:
   fork-using user program. The kernel does not read these exports
   directly, but the host runtime in `host/src/worker-main.ts` does —
   a rename here silently breaks fork for every already-built binary.
+  A change confined to `program_artifact.fork_instrumentation` bumps the
+  version in `abi/fork-contract.json` rather than `ABI_VERSION`; see
+  [persistent program compatibility](persistent-program-compatibility.md).
 - Changing the linked musl/glue syscall function types or argument-slot widths,
   including the wasm32 cancellation-point `__syscall_cp` path. These are not
   currently visible in the structural snapshot, but stale objects and archives

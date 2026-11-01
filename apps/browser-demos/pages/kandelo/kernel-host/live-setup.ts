@@ -335,6 +335,8 @@ class BootSuperseded extends Error {
   }
 }
 
+const INCOMPATIBLE_SOFTWARE_UNMANAGED = "This saved filesystem's software cannot run on this version of Kandelo, or an update is unfinished. Its files are preserved. Open it as a saved computer to update it.";
+
 class RetryInstalledBootConfiguration extends Error {
   constructor(readonly composition: StoredComposition) {
     super("retrying with the boot configuration of the installed software");
@@ -822,8 +824,7 @@ async function createLiveHostWithLease(
         const loader = CANONICAL_PAGES_VFS_LOADER;
         if (computer === null || profile === null || loader === undefined) throw new Error("This deployment has no verified software bundle for the computer");
         const recovery = session.getSnapshot().recovery;
-        if (recovery === "active" || recovery === "rolled-back") await session.discard();
-        else if (recovery !== "none") throw new Error("Resume or discard the existing update first");
+        if (recovery !== "none" && recovery !== "active" && recovery !== "rolled-back") throw new Error("Resume or discard the existing update first");
         await session.run("install", async signal => {
           const product = computer.softwareProductId ?? (await bindVfsProduct(profile)).productId;
           if (!product || galleryProductSource(product) === undefined) throw new Error("This image has no trusted release software bundle");
@@ -1165,7 +1166,7 @@ async function createLiveHostWithLease(
             publishSoftware();
             if (!maintenanceRequested && admission === 0) return undefined;
             if (seq !== bootSeq) throw new BootSuperseded();
-            return PackageMaintenanceSession.open(kernel, () => { if (seq !== bootSeq) throw new BootSuperseded(); });
+            return PackageMaintenanceSession.open(kernel, () => { if (seq !== bootSeq) throw new BootSuperseded(); }, admission === 1, softwareSupported);
           },
           managedComputerId,
           composition,
@@ -2115,6 +2116,9 @@ async function bootProfile(
           tick("computer paused for package maintenance; guest programs have not started");
           host.setStatus("halted");
           return { kernel, persistenceIdentity: persistence.identity, persistenceJournalName: opfsImage.journalName, softwareProductId: profile.productId, maintenance, baseComposition: opfsImage.composition };
+        }
+        if (openMaintenance === undefined && checkedPackageMaintenanceResponse(await kernel.packageMaintenance({ action: "bootBlocked" })).status !== 0) {
+          throw new Error(INCOMPATIBLE_SOFTWARE_UNMANAGED);
         }
         const installedComposition = await selectBootComposition(kernel, bootConfigurations, opfsImage.composition);
         if (!bootCompositionMatchesInstalled(assumedComposition ?? opfsImage.composition, installedComposition)) {
