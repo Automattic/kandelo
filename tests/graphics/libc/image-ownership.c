@@ -2410,10 +2410,11 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
                 assert(eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, list) == EGL_NO_CONTEXT);
                 assert(eglGetError() == rejected[i][4]);
             }
-            /* Defined ES 1.x and 3.x versions: a config without the API's
-             * renderable bit is EGL_BAD_CONFIG; with no config the
-             * implementation itself lacks them, which is EGL_BAD_MATCH. */
-            const EGLint missing = c == 0 ? EGL_BAD_CONFIG : EGL_BAD_MATCH;
+            /* Defined ES 1.x and 3.x versions this implementation lacks are
+             * EGL_BAD_MATCH with or without a config: EGL 1.5 without
+             * KHR_create_context, as dEQP negative_api.create_context reads
+             * it (teglNegativeApiTests.cpp Test4). */
+            const EGLint missing = EGL_BAD_MATCH;
             const EGLint versions[][2] = {{1, 0}, {1, 1}, {3, 0}, {3, 1}, {3, 2}};
             for (unsigned i = 0; i < 5; i++) {
                 const EGLint list[] = {EGL_CONTEXT_MAJOR_VERSION, versions[i][0],
@@ -2642,6 +2643,38 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(!image_export_closes);
         assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
         assert(!allocation_count());
+    } else if (!strcmp(name, "egl-spec-make-current-display")) {
+        /* dEQP negative_api.make_current: EGL_NO_DISPLAY is not a display
+         * connection, even for a release. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        assert(!eglMakeCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglGetError() == EGL_BAD_DISPLAY && eglGetCurrentContext() == context);
+        assert(!eglMakeCurrent((EGLDisplay)-1, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglGetError() == EGL_BAD_DISPLAY && eglGetCurrentContext() == context);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
+        assert(eglDestroyContext(dpy, context) && eglTerminate(dpy));
+        /* Release on a valid display needs no initialization. */
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglReleaseThread());
+    } else if (!strcmp(name, "egl-spec-config-bounds")) {
+        /* dEQP query_config.get_configs.get_configs_bounds: a negative size
+         * with a buffer returns no configs and raises no error. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLConfig configs[2] = {(EGLConfig)(uintptr_t)0x1234, (EGLConfig)(uintptr_t)0x1234};
+        EGLint count = 17;
+        assert(eglGetConfigs(dpy, configs, -1, &count) && eglGetError() == EGL_SUCCESS);
+        assert(count == 0 && configs[0] == (EGLConfig)(uintptr_t)0x1234);
+        const EGLint list[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+        count = 17;
+        assert(eglChooseConfig(dpy, list, configs, -1, &count) && eglGetError() == EGL_SUCCESS);
+        assert(count == 0 && configs[0] == (EGLConfig)(uintptr_t)0x1234);
+        /* Only a missing count is EGL_BAD_PARAMETER. */
+        assert(!eglGetConfigs(dpy, configs, -1, NULL) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglChooseConfig(dpy, list, configs, 2, NULL) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
@@ -7512,10 +7545,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "records-attributes")) {
-        /* The default ES 1.x request needs EGL_OPENGL_ES_BIT, which this
-         * config lacks (EGL 1.5 section 3.7.1). */
+        /* The default ES 1.x request is a version this implementation
+         * lacks: EGL_BAD_MATCH under EGL 1.5 (dEQP negative_api). */
         assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, NULL) &&
-               eglGetError() == EGL_BAD_CONFIG);
+               eglGetError() == EGL_BAD_MATCH);
         const EGLint bad[] = {0x7fffffff, 1, EGL_NONE};
         assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, bad) &&
                eglGetError() == EGL_BAD_ATTRIBUTE);
@@ -7762,7 +7795,7 @@ int main(int argc, char **argv) {
         assert(eglGetCurrentContext() == ctx);
         assert(destroyed_contexts == 0 && submit_batches == 0);
         glClear(GL_COLOR_BUFFER_BIT);
-        assert(eglMakeCurrent(EGL_NO_DISPLAY, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
         assert(destroyed_contexts == 1 && submit_batches == 1 && clear_commands == 2);
         EGLint value = 17;
         assert(!eglQueryContext(dpy, ctx, EGL_CONFIG_ID, &value));
@@ -7946,7 +7979,7 @@ int main(int argc, char **argv) {
         assert(eglGetConfigAttrib(dpy, configs[0], EGL_BUFFER_SIZE, &buffer_bits));
         assert(buffer_bits == 32);
         assert(eglGetProcAddress("eglGetConfigs") != NULL);
-        assert(!enumerate(dpy, configs, -1, &count));
+        assert(!enumerate(dpy, configs, 3, NULL));
         assert(eglGetError() == EGL_BAD_PARAMETER);
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         count = 17;

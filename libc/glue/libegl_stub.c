@@ -499,12 +499,16 @@ static EGLBoolean config_display_ready(EGLDisplay dpy) {
     return EGL_TRUE;
 }
 
+/* A negative size with a buffer holds no configs: the call succeeds and
+ * returns none (dEQP query_config get_configs_bounds, as Mesa). Only a
+ * missing count is EGL_BAD_PARAMETER. */
 static EGLBoolean return_configs(EGLConfig *configs, EGLint config_size,
                                  EGLint *num_config, int matches) {
-    if (!num_config || (configs && config_size < 0)) {
+    if (!num_config) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
+    if (config_size < 0) config_size = 0;
     EGLint count = 0;
     for (unsigned i = 0; i < CONFIG_COUNT; ++i) {
         if (!(matches & (1u << i))) continue;
@@ -527,7 +531,7 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
                            EGLint *num_config) {
     egl_call_begin();
     if (!config_display_ready(dpy)) return EGL_FALSE;
-    if (!num_config || (configs && config_size < 0)) {
+    if (!num_config) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
     }
@@ -779,9 +783,12 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
             goto bad_attribute;
         }
     }
-    /* Undefined ES versions are EGL_BAD_MATCH. A defined version other
-     * than 2.0 needs a renderable bit no config has (EGL_BAD_CONFIG); with
-     * EGL_NO_CONFIG_KHR the implementation itself lacks it (EGL_BAD_MATCH). */
+    /* Undefined ES versions are EGL_BAD_MATCH, and so is every defined
+     * version other than 2.0, which this implementation lacks. EGL 1.4,
+     * EGL 1.5 and KHR_create_context disagree on EGL_BAD_CONFIG versus
+     * EGL_BAD_MATCH when a config lacks the API's renderable bit; dEQP
+     * (negative_api.create_context) requires EGL_BAD_MATCH for EGL 1.5
+     * without KHR_create_context. */
     const int defined = (version == 1 && (minor == 0 || minor == 1)) ||
                         (version == 2 && minor == 0) ||
                         (version == 3 && minor >= 0 && minor <= 2);
@@ -790,7 +797,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         return EGL_NO_CONTEXT;
     }
     if (version != 2) {
-        g_last_error = config == EGL_NO_CONFIG_KHR ? EGL_BAD_MATCH : EGL_BAD_CONFIG;
+        g_last_error = EGL_BAD_MATCH;
         return EGL_NO_CONTEXT;
     }
     /* WebGL 2 exposes no robust buffer access guarantee or reset
@@ -1117,7 +1124,9 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLC
     EGLBoolean result = EGL_FALSE;
     struct egl_generation *generation = active_generation(dpy);
     if (handle == EGL_NO_CONTEXT) {
-        if (dpy != EGL_NO_DISPLAY && !display_record(dpy))
+        /* A release still names a display connection; EGL_NO_DISPLAY is
+         * none (dEQP negative_api.make_current, as Mesa). */
+        if (!display_record(dpy))
             g_last_error = EGL_BAD_DISPLAY;
         else if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE)
             g_last_error = EGL_BAD_MATCH;
