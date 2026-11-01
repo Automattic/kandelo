@@ -57,10 +57,14 @@ particular:
 - TCP servers now bind/listen/accept through real nonblocking POSIX
   sockets. Server closure waits for accepted descriptors; Socket.end uses
   actual write-half shutdown. Native watch reference state drives listener
-  and socket lifetime. Five focused cases pass on each host, including an
-  independent C client over IPv4 and IPv6. Callable constructors, complete
-  listen overloads/descriptors, IPC/fd listeners, connection limits,
-  BlockList, socket controls and full stream behavior remain gaps.
+  and socket lifetime. Eight focused cases pass on each host, including an
+  independent C client over IPv4 and IPv6. The accept path compares live
+  connection counts with maxConnections before constructing a Socket. It
+  drops excess descriptors, including at zero capacity, with real endpoint
+  records. Three unchanged upstream limit/drop files pass on all four
+  hosts. Cluster distribution and dropMaxConnection are not supplied.
+  Callable constructors, complete listen overloads/descriptors, IPC/fd
+  listeners, BlockList, socket controls and full stream behavior remain gaps.
 
 - Streams, Fetch networking and process lifecycle need broader upstream
   coverage. Shared natural exit now has a shell teardown hook for files and eval,
@@ -73,8 +77,8 @@ particular:
   the actual validated status, including zero and explicit exits, and
   already-fatal exits retain the original diagnostic. Seventeen additional
   programs pass on all four hosts against exact native controls.
-  beforeExit, custom uncaughtException
-  and unhandledRejection policy, and complete timer ordering remain gaps.
+  beforeExit, custom uncaughtException/unhandledRejection policy and
+  complete timer ordering remain gaps.
 
 - CommonJS entries publish their module identity before children execute.
   Explicit ESM entries use the native parser/linker and module graph, with
@@ -111,8 +115,8 @@ particular:
   identity. Failed and cancelled attempts close their descriptors; late
   successes are closed. TLS uses this same TCP dialing policy. Endpoint
   properties come from getsockname/getpeername, including local binding.
-  Socket timeout/keepalive controls, complete stream semantics, listening
-  servers, BlockList and TLS handshake cancellation remain incomplete.
+  Socket timeout/keepalive controls, complete stream semantics, BlockList
+  and TLS handshake cancellation remain incomplete.
 
 - `dns.lookup` and its promise form use libc getaddrinfo, with literal IP,
   family/all/order options and asynchronous delivery. The current libc

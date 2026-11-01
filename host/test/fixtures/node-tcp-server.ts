@@ -80,6 +80,98 @@ net.createServer().listen(0, '127.0.0.1', function () {
 });
 `,
   },
+  ...(['127.0.0.1', '::1'] as const).map(host => ({
+    name: host === '::1' ? 'zero-ipv6' : 'zero-ipv4',
+    source: `
+const assert = require('assert');
+const net = require('net');
+let dropped = false, closed = false, clientClosed = false;
+process.on('exit', () => {
+  assert(dropped && closed && clientClosed);
+  console.log('node-tcp-zero-limit-ok');
+});
+const server = net.createServer(() => { throw Error('zero capacity accepted a connection'); });
+server.maxConnections = 0;
+server.on('drop', data => {
+  assert.strictEqual(Object.getPrototypeOf(data), null);
+  assert.deepStrictEqual(Object.keys(data).sort(), [
+    'localAddress', 'localFamily', 'localPort', 'remoteAddress', 'remoteFamily', 'remotePort',
+  ]);
+  assert.strictEqual(data.localAddress, ${JSON.stringify(host)});
+  assert.strictEqual(data.remoteAddress, ${JSON.stringify(host)});
+  assert.strictEqual(data.localFamily, ${JSON.stringify(host === '::1' ? 'IPv6' : 'IPv4')});
+  assert.strictEqual(data.remoteFamily, ${JSON.stringify(host === '::1' ? 'IPv6' : 'IPv4')});
+  assert(data.localPort > 0 && data.remotePort > 0);
+  assert.strictEqual(data.localPort, server.address().port);
+  server.getConnections((error, count) => { assert.ifError(error); assert.strictEqual(count, 0); });
+  dropped = true;
+  server.close(() => { closed = true; });
+});
+server.listen(0, ${JSON.stringify(host)}, () => {
+  const client = net.connect(server.address().port, ${JSON.stringify(host)});
+  client.on('error', error => { assert.strictEqual(error.code, 'ECONNRESET'); });
+  client.on('close', () => { clientClosed = true; });
+  client.resume();
+});
+`,
+  })),
+  {
+    name: 'release-capacity',
+    source: `
+const assert = require('assert');
+const net = require('net');
+let accepted = 0, dropped = 0, done = false;
+const acceptedSockets = [];
+process.on('exit', () => {
+  assert(done);
+  assert.strictEqual(accepted, 2);
+  assert.strictEqual(dropped, 1);
+  console.log('node-tcp-capacity-release-ok');
+});
+const server = net.createServer(socket => {
+  accepted++;
+  acceptedSockets.push(socket);
+  socket.on('data', data => socket.write(data));
+});
+server.maxConnections = 1;
+server.on('drop', () => { dropped++; });
+function connect() {
+  return new Promise(resolve => {
+    const client = net.connect(server.address().port, '127.0.0.1', () => resolve(client));
+  });
+}
+function closed(client) {
+  return new Promise(resolve => { client.once('close', resolve); client.resume(); client.end(); });
+}
+function echo(client, message) {
+  return new Promise((resolve, reject) => {
+    client.once('data', bytes => { assert.strictEqual(String(bytes), message); resolve(); });
+    client.once('error', reject);
+    client.write(message);
+  });
+}
+server.listen(0, '127.0.0.1', async () => {
+  const first = await connect();
+  await echo(first, 'first');
+  const second = await connect();
+  await new Promise(resolve => {
+    second.once('close', resolve);
+    second.on('error', error => assert.strictEqual(error.code, 'ECONNRESET'));
+    second.resume();
+  });
+  assert.strictEqual(accepted, 1);
+  assert.strictEqual(dropped, 1);
+  // The client can close before the accepted descriptor is torn down.
+  const acceptedClosed = new Promise(resolve => acceptedSockets[0].once('close', resolve));
+  await closed(first);
+  await acceptedClosed;
+  const third = await connect();
+  await echo(third, 'third');
+  await closed(third);
+  server.close(() => { done = true; });
+});
+`,
+  },
 ];
 
 export const nodeTcpServerPeerSource = `

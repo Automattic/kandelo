@@ -205,12 +205,13 @@ The complete product rebuild remains deferred.
 
 This is the first real listener implementation, not complete net
 compatibility. Callable constructors, listen overloads and descriptors,
-IPC paths/fd listeners, maxConnections/drop, BlockList, socket options,
+IPC paths/fd listeners, BlockList, socket options,
 stream encoding/backpressure, timer unref and disposal remain gaps.
+The later connection-limit section records the maxConnections/drop fix.
 The unchanged networking/DNS inventory must remain a separate report;
 these focused checks never refresh unselected baseline rows.
 
-## Current evidence and limits
+## Earlier milestone evidence and remaining limits
 
 - All 83 source/harness tests pass under the exact native Node 26.13.0
   reference, including execution of the assembled bootstrap and
@@ -581,7 +582,7 @@ Repeat with fresh directories for chromium, firefox and webkit. Collect
 the terminal job result; exit 1 is expected while cases remain failures.
 The initial run is retained, including failures, before any focused replay.
 
-The next failures to close include real interface/capability metadata,
+At that product, remaining failures included real interface/capability metadata,
 reuse-port binding, large writes/backpressure, maxConnections/drop,
 callable constructors/overloads, stream encoding and timer reference
 semantics. An independent C getifaddrs probe confirms that the current
@@ -638,6 +639,59 @@ Custom exception/rejection hooks, beforeExit, complete timer ordering and
 stalled-module warning text remain gaps; this is not complete lifecycle
 or core-module conformance.
 
+## TCP connection-limit follow-up
+
+At production commit `4c6e536cc9477091ebfc8a9bdb11106d0add22ee`, servers
+compare the live accepted-descriptor count with maxConnections before
+publishing a Socket. Excess descriptors are closed and produce a drop
+event with actual local/remote endpoints. Zero capacity rejects every
+connection; tearing down an accepted descriptor releases capacity.
+The accept loop continues after a drop. Cluster distribution and
+`dropMaxConnection` remain outside this implementation.
+
+All eight focused normal-image TCP cases passed on Node, Chromium,
+Firefox and WebKit without timeouts or harness errors. They include the
+three new limit programs, the preceding lifetime/bind/unref controls and
+an independent C peer over both IP families. All 117 source/reference
+checks passed without skips under exact native Node 26.13.0.
+
+The three unchanged upstream connection-limit files also passed on the
+native oracle and every guest host:
+
+| File | Previous TCP/DNS run, each guest host | Current, each guest host |
+| --- | --- | --- |
+| `parallel/test-net-server-drop-connections.js` | Fail | Pass |
+| `parallel/test-net-server-max-connections.js` | Timeout | Pass |
+| `parallel/test-net-server-max-connections-close-makes-more-available.js` | Timeout | Pass |
+
+Every selected guest report has three passes and zero fail, skip,
+unsupported, timeout, harness-error or pending cases. The earlier
+206-case reports remain unchanged; these three files do not establish a
+new full networking score or refresh other baseline rows.
+
+For a fresh report, use the normal upstream runner with those exact
+filenames and `--timeout 30 --out FRESH_DIRECTORY`, once per host.
+The focused TCP command in the listener section now includes the new
+programs automatically. Reports are
+`.context/node26-tcp-limits-runtime-HOST/` and
+`.context/node26-tcp-limits-upstream-HOST/`; corresponding `-audit.json`
+files verify source, runtime and image parity. Frozen inputs are in
+`.context/node26-tcp-limits-runtime-inputs/manifest.json`; Node archive
+SHA-256 is
+`7f99cb67974ef5015907922b987723e7052ce38fbeb9d6ead18d8445320d70a0`.
+
+The broader Node-host core check passed all 16 cases without skips; its
+report is `.context/node-prepared-reports/vitest.u5AohJ/`.
+
+The normal targeted shell build passed with SpiderMonkey package revision
+36. The build job recorded the pre-amend commit
+`a5e4d57fa936dfc302f6fa15c6478e0b69b76930`; its tree is identical to the
+production commit (only the commit message was amended). ABI snapshot and
+616-file evidence-registry checks passed; ABI remains 55. Full product
+rebuild, broad POSIX/memory gates and performance comparisons remain
+deferred. Callable constructors, listen overloads, socket controls,
+backpressure, real interface metadata and timer references remain gaps.
+
 ## Draft delivery stack
 
 The changes remain in focused draft PRs. None has been merged or deployed.
@@ -663,6 +717,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Default fatal shutdown with live work | [#1616](https://github.com/Automattic/kandelo/pull/1616) |
 | Real TCP listeners and half-close | [#1617](https://github.com/Automattic/kandelo/pull/1617) |
 | Exit-listener status and fatal diagnostics | [#1619](https://github.com/Automattic/kandelo/pull/1619) |
+| Real TCP connection limits and drop events | [#1620](https://github.com/Automattic/kandelo/pull/1620) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
