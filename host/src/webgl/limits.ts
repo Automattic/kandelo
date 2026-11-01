@@ -1,10 +1,31 @@
-import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
+import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
 
 /** Immutable limits belong to the native context, independently of whichever
  * guest currently owns its mutable state. Weak keys do not retain a retired
  * browser context. Do not cache null results from a lost context. */
 const textureLimits = new WeakMap<WebGL2RenderingContext, number>();
 const viewportLimits = new WeakMap<WebGL2RenderingContext, readonly [number, number]>();
+const textureImageLevels = new WeakMap<WebGL2RenderingContext, Map<number, number>>();
+
+/** Texture level bounds are native-context capabilities, not texture storage
+ * dimensions. Undefined destination storage cannot override their GLES errors. */
+export function maxTextureImageLevel(owner: CheckedGlOwner, cube: boolean): number | null {
+  const gl = owner.gl;
+  if (!gl) return null;
+  const pname = cube ? 0x851c : 0x0d33;
+  let level = textureImageLevels.get(gl)?.get(pname);
+  let size: unknown;
+  if (!checkedGlCall(owner, () => { if (level === undefined) size=gl.getParameter(pname); })) return null;
+  if (level !== undefined) return level;
+  if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > 0x7fff_ffff) {
+    recordGlError(owner,0x502); return null;
+  }
+  level=Math.floor(Math.log2(size));
+  let limits=textureImageLevels.get(gl);
+  if (!limits) { limits=new Map(); textureImageLevels.set(gl,limits); }
+  limits.set(pname,level);
+  return level;
+}
 
 /** Remains available after a retiring owner has discarded its shadow. A
  * successful high-unit selection necessarily populated this native limit. */

@@ -2,7 +2,7 @@ import type { GlTextureView } from "./image-storage.js";
 import type { GlBinding } from "./registry.js";
 import type { GlShadowState } from "./shadow.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { combinedTextureUnits } from "./limits.js";
+import { combinedTextureUnits, maxTextureImageLevel } from "./limits.js";
 
 export function validGlesTextureParameter(pname: number): boolean {
   return pname >= 0x2800 && pname <= 0x2803;
@@ -56,11 +56,21 @@ function createDefaultTexture(b: GlBinding, target: number): boolean {
 
 /** Image operations address a 2D target or a cube face; sampler operations
  * address a 2D or cube target. Reject other APIs before materializing zero. */
-export function prepareTextureOperation(b: GlBinding, target: number, image = false): boolean {
+export function prepareTextureOperation(b: GlBinding, target: number, image = false, level?: number): boolean {
   const base = target === 0x0de1 ? target
     : image ? (target >= 0x8515 && target <= 0x851a ? 0x8513 : 0)
     : target === 0x8513 ? target : 0;
   if (!base) { recordGlError(b,0x500); return false; }
+  if (level !== undefined) {
+    if (level < 0) { recordGlError(b,0x501); return false; }
+    // Level zero is valid for every supported native texture limit. Higher
+    // levels use the actual accepted limit before touching destination storage.
+    if (level !== 0) {
+      const maximum=maxTextureImageLevel(b,base===0x8513);
+      if (maximum===null) return false;
+      if (level>maximum) { recordGlError(b,0x501); return false; }
+    }
+  }
   const units = base === 0x0de1 ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
   return !!units[b.shadow.activeTexture] || createDefaultTexture(b,base);
 }

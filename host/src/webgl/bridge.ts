@@ -506,8 +506,12 @@ function dispatch(
   }
   switch (op) {
     case O.OP_TEX_IMAGE_2D: case O.OP_TEX_SUB_IMAGE_2D:
-    case O.OP_COMPRESSED_TEX_IMAGE_2D: case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
     case O.OP_COPY_TEX_IMAGE_2D: case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      if (!prepareTextureOperation(b,v.getUint32(p,true),true,v.getInt32(p+4,true))) return;
+      break;
+    case O.OP_COMPRESSED_TEX_IMAGE_2D: case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D:
+      // Compressed extensions can define different level rules (including
+      // negative paletted levels); keep their native format validation separate.
       if (!prepareTextureOperation(b,v.getUint32(p,true),true)) return;
       break;
     case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:

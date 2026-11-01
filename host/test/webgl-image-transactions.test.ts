@@ -385,6 +385,56 @@ it("admits imported subimage destinations against the actual shared source and r
   expect(gl.read).toBe(framebuffer);
   expect(gl.deleted).toEqual([]);
 });
+it.each([TEX,0x8515,0x8516,0x8517,0x8518,0x8519,0x851a])(
+  "validates subimage/copy mip limits for target %i before native destination access", target => {
+    const { b, gl, query, queued } = setup();
+    b.shadow.cubeTextureUnits[0] = {};
+    const lookups: number[] = [];
+    let updates = 0;
+    Object.assign(gl, {
+      getParameter: (name: number) => {
+        if (name === 0x88ef) return null;
+        lookups.push(name);
+        return name === 0x851c ? 64 : 128;
+      },
+      texSubImage2D: () => { updates++; gl.errors.push(0x502); },
+      copyTexSubImage2D: () => { updates++; gl.errors.push(0x502); },
+    });
+    const limit = target === TEX ? 7 : 6;
+    expect(query(O.QOP_IMAGE_STORAGE,[O.OP_TEX_SUB_IMAGE_2D,target,limit+1,0,0,0,0,0x1908,0x1401,0])).toEqual([1,0]);
+    queued(O.OP_COPY_TEX_SUB_IMAGE_2D,[target,limit+1,0,0,0,0,0,0]);
+    expect(updates).toBe(0);
+    expect(lookups).toEqual([target === TEX ? 0x0d33 : 0x851c]);
+    expect(b.errors).toEqual([0x501]);
+    // The exact maximum is admitted; missing destination storage then retains
+    // the distinct native INVALID_OPERATION rather than a fabricated limit.
+    expect(query(O.QOP_IMAGE_STORAGE,[O.OP_TEX_SUB_IMAGE_2D,target,limit,0,0,0,0,0x1908,0x1401,0])).toEqual([1,0]);
+    expect(updates).toBe(1);
+    expect(b.errors).toEqual([0x501,0x502]);
+    expect(lookups).toHaveLength(1);
+  });
+it("refuses unavailable or rejected image limits without caching or invoking a dependent update", () => {
+  const { b, gl, query } = setup();
+  let size: unknown = 0, calls = 0, updates = 0, fail = false;
+  Object.assign(gl, {
+    getParameter: (name: number) => {
+      if (name === 0x88ef) return null;
+      calls++; if (fail) gl.errors.push(0x505); return size;
+    },
+    texSubImage2D: () => { updates++; },
+  });
+  const words=[O.OP_TEX_SUB_IMAGE_2D,TEX,1,0,0,0,0,0x1908,0x1401,0];
+  expect(query(O.QOP_IMAGE_STORAGE,words)).toEqual([1,0]);
+  expect(b.errors).toEqual([0x502]);
+  size=128; fail=true;
+  expect(query(O.QOP_IMAGE_STORAGE,words)).toEqual([1,0]);
+  expect(updates).toBe(0);
+  fail=false;
+  expect(query(O.QOP_IMAGE_STORAGE,words)).toEqual([0,1]);
+  expect(calls).toBe(3);
+  expect(updates).toBe(1);
+  expect(b.errors).toEqual([0x502,0x505]);
+});
 it("checks exact framebuffer bind spans and selectors before native allocation", () => {
   const { b, gl, query } = setup();
   for (const [inputSize, replySize] of [[4, 12], [12, 12], [8, 8], [8, 16]]) {
