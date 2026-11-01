@@ -181,7 +181,9 @@ pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Res
     if prop_id != PROP_DPMS || !entries.iter().any(|&(v, _)| v == value) {
         return Err(Errno::EINVAL);
     }
+    let was_active = crtc_active();
     DPMS.store(value, Ordering::Relaxed);
+    note_vblank_transition(was_active);
     Ok(())
 }
 
@@ -242,7 +244,31 @@ pub fn set_crtc_fb(fb_id: u32) {
 }
 
 pub fn set_crtc_mode(mode: Option<WpkDrmModeModeinfo>) {
+    let was_active = crtc_active();
     unsafe { *CRTC_MODE.0.get() = mode };
+    note_vblank_transition(was_active);
+}
+
+/// Whether the CRTC is lit: it has a mode and its connector's DPMS is On.
+/// Linux's vblank counter (and `DRM_IOCTL_WAIT_VBLANK`) runs only then.
+pub fn crtc_active() -> bool {
+    crtc_mode().is_some() && DPMS.load(Ordering::Relaxed) == DRM_MODE_DPMS_ON
+}
+
+/// Counts `drm_crtc_vblank_off` transitions. Linux sends every queued
+/// vblank event prematurely and wakes every waiter (which then succeeds)
+/// when the CRTC turns off; waits and events record the generation they
+/// started in, so a later generation means "the CRTC turned off since".
+static VBLANK_OFF_GENERATION: AtomicU32 = AtomicU32::new(0);
+
+pub fn vblank_off_generation() -> u32 {
+    VBLANK_OFF_GENERATION.load(Ordering::Relaxed)
+}
+
+fn note_vblank_transition(was_active: bool) {
+    if was_active && !crtc_active() {
+        VBLANK_OFF_GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub fn crtc_fb() -> u32 {

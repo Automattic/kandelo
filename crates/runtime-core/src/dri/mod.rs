@@ -133,8 +133,10 @@ pub fn retire_vblank_for_process(
                 flip.user_data, flip.crtc_id, seq as u32, tv_sec, tv_usec);
         }
         let mut waiting = alloc::vec::Vec::new();
+        let off = kms::vblank_off_generation();
         for event in core::mem::take(&mut kms.pending_vblank_events) {
-            if vblank_passed(seq, event.target) {
+            // drm_crtc_vblank_off sends queued events prematurely.
+            if vblank_passed(seq, event.target) || event.off_generation != off {
                 write_vblank_event(&mut kms.event_ring, DRM_EVENT_VBLANK,
                     event.user_data, event.crtc_id, seq as u32, tv_sec, tv_usec);
             } else {
@@ -146,7 +148,8 @@ pub fn retire_vblank_for_process(
             wake = true;
             crate::epoll::notify(crate::epoll::Source::Description(id), 0x41);
         }
-        wake |= kms.vblank_waits.iter().any(|wait| vblank_passed(seq, wait.target));
+        wake |= kms.vblank_waits.iter()
+            .any(|wait| vblank_passed(seq, wait.target) || wait.off_generation != off);
     }
     wake
 }

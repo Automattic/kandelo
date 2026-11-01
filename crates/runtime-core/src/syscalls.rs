@@ -3376,6 +3376,11 @@ fn handle_dri_card_ioctl(
             {
                 return Err(Errno::ENOMEM);
             }
+            // drm_atomic_crtc_check: an event cannot be requested while the
+            // CRTC stays off (DPMS not On).
+            if wants_event && !kms::crtc_active() {
+                return Err(Errno::EINVAL);
+            }
             // The previous flip's commit completes at the next vblank; until
             // then the CRTC is busy whichever file queued it.
             if kms::flip_pending() {
@@ -3635,9 +3640,7 @@ fn handle_drm_wait_vblank(
     } else {
         0
     };
-    // One CRTC (index 0). A disabled CRTC has no running vblank counter:
-    // `drm_vblank_get` refuses it with EINVAL.
-    if pipe != 0 || kms::crtc_mode().is_none() {
+    if pipe != 0 {
         return Err(Errno::EINVAL);
     }
 
@@ -3656,8 +3659,30 @@ fn handle_drm_wait_vblank(
         .position(|w| w.pid == pid && w.tid == tid)
         .map(|i| kms.vblank_waits.remove(i))
         .filter(|w| w.request_type == req_type && w.request_sequence == req_sequence);
-
+    let off_generation = kms::vblank_off_generation();
     let (seq, tv_sec, tv_usec) = crate::dri::vblank_count_and_time();
+    let write_reply = |buf: &mut [u8], out_type: u32| {
+        buf[0..4].copy_from_slice(&out_type.to_le_bytes());
+        buf[4..8].copy_from_slice(&(seq as u32).to_le_bytes());
+        if wide {
+            buf[8..16].copy_from_slice(&u64::from(tv_sec).to_le_bytes());
+            buf[16..24].copy_from_slice(&u64::from(tv_usec).to_le_bytes());
+        } else {
+            buf[8..12].copy_from_slice(&tv_sec.to_le_bytes());
+            buf[12..16].copy_from_slice(&tv_usec.to_le_bytes());
+        }
+    };
+    // drm_crtc_vblank_off wakes every waiter; the woken wait succeeds and
+    // replies with the count at which the CRTC stopped.
+    if resumed.is_some_and(|w| w.off_generation != off_generation) {
+        write_reply(buf, req_type & !(DRM_VBLANK_RELATIVE | DRM_VBLANK_NEXTONMISS));
+        return Ok(());
+    }
+    // A CRTC that is off (no mode, or DPMS not On) has no running vblank
+    // counter: `drm_vblank_get` refuses it with EINVAL.
+    if !kms::crtc_active() {
+        return Err(Errno::EINVAL);
+    }
     let mut out_type = req_type;
     let (target, deadline_ns) = match resumed {
         Some(wait) => {
@@ -3691,7 +3716,7 @@ fn handle_drm_wait_vblank(
             crate::dri::queue_vblank_event_now(&mut *kms, signal, kms::CRTC_ID)
         } else {
             kms.pending_vblank_events.push(crate::ofd::PendingVblankEvent {
-                target, user_data: signal, crtc_id: kms::CRTC_ID,
+                target, user_data: signal, crtc_id: kms::CRTC_ID, off_generation,
             });
             target as u32
         };
@@ -3708,7 +3733,7 @@ fn handle_drm_wait_vblank(
         if now_ns < deadline_ns {
             kms.vblank_waits.push(crate::ofd::VblankWait {
                 pid, tid, request_type: req_type, request_sequence: req_sequence,
-                target, deadline_ns,
+                target, deadline_ns, off_generation,
             });
             // The request words are rewritten as Linux rewrites them, but
             // the host discards a parked call's staged output.
@@ -3719,14 +3744,7 @@ fn handle_drm_wait_vblank(
     }
     // drm_wait_vblank_reply: the current count and its vblank's time, also
     // reported with EBUSY.
-    buf[4..8].copy_from_slice(&(seq as u32).to_le_bytes());
-    if wide {
-        buf[8..16].copy_from_slice(&u64::from(tv_sec).to_le_bytes());
-        buf[16..24].copy_from_slice(&u64::from(tv_usec).to_le_bytes());
-    } else {
-        buf[8..12].copy_from_slice(&tv_sec.to_le_bytes());
-        buf[12..16].copy_from_slice(&tv_usec.to_le_bytes());
-    }
+    write_reply(buf, out_type);
     result
 }
 
@@ -55303,6 +55321,47 @@ impl HostIO for RelSymlinkMock {
         }
         assert_eq!(page_flip(&mut proc, &mut host, other, a, DRM_MODE_PAGE_FLIP_EVENT), Err(Errno::ENOMEM));
         page_flip(&mut proc, &mut host, other, a, 0).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_turning_the_crtc_off_ends_vblank_waits_and_sends_queued_events() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let now = kms_host_vblank(&mut proc, 7, 0);
+        // (A blocked thread issues nothing else, so queue the event first.)
+        wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 10, 5)).unwrap();
+        let wait = vblank_request(DRM_VBLANK_RELATIVE, 10, 0);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, wait).map(|_| ()), Err(Errno::EAGAIN));
+
+        // DPMS off is drm_crtc_vblank_off: the waiter wakes and succeeds with
+        // the count at which the CRTC stopped, new waits and event-carrying
+        // flips are refused, and the queued event is sent prematurely.
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPROPERTY, WpkDrmModeConnectorSetProperty {
+            value: DRM_MODE_DPMS_OFF, prop_id: kms::PROP_DPMS, connector_id: kms::CONNECTOR_ID }).unwrap();
+        let reply = wait_vblank(&mut proc, &mut host, fd, wait).unwrap();
+        assert_eq!(le_u32(&reply, 4), now as u32);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, wait).map(|_| ()), Err(Errno::EINVAL));
+        let next = kms_fb(&mut proc, &mut host, fd, 640, 480, DRM_FORMAT_ARGB8888);
+        assert_eq!(page_flip(&mut proc, &mut host, fd, next, DRM_MODE_PAGE_FLIP_EVENT), Err(Errno::EINVAL));
+        kms_host_vblank(&mut proc, 7, 16_667);
+        let event = read_drm_events(&mut proc, &mut host, fd, 64).unwrap();
+        assert_eq!((le_u32(&event, 0), le_u32(&event, 8)), (DRM_EVENT_VBLANK, 5));
+
+        // DPMS on restores the counter; a mode-less SETCRTC is the same
+        // vblank-off transition.
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPROPERTY, WpkDrmModeConnectorSetProperty {
+            value: DRM_MODE_DPMS_ON, prop_id: kms::PROP_DPMS, connector_id: kms::CONNECTOR_ID }).unwrap();
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, wait).map(|_| ()), Err(Errno::EAGAIN));
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETCRTC,
+            WpkDrmModeGetCrtc { crtc_id: kms::CRTC_ID, ..Default::default() }).unwrap();
+        assert!(wait_vblank(&mut proc, &mut host, fd, wait).is_ok());
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, wait).map(|_| ()), Err(Errno::EINVAL));
         kms::reset_for_test();
     }
 

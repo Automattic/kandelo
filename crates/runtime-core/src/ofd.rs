@@ -519,6 +519,9 @@ pub struct PendingVblankEvent {
     pub target: u64,
     pub user_data: u64,
     pub crtc_id: u32,
+    /// `kms::vblank_off_generation()` when queued; a newer generation means
+    /// the CRTC turned off, which sends the event prematurely.
+    pub off_generation: u32,
 }
 
 /// One thread's blocking `DRM_IOCTL_WAIT_VBLANK` across host EAGAIN retries.
@@ -540,6 +543,9 @@ pub struct VblankWait {
     pub target: u64,
     /// CLOCK_MONOTONIC ns at which Linux's 3 s wait gives up with EBUSY.
     pub deadline_ns: i64,
+    /// `kms::vblank_off_generation()` when the wait began; a newer one means
+    /// the CRTC turned off, which ends the wait successfully on Linux.
+    pub off_generation: u32,
 }
 
 /// Mutable KMS state belongs to the DRM file, including caps, cursor and
