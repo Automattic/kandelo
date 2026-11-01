@@ -10,9 +10,11 @@ links 92 case families to baseline areas, preserves inventory hashes and keeps
 conditional extension/configuration applicability distinct from missing work.
 
 `scripts/test-graphics-cts.sh` runs complete bounded GLES2 groups in headless
-Playwright Chromium, Firefox and WebKit. Supported selectors currently are
-`negative-state`, `negative-api` and `color-clear`; exact case manifests and QPA
-accounting preserve upstream outcomes, missing cases and diagnostics. The latest
+Playwright Chromium, Firefox and WebKit. Its selectors are `negative-state`,
+`negative-api` and `color-clear`; exact case manifests and QPA accounting
+preserve upstream outcomes, missing cases and diagnostics.
+`scripts/run-graphics-cts.sh` (below) runs the complete suites, chunked, on
+Node and the three headless engines. The latest
 normal rendering evidence, source/artifact identities and failures are in the
 [compatibility ledger](../../docs/graphics/compatibility-v1.md). These selected
 groups are not full graphics conformance or formal certification.
@@ -27,6 +29,87 @@ compile checks and focused causal controls. Broad rebuilds and suite execution
 are deferred until that implementation pass is complete. Existing inventories
 and specifications guide implementation now; focused failure-injection tests
 supplement upstream acceptance rather than replacing it.
+
+## Complete chunked upstream runs
+
+`scripts/run-graphics-cts.sh` runs the complete upstream `deqp-gles2`
+(19,825 cases) or `deqp-egl` (4,117 cases), or any part of it, on one host
+with one command. It only runs normally packaged artifacts (`graphics-cts`
+package outputs and `kernel.wasm`); provision them first as for any suite.
+
+```sh
+# Complete suites, one command per suite and host
+scripts/run-graphics-cts.sh gles2 node
+scripts/run-graphics-cts.sh gles2 chromium
+scripts/run-graphics-cts.sh gles2 firefox
+scripts/run-graphics-cts.sh gles2 webkit
+scripts/run-graphics-cts.sh egl node
+scripts/run-graphics-cts.sh egl chromium
+scripts/run-graphics-cts.sh egl firefox
+scripts/run-graphics-cts.sh egl webkit
+
+# Selectors and strict mode
+scripts/run-graphics-cts.sh gles2 chromium functional.fbo --strict
+scripts/run-graphics-cts.sh gles2 webkit functional.negative_api,info
+scripts/run-graphics-cts.sh gles2 firefox negative-state      # earlier selectors still work
+scripts/run-graphics-cts.sh egl node functional              # every functional family
+
+# Rerun only named chunks of an earlier plan's selection
+KANDELO_CTS_CHUNKS='dEQP-EGL.functional.sharing#004' scripts/run-graphics-cts.sh egl chromium functional.sharing
+```
+
+Selectors: `all` (default); a top-level group (`accuracy`, `capability`,
+`functional`, `info`, `performance`, `stress`); any family of the
+[coverage map](../../docs/graphics/cts-coverage-v1.md), with or without the
+suite root (`functional.fbo`, `dEQP-EGL.functional.image`, `info.vendor`);
+the earlier GLES2 selectors `negative-state`, `negative-api` and
+`color-clear`; or a comma-separated union. The expected cases come from the
+recorded executable inventories in `cts-inventory/`, verified against the
+coverage map's SHA256 values, so a case the executable never runs is reported
+as Missing instead of disappearing.
+
+Chunks never cross a family and hold at most 100 GLES2 or 50 EGL cases
+(`KANDELO_CTS_CHUNK_SIZE`). Each chunk is its own Playwright test and page,
+or its own Vitest test on Node, and each attempt boots a fresh kernel from
+the same image. The chunk's cases go to dEQP through
+`--deqp-caselist-file`. Every run passes `--deqp-visibility=hidden`: the
+Kandelo GBM platform has no visible window or KMS presentation service, so
+the default `windowed` visibility would make every dEQP-EGL window case (and
+the GLES2 render target) NotSupported. If the guest exits abnormally or the
+attempt deadline (`KANDELO_CTS_ATTEMPT_BASE_MS` + `KANDELO_CTS_CASE_MS` per
+case, default 60 s + 10 s) expires while a case's `#beginTestCaseResult` is
+open, that case is Crash or Timeout and the chunk resumes after it in a fresh
+kernel (`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
+nothing can be attributed, so the remaining cases are Missing. A lost page
+or host loses only that chunk.
+
+Each run writes, under `KANDELO_CTS_OUT` (default
+`.context/graphics-cts-runs/<suite>-<host>-<time>/`):
+
+- `plan.json`: the selected cases and chunks;
+- `<host>/<chunk>.json`: per-case rows, attempts, outcomes, crashed case,
+  page/console/host diagnostics and artifact SHA256s;
+- `<host>/qpa/<chunk>.attempt<N>.qpa`: the raw upstream log of each attempt;
+- `summary.json`: Pass, Fail, NotSupported, QualityWarning,
+  CompatibilityWarning, Crash, Timeout and Missing (plus any other upstream
+  status verbatim) per engine and per family, every chunk with a crash,
+  deadline or absent result (`crashedChunks`: chunk, attempt, case, reason),
+  and accounting errors (unexpected, duplicate or mismatched cases);
+- `cases.tsv`: engine, chunk, family, case, status, attempt and detail for
+  every planned case.
+
+Statuses are never upgraded: NotSupported, warnings and Missing stay as they
+are. Without `--strict` (or `KANDELO_CTS_STRICT=1`) the exit status reports
+only runner failures; a chunk without a result file counts as Missing. With
+`--strict` the run also fails on any Fail, Crash, Timeout or Missing, on any
+other non-passing upstream status (ResourceError, InternalError, ...) and on
+any accounting error. NotSupported, QualityWarning, CompatibilityWarning and
+CapabilityWarning do not fail strict mode; they remain visible per family.
+
+`node --test tests/graphics/cts-plan.test.mjs tests/graphics/cts-accounting.test.mjs`
+are the source-only checks of selection, chunking and accounting. The
+bounded `scripts/test-graphics-cts.sh` runner above is unchanged; the full
+runner is the one for the combined validation phase.
 
 ## Initial adapted EGL harness
 

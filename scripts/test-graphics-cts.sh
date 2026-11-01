@@ -18,7 +18,8 @@ for argument in "$@"; do
             ;;
     esac
 done
-node --test "$repo_root/tests/graphics/cts-qpa.test.mjs" "$repo_root/tests/graphics/cts-retirement.test.mjs"
+node --test "$repo_root/tests/graphics/cts-qpa.test.mjs" "$repo_root/tests/graphics/cts-retirement.test.mjs" \
+    "$repo_root/tests/graphics/cts-plan.test.mjs" "$repo_root/tests/graphics/cts-accounting.test.mjs"
 cd "$repo_root/apps/browser-demos"
 exec node node_modules/@playwright/test/cli.js test \
     test/graphics-cts-gles2.spec.ts --workers 1 --retries 0 \
