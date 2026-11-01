@@ -17,7 +17,8 @@
  *   - gbm_bo_get_fd        (PRIME export → handle-to-fd)
  *   - gbm_bo_import        (GBM_BO_IMPORT_FD, and GBM_BO_IMPORT_FD_MODIFIER
  *                           for one linear plane: fd-to-handle, bounded by
- *                           the dma-buf's real size)
+ *                           the dma-buf's real size; GBM_BO_IMPORT_EGL_IMAGE
+ *                           for an image of this device's EGL display)
  *   - gbm_bo_map / gbm_bo_unmap   (single-plane mmap)
  *   - gbm_bo_write         (map + memcpy)
  *   - gbm_bo_set/get_user_data (opaque pointer with destroy cb)
@@ -58,6 +59,11 @@
 #include <string.h>
 #include <stdint.h>
 #include <limits.h>
+
+/* libEGL's half of GBM_BO_IMPORT_EGL_IMAGE; absent when EGL is not linked,
+ * which leaves no EGLImage to import. */
+__attribute__((weak)) int _wpk_egl_image_export_gbm(const void *, const void *, uint64_t,
+                                                    struct wpk_gbm_image_plane *);
 #include <unistd.h>
 #include <pthread.h>
 
@@ -634,8 +640,26 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
         return import_plane(gbm, d->fds[0], d->width, d->height, d->format,
                             (uint32_t)d->strides[0], (uint32_t)d->offsets[0], flags);
     }
-    /* GBM_BO_IMPORT_WL_BUFFER / EGL_IMAGE need a Wayland or EGL image
-     * backend that this GBM does not have. */
+    if (type == GBM_BO_IMPORT_EGL_IMAGE) {
+        /* Mesa gbm_dri_bo_import: the EGLImage must belong to the EGL
+         * display initialized on this device, and the bo shares its storage
+         * with the image's format, extent and pitch (here through a PRIME
+         * descriptor of the image's bo). import_plane validates the usage
+         * against that storage as for any dma-buf. */
+        struct wpk_gbm_image_plane plane;
+        if (!retain_device(gbm)) return NULL;
+        errno = EINVAL;
+        int exported = _wpk_egl_image_export_gbm &&
+            _wpk_egl_image_export_gbm(buffer, gbm, gbm->identity, &plane) == 0;
+        struct gbm_bo *bo = exported ? import_plane(gbm, plane.fd, plane.width, plane.height,
+                                                    plane.format, plane.stride, plane.offset, flags)
+                                     : NULL;
+        int error = errno;
+        if (exported) close(plane.fd);
+        release_device(gbm);
+        errno = error;
+        return bo;
+    }
     errno = EINVAL;
     return NULL;
 }

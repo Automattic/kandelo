@@ -25,6 +25,7 @@
 #include <unistd.h>
 
 int _wpk_gbm_surface_metadata(const void *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
+int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 
 #define MAX_HANDLES 64
 static unsigned created;              /* last allocated GEM handle */
@@ -223,11 +224,10 @@ static void import_fd_modifier(void) {
         assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &bad[i], 0) && errno == EINVAL);
     }
     assert(closes[handle] == closes_before + 1); /* only the offset overrun reached PRIME */
-    /* Other import types stay honest failures. */
+    /* A Wayland buffer import needs a wl_drm buffer, which nothing here
+     * created. */
     errno = 0;
     assert(!gbm_bo_import(device, GBM_BO_IMPORT_WL_BUFFER, &base, 0) && errno == EINVAL);
-    errno = 0;
-    assert(!gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &base, 0) && errno == EINVAL);
     close(fd);
     close_device(device);
 }
@@ -257,6 +257,87 @@ static void import_gpu_tier(void) {
     assert(map_dumb_calls == calls); /* known unmappable: no kernel round trip */
     gbm_bo_destroy(bo);
     close(fd);
+    close_device(device);
+}
+
+/* libEGL's half of GBM_BO_IMPORT_EGL_IMAGE: only images of the EGL display
+ * initialized on `egl_device` (with its identity) export a plane, each time
+ * as a fresh PRIME descriptor naming the image's GEM storage. */
+struct egl_image_double { uint32_t handle; off_t size; struct wpk_gbm_image_plane plane; };
+static const void *egl_device;
+static uint64_t egl_identity;
+static int egl_export_error, last_export_fd = -1;
+int _wpk_egl_image_export_gbm(const void *image, const void *device, uint64_t identity,
+                              struct wpk_gbm_image_plane *plane) {
+    const struct egl_image_double *source = image;
+    if (egl_export_error) { errno = egl_export_error; return -1; }
+    if (!source || device != egl_device || identity != egl_identity || !source->handle) {
+        errno = EINVAL;
+        return -1;
+    }
+    *plane = source->plane;
+    plane->fd = last_export_fd = prime_fd(source->handle, source->size);
+    return 0;
+}
+
+/* Mesa gbm_dri_bo_import(GBM_BO_IMPORT_EGL_IMAGE): an image of this device's
+ * EGL display becomes a bo sharing its storage, reporting the image's format,
+ * extent, pitch and plane, with usage checked against that storage. */
+static void import_egl_image(void) {
+    struct gbm_device *device = open_device();
+    int device_fd;
+    assert(_wpk_gbm_device_metadata(device, &device_fd, &egl_identity));
+    egl_device = device;
+    struct egl_image_double gpu = {new_handle(1), 48,
+        {.width = 4, .height = 3, .format = GBM_FORMAT_ABGR8888, .stride = 16}};
+    struct egl_image_double cpu = {new_handle(0), 96,
+        {.width = 4, .height = 3, .format = GBM_FORMAT_XRGB8888, .stride = 16, .offset = 32}};
+    struct egl_image_double unknown = {0};
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &unknown, 0) && errno == EINVAL);
+    /* The GPU-tier image: unmappable storage, so a write usage is refused,
+     * and the PRIME descriptor is released either way. */
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &gpu, GBM_BO_USE_WRITE) && errno == EINVAL);
+    assert(fcntl(last_export_fd, F_GETFD) < 0 && !live[gpu.handle]);
+    struct gbm_bo *bo = gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &gpu,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    assert(bo && fcntl(last_export_fd, F_GETFD) < 0);
+    assert(gbm_bo_get_handle(bo).u32 == gpu.handle && live[gpu.handle]);
+    assert(gbm_bo_get_width(bo) == 4 && gbm_bo_get_height(bo) == 3);
+    assert(gbm_bo_get_format(bo) == GBM_FORMAT_ABGR8888 && gbm_bo_get_bpp(bo) == 32);
+    assert(gbm_bo_get_stride(bo) == 16 && gbm_bo_get_offset(bo, 0) == 0);
+    assert(gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_LINEAR && gbm_bo_get_plane_count(bo) == 1);
+    uint32_t stride = 0; void *token = NULL;
+    errno = 0;
+    assert(!gbm_bo_map(bo, 0, 0, 4, 3, GBM_BO_TRANSFER_READ, &stride, &token) && errno == EINVAL);
+    gbm_bo_destroy(bo);
+    assert(!live[gpu.handle]);
+    /* The CPU-tier image keeps its plane offset: writes land in its rows. */
+    bo = gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &cpu, GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR);
+    assert(bo && gbm_bo_get_offset(bo, 0) == 32 && gbm_bo_get_stride(bo) == 16);
+    assert(gbm_bo_get_format(bo) == GBM_FORMAT_XRGB8888);
+    const uint32_t pixel = 0x11223344u;
+    assert(gbm_bo_write(bo, &pixel, sizeof pixel) == 0);
+    uint32_t stored = 0;
+    off_t at = (off_t)cpu.handle * sysconf(_SC_PAGESIZE) + 32;
+    assert(pread(fileno(device_file), &stored, 4, at) == 4 && stored == pixel);
+    gbm_bo_destroy(bo);
+    /* Geometry the storage cannot back is refused like any dma-buf. */
+    cpu.size = 64;
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &cpu, 0) && errno == EINVAL);
+    /* EGL's own failure is reported as is. */
+    egl_export_error = EMFILE;
+    errno = 0;
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &gpu, 0) && errno == EMFILE);
+    egl_export_error = 0;
+    /* Another device's display does not own these images. */
+    struct gbm_device *other = gbm_create_device(fileno(device_file));
+    assert(other);
+    errno = 0;
+    assert(!gbm_bo_import(other, GBM_BO_IMPORT_EGL_IMAGE, &gpu, 0) && errno == EINVAL);
+    gbm_device_destroy(other);
     close_device(device);
 }
 
@@ -422,6 +503,7 @@ int main(int argc, char **argv) {
         {"usage-flags", usage_flags},
         {"plane-accessors", plane_accessors},
         {"rgb565", rgb565},
+        {"import-egl-image", import_egl_image},
     };
     if (argc != 2) { fprintf(stderr, "usage: %s <case>\n", argv[0]); return 2; }
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {

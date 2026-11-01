@@ -67,7 +67,7 @@ clang "${native_flags[@]}" \
     "$repo_root/tests/graphics/libc/gbm-file-double.c" \
     -o "$output_dir/gbm-mesa"
 status=0
-for case_name in ${KANDELO_GBM_CASES:-user-data-replace import-fd-bounds import-fd-modifier import-gpu-tier import-usage legacy-formats usage-flags plane-accessors rgb565}; do
+for case_name in ${KANDELO_GBM_CASES:-user-data-replace import-fd-bounds import-fd-modifier import-gpu-tier import-usage legacy-formats usage-flags plane-accessors rgb565 import-egl-image}; do
     python3 - "$output_dir/gbm-mesa" "$case_name" <<'PY' || status=1
 import subprocess, sys
 try:

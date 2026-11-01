@@ -145,7 +145,8 @@ it("exports a 2D level as aliased storage and keeps the source a sibling", () =>
   bind(b, 1, 0x0de1, 5); image(b, 0x0de1, 0, 10); linear(b);
   const source = b.textures.get(5)!;
   const result = exported(b, registry, 41, 0x0de1, 5);
-  expect([result.record.width, result.record.height, result.internalFormat]).toEqual([1, 1, 0x1908]);
+  // The sized format of RGBA/UNSIGNED_BYTE (EGL derives the DRM format).
+  expect([result.record.width, result.record.height, result.internalFormat]).toEqual([1, 1, 0x8058]);
   expect(result.revision).toBe(1);
   // The source reports its image token, so C keeps it as a sibling.
   expect(query(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x0de1], 16)).toEqual([0, result.token, 1, 0x47514c33]);
@@ -262,6 +263,32 @@ it("writes a 2D sibling through to a cube-face image", () => {
   expect(b.errors).toEqual([]);
 });
 
+// OpenGL ES 3.0 table 3.2 / EXT_texture_storage: an exported image reports
+// its sized internal format, which EGL maps to the DRM format a
+// gbm_bo_import(GBM_BO_IMPORT_EGL_IMAGE) bo reports.
+it.each([
+  [0x1907, 0x1401, 3, 0x8051],   // RGB/UNSIGNED_BYTE: RGB8
+  [0x1907, 0x8363, 2, 0x8d62],   // RGB/UNSIGNED_SHORT_5_6_5: RGB565
+  [0x1908, 0x8033, 2, 0x8056],   // RGBA/UNSIGNED_SHORT_4_4_4_4: RGBA4
+  [0x1908, 0x8034, 2, 0x8057],   // RGBA/UNSIGNED_SHORT_5_5_5_1: RGB5_A1
+  [0x190a, 0x1401, 2, 0x8045],   // LUMINANCE_ALPHA: LUMINANCE8_ALPHA8
+  [0x1909, 0x1401, 1, 0x8040],   // LUMINANCE: LUMINANCE8
+  [0x1906, 0x1401, 1, 0x803c],   // ALPHA: ALPHA8
+])("exports a %s/%s texture image with its sized internal format", (format, type, bytes, sized) => {
+  const {registry, b} = setup();
+  bind(b, 1, 0x0de1, 5);
+  submit(b, O.OP_TEX_IMAGE_2D, [0x0de1, 0, format, 1, 1, 0, format, type, bytes], Array(bytes).fill(1));
+  linear(b);
+  expect(exported(b, registry, 41, 0x0de1, 5).internalFormat).toBe(sized);
+  expect(b.errors).toEqual([]);
+});
+it("exports a renderbuffer with the format the guest specified", () => {
+  const {registry, b} = setup();
+  bind(b, 2, 0x8d41, 8);
+  submit(b, O.OP_RENDERBUFFER_STORAGE, [0x8d41, 0x8d62, 4, 2]);   // RGB565
+  expect(exported(b, registry, 41, 0x8d41, 8).internalFormat).toBe(0x8d62);
+  expect(b.errors).toEqual([]);
+});
 it("exports renderbuffers of any format and orphans them on new storage", () => {
   const {registry, b, gl} = setup();
   bind(b, 2, 0x8d41, 8);

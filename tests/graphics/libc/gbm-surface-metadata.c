@@ -18,6 +18,13 @@
 int _wpk_gbm_surface_metadata(const void *, uint32_t *, uint32_t *, uint32_t *, uint32_t *);
 int _wpk_gbm_surface_dimensions(const void *, uint32_t *, uint32_t *);
 int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
+/* No EGL display exists in this process, so no EGLImage either. */
+int _wpk_egl_image_export_gbm(const void *image, const void *device, uint64_t identity,
+                              struct wpk_gbm_image_plane *plane) {
+    (void)image; (void)device; (void)identity; (void)plane;
+    errno = EINVAL;
+    return -1;
+}
 static int device_fd;
 static unsigned created, closed, fail_allocation;
 static uint32_t imported_handle;

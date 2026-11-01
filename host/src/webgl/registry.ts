@@ -740,6 +740,11 @@ export class GlContextRegistry {
     const record = this.exportedImages.get(bo);
     return record?.boLive && !this.foreignRetirements.has(bo) ? record : undefined;
   }
+  /** The GPU-tier storage KMS presents for `bo`: a GBM GPU bo or an
+   *  exported GLES image (exportedImageScanout gives the latter's reader). */
+  scanoutSource(bo: number): GpuBo | GlExportedImage | undefined {
+    return this.gpuBo(bo) ?? this.exportedImage(bo);
+  }
   private retireExportedBo(bo: number): boolean {
     const record = this.exportedImages.get(bo);
     if (!record) return true;

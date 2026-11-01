@@ -2,7 +2,7 @@ import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
-import { drawGpuScanout, readGpuScanout } from "./webgl/kms-scanout.js";
+import { drawGpuScanout, readGpuScanout, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
@@ -77,7 +77,7 @@ import {
 } from "./generated/abi";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
-import { exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
+import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
@@ -1116,9 +1116,19 @@ export class WasmPosixKernel {
     }
   }
 
+  /** KMS reads a GBM GPU bo's framebuffer, or a framebuffer over an exported
+   * GLES image made (once, with the selected owner's errors captured first)
+   * on its first scanout. Undefined: not GPU-tier. Null: not presentable. */
+  private scanoutStorage(bo: number): GpuScanoutStorage | null | undefined {
+    const source = this.gl.scanoutSource(bo);
+    if (!source || !("native" in source)) return source;
+    if (source.scanout || source.gl.isContextLost()) return source.scanout ?? null;
+    return this.withRestoredGraphicsState(source.gl, () => exportedImageScanout(source));
+  }
+
   private gpuCursor(bo: number, width: number, height: number): Uint8Array<ArrayBuffer> | null | undefined {
-    const storage = this.gl.gpuBo(bo);
-    if (!storage) return undefined;
+    const storage = this.scanoutStorage(bo);
+    if (!storage) return storage;
     if (storage.gl.isContextLost()) {
       this.glMuxerFor(storage.gl).invalidateCurrent();
       return null;
@@ -1135,7 +1145,7 @@ export class WasmPosixKernel {
 
   private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean):
       { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
-    const storage = this.gl.gpuBo(fb.bo_id);
+    const storage = this.scanoutStorage(fb.bo_id);
     if (!storage) return null;
     // Context loss already reaches the guest through its EGL/GL failure
     // channel. A device tick must stand down rather than kill the machine.
@@ -3310,7 +3320,7 @@ export class WasmPosixKernel {
         // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
         // renderbuffer of context `ctxId` as GPU-tier bo `boId`. `attrs` is
         // the kernel's 48-byte WpkDrmExportImage copy; the reply writes the
-        // image extent, its GL internal format, the share group's source
+        // image extent, its sized GL internal format, the share group's source
         // token and the object's sibling revision. Negative errno otherwise.
         host_gl_export_image: (pid: number, ctxId: number, boId: number,
           attrsPtr: KernelPointer, attrsLen: KernelPointer): number => {

@@ -1009,3 +1009,47 @@ it("refuses unjournaled borrowed storage before commands and accepts its restore
   expect(r.imports.host_gl_submit(8,0,bytes.length,12)).toBe(0);
   expect(effects).toBe(1);
 });
+
+// DRM ADDFB2 accepts an exported GLES image's GPU-tier bo (EGLImage →
+// gbm_bo_import(GBM_BO_IMPORT_EGL_IMAGE) → drmModeAddFB2), so KMS presents
+// the image's own storage: a framebuffer over it is made on first scanout,
+// read every vblank like a GBM GPU bo, and deleted with the bo.
+it("scans out and samples the cursor from an exported GLES image's own storage", () => {
+  const r = selectedKernel(), native = {}, attached: unknown[][] = [], deleted: unknown[] = [];
+  Object.assign(r.gl, {
+    framebufferTexture2D: (...args: unknown[]) => attached.push(args),
+    deleteFramebuffer: (fbo: unknown) => deleted.push(fbo),
+  });
+  const record = { bo: 43, gl: r.gl, object: {}, native, renderbuffer: false, width: 2, height: 2,
+    storage: { target: 0x8516, level: 1 }, sourceUsing: true, boLive: true, format: 0x8058 };
+  r.kernel.gl.publishExportedImage(record as any);
+  const canvas = { width: 2, height: 2, getContext: () => null };
+  r.setPixels([0, 255, 0, 255]);
+  const frame = getKernelGraphicsAccess(r.kernel).gpuScanout(
+    { bo_id: 43, width: 2, height: 2 } as any, canvas as any, false);
+  expect(frame?.direct).toBe(false);
+  expect([...(frame as { pixels: Uint8Array }).pixels.subarray(0, 4)]).toEqual([0, 255, 0, 255]);
+  // The image's cube face and level are attached once, on the read target.
+  expect(attached).toEqual([[0x8ca8, 0x8ce0, 0x8516, native, 1]]);
+  r.setPixels([0, 0, 255, 255]);
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.kernel.kms.setCursor(100, 3, 43, 2, 2, 0, 0, 0, 0);
+  expect([...r.kernel.kms.cursorSnapshot().pixels!.slice(0, 4)]).toEqual([0, 0, 255, 255]);
+  expect(attached.length).toBe(1);
+  expect(r.state).toEqual(r.selected);
+  r.kernel.gl.retireForeignBo(43);
+  expect(deleted).toContain(r.storage.fbo);
+  expect(hasNativeRepair(r.gl)).toBe(false);
+});
+
+it("does not present an exported image that is not normalized color", () => {
+  const r = selectedKernel();
+  r.kernel.gl.publishExportedImage({ bo: 44, gl: r.gl, object: {}, native: {}, renderbuffer: true,
+    width: 2, height: 2, storage: {}, sourceUsing: true, boLive: true, format: 0x8814 } as any);
+  expect(getKernelGraphicsAccess(r.kernel).gpuScanout(
+    { bo_id: 44, width: 2, height: 2 } as any, { width: 2, height: 2, getContext: () => null } as any, false))
+    .toBeNull();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.kernel.kms.setCursor(100, 3, 44, 2, 2, 0, 0, 0, 0);
+  expect(r.kernel.kms.cursorSnapshot().pixels).toBeNull();
+});

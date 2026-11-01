@@ -202,3 +202,34 @@ export function renderbufferFloat(internal: number): boolean {
 export function nativeRenderbufferFormat(internal: number): number {
   return internal === BGRA || internal === BGRA8 ? 0x8058 : internal === RGB16F ? RGBA16F : internal;
 }
+
+/** Sized formats of the unsized GLES 2 (format, type) pairs: OpenGL ES 3.0
+ * table 3.2 for the core and EXT_texture_rg rows, EXT_texture_storage names
+ * for the LUMINANCE/ALPHA rows (8-bit, OES_texture_float and
+ * OES_texture_half_float), and EXT_texture_format_BGRA8888's BGRA8_EXT. Depth
+ * and depth-stencil rows are absent: their sized format is whatever the
+ * renderer chose, which `native` reports. */
+const EFFECTIVE_FORMATS: ReadonlyMap<number, ReadonlyMap<number, number>> = new Map([
+  [RGBA, new Map([[UNSIGNED_BYTE, 0x8058], [UNSIGNED_SHORT_4_4_4_4, 0x8056],
+    [UNSIGNED_SHORT_5_5_5_1, 0x8057], [FLOAT, 0x8814], [HALF_FLOAT_OES, RGBA16F]])],
+  [RGB, new Map([[UNSIGNED_BYTE, 0x8051], [UNSIGNED_SHORT_5_6_5, 0x8d62], [FLOAT, 0x8815],
+    [HALF_FLOAT_OES, RGB16F]])],
+  [LUMINANCE_ALPHA, new Map([[UNSIGNED_BYTE, 0x8045], [FLOAT, 0x8819], [HALF_FLOAT_OES, 0x881f]])],
+  [LUMINANCE, new Map([[UNSIGNED_BYTE, 0x8040], [FLOAT, 0x8818], [HALF_FLOAT_OES, 0x881e]])],
+  [ALPHA, new Map([[UNSIGNED_BYTE, 0x803c], [FLOAT, 0x8816], [HALF_FLOAT_OES, 0x881c]])],
+  [RED, new Map([[UNSIGNED_BYTE, 0x8229], [FLOAT, 0x822e], [HALF_FLOAT_OES, 0x822d]])],
+  [RG, new Map([[UNSIGNED_BYTE, 0x822b], [FLOAT, 0x8230], [HALF_FLOAT_OES, 0x822f]])],
+  [BGRA, new Map([[UNSIGNED_BYTE, BGRA8]])],
+]);
+const UNSIZED = new Set([RGBA, RGB, LUMINANCE_ALPHA, LUMINANCE, ALPHA, RED, RG, BGRA,
+  DEPTH_COMPONENT, DEPTH_STENCIL]);
+
+/** The sized internal format of a GLES 2 image: an exported EGLImage reports
+ * it (EGL 1.5 section 3.9), and EGL maps it to a DRM format for GBM import.
+ * `type` may be WebGL's HALF_FLOAT (0x140b) for HALF_FLOAT_OES. A sized or
+ * compressed `internal` already is effective; an unsized pair without a row
+ * reports the renderer's `native` storage format. */
+export function effectiveInternalFormat(internal: number, format: number, type: number, native: number): number {
+  if (!UNSIZED.has(internal)) return internal;
+  return EFFECTIVE_FORMATS.get(format)?.get(type === 0x140b ? HALF_FLOAT_OES : type) ?? native;
+}

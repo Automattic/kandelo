@@ -212,6 +212,7 @@ static unsigned transfers, transfer_closes, export_closes;
 static unsigned image_exports, image_export_closes;
 static int image_export_errno;
 static uint32_t image_export_request[4];
+static uint32_t image_export_format = 0x8058; /* the sized format the host reports */
 static int fail_prime_export, fail_prime_import, fail_foreign_texture, fail_dmabuf_import;
 static unsigned display_opens, display_closes, object_closes;
 static unsigned native_files[8];
@@ -638,8 +639,14 @@ int _wpk_gbm_device_metadata(const void *native, int *fd, uint64_t *identity) {
     if(native!=(void *)(uintptr_t)0x576200u)return 0;
     *fd=10;*identity=wayland_native_identity;return 1;
 }
+/* gbm-image-export makes the GBM device initializable: its EGL display then
+ * owns a native DRM file of its own, as libgbm's descriptor alias does. */
+static int gbm_device_initializable;
 int _wpk_gbm_device_acquire_fd(const void *native, uint64_t identity) {
-    (void)native; (void)identity; errno = EINVAL; return -1;
+    if (gbm_device_initializable && native == (void *)(uintptr_t)0x576200u
+        && identity == wayland_native_identity)
+        return open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
+    errno = EINVAL; return -1;
 }
 
 int graphics_open(const char *path, int flags, ...) {
@@ -702,6 +709,9 @@ int graphics_close(int fd) {
 #endif
     assert(fd == 10); return 0;
 }
+/* A CPU-tier dma-buf: its mapping is real memory. */
+static int dmabuf_cpu_tier;
+static uint8_t dmabuf_cpu_storage[64 * 64 * 4];
 int graphics_fstat(int fd, struct stat *st) {
     assert(fd == 100);
     memset(st, 0, sizeof *st);
@@ -719,10 +729,12 @@ void *graphics_mmap(void *a, size_t len, int prot, int flags, int fd, off_t offs
         return commands;
     }
     assert(fd == 100);
+    if (dmabuf_cpu_tier) { assert(len == sizeof dmabuf_cpu_storage); return dmabuf_cpu_storage; }
     errno = EINVAL; // GPU storage is not CPU mappable.
     return MAP_FAILED;
 }
 int graphics_munmap(void *a, size_t len) {
+    if (a == dmabuf_cpu_storage) { assert(len == sizeof dmabuf_cpu_storage); return 0; }
     int found = 0;
     for (unsigned i=0; i<8; i++) found |= a == command_storage[i];
     assert(found && len == WPK_GL_CMDBUF_LEN);
@@ -865,7 +877,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (image_export_errno) { errno = image_export_errno; image_export_errno = 0; return -1; }
         const uint32_t kind = words[1] == GL_RENDERBUFFER ? 2 : 1;
         *object_image_source(slot, kind, words[2]) = 5;
-        words[4] = 99; words[5] = 4; words[6] = 4; words[7] = GL_RGBA; words[8] = 5;
+        words[4] = 99; words[5] = 4; words[6] = 4; words[7] = image_export_format; words[8] = 5;
         words[9] = ++*object_image_revision(slot, kind, words[2]);
     } else if (request == GLIO_CREATE_CONTEXT && fail_create_context) {
         errno = ENOMEM;
@@ -2759,6 +2771,80 @@ int main(int argc, char **argv) {
         assert(major == 1 && minor == 5 && display_live);
         assert(eglTerminate(dpy) && !display_live && display_closes == 2 && object_closes == 2);
         puts("PASS display-join-rollback"); return 0;
+    }
+    if (!strcmp(argv[1], "gbm-image-export")) {
+        /* GBM_BO_IMPORT_EGL_IMAGE (Mesa gbm_dri_bo_import): only an image of
+         * the EGL display initialized on that GBM device is importable, and
+         * the plane is the image's own storage with its true layout. */
+        const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+        void *device = (void *)(uintptr_t)0x576200u;
+        struct wpk_gbm_image_plane plane;
+        EGLDisplay gbm = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, device, NULL);
+        gbm_device_initializable = 1;
+        assert(gbm != EGL_NO_DISPLAY && eglInitialize(gbm, NULL, NULL));
+        EGLint dmabuf[] = {EGL_WIDTH,64,EGL_HEIGHT,32,EGL_LINUX_DRM_FOURCC_EXT,0x34325258,
+            EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,
+            EGL_DMA_BUF_PLANE0_PITCH_EXT,320,EGL_NONE};
+        EGLImageKHR gpu = eglCreateImageKHR(gbm, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, dmabuf);
+        assert(gpu != EGL_NO_IMAGE_KHR);
+        assert(_wpk_egl_image_export_gbm(gpu, device, wayland_native_identity, &plane) == 0);
+        assert(plane.fd >= 200 && plane.fd < 208 && prime_exports[plane.fd - 200].handle == 77);
+        assert(plane.width == 64 && plane.height == 32 && plane.format == 0x34325258 &&
+               plane.stride == 320 && plane.offset == 0);
+        assert(close(plane.fd) == 0);
+        /* Another device, a recycled identity, an unknown handle, and an
+         * image of a different display are not this device's images. */
+        errno = 0;
+        assert(_wpk_egl_image_export_gbm(gpu, (void *)(uintptr_t)0x576201u, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        assert(_wpk_egl_image_export_gbm(gpu, device, wayland_native_identity + 1, &plane) < 0 && errno == EINVAL);
+        assert(_wpk_egl_image_export_gbm((void *)(uintptr_t)0x7fff0000u, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        /* A CPU-tier plane keeps its byte offset within the dma-buf. */
+        dmabuf_cpu_tier = 1; dmabuf[9] = 640;
+        EGLImageKHR cpu = eglCreateImageKHR(gbm, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, dmabuf);
+        assert(cpu != EGL_NO_IMAGE_KHR);
+        assert(_wpk_egl_image_export_gbm(cpu, device, wayland_native_identity, &plane) == 0);
+        assert(plane.offset == 640 && plane.stride == 320 && plane.format == 0x34325258);
+        assert(close(plane.fd) == 0 && eglDestroyImageKHR(gbm, cpu));
+        dmabuf_cpu_tier = 0; dmabuf[9] = 0;
+        /* A GLES texture image: its sized format names the DRM format, and
+         * the exported bo's rows are 32-bpp. */
+        EGLContext context = eglCreateContext(gbm, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
+        assert(context && eglMakeCurrent(gbm, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        GLuint textures[2];
+        glGenTextures(2, textures);
+        for (unsigned i = 0; i < 2; i++) {
+            glBindTexture(GL_TEXTURE_2D, textures[i]);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        }
+        EGLImageKHR texture = eglCreateImageKHR(gbm, context, EGL_GL_TEXTURE_2D,
+            (EGLClientBuffer)(uintptr_t)textures[0], NULL);
+        assert(texture != EGL_NO_IMAGE_KHR);
+        assert(_wpk_egl_image_export_gbm(texture, device, wayland_native_identity, &plane) == 0);
+        assert(prime_exports[plane.fd - 200].handle == 99);
+        assert(plane.width == 4 && plane.height == 4 && plane.format == 0x34324241 &&
+               plane.stride == 16 && plane.offset == 0);
+        assert(close(plane.fd) == 0);
+        /* A host-reported RGBA32F image has no DRM format to describe it. */
+        image_export_format = 0x8814;
+        EGLImageKHR wide = eglCreateImageKHR(gbm, context, EGL_GL_TEXTURE_2D,
+            (EGLClientBuffer)(uintptr_t)textures[1], NULL);
+        assert(wide != EGL_NO_IMAGE_KHR);
+        assert(_wpk_egl_image_export_gbm(wide, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        /* Destruction and termination end importability. */
+        assert(eglDestroyImageKHR(gbm, wide));
+        assert(_wpk_egl_image_export_gbm(wide, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        assert(eglMakeCurrent(gbm, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        glDeleteTextures(2, textures);
+        assert(eglDestroyContext(gbm, context) && eglTerminate(gbm));
+        assert(_wpk_egl_image_export_gbm(gpu, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        assert(_wpk_egl_image_export_gbm(texture, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        /* Nor is an image of another display. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLImageKHR other = eglCreateImageKHR(dpy, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, dmabuf);
+        assert(other != EGL_NO_IMAGE_KHR);
+        assert(_wpk_egl_image_export_gbm(other, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
+        assert(eglDestroyImageKHR(dpy, other) && eglTerminate(dpy));
+        puts("PASS gbm-image-export"); return 0;
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };

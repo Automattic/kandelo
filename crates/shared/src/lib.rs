@@ -4741,7 +4741,7 @@ pub mod dri {
         pub bo_handle: u32,       // 16  out
         pub width: u32,           // 20  out
         pub height: u32,          // 24  out
-        pub internal_format: u32, // 28  out  GL internal format of the image
+        pub internal_format: u32, // 28  out  sized GL internal format of the image
         pub source: u32,          // 32  out  share-group image source token
         pub revision: u32,        // 36  out  source object's sibling revision
         pub reserved: [u32; 2],   // 40  zero

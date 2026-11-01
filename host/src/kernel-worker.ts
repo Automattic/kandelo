@@ -31207,7 +31207,7 @@ export class CentralizedKernelWorker {
         const gpuFrames = new Map<number, { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> }>();
         for (const [crtcId, canvas] of this.kmsCanvases) {
           const fb = this.#kernel.kms.currentFb(crtcId);
-          if (!fb || !this.#kernel.gl.gpuBo(fb.bo_id)) continue;
+          if (!fb || !this.#kernel.gl.scanoutSource(fb.bo_id)) continue;
           const frame = getKernelGraphicsAccess(this.#kernel).gpuScanout(
             fb, canvas, this.kmsContextMode.get(crtcId) !== "2d");
           if (frame) gpuFrames.set(crtcId, frame);

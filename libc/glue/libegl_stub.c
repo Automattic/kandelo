@@ -2828,6 +2828,20 @@ static uint32_t adopt_bo_handle(struct egl_generation *generation, int fd, uint3
     pthread_mutex_unlock(&g_image_mutex);
     return local;
 }
+/* The DRM format naming a GLES image's sized internal format, as Mesa's DRI
+ * image formats do; zero when no DRM format describes it. */
+static uint32_t gl_image_fourcc(uint32_t internal_format) {
+    switch (internal_format) {
+    case 0x8058: return 0x34324241; /* RGBA8: ABGR8888 */
+    case 0x8051: return 0x34324258; /* RGB8: XBGR8888 */
+    case 0x93a1: return 0x34325241; /* BGRA8_EXT: ARGB8888 */
+    case 0x8d62: return 0x36314752; /* RGB565 */
+    case 0x8229: return 0x20203852; /* R8 */
+    case 0x822b: return 0x38385247; /* RG8: GR88 */
+    case 0x881a: return 0x48344241; /* RGBA16F: ABGR16161616F */
+    default: return 0;
+    }
+}
 /* EGL 1.5 section 3.9.1 with KHR_gl_texture_2D_image,
  * KHR_gl_texture_cubemap_image and KHR_gl_renderbuffer_image. The image is
  * the object's own storage, not a copy: the object becomes an EGLImage
@@ -2892,6 +2906,10 @@ static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGL
     image->public_handle = g_next_object_handle++;
     image->width = request.width;
     image->height = request.height;
+    /* The exported bo is a 32-bpp GPU-tier registry entry sized to the image
+     * (DRM_IOCTL_WPK_EXPORT_IMAGE), so its rows are width * 4 bytes. */
+    image->fourcc = gl_image_fourcc(request.internal_format);
+    image->pitch = request.width * 4u;
     image->references = 1;
     image->public_live = 1;
     pthread_mutex_lock(&g_image_mutex);
@@ -3168,6 +3186,41 @@ void _wpk_egl_image_release(struct wpk_egl_image *image) {
     pthread_mutex_lock(&g_image_mutex);
     image_release_locked(image);
     pthread_mutex_unlock(&g_image_mutex);
+}
+
+/* GBM_BO_IMPORT_EGL_IMAGE (Mesa gbm_dri_bo_import): only a live image of the
+ * EGL display currently initialized on that GBM device is importable, whatever
+ * context is current. The PRIME descriptor carries the image's own storage. */
+int _wpk_egl_image_export_gbm(const void *public_image, const void *device, uint64_t identity,
+                              struct wpk_gbm_image_plane *plane) {
+    lock_context();
+    pthread_mutex_lock(&g_image_mutex);
+    int error = EINVAL;
+    for (struct wpk_egl_image *image = g_images; image; image = image->next) {
+        struct egl_generation *generation = image->generation;
+        struct egl_display_record *display = generation->display;
+        if (image->public_handle != (uintptr_t)public_image || !image->public_live
+            || !generation->initialized || display->active != generation
+            || display->native_kind != NATIVE_GBM || display->native_device != device
+            || display->native_identity != identity)
+            continue;
+        if (!image->fourcc) break;
+        struct wpk_drm_prime_handle exported = {
+            .handle = image->handle, .flags = O_CLOEXEC | O_RDWR, .fd = -1};
+        if (ioctl(generation->fd, WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported) != 0) {
+            error = errno;
+            break;
+        }
+        *plane = (struct wpk_gbm_image_plane){.fd = exported.fd, .width = image->width,
+            .height = image->height, .format = image->fourcc, .stride = image->pitch,
+            .offset = image->pixels ? (uint32_t)(image->pixels - (const uint8_t *)image->map) : 0};
+        error = 0;
+        break;
+    }
+    pthread_mutex_unlock(&g_image_mutex);
+    unlock_context();
+    errno = error;
+    return error ? -1 : 0;
 }
 
 EGLBoolean eglDestroyImageKHR(EGLDisplay dpy, EGLImageKHR image) {

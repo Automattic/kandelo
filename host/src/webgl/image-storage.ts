@@ -1,8 +1,10 @@
 import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
+import type { GpuScanoutStorage } from "./kms-scanout.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
-import { recordRenderbufferSize } from "./image-sizes.js";
+import { recordRenderbufferSize, renderbufferLogicalFormat } from "./image-sizes.js";
+import { effectiveInternalFormat } from "./es2-formats.js";
 import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
 /** Private source handles never enter the public GLuint texture namespace. */
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
@@ -547,7 +549,13 @@ export type GlExportedImage = {
   storage: GlImageStorage;
   sourceUsing: boolean;
   boLive: boolean;
+  /** Sized internal format (es2-formats effectiveInternalFormat). */
+  format: number;
+  /** Read framebuffer over the image for KMS scanout, made on first use. */
+  scanout?: GpuScanoutStorage & { retirement: NativeRetirement };
 };
+/** `internalFormat` is the image's sized internal format, from which EGL
+ * derives the DRM format a GBM import of the image reports. */
 export type GlImageExport = { record: GlExportedImage; token: number; revision: number; internalFormat: number };
 const exportedByNative = new WeakMap<object, GlExportedImage>();
 const exportedBySource = new WeakMap<object, GlExportedImage>();
@@ -664,7 +672,7 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
   if (!object) return -2;
   const view = renderbuffer ? b.renderbufferViews.get(object) : b.textureViews.get(object as WebGLTexture);
   if (view?.source || linkedSource(object)) return -16;
-  let native: WebGLTexture | WebGLRenderbuffer, width = 0, height = 0, storage: GlImageStorage;
+  let native: WebGLTexture | WebGLRenderbuffer, width = 0, height = 0, storage: GlImageStorage, effective = 0;
   if (renderbuffer) {
     native = renderbufferNative(b, object);
     let internalFormat = 0, samples = 0;
@@ -677,6 +685,9 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     }))) return -5;
     if (!(width > 0) || !(height > 0) || samples) return -22;
     storage = { renderbuffer: native, internalFormat };
+    // The guest's format, not its native stand-in (BGRA on RGBA8 storage).
+    const logical = renderbufferLogicalFormat(object as WebGLRenderbuffer) ?? internalFormat;
+    effective = effectiveInternalFormat(logical, logical, 0x1401, internalFormat);
   } else {
     const cube = target !== TEX, faces = textureFaces(object);
     if (cube ? faces.has(TEX) : CUBE_FACES.some(face => faces.has(face))) return -22;
@@ -695,11 +706,14 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     if (!image) return -34;
     width = image.width; height = image.height;
     storage = { target, level, internalFormat: image.internalFormat, format: image.format, type: image.type };
+    const gles = image.gles;
+    effective = gles ? effectiveInternalFormat(gles.internalFormat, gles.format, gles.type, image.internalFormat)
+      : image.internalFormat;
   }
   const previous = b.imageRevisions.get(object) ?? 0;
   if (previous === 0xffffffff) return -12;
   const record: GlExportedImage = { bo, gl, object, native, renderbuffer, width, height, storage,
-    sourceUsing: true, boLive: true };
+    sourceUsing: true, boLive: true, format: effective };
   const token = registerImageSource(b, bo, renderbuffer ? null : native as WebGLTexture, width, height, undefined, storage);
   if (token < 0) return token;
   try {
@@ -712,7 +726,7 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     exportedByNative.delete(native); exportedBySource.delete(object);
     return -12;
   }
-  return { record, token, revision: previous + 1, internalFormat: storage.internalFormat ?? 0 };
+  return { record, token, revision: previous + 1, internalFormat: effective };
 }
 
 /** Register an exported image as a source in another share group. */
@@ -722,10 +736,52 @@ export function registerExportedSource(b: GlBinding, record: GlExportedImage): n
     record.width, record.height, undefined, record.storage);
 }
 
+/** Normalized fixed-point color formats: a framebuffer over one is read and
+ * blitted as RGBA bytes, as KMS scanout of a GPU-tier bo does. */
+const SCANOUT_FORMATS = new Set([0x8058, 0x8051, 0x93a1, 0x8d62, 0x8056, 0x8057, 0x8229, 0x822b]);
+
+/** KMS scanout storage for an exported image's bo. DRM_IOCTL_MODE_ADDFB2
+ * accepts any GPU-tier bo, so the presenter reads this image's own storage
+ * every vblank exactly as it reads a GBM GPU bo (no copy: rendering into the
+ * image shows without a flip). The framebuffer is made on first scanout and
+ * deleted with the bo. Null when the image's format cannot be read as color
+ * bytes or the renderer refuses the framebuffer. */
+export function exportedImageScanout(record: GlExportedImage): GpuScanoutStorage | null {
+  if (!record.boLive || !SCANOUT_FORMATS.has(record.format)) return null;
+  if (record.scanout) return record.scanout;
+  const gl = record.gl, owner = { gl, errors: [] as number[] };
+  let read: WebGLFramebuffer | null = null;
+  if (!checkedGlCall(owner, () => { read = gl.getParameter(0x8caa); })) return null;
+  const retirement = reserveNativeRetirement(owner, [["deleteFramebuffer", null]], [], { ordered: true });
+  if (!retirement) return null;
+  let fbo: WebGLFramebuffer | null = null, published = false;
+  try {
+    const restore = nativeInverse(owner, [["bindFramebuffer", 0x8ca8, read]]);
+    const { target = TEX, level = 0 } = record.storage;
+    if (!applyNativeChanges({ ...owner, shadow: {} }, [{ restore, apply: () => {
+      if (!checkedGlCall(owner, () => { retirement.calls[0][1] = fbo = gl.createFramebuffer(); }) || !fbo) return false;
+      let status = 0;
+      return checkedGlCall(owner, () => gl.bindFramebuffer(0x8ca8, fbo))
+        && checkedGlCall(owner, () => record.renderbuffer
+          ? gl.framebufferRenderbuffer(0x8ca8, 0x8ce0, RBO, record.native as WebGLRenderbuffer)
+          : gl.framebufferTexture2D(0x8ca8, 0x8ce0, target, record.native as WebGLTexture, level))
+        && checkedGlCall(owner, () => { status = gl.checkFramebufferStatus(0x8ca8); }) && status === 0x8cd5;
+    } }], { shared: true, finalizer: restore })) return null;
+    record.scanout = { gl, fbo: fbo!, w: record.width, h: record.height, retirement };
+    published = true;
+    return record.scanout;
+  } catch { return null; }
+  finally { if (!published) retireNativeRetirement(retirement); }
+}
+
 /** The bo's last reference ended. The image's storage is deleted unless the
  * source object still uses it, in which case the object owns it again. */
 export function retireExportedImage(record: GlExportedImage): boolean {
   record.boLive = false;
+  if (record.scanout) {
+    if (!retireNativeRetirement(record.scanout.retirement)) return false;
+    record.scanout = undefined;
+  }
   if (record.sourceUsing) {
     exportedBySource.delete(record.object);
     exportedByNative.delete(record.native);
