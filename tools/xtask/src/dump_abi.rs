@@ -1505,6 +1505,13 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!("export const {name} = {value} as const;\n"));
     }
+    for (name, value) in [
+        ("KMS_CURSOR_PROTOCOL_VERSION", shared::kms_cursor::PROTOCOL_VERSION as usize),
+        ("KMS_CURSOR_RECORD_BYTES", shared::kms_cursor::RECORD_BYTES),
+        ("KMS_CURSOR_FRAMEBUFFER_OFFSET", shared::kms_cursor::FRAMEBUFFER_OFFSET),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
     out.push('\n');
 
     // Not an ABI value: the one fixed instant image builders use when a fixed
@@ -4378,6 +4385,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "process_snapshot_wire", process_snapshot_wire());
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
+    s.add(KernelHost, "kms_cursor_transport", kms_cursor_transport());
     s.add(Program, "io_multiplexing", io_multiplexing());
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
@@ -4437,6 +4445,27 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "kernel_imports", kernel_imports(&wasm)?);
 
     Ok(s.finish())
+}
+
+fn kms_cursor_transport() -> Value {
+    use shared::kms_cursor as wire;
+    json!({
+        "version": wire::PROTOCOL_VERSION,
+        "record_bytes": wire::RECORD_BYTES,
+        "byte_order": "little-endian",
+        "offsets": {
+            "lease_u64": wire::LEASE_OFFSET, "bo_u32": wire::BO_OFFSET,
+            "width_u32": wire::WIDTH_OFFSET, "height_u32": wire::HEIGHT_OFFSET,
+            "x_i32": wire::X_OFFSET, "y_i32": wire::Y_OFFSET,
+            "hot_x_i32": wire::HOT_X_OFFSET, "hot_y_i32": wire::HOT_Y_OFFSET,
+            "framebuffer_u32": wire::FRAMEBUFFER_OFFSET,
+        },
+        "image_identity": "exact-master-lease-and-kernel-framebuffer-id",
+        "disabled_image": "zero-bo-framebuffer-dimensions-and-hotspot",
+        "read_reconciliation": "same-entry-authoritative-plane-no-nonzero-image-synthesis",
+        "retired_framebuffer": "conditional-exact-lease-and-fb-local-metadata-not-native-ack",
+        "unsupported_versions": [1, 2],
+    })
 }
 
 fn gl_image_container_receipts() -> Value {
@@ -8654,6 +8683,33 @@ mod tests {
     }
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn kms_cursor_transport_serializes_exact_framebuffer_identity_and_constants() {
+        let wire = kms_cursor_transport();
+        assert_eq!(wire["version"], json!(3));
+        assert_eq!(wire["record_bytes"], json!(40));
+        assert_eq!(wire["offsets"]["framebuffer_u32"], json!(36));
+        assert_eq!(wire["unsupported_versions"], json!([1, 2]));
+        let rendered = render_ts_module();
+        for (name, value) in [("KMS_CURSOR_PROTOCOL_VERSION", 3),
+            ("KMS_CURSOR_RECORD_BYTES", 40), ("KMS_CURSOR_FRAMEBUFFER_OFFSET", 36)] {
+            assert!(rendered.contains(&format!("export const {name} = {value} as const;")));
+        }
+        let snapshot = |include| {
+            let mut root = JsonMap::new();
+            root.insert("abi_version".into(), json!(shared::ABI_VERSION));
+            let mut sections = Sections {root, program: Vec::new(), kernel_host: Vec::new()};
+            sections.add(Surface::Program, "control", json!(1));
+            if include { sections.add(Surface::KernelHost, "kms_cursor_transport", wire.clone()); }
+            Value::Object(sections.finish().into_iter().collect())
+        };
+        let old = snapshot(false); let new = snapshot(true);
+        assert_eq!(crate::local_abi_identity::program_contract_digest(&old, shared::ABI_VERSION).unwrap(),
+            crate::local_abi_identity::program_contract_digest(&new, shared::ABI_VERSION).unwrap());
+        assert!(new[SURFACES_KEY]["kernel_host"].as_array().unwrap()
+            .contains(&json!("kms_cursor_transport")));
+    }
 
     #[test]
     fn image_container_receipts_serialize_shared_values_and_generated_constants() {

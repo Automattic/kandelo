@@ -1,4 +1,4 @@
-import { KMS_CURSOR_RECORD_BYTES } from "./kms-cursor-protocol.js";
+import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "./kms-cursor-protocol.js";
 import type { KmsCursor } from "./cursor-plane.js";
 import type { GbmBoRegistry } from "./registry.js";
 
@@ -96,6 +96,7 @@ export class KmsRegistry {
   };
 
   private cursorBo = 0;
+  private cursorFbId = 0;
   private cursorBytes: Uint8Array | null = null;
 
   /** Called under the kernel entry before deferred canvas presentation.
@@ -136,10 +137,11 @@ export class KmsRegistry {
   }
 
   setCursor(_pid: number, flags: number, boId: number, width: number, height: number,
-    x: number, y: number, hotX: number, hotY: number): KmsCursor {
+    x: number, y: number, hotX: number, hotY: number, fbId = 0): KmsCursor {
     const next = { ...this.cursor, version: this.cursor.version + 1 };
     if (flags & 1) {
       this.cursorBo = boId;
+      this.cursorFbId = fbId;
       this.cursorBytes = null;
       next.pixels = null;
       next.width = width;
@@ -157,17 +159,21 @@ export class KmsRegistry {
     if (bytes.byteLength !== KMS_CURSOR_RECORD_BYTES) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     if (view.getBigUint64(0, true) !== this.masterLeaseId) return;
-    if (view.getUint32(36, true) !== 0) throw new Error("Invalid KMS cursor reserved word");
+    const fbId = view.getUint32(KMS_CURSOR_FRAMEBUFFER_OFFSET, true);
     const bo = view.getUint32(8, true);
     const width = view.getUint32(12, true), height = view.getUint32(16, true);
     const x = view.getInt32(20, true), y = view.getInt32(24, true);
     const hotX = view.getInt32(28, true), hotY = view.getInt32(32, true);
+    if ((bo !== 0 && (this.masterLeaseId === 0n || fbId === 0))
+        || (bo === 0 && (fbId !== 0 || width !== 0 || height !== 0 || hotX !== 0 || hotY !== 0))) {
+      throw new Error("Invalid KMS cursor image identity");
+    }
     if (bo && (!width || !height || width > 64 || height > 64)) {
       throw new Error("Invalid KMS cursor image geometry");
     }
-    const imageChanged = bo !== this.cursorBo || width !== this.cursor.width
+    const imageChanged = fbId !== this.cursorFbId || bo !== this.cursorBo || width !== this.cursor.width
       || height !== this.cursor.height || hotX !== this.cursor.hotX || hotY !== this.cursor.hotY;
-    return this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY);
+    return this.setCursor(0, imageChanged ? 3 : 2, bo, width, height, x, y, hotX, hotY, fbId);
   }
 
   constructor(private gbm: GbmBoRegistry,
@@ -214,9 +220,19 @@ export class KmsRegistry {
 
   private clearCursor(): void {
     this.cursorBo = 0;
+    this.cursorFbId = 0;
     this.cursorBytes = null;
     this.cursor = { version: this.cursor.version + 1, x: 0, y: 0,
       hotX: 0, hotY: 0, width: 0, height: 0, pixels: null };
+  }
+
+  /** Conditional local metadata action, not physical BO/native retirement
+   * proof. Same-BO renewals have distinct actual framebuffer identities. */
+  retireCursorFramebuffer(leaseId: bigint, fbId: number): boolean {
+    if (!Number.isInteger(fbId) || fbId <= 0 || fbId > 0xffff_ffff
+        || this.masterLeaseId !== leaseId || this.cursorFbId !== fbId) return false;
+    this.clearCursor();
+    return true;
   }
 
   /** A late release receipt must not clear a renewed grant. */

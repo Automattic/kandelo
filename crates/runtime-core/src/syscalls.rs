@@ -2734,10 +2734,11 @@ fn apply_kms_cursor(
     next.owner = owner;
     let fb = next.fb;
     let (x, y, hot_x, hot_y) = (next.x, next.y, next.hot_x, next.hot_y);
+    let fb_id = next.fb_id;
     kms::set_cursor_plane(next);
     host.kms_cursor(proc.pid as i32, kms::CRTC_ID, flags,
         fb.map_or(0, |fb| fb.bo_id), fb.map_or(0, |fb| fb.width),
-        fb.map_or(0, |fb| fb.height), x, y, hot_x, hot_y);
+        fb.map_or(0, |fb| fb.height), x, y, hot_x, hot_y, fb_id);
     if let Some(old) = old {
         if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
             host.gbm_bo_destroy(proc.pid as i32, old);
@@ -2757,7 +2758,7 @@ fn collect_cursor_framebuffer_release(fb_id: u32) -> Result<Vec<DriReleaseEffect
     let bo = state.owner.take_cursor_bo()?.ok_or(Errno::EIO)?;
     state.fb = None;
     state.fb_id = 0;
-    effects.push(DriReleaseEffect::HideCursor { lease_id: state.lease_id });
+    effects.push(DriReleaseEffect::HideCursor { lease_id: state.lease_id, fb_id });
     kms::set_cursor_plane(state);
     if crate::dri::with_registry(|r| r.decref(bo)) == Some(0) {
         effects.push(DriReleaseEffect::DestroyBo(bo));
@@ -3666,7 +3667,7 @@ pub enum DriReleaseEffect {
     UnbindBo {bo_id: u32, addr: usize, len: usize},
     DestroyBo(u32),
     RemoveFramebuffer(u32),
-    HideCursor { lease_id: u64 },
+    HideCursor { lease_id: u64, fb_id: u32 },
     DropMaster { file_id: u64, lease_id: u64 },
     UnbindGl { owner_pid: i32, session_id: u32 },
 }
@@ -3677,13 +3678,13 @@ pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host:
             DriReleaseEffect::UnbindBo {bo_id, addr, len} => host.gbm_bo_unbind(pid, bo_id, addr, len),
             DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
             DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
-            DriReleaseEffect::HideCursor { lease_id } => {
+            DriReleaseEffect::HideCursor { lease_id, fb_id } => {
                 // Cleanup can be delivered after another image was installed,
                 // even within the same grant. Hide only the still-disabled
                 // plane whose actual owner was retired by this collection.
-                if kms::cursor_plane().is_some_and(|state|
+                if fb_id != 0 && kms::cursor_plane().is_some_and(|state|
                     state.lease_id == lease_id && state.fb_id == 0) {
-                    host.kms_cursor(pid, kms::CRTC_ID, 1, 0, 0, 0, 0, 0, 0, 0);
+                    host.kms_cursor(pid, kms::CRTC_ID, 1, 0, 0, 0, 0, 0, 0, 0, 0);
                 }
             }
             DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
@@ -25512,6 +25513,8 @@ mod tests {
         proc_write_calls: Vec<(i32, u64, Vec<u8>)>,
         cursor_supported: bool,
         cursor_calls: Vec<(u32, u32, u32, u32, i32, i32, i32, i32)>,
+        cursor_transport: crate::dri::cursor::CursorTransport,
+        cursor_records: Vec<[u32; 10]>,
         /// Simulated guest linear memory for `proc_read_bytes` /
         /// `proc_write_bytes`. Without it every cross-memory call fails with
         /// the trait's `-ENOSYS` default, which would make a test that means
@@ -25691,6 +25694,12 @@ mod tests {
                 proc_write_calls: Vec::new(),
                 cursor_supported: false,
                 cursor_calls: Vec::new(),
+                cursor_transport: {
+                    let mut transport = crate::dri::cursor::CursorTransport::new();
+                    transport.configure(wasm_posix_shared::kms_cursor::PROTOCOL_VERSION);
+                    transport
+                },
+                cursor_records: Vec::new(),
                 // 64 KiB — one wasm page, enough for every address these
                 // tests use and small enough that a deliberately-high
                 // address is out of range.
@@ -26138,8 +26147,12 @@ mod tests {
     impl HostIO for MockHostIO {
         fn kms_cursor_supported(&mut self) -> bool { self.cursor_supported }
         fn kms_cursor(&mut self, _pid: i32, _crtc: u32, flags: u32, bo: u32,
-            width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32) {
+            width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32, fb_id: u32) {
             self.cursor_calls.push((flags, bo, width, height, x, y, hot_x, hot_y));
+            if let Some(grant) = crate::dri::master::current() {
+                self.cursor_transport.update(grant.lease_id, flags, bo, width, height, x, y, hot_x, hot_y, fb_id);
+                if let Some(record) = self.cursor_transport.take() { self.cursor_records.push(record); }
+            }
         }
 
         fn host_udp_source_address(&mut self, _dst: &[u8; 4]) -> Result<[u8; 4], Errno> {
@@ -52444,6 +52457,48 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(bo_refcount(offset_bo), Some(2));
             assert_eq!(bo_refcount(padded_bo), Some(2));
         }
+        sys_close(&mut proc, &mut host, fd).unwrap();
+    }
+
+    #[test]
+    fn kms_cursor_records_preserve_actual_same_bo_framebuffer_identity() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _master = crate::dri::master::lock_for_test();
+        let _bo = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1); let mut host = MockHostIO::new();
+        host.cursor_supported = true;
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (first, handle, bo) = kms_cursor_fb(&mut proc, &mut host, fd, 64, 64, 0);
+        let mut fb = WpkDrmModeFbCmd2 { width: 64, height: 64,
+            pixel_format: DRM_FORMAT_ARGB8888, ..Default::default() };
+        fb.handles[0] = handle; fb.pitches[0] = 64 * 4;
+        let second = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB2, fb).unwrap().fb_id;
+        assert_ne!(first, second);
+        let set = WpkDrmModeSetPlane { plane_id: kms::CURSOR_PLANE_ID,
+            crtc_id: kms::CRTC_ID, crtc_w: 64, crtc_h: 64,
+            src_w: 64 << 16, src_h: 64 << 16, ..Default::default() };
+        for fb_id in [first, second] {
+            kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETPLANE,
+                WpkDrmModeSetPlane { fb_id, ..set }).unwrap();
+            let record = host.cursor_records.last().unwrap();
+            assert_eq!(record[2], bo, "same actual backing BO");
+            assert_eq!(record[9], fb_id, "ordinary producer must preserve actual framebuffer identity");
+        }
+        let lease = crate::dri::master::current().unwrap().lease_id;
+        let deferred = collect_cursor_framebuffer_release(second).unwrap();
+        assert!(deferred.iter().any(|effect| matches!(effect,
+            DriReleaseEffect::HideCursor {lease_id, fb_id} if *lease_id == lease && *fb_id == second)));
+        // The ordinary callback already drained the image record. Collection
+        // clears authoritative Rust state before any deferred host effects;
+        // the normal serializer must still replace its cached old image.
+        let plane = kms::cursor_plane().unwrap();
+        let mut out = [0xa5; wasm_posix_shared::kms_cursor::RECORD_BYTES];
+        assert_eq!(host.cursor_transport.read_into(lease, plane.fb_id, plane.x, plane.y, &mut out), Ok(40));
+        assert_eq!(u32::from_le_bytes(out[8..12].try_into().unwrap()), 0);
+        assert_eq!(u32::from_le_bytes(out[36..40].try_into().unwrap()), 0);
+        assert_eq!(host.cursor_transport.read_into(lease, plane.fb_id, plane.x, plane.y, &mut out), Ok(0));
+        apply_dri_release_effects(proc.pid as i32, deferred, &mut host);
         sys_close(&mut proc, &mut host, fd).unwrap();
     }
 

@@ -1,3 +1,6 @@
-/** Cursor records are scoped to a kernel-owned master grant. */
-export const KMS_CURSOR_PROTOCOL_VERSION = 2;
-export const KMS_CURSOR_RECORD_BYTES = 40;
+/** Kernel-owned master grant and framebuffer identity, generated from Rust. */
+export {
+  KMS_CURSOR_PROTOCOL_VERSION,
+  KMS_CURSOR_RECORD_BYTES,
+  KMS_CURSOR_FRAMEBUFFER_OFFSET,
+} from "../generated/abi.js";

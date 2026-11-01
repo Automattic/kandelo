@@ -695,6 +695,7 @@ pub trait HostIO {
         y: i32,
         hot_x: i32,
         hot_y: i32,
+        fb_id: u32,
     ) {
     }
 }

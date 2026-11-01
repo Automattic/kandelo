@@ -18727,3 +18727,59 @@ continues to describe the original `7b9abb8c40` run only.
 A fresh fetch still resolves `origin/main` to
 `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3`, already integrated. No newer
 main behavior needs reconciliation at this checkpoint.
+
+
+### Exact cursor framebuffer identity across the ordinary transport
+
+Protocol 3 keeps the 40-byte cursor record and assigns offset 36 to the
+actual framebuffer ID. Shared Rust constants generate its host constants
+and a kernel-host-only snapshot section. Normal KMS ioctl state passes
+that ID through HostIO, the Wasm adapter and the coalesced transport to the
+shared Node/browser host decoder. A new framebuffer is an image replacement
+even when its BO, geometry, hotspot and master lease are unchanged.
+Delayed local cursor-metadata cleanup checks the exact lease and framebuffer;
+it is not an acknowledgment of native BO/session retirement.
+
+Normal cursor reads acquire the existing global kernel lock before the
+transport mutex and reconcile against the actual master/plane in that same
+entry. An authoritative disabled plane replaces an undrained or cached retired
+image once. A nonzero identity mismatch or short destination refuses without
+consuming pending state or writing output. No missing image is synthesized.
+The retained HideCursor effect preserves the actual removed framebuffer for
+later receiver admission; physical routing and public scheduling stay inactive.
+
+Causal before-controls fail the old real KMS ioctl producer (framebuffer word
+0 rather than actual 11) and old host reserved-word decoder. Final source
+controls pass 31 cursor-name-filtered runtime-core cases (including unrelated
+file-cursor names), 22 lifecycle/effects cases and one xtask serialization
+case. Host controls initially pass 45 cases; root review adds a causal
+masterless-image refusal before storage access, then all 46 pass with scoped
+strict types. The existing generic-Uint8Array fixture type failure is reproduced
+against its original source before its truthful allocation return type is fixed.
+
+Job `graphics-cursor-canonical-r1-1031-221353-33ea` exits 0 in 30 seconds.
+All ten canonical kernel/generation, SDK32/64 freshness, ABI/layout, resolver,
+digest and host/type stages pass with unchanged guarded Rust inputs. The
+program digest stays
+`cdd38c6387544155c1a25773a0a6f3bcae6a50548bf8e33341c87dfd48075cd8`.
+Snapshot SHA256:
+`905ca9a298a38f03880213ec084fd9761307c0c74e121d8af514358a036ecbd4`.
+Generated host constants SHA256:
+`d56b921d464ba3f7e769e3ea647a7f91a632f2516d6aea02dbe1da3f8c3a99be`.
+Resolver regeneration/check passes without changing its bytes.
+
+The separate normal kernel-only package job
+`graphics-cursor-normal-kernel-r1-1031-221527-2a7a` exits 0. Its admitted,
+ABI-stamped kernel is 1,871,395 bytes, SHA256
+`aca897698e1e3acfa1a0b3a3c7b6f2e75645b5882dd56dbd5aedbc0232eab334`.
+The selected artifact-backed test actually instantiates that kernel with its
+existing declared-import doubles, refuses protocols 1/2 and accepts 3: one
+selected case passes, three are filtered. This is compiled-export evidence,
+not normal desktop, real cursor presentation or browser-memory acceptance.
+
+Evidence remains in integration
+`.context/cursor-framebuffer-identity-r1/`, including source-before logs,
+canonical and normal-kernel receipts, `masterless-before.log`,
+`root-host-r3.log` and `root-types-r3.log`. Numeric versions remain
+program 56 / host 3 / GL table 17 / fork 21. Old preview artifacts remain paired
+with their frozen old hosts; numeric equality does not authorize mixing them.

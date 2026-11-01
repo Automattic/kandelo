@@ -1261,11 +1261,11 @@ impl HostIO for WasmHostIO {
 
     fn kms_cursor(
         &mut self, _pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
-        width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32,
+        width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32, fb_id: u32,
     ) {
         let grant = crate::dri::master::current().expect("authorized KMS cursor grant");
         CURSOR_TRANSPORT.lock().update(
-            grant.lease_id, flags, bo_id, width, height, x, y, hot_x, hot_y,
+            grant.lease_id, flags, bo_id, width, height, x, y, hot_x, hot_y, fb_id,
         );
     }
 }
@@ -17379,25 +17379,31 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
 static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
     spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
 
-/// Negotiate cursor protocol 2 with exact master-grant identity.
+/// Negotiate cursor protocol 3 with exact master-grant and framebuffer identity.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
     CURSOR_TRANSPORT.lock().configure(version)
 }
 
 /// Read the latest complete cursor state, coalescing image and motion updates.
-/// Protocol 2: ten little-endian words (lease low/high, BO, width, height,
-/// x, y, hot_x, hot_y, zero). Returns 40, 0 when unchanged, or negative errno.
+/// Protocol 3: ten LE words (lease low/high, BO, width, height, x, y,
+/// hot_x, hot_y, actual framebuffer). Returns 40, 0 unchanged, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
-    if out_ptr.is_null() || out_len < 40 { return -(Errno::EINVAL as i32); }
+    use wasm_posix_shared::kms_cursor as wire;
+    if out_ptr.is_null() || out_len < wire::RECORD_BYTES as u32 { return -(Errno::EINVAL as i32); }
+    // Host entry serialization owns the kernel. Acquire before the transport
+    // mutex: applying pending exits may itself clear this transport.
+    let _gkl = GklGuard::acquire();
+    let lease = crate::dri::master::current().map_or(0, |grant| grant.lease_id);
+    let plane = crate::dri::kms::cursor_plane();
+    let (fb, x, y) = plane.map_or((0, 0, 0), |state| (state.fb_id, state.x, state.y));
     let mut transport = CURSOR_TRANSPORT.lock();
-    let Some(words) = transport.take() else { return 0 };
-    let out = unsafe { slice::from_raw_parts_mut(out_ptr, 40) };
-    for (chunk, word) in out.chunks_exact_mut(4).zip(words) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+    let out = unsafe { slice::from_raw_parts_mut(out_ptr, wire::RECORD_BYTES) };
+    match transport.read_into(lease, fb, x, y, out) {
+        Ok(count) => count as i32,
+        Err(error) => -(error as i32),
     }
-    40
 }
 
 /// Number of successful page-flip commits on the given crtc.

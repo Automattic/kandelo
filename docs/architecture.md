@@ -3809,26 +3809,34 @@ SDL's KMS backend converts pointer coordinates to image coordinates on
 motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
 without changing DRM semantics for other clients.
 
-Cursor transport adds no required Wasm import. The optional
-`kernel_kms_cursor_configure(version)` export accepts protocol 1 and returns
-1, or negative `ENOTSUP` for unknown versions. Until negotiation, cursor
+Cursor transport adds no required Wasm import. The
+`kernel_kms_cursor_configure(version)` export accepts protocol 3 and returns
+3, or negative `ENOTSUP` for other versions. Until negotiation, cursor
 capabilities report zero and valid master cursor requests that reach the
-kernel fail `ENOTSUP` before retaining a buffer. An older host adapter can
-reject the unknown ioctl earlier with `EINVAL`; the zero capability is the
-supported way to detect the unavailable plane. Both Node and browser hosts
-negotiate support;
-a visible display is not required. The two cursor exports are optional in
-ABI 50 and become required in ABI 51 through the export lifecycle table.
+kernel fail `ENOTSUP` before retaining a buffer. Both Node and browser hosts
+negotiate support; a visible display is not required. The two cursor exports
+were optional in ABI 50 and became required in ABI 51 through the export
+lifecycle table. Current hosts refuse a mismatched protocol acknowledgment.
 
-`kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 32 after
-copying one complete state, or negative `EINVAL` for invalid output. Its
-32-byte protocol-1 record contains eight little-endian words: owner PID,
-buffer ID, width, height, signed x/y, and signed hotspot x/y. Image and
-motion requests coalesce without losing the image; dropping master clears
-pending state before its buffer can be reused. The host drains this state
-inside the existing vblank kernel entry before reading pixels, using a
-scratch lease and owned copies. Records from retired owners are discarded.
-Older kernels without the exports remain loadable by new hosts.
+`kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 40 after
+copying one complete state, or negative `EINVAL` for a null/short output.
+The 40-byte protocol-3 record contains a little-endian 64-bit master lease,
+then eight 32-bit words: buffer ID, width, height, signed x/y, signed hotspot
+x/y and actual framebuffer ID. Offset 36 is framebuffer identity, not a
+reserved word. A displayed image has nonzero buffer and framebuffer IDs;
+a disabled image has zero buffer, framebuffer, dimensions and hotspot.
+Shared Rust constants generate the host values and the kernel-host snapshot.
+
+Image and motion requests coalesce without losing framebuffer identity.
+Before draining, the kernel reads the actual master and cursor plane under
+its global lock. An authoritative disabled plane replaces a stale pending
+or cached image once. A nonzero framebuffer mismatch returns `EIO` without
+writing output or consuming pending state; no missing image is fabricated.
+The host drains inside the vblank kernel entry before reading pixels, using
+a scratch lease and owned copies. Records with a retired master lease are
+discarded. Same-buffer, same-geometry images with different framebuffer IDs
+are distinct replacements. Delayed local metadata cleanup matches both the
+old lease and framebuffer; it does not acknowledge native resource retirement.
 
 `KmsRegistry` refreshes the packed cursor image from its producer mapping
 at vblank, using the shared GBM coherence boundary. It retains an owned

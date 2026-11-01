@@ -5,6 +5,7 @@ pub mod channel_scalar;
 pub mod host_abi;
 pub mod host_raw_syscalls;
 pub mod ioctl_contract;
+pub mod kms_cursor;
 pub mod process_layout;
 
 // The program ABI is owned separately so host-only edits do not rebuild

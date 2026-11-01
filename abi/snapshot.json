@@ -5,6 +5,7 @@
       "host_adapter",
       "kernel_exports",
       "kernel_imports",
+      "kms_cursor_transport",
       "pcm_transport_abi",
       "process_metadata_contract",
       "process_snapshot_wire",
@@ -4581,6 +4582,30 @@
       "shared": true
     }
   ],
+  "kms_cursor_transport": {
+    "byte_order": "little-endian",
+    "disabled_image": "zero-bo-framebuffer-dimensions-and-hotspot",
+    "image_identity": "exact-master-lease-and-kernel-framebuffer-id",
+    "offsets": {
+      "bo_u32": 8,
+      "framebuffer_u32": 36,
+      "height_u32": 16,
+      "hot_x_i32": 28,
+      "hot_y_i32": 32,
+      "lease_u64": 0,
+      "width_u32": 12,
+      "x_i32": 20,
+      "y_i32": 24
+    },
+    "read_reconciliation": "same-entry-authoritative-plane-no-nonzero-image-synthesis",
+    "record_bytes": 40,
+    "retired_framebuffer": "conditional-exact-lease-and-fb-local-metadata-not-native-ack",
+    "unsupported_versions": [
+      1,
+      2
+    ],
+    "version": 3
+  },
   "marshalled_structs": {
     "AudioBufInfo": {
       "align": 4,

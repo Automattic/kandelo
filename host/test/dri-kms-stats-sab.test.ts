@@ -246,7 +246,7 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
       pending = new Uint8Array(40);
       const view = new DataView(pending.buffer);
       view.setBigUint64(0, lease, true);
-      [bo, 2, 2, x, 4, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+      [bo, 2, 2, x, 4, 0, 0, bo ? 25 : 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     };
     kernel.bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
     kernel.bos.pixelView(1)!.set([0, 0, 255, 255]);

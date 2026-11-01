@@ -149,8 +149,12 @@ validation.
 
 The KMS cursor transport uses this mechanism: `kernel_kms_cursor_configure`
 and `kernel_kms_cursor_read` are optional in ABI 50 and required from ABI
-51. New hosts negotiate protocol 1; older hosts load the kernel with cursor
-capability disabled. No cursor host import is required. See
+51. The current unpublished ABI 56 / host 3 family negotiates protocol 3,
+whose 40-byte record includes exact master-lease and framebuffer identity.
+Protocols 1 and 2 are refused; matching numeric versions alone do not admit
+artifacts from an earlier source checkpoint. The `kms_cursor_transport`
+snapshot section belongs to the kernel-host surface, leaving the program
+contract digest unchanged. No cursor host import is required. See
 [the cursor transport contract](architecture.md) for the record layout and
 ownership rules.
 

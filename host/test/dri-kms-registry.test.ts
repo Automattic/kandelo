@@ -260,7 +260,7 @@ it("consumes complete grant-scoped cursor records without resurrecting retired s
   const record = (lease: bigint, words: number[]) => {
     const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
     view.setBigUint64(0, lease, true);
-    words.forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    [...words, words[0] ? 25 : 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     return bytes;
   };
   kms.setMaster(7, 1n, 1n);
@@ -321,4 +321,66 @@ describe("DRM scanout pixel layouts", () => {
     expect(() => snapshotScanout(fb, new Uint8Array(15))).toThrow(RangeError);
     expect(() => scanoutRgba(0x36314752, new Uint8Array(3))).toThrow(RangeError);
   });
+});
+
+
+it("distinguishes renewed framebuffer identity with identical lease, BO and image geometry", () => {
+  const bos = new GbmBoRegistry();
+  bos.create({pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
+  const kms = new KmsRegistry(bos);
+  const record = (lease: bigint, fb: number) => {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    view.setBigUint64(0, lease, true);
+    [1, 2, 2, 30, 40, 0, 0, fb].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+    return bytes;
+  };
+  kms.setMaster(7, 1n, 1n);
+  kms.applyCursorRecord(record(1n, 25));
+  const first = kms.cursorSnapshot();
+  kms.applyCursorRecord(record(1n, 26));
+  const renewed = kms.cursorSnapshot();
+  expect(renewed.pixels).toEqual(first.pixels);
+  expect(renewed.pixels).not.toBe(first.pixels);
+  expect(kms.retireCursorFramebuffer(1n, 25)).toBe(false);
+  expect(kms.cursorSnapshot()).toBe(renewed);
+  expect(kms.retireCursorFramebuffer(0n, 26)).toBe(false);
+  expect(kms.cursorSnapshot()).toBe(renewed);
+  expect(kms.retireCursorFramebuffer(1n, 26)).toBe(true);
+  expect(kms.cursorSnapshot().pixels).toBeNull();
+  kms.setMaster(7, 1n, 2n);
+  kms.applyCursorRecord(record(2n, 27));
+  const nextLease = kms.cursorSnapshot();
+  expect(kms.retireCursorFramebuffer(1n, 27)).toBe(false);
+  expect(kms.cursorSnapshot()).toBe(nextLease);
+});
+
+
+it("requires a nonzero current master for a framebuffer-bearing cursor image", () => {
+  const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
+  const snapshot = kms.cursorSnapshot();
+  const read = vi.spyOn(bos, "syncToSab");
+  const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+  // A disabled registry and forged record both have lease0. Numeric equality
+  // must not grant a masterless image access to BO storage.
+  [999, 2, 2, 0, 0, 0, 0, 25].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+  expect(() => kms.applyCursorRecord(bytes)).toThrow("image identity");
+  expect(kms.cursorSnapshot()).toBe(snapshot);
+  expect(read).not.toHaveBeenCalled();
+});
+
+it("refuses protocol3 image/FB inconsistencies before reading or replacing current storage", () => {
+  const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
+  kms.setMaster(7, 1n, 1n);
+  const snapshot = kms.cursorSnapshot();
+  const read = vi.spyOn(bos, "syncToSab");
+  for (const words of [[999,2,2,0,0,0,0,0], [0,0,0,0,0,0,0,25], [0,2,2,0,0,0,0,0],
+    [0,0,0,0,0,1,0,0], [999,65,2,0,0,0,0,25]]) {
+    const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
+    view.setBigUint64(0,1n,true);
+    words.forEach((word,i) => view.setUint32(8+i*4,word,true));
+    expect(() => kms.applyCursorRecord(bytes)).toThrow(/Invalid KMS cursor image/);
+    expect(kms.cursorSnapshot()).toBe(snapshot);
+    expect(read).not.toHaveBeenCalled();
+  }
 });

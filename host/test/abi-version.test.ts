@@ -176,7 +176,8 @@ describe("ABI version marker", () => {
     const read = instance.exports.kernel_kms_cursor_read as (pointer: number, length: number) => number;
     expect(typeof read).toBe("function");
     expect(configure(2)).toBe(-95);
-    expect(configure(1)).toBe(1);
+    expect(configure(1)).toBe(-95);
+    expect(configure(3)).toBe(3);
   });
 
   it("freshly-built user programs export a matching __abi_version", async () => {
