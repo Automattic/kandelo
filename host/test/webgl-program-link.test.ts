@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { uniformLocation } from "../src/webgl/uniform-queries.js";
-import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
+import { hasNativeRepair, NativeGlFault, repairNativeState, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { KernelEntryGate } from "../src/kernel-entry-gate.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import * as O from "../src/webgl/ops.js";
@@ -78,6 +78,25 @@ class NativePrograms {
   uniform1f() { this.uniformWrites++; }
 }
 
+/** Decision D-29: a host-owned deletion that a live renderer refuses is a
+ * fatal NativeGlFault, reported before it is thrown so a caller's catch
+ * cannot hide it. Returns every reported fault and the exception, if any. */
+function nativeFaults(run: () => unknown): {faults: Error[]; thrown: unknown} {
+  const faults: Error[] = [];
+  let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch (error) { thrown = error; }
+  finally { setNativeGlFaultReporter(null); }
+  return {faults, thrown};
+}
+function expectFault(thrown: unknown, message: string): void {
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toBe(message);
+}
+const OWNERSHIP_UNDECIDED = "could not decide whether a retired program is still owned";
+const refusedDelete = (kind: "Shader" | "Program") => `the live renderer refused delete${kind} of an object the host retired`;
+afterEach(() => setNativeGlFaultReporter(null));
+
 function setup() {
   const native = new NativePrograms();
   const gl = new Proxy(native, {
@@ -153,7 +172,7 @@ describe("program link attempts and installed executables", () => {
     expect([...output]).toEqual(Array(capacity).fill(0xcc));
   });
 
-  it.each(["named","current","query pin"] as const)("never deletes an unknown %s owner while eligibility inspection is failing",kind=>{
+  it.each(["named","current","query pin"] as const)("faults instead of deleting an unknown %s owner while eligibility inspection is failing",kind=>{
     const parent=setup();let target=parent.b;
     let lease:ReturnType<GlContextRegistry["retainContextExecution"]>=null,pin:GlProgramQueryPin|null=null;
     if(kind==="current") target=sharePeer(parent);
@@ -170,17 +189,13 @@ describe("program link attempts and installed executables", () => {
     const link=vi.spyOn(parent.native,"linkProgram").mockImplementation(program=>{
       nativeLink(program);has=vi.spyOn(target.programQueryPins,"has").mockImplementation(()=>{throw new Error("ownership lookup refused");});
     });
-    try {
-      linkProgramRetainingExecutable(target,20);
-      expect(hasNativeRepair(parent.gl)).toBe(true);expect(repairNativeState(parent.gl)).toBe(false);
-      expect(parent.native.deleted.has(parent.original)).toBe(false);expect(target.errors).toEqual([0x501,0x505]);
-    } finally {has?.mockRestore();link.mockRestore();}
-    expect(repairNativeState(parent.gl)).toBe(true);expect(parent.native.deleted.has(parent.original)).toBe(false);
-    if(kind==="current") useProgramIfAccepted(parent.b,0);
-    else if(kind==="query pin") {expect(pin!.release()).toBe(true);expect(lease!.release()).toBe(true);}
-    else parent.send(O.OP_DELETE_PROGRAM,[20]);
-    expect(parent.native.deletions.get(parent.original)).toBe(1);
-    expect(repairNativeState(parent.gl)).toBe(true);expect(parent.native.deletions.get(parent.original)).toBe(1);
+    let result:ReturnType<typeof nativeFaults>;
+    try {result=nativeFaults(()=>linkProgramRetainingExecutable(target,20));}
+    finally {has?.mockRestore();link.mockRestore();}
+    expectFault(result.thrown,OWNERSHIP_UNDECIDED);expect(result.faults).toEqual([result.thrown]);
+    expect(parent.native.deleteAttempts).not.toContain(parent.original);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
+    void lease;void pin;
   });
 
   it.each(["filter","delete"] as const)("preserves the original branded link failure while %s cleanup throws",phase=>{
@@ -222,19 +237,15 @@ describe("program link attempts and installed executables", () => {
     expect(native.deletions.get(original)).toBe(1);
   });
 
-  it.each(["relink","use"] as const)("keeps %s cleanup retryable when ownership iteration throws after the accepted switch",mode=>{
+  it.each(["relink","use"] as const)("faults %s cleanup when ownership iteration throws after the accepted switch",mode=>{
     const {b,native,original}=setup();
     if(mode==="use") {(b.shaders.get(11) as unknown as Shader).compiled=false;linkProgramRetainingExecutable(b,20);}
     const values=vi.spyOn(b.programs,"values").mockImplementation(()=>{throw new Error("ownership iteration refused");});
-    let failure:unknown;
-    try {if(mode==="relink")linkProgramRetainingExecutable(b,20);else useProgramIfAccepted(b,0);} catch(error) {failure=error;}
-    expect(b.currentProgram).not.toBe(original);expect(native.deleted.has(original)).toBe(false);
-    try {
-      expect(hasNativeRepair(b.gl!)).toBe(true);expect(repairNativeState(b.gl!)).toBe(false);
-    } finally {values.mockRestore();}
-    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(original)).toBe(1);
-    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(original)).toBe(1);
-    expect(failure).toBeUndefined();expect(b.errors).toContain(0x505);
+    let result:ReturnType<typeof nativeFaults>;
+    try {result=nativeFaults(()=>{if(mode==="relink")linkProgramRetainingExecutable(b,20);else useProgramIfAccepted(b,0);});}
+    finally {values.mockRestore();}
+    expectFault(result.thrown,OWNERSHIP_UNDECIDED);expect(result.faults).toEqual([result.thrown]);
+    expect(b.currentProgram).not.toBe(original);expect(native.deleteAttempts).not.toContain(original);
   });
 
   it.each(["shader", "program", "first clone receiver", "second clone receiver"] as const)("refuses %s receiver allocation before native creation",kind=>{
@@ -254,40 +265,34 @@ describe("program link attempts and installed executables", () => {
     expect(b.errors).toContain(0x505);expect(hasNativeRepair(b.gl!)).toBe(false);
   });
 
-  it.each(["shader", "program"] as const)("owns a %s returned together with a native create error",kind=>{
+  it.each(["shader", "program"] as const)("owns a %s returned together with a native create error and faults when its deletion is refused",kind=>{
     const {b,native}=setup();native.failDeleteShader=true;native.failDeleteProgram=true;
-    if(kind==="shader") {native.failCreateShaderAfterAllocation=true;createShaderIfAccepted(b,0x8b31,99);}
-    else {native.failCreateAfterAllocation=true;createProgramIfAccepted(b,99);}
-    expect(b.shaders.has(99)||b.programs.has(99)).toBe(false);expect(hasNativeRepair(b.gl!)).toBe(true);
-    expect(b.errors).toContain(0x505);expect(b.errors).toContain(0x502);
-    native.failDeleteShader=false;native.failDeleteProgram=false;
-    expect(repairNativeState(b.gl!)).toBe(true);
+    const {faults,thrown}=nativeFaults(()=>{
+      if(kind==="shader") {native.failCreateShaderAfterAllocation=true;createShaderIfAccepted(b,0x8b31,99);}
+      else {native.failCreateAfterAllocation=true;createProgramIfAccepted(b,99);}
+    });
+    expectFault(thrown,refusedDelete(kind==="shader"?"Shader":"Program"));expect(faults).toEqual([thrown]);
     const candidate=kind==="shader"?native.createdShaders.at(-1)!:native.createdPrograms.at(-1)!;
-    expect(kind==="shader"?(candidate as Shader).deleted:native.deletions.get(candidate as Program)).toBe(kind==="shader"?true:1);
+    expect(b.shaders.has(99)||b.programs.has(99)).toBe(false);expect(native.deleteAttempts).toEqual([candidate]);
   });
 
-  it("reserves old-executable deletion before a successful relink publishes its replacement",()=>{
+  it("faults when the live renderer refuses the old executable's deletion after a successful relink",()=>{
     const {b,native,original}=setup();native.failDeleteProgram=true;
-    linkProgramRetainingExecutable(b,20);
-    const replacement=b.programs.get(20);
-    expect(replacement).not.toBe(original);expect(b.currentProgram).toBe(replacement);
-    expect(native.current).toBe(replacement);expect(native.deleted.has(original)).toBe(false);
-    expect(hasNativeRepair(b.gl!)).toBe(true);
-    const creations=native.createdPrograms.length;
-    native.failDeleteProgram=false;expect(repairNativeState(b.gl!)).toBe(true);
-    expect(native.deletions.get(original)).toBe(1);expect(native.createdPrograms.length).toBe(creations);
-    expect(b.programs.get(20)).toBe(replacement);expect(repairNativeState(b.gl!)).toBe(true);
-    expect(native.deletions.get(original)).toBe(1);
+    const {faults,thrown}=nativeFaults(()=>linkProgramRetainingExecutable(b,20));
+    expectFault(thrown,refusedDelete("Program"));expect(faults).toEqual([thrown]);
+    const replacement=native.createdPrograms.at(-1)!;
+    expect(replacement).not.toBe(original);expect(native.current).toBe(replacement);
+    expect(native.deleteAttempts).toEqual([original]);
   });
 
-  it("reserves orphaned current-executable deletion before accepting useProgram",()=>{
+  it("faults when the live renderer refuses an orphaned current executable's deletion after useProgram",()=>{
     const {b,native,original}=setup();(b.shaders.get(11) as unknown as Shader).compiled=false;
     linkProgramRetainingExecutable(b,20);const attempt=b.programs.get(20);
-    native.failDeleteProgram=true;useProgramIfAccepted(b,0);
-    expect(b.currentProgram).toBeNull();expect(native.current).toBeNull();expect(b.programs.get(20)).toBe(attempt);
-    expect(hasNativeRepair(b.gl!)).toBe(true);expect(native.deleted.has(original)).toBe(false);
-    native.failDeleteProgram=false;expect(repairNativeState(b.gl!)).toBe(true);
-    expect(native.deletions.get(original)).toBe(1);expect(native.deleted.has(attempt as unknown as Program)).toBe(false);
+    native.failDeleteProgram=true;
+    const {faults,thrown}=nativeFaults(()=>useProgramIfAccepted(b,0));
+    expectFault(thrown,refusedDelete("Program"));expect(faults).toEqual([thrown]);
+    expect(native.current).toBeNull();expect(b.programs.get(20)).toBe(attempt);
+    expect(native.deleteAttempts).toEqual([original]);
   });
 
   it("does not switch away from an orphaned current executable without a reserved receiver",()=>{
@@ -299,7 +304,7 @@ describe("program link attempts and installed executables", () => {
     expect(b.errors).toContain(0x505);expect(hasNativeRepair(b.gl!)).toBe(false);
   });
 
-  it("keeps a real query pin and pending name when native unbind rejects deletion",()=>{
+  it("makes a refused uninstall before deleting a released pinned program a fatal fault",()=>{
     const {b,native,registry,gl,original,send}=setup();b.contextId=21;
     const lease=registry.retainContextExecution(1,0,new GlMuxer(gl))!;
     const pin=GlProgramQueryPin.acquire(lease,20)!;
@@ -308,54 +313,50 @@ describe("program link attempts and installed executables", () => {
     // this does not grant a logical current owner or permission to delete it.
     gl.useProgram(original as unknown as WebGLProgram);
     native.failUnbind=true;
-    expect(pin.release()).toBe(false);
+    const {faults,thrown}=nativeFaults(()=>pin.release());
+    expectFault(thrown,"the live renderer refused to uninstall a program before deleting it");
+    expect(faults).toEqual([thrown]);
     expect(native.deleted.has(original)).toBe(false);
-    expect(b.programQueryPins.get(original as unknown as WebGLProgram)).toBe(1);
-    expect(b.programs.get(20)).toBe(original);expect(b.programDeletePending.has(20)).toBe(true);
-    native.failUnbind=false;expect(pin.release()).toBe(true);expect(pin.release()).toBe(true);
-    expect(native.deletions.get(original)).toBe(1);expect(b.programs.has(20)).toBe(false);
-    expect(b.programQueryPins.size).toBe(0);expect(lease.release()).toBe(true);
   });
 
-  it("preserves selected-peer error flags and shared current ownership during rollback retries",()=>{
+  it("preserves selected-peer error flags and shared current ownership across a rolled-back peer link",()=>{
     const parent=setup(),peer=sharePeer(parent),muxer=new GlMuxer(parent.gl);
     muxer.switchTo(parent.b);parent.native.error=0x500;muxer.switchTo(peer);
-    parent.native.failPrepare=true;parent.native.failDeleteProgram=true;
+    parent.native.failPrepare=true;
     linkProgramRetainingExecutable(peer,20);
     const candidate=parent.native.createdPrograms.at(-1)!;
     expect(parent.b.currentProgram).toBe(parent.original);expect(peer.currentProgram).toBeNull();
     expect(parent.b.errors).toEqual([0x500]);expect(peer.errors).toEqual([0x502]);
-    parent.native.error=0x501;
-    expect(()=>muxer.switchTo(parent.b)).toThrow("Native GL restoration remains pending");
+    expect(parent.native.deletions.get(candidate)).toBe(1);
+    parent.native.error=0x501;muxer.switchTo(parent.b);
     expect(peer.errors).toEqual([0x502,0x501]);expect(parent.b.errors).toEqual([0x500]);
-    parent.native.failDeleteProgram=false;muxer.switchTo(parent.b);
     expect(parent.native.current).toBe(parent.original);expect(parent.native.deletions.get(candidate)).toBe(1);
-    expect(parent.native.deleted.has(parent.original)).toBe(false);expect(parent.b.errors).toEqual([0x500]);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
   });
 
-  it.each(["create", "prepare", "link", "publication"] as const)("retains rejected %s clone deletion until actual native retry",phase=>{
+  it.each(["create", "prepare", "link", "publication"] as const)("faults when the live renderer refuses the rejected %s clone's deletion",phase=>{
     const {b,native,original}=setup();
     if(phase==="create") native.failCreateAfterAllocation=true;
     if(phase==="prepare") native.failPrepare=true;
     if(phase==="link") native.failLink=true;
     if(phase==="publication") b.programs.set=()=>{throw new Error("allocation rejected");};
     native.failDeleteProgram=true;
-    linkProgramRetainingExecutable(b,20);
+    const {faults,thrown}=nativeFaults(()=>linkProgramRetainingExecutable(b,20));
+    // The candidate's refusal is reported first; the released executable's
+    // collection in the same finally re-collects the still-reserved
+    // candidate and reports the same refusal again before it propagates.
+    expectFault(thrown,refusedDelete("Program"));expect(faults).toContain(thrown);
+    for (const fault of faults) expectFault(fault,refusedDelete("Program"));
     const candidate=native.createdPrograms.at(-1)!;
     expect(candidate).not.toBe(original);
     expect(b.programs.get(20)).toBe(original);
     expect(b.currentProgram).toBe(original);expect(native.current).toBe(original);
     expect(b.uniformLocationRecords.has(1)).toBe(true);
-    expect(native.deleted.has(candidate)).toBe(false);expect(hasNativeRepair(b.gl!)).toBe(true);
-    expect(repairNativeState(b.gl!)).toBe(false);
-    native.failDeleteProgram=false;
-    expect(repairNativeState(b.gl!)).toBe(true);
-    expect(native.deletions.get(candidate)).toBe(1);
-    expect(repairNativeState(b.gl!)).toBe(true);expect(native.deletions.get(candidate)).toBe(1);
-    expect(native.deleted.has(original)).toBe(false);
+    expect(native.deleteAttempts.length).toBeGreaterThan(0);
+    expect(native.deleteAttempts.every(value=>value===candidate)).toBe(true);
   });
 
-  it.each(["shader", "program"] as const)("retains unpublished %s after publication and deletion both fail",kind=>{
+  it.each(["shader", "program"] as const)("reports a fault when an unpublished %s's deletion is refused after publication fails",kind=>{
     const {b,native}=setup();
     if(kind==="shader") {b.shaders.set=()=>{throw new Error("allocation rejected");};native.failDeleteShader=true;}
     else {b.programs.set=()=>{throw new Error("allocation rejected");};native.failDeleteProgram=true;}
@@ -364,16 +365,18 @@ describe("program link attempts and installed executables", () => {
     view.setUint16(2,kind==="shader"?8:4,true);
     view.setUint32(4,kind==="shader"?0x8b31:99,true);
     if(kind==="shader") view.setUint32(8,99,true);
-    expect(decodeAndDispatch(b,0,kind==="shader"?12:8)).toBeLessThan(0);
+    // The bridge's per-record catch turns the first exception into an EIO
+    // reply after the reporter latched it; its post-batch collection then
+    // meets the still-reserved deletion and the refusal propagates.
+    const {faults,thrown}=nativeFaults(()=>decodeAndDispatch(b,0,kind==="shader"?12:8));
+    const message=refusedDelete(kind==="shader"?"Shader":"Program");
+    expectFault(thrown,message);expect(faults).toContain(thrown);
+    for (const fault of faults) expectFault(fault,message);
     const candidate=kind==="shader"?native.createdShaders.at(-1)!:native.createdPrograms.at(-1)!;
     expect(b.shaders.has(99)||b.programs.has(99)).toBe(false);
     expect(b.programShaders.has(99)).toBe(false);
-    expect(hasNativeRepair(b.gl!)).toBe(true);
-    native.failDeleteShader=false;native.failDeleteProgram=false;
-    expect(decodeAndDispatch(b,0,0)).toBe(0);
-    expect(kind==="shader"?(candidate as Shader).deleted:native.deleted.has(candidate as Program)).toBe(true);
-    const attempts=native.deleteAttempts.length;
-    expect(decodeAndDispatch(b,0,0)).toBe(0);expect(native.deleteAttempts.length).toBe(attempts);
+    expect(native.deleteAttempts.length).toBeGreaterThan(0);
+    expect(native.deleteAttempts.every(value=>value===candidate)).toBe(true);
   });
 
   const inactiveSetters = [

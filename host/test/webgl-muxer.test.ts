@@ -1,7 +1,8 @@
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { knownVertexAttributeLimit } from "../src/webgl/limits.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
@@ -348,52 +349,55 @@ describe("GlMuxer.switchTo", () => {
 
 });
 
-for (const sameOwner of [true,false]) it(`repairs before a cached or different muxer owner can run (same owner: ${sameOwner})`, () => {
-  const {gl,mux} = mk(), reg = new GlContextRegistry();
+function collectFaults(): Error[] {
+  const reported: Error[] = [];
+  setNativeGlFaultReporter(fault => reported.push(fault));
+  return reported;
+}
+afterEach(() => setNativeGlFaultReporter(null));
+const REFUSED_RESTORE = /live renderer refused to restore native state after a rejected change/;
+
+it("makes a refused framebuffer-binding restoration after a rejected deletion a fatal fault", () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry(), reported = collectFaults();
   reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:0}); const b = reg.get(1)!;
   b.gl = gl as unknown as WebGL2RenderingContext;
   const framebuffer = {};
   b.fbos.set(17,framebuffer); b.shadow.fbo = b.shadow.readFbo = framebuffer;
   mux.switchTo(b);
-  let rejected = false, block = true;
+  let rejected = false;
   const bind = gl.bindFramebuffer.bind(gl);
   gl.bindFramebuffer = (target,value) => {
-    if (rejected && block && value === framebuffer) { gl.pendingErrors.push(0x502); return; }
+    if (rejected && value === framebuffer) { gl.pendingErrors.push(0x502); return; }
     bind(target,value);
   };
   Object.assign(gl,{deleteFramebuffer() { rejected = true; gl.pendingErrors.push(0x505); }});
   const out = new Uint8Array(12);
+  // The fault is reported before the query's reply wrapper turns the throw
+  // into a failed reply.
   expect(runGlQuery(b,O.QOP_IMAGE_OBJECT_DELETE,new Uint8Array(new Uint32Array([3,17]).buffer),out)).toBe(12);
   expect([...new Uint32Array(out.buffer)]).toEqual([1,0,0x47514c33]);
-  const target = sameOwner ? b : newTarget(); const viewports = gl.callsOf("viewport").length;
-  expect(() => mux.switchTo(target)).toThrow("restoration remains pending");
-  expect(gl.callsOf("viewport").length).toBe(viewports);
-  if (!sameOwner) expect(target.errors).toEqual([]);
-  block = false; mux.switchTo(target);
-  expect(gl.callsOf("viewport").length).toBe(viewports+1);
-  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca9,framebuffer]);
-  expect(gl.callsOf("bindFramebuffer")).toContainEqual([0x8ca8,framebuffer]);
+  expect(reported).toHaveLength(1);
+  expect(reported[0]).toBeInstanceOf(NativeGlFault);
+  expect(reported[0].message).toMatch(REFUSED_RESTORE);
+  expect(b.fbos.get(17)).toBe(framebuffer);
   expect(b.errors).toContain(0x505); expect(b.errors).toContain(0x502);
 });
 
-for (const sameOwner of [true,false]) it(`publishes client-array completion before muxer replay (same owner: ${sameOwner})`, () => {
-  const {gl,mux} = mk(), reg = new GlContextRegistry(); reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:4});
+it("makes a refused client-array completion restoration a fatal fault without publishing it", () => {
+  const {gl,mux} = mk(), reg = new GlContextRegistry(), reported = collectFaults(); reg.bind({pid:1,cmdbufAddr:0,cmdbufLen:4});
   const b = reg.get(1)!, saved = {}, temporary = {};
   b.gl = gl as unknown as WebGL2RenderingContext; b.shadow.arrayBuffer = temporary;
   b.savedClientArrayBuffer = saved; b.cmdbufView = new Uint8Array(new Uint16Array([O.OP_END_CLIENT_ARRAY,0]).buffer);
   mux.switchTo(b);
-  const bind = gl.bindBuffer.bind(gl); let block = true;
-  gl.bindBuffer = (...args) => {if(block && args[0]===0x8892 && args[1]===saved){gl.pendingErrors.push(0x502);return;}bind(...args);};
-  expect(decodeAndDispatch(b,0,4)).toBe(-5);
+  const bind = gl.bindBuffer.bind(gl);
+  gl.bindBuffer = (...args) => {if(args[0]===0x8892 && args[1]===saved){gl.pendingErrors.push(0x502);return;}bind(...args);};
+  let thrown: unknown;
+  try { decodeAndDispatch(b,0,4); } catch (error) { thrown = error; }
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(REFUSED_RESTORE);
+  expect(reported.length).toBeGreaterThan(0); expect(reported.at(-1)).toBe(thrown);
+  // The refused completion is never published as logical state.
   expect(b.shadow.arrayBuffer).toBe(temporary); expect(b.savedClientArrayBuffer).toBe(saved);
-  const target = sameOwner ? b : newTarget(), calls = gl.callsOf("viewport").length;
-  expect(()=>mux.switchTo(target)).toThrow("restoration remains pending");
-  expect(gl.callsOf("viewport").length).toBe(calls);
-  block = false; mux.switchTo(target);
-  if (!sameOwner) { expect(b.shadow.arrayBuffer).toBe(temporary); expect(target.errors).toEqual([]); mux.switchTo(b); }
-  expect(b.shadow.arrayBuffer).toBe(saved); expect(b.savedClientArrayBuffer).toBeUndefined();
-  expect(gl.callsOf("bindBuffer").at(-1)).toEqual([0x8892,saved]);
-  expect(b.clientArrayRestore).toBeUndefined(); expect(b.clientArrayEndRequested).toBe(false);
 });
 
 it("revokes the outgoing owner before any prefix of a full peer replay can throw",()=>{

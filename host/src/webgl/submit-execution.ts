@@ -3,6 +3,8 @@ import type { GlMuxer } from "./muxer.js";
 import type { GlDrawableBinding } from "./current.js";
 import { defaultFramebuffer, logicalDefaultFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { retainSurfaceStorage, type GlSurfaceStorageLease } from "./surface-resources.js";
+import { nativeGlFault, NativeGlFault } from "./native-recovery.js";
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 
 /** Per-work selectors contain native handles and copied scalars only. The
  * logical surface may resize or disappear while this allocation is retained. */
@@ -121,19 +123,24 @@ export class GlSubmitExecution {
     }
   }
 
+  /** Release every hold. The last hold on retained storage deletes it now;
+   * a refusal is a NativeGlFault (native-recovery.ts), never a retry. */
   release(): boolean {
     this.closed = true;
     try {
       // Cancellation may run while a different logical owner is selected.
       // Preserve its GL flags before any retained storage can be collected.
       this.muxer.deref()?.captureCurrentErrors();
-      if (this.drawLease && !this.drawLease.release(null)) return false;
+      if (this.drawLease && !this.drawLease.release(null)) nativeGlFault("a GL submission's draw storage refused its release");
       this.drawLease = null;
-      if (this.readLease && !this.readLease.release(null)) return false;
+      if (this.readLease && !this.readLease.release(null)) nativeGlFault("a GL submission's read storage refused its release");
       this.readLease = null;
-      if (this.contextLease && !this.contextLease.release()) return false;
+      if (this.contextLease && !this.contextLease.release()) nativeGlFault("a GL submission's context refused its release");
       this.contextLease = null;
       return true;
-    } catch { return false; }
+    } catch (error) {
+      if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+      nativeGlFault("releasing a GL submission's holds threw", error);
+    }
   }
 }

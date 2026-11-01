@@ -11,7 +11,7 @@ import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
 import type { GlClientArrayFields } from "./client-array.js";
-import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
+import { repairNativeState, retireNativeRepair, retireNativeObject, reserveNativeRetirement, retireNativeRetirement, nativeGlFault, NativeGlFault, type NativeRetirement, type NativeDeletion } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
@@ -182,8 +182,6 @@ type ExecutionRecord = {
   muxer: WeakRef<GlExecutionRetirementGuard>;
   references: number;
   retired: boolean;
-  cleaned: boolean;
-  cleanup: NativeRetirement | null;
   gpuBos: ReadonlyMap<number,GpuBo>;
   records: Set<ExecutionRecord>;
   contexts: WeakMap<GlBinding,ExecutionRecord>;
@@ -215,9 +213,8 @@ export class GlContextExecutionLease {
     if (!record) return true;
     const releasedNow=!this.#released;
     if (releasedNow) { this.#released = true; record.references--; }
-    if (record.retired && record.references === 0) {
-      if (!collectExecution(record)) return false;
-    } else if (!record.retired && record.references === 0) {
+    if (record.retired && record.references === 0) collectExecution(record);
+    else if (!record.retired && record.references === 0) {
       record.records.delete(record); record.contexts.delete(record.binding);
     }
     this.#record = null;
@@ -247,36 +244,31 @@ function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | nu
   return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
 }
 
-function collectExecution(record: ExecutionRecord): boolean {
-  if (!record.retired || record.references !== 0) return true;
-  // A registry retry may already have completed this lease's cleanup.
-  // Releasing its old token must not recapture or invalidate a new owner.
-  if (record.cleaned && record.cleanup?.complete) {
-    record.records.delete(record); record.contexts.delete(record.binding);
-    return true;
-  }
+/** Delete a retired context's native objects once its last accepted
+ * execution ends. Each step completes or is a NativeGlFault: nothing retries
+ * this later. A lost renderer's objects are dropped without native calls
+ * (native-recovery.ts). */
+function collectExecution(record: ExecutionRecord): void {
+  if (!record.retired || record.references !== 0) return;
   try {
     const muxer = record.muxer.deref();
-    if (muxer) { if (!muxer.prepareRetirement()) return false; }
-    else captureNativeGlErrors(record.gl,null);
-    if (!record.cleaned) {
-      record.cleanup ??= reserveExecutionCleanup(record);
-      if (!record.cleanup) return false;
-      retireNativeRepair(record.gl,record.binding.shadow);
-      if (!repairNativeState(record.gl)) return false;
-      destroyContextResources(record.binding,record.gpuBos,record.cleanup);
-      record.cleaned = true;
-    }
-    const cleanup = record.cleanup!;
+    if (muxer) {
+      if (!muxer.prepareRetirement()) nativeGlFault("could not read the selected owner's error flags before retiring a context");
+    } else captureNativeGlErrors(record.gl,null);
+    const cleanup = reserveExecutionCleanup(record) ?? nativeGlFault("could not reserve a retired context's native cleanup");
+    retireNativeRepair(record.gl,record.binding.shadow);
+    if (!repairNativeState(record.gl)) nativeGlFault("a retired context's cleanup ran inside an in-flight native change");
+    destroyContextResources(record.binding,record.gpuBos,cleanup);
     const installed = record.gl.getParameter(0x8b8d) as WebGLProgram | null;
     if (installed && cleanup.calls.some(call => call[0] === "deleteProgram" && call[1] === installed) &&
-        !checkedGlCall(cleanup.owner,()=>record.gl.useProgram(null))) return false;
-    if (!cleanup.pending) {
-      if (!retireNativeRetirement(cleanup)) return false;
-    } else if (!repairNativeState(record.gl) || !cleanup.complete) return false;
+        !checkedGlCall(cleanup.owner,()=>record.gl.useProgram(null)) && !record.gl.isContextLost?.())
+      nativeGlFault("the live renderer refused to uninstall a retired context's program");
+    if (!retireNativeRetirement(cleanup)) nativeGlFault("a retired context's native objects were not deleted");
     record.records.delete(record); record.contexts.delete(record.binding);
-    return true;
-  } catch(error) {if(isKernelExportFailure(error))throw error;return false;}
+  } catch(error) {
+    if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+    nativeGlFault("retiring a context's native objects threw", error);
+  }
 }
 
 export class GlContextRegistry {
@@ -368,7 +360,7 @@ export class GlContextRegistry {
         const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
           cmdbufLen:b.cmdbufLen},b.canvas);
         record = {binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
-          references:0,retired:false,cleaned:false,cleanup:null,records:this.executionRecords,
+          references:0,retired:false,records:this.executionRecords,
           contexts:this.executions,gpuBos:this.gpuBos};
         this.executionRecords.add(record);
         try { this.executions.set(b,record); }
@@ -385,23 +377,6 @@ export class GlContextRegistry {
   retainSubmitExecution(binding: GlBinding, muxer: GlMuxer): GlSubmitExecution | null {
     if (this.get(binding.pid, binding.sessionId) !== binding) return null;
     return GlSubmitExecution.capture(this, binding, muxer);
-  }
-
-  /** Cleanup can mutate native selectors even when its own guard is not the
-   * caller's muxer. Let a device-state borrower invalidate before that work. */
-  hasExecutionRetirements(gl: WebGL2RenderingContext): boolean {
-    for (const record of this.executionRecords)
-      if (record.retired && record.references === 0 && record.gl === gl) return true;
-    return false;
-  }
-
-  /** Only failed, unreferenced retirement blocks admission on its physical
-   * context. Retained execution is deliberate ownership, not a repair error. */
-  retryExecutionRetirements(gl?: WebGL2RenderingContext): boolean {
-    let complete = true;
-    for (const record of this.executionRecords) if (record.retired && record.references === 0 && (!gl || record.gl === gl))
-      complete = collectExecution(record) && complete;
-    return complete;
   }
 
   /** Retire every matching session. Public lookup always ends. Returns
@@ -638,7 +613,7 @@ export class GlContextRegistry {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
         w > 0x7fff_ffff || h > 0x7fff_ffff || gl.isContextLost?.()) return null;
-    if (!this.retryExecutionRetirements(gl) || !repairNativeState(gl)) return null;
+    if (!repairNativeState(gl)) return null;
     const existing = this.gpuBos.get(bo_id);
     if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
       ? existing.texId : null;

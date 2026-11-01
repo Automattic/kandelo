@@ -1,11 +1,20 @@
 import { foreignTextureGl } from "./support/foreign-texture-gl.js";
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { registerImageSource, textureNative, canonicalTexture, WPK_IMAGE_SOURCE_TARGET, imageTextureOperation, imageRenderbufferStorage, destroyTextureView, destroyRenderbufferView } from "../src/webgl/image-storage.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import * as O from "../src/webgl/ops.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
+afterEach(() => setNativeGlFaultReporter(null));
+/** Query replies (checkedQueryReply) swallow a thrown fault into an error
+ * status; the reporter is what latches it as fatal. */
+function collectFaults(): Error[] {
+  const faults: Error[] = [];
+  setNativeGlFaultReporter(fault => faults.push(fault));
+  return faults;
+}
 function setup() {
   const reg = new GlContextRegistry();
   reg.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
@@ -211,8 +220,8 @@ function storageRepairSetup(kind = 1) {
   const target = kind === 1 ? 0x0de1 : 0x8d41;
   return {registry,b,object,first,second,target,...native};
 }
-for (const kind of [1,2]) it(`retains peer storage rollback after the submitting context retires (kind ${kind})`, () => {
-  const {registry,b,object,first,second,target,gl,frames,alive,control} = storageRepairSetup(kind);
+for (const kind of [1,2]) it(`faults when the live renderer refuses peer storage rollback (kind ${kind})`, () => {
+  const {registry,b,object,first,second,target,gl,control} = storageRepairSetup(kind);
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,1],16)[0]).toBe(0);
   const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
   registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer = registry.get(7,12)!;
@@ -224,78 +233,49 @@ for (const kind of [1,2]) it(`retains peer storage rollback after the submitting
     gl.bindFramebuffer(0x8d40,frame); gl.framebufferTexture2D(0x8d40,0x8ce0,0x0de1,first,0);
   }
   gl.bindFramebuffer(0x8d40,sourceFrame);
-  const attach = gl.framebufferTexture2D.bind(gl), bindFrame = gl.bindFramebuffer.bind(gl);
-  let rejected = false, block = true, deadBinds = 0, retired = false;
+  const attach = gl.framebufferTexture2D.bind(gl);
+  let rejected = false;
+  // The peer's retarget is rejected, then its restoration to `first` is refused.
   gl.framebufferTexture2D = (fbTarget,point,texTarget,texture,level) => {
     if (!rejected && fbTarget === 0x8ca9 && texture === second && gl.getParameter(0x8ca6) === peerFrame) {
       rejected = true; control.fault = "framebufferTexture2D";
-    } else if (rejected && block && texture === first) control.fault = "framebufferTexture2D";
+    } else if (rejected && texture === first) control.fault = "framebufferTexture2D";
     attach(fbTarget,point,texTarget,texture,level);
   };
-  gl.bindFramebuffer = (selected,frame) => { if (retired && frame === sourceFrame) deadBinds++; bindFrame(selected,frame); };
+  const faults = collectFaults();
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[kind,target,2],16)[0]).toBe(1);
-  expect(rejected).toBe(true); expect(frames.get(sourceFrame)!.get(0x8ce0)).toBe(second);
+  expect(rejected).toBe(true);
+  expect(faults).toHaveLength(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
+  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
   expect(b.imageRevisions.get(object)).toBe(1);
   expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  registry.destroyContext(7,11); retired = true;
-  expect(alive.has(sourceFrame)).toBe(false); expect(alive.has(peerFrame)).toBe(true);
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  block = false;
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(deadBinds).toBe(0); expect(frames.get(peerFrame)!.get(0x8ce0)).toBe(first);
-  expect(peer.imageRevisions.get(object)).toBe(1);
-  expect(checked(peer,O.QOP_IMAGE_TARGET,[kind,17,2])[0]).toBe(0);
-  expect(frames.get(peerFrame)!.get(0x8ce0)).toBe(second);
-  registry.destroyContext(7,12); gl.deleteTexture(first); gl.deleteTexture(second);
-  expect(alive.size).toBe(0);
 });
 
-it("retains image utility restoration and partial candidate cleanup without duplicate deletion", () => {
-  const {b,object,gl,alive,control} = storageRepairSetup();
+it("faults when the live renderer refuses image utility selector restoration", () => {
+  const {b,object,gl,control} = storageRepairSetup();
   const read = gl.createFramebuffer()!, draw = gl.createFramebuffer()!;
   gl.bindFramebuffer(0x8ca8,read); gl.bindFramebuffer(0x8ca9,draw);
-  const count = alive.size, create = gl.createTexture.bind(gl), bind = gl.bindFramebuffer.bind(gl);
-  const destroyTexture = gl.deleteTexture.bind(gl), destroyFrame = gl.deleteFramebuffer.bind(gl);
-  const deleted: object[] = []; let allocated = false, block = true, blockCleanup = true;
+  const create = gl.createTexture.bind(gl), bind = gl.bindFramebuffer.bind(gl);
+  let allocated = false;
   gl.createTexture = () => { allocated = true; return create(); };
-  gl.bindFramebuffer = (target,frame) => { if (allocated && block && target === 0x8ca8 && frame === read) control.fault = "bindFramebuffer"; bind(target,frame); };
-  gl.deleteTexture = value => { deleted.push(value); destroyTexture(value); };
-  gl.deleteFramebuffer = value => { if (blockCleanup && value !== read && value !== draw) control.fault = "deleteFramebuffer"; else deleted.push(value); destroyFrame(value); };
+  gl.bindFramebuffer = (target,frame) => { if (allocated && target === 0x8ca8 && frame === read) control.fault = "bindFramebuffer"; bind(target,frame); };
+  const faults = collectFaults();
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(1);
-  expect(b.textureViews.has(object)).toBe(false); expect(alive.size).toBe(count+2);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect(deleted.length).toBe(1);
-  expect(gl.getParameter(0x8069)).toBe(object); expect(gl.getParameter(0x8caa)).toBe(read); expect(gl.getParameter(0x8ca6)).toBe(draw);
-  blockCleanup = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(new Set(deleted).size).toBe(2); expect(deleted.length).toBe(2); expect(alive.size).toBe(count);
-  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  expect(faults).toHaveLength(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
+  expect(faults[0].message).toMatch(/live renderer refused to restore native state/);
+  expect(b.textureViews.has(object)).toBe(false);
 });
 
-it("keeps accepted image storage while retired native cleanup rejects and retries", () => {
-  const {b,object,gl,alive,control} = storageRepairSetup();
+it("faults when the live renderer refuses deletion of a replaced image view", () => {
+  const {b,object,alive,control} = storageRepairSetup();
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
   const old = b.textureViews.get(object)!;
-  const destroyFrame = gl.deleteFramebuffer.bind(gl), deleted: object[] = [];
-  gl.deleteFramebuffer = value => { deleted.push(value); destroyFrame(value); };
   control.failDelete = true;
-  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16)[0]).toBe(0);
-  const accepted = b.textureViews.get(object)!;
-  expect(accepted.source!.token).toBe(2); expect(b.imageRevisions.get(object)).toBe(2);
-  expect(alive.has(old.native)).toBe(true); expect(alive.has(old.read!)).toBe(false);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  control.failDelete = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(b.textureViews.get(object)).toBe(accepted); expect(alive.has(old.native)).toBe(false);
-  expect(deleted.filter(value => value === old.read).length).toBe(1);
+  const faults = collectFaults();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,2],16)[0]).toBe(1);
+  expect(faults.length).toBeGreaterThanOrEqual(1); expect(faults[0]).toBeInstanceOf(NativeGlFault);
+  expect(faults[0].message).toMatch(/live renderer refused deleteTexture/);
+  expect(alive.has(old.native)).toBe(true);
 });
 
 it("reserves candidate native ownership before allocating a texture view", () => {
@@ -325,17 +305,11 @@ it("reserves final image cleanup ownership before deleting any native resource",
   expect(alive.has(view.native)).toBe(false); expect(alive.has(view.read!)).toBe(false);
 });
 
-it("keeps retired native cleanup errors separate from a reused session", () => {
-  const {registry,b,gl,control} = storageRepairSetup();
+it("faults when the live renderer refuses a retired context's image view deletion", () => {
+  const {registry,b,control} = storageRepairSetup();
   expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
-  const oldErrors = b.errors; control.failDelete = true;
-  registry.destroyContext(7,11);
-  expect(b.errors).not.toBe(oldErrors); expect(b.errors).toEqual([]);
-  b.gl = gl; b.contextId = 23;
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect(b.errors).toEqual([]); expect(oldErrors).toContain(0x500);
-  control.failDelete = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect([...out]).toEqual([0,0,0,0]); expect(b.errors).toEqual([]);
+  control.failDelete = true;
+  let fault: unknown; try { registry.destroyContext(7,11); } catch (error) { fault = error; }
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
 });

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { drawGpuScanout, readGpuScanout } from "../src/webgl/kms-scanout";
 import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess } from "../src/kernel";
 import { defaultShadow } from "../src/webgl/shadow";
@@ -6,7 +6,17 @@ import type { GlMuxer } from "../src/webgl/muxer";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import { OP_CLEAR, QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
 import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "../src/dri/kms-cursor-protocol";
-import { hasNativeRepair, repairNativeState, reserveNativeRetirement } from "../src/webgl/native-recovery";
+import { hasNativeRepair, NativeGlFault, reserveNativeRetirement, setNativeGlFaultReporter } from "../src/webgl/native-recovery";
+
+// A refused native restoration or deletion on a live renderer is a fatal
+// NativeGlFault (native-recovery.ts). Tests that observe a fault through a
+// path that turns it into an errno install a reporter; always reset it.
+afterEach(() => setNativeGlFaultReporter(null));
+function caught(call: () => unknown): Error | undefined {
+  try { call(); } catch (error) { return error as Error; }
+  return undefined;
+}
+const RESTORE_REFUSED = /live renderer refused to restore native state after a rejected change/;
 
 function renderer() {
   const read = {}, draw = {}, pack = {}, fbo = {};
@@ -139,21 +149,17 @@ it("rejects invalid readback geometry before native mutation or allocation", () 
   expect(r.state).toEqual(r.initial);
 });
 
-it("retains a rejected restoration and fences later GPU presentation until repair", () => {
+it("makes a GPU readback restoration the live renderer refuses a fatal fault", () => {
   const r = renderer();
   r.failRead();
   r.failRestore();
-  expect(readGpuScanout(r.storage, 2, 2)).toBeNull();
-  expect(hasNativeRepair(r.gl)).toBe(true);
-  expect(drawGpuScanout(r.storage, 2, 2)).toBe(false);
+  const fault = caught(() => readGpuScanout(r.storage, 2, 2));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(RESTORE_REFUSED);
   expect(r.calls).toEqual([]);
   // Independent inverse groups still restored the pack buffer and layout.
   expect(r.state.get(0x88ed)).toBe(r.initial.get(0x88ed));
   expect(r.state.get(0x0d05)).toBe(8);
-  r.allowRestore();
-  expect(repairNativeState(r.gl)).toBe(true);
-  expect(r.state).toEqual(r.initial);
-  expect(drawGpuScanout(r.storage, 2, 2)).toBe(true);
 });
 
 it("presents actual rendered GPU cursor bytes through the kernel's shared KMS registry", () => {
@@ -182,7 +188,7 @@ it("presents actual rendered GPU cursor bytes through the kernel's shared KMS re
   expect(kernel.gl.gpuBo(42)).toBeUndefined();
 });
 
-it("keeps GPU cursor readback failures visible and restores the selected peer", () => {
+it("keeps GPU cursor readback failures visible and faults when the live renderer refuses restoration", () => {
   const r = renderer();
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const kernel = createWasmPosixKernelTestHarness({io: {} as any, callbacks: {}, memory,
@@ -193,13 +199,9 @@ it("keeps GPU cursor readback failures visible and restores the selected peer", 
   expect(() => kernel.kms.setCursor(100, 1, 42, 2, 2, 0, 0, 0, 0)).toThrow("GPU cursor readback failed");
   expect(r.state).toEqual(r.initial);
   r.failRestore();
-  expect(() => kernel.kms.cursorSnapshot()).toThrow("GPU cursor readback failed");
-  expect(hasNativeRepair(r.gl)).toBe(true);
-  r.allowRead(); r.allowRestore();
-  // Retry the same retained storage only after its inverse journal repairs.
-  expect(kernel.kms.cursorSnapshot().pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
-  expect(hasNativeRepair(r.gl)).toBe(false);
-  expect(r.state).toEqual(r.initial);
+  const fault = caught(() => kernel.kms.cursorSnapshot());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(RESTORE_REFUSED);
 });
 
 it("reuses an accepted cursor record's GPU sample while later observations see live writes and loss", () => {
@@ -297,20 +299,14 @@ it("invalidates the selected GL state before a scanout drawing-buffer resize", (
   expect(r.selections()).toBe(2);
 });
 
-it("invalidates selection on rejected cursor work and retains failed inverse repair", () => {
+it("faults when the live renderer refuses to restore rejected cursor work", () => {
   const r = selectedKernel();
   r.kernel.kms.setMaster(100, 1n, 1n);
   r.failRead(); r.failRestore();
-  expect(() => r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0))
-    .toThrow("GPU cursor readback failed");
-  expect(hasNativeRepair(r.gl)).toBe(true);
+  const fault = caught(() => r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(RESTORE_REFUSED);
   expect(r.owner.errors).toEqual([]);
-  expect(() => r.muxer.switchTo(r.owner)).toThrow("restoration remains pending");
-  r.allowRead(); r.allowRestore();
-  r.muxer.switchTo(r.owner);
-  expect(hasNativeRepair(r.gl)).toBe(false);
-  expect(r.selections()).toBe(2);
-  expect(r.state).toEqual(r.selected);
 });
 
 it.each(["cursor", "scanout"] as const)("stands down and invalidates an already-lost %s context", kind => {
@@ -328,44 +324,17 @@ it.each(["cursor", "scanout"] as const)("stands down and invalidates an already-
   expect(r.selections()).toBe(2);
 });
 
-it("invalidates its canonical muxer before cleanup registered with another guard", () => {
+it("faults when another guard cannot prepare a retired context's cleanup", () => {
   const r = selectedKernel();
   r.kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
   const old = r.kernel.gl.get(7, 11)!;
   old.gl = r.gl; old.contextId = 1;
-  let refuse = true;
-  const guard = { context: r.gl, prepareRetirement() {
-    if (refuse) return false;
-    // This guard knows this renderer, but does not know its canonical muxer.
-    r.gl.bindFramebuffer(0x8d40, null);
-    return true;
-  } };
+  const guard = { context: r.gl, prepareRetirement: () => false };
   const lease = r.kernel.gl.retainContextExecution(7, 11, guard)!;
   r.kernel.gl.destroyContext(7, 11);
-  expect(lease.release()).toBe(false);
-  expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(true);
-  refuse = false;
-  r.kernel.kms.setMaster(100, 1n, 1n);
-  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
-  expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
-  r.muxer.switchTo(r.owner);
-  expect(r.selections()).toBe(2);
-  expect(r.state).toEqual(r.selected);
-  expect(lease.release()).toBe(true);
-});
-
-it("invalidates before a pending native inverse successfully repairs", () => {
-  const r = selectedKernel();
-  r.failRead(); r.failRestore();
-  expect(readGpuScanout(r.storage, 2, 2)).toBeNull();
-  expect(hasNativeRepair(r.gl)).toBe(true);
-  r.allowRead(); r.allowRestore();
-  r.kernel.kms.setMaster(100, 1n, 1n);
-  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
-  expect(hasNativeRepair(r.gl)).toBe(false);
-  r.muxer.switchTo(r.owner);
-  expect(r.selections()).toBe(2);
-  expect(r.state).toEqual(r.selected);
+  const fault = caught(() => lease.release());
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/could not read the selected owner's error flags before retiring a context/);
 });
 
 it("retains guest error ownership after an initial capture failure", () => {
@@ -440,14 +409,14 @@ for (const kind of ["draw", "read"] as const) for (let index = 0; index < (kind 
       expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
     });
 
-it("keeps a rejected inverse after an early KMS selector failure and repairs independent state", () => {
+it("faults on a refused inverse after an early KMS selector failure but restores independent state", () => {
   const r = sequenceFault("read", 1, "native"); r.failRestore();
-  expect(readGpuScanout(r.storage, 2, 2)).toBeNull(); expect(hasNativeRepair(r.gl)).toBe(true);
+  const fault = caught(() => readGpuScanout(r.storage, 2, 2));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(RESTORE_REFUSED);
   expect(r.state.get(0x88ed)).toBe(r.initial.get(0x88ed));
   expect([0x0d05, 0x0d02, 0x0d04, 0x0d03].map(p => r.state.get(p)))
     .toEqual([0x0d05, 0x0d02, 0x0d04, 0x0d03].map(p => r.initial.get(p)));
-  r.allowRestore(); expect(repairNativeState(r.gl)).toBe(true);
-  expect(hasNativeRepair(r.gl)).toBe(false); expect(r.state).toEqual(r.initial);
 });
 
 for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-check and inverse with local forward and inverse entries`, () => {
@@ -547,20 +516,22 @@ for (const kind of ["gpu","cpu"] as const) {
     expect(r.run()).toBe(-5);expect(r.publications()).toBe(0);
     r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
   });
-  it(`preserves ${kind} front ENOMEM even when the final context-loss guard rejects`,()=>{
-    const r=selectedFront(kind);r.fault("memory");r.afterFront(r.loseContext);
+  it(`preserves ${kind} front ENOMEM and drops the inverse of a renderer lost during the export`,()=>{
+    const r=selectedFront(kind),faults:Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
+    r.fault("memory");r.afterFront(r.loseContext);
     expect(r.run()).toBe(-12);expect(r.publications()).toBe(0);
-    expect(hasNativeRepair(r.gl)).toBe(true);
-    expect(() => r.muxer.switchTo(r.owner)).toThrow("Native GL restoration remains pending");
-    expect(r.selections()).toBe(r.before);
-  });
-  it(`retains failed ${kind} front inverses and revokes selection before later repair`,()=>{
-    const r=selectedFront(kind);r.failRestore();
-    expect(r.run()).toBe(-5);expect(hasNativeRepair(r.gl)).toBe(true);
-    expect(r.publications()).toBe(0);r.allowRestore();
-    expect(r.run()).toBe(0);expect(hasNativeRepair(r.gl)).toBe(false);
+    // A lost renderer has no state left to restore: no fault, no pending repair.
+    expect(faults).toEqual([]);expect(hasNativeRepair(r.gl)).toBe(false);
     r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
-    expect(r.state).toEqual(r.selected);expect(r.binding.errors).toEqual([]);
+  });
+  it(`reports a ${kind} front inverse the live renderer refuses as a fatal host fault`,()=>{
+    const r=selectedFront(kind),faults:Error[]=[];setNativeGlFaultReporter(fault=>faults.push(fault));
+    r.failRestore();
+    // host_gl_update_surface turns the thrown fault into EIO; the reporter
+    // has already latched it.
+    expect(r.run()).toBe(-5);expect(r.publications()).toBe(0);
+    expect(faults).toHaveLength(1);expect(faults[0]).toBeInstanceOf(NativeGlFault);
+    expect(faults[0].message).toMatch(RESTORE_REFUSED);
   });
   it(`retains ${kind} front invalid-source errno before the private capture`,()=>{
     const r=selectedFront(kind),getError=r.gl.getError;let captures=0;
@@ -577,51 +548,12 @@ for (const kind of ["gpu","cpu"] as const) {
     expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
     expect(r.selections()).toBe(r.before+1);
   });
-  it(`does not borrow ${kind} front state across another guard's execution cleanup`,()=>{
-    const r=selectedFront(kind);r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
-    const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
-    let refuse=true;
-    const guard={context:r.gl,prepareRetirement(){if(refuse)return false;r.gl.bindFramebuffer(0x8d40,null);return true;}};
-    const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
-    r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);
-    refuse=false;expect(r.run()).toBe(0);expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
-    r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);expect(lease.release()).toBe(true);
-  });
 }
-
-it("revokes selected peer state before a capabilities query retries another guard's cleanup",()=>{
-  const r=selectedFront("gpu");r.state.set(0x0d33,4096);r.state.set(0x84e8,4096);
-  r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
-  const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
-  let refuse=true;
-  const guard={context:r.gl,prepareRetirement(){if(refuse)return false;r.gl.bindFramebuffer(0x8d40,null);return true;}};
-  const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
-  r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);refuse=false;
-  r.setError(0x501);
-  expect(r.imports.host_gl_query(8,QOP_SURFACE_CAPABILITIES,0,0,512,16,12)).toBe(16);
-  r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before+1);
-  expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
-  expect(lease.release()).toBe(true);
-});
 
 it("invalidates a successful CPU front read if canonical publication refuses",()=>{
   const r=selectedFront("cpu");r.kernel.bos.publishDevicePixels=()=>false;
   expect(r.run()).toBe(-5);r.muxer.switchTo(r.owner);
   expect(r.selections()).toBe(r.before+1);expect(r.binding.errors).toEqual([]);
-});
-
-it("refuses another guard's cleanup while the selected peer's flags remain unread",()=>{
-  const r=selectedFront("gpu");r.kernel.gl.bind({pid:9,sessionId:13,cmdbufAddr:0,cmdbufLen:0});
-  const old=r.kernel.gl.get(9,13)!;old.gl=r.gl;old.contextId=23;
-  let refuse=true,cleanups=0;
-  const guard={context:r.gl,prepareRetirement(){if(refuse)return false;cleanups++;r.gl.bindFramebuffer(0x8d40,null);return true;}};
-  const lease=r.kernel.gl.retainContextExecution(9,13,guard)!;
-  r.kernel.gl.destroyContext(9,13);expect(lease.release()).toBe(false);refuse=false;
-  const getError=r.gl.getError;r.setError(0x501);r.gl.getError=()=>{throw Error("unread selected error");};
-  expect(r.run()).toBe(-5);expect(cleanups).toBe(0);expect(r.copies()).toBe(0);
-  r.gl.getError=getError;expect(r.run()).toBe(0);expect(cleanups).toBe(1);
-  expect(r.owner.errors).toEqual([0x501]);expect(r.binding.errors).toEqual([]);
-  expect(lease.release()).toBe(true);
 });
 
 /** A second real BO-backed surface. Native allocation/publication is setup,
@@ -740,21 +672,6 @@ it("keeps the dirty drawable witness through a fixed KMS helper's exact native i
   expect(r.state.get(0x8ca6)).toBe(r.storage.fbo);
   expect(r.submit()).toBe(0);expect(r.state.get(0x8ca6)).toBe(nextFbo);
   expect(r.state.get(0x8caa)).toBe(nextFbo);expect(r.selections()).toBe(r.before);
-});
-
-it("uses full selection after pending native repair during a drawable transition",()=>{
-  const r=selectedDrawable();r.failRead();
-  // A real native selector delta is required to exercise its failed inverse;
-  // an already-selected read FBO now needs neither a write nor restoration.
-  r.state.set(0x8caa,{});
-  const bind=r.gl.bindFramebuffer.bind(r.gl);let reads=0,reject=true;
-  r.gl.bindFramebuffer=(which,value)=>{
-    if(which===0x8ca8&&++reads>1&&reject){r.setError(0x502);return;}
-    bind(which,value);
-  };
-  expect(readGpuScanout(r.storage,2,2)).toBeNull();expect(hasNativeRepair(r.gl)).toBe(true);
-  r.allowRead();reject=false;expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
-  expect(hasNativeRepair(r.gl)).toBe(false);expect(r.selections()).toBe(r.before+1);
 });
 
 it("refuses a dirty drawable after context loss before dependent guest work",()=>{
@@ -906,18 +823,16 @@ for (const fault of ["native","throw"] as const) for (const afterEffect of [fals
   });
 
 for (const field of [0x0d05,0x0d02,0x0d04,0x0d03])
-  it(`retains a late failed read layout inverse${field} until repair without replaying readback`,()=>{
-    const r=renderer(),original=r.gl.pixelStorei.bind(r.gl);let restoring=false,reject=true,reads=0;
+  it(`faults when the live renderer refuses the late read layout inverse${field} without replaying readback`,()=>{
+    const r=renderer(),original=r.gl.pixelStorei.bind(r.gl);let restoring=false,reads=0;
     r.onRead(()=>{restoring=true;reads++;});
     r.gl.pixelStorei=(p,v)=>{
-      if(restoring&&reject&&p===field&&v===r.initial.get(p)){original(p,v);r.setError(0x502);return;}
+      if(restoring&&p===field&&v===r.initial.get(p)){original(p,v);r.setError(0x502);return;}
       original(p,v);
     };
-    expect(readGpuScanout(r.storage,1,2)).toBeNull();expect(reads).toBe(1);expect(hasNativeRepair(r.gl)).toBe(true);
-    // The pending inverse fences a second presentation before it reaches pixels.
-    expect(readGpuScanout(r.storage,1,2)).toBeNull();expect(reads).toBe(1);
-    reject=false;expect(repairNativeState(r.gl)).toBe(true);expect(r.state).toEqual(r.initial);
-    expect(hasNativeRepair(r.gl)).toBe(false);expect(reads).toBe(1);
+    const fault=caught(()=>readGpuScanout(r.storage,1,2));
+    expect(fault).toBeInstanceOf(NativeGlFault);expect(fault!.message).toMatch(RESTORE_REFUSED);
+    expect(reads).toBe(1);
   });
 
 for (const selector of ["read", "draw", "scissor", "mask", "clear"] as const)
@@ -955,23 +870,23 @@ for (const selector of ["read","pack","row","pixels","rows"] as const)
 
 for (const selector of ["draw","read","scissor","mask","clear"] as const)
   for(const fault of ["native","throw"]as const)
-    it(`fences a post-effect late primary ${selector} inverse ${fault} without repeating pixels`,()=>{
-      const r=renderer();let restoring=false,reject=true;
+    it(`faults when the live renderer refuses the post-effect primary ${selector} inverse (${fault})`,()=>{
+      const r=renderer();let restoring=false;
       const clear=r.gl.clear.bind(r.gl);r.gl.clear=(bits)=>{clear(bits);restoring=true;};
       const method={draw:"bindFramebuffer",read:"bindFramebuffer",scissor:"enable",mask:"colorMask",clear:"clearColor"}[selector]as"bindFramebuffer"|"enable"|"colorMask"|"clearColor";
       const original=r.gl[method];
       (r.gl as any)[method]=(...args:unknown[])=>{
-        const chosen=restoring&&reject&&(selector==="draw"?args[0]===0x8ca9&&args[1]===r.initial.get(0x8ca6)
+        const chosen=restoring&&(selector==="draw"?args[0]===0x8ca9&&args[1]===r.initial.get(0x8ca6)
           :selector==="read"?args[0]===0x8ca8&&args[1]===r.initial.get(0x8caa)
           :selector==="scissor"?args[0]===0x0c11:true);
         const value=Reflect.apply(original,r.gl,args);
         if(chosen){if(fault==="throw")throw Error("inverse after effect");r.setError(0x502);}
         return value;
       };
-      expect(drawGpuScanout(r.storage,2,2)).toBe(false);expect(hasNativeRepair(r.gl)).toBe(true);
-      const completed=r.calls.length;expect(drawGpuScanout(r.storage,2,2)).toBe(false);expect(r.calls.length).toBe(completed);
-      reject=false;expect(repairNativeState(r.gl)).toBe(true);expect(r.state).toEqual(r.initial);
-      expect(r.calls.length).toBe(completed);expect(hasNativeRepair(r.gl)).toBe(false);
+      const refusal=caught(()=>drawGpuScanout(r.storage,2,2));
+      expect(refusal).toBeInstanceOf(NativeGlFault);expect(refusal!.message).toMatch(RESTORE_REFUSED);
+      // The primary was presented exactly once before its inverse was refused.
+      expect(r.calls.filter(call=>call[0]==="opaque primary")).toHaveLength(1);
     });
 
 it("preserves readback failure reporting when every captured selector already matches",()=>{
@@ -1004,7 +919,7 @@ it("refuses unjournaled borrowed storage before commands and accepts its restore
   expect(r.imports.host_gl_make_current(8,22,71,71,12)).toBe(0);
   r.binding.surface.borrowedTarget=null;
   expect(r.imports.host_gl_submit(8,0,bytes.length,12)).toBe(-12);
-  expect(effects).toBe(0);expect(r.kernel.gl.hasExecutionRetirements(r.gl)).toBe(false);
+  expect(effects).toBe(0);
   r.binding.surface.borrowedTarget=allocation;
   expect(r.imports.host_gl_submit(8,0,bytes.length,12)).toBe(0);
   expect(effects).toBe(1);

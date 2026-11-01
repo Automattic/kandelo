@@ -82,7 +82,7 @@ import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { hasNativeRepair, repairNativeState, retireNativeRetirement } from "./webgl/native-recovery";
+import { hasNativeRepair, NativeGlFault, repairNativeState, retireNativeRetirement, setNativeGlFaultReporter } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import { noteStorageWrite } from "./webgl/image-writes";
@@ -826,8 +826,9 @@ export interface KernelCallbacks {
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /** A host-internal fault that leaves host state no longer matching the
    * kernel's (a lost final writeback, a DRI/GL release the host could not
-   * finish). The kernel worker makes this its kernel-fatal shutdown; the
-   * reporting code then throws the same error. */
+   * finish, a native GL deletion or restoration a live renderer refused).
+   * The kernel worker makes this its kernel-fatal shutdown; the reporting
+   * code then throws the same error. */
   onHostFault?: (fault: Error) => void;
   /**
    * Observe a persistent kernel-realm wrapper of process Memory for weak
@@ -1044,12 +1045,11 @@ export class WasmPosixKernel {
       const muxer = this.gl_muxers.get(b.gl);
       // A retirement's guard can own the renderer without owning this muxer.
       // Revoke its selection before any cleanup or pending inverse can run.
-      if (this.gl.hasExecutionRetirements(b.gl) || hasNativeRepair(b.gl)) muxer?.invalidateCurrent();
+      if (hasNativeRepair(b.gl)) muxer?.invalidateCurrent();
       try {
         // Refuse before cleanup if the selected peer's flags cannot be read,
         // including when invalidation above retained that unread ownership.
         muxer?.captureCurrentErrors();
-        if (!this.gl.retryExecutionRetirements(b.gl)) { muxer?.invalidateCurrent(); return false; }
         if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
       } catch { muxer?.invalidateCurrent(); return false; }
     }
@@ -1084,7 +1084,7 @@ export class WasmPosixKernel {
   private withGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
     const muxer = this.glMuxerFor(gl);
     // Generic native work may write constants absent every guest shadow.
-    if (!muxer.prepareRetirement(true) || !this.gl.retryExecutionRetirements(gl) || !repairNativeState(gl))
+    if (!muxer.prepareRetirement(true) || !repairNativeState(gl))
       throw new Error("Native graphics state is not ready for device presentation");
     try {
       const result = work();
@@ -1101,14 +1101,8 @@ export class WasmPosixKernel {
     const muxer = this.glMuxerFor(gl);
     try {
       muxer.captureCurrentErrors();
-      // WHY: cleanup/repair may change selectors independently of this owner.
-      // Invalidate before either can mutate, including cleanup registered with
-      // another guard for this same physical context. The idle path has no
-      // such mutation and need not replay the guest's entire texture state.
-      if (this.gl.hasExecutionRetirements(gl) && !muxer.prepareRetirement())
-        throw new Error("Native graphics retirement is not ready for device presentation");
-      if (!this.gl.retryExecutionRetirements(gl))
-        throw new Error("Native graphics retirement remains pending");
+      // WHY: pending native cleanup may change selectors independently of
+      // this owner; invalidate before it can mutate.
       if (hasNativeRepair(gl)) muxer.invalidateCurrent();
       if (!repairNativeState(gl)) throw new Error("Native graphics restoration remains pending");
       const result = work();
@@ -1349,7 +1343,8 @@ export class WasmPosixKernel {
   /** Turn an error caught during a committed DRI/GL release into the fatal
    * host fault described at runDriCleanup. */
   private driCleanupFailed(error: unknown, pid: number, operation: string, object: string): never {
-    if (isKernelExportFailure(error) || error instanceof GbmMappingFault || error instanceof DriCleanupFault) throw error;
+    if (isKernelExportFailure(error) || error instanceof GbmMappingFault || error instanceof DriCleanupFault
+      || error instanceof NativeGlFault) throw error;
     const fault = new DriCleanupFault(operation, pid, object, String((error as Error | null)?.message ?? error), error);
     try { this.callbacks.onHostFault?.(fault); }
     catch (callbackError) { if (isKernelExportFailure(callbackError)) throw callbackError; }
@@ -1605,6 +1600,9 @@ export class WasmPosixKernel {
     this.config = config;
     this.io = io;
     this.callbacks = callbacks ?? {};
+    // A refused native GL deletion or restoration (native-recovery.ts) is a
+    // fatal host fault. This kernel owns the renderers of its worker realm.
+    setNativeGlFaultReporter(fault => this.callbacks.onHostFault?.(fault));
     if (arguments[3] === wasmPosixKernelTestCapability) {
       const testRuntime = arguments[4] as
         | WasmPosixKernelTestHarnessOptions
@@ -3033,8 +3031,7 @@ export class WasmPosixKernel {
             if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
               // Losses of this renderer before now belong to earlier owners.
               observeRendererLoss(b);
-              if (!this.gl.retryExecutionRetirements(b.gl)) failure = -5;
-              else if (!source) return 0;
+              if (!source) return 0;
               else if (b.gl === source.gl) {
                 if (this.gl.shareObjects(pid,b.sessionId,source.sessionId)) return 0;
                 failure = -22;
@@ -3079,7 +3076,6 @@ export class WasmPosixKernel {
               if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
             }
             const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
-              if (!this.gl.retryExecutionRetirements(gl)) throw new Error("Execution retirement remains pending");
               this.gl_muxers.get(gl)?.captureCurrentErrors();
             });
             const prepared = result.prepared;
@@ -3213,7 +3209,7 @@ export class WasmPosixKernel {
               if (b) {
                 const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
                 const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
-                const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!));
+                const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer);
                 releaseSurfaceResources(b); b.currentDrawable = null;
                 if (drawableOnly && (oldDraw !== b.shadow.fbo || oldRead !== b.shadow.readFbo)) muxer!.invalidateFramebuffers(b);
               }
@@ -3237,7 +3233,7 @@ export class WasmPosixKernel {
           try {
             const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
             const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
-            const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,this.gl.hasExecutionRetirements(b.gl!),drawable);
+            const drawableOnly = !!muxer && prepareDrawableTransition(b,muxer,drawable);
             if (!applyCurrentDrawable(b, drawable, surfaces ?? undefined)) {
               muxer?.invalidateCurrent();
               return -12;

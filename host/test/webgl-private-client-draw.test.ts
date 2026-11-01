@@ -1,7 +1,7 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "../src/webgl/private-client-draw.js";
-import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
+import { hasNativeRepair, NativeGlFault, repairNativeState, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
 
@@ -265,15 +265,20 @@ for (const method of ["createBuffer","bindBuffer","bufferData","bufferSubData","
     });
   }
 }
-it("keeps private backing until a failed inverse recovers and never replays the accepted draw",() => {
-  const {b,gl,restored} = fixture(); gl.blockAfterDraw = true;
-  expect(drawPrivateClientArrays(b,payload())).toEqual({attempted:true,accepted:true,restored:false});
-  expect(gl.draws).toHaveLength(1); expect(gl.alive.size).toBe(3); expect(hasNativeRepair(b.gl!)).toBe(true);
-  const created = gl.counts.get("createBuffer");
-  expect(drawPrivateClientArrays(b,payload())).toEqual({attempted:false,accepted:false,restored:false});
-  expect(gl.counts.get("createBuffer")).toBe(created); expect(gl.draws).toHaveLength(1);
-  gl.blockRestore = false; expect(repairNativeState(b.gl!)).toBe(true);
-  expect(gl.draws).toHaveLength(1); restored();
+afterEach(() => setNativeGlFaultReporter(null));
+function collectFaults(): Error[] {
+  const reported: Error[] = [];
+  setNativeGlFaultReporter(fault => reported.push(fault));
+  return reported;
+}
+it("makes a refused restoration after an accepted draw a fatal fault without replaying the draw",() => {
+  const {b,gl} = fixture(), reported = collectFaults(); gl.blockAfterDraw = true;
+  // drawPrivateClientArrays' catch turns the thrown fault into a result; the
+  // fault is reported first, which is what latches the fatal shutdown.
+  try { drawPrivateClientArrays(b,payload()); } catch (error) { expect(error).toBe(reported[0]); }
+  expect(reported).toHaveLength(1); expect(reported[0]).toBeInstanceOf(NativeGlFault);
+  expect(reported[0].message).toMatch(/live renderer refused to restore native state after a rejected change/);
+  expect(gl.draws).toHaveLength(1);
 });
 it("deletes nothing per draw, so no buffer cleanup can be left pending",() => {
   const {b,gl,restored} = fixture(); gl.fault = {method:"deleteBuffer",nth:1};

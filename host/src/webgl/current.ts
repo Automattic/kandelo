@@ -40,10 +40,10 @@ export type GlDrawableSurfaces = { draw: GlSurfaceResources; read: GlSurfaceReso
  * first-current also changes viewport/scissor, and surfaceless allocation or
  * pending cleanup can mutate beyond the two framebuffer selectors. */
 export function prepareDrawableTransition(b: GlBinding, muxer: GlMuxer,
-  executionRetirementPending: boolean, drawable?: GlDrawableBinding): boolean {
+  drawable?: GlDrawableBinding): boolean {
   const collect = b.drawSurface?.ownerAlive === false || b.readSurface?.ownerAlive === false;
   const allocation = drawable?.drawSurfaceId === 0 && !b.undefinedDefaultFbo;
-  const cleanup = executionRetirementPending || hasNativeRepair(muxer.context);
+  const cleanup = hasNativeRepair(muxer.context);
   if (b.hasBeenCurrent && !collect && !allocation && !cleanup &&
       !b.clientArrayEndRequested && !muxer.context.isContextLost?.()) {
     // No native work/callout occurs in the reviewed logical commit. Mark

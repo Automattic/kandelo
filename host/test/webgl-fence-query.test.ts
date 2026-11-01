@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE, QOP_FLUSH } from "../src/webgl/ops.js";
 
 function renderer() {
@@ -27,9 +28,9 @@ function words(value: Uint8Array): number[] {
   const data = new DataView(value.buffer, value.byteOffset, value.byteLength);
   return Array.from({ length: value.byteLength / 4 }, (_, index) => data.getUint32(index * 4, true));
 }
-function direct(width: 4 | 8) {
+function direct(width: 4 | 8, onHostFault?: (fault: Error) => void) {
   const native = renderer(), memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
-  const kernel = createWasmPosixKernelTestHarness({ io: {}, memory, pointerWidth: width,
+  const kernel = createWasmPosixKernelTestHarness({ io: {}, memory, pointerWidth: width, callbacks: { onHostFault },
     instance: createKernelScratchTestInstance(width, memory, () => ({}), () => width === 4 ? 4096 : 4096n),
   });
   kernel.gl.bind({ pid: 7, sessionId: 11, cmdbufAddr: 4096, cmdbufLen: 4096 });
@@ -109,18 +110,24 @@ it.each([4, 8] as const)("server flush is acknowledged and preflights empty payl
   expect(value.native.flushes()).toBe(1);
   value.kernel.releaseProcessViews(7);
 });
-it("rejects malformed fence requests before replaying pending cleanup, then preserves selected flags on valid admission", () => {
+it("reports a fence deletion the live renderer refuses as a fatal host fault", () => {
+  const faults: Error[] = [];
+  try {
+    const value = direct(4, fault => faults.push(fault)); value.query(QOP_CREATE_FENCE, 7);
+    value.native.gl.deleteSync = () => { value.native.errors.push(0x502); };
+    // host_gl_query turns the thrown fault into EIO; the kernel's host-fault
+    // callback has already latched it.
+    expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(-5);
+    expect(faults).toHaveLength(1);
+    expect(faults[0]).toBeInstanceOf(NativeGlFault);
+    expect(faults[0].message).toMatch(/live renderer refused deleteSync of an object the host retired/);
+    expect(value.native.deleted).toHaveLength(0);
+  } finally { setNativeGlFaultReporter(null); }
+});
+it("preserves selected flags on valid fence admission", () => {
   const value = direct(4); value.query(QOP_CREATE_FENCE, 7);
-  const destroy = value.native.gl.deleteSync;
-  value.native.gl.deleteSync = () => { value.native.errors.push(0x502); };
-  expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(16);
-  expect(value.native.deleted).toHaveLength(0);
-  value.native.gl.deleteSync = destroy;
-  expect(value.query(QOP_CREATE_FENCE, 8, 0, 16).rc).toBe(-22);
-  expect(value.native.deleted).toHaveLength(0);
   value.native.errors.push(0x500);
   expect(value.query(QOP_CREATE_FENCE, 8).rc).toBe(16);
-  expect(value.native.deleted).toHaveLength(1);
   expect(value.binding.errors).toEqual([0x500]);
   value.kernel.releaseProcessViews(7);
   expect(value.native.deleted).toHaveLength(2);

@@ -17,6 +17,7 @@
 import type { GlBinding } from "./registry.js";
 import type { GlMuxer } from "./muxer.js";
 import type { SubmitQueue } from "./submit-queue.js";
+import { NativeGlFault } from "./native-recovery.js";
 
 // A callback may enqueue work while dispatching. The later frame cannot run
 // on that same physical renderer until the active frame's tail has finished.
@@ -54,7 +55,9 @@ export function drainSubmitQueue(
         if (mux) mux.switchTo(entry.binding);
         return dispatch(entry.binding,0,frame.byteLength);
       });
-    } catch {
+    } catch (error) {
+      // A native cleanup fault is fatal, never an I/O result.
+      if (error instanceof NativeGlFault) throw error;
       // Renderer failure is an I/O result, not an exception into kernel Wasm.
       return -5;
     } finally {

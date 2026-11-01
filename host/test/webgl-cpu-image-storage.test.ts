@@ -6,6 +6,7 @@ import {registerImageSource} from "../src/webgl/image-storage";
 import {foreignTextureGl} from "./support/foreign-texture-gl";
 import {halfBits} from "../src/webgl/cpu-image-codec";
 import {noteStorageWrite, setImageWriteAudit} from "../src/webgl/image-writes";
+import {NativeGlFault} from "../src/webgl/native-recovery";
 
 // Tests model accepted native rendering into a mirror by writing its pixels
 // and counting the write, as every renderer write path does (image-writes.ts).
@@ -110,11 +111,12 @@ it("retries failed publication without rereading native pixels or losing unrelat
   expect([...f.store.pixelView(41)!].slice(4,8)).toEqual([100,101,102,103]);
 });
 
-it("refuses retiring storage and completes native cleanup after a rejected deletion",()=>{
-  const f=fixture(), image=f.images.acquire(f.b,41,f.store,f.layout)!;
+it("faults when the live renderer refuses retiring storage's native deletion",()=>{
+  const f=fixture();f.images.acquire(f.b,41,f.store,f.layout)!;
   expect(f.prepare()).toBe(true);f.control.failDelete=true;
-  expect(f.images.retire(41)).toBe(false);expect(f.images.acquire(f.b,41,f.store,f.layout)).toBeNull();
-  f.control.failDelete=false;expect(f.images.retire(41)).toBe(true);expect(f.alive.has(image.tex)).toBe(false);
+  let fault: unknown;try{f.images.retire(41);}catch(error){fault=error;}
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect((fault as Error).message).toMatch(/live renderer refused deleteTexture/);
 });
 
 it("distinguishes image-layout identities within one retained BO",()=>{

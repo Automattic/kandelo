@@ -64,6 +64,7 @@ function fakeCanvas(width = 300, height = 150): {
     framebufferRenderbuffer: () => {},
     deleteTexture: () => {},
     deleteFramebuffer: () => {},
+    activeTexture: () => {},
     bindTexture: () => {},
     bindFramebuffer: () => {},
     texImage2D: () => {},

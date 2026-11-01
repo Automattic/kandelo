@@ -1,8 +1,9 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 
 const ARRAY = 0x8892, ELEMENT = 0x8893;
 class BufferGl {
@@ -54,6 +55,24 @@ class BufferGl {
   }
   bufferSubData(target: number, offset: number, bytes: Uint8Array) { this.contents.get(this.bindings.get(target)!)!.set(bytes, offset); }
   getBufferSubData(target: number, offset: number, out: Uint8Array) { out.set(this.contents.get(this.bindings.get(target)!)!.subarray(offset, offset + out.length)); }
+}
+/** Decision D-29: a host-owned deletion or inverse restoration that a live
+ * renderer refuses is a fatal NativeGlFault. The reporter latches it before
+ * it is thrown, so a caller's catch cannot hide it: query replies built by
+ * checkedQueryReply catch the exception into a rejected reply, while submit
+ * batches and direct calls let it propagate. */
+const REFUSED_RESTORE = "the live renderer refused to restore native state after a rejected change";
+const REFUSED_DELETE_BUFFER = "the live renderer refused deleteBuffer of an object the host retired";
+afterEach(() => setNativeGlFaultReporter(null));
+function expectNativeGlFault(run: () => unknown, message: string): void {
+  const faults: Error[] = [];
+  let thrown: unknown;
+  setNativeGlFaultReporter(fault => { faults.push(fault); });
+  try { run(); } catch (error) { thrown = error; }
+  finally { setNativeGlFaultReporter(null); }
+  expect(faults.length).toBeGreaterThan(0);
+  for (const fault of faults) { expect(fault).toBeInstanceOf(NativeGlFault); expect(fault.message).toBe(message); }
+  if (thrown !== undefined) expect(faults).toContain(thrown);
 }
 function setup() {
   const registry = new GlContextRegistry(); registry.bind({ pid: 1, cmdbufAddr: 0, cmdbufLen: 64 });
@@ -226,32 +245,14 @@ for (const fault of ["error","throw"] as const) it(`restores deletion after an A
   expect(remove()).toEqual([0,1]); expect(gl.alive.size).toBe(0);
 });
 
-for (const converted of [false,true]) it(`commits logical deletion while failed physical cleanup stays owned and fences later work (converted: ${converted})`, () => {
-  const {b,gl,remove,old,store} = deletionSetup(converted);
-  const destroy = gl.deleteBuffer.bind(gl), deleted: object[] = [];
-  let block = true;
-  gl.deleteBuffer = object => {
-    if (block) {gl.errors.push(0x505);return;}
-    deleted.push(object);destroy(object);
-  };
+for (const converted of [false,true]) it(`faults when the live renderer refuses physical cleanup of a deleted buffer (converted: ${converted})`, () => {
+  const {b,gl,remove} = deletionSetup(converted);
+  gl.deleteBuffer = () => { gl.errors.push(0x505); };
   const count = gl.alive.size;
-  expect(remove()).toEqual([0,1]);
-  expect(b.buffers.has(17)).toBe(false); expect(b.retiredBuffers.get(old)).toBe(17);
-  expect(b.bufferStores.get(old)).toBe(store);
-  expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === null && !a.view)).toBe(true);
+  expectNativeGlFault(() => remove(), REFUSED_DELETE_BUFFER);
+  expect(b.buffers.has(17)).toBe(false);
   expect([...gl.attributes.values()].every(a => a.buffer === null)).toBe(true);
-  expect(gl.bindings.get(ARRAY)).toBeNull(); expect(gl.bindings.get(ELEMENT)).toBeNull();
   expect(gl.alive.size).toBe(count);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  // Physical receipts retry independently of the already committed name change.
-  // A later admitted delete query collects the completed logical tombstone.
-  expect(remove()).toEqual([0,1]);
-  expect(gl.alive.size).toBe(0); expect(b.retiredBuffers.size).toBe(0);
-  expect(new Set(deleted).size).toBe(count); expect(deleted.length).toBe(count);
 });
 
 it("prepares all deletion metadata before native attribute changes", () => {
@@ -293,78 +294,49 @@ it("validates deletion spans and accepts absent or zero names without mutation",
   expect(gl.alive.size).toBe(0); expect(gl.bindings.size).toBe(0); expect(b.errors).toEqual([]);
 });
 
-for (const converted of [false,true]) it(`retains failed attribute restoration and fences dependent work (converted: ${converted})`, () => {
-  const {b,gl,remove,preserved,old} = deletionSetup(converted);
-  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false, block = true;
+for (const converted of [false,true]) it(`faults when the live renderer refuses attribute restoration after a rejected deletion (converted: ${converted})`, () => {
+  const {b,gl,remove,old} = deletionSetup(converted);
+  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false;
   gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
     if (!rejected && args[0] === 1) { rejected = true; gl.errors.push(0x502); return; }
-    if (rejected && block) { gl.errors.push(0x502); return; }
+    if (rejected) { gl.errors.push(0x502); return; }
     pointer(...args);
   };
-  expect(remove()).toEqual([1,0]);
+  expectNativeGlFault(() => remove(), REFUSED_RESTORE);
   expect(b.buffers.get(17)).toBe(old);
   expect([...b.vertexArrays.get(0)!.attributes.values()].every(a => a.buffer === old)).toBe(true);
-  // The first pointer was cleared before the second failed; it stays native
-  // null while the journal fences work, rather than retaining a scratch BO.
+  // The first pointer was cleared before the second failed; its refused
+  // restoration never retained a scratch BO.
   expect(gl.attributes.get(0)!.buffer).toBeNull();
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  preserved();
-  expect(remove()).toEqual([0,1]); expect(gl.alive.size).toBe(0);
 });
 
-for (const target of [ARRAY,ELEMENT]) it(`retains failed buffer binding restoration and candidate cleanup (target ${target})`, () => {
+for (const target of [ARRAY,ELEMENT]) it(`faults when the live renderer refuses buffer binding restoration (target ${target})`, () => {
   const {b,gl,query} = setup(); query(target,17); const old = b.buffers.get(17)!;
-  const bind = gl.bindBuffer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
-  let rejected = false, block = true, blockCleanup = true;
+  const bind = gl.bindBuffer.bind(gl);
+  let rejected = false;
   gl.bindBuffer = (selected,object) => {
     if (!rejected && selected === target && object !== old) { rejected = true; gl.errors.push(0x502); return; }
-    if (rejected && block && selected === target && object === old) { gl.errors.push(0x502); return; }
+    if (rejected && selected === target && object === old) { gl.errors.push(0x502); return; }
     bind(selected,object);
   };
-  gl.deleteBuffer = object => { if (blockCleanup && object !== old) { gl.errors.push(0x505); return; } destroy(object); };
-  expect(query(target,18)).toEqual([1,0]);
+  expectNativeGlFault(() => query(target,18), REFUSED_RESTORE);
   expect(b.buffers.has(18)).toBe(false); expect(b.buffers.get(17)).toBe(old);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect(gl.bindings.get(target)).toBe(old);
-  expect(gl.alive.size).toBe(2);
-  blockCleanup = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(gl.alive.size).toBe(1); expect(gl.bindings.get(target)).toBe(old);
-  expect(query(target,18)).toEqual([0,1]);
 });
 
-it("retains nested copy-selector restoration before the outer buffer binding can commit", () => {
+it("faults when the live renderer refuses nested copy-selector restoration before the outer buffer binding commits", () => {
   const {b,gl,query} = setup(); query(ARRAY,17); query(ELEMENT,18);
   const source = b.buffers.get(17)!, previous = b.buffers.get(18)!;
   b.bufferStores.get(source)!.size = 4; gl.contents.set(source,new Uint8Array([1,2,3,4]));
   const read = gl.createBuffer(), write = gl.createBuffer();
   gl.bindBuffer(0x8f36,read); gl.bindBuffer(0x8f37,write);
-  const bind = gl.bindBuffer.bind(gl); let block = true;
+  const bind = gl.bindBuffer.bind(gl);
   gl.bindBuffer = (target,object) => {
-    if (block && target === 0x8f37 && object === write) { gl.errors.push(0x502); return; }
+    if (target === 0x8f37 && object === write) { gl.errors.push(0x502); return; }
     bind(target,object);
   };
-  expect(query(ELEMENT,17)).toEqual([1,0]);
+  expectNativeGlFault(() => query(ELEMENT,17), REFUSED_RESTORE);
   expect(b.bufferStores.get(source)!.views.has(ELEMENT)).toBe(false);
   expect(b.vertexArrays.get(0)!.element).toBe(previous);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(gl.bindings.get(ELEMENT)).toBe(previous);
-  expect(gl.bindings.get(0x8f36)).toBe(read); expect(gl.bindings.get(0x8f37)).toBe(write);
-  expect(query(ELEMENT,17)).toEqual([0,1]);
-  const view = b.bufferStores.get(source)!.views.get(ELEMENT)!;
-  expect(gl.contents.get(view.native)).toEqual(new Uint8Array([1,2,3,4]));
 });
 
 it("retires an allocated buffer candidate if VAO bookkeeping throws before publication", () => {
@@ -419,81 +391,63 @@ it("keeps a restore request when ticket reservation fails and retries it on admi
   expect(b.savedClientArrayBuffer).toBeUndefined();
 });
 
-for (const converted of [false,true]) it(`restores a partially applied pointer and ARRAY selection before accepting later work (converted: ${converted})`, () => {
+for (const converted of [false,true]) it(`faults when the live renderer refuses to restore a partially applied pointer (converted: ${converted})`, () => {
   const {b,gl,submit,object} = pointerSetup();
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,0]]])).toBe(0);
   const accepted = b.vertexArrays.get(0)!.attributes.get(0)!;
   const native = {...gl.attributes.get(0)!}, count = gl.alive.size;
-  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false, block = true;
+  const pointer = gl.vertexAttribPointer.bind(gl); let rejected = false;
   gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
     if (!rejected && args[1] === 3) { pointer(...args); rejected = true; gl.errors.push(0x502); return; }
-    if (rejected && block && args[1] === 2) { gl.errors.push(0x502); return; }
+    if (rejected && args[1] === 2) { gl.errors.push(0x502); return; }
     pointer(...args);
   };
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,converted?0x140c:0x1406,0,0,0]]])).toBe(-5);
+  expectNativeGlFault(() => submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,converted?0x140c:0x1406,0,0,0]]]), REFUSED_RESTORE);
   expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(accepted);
-  expect(gl.attributes.get(0)!.size).toBe(3);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(gl.attributes.get(0)).toEqual(native); expect(gl.bindings.get(ARRAY)).toBe(object);
-  expect(gl.alive.size).toBe(count); expect(b.bufferStores.get(object)!.converted.size).toBe(0);
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,converted?0x140c:0x1406,0,0,0]]])).toBe(0);
-  expect(b.vertexArrays.get(0)!.attributes.get(0)!.size).toBe(3);
+  expect(gl.attributes.get(0)).not.toEqual(native); expect(gl.attributes.get(0)!.size).toBe(3);
+  void count;
 });
 
-it("restores an initially null attribute without allocating scratch storage", () => {
+for (const refuseRestore of [false,true]) it(`${refuseRestore ? "faults when the live renderer refuses to restore" : "restores"} an initially null attribute without allocating scratch storage`, () => {
   const {b,gl,submit,object} = pointerSetup();
   const pointer = gl.vertexAttribPointer.bind(gl);
-  let rejected = false, blockRestore = true;
+  let rejected = false;
   gl.failCreate = true;
   gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
-    if (rejected && blockRestore && args[1] === 4) { gl.errors.push(0x502); return; }
+    if (rejected && refuseRestore && args[1] === 4) { gl.errors.push(0x502); return; }
     pointer(...args);
     if (!rejected) { rejected = true; gl.errors.push(0x502); }
   };
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(-5);
+  const submitted = () => submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]]);
+  if (refuseRestore) expectNativeGlFault(submitted, REFUSED_RESTORE);
+  else expect(submitted()).toBe(0);
   expect(b.vertexArrays.get(0)!.attributes.has(0)).toBe(false);
-  expect(gl.attributes.get(0)).toMatchObject({buffer:object,size:2});
   expect(gl.alive.size).toBe(1);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  blockRestore = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  if (refuseRestore) { expect(gl.attributes.get(0)).toMatchObject({buffer:object,size:2}); return; }
+  expect(b.errors).toContain(0x502);
   expect(gl.attributes.get(0)).toEqual({buffer:null,size:4,type:0x1406,normalized:false,stride:0,offset:0});
   expect(gl.bindings.get(ARRAY)).toBe(object);
-  expect(gl.alive.size).toBe(1);
 });
 
-it("does not restore a null pointer until its inverse ARRAY null bind accepts", () => {
+it("faults without restoring a null pointer when its inverse ARRAY null bind is refused", () => {
   const {b,gl,submit,object} = pointerSetup();
   const pointer = gl.vertexAttribPointer.bind(gl), bind = gl.bindBuffer.bind(gl);
-  let rejected = false, block = true, pointerCalls = 0;
+  let rejected = false, pointerCalls = 0;
   gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
     pointerCalls++; pointer(...args);
     if (!rejected) {rejected = true; gl.errors.push(0x502);}
   };
   gl.bindBuffer = (target,value) => {
-    if (rejected && block && target === ARRAY && value === null) {gl.errors.push(0x502);return;}
+    if (rejected && target === ARRAY && value === null) {gl.errors.push(0x502);return;}
     bind(target,value);
   };
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(-5);
+  expectNativeGlFault(() => submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]]), REFUSED_RESTORE);
   expect(pointerCalls).toBe(1);
   expect(b.vertexArrays.get(0)!.attributes.has(0)).toBe(false);
   expect(gl.attributes.get(0)).toMatchObject({buffer:object,size:2});
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect(pointerCalls).toBe(1); expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(pointerCalls).toBe(2); expect(gl.attributes.get(0)!.buffer).toBeNull();
-  expect(gl.bindings.get(ARRAY)).toBe(object); expect(gl.alive.size).toBe(1);
 });
 
-it("restores a deleted logical-null offset after a failed replacement while preserving another ARRAY binding", () => {
+for (const refuseRestore of [false,true]) it(`${refuseRestore ? "faults when the live renderer refuses to restore" : "restores"} a deleted logical-null offset after a failed replacement while preserving another ARRAY binding`, () => {
   const {b,gl,query,submit} = pointerSetup();
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,8,4]]])).toBe(0);
   const deleted = new Uint8Array(12);
@@ -505,19 +459,21 @@ it("restores a deleted logical-null offset after a failed replacement while pres
   expect(query(ARRAY,18)).toEqual([0,1]);
   const replacement = b.buffers.get(18)!;
   const pointer = gl.vertexAttribPointer.bind(gl);
-  let rejected = false, blockRestore = true;
+  let rejected = false;
   gl.vertexAttribPointer = (...args: Parameters<typeof pointer>) => {
-    if (rejected && blockRestore && gl.bindings.get(ARRAY) === null) {gl.errors.push(0x502);return;}
+    if (rejected && refuseRestore && gl.bindings.get(ARRAY) === null) {gl.errors.push(0x502);return;}
     pointer(...args);
     if (!rejected) {rejected = true;gl.errors.push(0x502);}
   };
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,0,12,0]]])).toBe(-5);
-  expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(logicalNull);
-  expect(gl.attributes.get(0)).toMatchObject({buffer:replacement,size:3});
+  const submitted = () => submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,0,12,0]]]);
+  if (refuseRestore) {
+    expectNativeGlFault(submitted, REFUSED_RESTORE);
+    expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(logicalNull);
+    expect(gl.attributes.get(0)).toMatchObject({buffer:replacement,size:3});
+    return;
+  }
+  expect(submitted()).toBe(0);
   const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  blockRestore = false;
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
   expect(new DataView(out.buffer).getUint32(0,true)).toBe(0x502);
   expect(b.vertexArrays.get(0)!.attributes.get(0)).toBe(logicalNull);
@@ -599,42 +555,33 @@ it("rejects invalid vertex formats and native-limit indices before allocation or
   }
 });
 
-for (const type of [0x1401,0x1403]) it(`retains promoted-index restoration without replaying the draw (type ${type})`, () => {
+for (const type of [0x1401,0x1403]) it(`faults when the live renderer refuses promoted-index restoration, without replaying the draw (type ${type})`, () => {
   const {b,gl,query} = setup(); query(ELEMENT,17); const object = b.buffers.get(17)!;
   const bytes = type === 0x1401 ? new Uint8Array([255,1,2]) : new Uint8Array(new Uint16Array([65535,1,2]).buffer);
   b.bufferStores.get(object)!.size = bytes.length; gl.contents.set(object,bytes.slice());
-  let draws = 0, block = true, blockCleanup = true;
+  let draws = 0;
   Object.assign(gl,{drawElements(){draws++;}});
-  const bind = gl.bindBuffer.bind(gl), destroy = gl.deleteBuffer.bind(gl);
-  gl.bindBuffer = (target,value) => { if (draws && block && target===ELEMENT && value===object) {gl.errors.push(0x502);return;}bind(target,value); };
-  gl.deleteBuffer = value => {if(blockCleanup && value!==object){gl.errors.push(0x505);return;}destroy(value);};
+  const bind = gl.bindBuffer.bind(gl);
+  gl.bindBuffer = (target,value) => { if (draws && target===ELEMENT && value===object) {gl.errors.push(0x502);return;}bind(target,value); };
   const data = new Uint8Array(20), view = new DataView(data.buffer);
   view.setUint16(0,O.OP_DRAW_ELEMENTS,true);view.setUint16(2,16,true);
   [0,3,type,0].forEach((word,i)=>view.setUint32(4+i*4,word,true)); b.cmdbufView=data;
-  expect(decodeAndDispatch(b,0,20)).toBe(-5); expect(draws).toBe(1);
+  expectNativeGlFault(() => decodeAndDispatch(b,0,20), REFUSED_RESTORE);
+  expect(draws).toBe(1);
   expect(b.vertexArrays.get(0)!.element).toBe(object); expect(gl.bindings.get(ELEMENT)).not.toBe(object);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect([...out]).toEqual([165,165,165,165]);
-  block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(gl.bindings.get(ELEMENT)).toBe(object); expect(draws).toBe(1);
   // The widened index form lives with the buffer object: nothing is deleted
-  // per draw, so no cleanup can be left pending.
-  expect(blockCleanup).toBe(true);
-  expect(draws).toBe(1); expect(gl.alive.size).toBe(2); expect(gl.contents.get(object)).toEqual(bytes);
+  // per draw.
+  expect(gl.alive.size).toBe(2); expect(gl.contents.get(object)).toEqual(bytes);
 });
 
-it("recreates a converted cache view after pending cleanup completed on a query", () => {
+for (const refuseCleanup of [false,true]) it(`${refuseCleanup ? "faults when the live renderer refuses to delete a superseded converted cache view" : "recreates a converted cache view after its superseded view is deleted"}`, () => {
   const {b,gl,submit,object} = pointerSetup();
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
   const old = b.vertexArrays.get(0)!.attributes.get(0)!.view!, destroy = gl.deleteBuffer.bind(gl);
-  let block = true;
-  gl.deleteBuffer = value => {if(value===old && block){gl.errors.push(0x505);return;}destroy(value);};
-  expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(0);
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  block = false; expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
+  gl.deleteBuffer = value => {if(value===old && refuseCleanup){gl.errors.push(0x505);return;}destroy(value);};
+  const superseded = () => submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]]);
+  if (refuseCleanup) { expectNativeGlFault(superseded, REFUSED_DELETE_BUFFER); expect(gl.alive.has(old)).toBe(true); return; }
+  expect(superseded()).toBe(0);
   expect(gl.alive.has(old)).toBe(false);
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
   const fresh = b.vertexArrays.get(0)!.attributes.get(0)!.view!;
@@ -647,56 +594,37 @@ it("recreates a converted cache view after pending cleanup completed on a query"
   expect(b.bufferStores.get(object)!.converted.size).toBe(1);
 });
 
-it("shares converted cleanup with final buffer retirement and never repeats accepted deletion", () => {
+it("deletes a superseded converted view once and the source buffer once at teardown", () => {
   const {b,gl,submit,object,registry} = pointerSetup();
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x140c,0,0,0]]])).toBe(0);
   const converted = b.vertexArrays.get(0)!.attributes.get(0)!.view!, destroy = gl.deleteBuffer.bind(gl);
-  const deleted: object[] = []; let block = true;
-  gl.deleteBuffer = value => {if(value===converted && block){gl.errors.push(0x505);return;}deleted.push(value);destroy(value);};
+  const deleted: object[] = [];
+  gl.deleteBuffer = value => {deleted.push(value);destroy(value);};
   expect(submit([[O.OP_VERTEX_ATTRIB_POINTER,[0,2,0x1406,0,0,0]]])).toBe(0);
-  // The source namespace is still alive. Teardown, unlike an admitted GL
-  // command, must retain final cleanup while the converted child is pending.
+  expect(deleted).toEqual([converted]);
   registry.destroyContext(1);
   expect(b.gl).toBeNull();
-  expect(deleted.filter(value=>value===object)).toHaveLength(1);
-  registry.bind({pid:2,cmdbufAddr:0,cmdbufLen:0});
-  const next = registry.get(2)!; next.gl = gl as unknown as WebGL2RenderingContext; next.contextId = 2;
-  block = false;
-  const out = new Uint8Array(4);
-  expect(runGlQuery(next,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect([...out]).toEqual([0,0,0,0]);
   expect(deleted.filter(value=>value===object)).toHaveLength(1);
   expect(deleted.filter(value=>value===converted)).toHaveLength(1);
   expect(gl.alive.size).toBe(0); expect(b.bufferStores.has(object)).toBe(false);
 });
 
-it("completes a rejected zero-binding capture restore on the next query", () => {
+it("faults when the live renderer refuses a zero-binding capture restore", () => {
   const {b,gl,submit,query} = pointerSetup(); query(ARRAY,0);
   expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
-  const bind = gl.bindBuffer.bind(gl); let block = true;
-  gl.bindBuffer = (target,value) => { if(block && target===ARRAY && value===null){gl.errors.push(0x502);return;}bind(target,value); };
-  expect(submit([[O.OP_END_CLIENT_ARRAY,[]]])).toBe(-5);
+  const bind = gl.bindBuffer.bind(gl);
+  gl.bindBuffer = (target,value) => { if(target===ARRAY && value===null){gl.errors.push(0x502);return;}bind(target,value); };
+  expectNativeGlFault(() => submit([[O.OP_END_CLIENT_ARRAY,[]]]), REFUSED_RESTORE);
   expect(b.savedClientArrayBuffer).toBeNull(); expect(b.shadow.arrayBuffer).not.toBeNull();
-  const out = new Uint8Array(4).fill(0xa5);
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  block = false; expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(b.savedClientArrayBuffer).toBeUndefined(); expect(b.shadow.arrayBuffer).toBeNull();
-  expect(gl.bindings.get(ARRAY)).toBeNull(); expect(b.clientArrayRestore).toBeUndefined();
 });
 
-it("retires a pending capture without publishing it into another context", () => {
+it("faults when the live renderer refuses a capture restore without publishing it into another context", () => {
   const {registry,b,gl,submit,object} = pointerSetup(); b.contextId = 1;
   registry.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:0}); const peer = registry.get(1,2)!;
   peer.gl = b.gl; peer.contextId = 2; expect(registry.shareObjects(1,2,0)).toBe(true);
   expect(submit([[O.OP_BEGIN_CLIENT_ARRAY,[]],[O.OP_BIND_BUFFER,[ARRAY,18]]])).toBe(0);
   const bind = gl.bindBuffer.bind(gl);
   gl.bindBuffer = (target,value) => {if(target===ARRAY && value===object){gl.errors.push(0x502);return;}bind(target,value);};
-  expect(submit([[O.OP_END_CLIENT_ARRAY,[]]])).toBe(-5);
-  registry.destroyContext(1,0);
-  expect(b.savedClientArrayBuffer).toBeUndefined(); expect(b.clientArrayRestore).toBeUndefined();
-  expect(b.clientArrayEndRequested).toBe(false); expect(b.gl).toBeNull();
-  const out = new Uint8Array(4);
-  expect(runGlQuery(peer,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect([...out]).toEqual([0,0,0,0]); expect(peer.shadow.arrayBuffer).toBeNull();
-  registry.destroyContext(1,2); expect(gl.alive.size).toBe(0);
+  expectNativeGlFault(() => submit([[O.OP_END_CLIENT_ARRAY,[]]]), REFUSED_RESTORE);
+  expect(peer.shadow.arrayBuffer).toBeNull();
 });

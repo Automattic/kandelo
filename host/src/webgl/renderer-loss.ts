@@ -43,6 +43,14 @@ function lossCounter(gl: WebGL2RenderingContext): LossCounter {
   return created;
 }
 
+/** How many losses this renderer has reported since the host first asked.
+ * Native objects created before a later loss belong to the lost generation:
+ * they are gone even after the context object is restored, so cleanup must
+ * not treat a refused deletion of one as a live-renderer fault. */
+export function rendererLossCount(gl: WebGL2RenderingContext): number {
+  return lossCounter(gl).count;
+}
+
 /** Start observing a binding's renderer: losses before this call belong to
  * earlier owners of the same (since restored) context object. */
 export function observeRendererLoss(b: { gl: WebGL2RenderingContext | null }): void {

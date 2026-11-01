@@ -1,8 +1,8 @@
-import { expect,it } from "vitest";
+import { afterEach,expect,it } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { runGlQuery } from "../src/webgl/query.js";
-import { hasNativeRepair,repairNativeState } from "../src/webgl/native-recovery.js";
+import { NativeGlFault,setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import * as O from "../src/webgl/ops.js";
 
 const OLD=[1,2,3,4] as [number,number,number,number];
@@ -59,17 +59,19 @@ it("bounds repeated invalid-index batches and still executes a later valid comma
   expect(f.b.errors).toEqual([0x501]);
 });
 
-it("keeps an uncertain new constant fenced through owner retirement until its scalar inverse accepts",()=>{
-  const f=fixture(),old=f.b.shadow.vertexAttribValues;f.b.contextId=3;f.errors.push(0x500);
+afterEach(()=>setNativeGlFaultReporter(null));
+
+it("makes a refused scalar restoration of an uncertain new constant a fatal fault",()=>{
+  const f=fixture(),old=f.b.shadow.vertexAttribValues,reported:Error[]=[];f.b.contextId=3;f.errors.push(0x500);
+  setNativeGlFaultReporter(fault=>reported.push(fault));
   f.fault("after-throw");f.restore(true,7);
-  expect(f.submit([7])).toBe(-5);expect(hasNativeRepair(f.gl)).toBe(true);
+  let thrown:unknown;try{f.submit([7]);}catch(error){thrown=error;}
+  expect(thrown).toBeInstanceOf(NativeGlFault);
+  expect((thrown as Error).message).toMatch(/live renderer refused to restore native state after a rejected change/);
+  expect(reported.length).toBeGreaterThan(0);expect(reported.at(-1)).toBe(thrown);
+  // The uncertain constant is never published as logical state.
   expect(f.b.shadow.vertexAttribValues).toBe(old);expect(old.has(7)).toBe(false);expect(f.values.get(7)).toEqual(NEXT);
   expect(f.b.errors).toEqual([0x500,0x502]);
-  const before=f.calls.length;expect(f.submit([3])).toBe(-5);
-  expect(f.calls.slice(before).every(([index])=>index===7)).toBe(true);expect(old.has(3)).toBe(false);
-  f.registry.destroyContext(1,2);expect(hasNativeRepair(f.gl)).toBe(true);
-  f.restore(false);expect(repairNativeState(f.gl)).toBe(true);expect(hasNativeRepair(f.gl)).toBe(false);
-  expect(f.values.get(7)).toEqual([0,0,0,1]);
 });
 
 it("updates an existing private tuple only after acceptance without cloning its Map",()=>{

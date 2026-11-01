@@ -3,7 +3,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
 import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
-import { reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
+import { nativeGlFault, rendererEverLost, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
   type NativeDeletion, type NativeRetirement } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
@@ -276,13 +276,17 @@ export function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | 
   deleteUnusedNativeProgram(b, program);
 }
 
+/** Uninstall and delete a program no name, pin or member uses any more.
+ * A live renderer that refuses either step is a NativeGlFault: nothing
+ * retries it later. A renderer that has been lost already lost the program,
+ * and its bindings report the loss (renderer-loss.ts). */
 function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean {
-  // Stop before deletion if the selector change was rejected. The name or
-  // query pin still owns the handle and must be able to retry that same step.
+  const gl = b.gl!;
   if (!checkedGlCall(b, () => {
-    if (b.gl!.getParameter(0x8b8d) === program) b.gl!.useProgram(null);
-  })) return false;
-  if (!checkedGlCall(b, () => b.gl!.deleteProgram(program))) return false;
+    if (gl.getParameter(0x8b8d) === program) gl.useProgram(null);
+  }) && !rendererEverLost(gl)) nativeGlFault("the live renderer refused to uninstall a program before deleting it");
+  if (!checkedGlCall(b, () => gl.deleteProgram(program)) && !rendererEverLost(gl))
+    nativeGlFault("the live renderer refused deleteProgram of a program no owner uses");
   releaseReversedDepthTwin(b, program);
   return true;
 }

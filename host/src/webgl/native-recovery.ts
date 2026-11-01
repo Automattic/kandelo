@@ -4,6 +4,57 @@ import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
+import { rendererLossCount } from "./renderer-loss.js";
+
+/**
+ * A native GL operation the host's own bookkeeping depends on -- deleting a
+ * retired object, or restoring native state after a failed change -- was
+ * refused by a live renderer.
+ *
+ * WHY THIS IS FATAL. These operations act only on objects and state the host
+ * itself created and still tracks, so a live WebGL renderer has no valid
+ * reason to refuse them. A refusal means host state no longer matches the
+ * renderer (or the renderer is broken), and a retry before later GL work is
+ * not guaranteed to run or to succeed. A lost renderer is the exception: its
+ * objects and state are gone with it, so cleanup completes without touching
+ * it and the bindings that used it report the loss as a graphics reset
+ * (renderer-loss.ts, ENODEV replies) at their next entry.
+ */
+export class NativeGlFault extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "NativeGlFault";
+  }
+}
+let faultReporter: ((fault: Error) => void) | null = null;
+/** The kernel installs its fatal host-fault callback here. One kernel owns
+ * the renderers of a worker realm. */
+export function setNativeGlFaultReporter(reporter: ((fault: Error) => void) | null): void {
+  faultReporter = reporter;
+}
+/** Report a NativeGlFault, then throw it. Reporting first latches the fatal
+ * shutdown even if a caller's catch swallows the exception. */
+export function nativeGlFault(message: string, cause?: unknown): never {
+  const fault = new NativeGlFault(message, cause);
+  try { faultReporter?.(fault); }
+  catch (error) { if (isKernelExportFailure(error)) throw error; }
+  throw fault;
+}
+/** True when the renderer is lost now or was lost at some point, so an
+ * object created before that loss may already be gone. For a direct deletion
+ * that has no recorded creation generation. */
+export function rendererEverLost(gl: WebGL2RenderingContext): boolean {
+  let lost = false;
+  try { lost = gl.isContextLost?.() === true; } catch { lost = false; }
+  return lost || rendererLossCount(gl) !== 0;
+}
+/** True when native objects of renderer generation `epoch` no longer exist:
+ * the context is lost now, or was lost (and perhaps restored) since. */
+function rendererGone(gl: WebGL2RenderingContext, epoch: number): boolean {
+  let lost = false;
+  try { lost = gl.isContextLost?.() === true; } catch { lost = false; }
+  return lost || rendererLossCount(gl) !== epoch;
+}
 
 /** Only native handles/scalars enter a persistent inverse, never guest data or
  * callbacks whose lexical environment could retain a whole binding. */
@@ -30,13 +81,15 @@ export type NativeDeletion = ["deleteTexture", WebGLTexture | null] | ["deleteRe
   | ["deleteFramebuffer", WebGLFramebuffer | null] | ["deleteBuffer", WebGLBuffer | null]
   | ["deleteSync", WebGLSync | null] | ["deleteShader", WebGLShader | null]
   | ["deleteProgram", WebGLProgram | null] | ["deleteVertexArray", WebGLVertexArrayObject | null];
-export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>};
+export type NativeRetirement = {owner: CheckedGlOwner; calls: NativeDeletion[]; pending: boolean; complete: boolean; references: number; dependencies: readonly NativeRetirement[]; ordered?: boolean; uninstallPrograms?: boolean; unusedProgramOwners?: WeakRef<GlObjectGroup>;
+  /** Renderer generation (loss count) the objects were created in. */
+  epoch: number};
 const retirements = new WeakMap<WebGL2RenderingContext, Set<NativeRetirement>>();
 
 export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][];
   /** Each group is checked once after its last call instead of after every
    * call: for calls that cannot fail on valid arguments, where one check
-   * still detects a failed restoration (and keeps the repair pending). */
+   * still detects a failed restoration (a NativeGlFault on a live renderer). */
   batched?: boolean };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
 export type NativeCompletion = {submitted: boolean; complete: boolean};
@@ -50,8 +103,17 @@ type Repair = {
   pending: boolean;
   replaying: boolean;
   owner: CheckedGlOwner;
+  epoch: number;
 };
+/** Repairs exist only while applyNativeChanges runs: a restoration either
+ * completes, or faults (live renderer), or is dropped (lost renderer). */
 const repairs = new WeakMap<WebGL2RenderingContext, Repair>();
+/** Renderers whose retirement collection waited for an in-flight change. */
+const deferredCollections = new WeakSet<WebGL2RenderingContext>();
+function collectOrDefer(gl: WebGL2RenderingContext): void {
+  if (repairs.has(gl)) deferredCollections.add(gl);
+  else collectNativeRetirements(gl);
+}
 
 export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): boolean {
   const [method, ...args] = call;
@@ -105,7 +167,8 @@ export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion
   if (!b.gl) return null;
   try {
     const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms,
-      unusedProgramOwners:options.unusedProgramOwners ? new WeakRef(options.unusedProgramOwners) : undefined};
+      unusedProgramOwners:options.unusedProgramOwners ? new WeakRef(options.unusedProgramOwners) : undefined,
+      epoch:rendererLossCount(b.gl)};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -130,55 +193,61 @@ function programStillOwned(group: GlObjectGroup, program: WebGLProgram): boolean
   for (const named of group.programs.values()) if (named === program) return true;
   return false;
 }
+/** Delete every requested, unretained retirement's objects. A retirement
+ * waits only for storage an accepted execution still holds or for a
+ * dependency not yet requested; false reports such a wait. A refusal by a
+ * live renderer is a NativeGlFault; objects of a lost renderer generation are
+ * already gone and are dropped without a native call. Passes repeat so a
+ * retirement completes in the same call as the dependency it waited for. */
 function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
-  let accepted = true;
-  for (const retirement of retirements.get(gl) ?? []) {
-    if (!retirement.pending || retainedRetirement(retirement)) continue;
-    for (const call of retirement.calls) {
-      const object = call[1];
-      if (!object) continue;
-      if (call[0] === "deleteProgram" && retirement.unusedProgramOwners) {
-        try {
-          const group = retirement.unusedProgramOwners.deref();
-          if (group && programStillOwned(group, object)) { call[1] = null; continue; }
-        } catch (error) {
-          if (isKernelExportFailure(error)) throw error;
-          // Pending was armed before inspection. Unknown eligibility keeps
-          // this exact handle for retry and must never authorize deletion.
-          recordGlError(retirement.owner,0x505); accepted = false; continue;
+  const owned = retirements.get(gl);
+  if (!owned) return true;
+  let progress = true, waiting = false;
+  while (progress) {
+    progress = false; waiting = false;
+    for (const retirement of owned) {
+      if (!retirement.pending || retainedRetirement(retirement)) continue;
+      for (const call of retirement.calls) {
+        const object = call[1];
+        if (!object) continue;
+        if (rendererGone(gl, retirement.epoch)) { call[1] = null; continue; }
+        if (call[0] === "deleteProgram" && retirement.unusedProgramOwners) {
+          let stillOwned: boolean;
+          try {
+            const group = retirement.unusedProgramOwners.deref();
+            stillOwned = !!group && programStillOwned(group, object);
+          } catch (error) {
+            if (isKernelExportFailure(error)) throw error;
+            nativeGlFault("could not decide whether a retired program is still owned", error);
+          }
+          if (stillOwned) { call[1] = null; continue; }
         }
-      }
-      // A logical switch can orphan an executable still physically selected.
-      // Unbind only that exact handle before deleting it; failed unbind keeps
-      // the same receiver pending and cannot delete another owner's program.
-      if (retirement.uninstallPrograms && call[0] === "deleteProgram" &&
-          !checkedGlCall(retirement.owner, () => {
-            if (gl.getParameter(0x8b8d) === object) gl.useProgram(null);
-          })) {
-        accepted = false;
-        if (retirement.ordered) break;
-        continue;
-      }
-      if (checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
+        // A logical switch can orphan an executable still physically selected.
+        // Unbind only that exact handle before deleting it.
+        if (retirement.uninstallPrograms && call[0] === "deleteProgram" &&
+            !checkedGlCall(retirement.owner, () => {
+              if (gl.getParameter(0x8b8d) === object) gl.useProgram(null);
+            })) {
+          if (rendererGone(gl, retirement.epoch)) { call[1] = null; continue; }
+          nativeGlFault("the live renderer refused to uninstall a retired program before deleting it");
+        }
+        if (!checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
+          if (rendererGone(gl, retirement.epoch)) { call[1] = null; continue; }
+          nativeGlFault(`the live renderer refused ${call[0]} of an object the host retired`);
+        }
         if (call[0] === "deleteProgram") releaseReversedDepthTwin(retirement.owner,object);
         retireNativeObject(gl,object); call[1] = null;
-      } else {
-        accepted = false;
-        // Canonical BO backing must survive a rejected container retirement.
-        // Already accepted members remain null and never execute again.
-        if (retirement.ordered) break;
       }
+      if (retirement.dependencies.every(dependency => dependency.complete)) { finishNativeRetirement(retirement); progress = true; }
+      else waiting = true;
     }
-    if (retirement.calls.every(call => call[1] === null) && retirement.dependencies.every(dependency => dependency.complete)) finishNativeRetirement(retirement);
-    else accepted = false;
   }
-  return accepted;
+  return !waiting;
 }
 export function retireNativeRetirement(retirement: NativeRetirement): boolean {
   if (retirement.complete) return true;
   retirement.pending = true;
-  const gl = retirement.owner.gl!;
-  if (!repairs.has(gl)) collectNativeRetirements(gl);
+  collectOrDefer(retirement.owner.gl!);
   return retirement.complete;
 }
 export function hasNativeRepair(gl: WebGL2RenderingContext): boolean {
@@ -218,17 +287,20 @@ export class NativeRetirementLease {
   clone(): NativeRetirementLease | null {
     return this.active ? NativeRetirementLease.take(this.#retirement!,true) : null;
   }
+  /** Drop this reference. The last one deletes the storage now (or at the
+   * end of an in-flight native change); a refusal is a NativeGlFault. */
   release(selectedErrors: GlErrorState | null): boolean {
     const retirement = this.#retirement;
     if (!retirement) return true;
     if (retirement.complete) { this.#retirement = null; return true; }
     const gl = retirement.owner.gl!;
     try { captureNativeGlErrors(gl,selectedErrors); }
-    catch { return false; }
-    const releasedNow=!this.#released;
-    if (releasedNow) { this.#released = true; retirement.references--; }
-    if (!repairs.has(gl)) collectNativeRetirements(gl);
-    if (retirement.pending && !retirement.complete && retirement.references === 0) return false;
+    catch (error) {
+      if (isKernelExportFailure(error)) throw error;
+      nativeGlFault("could not read the renderer's error flags before releasing retained storage", error);
+    }
+    if (!this.#released) { this.#released = true; retirement.references--; }
+    collectOrDefer(gl);
     this.#retirement = null;
     return true;
   }
@@ -238,28 +310,34 @@ export function retainNativeRetirement(retirement: NativeRetirement): NativeReti
   return NativeRetirementLease.acquire(retirement);
 }
 
+/** Replay a failed change's inverse. False only for a repair still on the
+ * caller's stack (an in-flight change). A live renderer that refuses the
+ * restoration is a NativeGlFault; a lost renderer has no state left to
+ * restore, so its repair is dropped and its bindings report the loss. */
 export function repairNativeState(gl: WebGL2RenderingContext): boolean {
   let repair = repairs.get(gl);
   while (repair) {
     if (!repair.pending || repair.replaying) return false;
     repair.replaying = true;
-    let restored = true;
     try {
-      if (gl.isContextLost?.()) return false;
-      for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
-      if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
-      if (!restored) return false;
+      if (!rendererGone(gl, repair.epoch)) {
+        let restored = true;
+        for (let i = repair.attempted - 1; i >= 0; i--) restored = restoreInverse(repair.restores[i]) && restored;
+        if (repair.finalizer) restored = restoreInverse(repair.finalizer) && restored;
+        if (!restored && !rendererGone(gl, repair.epoch))
+          nativeGlFault("the live renderer refused to restore native state after a rejected change");
+      }
       if (repair.completion) repair.completion.complete = true;
       if (repair.parent) repairs.set(gl,repair.parent); else repairs.delete(gl);
-    } catch { recordGlError(repair.owner,0x502); return false; }
-    finally { repair.replaying = false; }
+    } finally { repair.replaying = false; }
     repair = repairs.get(gl);
   }
+  deferredCollections.delete(gl);
   return collectNativeRetirements(gl);
 }
 
-/** Reserve the repair record before native mutation. A failed inverse remains
- * reachable and fences the entire physical context until it can be replayed. */
+/** Reserve the repair record before native mutation. A rejected change is
+ * undone before this returns (see repairNativeState). */
 export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, changes: NativeChange[], options: {shared?: boolean; finalizer?: NativeInverse; completion?: NativeCompletion} = {}): boolean {
   const gl = b.gl;
   if (!gl) return false;
@@ -268,7 +346,7 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
   let repair: Repair;
   try {
     repair = { parent, lifetime:options.shared ? null : b.shadow, finalizer:options.finalizer, completion:options.completion, restores:changes.map(change => change.restore),
-      attempted:0, pending:false, replaying:false, owner:nativeOwner(b) };
+      attempted:0, pending:false, replaying:false, owner:nativeOwner(b), epoch:rendererLossCount(gl) };
     repairs.set(gl,repair);
     if (repair.completion) repair.completion.submitted = true;
   } catch { recordGlError(b,0x505); return false; }
@@ -276,7 +354,10 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
     repair.attempted++;
     let accepted = false;
     try { accepted = change.apply(); }
-    catch { recordGlError(b,0x502); }
+    catch (error) {
+      if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+      recordGlError(b,0x502);
+    }
     if (accepted) continue;
     repair.pending = true;
     repairNativeState(gl);
@@ -289,6 +370,7 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
   }
   if (parent) repairs.set(gl,parent); else repairs.delete(gl);
   if (repair.completion) repair.completion.complete = true;
+  if (!parent && deferredCollections.has(gl)) { deferredCollections.delete(gl); collectNativeRetirements(gl); }
   return true;
 }
 

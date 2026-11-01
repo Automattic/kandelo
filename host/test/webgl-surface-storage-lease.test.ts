@@ -1,8 +1,16 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { resizeSurfaceTarget } from "../src/webgl/present-target.js";
 import * as S from "../src/webgl/surface-resources.js";
-import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
+import { hasNativeRepair, NativeGlFault, repairNativeState, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
+
+afterEach(()=>setNativeGlFaultReporter(null));
+function fault(call:()=>unknown,message:RegExp):void{
+  const reported:Error[]=[];setNativeGlFaultReporter(error=>reported.push(error));
+  let thrown:unknown;try{call();}catch(error){thrown=error;}
+  expect(thrown).toBeInstanceOf(NativeGlFault);expect((thrown as Error).message).toMatch(message);
+  expect(reported).toEqual([thrown]);
+}
 
 function fixture() {
   let serial=0,reject=false;
@@ -60,28 +68,21 @@ it("clones an existing retired allocation without granting a new public hold",as
   expect(f.deleted.filter(x=>x===old.fbo)).toHaveLength(1);
   f.reg.unbind(7);expect(f.live.size).toBe(0);
 });
-it("retains a retry token after final deletion rejection without decrementing twice",()=>{
+it("makes a refused final deletion of released storage a fatal fault",()=>{
   const f=fixture(),old=f.binding.presentTarget!,lease=f.retain!(f.binding.surface)!;
   f.reg.destroySurface(7,11);f.reject(true);
   const peer={errors:[] as number[]};f.errors.push(0x500);
-  expect(lease.release(peer)).toBe(false);
+  fault(()=>lease.release(peer),/live renderer refused delete\w+ of an object the host retired/);
+  // The selected owner's flags were captured before the refused deletion.
   expect(peer.errors).toEqual([0x500]);expect(old.retirement.references).toBe(0);
-  expect(lease.context).toBe(f.gl);expect(()=>lease.framebuffer).toThrow("released");
-  expect(lease.clone()).toBeNull();expect(hasNativeRepair(f.gl)).toBe(true);
-  expect(lease.release(peer)).toBe(false);expect(old.retirement.references).toBe(0);
-  f.reject(false);expect(lease.release(peer)).toBe(true);
-  expect(peer.errors).toEqual([0x500]);expect(lease.context).toBeNull();
-  expect(old.retirement.complete).toBe(true);expect(hasNativeRepair(f.gl)).toBe(false);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  expect(old.retirement.complete).toBe(false);
 });
-it("keeps a lease active if selected-owner errors cannot be captured",()=>{
+it("makes an unreadable error state at storage release a fatal fault",()=>{
   const f=fixture(),old=f.binding.presentTarget!,lease=f.retain!(f.binding.surface)!;
   f.reg.destroySurface(7,11);
-  const read=vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("error read failed");});
-  expect(lease.release(null)).toBe(false);expect(old.retirement.references).toBe(1);
-  expect(lease.framebuffer).toBe(old.fbo);expect(f.live.has(old.fbo)).toBe(true);
-  read.mockRestore();expect(lease.release(null)).toBe(true);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  vi.spyOn(f.gl,"getError").mockImplementation(()=>{throw new Error("error read failed");});
+  fault(()=>lease.release(null),/could not read the renderer's error flags before releasing retained storage/);
+  expect(old.retirement.references).toBe(1);expect(f.live.has(old.fbo)).toBe(true);
 });
 it("does not transfer deletion ownership while retained storage is in use",async()=>{
   const {transferNativeRetirement}=await import("../src/webgl/native-recovery.js");
@@ -97,37 +98,33 @@ it("rejects reference exhaustion without changing allocation ownership",()=>{
   expect(old.retirement.references).toBe(Number.MAX_SAFE_INTEGER);
   old.retirement.references=0;f.reg.unbind(7);expect(f.live.size).toBe(0);
 });
-it("retains pending selector inverses until the held native object is really deleted",async()=>{
+it("makes a refused selector restoration naming held storage a fatal fault",async()=>{
   const {applyNativeChanges,nativeInverse}=await import("../src/webgl/native-recovery.js");
-  const f=fixture(),old=f.binding.presentTarget!,lease=f.retain!(f.binding.surface)!;
-  let reject=true;
-  const bind=vi.spyOn(f.gl,"bindFramebuffer").mockImplementation((_target,framebuffer)=>{
-    if(reject && framebuffer===old.fbo)throw new Error("selector blocked");
+  const f=fixture(),old=f.binding.presentTarget!;f.retain!(f.binding.surface);
+  vi.spyOn(f.gl,"bindFramebuffer").mockImplementation((_target,framebuffer)=>{
+    if(framebuffer===old.fbo)throw new Error("selector blocked");
   });
   const owner={gl:f.gl,errors:[] as number[]};
-  expect(applyNativeChanges({...owner,shadow:f.binding.shadow},[
+  fault(()=>applyNativeChanges({...owner,shadow:f.binding.shadow},[
     {apply:()=>false,restore:nativeInverse(owner,[["bindFramebuffer",0x8ca9,old.fbo]])},
-  ],{shared:true})).toBe(false);
-  f.reg.destroySurface(7,11);expect(f.live.has(old.fbo)).toBe(true);
-  reject=false;expect(repairNativeState(f.gl)).toBe(true);
-  expect(bind).toHaveBeenLastCalledWith(0x8ca9,old.fbo);
-  expect(f.live.has(old.fbo)).toBe(true);expect(lease.release(null)).toBe(true);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  ],{shared:true}),/live renderer refused to restore native state after a rejected change/);
+  expect(f.live.has(old.fbo)).toBe(true);
 });
-it("releases its reference but defers deletion behind an unresolved native inverse",async()=>{
+it("defers a released storage deletion until a rejected change's inverse has been replayed",async()=>{
   const {applyNativeChanges,nativeInverse}=await import("../src/webgl/native-recovery.js");
   const f=fixture(),old=f.binding.presentTarget!,lease=f.retain!(f.binding.surface)!;
-  let reject=true;
-  vi.spyOn(f.gl,"bindFramebuffer").mockImplementation(()=>{if(reject)throw new Error("selector blocked");});
+  const order:string[]=[];
+  vi.spyOn(f.gl,"bindFramebuffer").mockImplementation((_target,framebuffer)=>{if(framebuffer===old.fbo)order.push("restore");});
+  const remove=f.gl.deleteFramebuffer.bind(f.gl);
+  f.gl.deleteFramebuffer=framebuffer=>{if(framebuffer===old.fbo)order.push("delete");remove(framebuffer);};
   const owner={gl:f.gl,errors:[] as number[]};
-  expect(applyNativeChanges({...owner,shadow:f.binding.shadow},[
-    {apply:()=>false,restore:nativeInverse(owner,[["bindFramebuffer",0x8ca9,old.fbo]])},
-  ],{shared:true})).toBe(false);
-  f.reg.destroySurface(7,11);expect(lease.release(null)).toBe(false);
-  expect(old.retirement.references).toBe(0);expect(f.deleted).toEqual([]);
-  reject=false;expect(repairNativeState(f.gl)).toBe(true);
-  expect(lease.release(null)).toBe(true);
-  expect(f.deleted.filter(x=>x===old.fbo)).toHaveLength(1);
+  expect(applyNativeChanges({...owner,shadow:f.binding.shadow},[{apply:()=>{
+    f.reg.destroySurface(7,11);expect(lease.release(null)).toBe(true);
+    expect(old.retirement.references).toBe(0);expect(f.deleted).toEqual([]);
+    return false;
+  },restore:nativeInverse(owner,[["bindFramebuffer",0x8ca9,old.fbo]])}],{shared:true})).toBe(false);
+  expect(order).toEqual(["restore","delete"]);
+  expect(f.deleted.filter(x=>x===old.fbo)).toHaveLength(1);expect(hasNativeRepair(f.gl)).toBe(false);
   f.reg.unbind(7);expect(f.live.size).toBe(0);
 });
 it("does not release a native dependency while its storage lease is held",async()=>{
@@ -145,15 +142,11 @@ it("does not release a native dependency while its storage lease is held",async(
   f.reg.unbind(7);expect(f.live.size).toBe(0);
 });
 
-it("does not replay accepted deletions when only one allocation member rejects cleanup",()=>{
+it("makes one allocation member's refused deletion a fatal fault",()=>{
   const f=fixture(),old=f.binding.presentTarget!,lease=f.retain!(f.binding.surface)!;
-  const destroy=f.gl.deleteTexture.bind(f.gl);let rejected=true,attempts=0;
-  f.gl.deleteTexture=texture=>{attempts++;if(rejected)throw new Error("texture deletion rejected");destroy(texture);};
-  f.reg.destroySurface(7,11);expect(lease.release(null)).toBe(false);
-  expect(f.live.has(old.tex)).toBe(true);expect(f.live.has(old.fbo)).toBe(false);expect(f.live.has(old.depthStencil)).toBe(false);
-  expect(lease.release(null)).toBe(false);expect(attempts).toBe(2);
-  expect(f.deleted.filter(x=>x===old.fbo)).toHaveLength(1);expect(f.deleted.filter(x=>x===old.depthStencil)).toHaveLength(1);
-  rejected=false;expect(lease.release(null)).toBe(true);expect(attempts).toBe(3);
-  expect(f.deleted.filter(x=>x===old.tex)).toHaveLength(1);
-  f.reg.unbind(7);expect(f.live.size).toBe(0);
+  let attempts=0;
+  f.gl.deleteTexture=()=>{attempts++;throw new Error("texture deletion rejected");};
+  f.reg.destroySurface(7,11);
+  fault(()=>lease.release(null),/live renderer refused deleteTexture of an object the host retired/);
+  expect(attempts).toBe(1);expect(f.live.has(old.tex)).toBe(true);
 });

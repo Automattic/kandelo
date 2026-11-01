@@ -84,7 +84,7 @@ export function surfaceSampleMask(owner: CheckedGlOwner): number | null {
 /** Allocate color and depth/stencil renderbuffers with exactly `samples`
  * samples. A renderer that allocates another count fails the allocation:
  * EGL_SAMPLES must describe the surface the guest renders into. Native
- * selectors are restored, or left as a pending repair, before return. */
+ * selectors are restored (or the refusal is a NativeGlFault) before return. */
 export function allocateMultisampleTarget(owner: CheckedGlOwner, samples: number,
   w: number, h: number): GlMultisampleTarget | null {
   const gl = owner.gl;

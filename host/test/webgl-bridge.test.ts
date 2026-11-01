@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import {
   decodeAndDispatch,
   GL_SUBMIT_EINVAL,
@@ -496,27 +497,26 @@ describe("shared buffer deletion", () => {
     send(a,O.OP_BIND_BUFFER,[0x8892,0]);expect(a.bufferStores.has(object)).toBe(false);
     expect(b.shadow.arrayBuffer).toBe(replacement);reg.unbind(7);
   });
-  it("automatically publishes a repaired capture and releases it on context retirement",()=>{
-    const {gl,reg,a,b,send}=setup();
+  it("makes a refused client-array restoration of a peer-deleted capture a fatal fault",()=>{
+    const {gl,a,b,send}=setup(),reported:Error[]=[];
     send(a,O.OP_BIND_BUFFER,[0x8892,71]);send(a,O.OP_BUFFER_DATA,[0x8892,4,0x88e4]);const old=a.shadow.arrayBuffer!;
     send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);const temporary=a.shadow.arrayBuffer;
     send(b,O.OP_DELETE_BUFFERS,[1,71]);
-    const original=gl.bindBuffer.bind(gl);let reject=true;
-    gl.bindBuffer=(target:number,value:unknown)=>{if(target===0x8892 && value===old && reject)throw new Error("restore rejected");original(target,value);};
+    const original=gl.bindBuffer.bind(gl);
+    gl.bindBuffer=(target:number,value:unknown)=>{if(target===0x8892 && value===old)throw new Error("restore rejected");original(target,value);};
     const bytes = a.cmdbufView!, v = new DataView(bytes.buffer);
     v.setUint16(0,0x0106,true); v.setUint16(2,0,true);
-    expect(decodeAndDispatch(a,0,4)).toBe(-5);
-    expect(a.shadow.arrayBuffer).toBe(temporary);expect(a.bufferStores.has(old)).toBe(true);
-    expect(a.errors).not.toEqual([]);
-    const out = new Uint8Array(4).fill(0xa5);
-    expect(runGlQuery(a,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-    expect([...out]).toEqual([165,165,165,165]);
+    setNativeGlFaultReporter(fault=>reported.push(fault));
+    let thrown:unknown;
+    try { decodeAndDispatch(a,0,4); } catch (error) { thrown = error; }
+    finally { setNativeGlFaultReporter(null); }
+    expect(thrown).toBeInstanceOf(NativeGlFault);
+    expect((thrown as Error).message).toMatch(/live renderer refused to restore native state after a rejected change/);
+    expect(reported.length).toBeGreaterThan(0);expect(reported.at(-1)).toBe(thrown);
+    // The refused restoration is never published as logical state.
+    expect(a.shadow.arrayBuffer).toBe(temporary);expect(a.savedClientArrayBuffer).toBe(old);
+    expect(a.bufferStores.has(old)).toBe(true);
     expect(gl.log.some(([name])=>name==="drawArrays")).toBe(false);
-    reject=false;
-    expect(runGlQuery(a,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-    expect(a.shadow.arrayBuffer).toBe(old); expect(a.savedClientArrayBuffer).toBeUndefined();
-    send(a,0x0105,[]);send(a,O.OP_BIND_BUFFER,[0x8892,72]);reg.destroyContext(7,11);
-    expect(b.bufferStores.has(old)).toBe(false);reg.unbind(7);
   });
   it("keeps zero savepoints distinct from absent ones and rejects nested captures",()=>{
     const {a,send}=setup();

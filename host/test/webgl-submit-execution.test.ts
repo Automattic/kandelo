@@ -9,6 +9,12 @@ import { defaultFramebuffer } from "../src/webgl/framebuffer.js";
 import { resizeSurfaceTarget } from "../src/webgl/present-target.js";
 import { OP_CLEAR, QOP_GET_ERROR } from "../src/webgl/ops.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
+import { NativeGlFault } from "../src/webgl/native-recovery.js";
+
+function caught(call: () => unknown): Error | undefined {
+  try { call(); } catch (error) { return error as Error; }
+  return undefined;
+}
 
 function fixture() {
   let serial = 0;
@@ -108,7 +114,6 @@ it("reentrant queue draining cannot collect the currently executing context", ()
   f.queue.enqueue(f.binding, frame());
   expect(drainSubmitQueue(f.queue, () => f.muxer, () => {
     f.registry.destroyContext(7, 11);
-    f.queue.retryRetirements();
     expect(f.live.has(texture)).toBe(true);
   })).toBe(0);
   expect(f.live.has(texture)).toBe(false);
@@ -148,24 +153,20 @@ it("changed raw canvas storage fails before dispatch rather than targeting its r
   f.registry.unbind(7);
 });
 
-it("failed native retirement remains retryable without deleting an accepted prefix twice", () => {
+it("a live renderer refusing deletion of a frame's retained storage is a fatal fault", () => {
   const f = fixture(), old = f.binding.presentTarget!;
   f.queue.enqueue(f.binding, frame());
   expect(resizeSurfaceTarget(f.binding, 8, 6)).toBe(true);
   const destroy = f.gl.deleteFramebuffer.bind(f.gl);
-  let reject = true;
   f.gl.deleteFramebuffer = value => {
-    if (value === old.fbo && reject) throw new Error("delete blocked");
+    if (value === old.fbo) throw new Error("delete blocked");
     destroy(value);
   };
-  expect(drainSubmitQueue(f.queue, () => f.muxer, () => 0)).toBe(0);
+  const fault = caught(() => drainSubmitQueue(f.queue, () => f.muxer, () => 0));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteFramebuffer of an object the host retired/);
   expect(f.live.has(old.fbo)).toBe(true);
-  reject = false;
-  f.queue.retryRetirements();
-  expect(f.live.has(old.fbo)).toBe(false);
-  f.queue.retryRetirements();
-  expect(f.deleted.filter(value => value === old.fbo)).toHaveLength(1);
-  f.registry.unbind(7);
+  expect(f.deleted.filter(value => value === old.fbo)).toHaveLength(0);
 });
 
 it("in-frame resize preserves both accepted native and logical default selectors", () => {
@@ -212,36 +213,30 @@ it("independent read allocation retains its own dimensions and lifetime", () => 
   f.registry.unbind(7);
 });
 
-it("throwing cleanup receipts cannot replace the admission failure", () => {
+it("a throwing cleanup receipt after failed admission is a fatal fault", () => {
   const f = fixture();
-  let blocked = true;
-  const release = vi.fn(() => { if (blocked) throw new Error("cleanup callback failed"); return true; });
+  const release = vi.fn(() => { throw new Error("cleanup callback failed"); });
   const queue = new SubmitQueue(undefined, b => ({ binding:b, admitted:false, run: work => work(), release }));
-  expect(() => queue.enqueue(f.binding, frame())).toThrow("GL drawable capture failed");
+  const fault = caught(() => queue.enqueue(f.binding, frame()));
+  // The receipt's fault outranks the admission failure it was cleaning up.
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/releasing a GL submission's execution threw/);
+  expect((fault!.cause as Error).message).toBe("cleanup callback failed");
   expect(queue.isEmpty()).toBe(true);
-  expect(queue.pendingRetirements).toBe(1);
-  blocked = false;
-  queue.removeSession(7, 11);
-  expect(queue.pendingRetirements).toBe(0);
-  expect(release).toHaveBeenCalled();
+  expect(release).toHaveBeenCalledTimes(1);
   f.registry.unbind(7);
 });
 
-it("empty repeated session purges retry failed native retirement receipts", () => {
+it("a live renderer refusing deletion of a purged frame's retained storage is a fatal fault", () => {
   const f = fixture(), old = f.binding.presentTarget!;
   f.queue.enqueue(f.binding, frame());
   expect(resizeSurfaceTarget(f.binding, 8, 6)).toBe(true);
   const destroy = f.gl.deleteFramebuffer.bind(f.gl);
-  let blocked = true;
-  f.gl.deleteFramebuffer = value => { if (value === old.fbo && blocked) throw new Error("blocked"); destroy(value); };
-  f.queue.removeSession(7, 11);
-  expect(f.queue.isEmpty()).toBe(true);
-  expect(f.queue.pendingRetirements).toBe(1);
-  blocked = false;
-  f.queue.removeSession(7, 11);
-  expect(f.live.has(old.fbo)).toBe(false);
-  expect(f.queue.pendingRetirements).toBe(0);
-  f.registry.unbind(7);
+  f.gl.deleteFramebuffer = value => { if (value === old.fbo) throw new Error("blocked"); destroy(value); };
+  const fault = caught(() => f.queue.removeSession(7, 11));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/live renderer refused deleteFramebuffer of an object the host retired/);
+  expect(f.live.has(old.fbo)).toBe(true);
 });
 
 it("unchanged consecutive execution selectors do not force full logical state replay", () => {
@@ -273,24 +268,23 @@ it("reentrant drain leaves later frames queued until the current frame tail comp
 
 
 
-it("a throwing consumed receipt does not block peer dispatch or cleanup", () => {
+it("a throwing consumed receipt is a fatal fault that stops the drain", () => {
   const f = fixture();
-  let serial = 0, blocked = true;
+  let serial = 0;
   const retired: number[] = [], ran: number[] = [];
   const queue = new SubmitQueue(undefined,b => {
     const id = ++serial;
     return { binding:b, admitted:true, run: work => { ran.push(id); return work(); }, release: () => {
-      if (id === 1 && blocked) throw new Error("first receipt blocked");
+      if (id === 1) throw new Error("first receipt blocked");
       retired.push(id); return true;
     } };
   });
   queue.enqueue(f.binding,frame()); queue.enqueue(f.binding,frame());
-  expect(drainSubmitQueue(queue,() => f.muxer,() => 0)).toBe(0);
-  expect(ran).toEqual([1,2]); expect(retired).toEqual([2]);
-  expect(queue.pendingRetirements).toBe(1);
-  blocked = false; queue.removePid(7);
-  expect(retired).toEqual([2,1]); expect(queue.pendingRetirements).toBe(0);
-  f.registry.unbind(7);
+  const fault = caught(() => drainSubmitQueue(queue,() => f.muxer,() => 0));
+  expect(fault).toBeInstanceOf(NativeGlFault);
+  expect(fault!.message).toMatch(/releasing a GL submission's execution threw/);
+  expect((fault!.cause as Error).message).toBe("first receipt blocked");
+  expect(ran).toEqual([1]); expect(retired).toEqual([]);
 });
 
 it("cancelling retained storage captures flags for the selected peer's error owner", () => {
@@ -351,5 +345,5 @@ it("retires pending uniform staging with its exact accepted execution owner",()=
   expect(replacement).not.toBe(b);expect(replacement.uniformUpload).toBeNull();
   expect(b.uniformUpload).toBe(pending);
   f.queue.removeSession(7,11);expect(b.uniformUpload).toBeNull();
-  expect(f.queue.pendingRetirements).toBe(0);f.registry.unbind(7,11);
+  expect(f.queue.isEmpty()).toBe(true);f.registry.unbind(7,11);
 });

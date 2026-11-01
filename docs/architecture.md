@@ -3682,8 +3682,9 @@ native WebGL state. Clearing an attribute uses a native null ARRAY binding
 and `vertexAttribPointer` with offset zero, as WebGL permits. The logical
 size, type, stride and original offset remain available to GLES queries;
 no temporary native buffer is allocated merely to represent null. Native
-changes and their inverses are checked before logical publication. Failed
-restoration fences the physical context until its owned repair completes.
+changes and their inverses are checked before logical publication. A
+restoration a live renderer refuses is a fatal host fault (see native
+retirement below).
 Deleted buffer names and backing-storage retirement remain separate, so
 another context or an unbound vertex array can retain the old storage.
 
@@ -3762,13 +3763,13 @@ an independent render file. On the same native display context it blits
 the selected FBO, with KMS row zero at the top. Primary scanout forces only
 its displayed alpha to one, matching both CPU presenters; source BO alpha
 remains available to image siblings. Native color masks and clear values
-are restored through the same retryable inverse journal. A 2D display or
+are restored through the same checked inverse journal. A 2D display or
 a different native canvas receives an independent RGBA readback. GPU access
 is synchronous inside the kernel entry while the latched framebuffer owns
 its BO; only owned pixel bytes survive into detached presentation.
 
-Native device blits/readback retain retryable selector, scissor and packing
-inverses through the shared recovery journal. They retain native handles and
+Native device blits/readback restore their selector, scissor and packing
+inverses through the shared checked journal. They retain native handles and
 scalars rather than guest memories or bindings. CPU WebGL scanout also resets
 its complete draw/upload dependencies on each accepted frame. Every utility
 captures the outgoing logical owner's errors before native work. Generic
@@ -3791,8 +3792,7 @@ inverse succeeds. Front export retains its own errno and private errors; CPU
 front bytes are published only after the final error, context-loss and pending
 repair checks succeed. Failed native export or publication revokes selection
 reuse. Shared query, submit, import and front-copy preparation invalidates
-before retrying execution cleanup or native repair, including cleanup registered
-through another guard. Resize invalidates before the first drawing-buffer
+before pending native cleanup can change selectors. Resize invalidates before the first drawing-buffer
 dimension write. Failure
 or context loss also invalidates, and private device errors remain separate
 from the guest's pending flags. This is selector validity, not content
@@ -4616,9 +4616,8 @@ CPU/storage metadata conformance remain open compatibility work.
 
 Surface allocation reserves native deletion receipts and every selector update
 before creating texture/renderbuffer/framebuffer objects. Checked storage and
-read/draw/texture/renderbuffer inverses keep failed setup or finalization owned
-after creator retirement. Dependent operations stop until restoration and
-cleanup finish. Accepted replacement storage stays committed if retiring an old
+read/draw/texture/renderbuffer inverses are checked; a refused restoration or
+cleanup is a fatal host fault. Accepted replacement storage stays committed if retiring an old
 target fails. Surface destruction retires the
 same receipts, preserving the distinction between owned native targets and
 borrowed BO framebuffers. Broader resource factories, context loss and unknown
@@ -4842,7 +4841,7 @@ checking for every state replay. Queued constant-attribute setters validate the
 index against the accepted native limit before any write or shadow growth.
 Their old scalar value enters the native repair journal before effects, and
 new shadow values publish only after checked acceptance. A refused inverse
-fences later work even after its logical owner retires. Existing private tuples
+is a fatal host fault. Existing private tuples
 update without a Map clone; new indices reserve only valid native slots before
 publication, rather than copying historical invalid entries. Synchronous native-state queries
 select the caller through that same multiplexer after destination preflight.
@@ -4854,7 +4853,7 @@ snapshot with the selectors needed by that operation and reserve inverse
 records only for writes that will actually be attempted. A write whose value
 already matches is omitted along with its redundant inverse. Every attempted
 native operation still receives its checked post-call error capture, and a
-failed inverse retains the existing physical-context repair fence.
+refused inverse is a fatal host fault.
 
 Owned RGBA/UNSIGNED_BYTE readback uses zero pack row length and skips. It
 retains captured PACK_ALIGNMENT 1/2/4/8 when that alignment divides width*4;
@@ -4941,11 +4940,22 @@ hold after retirement, while a new lookup cannot acquire a retiring receipt.
 
 Native retirement distinguishes a deliberate reference hold from failed
 cleanup. Held allocations and their retirement dependants do not block
-admission, so retained work can execute and release them. The last release
-captures selected-owner errors before private deletion. Failed error
-capture keeps the reference; failed deletion ends use but keeps a retry
-token and checked native receipt. Successful deletion members do not replay,
-and native inverses retain old handles until deletion really accepts.
+admission, so retained work can execute and release them; the last release
+captures selected-owner errors and deletes the storage in the same call
+(at the end of the native change in flight, if any). A deletion or a state
+restoration that a live renderer refuses is not retried "before later GL
+work": nothing guarantees that work will come, the host created and still
+tracks every object involved, so a live WebGL renderer has no valid reason to
+refuse, and the refusal means host state no longer matches the renderer. It
+is a fatal host fault (`NativeGlFault`, `host/src/webgl/native-recovery.ts`),
+reported through the kernel's `onHostFault` before it is thrown, so the
+kernel worker stops exactly as for a trapped kernel export on Node and in
+the browser. A lost renderer is the exception and a normal event: its
+objects and state are gone with it (including after a restoration of the
+same context object, detected through the renderer's loss count), so cleanup
+completes without native calls, pending restorations are dropped, and the
+bindings that used it report the loss as a graphics reset through
+`host/src/webgl/renderer-loss.ts` (`ENODEV` replies).
 The same leases cover borrowed GPU BO allocations through a native-only
 allocation receipt copied into the surface record. Public BO retirement
 revokes lookup while existing leases keep the old allocation usable. A
@@ -4957,14 +4967,12 @@ without taking over the kernel BO's ownership.
 GPU BO allocation now reserves native cleanup before creating its texture,
 framebuffer and depth/stencil buffer. Checked creation, storage setup,
 completeness and selected texture/renderbuffer/read/draw restoration all
-precede publication. Failed inverse restoration retains candidates and
-blocks dependent native work until repair. The kernel host import captures
+precede publication. A refused inverse restoration is a fatal host fault. The kernel host import captures
 selected-owner errors before this private utility runs. Cleanup receipts
 can enforce member order, preserving canonical texture backing after a
-rejected container deletion and skipping members already accepted. Failed
-unheld BO retirement stays hidden from public lookup and target selection
-until checked cleanup completes. Retained execution groups remain part of
-raw BO-view retirement even after public context replacement.
+rejected container deletion and skipping members already accepted.
+Retained execution groups remain part of raw BO-view retirement even after
+public context replacement.
 
 Context execution leases separately retain a native execution owner after
 public context destruction or session removal. Acquisition reserves a fresh

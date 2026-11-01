@@ -14,6 +14,8 @@
  */
 import type { GlOperationTicket } from "./operation-stream.js";
 import type { GlBinding } from "./registry.js";
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
+import { nativeGlFault, NativeGlFault } from "./native-recovery.js";
 
 export interface SubmitExecutionOwner {
   readonly binding: GlBinding;
@@ -67,15 +69,20 @@ export class SubmitFrame {
   }
   get ready(): boolean { return this.#operation?.ready ?? true; }
   get consumed(): boolean { return this.#bytes === null && !this.#running; }
-  retryCleanup(): boolean {
-    if (this.#running) return false;
-    if (!this.#execution) return true;
-    // Cleanup is a retryable receipt, including a custom owner that throws.
-    // It must not replace the dispatch result or abort retirement of peers.
-    try { if (!this.#execution.release()) return false; }
-    catch { return false; }
+  /** Release the execution this frame owns once it is not running. The
+   * release deletes whatever the execution alone retained; nothing retries
+   * it later, so a refusal is a NativeGlFault. */
+  releaseExecution(): void {
+    if (this.#running || !this.#execution) return;
+    const execution = this.#execution;
     this.#execution = null;
-    return true;
+    let released: boolean;
+    try { released = execution.release(); }
+    catch (error) {
+      if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+      nativeGlFault("releasing a GL submission's execution threw", error);
+    }
+    if (!released) nativeGlFault("a GL submission's execution owner refused its release");
   }
   /** The temporary device view never becomes the binding's cached guest view.
    * A rebind/teardown during dispatch owns its replacement; do not revive the
@@ -97,11 +104,11 @@ export class SubmitFrame {
     } finally {
       if (binding.cmdbufView === bytes) binding.cmdbufView = previous;
       this.#running = false;
-      try { this.retryCleanup(); }
+      try { this.releaseExecution(); }
       finally { this.#operation?.finish(); }
     }
   }
-  discard(): void { this.#bytes = null; this.#operation?.cancel(); this.retryCleanup(); }
+  discard(): void { this.#bytes = null; this.#operation?.cancel(); this.releaseExecution(); }
 }
 
 export interface QueueEntry {
@@ -114,7 +121,6 @@ export class SubmitQueue {
   private compositor: QueueEntry[] = [];
   private clients: QueueEntry[] = [];
   private byKey = new Map<string, QueueEntry>();
-  private ownedFrames = new Set<SubmitFrame>();
 
   /** Only the caller's exact binding authority selects the compositor lane.
    * Unclassified bindings remain ordinary FIFO clients. */
@@ -125,8 +131,6 @@ export class SubmitQueue {
 
   enqueue(binding: GlBinding, frame: SubmitFrame): void {
     frame.claim();
-    // Reserve retry ownership before acquiring context/native storage holds.
-    this.ownedFrames.add(frame);
     const key = `${binding.pid}:${binding.sessionId}:${binding.contextId ?? "_"}`;
     const existing = this.byKey.get(key);
     let entry: QueueEntry | undefined;
@@ -169,7 +173,6 @@ export class SubmitQueue {
    *  next pickNext lands on the next client even if this one still has
    *  frames buffered. */
   pickNext(): QueueEntry | null {
-    this.retryRetirements();
     // A blocked logical head cannot be bypassed by a later frame of that
     // same session; runnable peer streams still get their ordinary lane turn.
     for (let index = 0; index < this.compositor.length;) {
@@ -213,7 +216,6 @@ export class SubmitQueue {
   removePid(pid: number): void { this.removeSession(pid); }
 
   removeSession(pid: number, sessionId?: number): void {
-    this.retryRetirements();
     if (sessionId !== undefined) sessionId >>>= 0;
     for (const [key, entry] of Array.from(this.byKey)) {
       if (entry.binding.pid !== pid || (sessionId !== undefined && entry.binding.sessionId !== sessionId)) continue;
@@ -229,20 +231,10 @@ export class SubmitQueue {
     }
   }
 
+  /** A consumed frame has released its execution (see releaseExecution). */
   complete(frame: SubmitFrame): void {
-    if (frame.consumed && frame.retryCleanup()) this.ownedFrames.delete(frame);
-  }
-
-  retryRetirements(): void {
-    for (const frame of this.ownedFrames) this.complete(frame);
-  }
-
-  /** Consumed frames whose native cleanup is still unproved. Queue emptiness
-   * alone describes dispatch, not retirement of its accepted resources. */
-  get pendingRetirements(): number {
-    let count = 0;
-    for (const frame of this.ownedFrames) if (frame.consumed) count++;
-    return count;
+    if (!frame.consumed) return;
+    frame.releaseExecution();
   }
 
   isEmpty(): boolean {
