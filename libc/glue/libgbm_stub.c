@@ -290,11 +290,20 @@ static int format_renderable(uint32_t fourcc) {
     return format_bpp(fourcc) == 32;
 }
 
-/* Usages Kandelo can provide. Protected content, front-buffer rendering and
- * fixed-rate compression have no implementation here, so they fail with
- * EINVAL like unknown bits instead of being granted in name only. */
+/* Usages Kandelo can provide. Protected content and fixed-rate compression
+ * have no implementation here, so they fail with EINVAL like unknown bits
+ * instead of being granted in name only.
+ *
+ * GBM_BO_USE_FRONT_RENDERING (Mesa's DRI backend passes it on as
+ * __DRI_IMAGE_USE_FRONT_RENDERING, which drivers honor by disabling
+ * framebuffer compression) asks that rendering into a buffer being scanned
+ * out stay in step with the scanned-out pixels. No Kandelo buffer has
+ * compression metadata, and the host presents the scanout buffer's current
+ * storage on vblanks without needing a flip, so every buffer already
+ * satisfies it. */
 #define WPK_GBM_SUPPORTED_USAGE (GBM_BO_USE_SCANOUT | GBM_BO_USE_CURSOR | \
-    GBM_BO_USE_RENDERING | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR)
+    GBM_BO_USE_RENDERING | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | \
+    GBM_BO_USE_FRONT_RENDERING)
 
 static uint32_t canonical_format(uint32_t format) {
     if (format == GBM_BO_FORMAT_XRGB8888) return GBM_FORMAT_XRGB8888;

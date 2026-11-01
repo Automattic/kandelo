@@ -348,7 +348,7 @@ static void import_usage(void) {
     int fd = prime_fd(handle, 48);
     struct gbm_import_fd_data data = {.fd = fd, .width = 4, .height = 3, .stride = 16,
         .format = GBM_FORMAT_XRGB8888};
-    const uint32_t refused[] = {GBM_BO_USE_PROTECTED, GBM_BO_USE_FRONT_RENDERING,
+    const uint32_t refused[] = {GBM_BO_USE_PROTECTED,
         GBM_BO_FIXED_COMPRESSION_DEFAULT, 1u << 20};
     for (unsigned i = 0; i < sizeof refused / sizeof refused[0]; ++i) {
         errno = 0;
@@ -357,7 +357,7 @@ static void import_usage(void) {
     }
     struct gbm_bo *bo = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_CURSOR | GBM_BO_USE_RENDERING |
-        GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR);
+        GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_FRONT_RENDERING);
     assert(bo);
     assert(gbm_bo_write(bo, &data, 4) == 0); /* CPU tier: write honored */
     gbm_bo_destroy(bo);
@@ -407,10 +407,10 @@ static void legacy_formats(void) {
 }
 
 /* Allocation refuses usages Kandelo cannot provide (protected content,
- * front-buffer rendering, fixed-rate compression, unknown bits). */
+ * fixed-rate compression, unknown bits). */
 static void usage_flags(void) {
     struct gbm_device *device = open_device();
-    const uint32_t refused[] = {GBM_BO_USE_PROTECTED, GBM_BO_USE_FRONT_RENDERING,
+    const uint32_t refused[] = {GBM_BO_USE_PROTECTED,
         GBM_BO_FIXED_COMPRESSION_DEFAULT, GBM_BO_FIXED_COMPRESSION_12BPC, 1u << 20};
     const uint64_t linear = DRM_FORMAT_MOD_LINEAR;
     unsigned before = allocations;
@@ -429,6 +429,24 @@ static void usage_flags(void) {
         assert(!gbm_device_is_format_supported(device, GBM_FORMAT_XRGB8888, flags));
     }
     assert(allocations == before);
+    /* Front-buffer rendering (gbm.h: "disable framebuffer compression") is
+     * satisfied by every buffer: none has compression metadata, and scanout
+     * presents current storage without a flip. Both tiers grant it. */
+    const uint32_t front[] = {GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING};
+    for (unsigned i = 0; i < 2; ++i) {
+        uint32_t flags = front[i] | GBM_BO_USE_FRONT_RENDERING;
+        assert(gbm_device_is_format_supported(device, GBM_FORMAT_XRGB8888, flags) == 1);
+        struct gbm_bo *bo = gbm_bo_create(device, 4, 3, GBM_FORMAT_XRGB8888, flags);
+        assert(bo);
+        gbm_bo_destroy(bo);
+        bo = gbm_bo_create_with_modifiers2(device, 4, 3, GBM_FORMAT_XRGB8888, &linear, 1, flags);
+        assert(bo);
+        gbm_bo_destroy(bo);
+        struct gbm_surface *surface = gbm_surface_create(device, 4, 3, GBM_FORMAT_XRGB8888, flags);
+        assert(surface);
+        gbm_surface_destroy(surface);
+    }
     /* Format support follows the planes that scan the buffer out: the
      * kernel cursor plane takes ARGB8888 only, and (as Mesa's DRI backend
      * reports) no format is both a cursor and a render target. */
