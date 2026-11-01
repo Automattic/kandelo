@@ -55435,9 +55435,23 @@ impl HostIO for RelSymlinkMock {
 
         // The completed wait left no record: the same request waits anew.
         assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        // While parked, the argument holds Linux's rewrite: RELATIVE cleared
+        // and the absolute target. The host publishes it if a handler signal
+        // ends the wait (EINTR), so the caller's retry continues it.
+        let mut parked = two;
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WAIT_VBLANK, &mut parked), Err(Errno::EAGAIN));
+        let target = (start + 2 + 2) as u32;
+        assert_eq!((le_u32(&parked, 0), le_u32(&parked, 4)), (DRM_VBLANK_ABSOLUTE, target));
         // A handler signal ends that wait (EINTR); its target is forgotten, so
         // an identical later request is a new wait, not the interrupted one.
         interrupt_vblank_wait(&mut proc);
+        // libdrm's EINTR retry reissues the rewritten absolute request: it
+        // waits for the same vblank and completes there.
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, parked).map(|_| ()), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 10, 40_000);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, parked).map(|_| ()), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 10, 50_000);
+        assert_eq!(le_u32(&wait_vblank(&mut proc, &mut host, fd, parked).unwrap(), 4), target);
         kms_host_vblank(&mut proc, 11, 0);
         kms_host_vblank(&mut proc, 11, 1);
         assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));

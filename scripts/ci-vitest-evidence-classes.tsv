@@ -72,6 +72,7 @@ host/test/dri-cube-pyramid.test.ts	prepared-product
 host/test/dri-dumb-roundtrip.test.ts	prepared-product
 host/test/dri-egl-native-window.test.ts	prepared-product
 host/test/dri-import-lifetime.test.ts	prepared-product
+host/test/dri-ioctl-interrupt.test.ts	source-only
 host/test/dri-kms-cursor.test.ts	prepared-product
 host/test/dri-kms-gl-attach-ordering.test.ts	source-only
 host/test/dri-kms-modes.test.ts	prepared-product
@@ -498,9 +499,9 @@ host/test/webgl-es2-enums.test.ts	source-only
 host/test/webgl-es2-formats.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
-host/test/webgl-framebuffer-dimensions.test.ts	source-only
 host/test/webgl-final-render-node.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
+host/test/webgl-framebuffer-dimensions.test.ts	source-only
 host/test/webgl-framebuffer-names.test.ts	source-only
 host/test/webgl-gbm-front-copy.test.ts	source-only
 host/test/webgl-gpu-bo.test.ts	source-only
@@ -509,14 +510,15 @@ host/test/webgl-image-export.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-inverse-sequence.test.ts	source-only
-host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-kernel-owned-forward.test.ts	source-only
 host/test/webgl-kernel-query-controls.test.ts	source-only
 host/test/webgl-kernel-query-wakes.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
+host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-main-forward.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
 host/test/webgl-native-query-adapter.test.ts	source-only
+host/test/webgl-object-capture.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
 host/test/webgl-owned-forward.test.ts	source-only
@@ -527,6 +529,7 @@ host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-query-receipt-codec.test.ts	source-only
 host/test/webgl-readback-capture.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
+host/test/webgl-server-wait.test.ts	source-only
 host/test/webgl-shader-precision.test.ts	source-only
 host/test/webgl-shader-upload.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
@@ -538,9 +541,9 @@ host/test/webgl-submit-snapshot.test.ts	source-only
 host/test/webgl-surface-resources.test.ts	source-only
 host/test/webgl-surface-storage-lease.test.ts	source-only
 host/test/webgl-texture-zero.test.ts	source-only
+host/test/webgl-unaligned-vertex.test.ts	source-only
 host/test/webgl-uniform-query-candidate.test.ts	source-only
 host/test/webgl-uniform-upload.test.ts	source-only
-host/test/webgl-unaligned-vertex.test.ts	source-only
 host/test/webgl-vertex-constants.test.ts	source-only
 host/test/webmcp-guest-listing.test.ts	source-only
 host/test/webmcp-launch.test.ts	source-only
@@ -677,5 +680,3 @@ web-libs/kandelo-session/test/sized-download.test.ts	source-only
 web-libs/kandelo-session/test/terminal-links.test.ts	source-only
 web-libs/kandelo-session/test/tracked-demo-parity.test.ts	prepared-product
 web-libs/kandelo-session/test/vfs-asset-group.test.ts	source-only
-host/test/webgl-object-capture.test.ts	source-only
-host/test/webgl-server-wait.test.ts	source-only

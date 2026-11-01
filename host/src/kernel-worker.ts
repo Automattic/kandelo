@@ -18294,6 +18294,12 @@ export class CentralizedKernelWorker {
     // retain their public EAGAIN result, while every blocking path reaches
     // completion here after its exact Rust retry binding has been captured.
     if (deliveredSignal > 0) {
+      // An interrupted ioctl publishes its in/out argument as the kernel left
+      // it in this last attempt, as every other failed ioctl already does
+      // and as Linux's drm_ioctl copies an _IOWR argument back on failure.
+      // DRM_IOCTL_WAIT_VBLANK relies on it: the kernel rewrote a RELATIVE
+      // request to its ABSOLUTE target, so libdrm's EINTR retry (and an
+      // SA_RESTART resubmission) continues the same wait.
       this.completeChannel(
         channel,
         syscallNr,
@@ -18301,7 +18307,7 @@ export class CentralizedKernelWorker {
         SYSCALL_ARGS[syscallNr],
         -1,
         EINTR_ERRNO,
-        [],
+        syscallNr === SYS_IOCTL ? detachedOutput : [],
         undefined,
         entry,
       );
