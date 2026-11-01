@@ -342,6 +342,14 @@ export class GlOwnedMainForwardController {
     try {
     let receipt=owner.receipts.get(request.token);
     if(!receipt) {
+      if(request.control==="forget") {
+        // This floor permanently refuses every late Begin below it. Every
+        // uncertain native admission retains its actual ServerReceipt until
+        // native Forget succeeds, so absence here proves metadata disposal,
+        // never physical retirement or a Commit/Cancel disposition.
+        if(request.token<=owner.floor)this.send({...owner.grant,...finalWords(request.token),type:"gl_owned_query_forgotten"});
+        return;
+      }
       if(request.token<=owner.floor || this.records+this.finals.pending>=this.limits.maxRequests)return;
       if(request.control!=="begin" && request.control!=="cancel")return;
       // Reserve metadata before invoking any native capture. After entered is
@@ -369,10 +377,15 @@ export class GlOwnedMainForwardController {
       if(request.control==="forget" && receipt.entered && receipt.rejected===null) {
         const result=this.adapter.control(owner.owner,bytes);
         if("error" in result)return;
-        try {decodeQueryReply(result.bytes,expected("forget",request.token,receipt.capacity,receipt.mode));}catch{return;}
+        try {
+          const response=decodeQueryReply(result.bytes,expected("forget",request.token,receipt.capacity,receipt.mode));
+          if(response.phase!=="retired")return;
+        }catch{return;}
       }
-      this.reply(owner,request.control,request.token,receipt,receipt.terminal);
-      if(request.control==="forget") {owner.receipts.delete(request.token);this.records--;}
+      if(request.control==="forget") {
+        owner.receipts.delete(request.token);this.records--;
+        this.send({...owner.grant,...finalWords(request.token),type:"gl_owned_query_forgotten"});
+      } else this.reply(owner,request.control,request.token,receipt,receipt.terminal);
       return;
     }
     if(request.control==="begin" && request.begin!.capacity!==receipt.capacity)return;
@@ -411,8 +424,11 @@ export class GlOwnedMainForwardController {
       // terminal cancellation ACK as an unrequested-mode Poll. First tell it
       // to enter Cancel, then acknowledge that exact mode on its next control.
       this.reply(owner,"poll",request.token,receipt,{phase:"retiring",mode:"cancel"});
+    } else if(request.control==="forget") {
+      if(response.phase!=="retired")return;
+      owner.receipts.delete(request.token);this.records--;
+      this.send({...owner.grant,...finalWords(request.token),type:"gl_owned_query_forgotten"});
     } else this.send({...owner.grant,type:"gl_owned_reply",control:request.control,bytes:buffer(result.bytes)});
-    if(request.control==="forget" && response.phase==="retired") {owner.receipts.delete(request.token);this.records--;}
     } catch(error) {failure=error;throw error;}
     finally {
       // An uncertain native response still owns admitted custody. Schedule only
@@ -551,7 +567,7 @@ export class GlOwnedMainForwardController {
 
 type ClientReceipt={token:bigint;begin:Omit<QueryBegin,"input">;custody:GlRemoteResultCustody;
   execution:GlResultExecution|null;admission:"unsent"|"awaiting-native-admission"|"native-admitted";
-  mode:GlResultMode|null;rejected:boolean;announced?:string};
+  mode:GlResultMode|null;rejected:boolean;announced?:string;forgetting?:boolean;forgotten?:boolean};
 type ClientRetirement={sequence:number;source:number;state:"empty"|"queued"|"pending"|"complete"};
 type ClientFinal={bytes:Uint8Array<ArrayBuffer>;state:"unsent"|"awaiting-native-admission"|"pending"|"rejecting"|"retired"|"rejected";closesSession:boolean;dirty:boolean;forgetting?:boolean;forgotten?:boolean;wake?:()=>void};
 type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null;openRejected:boolean;closed:boolean;forgetting:boolean;receipts:Map<bigint,ClientReceipt>;finals:Map<bigint,ClientFinal>;
@@ -806,6 +822,12 @@ export class GlOwnedForwardClient {
       if(changed)this.notifyOwner(entry);
       return;
     }
+    if(message.type==="gl_owned_query_forgotten") {
+      const token=finalToken(message);if(token===null)return;
+      const receipt=entry.receipts.get(token);
+      if(!receipt || !receipt.forgetting || receipt.forgotten || this.store.poll(entry.owner,token).state!=="retired")return;
+      receipt.forgotten=true;this.notifyWork(entry);this.wake(entry.owner,token);return;
+    }
     if(message.type==="gl_owned_owner_forgotten") {
       if(!entry.forgetting || !entry.closed)return;
       // The server may retain only clean scalar owner metadata if this final
@@ -950,9 +972,14 @@ export class GlOwnedForwardClient {
   }
   forget(owner:GlResultOwner,token:bigint):boolean {
     const entry=this.owners.get(owner),receipt=entry?.receipts.get(token);
-    if(!entry || !receipt || this.store.poll(owner,token).state!=="retired")return false;
-    if(receipt.admission!=="unsent" && entry.grant)this.post({...entry.grant,type:"gl_owned_control",bytes:buffer(encodeQueryRequest({control:"forget",token}))});
-    if(!this.store.forget(owner,token))return false;entry.receipts.delete(token);return true;
+    if(!entry)return this.forgotten.has(owner); // Actual whole-owner disposal ACK.
+    if(!receipt || this.store.poll(owner,token).state!=="retired")return false;
+    receipt.forgetting=true;
+    if(receipt.admission==="unsent")receipt.forgotten=true;
+    else if(!receipt.forgotten && entry.grant)this.post({...entry.grant,type:"gl_owned_control",bytes:buffer(encodeQueryRequest({control:"forget",token}))});
+    if(entry.receipts.get(token)!==receipt)return receipt.forgotten===true;
+    if(!receipt.forgotten || !this.store.forget(owner,token))return false;
+    entry.receipts.delete(token);return true;
   }
   retireOwner(owner:GlResultOwner):boolean {
     const entry=this.owners.get(owner);if(!entry || !this.store.retireOwner(owner))return false;

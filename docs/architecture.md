@@ -4949,6 +4949,14 @@ lifecycle intent scheduling, owned forwarding, remaining mutating-query
 candidates and ordinary signal-driven exit integration remain required before
 production asynchronous query activation.
 
+Ordinary paired query Forget has its own authenticated metadata-disposal
+acknowledgment. A successful post cannot release local receipt ownership. Lost
+acknowledgments are recoverable from the same original grant after server
+metadata is gone and late Begin is irrevocably refused. This scalar replay
+proof never stands in for native retirement; that must already be acknowledged
+separately. Terminal metadata remains bounded without retaining a tombstone for
+every completed query.
+
 The retained server-wait source model separates command custody from result
 custody. A queue owns the exact source `GlFenceLease`, destination execution and
 operation ticket; an accepted wait survives result cancellation or Forget.

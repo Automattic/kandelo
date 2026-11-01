@@ -4391,6 +4391,15 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
     s.add(Program, "gl_compressed_upload", gl_compressed_upload());
+    s.add(KernelHost, "gl_forward_query_forget_ack", json!({
+        "message": "gl_owned_query_forgotten",
+        "fields": ["pid","sessionId","clientRegistration","epoch","registration","tokenLow","tokenHigh"],
+        "token": "positive-i63-low-high-u32",
+        "requires": "matching-original-endpoint-grant-local-retired-receipt-and-requested-forget",
+        "acknowledges": "per-token-metadata-disposal-not-native-retirement",
+        "replay": "native-forget-or-absent-and-future-begin-irrevocably-refused",
+        "client_release": "only-after-authenticated-ack-or-proven-never-posted"
+    }));
     s.add(Program, "gl_server_wait", json!({
         "opcode": shared::gl::QOP_SERVER_WAIT,
         "byte_order": "little-endian", "request_bytes": 8,

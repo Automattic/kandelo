@@ -19624,3 +19624,32 @@ can be called implemented end to end. General lifecycle physical effects and
 mapping retirement likewise remain explicit work; no missing receiver is
 acknowledged as cleanup. Broader rebuild/test work remains deferred until the
 entire combined implementation pass is complete.
+
+
+### Strict ordinary forwarded query Forget acknowledgment
+
+Ordinary query metadata now remains locally owned until the actual paired
+renderer confirms disposal. Posting a Forget is not an acknowledgment. The new
+`gl_owned_query_forgotten` message authenticates the original endpoint/grant and
+exact positive token; the client accepts it only after actual query retirement
+and a requested Forget. It does not prove native cleanup or change the recorded
+Commit/Cancel outcome. Definitely never-posted queries can dispose of purely
+local metadata without inventing a renderer acknowledgment.
+
+The server disposes of native adapter metadata before acknowledging. If an ACK
+is lost, absence of a server receipt under that same owner's irrevocable Begin
+replay floor proves disposal (or that no native admission ever occurred). Every
+uncertain admission retains its server receipt, so this absence rule cannot
+acknowledge physical cleanup. Repeated Forget can recover after later queries
+without keeping one unbounded tombstone per completed operation. Premature,
+wrong-token and foreign-grant notices cannot release local custody. A real
+whole-owner disposal acknowledgment also proves that owner's metadata absent.
+The reserved host3 snapshot records the additive message contract.
+
+Evidence is `.context/query-forget-r1/`: the first three controls fail before the
+repair; all 34 focused owned-forward controls and strict production types pass
+afterward. Controls include lost requests/replies, replayed Begin, later queries
+beyond the request budget and synchronous progress observers. This is source
+transport evidence. Rust/controller Forgetting and explicit final metadata
+consumption, public async activation and normal runtime validation remain in
+progress; no full graphics completion is claimed.

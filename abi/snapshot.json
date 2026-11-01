@@ -2,6 +2,7 @@
   "abi_surfaces": {
     "kernel_host": [
       "export_deny",
+      "gl_forward_query_forget_ack",
       "host_adapter",
       "kernel_exports",
       "kernel_imports",
@@ -1421,6 +1422,23 @@
       "completion_magic"
     ],
     "unknown_commit": "no-replay-abort-drops-staging-only"
+  },
+  "gl_forward_query_forget_ack": {
+    "acknowledges": "per-token-metadata-disposal-not-native-retirement",
+    "client_release": "only-after-authenticated-ack-or-proven-never-posted",
+    "fields": [
+      "pid",
+      "sessionId",
+      "clientRegistration",
+      "epoch",
+      "registration",
+      "tokenLow",
+      "tokenHigh"
+    ],
+    "message": "gl_owned_query_forgotten",
+    "replay": "native-forget-or-absent-and-future-begin-irrevocably-refused",
+    "requires": "matching-original-endpoint-grant-local-retired-receipt-and-requested-forget",
+    "token": "positive-i63-low-high-u32"
   },
   "gl_image_container_receipts": {
     "accepted_payload": 1,

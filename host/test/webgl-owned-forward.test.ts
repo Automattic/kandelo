@@ -422,3 +422,45 @@ it("rejects changed paired Begin inputs through lost admission ACK and Ready wit
   expect(f.client.poll(f.owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
   f.dispose();
 });
+
+it("retains local Forget custody until the actual per-token receiver ACK and recovers a lost ACK",async()=>{
+  const f=await fixture();f.begin(1n);f.drain();f.client.control(f.owner,1n,"commit");f.drain();
+  const oldBegin=f.clientPort.sent.find(data=>{const m=data as {type:string;bytes?:ArrayBuffer};return m.type==="gl_owned_control" && new DataView(m.bytes!).getUint16(6,true)===1;});
+  let ack:Record<string,unknown>|undefined;
+  f.serverPort.drop=data=>{const m=data as Record<string,unknown>;if(m.type==="gl_owned_query_forgotten"){ack=m;return true;}return false;};
+  expect(f.client.forget(f.owner,1n)).toBe(false);expect(f.client.pendingRequests).toBe(1);expect(f.dispose.ownedQueries!.pendingRequests).toBe(0);
+  expect(ack).toBeDefined();f.clientPort.fire({...ack,registration:Number(ack!.registration)+1});
+  expect(f.client.forget(f.owner,1n)).toBe(false);
+  f.serverPort.drop=null;expect(f.client.forget(f.owner,1n)).toBe(true);expect(f.client.pendingRequests).toBe(0);
+  f.serverPort.fire(oldBegin);f.dispose.ownedQueries!.drain(8);expect(f.log.filter(x=>x==="finish")).toHaveLength(1);expect(f.dispose.ownedQueries!.pendingRequests).toBe(0);f.dispose();
+});
+it("keeps an undelivered Forget request recoverable without a fabricated ACK",async()=>{
+  const f=await fixture();f.begin(1n);f.drain();f.client.control(f.owner,1n,"cancel");f.drain();
+  f.clientPort.drop=data=>{const m=data as {type:string;bytes?:ArrayBuffer};return m.type==="gl_owned_control" && new DataView(m.bytes!).getUint16(6,true)===6;};
+  expect(f.client.forget(f.owner,1n)).toBe(false);expect(f.client.pendingRequests).toBe(1);expect(f.dispose.ownedQueries!.pendingRequests).toBe(1);
+  f.clientPort.drop=null;expect(f.client.forget(f.owner,1n)).toBe(true);expect(f.dispose.ownedQueries!.pendingRequests).toBe(0);f.dispose();
+});
+it("ignores premature and wrong-token Forget notices even after native retirement",async()=>{
+  const f=await fixture();f.begin(1n);f.drain();f.client.control(f.owner,1n,"commit");f.drain();
+  const grant=f.serverPort.sent.find(data=>(data as {type:string}).type==="gl_owned_opened") as Record<string,unknown>;
+  f.clientPort.fire({...grant,type:"gl_owned_query_forgotten",tokenLow:1,tokenHigh:0});
+  f.clientPort.drop=data=>{const m=data as {type:string;bytes?:ArrayBuffer};return m.type==="gl_owned_control" && new DataView(m.bytes!).getUint16(6,true)===6;};
+  expect(f.client.forget(f.owner,1n)).toBe(false);
+  f.clientPort.fire({...grant,type:"gl_owned_query_forgotten",tokenLow:2,tokenHigh:0});expect(f.client.forget(f.owner,1n)).toBe(false);
+  f.clientPort.drop=null;expect(f.client.forget(f.owner,1n)).toBe(true);f.dispose();
+});
+it("recovers an older lost Forget ACK after later queries without retaining one tombstone per query",async()=>{
+  const f=await fixture();f.begin(1n);f.drain();f.client.control(f.owner,1n,"commit");f.drain();
+  f.serverPort.drop=data=>{const m=data as {type:string;tokenLow?:number};return m.type==="gl_owned_query_forgotten" && m.tokenLow===1;};
+  expect(f.client.forget(f.owner,1n)).toBe(false);
+  for(let n=2n;n<=20n;n++){
+    expect(f.begin(n)).toBe(true);f.drain();f.client.control(f.owner,n,"commit");f.drain();expect(f.client.forget(f.owner,n)).toBe(true);
+    expect(f.client.pendingRequests).toBe(1);expect(f.dispose.ownedQueries!.pendingRequests).toBe(0);
+  }
+  f.serverPort.drop=null;expect(f.client.forget(f.owner,1n)).toBe(true);expect(f.client.pendingRequests).toBe(0);f.dispose();
+});
+it("keeps a synchronous Forget progress observer from losing its completed ACK",async()=>{
+  const f=await fixture();f.begin(1n);f.drain();f.client.control(f.owner,1n,"commit");f.drain();let armed=false;
+  f.client.watchWork(f.owner,()=>{if(armed)f.client.forget(f.owner,1n);});armed=true;
+  expect(f.client.forget(f.owner,1n)).toBe(true);expect(f.client.pendingRequests).toBe(0);expect(f.dispose.ownedQueries!.pendingRequests).toBe(0);f.dispose();
+});
