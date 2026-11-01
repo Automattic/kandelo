@@ -80,58 +80,46 @@ pub enum DefaultSignalOutcome {
     Exited,
 }
 
-/// Internal delivery disposition. Pending cleanup still owns the exact query
-/// receipt; it is neither a delivered signal nor permission to resume a task.
+/// Internal delivery disposition. A process whose prepared exec target has an
+/// uncertain native close is contained: termination must not consume its
+/// signal or tear it down while that target's custody is unresolved.
 #[must_use]
 #[derive(Debug, PartialEq, Eq)]
 pub enum SignalProgress<T> {
     Complete(T),
-    PendingOwned,
     ProtocolFaultOwned,
 }
 
 impl<T> SignalProgress<T> {
-    /// Legacy callers have no pending result contract. Contain the call before
-    /// signal consumption or handler/mask mutation instead of reporting success.
+    /// Callers without a containment path stop before signal consumption or
+    /// handler/mask mutation instead of reporting success.
     pub fn require_complete(self) -> T {
         match self {
             Self::Complete(value) => value,
-            Self::PendingOwned => {
-                panic!("signal delivery requires pending query cleanup scheduling")
-            }
             Self::ProtocolFaultOwned => {
-                panic!("signal delivery requires query protocol containment")
+                panic!("signal delivery requires exec target containment")
             }
         }
     }
 }
 
-/// Run before consuming a terminating default signal. Process termination
-/// cancels receipts for every task, including a query owned by a sibling.
-pub fn preflight_default_signal_action(
-    proc: &mut Process,
-    host: &mut dyn HostIO,
-    signum: u32,
-) -> SignalProgress<()> {
+/// Run before consuming a terminating default signal.
+pub fn preflight_default_signal_action(proc: &Process, signum: u32) -> SignalProgress<()> {
     if matches!(
         default_action(signum),
         DefaultAction::Terminate | DefaultAction::CoreDump
     ) {
-        preflight_signal_termination(proc, host)
+        preflight_signal_termination(proc)
     } else {
         SignalProgress::Complete(())
     }
 }
 
-fn preflight_signal_termination(proc: &mut Process, host: &mut dyn HostIO) -> SignalProgress<()> {
+fn preflight_signal_termination(proc: &Process) -> SignalProgress<()> {
     if proc.prepared_exec_targets.has_retiring() {
         return SignalProgress::ProtocolFaultOwned;
     }
-    match crate::syscalls::preflight_gl_query_teardown(proc, host, None) {
-        crate::syscalls::GlQueryTeardown::Ready => SignalProgress::Complete(()),
-        crate::syscalls::GlQueryTeardown::PendingOwned => SignalProgress::PendingOwned,
-        crate::syscalls::GlQueryTeardown::ProtocolFaultOwned => SignalProgress::ProtocolFaultOwned,
-    }
+    SignalProgress::Complete(())
 }
 
 /// Finish a signal-caused process exit, including resource cleanup, before
@@ -172,7 +160,7 @@ fn try_terminate_process_by_signal_impl(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> SignalProgress<()> {
-    match preflight_signal_termination(proc, host) {
+    match preflight_signal_termination(proc) {
         SignalProgress::Complete(()) => (),
         pending => return pending,
     }
@@ -242,9 +230,8 @@ fn try_apply_default_signal_action_impl(
     host: &mut dyn HostIO,
     signum: u32,
 ) -> SignalProgress<DefaultSignalOutcome> {
-    match preflight_default_signal_action(proc, host, signum) {
+    match preflight_default_signal_action(proc, signum) {
         SignalProgress::Complete(()) => (),
-        SignalProgress::PendingOwned => return SignalProgress::PendingOwned,
         SignalProgress::ProtocolFaultOwned => return SignalProgress::ProtocolFaultOwned,
     }
     SignalProgress::Complete(apply_default_signal_action_impl(proc, locks, host, signum))
@@ -283,9 +270,8 @@ pub fn dequeue_signal_for(proc: &mut Process, tid: u32, signum: u32) -> (u32, u6
                 default_action(signum),
                 DefaultAction::Terminate | DefaultAction::CoreDump
             )
-            || !(proc.blocked_retries.has_external_query_receipts()
-                || proc.prepared_exec_targets.has_retiring()),
-        "terminating signal dequeue requires completed query cleanup"
+            || !proc.prepared_exec_targets.has_retiring(),
+        "terminating signal dequeue requires exec target containment"
     );
     if proc.state == ProcessState::Stopped && signum == wasm_posix_shared::signal::SIGKILL {
         proc.clear_signal_everywhere(signum);
@@ -376,7 +362,7 @@ fn deliver_pending_signals_impl(
         match action.handler {
             SignalHandler::Handler(_) => break,
             SignalHandler::Default => {
-                match preflight_default_signal_action(proc, host, signum) {
+                match preflight_default_signal_action(proc, signum) {
                     SignalProgress::Complete(()) => (),
                     pending => return pending,
                 }
@@ -1116,9 +1102,6 @@ impl SignalState {
         handlers
     }
 }
-
-#[cfg(test)]
-mod query_retirement_tests;
 
 #[cfg(test)]
 mod tests {

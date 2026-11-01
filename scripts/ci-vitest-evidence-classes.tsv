@@ -85,7 +85,6 @@ host/test/dri-mapping-fork.test.ts	prepared-product
 host/test/dri-modeset.test.ts	prepared-product
 host/test/dri-multiplex.test.ts	source-only
 host/test/dri-registry.test.ts	source-only
-host/test/dri-release-controls.test.ts	source-only
 host/test/dri-smoke.test.ts	prepared-product
 host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
@@ -226,7 +225,6 @@ host/test/kernel-large-transfer-protocol.test.ts	source-only
 host/test/kernel-late-channel.test.ts	prepared-product
 host/test/kernel-native-comparison-fallback.test.ts	prepared-product
 host/test/kernel-network-cleanup-entry.test.ts	source-only
-host/test/kernel-owned-query-channel.test.ts	prepared-product
 host/test/kernel-process-registration-entry.test.ts	source-only
 host/test/kernel-public-entry-roots.test.ts	source-only
 host/test/kernel-public-scratch.test.ts	source-only
@@ -493,7 +491,6 @@ host/test/webgl-depth-sampling-draw.test.ts	source-only
 host/test/webgl-depth-sampling-source.test.ts	source-only
 host/test/webgl-depth-range.test.ts	source-only
 host/test/webgl-depth-texture.test.ts	source-only
-host/test/webgl-error-query.test.ts	source-only
 host/test/webgl-error-sequence.test.ts	source-only
 host/test/webgl-es2-color-renderable.test.ts	source-only
 host/test/webgl-es2-enums.test.ts	source-only
@@ -510,20 +507,15 @@ host/test/webgl-image-export.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-inverse-sequence.test.ts	source-only
-host/test/webgl-kernel-query-controls.test.ts	source-only
-host/test/webgl-kernel-query-wakes.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
-host/test/webgl-native-query-adapter.test.ts	source-only
 host/test/webgl-object-capture.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-operation-stream.test.ts	source-only
-host/test/webgl-owned-result.test.ts	source-only
 host/test/webgl-present-target.test.ts	source-only
 host/test/webgl-private-client-draw.test.ts	source-only
 host/test/webgl-program-link.test.ts	source-only
-host/test/webgl-query-receipt-codec.test.ts	source-only
 host/test/webgl-readback-capture.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-server-wait.test.ts	source-only
@@ -539,7 +531,6 @@ host/test/webgl-surface-resources.test.ts	source-only
 host/test/webgl-surface-storage-lease.test.ts	source-only
 host/test/webgl-texture-zero.test.ts	source-only
 host/test/webgl-unaligned-vertex.test.ts	source-only
-host/test/webgl-uniform-query-candidate.test.ts	source-only
 host/test/webgl-uniform-upload.test.ts	source-only
 host/test/webgl-vertex-constants.test.ts	source-only
 host/test/webgl-vertex-depth-range.test.ts	source-only

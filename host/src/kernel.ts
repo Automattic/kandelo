@@ -8,9 +8,7 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, KERNEL_GL_QUERY_CONTROL } from "./webgl/ops.js";
-import { GlKernelQueryControls } from "./webgl/kernel-query-controls.js";
-import { QUERY_RECEIPT_REQUEST_HEADER, QUERY_RECEIPT_REPLY_HEADER } from "./webgl/query-receipt-codec.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -55,7 +53,7 @@ import { isFenceQuery, validFenceQuery, prepareFenceQuery, runServerWait, type P
 import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
-import { drainSubmitQueue, glSubmitExecuting, glSubmitQueueDisposition } from "./webgl/submit-drain";
+import { drainSubmitQueue, glSubmitExecuting } from "./webgl/submit-drain";
 import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
@@ -797,12 +795,6 @@ export interface KmsDisplaySize {
 }
 
 export interface KernelCallbacks {
-  /** Durable owned-query state changed. Schedule a later worker turn; never
-   * reenter Rust from this callback or retain a guest-memory view. */
-  onGlQueryWake?: (pid:number,session:number,registration:number,token:bigint)=>void;
-  /** Accepted private work or authenticated backend progress. This is a hint
-   * for a bounded later host turn, never permission to retry a guest channel. */
-  onGlQueryWork?: (pid:number,session:number,registration:number)=>void;
   onAlarm?: (seconds: number) => number;
   onPosixTimer?: (timerId: number, signo: number, valueMs: number, intervalMs: number) => number;
   onNetListen?: (fd: number, port: number, addr: [number, number, number, number]) => number;
@@ -1032,32 +1024,6 @@ export class WasmPosixKernel {
     binding => binding.gl ? this.gl.retainSubmitExecution(binding, this.glMuxerFor(binding.gl)) : null,
   );
   private gl_muxers = new WeakMap<WebGL2RenderingContext, GlMuxer>();
-  // Independent copied-byte budgets, not shared-memory reservation ceilings.
-  // These private controls remain disconnected from public ioctl parking.
-  private gl_query_controls=new GlKernelQueryControls(this.gl,this.bos,this.gl_muxers,
-    {maxOwners:256,maxRequests:1024,maxRetainedBytes:8*1024*1024},
-    (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token),
-    (pid,session,registration)=>this.callbacks.onGlQueryWork?.(pid,session,registration));
-
-  /** Private worker receipt routing, frozen before first native admission. */
-  prepareGlQueryControlOwner(pid:number,session:number) {return this.gl_query_controls.prepareOwner(pid,session);}
-  ownsGlQueryControlOwner(owner:import("./webgl/owned-result.js").GlResultOwner):boolean {return this.gl_query_controls.owns(owner);}
-
-  drainGlQueryControls(maxVisits:number):number {
-    if(!Number.isSafeInteger(maxVisits)||maxVisits<0)return 0;
-    let visits=this.gl_query_controls.drain(maxVisits);
-    this.drainGlSubmits(maxVisits);
-    visits+=this.gl_query_controls.drainNative(maxVisits);
-    return visits;
-  }
-  /** Inspect only after the bounded drain. The submit classifier can retry
-   * consumed-frame retirement; a remaining retirement is not runnable work. */
-  glQueryWorkRunnableAfterDrain():boolean {
-    return this.gl_query_controls.runnableAfterDrain || glSubmitQueueDisposition(this.gl_submit_queue,
-      binding=>binding.gl ? this.glMuxerFor(binding.gl) : null)==="runnable";
-  }
-  prepareGlQueryControlTeardown(pid:number):boolean {return this.gl_query_controls.prepareTeardown(pid);}
-  forgetGlQueryControlsAfterKernelLifecycle(pid:number):boolean {return this.gl_query_controls.forgetAfterKernelLifecycle(pid);}
   // Physical GPU resource ownership is device-wide, independent of DRM master
   // and of the first process that happens to create an EGL context.
   #deviceGl: WebGL2RenderingContext | null = null;
@@ -3219,24 +3185,6 @@ export class WasmPosixKernel {
           inPtr: KernelPointer, inLen: KernelPointer,
           outPtr: KernelPointer, outLen: KernelPointer, sessionId?: number,
         ): number => {
-          // Retirement controls must remain reachable after context/current
-          // removal. Validate Rust scratch before native admission or cleanup.
-          if (op===KERNEL_GL_QUERY_CONTROL) {
-            let destination:RustLentKernelDestination,input:Uint8Array,capacity:number;
-            try {
-              const length=this.#checkedKernelIndex(inLen,"owned GL control length");
-              capacity=this.#checkedKernelIndex(outLen,"owned GL control reply length");
-              if (length<QUERY_RECEIPT_REQUEST_HEADER||length>QUERY_RECEIPT_REQUEST_HEADER+65536
-                ||capacity<QUERY_RECEIPT_REPLY_HEADER||capacity>QUERY_RECEIPT_REPLY_HEADER+65536) return -22;
-              destination=this.#rustLentKernelDestination(outPtr,outLen,"owned GL control reply");
-              input=this.#readKernelBytes(inPtr,length);
-            }catch{return -14;}
-            const reply=this.gl_query_controls.control(pid,sessionId===undefined?0:sessionId>>>0,input,capacity);
-            if ("error" in reply) return -reply.error;
-            if (reply.bytes.byteLength>capacity) return -5;
-            try {this.#writeKernelBytes(destination,reply.bytes);}catch{return -14;}
-            return reply.bytes.byteLength;
-          }
           const b = this.gl.get(pid, sessionId);
           if (!b || (!b.gl && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
           if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;

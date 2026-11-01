@@ -38,19 +38,6 @@ pub struct HostAppendOutcome {
 
 /// Trait for host I/O operations that the kernel delegates to the runtime.
 pub trait HostIO {
-    /// Internal acknowledged final-device cleanup. Unsupported hosts retain the
-    /// Rust transaction; neither ENOSYS nor a legacy void callback is an ACK.
-    /// No Wasm import/public scheduling path is enabled by this default.
-    fn dri_release_control(
-        &mut self,
-        request: crate::dri_release::DriReleaseRequest<'_>,
-    ) -> Result<crate::dri_release::DriReleaseReply, Errno> {
-        Ok(crate::dri_release::DriReleaseReply {
-            token: request.token,
-            phase: crate::dri_release::DriReleasePhase::Rejected(Errno::ENOSYS),
-        })
-    }
-
     /// Open `name` — exactly one path component — relative to a directory
     /// handle this host previously issued, and return a new handle.
     ///

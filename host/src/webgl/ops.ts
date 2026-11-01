@@ -225,10 +225,6 @@ export const QOP_FENCE_STATUS = 0x002F;
 export const QOP_RELEASE_FENCE = 0x0030;
 export const QOP_FLUSH = 0x0031;
 
-// Reserved with shared::gl; no production control dispatch/pending path yet.
-export const KERNEL_GL_QUERY_CONTROL = 0x7fff_fffe;
-export const GL_QUERY_NEEDS_OWNED_ADMISSION = -2147483647;
-
 // Checked opaque compressed-image staging; full native call only at COMMIT.
 export const QOP_COMPRESSED_UPLOAD = 0x0032;
 // Reserved ABI56: one native read followed by independent copied-byte chunks.

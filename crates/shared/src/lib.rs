@@ -2391,10 +2391,6 @@ pub mod abi {
         HostAdapterKernelExport::required("kernel_get_process_exit_signal"),
         HostAdapterKernelExport::required("kernel_get_process_state"),
         HostAdapterKernelExport::required("kernel_get_socket_timeout_ms"),
-        HostAdapterKernelExport::optional("kernel_gl_query_advance"),
-        HostAdapterKernelExport::optional("kernel_gl_query_capture"),
-        HostAdapterKernelExport::optional("kernel_gl_query_release"),
-        HostAdapterKernelExport::optional("kernel_gl_query_session"),
         HostAdapterKernelExport::required("kernel_handle_channel"),
         HostAdapterKernelExport::required("kernel_handle_channel_record"),
         HostAdapterKernelExport::required("kernel_has_sa_nocldstop"),
@@ -4064,13 +4060,6 @@ pub mod gl {
     /// framebuffer should do it in tiles.
     pub const MAX_QUERY_IN_LEN: u32 = 64 * 1024;
     pub const MAX_QUERY_OUT_LEN: u32 = 64 * 1024;
-
-    /// Kernel-only future receipt envelope selector. Guest GLIO_QUERY rejects
-    /// this value. No host control dispatch or asynchronous query is enabled.
-    pub const KERNEL_GL_QUERY_CONTROL: u32 = 0x7fff_fffe;
-    /// Reserved zero-effect preentry disposition, not an errno or replay grant.
-    /// Neither producer nor consumer is enabled until owned admission is wired.
-    pub const GL_QUERY_NEEDS_OWNED_ADMISSION: i32 = i32::MIN + 1;
 
     // --- cmdbuf opcodes (mirrored in host/src/webgl/ops.ts) ----------------
     //

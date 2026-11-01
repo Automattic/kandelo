@@ -740,11 +740,9 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
-        if self.processes.get(&pid)?.blocked_retries.has_external_query_receipts()
-            || self.processes.get(&pid)?.prepared_exec_targets.has_retiring()
-        {
-            // No HostIO exists here. Keep the actual process/OFD/receipt owner
-            // until host-aware preflight proves retirement; IDs are not custody.
+        if self.processes.get(&pid)?.prepared_exec_targets.has_retiring() {
+            // No HostIO exists here. Keep the actual process/OFD owner until
+            // the uncertain executable close resolves; IDs are not custody.
             return None;
         }
         let mut proc = self.processes.remove(&pid)?;

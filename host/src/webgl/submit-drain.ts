@@ -28,28 +28,8 @@ export function glSubmitExecuting(muxer: GlMuxer | undefined): boolean {
   return !!muxer && executingMuxers.has(muxer);
 }
 
-/** Shared physical scope for internal owned queries as well as command
- * frames. The callback remains stack-local; no request callback is queued. */
-export function runGlRendererOperation<T>(muxer: GlMuxer, work: () => T): {entered:false} | {entered:true;value:T} {
-  if (executingMuxers.has(muxer)) return {entered:false};
-  executingMuxers.add(muxer);
-  try { return {entered:true,value:work()}; }
-  finally { executingMuxers.delete(muxer); }
-}
-
 export type GlMuxerFor = (b: GlBinding) => GlMuxer | null;
 export type GlDispatch = (b: GlBinding, off: number, len: number) => number | void;
-
-/** Inspect the actual queued head and physical renderer after a bounded pump.
- * pickNext also retries existing consumed-frame retirement; an unresolved
- * retirement is not runnable work and must not trigger a scheduling spin. */
-export function glSubmitQueueDisposition(queue: SubmitQueue, muxerFor: GlMuxerFor):
-  "empty" | "blocked" | "runnable" | "retiring" {
-  const entry = queue.pickNext();
-  if (!entry) return queue.isEmpty() ? (queue.pendingRetirements ? "retiring" : "empty") : "blocked";
-  try { return glSubmitExecuting(muxerFor(entry.binding) ?? undefined) ? "blocked" : "runnable"; }
-  catch { return "blocked"; }
-}
 
 export function drainSubmitQueue(
   queue: SubmitQueue,

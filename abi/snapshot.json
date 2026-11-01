@@ -1733,10 +1733,6 @@
       "kernel_clipboard_offer",
       "kernel_clipboard_stage",
       "kernel_epoll_wait_retry_state",
-      "kernel_gl_query_advance",
-      "kernel_gl_query_capture",
-      "kernel_gl_query_release",
-      "kernel_gl_query_session",
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
       "kernel_set_max_addr",
@@ -3444,26 +3440,6 @@
       "kind": "func",
       "name": "kernel_getsockopt",
       "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gl_query_advance",
-      "signature": "(i32,i32,i64,i32) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gl_query_capture",
-      "signature": "(i32,i32,i32,i64) -> (i64)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gl_query_release",
-      "signature": "(i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_gl_query_session",
-      "signature": "(i32,i32,i64) -> (i64)"
     },
     {
       "kind": "func",

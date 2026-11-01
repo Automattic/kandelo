@@ -12,7 +12,7 @@ extern crate wasm_posix_shared;
 pub use runtime_core::*;
 
 #[cfg(any(test, target_arch = "wasm32", target_arch = "wasm64"))]
-mod query_lifecycle;
+mod lifecycle;
 
 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
 pub mod wasm_api;

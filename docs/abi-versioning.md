@@ -2430,6 +2430,14 @@ kernel-host snapshot section and generated `DRI_CLEANUP_*` TypeScript
 constants carry the values. Earlier host3 kernels and hosts are not
 interchangeable with this contract; rebuild them together.
 
+The same contract drops the four optional kernel exports
+`kernel_gl_query_capture`, `kernel_gl_query_session`,
+`kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved
+`host_gl_query` operation `0x7ffffffe` they drove. Only a test hook ever
+called them: production `GLIO_QUERY` runs synchronously within the ioctl.
+A guest query with that operation number now reaches the renderer as an
+unknown operation.
+
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver
 from the merged source. All normal SDK, kernel, program, package and image
 artifacts require rebuilding for the combined program surface. Historical

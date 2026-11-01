@@ -1884,51 +1884,24 @@ SIGCHLD, so the kernel reaps them as they exit, as a Linux init does. They
 are the kernel-started Kandelo exchange agent and every orphan adopted as
 described next.
 
-The graphics integration also has an internal kernel-owned lifecycle intent
-registry. The existing synchronous `kernel_thread_exit` export now uses it;
-no opaque registry handle is exported. It retains the actual non-Clone driver
-intent with its existing PID/exec generation and exact request. Its 64-entry
-budget includes completed and taken scalar records. Admission reserves an
-entry fallibly before lifecycle work, and positive handles never wrap or reuse.
-Pending/faulted cleanup preserves the intent and process-table resources.
-Repeated completed steps observe a scalar summary without repeating effects.
-Actual removal lists, clear-TID pointer, exit status and executable completion
-remain held until `take_completion` moves them to a real Rust effects owner.
-The resulting Taken record means custody moved; it is not a host cleanup ACK
-or proof of execution. An infallible effects receiver can instead install
-that actual owner in the same reserved registry entry before any publication.
-The thread-exit consumer freezes the host's clear-child-TID flag at admission,
-checks the original process generation and pointer width, and uses the existing
-synchronous peer-memory store and kernel futex wake once. A failed store keeps
-Linux's ignored clear-TID fault semantics; a trapped import retains the owner
-and prohibits replay. It does not grant asynchronous memory-registration
-authority. Delivery repeats observe a scalar result. Only Taken, delivered or
-fully abandoned records can be forgotten.
+The lifecycle exports (`kernel_exec_commit`, `kernel_spawn_exec_commit`,
+the exit, signal-exit, thread-exit, removal, reap and blocking-retry release
+exports) validate their request and commit it in one synchronous call
+(`crates/kernel/src/lifecycle.rs`). Production GL and DRI run synchronously
+in the kernel worker, and device cleanup reports its real outcome from
+inside the commit (see "DRM/KMS" below), so no lifecycle transition waits on
+host work. A process whose prepared exec target has an uncertain native
+close is contained instead: every lifecycle request and terminating signal
+returns `EBUSY` or stays queued until that target's custody resolves.
 
-Removal and init-reap receivers retain the actual resource vectors and wait
-status as `PendingPhysicalReceiver`. The legacy void or ignored-error native
-release helpers are not physical cleanup acknowledgments. Those legacy removal
-exports remain unchanged until real retirement receivers exist. Scalar
-exec/exit/retry/signal completion delivery verifies the actual process-table
-transition; it does not acknowledge worker launch or physical native cleanup.
-
-Abandonment distinguishes an unstarted instruction from irreversible query
-cancellation. Once cleanup starts, abandonment must await its real retirement
-acknowledgment. Abandoned exec/spawn instructions also cancel their exact
-prepared target through the ordinary target/OFD cleanup path. Normal exec or
-removal invalidates an old intent; its token cannot cancel a replacement
-image's resources. Prepared-target cancel proves final regular-file OFD and
-cross-process handle ownership before attempting a final host close once.
-Success creates exact preclosed custody for normal OFD retirement without a
-second native close. An ambiguous error retains the sealed target and OFD;
-it cannot be read, retained, committed, retried by raw fd, discarded through
-process teardown or mistaken for an absent target. Registry abandonment stays
-faulted and cannot Forget it. Resolving Uncertain requires real host custody
-or explicit containment. Other executable-release sites still have ordinary
-error-retention gaps; this is not a general close transaction implementation.
-Kernel-held intent exports, remaining physical effects receivers, asynchronous
-memory authority and worker scheduling still need integration before public
-asynchronous graphics activation.
+Prepared-target cancel proves final regular-file OFD and cross-process
+handle ownership before attempting a final host close once. Success creates
+exact preclosed custody for normal OFD retirement without a second native
+close. An ambiguous error retains the sealed target and OFD; it cannot be
+read, retained, committed, retried by raw fd, discarded through process
+teardown or mistaken for an absent target. Other executable-release sites
+still have ordinary error-retention gaps; this is not a general close
+transaction implementation.
 
 ### Orphan adoption
 
@@ -4289,17 +4262,12 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
    `siglongjmp` then applies the jump buffer's saved mask when requested.
 5. If the signal interrupted a blocking syscall, EINTR is returned
 
-Internal owned graphics queries require an earlier termination check. A
-terminating default signal preflights every task's query receipt before
-consuming its queued instance or changing mask-wait and handler bookkeeping.
-The Rust `try_*` signal helpers return `SignalProgress::PendingOwned` or
-`ProtocolFaultOwned` while native cleanup is unproven; both retain the queued
-signal, process resources and existing signal state. Only acknowledged query
-retirement permits termination. Caught, ignored, stop and continue actions do
-not cancel graphics queries. Legacy delivery calls and the host-free default
-signal consumer fail closed if they bypass that ordering. These are internal
-integration guards: public graphics parking and the host's resumable signal
-scheduling are not enabled by them.
+A terminating default signal is checked before it consumes its queued
+instance or changes mask-wait and handler bookkeeping: while a prepared exec
+target has an uncertain native close, the Rust `try_*` signal helpers return
+`SignalProgress::ProtocolFaultOwned`, which retains the queued signal,
+process resources and existing signal state. Legacy delivery calls and the
+host-free default signal consumer fail closed if they bypass that ordering.
 
 PTY input follows the same completion path as other signal ingress on both
 Node and browser hosts. After the line discipline queues an ISIG signal to
@@ -4441,7 +4409,7 @@ the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
 GL always executes in the kernel worker, on both hosts. Command submission,
-queries, context and surface lifecycle, and retained query receipts run against
+queries, and context and surface lifecycle run against
 the WebGL 2 context the kernel worker owns (an `OffscreenCanvas`, a transferred
 KMS canvas, or an embedder-supplied canvas). There is no main-thread GL
 forwarding path: an earlier exported fallback that replayed commands and
@@ -4969,25 +4937,9 @@ selection, dependency ownership, query/presentation barriers and asynchronous
 retirement. Command snapshots
 and execution leases do not yet implement server ordering.
 
-The private owned-query selector of the existing `host_gl_query` import
-routes through `GlKernelQueryControls` before live-context lookup. It
-preflights the complete Rust reply span, copies bounded request bytes and
-reserves scalar routing metadata before native capture. Later controls use
-the exact registered session and token, including after public context
-removal. An unrelated or reused session cannot replace that owner. Native
-queries run only through an explicit bounded drain; its wake callback carries
-scalar identities and must schedule a later worker turn. The import never
-drains or recursively enters Rust. These controls do not yet enable public
-ioctl parking or interpret the pre-entry sentinel.
-
-The per-kernel controls budget bounds 256 owner registrations, 1,024 request
-records and 8 MiB of retained copied query bytes. These are independent heap
-budgets, not shared-memory reservation ceilings. Cleanup preparation preserves
-failed native retirement and terminal acknowledgements. Only an independently
-completed Rust lifecycle transition permits forgetting that metadata. Worker
-lifecycle intent scheduling, remaining mutating-query
-candidates and ordinary signal-driven exit integration remain required before
-production asynchronous query activation.
+`GLIO_QUERY` and `GLIO_SUBMIT_QUERY` execute their query and publish its
+result within the ioctl (`gl_query_request::GlQueryRequest`); there is no
+retained or parked query path between the kernel and host.
 
 The retained server-wait source model separates command custody from result
 custody. A queue owns the exact source `GlFenceLease`, destination execution and
