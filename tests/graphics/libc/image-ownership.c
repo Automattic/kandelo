@@ -2286,6 +2286,67 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(eglWaitNative(EGL_CORE_NATIVE_ENGINE) && eglGetError() == EGL_SUCCESS);
         assert(!eglWaitNative(-1) && eglGetError() == EGL_BAD_PARAMETER);
         assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-context-attributes")) {
+        /* EGL 1.5 section 3.7.1 context attributes for an ES context. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLConfig configs[] = {(EGLConfig)1, EGL_NO_CONFIG_KHR};
+        for (unsigned c = 0; c < 2; c++) {
+            const EGLint accepted[][11] = {
+                {EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 0,
+                 EGL_CONTEXT_OPENGL_DEBUG, EGL_FALSE, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_FALSE,
+                 EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY, EGL_NO_RESET_NOTIFICATION, EGL_NONE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_DEBUG, EGL_TRUE, EGL_NONE},
+            };
+            for (unsigned i = 0; i < 2; i++) {
+                EGLContext context = eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, accepted[i]);
+                assert(context != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
+                EGLint version = 0;
+                assert(eglQueryContext(dpy, context, EGL_CONTEXT_CLIENT_VERSION, &version) && version == 2);
+                assert(eglDestroyContext(dpy, context));
+            }
+            const EGLint rejected[][5] = {
+                /* Values outside an attribute's enum. */
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_DEBUG, 2, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, 5, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY, 0, EGL_BAD_ATTRIBUTE},
+                /* OpenGL-only attributes and unadvertised extension tokens. */
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_PROFILE_MASK, 1, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE, EGL_FALSE, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_FALSE, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT,
+                 EGL_NO_RESET_NOTIFICATION, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_FLAGS_KHR, 0, EGL_BAD_ATTRIBUTE},
+                /* Valid requests this implementation cannot provide. */
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_TRUE, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY,
+                 EGL_LOSE_CONTEXT_ON_RESET, EGL_BAD_MATCH},
+                /* ES versions that do not exist. */
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 1, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 0, EGL_NONE, 0, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 4, EGL_NONE, 0, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_CONTEXT_MINOR_VERSION, 3, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 1, EGL_CONTEXT_MINOR_VERSION, 2, EGL_BAD_MATCH},
+            };
+            for (unsigned i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+                const EGLint list[] = {rejected[i][0], rejected[i][1], rejected[i][2], rejected[i][3], EGL_NONE};
+                assert(eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, list) == EGL_NO_CONTEXT);
+                assert(eglGetError() == rejected[i][4]);
+            }
+            /* Defined ES 1.x and 3.x versions: a config without the API's
+             * renderable bit is EGL_BAD_CONFIG; with no config the
+             * implementation itself lacks them, which is EGL_BAD_MATCH. */
+            const EGLint missing = c == 0 ? EGL_BAD_CONFIG : EGL_BAD_MATCH;
+            const EGLint versions[][2] = {{1, 0}, {1, 1}, {3, 0}, {3, 1}, {3, 2}};
+            for (unsigned i = 0; i < 5; i++) {
+                const EGLint list[] = {EGL_CONTEXT_MAJOR_VERSION, versions[i][0],
+                    EGL_CONTEXT_MINOR_VERSION, versions[i][1], EGL_NONE};
+                assert(eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, list) == EGL_NO_CONTEXT);
+                assert(eglGetError() == missing);
+            }
+            assert(eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, NULL) == EGL_NO_CONTEXT);
+            assert(eglGetError() == missing);
+        }
+        assert(eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
@@ -6808,8 +6869,10 @@ int main(int argc, char **argv) {
         return 0;
     }
     if (!strcmp(argv[1], "records-attributes")) {
+        /* The default ES 1.x request needs EGL_OPENGL_ES_BIT, which this
+         * config lacks (EGL 1.5 section 3.7.1). */
         assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, NULL) &&
-               eglGetError() == EGL_BAD_MATCH);
+               eglGetError() == EGL_BAD_CONFIG);
         const EGLint bad[] = {0x7fffffff, 1, EGL_NONE};
         assert(!eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, bad) &&
                eglGetError() == EGL_BAD_ATTRIBUTE);

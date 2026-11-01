@@ -736,17 +736,55 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_CONTEXT;
         return EGL_NO_CONTEXT;
     }
-    EGLint version = 1;
+    /* EGL 1.5 section 3.7.1 attributes for an OpenGL ES context. The
+     * profile mask and forward-compatible flag are OpenGL-only, and the
+     * KHR_create_context / EXT_create_context_robustness spellings belong
+     * to extensions this library does not advertise: all are
+     * EGL_BAD_ATTRIBUTE, as is any value outside an attribute's enum. */
+    EGLint version = 1, minor = 0, robust = EGL_FALSE, reset = EGL_NO_RESET_NOTIFICATION;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
-        if (a[0] == EGL_CONTEXT_CLIENT_VERSION)
-            version = a[1];
-        else if (a[0] == EGL_CONTEXT_MINOR_VERSION && a[1] == 0) {
-        } else {
-            g_last_error = EGL_BAD_ATTRIBUTE;
-            return EGL_NO_CONTEXT;
+        switch (a[0]) {
+        case EGL_CONTEXT_MAJOR_VERSION: version = a[1]; break;
+        case EGL_CONTEXT_MINOR_VERSION: minor = a[1]; break;
+        /* ES 2.0 has no context flags query and Kandelo exposes no debug
+         * output extension, so a debug context behaves exactly like any
+         * other context. EGL lets debug contexts add checks, not require
+         * them. */
+        case EGL_CONTEXT_OPENGL_DEBUG:
+            if (a[1] != EGL_TRUE && a[1] != EGL_FALSE) goto bad_attribute;
+            break;
+        case EGL_CONTEXT_OPENGL_ROBUST_ACCESS:
+            if (a[1] != EGL_TRUE && a[1] != EGL_FALSE) goto bad_attribute;
+            robust = a[1];
+            break;
+        case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY:
+            if (a[1] != EGL_NO_RESET_NOTIFICATION && a[1] != EGL_LOSE_CONTEXT_ON_RESET)
+                goto bad_attribute;
+            reset = a[1];
+            break;
+        default:
+            goto bad_attribute;
         }
     }
+    /* Undefined ES versions are EGL_BAD_MATCH. A defined version other
+     * than 2.0 needs a renderable bit no config has (EGL_BAD_CONFIG); with
+     * EGL_NO_CONFIG_KHR the implementation itself lacks it (EGL_BAD_MATCH). */
+    const int defined = (version == 1 && (minor == 0 || minor == 1)) ||
+                        (version == 2 && minor == 0) ||
+                        (version == 3 && minor >= 0 && minor <= 2);
+    if (!defined) {
+        g_last_error = EGL_BAD_MATCH;
+        return EGL_NO_CONTEXT;
+    }
     if (version != 2) {
+        g_last_error = config == EGL_NO_CONFIG_KHR ? EGL_BAD_MATCH : EGL_BAD_CONFIG;
+        return EGL_NO_CONTEXT;
+    }
+    /* WebGL 2 exposes no robust buffer access guarantee or reset
+     * notification API (no GL_EXT_robustness), so neither can be
+     * provided; EGL reports an unsupported context flag or reset
+     * strategy as EGL_BAD_MATCH. */
+    if (robust == EGL_TRUE || reset == EGL_LOSE_CONTEXT_ON_RESET) {
         g_last_error = EGL_BAD_MATCH;
         return EGL_NO_CONTEXT;
     }
@@ -787,6 +825,9 @@ fail:
     free(context);
     retire_empty_sessions(generation);
     g_last_error = EGL_BAD_ALLOC;
+    return EGL_NO_CONTEXT;
+bad_attribute:
+    g_last_error = EGL_BAD_ATTRIBUTE;
     return EGL_NO_CONTEXT;
 }
 EGLContext eglCreateContext(EGLDisplay dpy, EGLConfig config, EGLContext share,
