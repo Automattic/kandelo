@@ -1115,6 +1115,11 @@ const auditAllowances: AuditAllowance[] = [
     why: "The private factory returns its newly constructed kernel Memory after recording scalar actual-constructor metadata; it exposes no new public authority.",
   },
   {
+    key: "host/src/dri/registry.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
+    disposition: "kernel-read",
+    why: "The GBM registry captures only the native buffer getter to authenticate each mapping's original process Memory before copying mapped bytes; no kernel Memory or view is retained.",
+  },
+  {
     key: "host/src/process-snapshot-comparator.ts::<module>::wasm-authority-escape::WebAssembly.Memory.prototype",
     disposition: "kernel-read",
     why: "The module captures only the native buffer getter for genuine Memory authentication; no Memory instance or view is retained here.",
@@ -1691,6 +1696,11 @@ const auditAllowances: AuditAllowance[] = [
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(outPtr,outLen,"owned GL control reply")',
     disposition: "rust-lent",
     why: "The kernel-only query control import proves a bounded full Rust reply span before backend admission; this one-shot generation-bound destination is consumed synchronously after the independent copied reply, never retained in an owned receipt.",
+  },
+  {
+    key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination(attrsPtr, GL_IMAGE_EXPORT_BYTES, "image export reply")',
+    disposition: "rust-lent",
+    why: "The image export import checks the exact generated record length and reserves the Rust-lent destination before any renderer effect; the copied reply is written through that token synchronously and never retained.",
   },
   {
     key: 'host/src/kernel.ts::WasmPosixKernel.#buildImportObject::kernel-destination-factory-call::this.#rustLentKernelDestination( outPtr, outLen, "host_gl_query destination", )',
