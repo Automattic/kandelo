@@ -316,11 +316,13 @@ unsafe extern "C" {
         format: u32,
         usage: u32,
     ) -> i32;
-    fn host_gbm_bo_destroy(pid: i32, bo_id: u32);
+    // DRI/GL cleanup imports answer with a `dri_cleanup_status` outcome;
+    // see `HostIO::gbm_bo_destroy` and `syscalls::apply_dri_release_effect`.
+    fn host_gbm_bo_destroy(pid: i32, bo_id: u32) -> i32;
     fn host_gbm_bo_bind(pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32;
-    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize);
+    fn host_gbm_bo_unbind(pid: i32, bo_id: u32, addr: usize, len: usize) -> i32;
     fn host_gl_bind(pid: i32, addr: usize, len: usize, session_id: u32, display_file_id: u64);
-    fn host_gl_unbind(pid: i32, session_id: u32);
+    fn host_gl_unbind(pid: i32, session_id: u32) -> i32;
     fn host_gl_create_context(pid: i32, ctx_id: u32, attrs_ptr: *const u8, attrs_len: usize, session_id: u32) -> i32;
     fn host_gl_destroy_context(pid: i32, ctx_id: u32);
     fn host_gl_create_surface(pid: i32, surface_id: u32, attrs_ptr: *mut u8, attrs_len: usize, session_id: u32) -> i32;
@@ -342,7 +344,7 @@ unsafe extern "C" {
     fn host_gl_import_image(pid: i32, ctx_id: u32, bo_id: u32, width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32;
     fn host_gl_export_image(pid: i32, ctx_id: u32, bo_id: u32, attrs_ptr: *mut u8, attrs_len: usize) -> i32;
     fn host_kms_set_master(pid: i32, file_id: u64, lease_id: u64);
-    fn host_kms_drop_master(pid: i32, file_id: u64, lease_id: u64);
+    fn host_kms_drop_master(pid: i32, file_id: u64, lease_id: u64) -> i32;
     fn host_proc_write_bytes(pid: i32, addr: u64, src_ptr: *const u8, len: u32) -> i32;
     /// Publish a parked request's decided result into the channel at
     /// `channel_addr` of process `pid`: write `ret` and `errno`, store
@@ -372,7 +374,7 @@ unsafe extern "C" {
         pitch: u32,
         offset: u32,
     ) -> i32;
-    fn host_kms_rmfb(pid: i32, fb_id: u32);
+    fn host_kms_rmfb(pid: i32, fb_id: u32) -> i32;
     /// Latch `fb_id` on `crtc_id`, scanning out the `width` x `height`
     /// viewport whose top-left pixel is (`x`, `y`) in the framebuffer (the
     /// CRTC's mode at its panning offset). `fb_id` 0 disables the CRTC.
@@ -1129,7 +1131,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_gpu_bo_create(pid, bo_id, width, height, format, usage) }
     }
 
-    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
         unsafe { host_gbm_bo_destroy(pid, bo_id) }
     }
 
@@ -1137,7 +1139,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_gbm_bo_bind(pid, bo_id, addr, len, bo_offset) }
     }
 
-    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
         unsafe { host_gbm_bo_unbind(pid, bo_id, addr, len) }
     }
 
@@ -1145,7 +1147,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_gl_bind(pid, addr, len, session_id, display_file_id) }
     }
 
-    fn gl_unbind(&mut self, pid: i32, session_id: u32) {
+    fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
         unsafe { host_gl_unbind(pid, session_id) }
     }
 
@@ -1218,7 +1220,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_kms_set_master(pid, file_id, lease_id) }
     }
 
-    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) -> i32 {
         unsafe { host_kms_drop_master(pid, file_id, lease_id) }
     }
 
@@ -1256,7 +1258,7 @@ impl HostIO for WasmHostIO {
         unsafe { host_kms_addfb(pid, fb_id, bo_id, width, height, pixel_format, pitch, offset) }
     }
 
-    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) -> i32 {
         unsafe { host_kms_rmfb(pid, fb_id) }
     }
 

@@ -454,15 +454,20 @@ export class GlContextRegistry {
     return complete;
   }
 
-  unbind(pid: number, sessionId?: number): void {
+  /** Retire every matching session. Public lookup always ends. Returns
+   * false when accepted execution still holds a retired context's native
+   * objects, which that execution releases when it finishes; true when all
+   * native state was released now. Throws the first native cleanup fault. */
+  unbind(pid: number, sessionId?: number): boolean {
     if (sessionId !== undefined) sessionId >>>= 0;
     let failure: unknown;
+    let released = true;
     for (const b of this.list()) {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
       b.operations.close();
       try {
-        this.retireContextBinding(b,false);
+        if (!this.retireContextBinding(b,false)) released = false;
         retireSurface(b.surface);
       } catch (error) {
         failure ??= error;
@@ -476,6 +481,7 @@ export class GlContextRegistry {
       this.pendingCanvases.delete(pid);
     }
     if (failure) throw failure;
+    return released;
   }
 
   /** Public lookup ends immediately. Accepted work may retain old execution;
@@ -486,7 +492,9 @@ export class GlContextRegistry {
     this.retireContextBinding(b,true);
   }
 
-  private retireContextBinding(b: GlBinding, replace: boolean): void {
+  /** True when native resources were destroyed now; false when an accepted
+   * execution retains them and retires them when it completes. */
+  private retireContextBinding(b: GlBinding, replace: boolean): boolean {
     // Copied replies own no native execution; public context retirement revokes
     // their private transfer immediately, even while native work is retained.
     b.objectCapture = null; b.readbackCapture = null;
@@ -510,10 +518,11 @@ export class GlContextRegistry {
       // borrowed guest cache.
       b.cmdbufView = null; b.canvas = record.canvas;
       record.retired = true;
-      return;
+      return false;
     }
     destroyContextResources(b,this.gpuBos);
     this.retryForeignRetirements();
+    return true;
   }
 
   destroySurface(pid: number, sessionId?: number): void {
@@ -712,10 +721,14 @@ export class GlContextRegistry {
     if (accepted && !pending) this.foreignRetirements.delete(bo);
     return accepted;
   }
-  retireForeignBo(bo: number): void {
+  /** True when every native view of `bo` is gone; false when some remain
+   * pending in `foreignRetirements`, which `retryForeignRetirements` and the
+   * submit path retry before later GL work. */
+  retireForeignBo(bo: number): boolean {
     this.foreignRetirementOwners(bo);
     if (this.dropForeignTexturesForBo(bo) && this.destroyGpuBo(bo) && this.cpuImages.retire(bo)
       && this.retireExportedBo(bo)) this.foreignRetirements.delete(bo);
+    return !this.foreignRetirements.has(bo);
   }
   /** Exported GLES images keyed by their GPU-tier bo (EXPORT_IMAGE). The
    *  record owns the source object's storage once the object stops using

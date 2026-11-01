@@ -1,6 +1,7 @@
 {
   "abi_surfaces": {
     "kernel_host": [
+      "dri_cleanup_status",
       "export_deny",
       "host_adapter",
       "kernel_exports",
@@ -1356,6 +1357,21 @@
     "kandelo.wpk_fork.unwind_transport",
     "wasm-posix-abi"
   ],
+  "dri_cleanup_status": {
+    "complete": 0,
+    "delivery": "synchronous-in-kernel-worker-no-retry-kernel-identity-never-reused",
+    "host_retained": 1,
+    "host_retained_meaning": "host-journal-owns-remaining-native-work-kernel-does-nothing",
+    "imports": [
+      "host_gbm_bo_unbind",
+      "host_gbm_bo_destroy",
+      "host_gl_unbind",
+      "host_kms_rmfb",
+      "host_kms_drop_master"
+    ],
+    "refused": "any-other-value-recorded-as-device-cleanup-loss",
+    "unbind_writeback_lost": "negative-eio-from-host_gbm_bo_unbind-binding-detached"
+  },
   "export_deny": {
     "deny_exact": [
       "__data_end",
@@ -4415,13 +4431,13 @@
       "kind": "func",
       "module": "env",
       "name": "host_gbm_bo_destroy",
-      "signature": "(i32,i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "module": "env",
       "name": "host_gbm_bo_unbind",
-      "signature": "(i32,i32,i32,i32) -> ()"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4517,7 +4533,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_gl_unbind",
-      "signature": "(i32,i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -4553,7 +4569,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_drop_master",
-      "signature": "(i32,i64,i64) -> ()"
+      "signature": "(i32,i64,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -4565,7 +4581,7 @@
       "kind": "func",
       "module": "env",
       "name": "host_kms_rmfb",
-      "signature": "(i32,i32) -> ()"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",

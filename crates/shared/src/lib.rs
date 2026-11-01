@@ -196,6 +196,31 @@ pub mod wakeup_event_wire {
     pub const TYPE_WAIT_COMPLETE: u8 = 128;
 }
 
+/// Checked outcome of one DRI/GL cleanup effect the kernel asks the host to
+/// apply (`host_gbm_bo_unbind`, `host_gbm_bo_destroy`, `host_gl_unbind`,
+/// `host_kms_rmfb`, `host_kms_drop_master`).
+///
+/// Production GL and DRI run synchronously in the kernel worker, so every
+/// effect returns its real outcome to the kernel in the same call:
+///
+/// * [`COMPLETE`]: the host applied the effect.
+/// * [`HOST_RETAINED`]: the host applied the effect's logical part and holds
+///   native work it could not finish now (for example a GPU object deletion
+///   refused while the renderer has pending errors) in its own retirement
+///   journal, which it retries at its defined points before later GL work.
+///   Nothing remains for the kernel to do.
+/// * `-EAGAIN`: the host changed nothing and kept nothing. The kernel keeps
+///   the effect and applies it again, in order, at its next cleanup point.
+/// * `-EIO` from `host_gbm_bo_unbind`: the mapping was detached but its final
+///   writeback could not be published, so those bytes are lost. The kernel
+///   records the loss in `/proc/kandelo/writeback_losses`.
+/// * Any other value: the host refused the request. The kernel records it in
+///   the same report, because it cannot succeed on a retry.
+pub mod dri_cleanup_status {
+    pub const COMPLETE: i32 = 0;
+    pub const HOST_RETAINED: i32 = 1;
+}
+
 /// Kernel-owned parking: the host/kernel contract for a syscall whose result
 /// the kernel withholds and later decides.
 ///

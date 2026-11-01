@@ -3906,6 +3906,25 @@ Kernel close-on-exec and final-reference callbacks still destroy buffers
 and release master state; trap/exit cleanup retains its process teardown
 backstop. Both Node and browser use this same path.
 
+Those kernel callbacks report their real outcome. The kernel retires a DRM
+buffer, framebuffer, master grant or GL session immediately: `close`,
+`munmap`, `_exit` and `RMFB` have no POSIX failure for a host that cannot
+release its copy, and the kernel never reuses those identities. It then
+calls `host_gbm_bo_unbind`, `host_gbm_bo_destroy`, `host_kms_rmfb`,
+`host_kms_drop_master` or `host_gl_unbind`, which run synchronously in the
+kernel worker and return a `dri_cleanup_status`: complete; host-retained,
+meaning the host already journals the remaining native GL deletions and
+retries them before later GL work (foreign texture views of a destroyed
+buffer, or a context an accepted execution still holds); `-EIO` from an
+unbind whose range detached but whose final writeback could not be
+published; or a negative errno when the host refused. Every step of a
+destroy or GL unbind still runs after an earlier step faults, and the fault
+is also reported as a `DRI cleanup` host diagnostic. The kernel records a
+lost writeback as a `writeback` loss and any refusal as a `device-cleanup`
+loss (pid, object id, operation and errno) in
+`/proc/kandelo/writeback_losses` (`syscalls::apply_dri_release_effect`), so
+a failed host cleanup is never counted as success.
+
 The browser's optional image-owned `presentation.displayScale` advertises
 a readable virtual monitor for bitmap interfaces. The guest mode, 96-DPI
 reference dimensions, scanout, input range, and cursor use one grid. Without

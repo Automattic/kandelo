@@ -462,9 +462,17 @@ pub trait HostIO {
 
     /// Free host-side backing for a bo whose refcount has reached zero
     /// (SAB for CPU-tier, `WebGLTexture`+FBO for GPU-tier). Idempotent:
-    /// calling on an unknown `bo_id` is a no-op.
+    /// an unknown `bo_id` has nothing left to free and is complete.
+    ///
+    /// Returns a `shared::dri_cleanup_status` outcome: `COMPLETE`,
+    /// `HOST_RETAINED` (native GL texture views of the bo are still pending
+    /// in the host's foreign-retirement journal), or a negative errno when
+    /// the host could not free the backing. The kernel reports a refusal in
+    /// `/proc/kandelo/writeback_losses`; see `syscalls::apply_dri_release_effect`.
     #[allow(unused_variables)]
-    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {}
+    fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Register a process mapping of `len` bytes starting at `bo_offset` in
     /// canonical BO storage. The host primes it after reserving/growing the
@@ -479,8 +487,17 @@ pub trait HostIO {
     /// Unbind a prior `gbm_bo_bind` — called from munmap /
     /// process-exit before the wasm pages are returned to the
     /// anonymous pool.
+    ///
+    /// The kernel has already unmapped the range, so the host must detach
+    /// the binding in this call: the address range is reused afterwards and
+    /// a live binding would copy unrelated bytes into the bo. Returns
+    /// `shared::dri_cleanup_status::COMPLETE`, `-EIO` when the binding
+    /// detached but its final writeback could not be published (those bytes
+    /// are lost), or another negative errno when the host refused.
     #[allow(unused_variables)]
-    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {}
+    fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Notify the host that process `pid` has mapped its GL cmdbuf at the
     /// given offset within its wasm `Memory`. Length is always
@@ -491,8 +508,15 @@ pub trait HostIO {
     /// Notify the host that one session's command memory is gone (`munmap`,
     /// process exit, or exec). Never retire another session of `pid`.
     /// The process argument names the renderer's actual owner. Idempotent.
+    ///
+    /// Returns a `shared::dri_cleanup_status` outcome: `COMPLETE`,
+    /// `HOST_RETAINED` (the session is gone but native objects it shared
+    /// remain in the host's retirement journal), or a negative errno when
+    /// the host could not retire the session's renderer state.
     #[allow(unused_variables)]
-    fn gl_unbind(&mut self, pid: i32, session_id: u32) {}
+    fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Allocate a host-side WebGL context. `ctx_id` is a fresh kernel-issued
     /// identity; `attrs` is a marshalled `shared::gl::GlContextAttrs`.
@@ -600,8 +624,13 @@ pub trait HostIO {
     #[allow(unused_variables)]
     fn kms_set_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
 
+    /// Retire the host's copy of a DRM master grant. A grant the host has
+    /// already replaced with a newer lease is retired too, so that answer is
+    /// `shared::dri_cleanup_status::COMPLETE`. Negative errno on refusal.
     #[allow(unused_variables)]
-    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {}
+    fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     /// Copy `src` from kernel-owned memory into the wasm process at `pid`'s
     /// linear memory at guest address `addr`. Returns 0 on success, negative
@@ -684,8 +713,12 @@ pub trait HostIO {
         0
     }
 
+    /// Forget the host's framebuffer record for `fb_id`.
+    /// Returns `shared::dri_cleanup_status::COMPLETE` or a negative errno.
     #[allow(unused_variables)]
-    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) {}
+    fn kms_rmfb(&mut self, pid: i32, fb_id: u32) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
 
     #[allow(unused_variables)]
     /// Latch `fb_id` on `crtc_id` with the scanned viewport
@@ -2837,6 +2870,12 @@ pub mod test_host {
     pub struct NoopHost;
 
     impl HostIO for NoopHost {
+        // NoopHost holds no device state, so releasing one completes.
+        fn gbm_bo_destroy(&mut self, _pid: i32, _bo_id: u32) -> i32 { 0 }
+        fn gbm_bo_unbind(&mut self, _pid: i32, _bo_id: u32, _addr: usize, _len: usize) -> i32 { 0 }
+        fn gl_unbind(&mut self, _pid: i32, _session_id: u32) -> i32 { 0 }
+        fn kms_rmfb(&mut self, _pid: i32, _fb_id: u32) -> i32 { 0 }
+        fn kms_drop_master(&mut self, _pid: i32, _file_id: u64, _lease_id: u64) -> i32 { 0 }
         fn host_close(&mut self, _h: i64) -> Result<(), Errno> {
             Ok(())
         }

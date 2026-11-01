@@ -1512,6 +1512,14 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!("export const {name} = {value} as const;\n"));
     }
+    // Outcomes the host_gbm_bo_*/host_gl_unbind/host_kms_* cleanup imports
+    // return (wasm_posix_shared::dri_cleanup_status).
+    for (name, value) in [
+        ("DRI_CLEANUP_COMPLETE", shared::dri_cleanup_status::COMPLETE),
+        ("DRI_CLEANUP_HOST_RETAINED", shared::dri_cleanup_status::HOST_RETAINED),
+    ] {
+        out.push_str(&format!("export const {name} = {value} as const;\n"));
+    }
     out.push('\n');
 
     // Not an ABI value: the one fixed instant image builders use when a fixed
@@ -4386,6 +4394,7 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(KernelHost, "wakeup_event_wire", wakeup_event_wire());
     s.add(KernelHost, "wait_completion_wire", wait_completion_wire());
     s.add(KernelHost, "kms_cursor_transport", kms_cursor_transport());
+    s.add(KernelHost, "dri_cleanup_status", dri_cleanup_status());
     s.add(Program, "io_multiplexing", io_multiplexing());
     s.add(Program, "vfs_metadata", vfs_metadata());
     s.add(Program, "spawn_contract", spawn_contract());
@@ -4537,6 +4546,22 @@ fn kms_cursor_transport() -> Value {
         "disabled_image": "zero-bo-framebuffer-dimensions-and-hotspot",
         "read_reconciliation": "same-entry-authoritative-plane-no-nonzero-image-synthesis",
         "unsupported_versions": [1, 2, 3],
+    })
+}
+
+fn dri_cleanup_status() -> Value {
+    use shared::dri_cleanup_status as status;
+    json!({
+        "imports": [
+            "host_gbm_bo_unbind", "host_gbm_bo_destroy", "host_gl_unbind",
+            "host_kms_rmfb", "host_kms_drop_master",
+        ],
+        "complete": status::COMPLETE,
+        "host_retained": status::HOST_RETAINED,
+        "host_retained_meaning": "host-journal-owns-remaining-native-work-kernel-does-nothing",
+        "unbind_writeback_lost": "negative-eio-from-host_gbm_bo_unbind-binding-detached",
+        "refused": "any-other-value-recorded-as-device-cleanup-loss",
+        "delivery": "synchronous-in-kernel-worker-no-retry-kernel-identity-never-reused",
     })
 }
 

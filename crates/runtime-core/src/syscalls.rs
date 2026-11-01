@@ -1402,7 +1402,7 @@ fn release_dri_handle(
     };
     let new_count = crate::dri::with_registry(|r| r.decref(bo_id));
     if new_count == Some(0) {
-        host.gbm_bo_destroy(pid, bo_id);
+        apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
     }
     Ok(())
 }
@@ -1863,7 +1863,7 @@ fn handle_dri_ioctl(
                             crate::dri::with_registry(|r| {
                                 r.decref(bo_id);
                             });
-                            host.gbm_bo_destroy(pid, bo_id);
+                            apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
                             return Err(Errno::EMFILE);
                         }
                     }
@@ -1872,7 +1872,7 @@ fn handle_dri_ioctl(
                     crate::dri::with_registry(|r| {
                         r.decref(bo_id);
                     });
-                    host.gbm_bo_destroy(pid, bo_id);
+                    apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
                     return Err(e);
                 }
             };
@@ -1925,7 +1925,7 @@ fn handle_dri_ioctl(
                             crate::dri::with_registry(|r| {
                                 r.decref(bo_id);
                             });
-                            host.gbm_bo_destroy(pid, bo_id);
+                            apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
                             return Err(Errno::EMFILE);
                         }
                     }
@@ -1934,7 +1934,7 @@ fn handle_dri_ioctl(
                     crate::dri::with_registry(|r| {
                         r.decref(bo_id);
                     });
-                    host.gbm_bo_destroy(pid, bo_id);
+                    apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
                     return Err(e);
                 }
             };
@@ -2180,7 +2180,7 @@ fn handle_dri_ioctl(
                 .ok_or(Errno::ENOMEM)?;
             let retire = |host: &mut dyn HostIO| {
                 crate::dri::with_registry(|r| { r.decref(bo_id); });
-                host.gbm_bo_destroy(pid, bo_id);
+                apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
             };
             let mut attrs = [0u8; core::mem::size_of::<WpkDrmExportImage>()];
             let length = attrs.len();
@@ -2825,9 +2825,9 @@ fn handle_dri_ioctl(
 
 fn release_kms_fb(host: &mut dyn HostIO, pid: i32, fb_id: u32, bo_id: crate::dri::BoId) {
     if crate::dri::with_registry(|r| r.decref(bo_id)) == Some(0) {
-        host.gbm_bo_destroy(pid, bo_id);
+        apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(bo_id), host);
     }
-    host.kms_rmfb(pid, fb_id);
+    apply_dri_release_effect(pid, DriReleaseEffect::RemoveFramebuffer(fb_id), host);
 }
 
 /// Linux disables the CRTC that scans out a removed fb.
@@ -2888,7 +2888,7 @@ fn apply_kms_cursor(
         fb.map_or(0, |fb| fb.height), x, y, hot_x, hot_y, fb_id);
     if let Some(old) = old {
         if crate::dri::with_registry(|r| r.decref(old)) == Some(0) {
-            host.gbm_bo_destroy(proc.pid as i32, old);
+            apply_dri_release_effect(proc.pid as i32, DriReleaseEffect::DestroyBo(old), host);
         }
     }
     Ok(())
@@ -3029,7 +3029,11 @@ fn handle_dri_card_ioctl(
                 if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
                     kms.holds_master = false;
                 }
-                host.kms_drop_master(pid, grant.ofd_id.0, grant.lease_id);
+                apply_dri_release_effect(
+                    pid,
+                    DriReleaseEffect::DropMaster { file_id: grant.ofd_id.0, lease_id: grant.lease_id },
+                    host,
+                );
                 Ok(())
             } else {
                 Err(Errno::EINVAL)
@@ -4373,23 +4377,102 @@ pub enum DriReleaseEffect {
     UnbindGl { owner_pid: i32, session_id: u32 },
 }
 
+/// Apply each effect in order. See [`apply_dri_release_effect`].
 pub fn apply_dri_release_effects(pid: i32, effects: Vec<DriReleaseEffect>, host: &mut dyn HostIO) {
     for effect in effects {
-        match effect {
-            DriReleaseEffect::UnbindBo {bo_id, addr, len} => host.gbm_bo_unbind(pid, bo_id, addr, len),
-            DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
-            DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
-            DriReleaseEffect::HideCursor { fb_id } => {
-                // Cleanup can be delivered after another image was installed.
-                // Hide only a plane that is still disabled.
-                if fb_id != 0 && kms::cursor_plane().is_some_and(|state| state.fb_id == 0) {
-                    host.kms_cursor(pid, kms::CRTC_ID, 1, 0, 0, 0, 0, 0, 0, 0, 0);
-                }
+        apply_dri_release_effect(pid, effect, host);
+    }
+}
+
+/// Ask the host to release the host-side state of one object the kernel has
+/// already retired, and act on the host's real answer.
+///
+/// Production GL and DRI run synchronously in the kernel worker, so the host
+/// reports its outcome from the same call (`shared::dri_cleanup_status`).
+/// The kernel object is gone either way: the syscall that retired it
+/// (`close`, `munmap`, `exit`, `DRM_IOCTL_MODE_RMFB`, ...) has no POSIX
+/// failure for a host that cannot keep up, and the kernel id is never
+/// reused. What the kernel must not do is count a failure as success, so a
+/// lost writeback or a refused release is recorded in
+/// `/proc/kandelo/writeback_losses`.
+pub fn apply_dri_release_effect(pid: i32, effect: DriReleaseEffect, host: &mut dyn HostIO) {
+    // SAFETY: the kernel services one syscall at a time; see
+    // `writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG`.
+    let log = unsafe { &mut *crate::writeback_loss::GLOBAL_WRITEBACK_LOSS_LOG.0.get() };
+    apply_dri_release_effect_with_log(log, pid, effect, host);
+}
+
+/// [`apply_dri_release_effect`] against an explicit loss log.
+pub fn apply_dri_release_effect_with_log(
+    log: &mut crate::writeback_loss::WritebackLossLog,
+    pid: i32,
+    effect: DriReleaseEffect,
+    host: &mut dyn HostIO,
+) {
+    let status = match effect {
+        DriReleaseEffect::UnbindBo {bo_id, addr, len} => host.gbm_bo_unbind(pid, bo_id, addr, len),
+        DriReleaseEffect::DestroyBo(bo) => host.gbm_bo_destroy(pid, bo),
+        DriReleaseEffect::RemoveFramebuffer(fb) => host.kms_rmfb(pid, fb),
+        DriReleaseEffect::HideCursor { fb_id } => {
+            // Cleanup can be delivered after another image was installed.
+            // Hide only a plane that is still disabled. The cursor record is
+            // kernel-owned transport the host reads on its next frame, so
+            // there is no host outcome to wait for.
+            if fb_id != 0 && kms::cursor_plane().is_some_and(|state| state.fb_id == 0) {
+                host.kms_cursor(pid, kms::CRTC_ID, 1, 0, 0, 0, 0, 0, 0, 0, 0);
             }
-            DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
-            DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
+            wasm_posix_shared::dri_cleanup_status::COMPLETE
+        }
+        DriReleaseEffect::DropMaster { file_id, lease_id } => host.kms_drop_master(pid, file_id, lease_id),
+        DriReleaseEffect::UnbindGl { owner_pid, session_id } => host.gl_unbind(owner_pid, session_id),
+    };
+    record_dri_cleanup_outcome(log, pid, &effect, status);
+}
+
+/// Decide what a host cleanup status means for the kernel.
+///
+/// * `COMPLETE`: nothing to record.
+/// * `HOST_RETAINED`: the host owns the remaining native work in its own
+///   retirement journal and retries it before later GL work; nothing is lost.
+/// * `-EIO` from `UnbindBo`: the host detached the mapping but could not
+///   publish its final writeback. That is a shared-mapping writeback loss.
+/// * anything else: the host refused, and the host-side state it names is
+///   now unreachable. Recorded as a device-cleanup loss.
+pub fn record_dri_cleanup_outcome(
+    log: &mut crate::writeback_loss::WritebackLossLog,
+    pid: i32,
+    effect: &DriReleaseEffect,
+    status: i32,
+) {
+    use wasm_posix_shared::dri_cleanup_status::{COMPLETE, HOST_RETAINED};
+    if status == COMPLETE || status == HOST_RETAINED {
+        return;
+    }
+    if let DriReleaseEffect::UnbindBo { addr, .. } = effect {
+        if status == -(Errno::EIO as i32) {
+            log.record(pid.max(0) as u32, *addr as u64, "DRI buffer final writeback lost at unmap");
+            return;
         }
     }
+    let (owner, object, operation) = match *effect {
+        DriReleaseEffect::UnbindBo { bo_id, .. } => (pid, u64::from(bo_id), "gbm_bo_unbind"),
+        DriReleaseEffect::DestroyBo(bo) => (pid, u64::from(bo), "gbm_bo_destroy"),
+        DriReleaseEffect::RemoveFramebuffer(fb) => (pid, u64::from(fb), "kms_rmfb"),
+        DriReleaseEffect::HideCursor { fb_id } => (pid, u64::from(fb_id), "kms_cursor hide"),
+        DriReleaseEffect::DropMaster { lease_id, .. } => (pid, lease_id, "kms_drop_master"),
+        DriReleaseEffect::UnbindGl { owner_pid, session_id } => (owner_pid, u64::from(session_id), "gl_unbind"),
+    };
+    let reason = if status < 0 {
+        alloc::format!("{operation} refused errno {}", -(status as i64))
+    } else {
+        alloc::format!("{operation} returned unknown status {status}")
+    };
+    log.record_kind(
+        crate::writeback_loss::MappingLossKind::DeviceCleanup,
+        owner.max(0) as u32,
+        object,
+        &reason,
+    );
 }
 
 /// Each live mapping owns one BO reference independently of descriptors.
@@ -14711,16 +14794,19 @@ impl DeviceUnmapPlan {
                 continue;
             }
             if !host_replaced_bindings {
-                host.gbm_bo_unbind(
+                apply_dri_release_effect(
                     pid,
-                    binding.bo_id,
-                    removed_start,
-                    removed_end - removed_start,
+                    DriReleaseEffect::UnbindBo {
+                        bo_id: binding.bo_id,
+                        addr: removed_start,
+                        len: removed_end - removed_start,
+                    },
+                    host,
                 );
             }
             if removed_start == binding.addr && removed_end == binding.addr + binding.len {
                 if crate::dri::with_registry(|registry| registry.decref(binding.bo_id)) == Some(0) {
-                    host.gbm_bo_destroy(pid, binding.bo_id);
+                    apply_dri_release_effect(pid, DriReleaseEffect::DestroyBo(binding.bo_id), host);
                 }
             }
         }
@@ -26334,6 +26420,10 @@ mod tests {
         gl_create_surface_calls: Vec<(i32, u32, Vec<u8>)>,
         gl_create_surface_rc: i32,
         gl_create_surface_dimensions: Option<(u32,u32)>,
+        /// Status every DRI/GL cleanup import answers. Defaults to COMPLETE.
+        dri_cleanup_status: i32,
+        /// Order of DRI/GL cleanup import calls.
+        dri_cleanup_calls: Vec<&'static str>,
     }
 
     impl MockHostIO {
@@ -26495,6 +26585,8 @@ mod tests {
                 gl_create_surface_calls: Vec::new(),
                 gl_create_surface_rc: 0,
                 gl_create_surface_dimensions: None,
+                dri_cleanup_status: 0,
+                dri_cleanup_calls: Vec::new(),
             }
         }
 
@@ -27295,25 +27387,39 @@ mod tests {
                 .push((pid, bo_id, width, height, format, usage));
             self.gbm_gpu_bo_create_rc
         }
-        fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) {
+        fn gbm_bo_destroy(&mut self, pid: i32, bo_id: u32) -> i32 {
             self.gbm_bo_destroy_calls.push((pid, bo_id));
             self.gl_surface_release_events.push((2,bo_id));
+            self.dri_cleanup_calls.push("destroy");
+            self.dri_cleanup_status
         }
         fn gbm_bo_bind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize, bo_offset: u64) -> i32 {
             let _ = bo_offset;
             self.gbm_bo_bind_calls.push((pid, bo_id, addr, len));
             self.gbm_bo_bind_rc
         }
-        fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) {
+        fn gbm_bo_unbind(&mut self, pid: i32, bo_id: u32, addr: usize, len: usize) -> i32 {
             self.gbm_bo_unbind_calls.push((pid, bo_id, addr, len));
+            self.dri_cleanup_calls.push("unbind");
+            self.dri_cleanup_status
+        }
+        fn kms_rmfb(&mut self, _pid: i32, _fb_id: u32) -> i32 {
+            self.dri_cleanup_calls.push("rmfb");
+            self.dri_cleanup_status
+        }
+        fn kms_drop_master(&mut self, _pid: i32, _file_id: u64, _lease_id: u64) -> i32 {
+            self.dri_cleanup_calls.push("drop_master");
+            self.dri_cleanup_status
         }
         fn gl_bind(&mut self, _pid: i32, _addr: usize, _len: usize, session_id: u32, _display_file_id: u64) {
             self.gl_bind_sessions.push(session_id);
         }
-        fn gl_unbind(&mut self, pid: i32, session_id: u32) {
+        fn gl_unbind(&mut self, pid: i32, session_id: u32) -> i32 {
             self.gl_unbind_calls.push(pid);
             self.gl_unbind_sessions.push(session_id);
             self.gl_surface_release_events.push((1,session_id));
+            self.dri_cleanup_calls.push("gl_unbind");
+            self.dri_cleanup_status
         }
         fn gl_submit(&mut self, _pid: i32, _offset: usize, _length: usize, session_id: u32) -> i32 {
             self.gl_submit_sessions.push(session_id);
@@ -27467,6 +27573,96 @@ mod tests {
         }
         table_addr
     }
+
+    mod dri_cleanup_status {
+        use super::*;
+        use crate::syscalls::*;
+        use crate::writeback_loss::{MappingLossKind, WritebackLossLog};
+        use alloc::string::String;
+        use wasm_posix_shared::dri_cleanup_status::{COMPLETE, HOST_RETAINED};
+
+        fn every_host_effect() -> Vec<DriReleaseEffect> {
+            alloc::vec![
+                DriReleaseEffect::UnbindBo { bo_id: 3, addr: 0x20000, len: 0x10000 },
+                DriReleaseEffect::DestroyBo(3),
+                DriReleaseEffect::RemoveFramebuffer(9),
+                DriReleaseEffect::DropMaster { file_id: 4, lease_id: 12 },
+                DriReleaseEffect::UnbindGl { owner_pid: 8, session_id: 21 },
+            ]
+        }
+
+        fn apply_all(status: i32) -> (WritebackLossLog, Vec<&'static str>) {
+            let mut log = WritebackLossLog::new();
+            let mut host = MockHostIO::new();
+            host.dri_cleanup_status = status;
+            for effect in every_host_effect() {
+                apply_dri_release_effect_with_log(&mut log, 7, effect, &mut host);
+            }
+            (log, host.dri_cleanup_calls)
+        }
+
+        fn reason(log: &WritebackLossLog, index: usize) -> String {
+            String::from_utf8(log.records()[index].reason.clone()).unwrap()
+        }
+
+        #[test]
+        fn completed_and_host_retained_cleanup_record_nothing() {
+            for status in [COMPLETE, HOST_RETAINED] {
+                let (log, calls) = apply_all(status);
+                assert_eq!(calls, ["unbind", "destroy", "rmfb", "drop_master", "gl_unbind"]);
+                assert_eq!(log.total(), 0, "status {status}");
+            }
+        }
+
+        #[test]
+        fn every_refused_cleanup_is_recorded_with_its_object() {
+            let (log, _) = apply_all(-(Errno::ENOSYS as i32));
+            assert_eq!(log.total(), 5);
+            let records = log.records();
+            assert!(records.iter().all(|record| record.kind == MappingLossKind::DeviceCleanup));
+            assert_eq!(records.iter().map(|record| (record.pid, record.operand)).collect::<Vec<_>>(),
+                [(7, 3), (7, 3), (7, 9), (7, 12), (8, 21)]);
+            assert_eq!(reason(&log, 0), "gbm_bo_unbind refused errno 38");
+            assert_eq!(reason(&log, 1), "gbm_bo_destroy refused errno 38");
+            assert_eq!(reason(&log, 2), "kms_rmfb refused errno 38");
+            assert_eq!(reason(&log, 3), "kms_drop_master refused errno 38");
+            assert_eq!(reason(&log, 4), "gl_unbind refused errno 38");
+        }
+
+        #[test]
+        fn lost_unbind_writeback_is_a_writeback_loss_at_the_mapping() {
+            let (log, _) = apply_all(-(Errno::EIO as i32));
+            let records = log.records();
+            assert_eq!(records[0].kind, MappingLossKind::Writeback);
+            assert_eq!((records[0].pid, records[0].operand), (7, 0x20000));
+            // EIO from any other effect is a refusal, not a writeback.
+            assert!(records[1..].iter().all(|record| record.kind == MappingLossKind::DeviceCleanup));
+            assert_eq!(reason(&log, 1), "gbm_bo_destroy refused errno 5");
+        }
+
+        #[test]
+        fn an_unknown_positive_status_is_not_success() {
+            let mut log = WritebackLossLog::new();
+            record_dri_cleanup_outcome(&mut log, 5, &DriReleaseEffect::DestroyBo(44), 2);
+            assert_eq!(log.total(), 1);
+            assert_eq!(log.records()[0].operand, 44);
+            assert_eq!(reason(&log, 0), "gbm_bo_destroy returned unknown status 2");
+            let rendered = String::from_utf8(log.render()).unwrap();
+            assert!(rendered.contains("loss kind=device-cleanup pid=5 object=0x2c reason=gbm_bo_destroy returned unknown status 2\n"),
+                "{rendered}");
+        }
+
+        #[test]
+        fn hide_cursor_has_no_host_outcome_and_records_nothing() {
+            let mut log = WritebackLossLog::new();
+            let mut host = MockHostIO::new();
+            host.dri_cleanup_status = -(Errno::EIO as i32);
+            apply_dri_release_effect_with_log(&mut log, 7, DriReleaseEffect::HideCursor { fb_id: 0 }, &mut host);
+            assert!(host.dri_cleanup_calls.is_empty());
+            assert_eq!(log.total(), 0);
+        }
+    }
+
 
     // --- futex: the kernel owns the wait (crate::wait_park) ----------------
     //

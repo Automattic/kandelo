@@ -68,6 +68,7 @@ host/test/dinit-image-helpers.test.ts	prepared-product
 host/test/dlopen-e2e.test.ts	prepared-product
 host/test/dlopen-host-imports.test.ts	source-only
 host/test/dri-bo-teardown.test.ts	source-only
+host/test/dri-cleanup-status.test.ts	source-only
 host/test/dri-cube-pyramid.test.ts	prepared-product
 host/test/dri-dumb-roundtrip.test.ts	prepared-product
 host/test/dri-egl-native-window.test.ts	prepared-product

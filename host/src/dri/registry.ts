@@ -443,12 +443,32 @@ export class GbmBoRegistry {
    * onPublicationLost. Also false for invalid arguments or reentry.
    */
   unbind(pid: number, bo_id: number, addr?: number, len?: number): boolean {
+    return this.unbindStatus(pid, bo_id, addr, len) === 0;
+  }
+
+  /**
+   * `unbind` with the outcome the kernel's `host_gbm_bo_unbind` import
+   * reports: 0 when the range is detached, -EIO when it detached but a final
+   * writeback was lost (recorded as for `unbind`), -EBUSY when a reentrant
+   * call or a failed staging left the binding in place, -EINVAL for a range
+   * that is not a valid address span.
+   */
+  unbindStatus(pid: number, bo_id: number, addr?: number, len?: number): number {
     const entry = this.bos.get(bo_id);
-    if (this.mutating) return false;
-    if (!entry) return true;
+    if (this.mutating) return -16;
+    if (!entry) return 0;
     if (addr !== undefined && (!Number.isSafeInteger(addr) || addr < 0 ||
-        (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return false;
-    return this.removeMappings(entry, pid, addr, len, undefined, true);
+        (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return -22;
+    const published = this.removeMappings(entry, pid, addr, len, undefined, true);
+    // removeMappings answers false both for a lost writeback (detached) and
+    // for a fault before commit (nothing changed); the remaining aliases say
+    // which.
+    if (len !== 0) for (const binding of entry.bindingsByPid.get(pid)?.values() ?? []) {
+      if (addr === undefined) return -16;
+      if (len === undefined ? binding.addr === addr
+        : binding.addr < addr + len && addr < binding.addr + binding.len) return -16;
+    }
+    return published ? 0 : -5;
   }
 
   /** Writebacks lost when kernel-unmapped mappings were detached. */

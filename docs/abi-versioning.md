@@ -2416,6 +2416,20 @@ it does not grant deferred cleanup authority or enable public retained
 query scheduling. This addition completes the same unpublished host3
 contract and requires matching regenerated kernel/host artifacts.
 
+The same unpublished host3 contract makes the five DRI/GL cleanup imports
+return `i32`: `host_gbm_bo_unbind`, `host_gbm_bo_destroy`,
+`host_gl_unbind`, `host_kms_rmfb` and `host_kms_drop_master`. They were
+void, so a host that failed to release a buffer, framebuffer, grant or GL
+session was indistinguishable from one that succeeded. The result is a
+`wasm_posix_shared::dri_cleanup_status` value: `0` complete, `1` host
+retained (the host's own retirement journal owns the remaining native
+deletions), `-EIO` from `host_gbm_bo_unbind` for a detached mapping whose
+final writeback was lost, or a negative errno refusal. The kernel records
+the last two in `/proc/kandelo/writeback_losses`. The `dri_cleanup_status`
+kernel-host snapshot section and generated `DRI_CLEANUP_*` TypeScript
+constants carry the values. Earlier host3 kernels and hosts are not
+interchangeable with this contract; rebuild them together.
+
 Regenerate the snapshot, C/TypeScript declarations and standalone resolver
 from the merged source. All normal SDK, kernel, program, package and image
 artifacts require rebuilding for the combined program surface. Historical

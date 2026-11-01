@@ -75,7 +75,9 @@ import {
   WASM_POLL_FD_FD_OFFSET,
   WASM_POLL_FD_REVENTS_OFFSET,
   CH_ERRNO, CH_RETURN, CH_STATUS, CHANNEL_STATUS_COMPLETE,
+  DRI_CLEANUP_COMPLETE, DRI_CLEANUP_HOST_RETAINED,
 } from "./generated/abi";
+import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
@@ -1223,6 +1225,29 @@ export class WasmPosixKernel {
    */
   #isMasterGlBinding(binding: GlBinding): boolean {
     return this.kms.isMasterFile(binding.displayFileId);
+  }
+
+  /**
+   * Run every step of one DRI/GL cleanup effect, even after a fault: the
+   * kernel object is already retired, so each step that can still release
+   * host state must run. A kernel export failure still aborts. Returns false
+   * when any step faulted; the fault is reported as a host diagnostic and the
+   * caller's negative status makes the kernel record the loss.
+   */
+  #runCleanupSteps(pid: number, operation: string, steps: readonly (() => unknown)[]): boolean {
+    let complete = true;
+    for (const step of steps) {
+      try { step(); }
+      catch (error) {
+        if (isKernelExportFailure(error)) throw error;
+        complete = false;
+        try {
+          this.callbacks.onHostDiagnostic?.({ pid, source: "DRI cleanup",
+            message: `${operation}: ${String((error as Error)?.message ?? error)}` });
+        } catch (callbackError) { if (isKernelExportFailure(callbackError)) throw callbackError; }
+      }
+    }
+    return complete;
   }
 
   #kernelIdentity(value: bigint, label: string): bigint {
@@ -2744,14 +2769,23 @@ export class WasmPosixKernel {
           if (texId == null) return -12; // -ENOMEM
           return 0;
         },
-        host_gbm_bo_destroy: (pid: number, bo_id: number): void => {
+        host_gbm_bo_destroy: (pid: number, bo_id: number): number => {
           // Rust's last-reference callback is the lifetime authority for
           // both tiers. GPU allocations have no CPU registry entry, so a
           // CPU mirror's destroy event cannot drive native retirement.
-          this.bos.destroy(pid, bo_id);
-          this.kms.retireCursorBo(bo_id);
-          for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
-          this.gl.retireForeignBo(bo_id);
+          // Every step runs even if an earlier one faults: the kernel BO is
+          // already gone, so whatever can still be released must be.
+          let retired = false;
+          const complete = this.#runCleanupSteps(pid, `GBM BO ${bo_id} destroy`, [
+            () => this.bos.destroy(pid, bo_id),
+            () => { this.kms.retireCursorBo(bo_id); },
+            () => { for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent(); },
+            () => { retired = this.gl.retireForeignBo(bo_id); },
+          ]);
+          if (!complete) return -5; // EIO: recorded by the kernel as a device-cleanup loss.
+          // Native views still pending are journaled in foreignRetirements
+          // and retried before later GL work (prepareForeignRetirements).
+          return retired ? DRI_CLEANUP_COMPLETE : DRI_CLEANUP_HOST_RETAINED;
         },
         host_gbm_bo_bind: (
           pid: number,
@@ -2789,12 +2823,18 @@ export class WasmPosixKernel {
           bo_id: number,
           addr: KernelPointer,
           len: KernelPointer,
-        ): void => {
-          const range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
-          // The kernel has unmapped the range: the registry always detaches
-          // it. A false result means a lost final writeback, which the
-          // registry records on the BO and reports via onHostDiagnostic.
-          this.bos.unbind(pid, bo_id, range.offset, range.length);
+        ): number => {
+          let range: { offset: number; length: number };
+          try {
+            range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
+          } catch {
+            return -22; // EINVAL
+          }
+          // The kernel has unmapped the range, so the registry detaches it.
+          // -EIO reports a lost final writeback, which the registry also
+          // records on the BO and reports via onHostDiagnostic; the kernel
+          // records it in /proc/kandelo/writeback_losses.
+          return this.bos.unbindStatus(pid, bo_id, range.offset, range.length);
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's
         // wasm Memory SAB; submit/query reach into it via the embedder-
@@ -2815,11 +2855,21 @@ export class WasmPosixKernel {
             cmdbufLen: binding.length,
           });
         },
-        host_gl_unbind: (pid: number, sessionId?: number): void => {
-          this.releaseClaimedKmsCanvas(pid, sessionId);
-          this.gl_submit_queue.removeSession(pid, sessionId);
-          this.invalidateGlRetirementContexts(pid, sessionId);
-          this.gl.unbind(pid, sessionId);
+        host_gl_unbind: (pid: number, sessionId?: number): number => {
+          // The session's command memory is already gone. Each step runs even
+          // if an earlier one faults, so the binding always leaves the
+          // registry and cannot read the reused range.
+          let released = true;
+          const complete = this.#runCleanupSteps(pid, `GL session ${sessionId ?? "*"} unbind`, [
+            () => this.releaseClaimedKmsCanvas(pid, sessionId),
+            () => this.gl_submit_queue.removeSession(pid, sessionId),
+            () => this.invalidateGlRetirementContexts(pid, sessionId),
+            () => { released = this.gl.unbind(pid, sessionId); },
+          ]);
+          if (!complete) return -5; // EIO: recorded by the kernel as a device-cleanup loss.
+          // An accepted execution still holding the retired context releases
+          // its native objects when it completes.
+          return released ? DRI_CLEANUP_COMPLETE : DRI_CLEANUP_HOST_RETAINED;
         },
         host_gl_create_context: (
           pid: number, ctxId: number,
@@ -3388,9 +3438,18 @@ export class WasmPosixKernel {
           this.kms.setMaster(pid, this.#kernelIdentity(fileId, "DRM file identity"),
             this.#kernelIdentity(leaseId, "DRM master grant identity"));
         },
-        host_kms_drop_master: (_pid: number, fileId: bigint, leaseId: bigint): void => {
-          this.kms.dropMaster(this.#kernelIdentity(fileId, "DRM release file identity"),
-            this.#kernelIdentity(leaseId, "DRM release grant identity"));
+        host_kms_drop_master: (_pid: number, fileId: bigint, leaseId: bigint): number => {
+          let file: bigint, lease: bigint;
+          try {
+            file = this.#kernelIdentity(fileId, "DRM release file identity");
+            lease = this.#kernelIdentity(leaseId, "DRM release grant identity");
+          } catch {
+            return -22; // EINVAL
+          }
+          // false means the host already holds a newer grant, so this one is
+          // retired either way.
+          this.kms.dropMaster(file, lease);
+          return DRI_CLEANUP_COMPLETE;
         },
         // `addr` is a GUEST address and arrives as a BigInt, because the
         // kernel declares it `u64` so that one import signature serves both a
@@ -3581,7 +3640,10 @@ export class WasmPosixKernel {
           this.kms.addFb({ fb_id, bo_id, width, height, pixel_format, pitch, offset: offset >>> 0 });
           return 0;
         },
-        host_kms_rmfb: (_pid: number, fb_id: number): void => { this.kms.rmFb(fb_id); },
+        host_kms_rmfb: (_pid: number, fb_id: number): number => {
+          this.kms.rmFb(fb_id);
+          return DRI_CLEANUP_COMPLETE;
+        },
         host_kms_set_fb: (
           pid: number,
           crtc_id: number,
