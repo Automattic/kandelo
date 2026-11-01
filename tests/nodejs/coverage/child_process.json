@@ -1,0 +1,634 @@
+{
+  "schema": 1,
+  "module": "node:child_process",
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "document": {
+    "path": "doc/api/child_process.md",
+    "sha256": "5f763352d3a7f6393f06f2055f1a11402105d97ccfb5c454b79a84d1d909964c"
+  },
+  "surfaceReview": "Three synchronous function headings reviewed. This is not the full child_process surface; async functions, classes, events, properties, descriptors, aliases and option combinations still require an audit.",
+  "fullCompatibility": false,
+  "controls": {
+    "path": "host/test/fixtures/node-sync-processes.ts",
+    "sha256": "439919095bada8614809d63dff6b99f243f3f1e401782361078d34cee51b29f1",
+    "sourceTest": "host/test/node-sync-processes.test.ts",
+    "nodeProductTest": "host/test/node-core-compat.test.ts",
+    "browserProductTest": "apps/browser-demos/test/node-sync-processes.spec.ts",
+    "allHostRunner": "scripts/run-nodejs-sync-process-tests.ts",
+    "independentPeer": "host/test/fixtures/node-sync-process-peer.c"
+  },
+  "upstreamSelection": "tests/nodejs/selections/child-process-sync.json",
+  "remainingReview": [
+    "Setting uid/gid returns ENOSYS because the spawn seam has no arbitrary credential attributes. This is an implementation gap, not an inherent platform boundary.",
+    "Node executable mode still depends on argv[0]; overriding it for the Node executable requires proper entry-point separation. The generic spawn seam preserves the supplied argv0.",
+    "Full stdio/input/encoding/shell/URL/byte-path/error matrices, signals and process groups, descriptor/alias/inheritance behavior and the rest of child_process remain incomplete.",
+    "Full Node core and broad POSIX/memory/performance suites have not been rerun for this focused work.",
+    "Async spawn still coerces detached instead of rejecting nonboolean values; its full validation matrix remains incomplete."
+  ],
+  "rows": [
+    {
+      "api": "child_process.spawnSync(command[, args][, options])",
+      "status": "partial",
+      "review": "Actual POSIX execution, binary pipes, environment/cwd, status/signal, timeout/output limits and cleanup; full option/error matrices and credential changes remain incomplete."
+    },
+    {
+      "api": "child_process.execFileSync(file[, args][, options])",
+      "status": "partial",
+      "review": "Actual POSIX execution, binary pipes, environment/cwd, status/signal, timeout/output limits and cleanup; full option/error matrices and credential changes remain incomplete."
+    },
+    {
+      "api": "child_process.execSync(command[, options])",
+      "status": "partial",
+      "review": "Actual POSIX execution, binary pipes, environment/cwd, status/signal, timeout/output limits and cleanup; full option/error matrices and credential changes remain incomplete."
+    }
+  ],
+  "evidence": {
+    "productionHead": "e4d6edc21ce8b290f70d35adfffa87b32b0bf584",
+    "validatedWorkingTreeBase": "d005cc6a1be679f6ecaa7ec26311c39f4cc137b5",
+    "runtimeInputs": {
+      "revision": 41,
+      "inputs": {
+        "kernel.wasm": {
+          "source": "local-binaries/source-only-v1/kernel.wasm",
+          "sha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "bytes": 1762814
+        },
+        "node.zip": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/node.zip",
+          "sha256": "ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e",
+          "bytes": 17442245
+        },
+        "coreutils.wasm": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/coreutils.wasm",
+          "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc",
+          "bytes": 1777079
+        },
+        "shell.vfs.zst": {
+          "source": "local-binaries/source-only-v1/programs/wasm32/shell.vfs.zst",
+          "sha256": "4d871305ad65d316529f89486899856ad697ca2b6f298f1e9b6c472acb618d36",
+          "bytes": 1051081
+        }
+      },
+      "source": {
+        "packages/registry/node-compat/bootstrap.js": "d2762d5505b1b715b1ca3bed6ea9636240c3d8398e284419e055e95055af4fb3",
+        "packages/registry/spidermonkey/node-compat/adapter.js": "a2dddce3316bebed896e1c5783a3c202249d5d0421d7dffcf0297f44e6745ee4",
+        "packages/registry/spidermonkey/patches/0036-kandelo-node-sync-processes.patch": "184d32890e0c9f9d057c9b4247dc23472bffd48ccff8e955227920913c8a4abb"
+      }
+    },
+    "sourceReference": {
+      "path": ".context/node26-sync-source-final.log",
+      "sha256": "45954418c843c1aa95449861cfee97fc663b7fd7dff75341436a0c5467be2088",
+      "passed": 158,
+      "skipped": 0
+    },
+    "nodeProduct": {
+      "path": ".context/node-prepared-reports/vitest.xlhXLA/report.json",
+      "sha256": "c605c8ec662f49ff57eb458c1aa2684c55ffc549ad101b20b77c37b76365c7af",
+      "passed": 18,
+      "skipped": 0
+    },
+    "browserProduct": {
+      "path": ".context/node26-sync-browser-reports/playwright.L2XDQ7/report.json",
+      "sha256": "bb429fd4c14041da7f1b1f3116e64f2b4ac9b3df303fbe5b86643f56f22c6753",
+      "counts": {
+        "startTime": "2026-11-01T02:33:20.250Z",
+        "duration": 307736.546,
+        "expected": 9,
+        "skipped": 0,
+        "unexpected": 0,
+        "flaky": 0
+      },
+      "retries": 0
+    },
+    "runtimeControls": {
+      "audit": {
+        "path": ".context/node26-sync-runtime-audit.json",
+        "sha256": "9af4429686bb45ccb0f4318363395f34d3d5c94e1c2f7e2dd1f9f1e6f83386b0"
+      },
+      "passedEachHost": 8,
+      "countsPerHost": {
+        "node": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "chromium": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "firefox": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        },
+        "webkit": {
+          "pass": 8,
+          "fail": 0,
+          "upstream-skip": 0,
+          "unsupported": 0,
+          "timeout": 0,
+          "harness-error": 0
+        }
+      },
+      "identicalInputs": true
+    },
+    "tcp": {
+      "node": {
+        "report": {
+          "path": ".context/node26-sync-tcp-node/result.json",
+          "sha256": "6158c5a5199b67bb2007704a418ccba10ec0434110b21d738e8048e07feec081"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "node",
+          "imageSha256": "b32f1ea0fca0986500f50ff1b693a24bc2a0fe1fde9519309f5522aad5ac9b1c",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ]
+        }
+      },
+      "chromium": {
+        "report": {
+          "path": ".context/node26-sync-tcp-chromium/result.json",
+          "sha256": "b6f78468d07c8f2391fd18b359e94d73adc71d4683a6b7dd35fba8052f413ae8"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "chromium",
+          "imageSha256": "b32f1ea0fca0986500f50ff1b693a24bc2a0fe1fde9519309f5522aad5ac9b1c",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "153.0.8010.12"
+        }
+      },
+      "firefox": {
+        "report": {
+          "path": ".context/node26-sync-tcp-firefox/result.json",
+          "sha256": "805393e948812bc6f4ac74082db1f3740f688505d3da7ef3ef3e056641aad9dd"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "firefox",
+          "imageSha256": "b32f1ea0fca0986500f50ff1b693a24bc2a0fe1fde9519309f5522aad5ac9b1c",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "155.0"
+        }
+      },
+      "webkit": {
+        "report": {
+          "path": ".context/node26-sync-tcp-webkit/result.json",
+          "sha256": "b7df644ca5cbd5afcabecec40b58e511381a5e88b929a3e6d010d4789d043dba"
+        },
+        "passed": 8,
+        "identity": {
+          "host": "webkit",
+          "imageSha256": "b32f1ea0fca0986500f50ff1b693a24bc2a0fe1fde9519309f5522aad5ac9b1c",
+          "kernelSha256": "0e6e314268222186f1efe0833ff97eea50faaee026cc9e78db68779b7bacd4b5",
+          "assets": [
+            {
+              "guest": "assets/programs/wasm32/node.zip",
+              "sha256": "ad7e5c21474e9fe9c0342b3cb1bff81236aa5bd730d5ec663c76d4dff884953e"
+            },
+            {
+              "guest": "assets/programs/wasm32/coreutils.wasm",
+              "sha256": "8d674a28a2bfac59f0f01d818a3598e4b6f8b7f1953e17d9f10ed0c5deae24cc"
+            }
+          ],
+          "browserVersion": "26.6"
+        }
+      }
+    },
+    "setsidKernelControl": {
+      "path": ".context/node26-sync-setsid-core-r2.log",
+      "sha256": "2c56d43266c9c92583685683819fd717ddd92822f705e726f95ccf4499835948",
+      "passed": 1
+    },
+    "upstream": {
+      "audit": {
+        "path": ".context/node26-sync-upstream-r3-audit.json",
+        "sha256": "a114fee831827fc8ad7956d4ba0529a57575f5bf01e754db444c43fb76bebd62"
+      },
+      "reports": {
+        "native": {
+          "counts": {
+            "pass": 13,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 0,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "fingerprint": "4c4310c761ffdb18dbbddca60d453b69c0a8ca89f4fb3c35af403b25f6c8b098",
+          "manifest": {
+            "path": ".context/node26-sync-upstream-r3-native/manifest.json",
+            "sha256": "5e3381865e36702b35483a2dfd4819dda713a98786158be8a819d053b31ef3d0"
+          },
+          "results": {
+            "path": ".context/node26-sync-upstream-r3-native/results.jsonl",
+            "sha256": "24c556335409495bba670b2e385abeadeabfea962d6016485e7867dbdd4856de"
+          }
+        },
+        "node": {
+          "counts": {
+            "pass": 12,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 1,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "fingerprint": "0103f02d6c38383140d85e3c9147aa9bed8f1e3c3c1be4d6dff709009c04dd7a",
+          "manifest": {
+            "path": ".context/node26-sync-upstream-r3-node/manifest.json",
+            "sha256": "a2a172d761fdf02d23b0fffc2321e5b21fc5648800a773727e32f5fb52f3e6da"
+          },
+          "results": {
+            "path": ".context/node26-sync-upstream-r3-node/results.jsonl",
+            "sha256": "eb0f5d274d430e77d392c5a8d8f065778e92cac20d4860fa01659540ad097491"
+          }
+        },
+        "chromium": {
+          "counts": {
+            "pass": 12,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 1,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "fingerprint": "7b7ae1e86c5af79d38c65840ac933fa03293d11eedfc4f98cca97c99f24b1936",
+          "manifest": {
+            "path": ".context/node26-sync-upstream-r3-chromium/manifest.json",
+            "sha256": "fcd480b7d224a74c526daeb01aee5d669d7ede84812a77d11d1ea55a0e143913"
+          },
+          "results": {
+            "path": ".context/node26-sync-upstream-r3-chromium/results.jsonl",
+            "sha256": "54a1b7ed81386e825bad15f4a1c902b0918510c762e558aba03f6819f11423d0"
+          }
+        },
+        "firefox": {
+          "counts": {
+            "pass": 12,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 1,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "fingerprint": "6053a80af884a4617b4e9f9a0bd72dcd2e6e044e9be34518727878dcc71f821a",
+          "manifest": {
+            "path": ".context/node26-sync-upstream-r3-firefox/manifest.json",
+            "sha256": "695936376cdee30f6cd9b033326cfc664d4d22fdcef14781f8c3bb5bd1401cd5"
+          },
+          "results": {
+            "path": ".context/node26-sync-upstream-r3-firefox/results.jsonl",
+            "sha256": "c0e5407ff4a26a909e41fe6baae18c3d216102a5e74742241b670845a2115154"
+          }
+        },
+        "webkit": {
+          "counts": {
+            "pass": 12,
+            "fail": 0,
+            "upstream-skip": 0,
+            "unsupported": 1,
+            "timeout": 0,
+            "harness-error": 0
+          },
+          "fingerprint": "a8425057d071952422ed34bbfc32f2cab7e9a2ee2df237229881a88a8997a67a",
+          "manifest": {
+            "path": ".context/node26-sync-upstream-r3-webkit/manifest.json",
+            "sha256": "0ee3bbd8b443baeed2b3d309c186662340e8e88b570d78954547918c27f3b636"
+          },
+          "results": {
+            "path": ".context/node26-sync-upstream-r3-webkit/results.jsonl",
+            "sha256": "be6dece5b19a0a1c9a709eac0d82fb7b71627842c4c62d6f3c685d6a3c883083"
+          }
+        }
+      },
+      "outcomesByHost": {
+        "native": {
+          "parallel/test-child-process-execfilesync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-execsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-env.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-input.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-non-string-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-shell.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-validation-errors.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-nan-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-negative-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "node": {
+          "parallel/test-child-process-execfilesync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-execsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-env.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-input.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-non-string-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-shell.js": {
+            "status": "unsupported",
+            "exitCode": null,
+            "unsupported": "Guest CLI has no verified mapping for required flags: --expose-internals"
+          },
+          "parallel/test-child-process-spawnsync-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-validation-errors.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-nan-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-negative-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "chromium": {
+          "parallel/test-child-process-execfilesync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-execsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-env.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-input.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-non-string-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-shell.js": {
+            "status": "unsupported",
+            "exitCode": null,
+            "unsupported": "Guest CLI has no verified mapping for required flags: --expose-internals"
+          },
+          "parallel/test-child-process-spawnsync-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-validation-errors.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-nan-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-negative-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "firefox": {
+          "parallel/test-child-process-execfilesync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-execsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-env.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-input.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-non-string-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-shell.js": {
+            "status": "unsupported",
+            "exitCode": null,
+            "unsupported": "Guest CLI has no verified mapping for required flags: --expose-internals"
+          },
+          "parallel/test-child-process-spawnsync-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-validation-errors.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-nan-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-negative-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        },
+        "webkit": {
+          "parallel/test-child-process-execfilesync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-execsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-env.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-input.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-maxbuf.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-non-string-args.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-shell.js": {
+            "status": "unsupported",
+            "exitCode": null,
+            "unsupported": "Guest CLI has no verified mapping for required flags: --expose-internals"
+          },
+          "parallel/test-child-process-spawnsync-timeout.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync-validation-errors.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-child-process-spawnsync.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-nan-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          },
+          "parallel/test-timers-negative-duration-warning.js": {
+            "status": "pass",
+            "exitCode": 0
+          }
+        }
+      },
+      "identicalGuestStatusesExitCodes": true,
+      "pendingEachHost": 0
+    },
+    "fullProductRebuild": "deferred; targeted engine/Node/shell build at revision 41 succeeded",
+    "fullBaselineRefreshed": false,
+    "unresolvedBroaderFailure": "Original broad WebKit core spawn/PATH ENOMEM observation remains unresolved; current selected controls passing does not establish its cause or a fix.",
+    "intermediateEvidence": {
+      "revision39": ".context/node26-sync-r1-summary.json",
+      "revision40": ".context/node26-sync-upstream-r2-node/summary.json",
+      "unexpectedExceptionRed": ".context/node26-sync-source-oom-red.log"
+    }
+  }
+}
