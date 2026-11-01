@@ -49,6 +49,10 @@ static int prime_fd(uint32_t handle, off_t size) {
     int fd = dup(fileno(file)); assert(fd >= 0);
     fclose(file);
     assert(!ftruncate(fd, size));
+    /* A closed descriptor number may be reused: rebind it, never alias. */
+    for (unsigned i = 0; i < sizeof primes / sizeof primes[0]; ++i) {
+        if (primes[i].handle && primes[i].fd == fd) { primes[i].handle = handle; return fd; }
+    }
     for (unsigned i = 0; i < sizeof primes / sizeof primes[0]; ++i) {
         if (!primes[i].handle) { primes[i].fd = fd; primes[i].handle = handle; return fd; }
     }

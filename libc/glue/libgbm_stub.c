@@ -9,7 +9,7 @@
  *
  * Surface implemented (v1):
  *   - gbm_create_device / gbm_device_destroy
- *   - gbm_device_is_format_supported (32-bpp fourccs)
+ *   - gbm_device_is_format_supported (32-bpp fourccs; per-usage planes)
  *   - gbm_bo_create        (linear, 32-bpp formats only)
  *   - gbm_bo_create_with_modifiers / gbm_bo_create_with_modifiers2
  *                          (LINEAR or implicit modifiers only)
@@ -40,8 +40,9 @@
  * CPU-facing window rendering remains unsupported rather than silently
  * replacing mappable storage with a GPU-only BO.
  *
- * Format queries report the single linear plane actually allocated here;
- * names use the public fourcc spelling, including the two legacy aliases.
+ * Format queries report the single linear plane actually allocated here.
+ * Every entry point canonicalizes the legacy GBM_BO_FORMAT_XRGB8888/ARGB8888
+ * values to their fourcc, as Mesa does, and only fourccs are reported.
  */
 
 #include <gbm.h>
@@ -400,8 +401,9 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
                                 uint32_t width, uint32_t height,
                                 uint32_t format, uint32_t flags,
                                 int gpu_tier, int owned_device) {
+    format = canonical_format(format);
     uint32_t bpp = format_bpp(format);
-    if (!gbm || !bpp || !width || !height) {
+    if (!gbm || !bpp || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)) {
         errno = EINVAL;
         return NULL;
     }
@@ -538,6 +540,7 @@ static void release_handle_locked(struct gbm_device *dev, uint32_t handle) {
 static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
                                    uint32_t width, uint32_t height, uint32_t format,
                                    uint32_t stride, uint32_t offset, uint32_t usage) {
+    format = canonical_format(format);
     uint32_t bpp = format_bpp(format);
     if (!gbm || fd < 0 || !width || !height || !bpp || (usage & ~WPK_GBM_SUPPORTED_USAGE) ||
         (uint64_t)width * (bpp / 8) > stride) {
@@ -850,15 +853,19 @@ uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
     return plane == 0 ? bo->offset : 0;
 }
 
+/* Report what an allocation with these usages can actually scan out. Like
+ * Mesa's DRI backend, a cursor is never also a render target, and unknown
+ * or unsupported usages are unsupported. The kernel cursor plane takes only
+ * ARGB8888 (kms::CURSOR_PLANE_FORMATS); the primary plane takes all four
+ * 32-bpp formats GBM allocates. */
 int gbm_device_is_format_supported(struct gbm_device *gbm,
                                    uint32_t format, uint32_t flags) {
-    (void) gbm; (void) flags;
-    /* Match format_bpp's set — the only formats the kernel's
-     * CREATE_DUMB path accepts. SDL2 KMSDRM probes ARGB8888 with
-     * GBM_BO_USE_SCANOUT|GBM_BO_USE_RENDERING; cursor probes use
-     * ARGB8888 with USE_CURSOR|USE_WRITE. Both fall under the same
-     * underlying linear dumb buffer in v1. */
-    return format_bpp(format) ? 1 : 0;
+    (void) gbm;
+    format = canonical_format(format);
+    if (!format_bpp(format) || (flags & ~WPK_GBM_SUPPORTED_USAGE)) return 0;
+    if (flags & GBM_BO_USE_CURSOR)
+        return !(flags & GBM_BO_USE_RENDERING) && format == GBM_FORMAT_ARGB8888;
+    return 1;
 }
 
 /* The render back is private GPU storage. Public CPU-facing usage flags
@@ -876,7 +883,9 @@ static struct gbm_bo *surface_alloc_bo(struct gbm_surface *s, int gpu) {
 struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
                                        uint32_t width, uint32_t height,
                                        uint32_t format, uint32_t flags) {
-    if (!gbm || !width || !height || !format_bpp(format)) {
+    format = canonical_format(format);
+    if (!gbm || !width || !height || !format_bpp(format) ||
+        (flags & ~WPK_GBM_SUPPORTED_USAGE)) {
         errno = EINVAL;
         return NULL;
     }
