@@ -2546,7 +2546,7 @@
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 16,
-      "wasm64Size": 16
+      "wasm64Size": null
     },
     "3222299819": {
       "argKind": "pointer",
@@ -2589,6 +2589,12 @@
       "direction": "inout",
       "wasm32Size": 20,
       "wasm64Size": 20
+    },
+    "3222823994": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": null,
+      "wasm64Size": 24
     },
     "3222824112": {
       "argKind": "pointer",
@@ -3561,6 +3567,11 @@
       "kind": "func",
       "name": "kernel_kms_last_frame_us",
       "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_kms_take_vblank_wake",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",

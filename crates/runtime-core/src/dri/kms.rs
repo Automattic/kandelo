@@ -8,7 +8,7 @@
 //! kernel syscall executor, just like the master and BO registries.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
 
 use wasm_posix_shared::dri::*;
@@ -211,6 +211,24 @@ pub fn allocate_fb_id() -> Result<u32, Errno> {
 
 static CRTC_FB: AtomicU32 = AtomicU32::new(0);
 
+/// A page flip latched on the CRTC that its next vblank has not completed.
+/// Linux tracks this per CRTC (the pending commit), not per file: a second
+/// flip before that vblank fails with EBUSY whichever file queued the first.
+static FLIP_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub fn flip_pending() -> bool {
+    FLIP_PENDING.load(Ordering::Relaxed)
+}
+
+pub fn set_flip_pending() {
+    FLIP_PENDING.store(true, Ordering::Relaxed);
+}
+
+/// The vblank that follows a flip completes it.
+pub fn complete_pending_flip() {
+    FLIP_PENDING.store(false, Ordering::Relaxed);
+}
+
 struct GlobalMode(UnsafeCell<Option<WpkDrmModeModeinfo>>);
 
 unsafe impl Sync for GlobalMode {}
@@ -323,6 +341,7 @@ pub fn reset_for_test() {
     unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
     set_crtc_fb(0);
     set_crtc_mode(None);
+    complete_pending_flip();
     replace_closed_scanout(None);
 }
 

@@ -406,7 +406,9 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_PRIME_HANDLE_TO_FD, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
-    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, 16),
+    // `union drm_wait_vblank` holds `unsigned long`/`long` fields, so each
+    // pointer width has its own request number and layout (as VERSION).
+    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK, InOut, wasm32 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETPROPERTY, In, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPBLOB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
@@ -422,6 +424,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // never succeed from a real guest.
     pointer!(crate::dri::DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
+    pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK_WASM64, InOut, wasm64 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_LEASE, InOut, 24),

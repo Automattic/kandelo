@@ -4858,6 +4858,82 @@ pub mod dri {
     /// on the CRTC that scans it out.
     pub const DRM_IOCTL_MODE_CLOSEFB: u32 = 0xc008_64d0;
 
+    /// Native wasm64 `_IOWR('d', 0x3a, drm_wait_vblank)`. The reply's
+    /// `long tval_sec` / `long tval_usec` and the request's `unsigned long
+    /// signal` are 8 bytes under LP64, so the union is 24 bytes.
+    pub const DRM_IOCTL_WAIT_VBLANK_WASM64: u32 = 0xc018_643a;
+
+    /// `_IOWR('d', 0xae, drm_mode_fb_cmd)` — legacy single-plane ADDFB.
+    pub const DRM_IOCTL_MODE_ADDFB: u32 = 0xc01c_64ae;
+
+    /// `_IOWR('d', 0xa4, drm_mode_crtc_lut)` / `0xa5` — legacy gamma LUT.
+    pub const DRM_IOCTL_MODE_GETGAMMA: u32 = 0xc020_64a4;
+    pub const DRM_IOCTL_MODE_SETGAMMA: u32 = 0xc020_64a5;
+
+    /// `_IOWR('d', 0xb1, drm_mode_fb_dirty_cmd)`.
+    pub const DRM_IOCTL_MODE_DIRTYFB: u32 = 0xc018_64b1;
+
+    /// `_IOWR('d', 0xbd, drm_mode_create_blob)` / `0xbe` destroy.
+    pub const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = 0xc010_64bd;
+    pub const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = 0xc004_64be;
+
+    /// `_IOWR('d', 0xce, drm_mode_fb_cmd2)` — multi-plane GETFB.
+    pub const DRM_IOCTL_MODE_GETFB2: u32 = 0xc068_64ce;
+
+    /// `_IOWR('d', 0x01, drm_unique)`: `(size_t, char *)`, 8 bytes on
+    /// wasm32 and 16 on wasm64.
+    pub const DRM_IOCTL_GET_UNIQUE: u32 = 0xc008_6401;
+    pub const DRM_IOCTL_GET_UNIQUE_WASM64: u32 = 0xc010_6401;
+
+    // `enum drm_vblank_seq_type` (include/uapi/drm/drm.h).
+    pub const DRM_VBLANK_ABSOLUTE: u32 = 0x0;
+    pub const DRM_VBLANK_RELATIVE: u32 = 0x1;
+    pub const DRM_VBLANK_HIGH_CRTC_MASK: u32 = 0x0000_003e;
+    pub const DRM_VBLANK_HIGH_CRTC_SHIFT: u32 = 1;
+    pub const DRM_VBLANK_EVENT: u32 = 0x0400_0000;
+    pub const DRM_VBLANK_FLIP: u32 = 0x0800_0000;
+    pub const DRM_VBLANK_NEXTONMISS: u32 = 0x1000_0000;
+    pub const DRM_VBLANK_SECONDARY: u32 = 0x2000_0000;
+    pub const DRM_VBLANK_SIGNAL: u32 = 0x4000_0000;
+    pub const DRM_VBLANK_TYPES_MASK: u32 = DRM_VBLANK_ABSOLUTE | DRM_VBLANK_RELATIVE;
+    pub const DRM_VBLANK_FLAGS_MASK: u32 =
+        DRM_VBLANK_EVENT | DRM_VBLANK_SIGNAL | DRM_VBLANK_SECONDARY | DRM_VBLANK_NEXTONMISS;
+
+    // `drm_mode_crtc_page_flip.flags` (include/uapi/drm/drm_mode.h).
+    pub const DRM_MODE_PAGE_FLIP_EVENT: u32 = 0x01;
+    pub const DRM_MODE_PAGE_FLIP_ASYNC: u32 = 0x02;
+    pub const DRM_MODE_PAGE_FLIP_TARGET_ABSOLUTE: u32 = 0x4;
+    pub const DRM_MODE_PAGE_FLIP_TARGET_RELATIVE: u32 = 0x8;
+    pub const DRM_MODE_PAGE_FLIP_TARGET: u32 =
+        DRM_MODE_PAGE_FLIP_TARGET_ABSOLUTE | DRM_MODE_PAGE_FLIP_TARGET_RELATIVE;
+    pub const DRM_MODE_PAGE_FLIP_FLAGS: u32 =
+        DRM_MODE_PAGE_FLIP_EVENT | DRM_MODE_PAGE_FLIP_ASYNC | DRM_MODE_PAGE_FLIP_TARGET;
+
+    // `drm_mode_fb_cmd2.flags` and format modifiers.
+    pub const DRM_MODE_FB_INTERLACED: u32 = 1 << 0;
+    pub const DRM_MODE_FB_MODIFIERS: u32 = 1 << 1;
+    pub const DRM_FORMAT_MOD_LINEAR: u64 = 0;
+
+    // `drm_mode_modeinfo` type/flag masks (drm_mode.h) used by
+    // `drm_mode_validate_basic` and `drm_mode_convert_umode`.
+    pub const DRM_MODE_TYPE_PREFERRED: u32 = 1 << 3;
+    pub const DRM_MODE_TYPE_USERDEF: u32 = 1 << 5;
+    pub const DRM_MODE_TYPE_DRIVER: u32 = 1 << 6;
+    pub const DRM_MODE_TYPE_ALL: u32 =
+        DRM_MODE_TYPE_PREFERRED | DRM_MODE_TYPE_USERDEF | DRM_MODE_TYPE_DRIVER;
+    /// PHSYNC..CLKDIV2 without the deprecated BCAST (bit 10) and PIXMUX
+    /// (bit 11), plus the 3D mask.
+    pub const DRM_MODE_FLAG_ALL: u32 = 0x3ff | (1 << 12) | (1 << 13) | DRM_MODE_FLAG_3D_MASK;
+    pub const DRM_MODE_FLAG_3D_MASK: u32 = 0x1f << 14;
+    pub const DRM_MODE_FLAG_3D_MAX: u32 = 8 << 14;
+    pub const DRM_MODE_FLAG_PIC_AR_MASK: u32 = 0x0f << 19;
+    /// Highest defined picture aspect ratio (`DRM_MODE_PICTURE_ASPECT_256_135`).
+    pub const DRM_MODE_FLAG_PIC_AR_MAX: u32 = 4 << 19;
+
+    /// Per-file event space Linux reserves for queued DRM events
+    /// (`drm_file.event_space`).
+    pub const DRM_EVENT_SPACE: usize = 4096;
+
     // --- KMS enums --------------------------------------------------------
 
     pub const DRM_MODE_CONNECTOR_VIRTUAL: u32 = 15;
@@ -5975,6 +6051,23 @@ mod dri_tests {
             DRM_IOCTL_MODE_ADDFB2,
             ioc(iowr, 'd' as u32, 0xb8, size_of::<WpkDrmModeFbCmd2>() as u32)
         );
+        // LP64 drm_wait_vblank: 8-byte signal / tval_sec / tval_usec.
+        assert_eq!(DRM_IOCTL_WAIT_VBLANK_WASM64, ioc(iowr, 'd' as u32, 0x3a, 24));
+        assert_eq!(
+            DRM_IOCTL_MODE_ADDFB,
+            ioc(iowr, 'd' as u32, 0xae, size_of::<WpkDrmModeFbCmd>() as u32)
+        );
+        assert_eq!(DRM_IOCTL_MODE_GETGAMMA, ioc(iowr, 'd' as u32, 0xa4, 32));
+        assert_eq!(DRM_IOCTL_MODE_SETGAMMA, ioc(iowr, 'd' as u32, 0xa5, 32));
+        assert_eq!(DRM_IOCTL_MODE_DIRTYFB, ioc(iowr, 'd' as u32, 0xb1, 24));
+        assert_eq!(DRM_IOCTL_MODE_CREATEPROPBLOB, ioc(iowr, 'd' as u32, 0xbd, 16));
+        assert_eq!(DRM_IOCTL_MODE_DESTROYPROPBLOB, ioc(iowr, 'd' as u32, 0xbe, 4));
+        assert_eq!(
+            DRM_IOCTL_MODE_GETFB2,
+            ioc(iowr, 'd' as u32, 0xce, size_of::<WpkDrmModeFbCmd2>() as u32)
+        );
+        assert_eq!(DRM_IOCTL_GET_UNIQUE, ioc(iowr, 'd' as u32, 0x01, 8));
+        assert_eq!(DRM_IOCTL_GET_UNIQUE_WASM64, ioc(iowr, 'd' as u32, 0x01, 16));
     }
 
     #[test]

@@ -3399,21 +3399,8 @@ fn handle_dri_card_ioctl(
             });
             Ok(())
         }
-        DRM_IOCTL_WAIT_VBLANK => {
-            if buf.len() < core::mem::size_of::<WpkDrmWaitVblankRequest>() {
-                return Err(Errno::EINVAL);
-            }
-            let (sec, nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)?;
-            let reply = WpkDrmWaitVblankReply {
-                rep_type: u32::from_le_bytes(buf[..4].try_into().unwrap()),
-                sequence: 0,
-                tv_sec: sec as u32,
-                tv_usec: (nsec / 1000) as u32,
-            };
-            unsafe {
-                core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, reply);
-            }
-            Ok(())
+        DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_WAIT_VBLANK_WASM64 => {
+            handle_drm_wait_vblank(proc, host, ofd_idx, request == DRM_IOCTL_WAIT_VBLANK_WASM64, buf)
         }
         DRM_IOCTL_SET_CLIENT_CAP => {
             let req: WpkDrmSetClientCap = read_dri_struct(buf)?;
@@ -3566,6 +3553,148 @@ fn handle_dri_card_ioctl(
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
     }
+}
+
+/// Linux's 3 s `wait_event_interruptible_timeout` bound in
+/// `drm_wait_vblank_ioctl`; a wait that outlives it fails with EBUSY.
+const DRM_VBLANK_WAIT_TIMEOUT_NS: i64 = 3_000_000_000;
+
+/// `DRM_IOCTL_WAIT_VBLANK`, following `drm_wait_vblank_ioctl`.
+///
+/// The counter is the host's real vblank cadence (`dri::retire_vblank`,
+/// driven by the same present pump that retires page flips), never a
+/// synthesized value. A blocking wait returns EAGAIN, which parks the
+/// caller on the host's ordinary blocking-retry path; the vblank that
+/// reaches the target raises `dri::take_vblank_wake` so the host retries it
+/// at that vblank. `wide` selects the LP64 (wasm64) union layout.
+fn handle_drm_wait_vblank(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    ofd_idx: usize,
+    wide: bool,
+    buf: &mut [u8],
+) -> Result<(), Errno> {
+    use wasm_posix_shared::dri::*;
+    let size = if wide { 24 } else { 16 };
+    if buf.len() < size {
+        return Err(Errno::EINVAL);
+    }
+    let word = |buf: &[u8], at: usize| u32::from_le_bytes(buf[at..at + 4].try_into().unwrap());
+    let req_type = word(buf, 0);
+    let req_sequence = word(buf, 4);
+    // `unsigned long signal`: 4 bytes on wasm32, 8 on wasm64.
+    let signal = if wide {
+        u64::from_le_bytes(buf[8..16].try_into().unwrap())
+    } else {
+        u64::from(word(buf, 8))
+    };
+    if req_type & DRM_VBLANK_SIGNAL != 0
+        || req_type & !(DRM_VBLANK_TYPES_MASK | DRM_VBLANK_FLAGS_MASK | DRM_VBLANK_HIGH_CRTC_MASK) != 0
+    {
+        return Err(Errno::EINVAL);
+    }
+    let flags = req_type & DRM_VBLANK_FLAGS_MASK;
+    let high_pipe = (req_type & DRM_VBLANK_HIGH_CRTC_MASK) >> DRM_VBLANK_HIGH_CRTC_SHIFT;
+    let pipe = if high_pipe != 0 {
+        high_pipe
+    } else if flags & DRM_VBLANK_SECONDARY != 0 {
+        1
+    } else {
+        0
+    };
+    // One CRTC (index 0). A disabled CRTC has no running vblank counter:
+    // `drm_vblank_get` refuses it with EINVAL.
+    if pipe != 0 || kms::crtc_mode().is_none() {
+        return Err(Errno::EINVAL);
+    }
+
+    let pid = proc.pid;
+    let tid = current_tid_for_process(proc);
+    let (now_sec, now_nsec) = host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC)?;
+    let now_ns = now_sec.saturating_mul(1_000_000_000).saturating_add(now_nsec);
+    let alive = |tid: u32| tid == proc.pid || proc.get_thread(tid).is_some();
+    let live: alloc::vec::Vec<u32> = kms_state(proc, ofd_idx)?
+        .vblank_waits.iter().filter(|w| w.pid == pid).map(|w| w.tid)
+        .filter(|&t| alive(t)).collect();
+    let mut kms = kms_state_mut(proc, ofd_idx)?;
+    // A record whose task has exited can never be retried.
+    kms.vblank_waits.retain(|w| w.pid != pid || live.contains(&w.tid));
+    let resumed = kms.vblank_waits.iter()
+        .position(|w| w.pid == pid && w.tid == tid)
+        .map(|i| kms.vblank_waits.remove(i))
+        .filter(|w| w.request_type == req_type && w.request_sequence == req_sequence);
+
+    let (seq, tv_sec, tv_usec) = crate::dri::vblank_count_and_time();
+    let mut out_type = req_type;
+    let (target, deadline_ns) = match resumed {
+        Some(wait) => {
+            out_type &= !(DRM_VBLANK_RELATIVE | DRM_VBLANK_NEXTONMISS);
+            (wait.target, wait.deadline_ns)
+        }
+        None => {
+            let mut target = if req_type & DRM_VBLANK_RELATIVE != 0 {
+                out_type &= !DRM_VBLANK_RELATIVE;
+                seq.wrapping_add(u64::from(req_sequence))
+            } else {
+                crate::dri::widen_32_to_64(req_sequence, seq)
+            };
+            if flags & DRM_VBLANK_NEXTONMISS != 0 && crate::dri::vblank_passed(seq, target) {
+                target = seq + 1;
+                out_type &= !DRM_VBLANK_NEXTONMISS;
+            }
+            (target, now_ns.saturating_add(DRM_VBLANK_WAIT_TIMEOUT_NS))
+        }
+    };
+    buf[0..4].copy_from_slice(&out_type.to_le_bytes());
+
+    if flags & DRM_VBLANK_EVENT != 0 {
+        // drm_queue_vblank_event: reserve event space, then send at once if
+        // the target has passed or queue for the vblank that reaches it.
+        // The reply's time fields are left as the caller's request bytes.
+        if kms.event_space_used() + 32 > DRM_EVENT_SPACE {
+            return Err(Errno::ENOMEM);
+        }
+        let reply_sequence = if crate::dri::vblank_passed(seq, target) {
+            crate::dri::queue_vblank_event_now(&mut *kms, signal, kms::CRTC_ID)
+        } else {
+            kms.pending_vblank_events.push(crate::ofd::PendingVblankEvent {
+                target, user_data: signal, crtc_id: kms::CRTC_ID,
+            });
+            target as u32
+        };
+        buf[4..8].copy_from_slice(&reply_sequence.to_le_bytes());
+        drop(kms);
+        if let Some(ofd) = proc.ofd_table.get(ofd_idx) {
+            crate::epoll::notify(crate::epoll::Source::Description(ofd.ofd_id), 0x41);
+        }
+        return Ok(());
+    }
+
+    let mut result = Ok(());
+    if !crate::dri::vblank_passed(seq, target) {
+        if now_ns < deadline_ns {
+            kms.vblank_waits.push(crate::ofd::VblankWait {
+                pid, tid, request_type: req_type, request_sequence: req_sequence,
+                target, deadline_ns,
+            });
+            // The request words are rewritten as Linux rewrites them, but
+            // the host discards a parked call's staged output.
+            buf[4..8].copy_from_slice(&(target as u32).to_le_bytes());
+            return Err(Errno::EAGAIN);
+        }
+        result = Err(Errno::EBUSY);
+    }
+    // drm_wait_vblank_reply: the current count and its vblank's time, also
+    // reported with EBUSY.
+    buf[4..8].copy_from_slice(&(seq as u32).to_le_bytes());
+    if wide {
+        buf[8..16].copy_from_slice(&u64::from(tv_sec).to_le_bytes());
+        buf[16..24].copy_from_slice(&u64::from(tv_usec).to_le_bytes());
+    } else {
+        buf[8..12].copy_from_slice(&tv_sec.to_le_bytes());
+        buf[12..16].copy_from_slice(&tv_usec.to_le_bytes());
+    }
+    result
 }
 
 fn read_dri_struct<T: Copy>(buf: &[u8]) -> Result<T, Errno> {
@@ -54436,7 +54565,7 @@ impl HostIO for RelSymlinkMock {
         );
 
         // One vblank tick retires the queued flip into event_ring.
-        crate::dri::drain_pending_flips_for_process(&mut proc, 9, 1, 2);
+        crate::dri::retire_vblank_for_process(&mut proc, 9, 1, 2);
         let kms = proc.ofd_table.get(ofd_idx).unwrap().kms().unwrap();
         assert!(kms.pending_flips.is_empty());
         assert_eq!(kms.event_ring.len(), 32);
@@ -54772,6 +54901,232 @@ impl HostIO for RelSymlinkMock {
             Err(Errno::EFAULT)
         );
         assert!(host.proc_write_calls.is_empty());
+    }
+
+    // -----------------------------------------------------------------
+    // DRM_IOCTL_WAIT_VBLANK (drm_wait_vblank_ioctl semantics).
+    // -----------------------------------------------------------------
+
+    /// One tick of the host's vblank pump over this process.
+    fn kms_host_vblank(proc: &mut Process, tv_sec: u32, tv_usec: u32) -> u64 {
+        crate::dri::retire_vblank_over([proc], tv_sec, tv_usec)
+    }
+
+    fn vblank_wake_taken() -> bool {
+        crate::dri::take_vblank_wake()
+    }
+
+    fn interrupt_vblank_wait(proc: &mut Process) {
+        let tid = proc.pid;
+        crate::dri::forget_vblank_waits(proc, tid);
+    }
+
+    fn vblank_request(req_type: u32, sequence: u32, signal: u32) -> [u8; 16] {
+        let mut b = [0u8; 16];
+        b[0..4].copy_from_slice(&req_type.to_le_bytes());
+        b[4..8].copy_from_slice(&sequence.to_le_bytes());
+        b[8..12].copy_from_slice(&signal.to_le_bytes());
+        b
+    }
+
+    fn wait_vblank(proc: &mut Process, host: &mut MockHostIO, fd: i32, request: [u8; 16])
+        -> Result<[u8; 16], Errno> {
+        let mut buf = request;
+        sys_ioctl(proc, host, fd, wasm_posix_shared::dri::DRM_IOCTL_WAIT_VBLANK, &mut buf).map(|()| buf)
+    }
+
+    fn le_u32(bytes: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+    }
+
+    fn kms_scanning_fixture() -> (Process, MockHostIO, i32) {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let (fb_id, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb_id);
+        (proc, host, fd)
+    }
+
+    fn read_drm_events(proc: &mut Process, host: &mut MockHostIO, fd: i32, len: usize) -> Result<Vec<u8>, Errno> {
+        let mut buf = alloc::vec![0u8; len];
+        let n = sys_read(proc, host, fd, &mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    #[test]
+    fn kms_wait_vblank_rejects_a_disabled_crtc_signal_and_unknown_or_high_crtc_bits() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        // No mode on the CRTC: drm_vblank_get refuses the disabled pipe.
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE, 0, 0)).map(|_| ()),
+            Err(Errno::EINVAL));
+        let (fb_id, _) = kms_dumb_fb(&mut proc, &mut host, fd);
+        kms_scan_out(&mut proc, &mut host, fd, fb_id);
+        for bad in [DRM_VBLANK_SIGNAL, DRM_VBLANK_FLIP, 1 << DRM_VBLANK_HIGH_CRTC_SHIFT,
+            DRM_VBLANK_SECONDARY, 0x100, 0x8000_0000] {
+            assert_eq!(
+                wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE | bad, 0, 0)).map(|_| ()),
+                Err(Errno::EINVAL), "type bits {bad:#x}");
+        }
+        assert!(wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE, 0, 0)).is_ok());
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_wait_vblank_blocks_until_the_host_vblank_reaches_a_relative_target() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let start = kms_host_vblank(&mut proc, 10, 500);
+        vblank_wake_taken();
+
+        // A query answers at once with the current count and that vblank's
+        // time; the RELATIVE bit is cleared as Linux rewrites the request.
+        let reply = wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE, 0, 0)).unwrap();
+        assert_eq!((le_u32(&reply, 0), le_u32(&reply, 4), le_u32(&reply, 8), le_u32(&reply, 12)),
+            (DRM_VBLANK_ABSOLUTE, start as u32, 10, 500));
+
+        // Two vblanks ahead: the call blocks (EAGAIN parks it on the host's
+        // retry path) and each host retry of the unchanged request keeps the
+        // target resolved by the first attempt.
+        let two = vblank_request(DRM_VBLANK_RELATIVE, 2, 0);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 10, 17_000);
+        assert!(!vblank_wake_taken(), "the first vblank releases nobody");
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 10, 34_000);
+        assert!(vblank_wake_taken(), "the target vblank asks the host to retry its waiters");
+        let reply = wait_vblank(&mut proc, &mut host, fd, two).unwrap();
+        assert_eq!((le_u32(&reply, 4), le_u32(&reply, 8), le_u32(&reply, 12)),
+            ((start + 2) as u32, 10, 34_000));
+
+        // The completed wait left no record: the same request waits anew.
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        // A handler signal ends that wait (EINTR); its target is forgotten, so
+        // an identical later request is a new wait, not the interrupted one.
+        interrupt_vblank_wait(&mut proc);
+        kms_host_vblank(&mut proc, 11, 0);
+        kms_host_vblank(&mut proc, 11, 1);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, two).map(|_| ()), Err(Errno::EAGAIN));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_wait_vblank_absolute_nextonmiss_and_the_three_second_timeout() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let now = kms_host_vblank(&mut proc, 1, 0);
+
+        // A passed absolute target completes at once with the current count.
+        let reply = wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_ABSOLUTE, (now - 1) as u32, 0)).unwrap();
+        assert_eq!(le_u32(&reply, 4), now as u32);
+        // NEXTONMISS turns the missed target into the next vblank.
+        let miss = vblank_request(DRM_VBLANK_ABSOLUTE | DRM_VBLANK_NEXTONMISS, (now - 1) as u32, 0);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, miss).map(|_| ()), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 1, 16_667);
+        let reply = wait_vblank(&mut proc, &mut host, fd, miss).unwrap();
+        assert_eq!((le_u32(&reply, 0), le_u32(&reply, 4)), (DRM_VBLANK_ABSOLUTE, (now + 1) as u32));
+
+        // Linux gives up after 3 s with EBUSY, still reporting the count.
+        host.monotonic_time = Some((100, 0));
+        let far = vblank_request(DRM_VBLANK_RELATIVE, 5, 0);
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, far).map(|_| ()), Err(Errno::EAGAIN));
+        host.monotonic_time = Some((102, 999_000_000));
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd, far).map(|_| ()), Err(Errno::EAGAIN));
+        host.monotonic_time = Some((103, 0));
+        let mut buf = far;
+        assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WAIT_VBLANK, &mut buf), Err(Errno::EBUSY));
+        assert_eq!(le_u32(&buf, 4), (now + 1) as u32);
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_wait_vblank_event_is_queued_for_its_target_vblank() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let now = kms_host_vblank(&mut proc, 3, 0);
+        vblank_wake_taken();
+
+        // EVENT returns at once with the target; nothing is readable until
+        // the host's vblank reaches it.
+        let reply = wait_vblank(&mut proc, &mut host, fd,
+            vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 1, 0xfeed)).unwrap();
+        assert_eq!(le_u32(&reply, 4), (now + 1) as u32);
+        assert_eq!(read_drm_events(&mut proc, &mut host, fd, 64), Err(Errno::EAGAIN));
+        kms_host_vblank(&mut proc, 4, 250);
+        assert!(vblank_wake_taken());
+        let event = read_drm_events(&mut proc, &mut host, fd, 64).unwrap();
+        assert_eq!(event.len(), 32);
+        assert_eq!((le_u32(&event, 0), le_u32(&event, 4)), (DRM_EVENT_VBLANK, 32));
+        assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0xfeed);
+        assert_eq!((le_u32(&event, 16), le_u32(&event, 20), le_u32(&event, 24), le_u32(&event, 28)),
+            (4, 250, (now + 1) as u32, kms::CRTC_ID));
+
+        // A target that has passed is sent at once.
+        let reply = wait_vblank(&mut proc, &mut host, fd,
+            vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 0, 7)).unwrap();
+        assert_eq!(le_u32(&reply, 4), (now + 1) as u32);
+        let event = read_drm_events(&mut proc, &mut host, fd, 64).unwrap();
+        assert_eq!((le_u32(&event, 0), le_u32(&event, 8), le_u32(&event, 24)), (DRM_EVENT_VBLANK, 7, (now + 1) as u32));
+
+        // The file's 4 KiB event space bounds queued events (ENOMEM).
+        for _ in 0..(DRM_EVENT_SPACE / 32) {
+            wait_vblank(&mut proc, &mut host, fd, vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 100, 0)).unwrap();
+        }
+        assert_eq!(wait_vblank(&mut proc, &mut host, fd,
+            vblank_request(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT, 100, 0)).map(|_| ()), Err(Errno::ENOMEM));
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_wait_vblank_wasm64_uses_the_lp64_union() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let (mut proc, mut host, fd) = kms_scanning_fixture();
+        let now = kms_host_vblank(&mut proc, 0x1234, 999_999);
+        let mut query = [0u8; 24];
+        query[0..4].copy_from_slice(&DRM_VBLANK_RELATIVE.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WAIT_VBLANK_WASM64, &mut query).unwrap();
+        assert_eq!(le_u32(&query, 4), now as u32);
+        assert_eq!(u64::from_le_bytes(query[8..16].try_into().unwrap()), 0x1234);
+        assert_eq!(u64::from_le_bytes(query[16..24].try_into().unwrap()), 999_999);
+
+        // `unsigned long signal` is 8 bytes and becomes the event's user data.
+        let mut event_req = [0u8; 24];
+        event_req[0..4].copy_from_slice(&(DRM_VBLANK_RELATIVE | DRM_VBLANK_EVENT).to_le_bytes());
+        event_req[8..16].copy_from_slice(&0x1_0000_0002u64.to_le_bytes());
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WAIT_VBLANK_WASM64, &mut event_req).unwrap();
+        let event = read_drm_events(&mut proc, &mut host, fd, 32).unwrap();
+        assert_eq!(u64::from_le_bytes(event[8..16].try_into().unwrap()), 0x1_0000_0002);
+        kms::reset_for_test();
     }
 
     #[test]

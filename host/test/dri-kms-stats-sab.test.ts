@@ -233,6 +233,36 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
+  it("tickVblank wakes blocked retries on a tick whose vblank released a waiter or queued an event", () => {
+    // kernel_vblank reaches a parked DRM_IOCTL_WAIT_VBLANK's target (or a
+    // DRM_VBLANK_EVENT's) without any host-side flip latch; the kernel
+    // reports that through kernel_kms_take_vblank_wake, consumed once.
+    let pending = 0;
+    const kernel = makeKernel({
+      kernel_kms_take_vblank_wake: () => {
+        const taken = pending;
+        pending = 0;
+        return taken;
+      },
+    });
+    (kernel.kms as unknown as { flipCount: () => number }).flipCount = () => 0;
+    const wake = vi.fn();
+    kernel.testAuthority.configureScratchBoundaryHooksForTest({
+      scheduleWakeBlockedRetries: wake,
+    });
+    kernel.attachKmsStats(0, new SharedArrayBuffer(5 * 4));
+
+    vi.advanceTimersByTime(17);
+    expect(wake).not.toHaveBeenCalled();
+
+    pending = 1;
+    vi.advanceTimersByTime(17);
+    expect(wake).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(17 * 3);
+    expect(wake).toHaveBeenCalledTimes(1);
+  });
+
   it("tickVblank samples cursor storage once per tick while accepting records and live writes", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let pending: Uint8Array | undefined;

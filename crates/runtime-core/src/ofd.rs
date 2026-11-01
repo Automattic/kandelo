@@ -492,8 +492,54 @@ pub struct KmsFdState {
     /// The `DRM_IOCTL_GET_MAGIC` token, issued on first request; 0 = none.
     pub magic: u32,
     pub fbs: SharedKmsFbs,
+    /// Flips queued with `DRM_MODE_PAGE_FLIP_EVENT`; a flip without the
+    /// flag completes at the same vblank but produces no event.
     pub pending_flips: Vec<PendingFlip>,
+    /// `DRM_VBLANK_EVENT` requests whose target vblank has not passed.
+    pub pending_vblank_events: Vec<PendingVblankEvent>,
+    /// Blocking `DRM_IOCTL_WAIT_VBLANK` calls parked on the host's EAGAIN
+    /// retry path, one per waiting thread; see [`VblankWait`].
+    pub vblank_waits: Vec<VblankWait>,
     pub event_ring: VecDeque<u8>,
+}
+
+impl KmsFdState {
+    /// Bytes of `drm_file.event_space` in use: delivered but unread events
+    /// plus every event already reserved by a pending flip or vblank event.
+    pub fn event_space_used(&self) -> usize {
+        self.event_ring.len()
+            + 32 * (self.pending_flips.len() + self.pending_vblank_events.len())
+    }
+}
+
+/// A `DRM_VBLANK_EVENT` queued by `DRM_IOCTL_WAIT_VBLANK`.
+#[derive(Clone, Copy, Debug)]
+pub struct PendingVblankEvent {
+    /// Absolute 64-bit vblank sequence the event waits for.
+    pub target: u64,
+    pub user_data: u64,
+    pub crtc_id: u32,
+}
+
+/// One thread's blocking `DRM_IOCTL_WAIT_VBLANK` across host EAGAIN retries.
+///
+/// WHY: the host re-runs a parked ioctl from the caller's unchanged request
+/// bytes, so a `_DRM_VBLANK_RELATIVE` request would otherwise be re-based on
+/// every retry and never complete. Linux resolves the target once (and
+/// writes it back as an absolute request); the kernel keeps that resolved
+/// target here, keyed by the waiting task and the exact request words, and
+/// drops it when the call completes, a handler signal interrupts the task,
+/// or the task makes a different request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VblankWait {
+    pub pid: u32,
+    pub tid: u32,
+    pub request_type: u32,
+    pub request_sequence: u32,
+    /// Absolute 64-bit vblank sequence the call waits for.
+    pub target: u64,
+    /// CLOCK_MONOTONIC ns at which Linux's 3 s wait gives up with EBUSY.
+    pub deadline_ns: i64,
 }
 
 /// Mutable KMS state belongs to the DRM file, including caps, cursor and

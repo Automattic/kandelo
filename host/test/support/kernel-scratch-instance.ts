@@ -627,6 +627,10 @@ function signatures(
       // genuine gated Wasm call.
       result: i32,
     },
+    kernel_kms_take_vblank_wake: {
+      parameters: [],
+      result: i32,
+    },
     kernel_set_wait_queue_enabled: {
       parameters: [i32],
       result: i32,

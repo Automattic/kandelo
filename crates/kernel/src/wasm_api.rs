@@ -4172,6 +4172,9 @@ pub extern "C" fn kernel_dequeue_signal(
             SignalHandler::Handler(idx) => {
                 let (_sig, si_value, si_code, siginfo_word_1, siginfo_word_2) =
                     dequeue_signal_for(proc, tid, signum);
+                // The handler interrupts a parked DRM_IOCTL_WAIT_VBLANK
+                // (EINTR); its resolved target must not outlive the call.
+                crate::dri::forget_vblank_waits(proc, tid);
                 // ppoll, pselect, and sigsuspend keep their replacement mask
                 // installed until the logical wait finally completes. Form
                 // the handler mask from that current mask and place the same
@@ -16911,22 +16914,32 @@ pub extern "C" fn kernel_take_pty_readiness_changed() -> u32 {
 // DRI / KMS
 // ---------------------------------------------------------------------------
 
-/// Tick the global vblank sequence counter and return the new value.
+/// Count one vblank of the host's present pump and return the new (low 32
+/// bits of the) sequence.
 ///
-/// The host runs this on a 16.67 ms RAF / setInterval pump in the
-/// kernel worker; user programs that posted `DRM_IOCTL_WAIT_VBLANK`
-/// observe the new sequence on the next syscall round-trip.
+/// The host runs this on its 16.67 ms vblank pump in the kernel worker, on
+/// Node and in the browser alike. The tick completes the CRTC's pending
+/// page flip, queues `DRM_EVENT_FLIP_COMPLETE` / `DRM_EVENT_VBLANK` records,
+/// and releases parked `DRM_IOCTL_WAIT_VBLANK` callers; the host learns
+/// that it must retry parked callers from [`kernel_kms_take_vblank_wake`].
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
-    let seq = crate::dri::vblank_tick();
     let mut host = WasmHostIO;
     let (tv_sec, tv_usec) =
         match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
             Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
             Err(_) => (0u32, 0u32),
         };
-    crate::dri::drain_pending_flips(seq, tv_sec, tv_usec);
-    seq
+    crate::dri::retire_vblank(tv_sec, tv_usec) as u32
+}
+
+/// Take the coalesced "a vblank queued a DRM event or released a
+/// `WAIT_VBLANK` waiter" notification: `1` when the host must retry its
+/// parked callers (card0 readers and pollers, `WAIT_VBLANK` ioctls), `0`
+/// otherwise. A tick that retired nothing leaves parked waits alone.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_kms_take_vblank_wake() -> u32 {
+    u32::from(crate::dri::take_vblank_wake())
 }
 
 // ---------------------------------------------------------------------------

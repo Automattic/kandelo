@@ -31412,7 +31412,16 @@ export class CentralizedKernelWorker {
         // waking then would retry every parked poll/select in the system
         // at 60 Hz for no reason.
         const flips = this.#kernel.kms.flipCount();
-        if (flips !== this.vblankFlipCount) {
+        // The same tick may also have queued DRM_EVENT_VBLANK records or
+        // reached the target of a parked DRM_IOCTL_WAIT_VBLANK (an ioctl
+        // that returned EAGAIN onto the generic retry path). The kernel
+        // coalesces both into one flag, so a waiter returns at the vblank
+        // that satisfies it rather than at the next fallback retry timer,
+        // and a tick that satisfied nobody still wakes nothing.
+        const takeVblankWake = entry.instance.exports.kernel_kms_take_vblank_wake as
+          (() => number) | undefined;
+        const vblankWake = takeVblankWake?.() === 1;
+        if (flips !== this.vblankFlipCount || vblankWake) {
           this.vblankFlipCount = flips;
           this.scheduleWakeBlockedRetries(entry);
         }

@@ -880,6 +880,7 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
         fbs: crate::ofd::SharedKmsFbs::default(),
         pending_flips,
         event_ring: VecDeque::new(),
+        ..Default::default()
     })
 }
 

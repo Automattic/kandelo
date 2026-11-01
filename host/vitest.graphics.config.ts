@@ -8,6 +8,7 @@ const files = readdirSync(new URL("./test/", import.meta.url))
 files.push("test/kernel-public-scratch.test.ts");
 files.push("test/dri-kms-gl-attach-ordering.test.ts");
 files.push("test/dri-multiplex.test.ts");
+files.push("test/dri-kms-stats-sab.test.ts");
 const evidence = new Map(readFileSync(
   new URL("../scripts/ci-vitest-evidence-classes.tsv", import.meta.url), "utf8",
 ).split("\n").filter((line) => line && !line.startsWith("#"))
