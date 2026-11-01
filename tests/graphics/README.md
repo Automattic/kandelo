@@ -1,5 +1,35 @@
 # Graphics conformance provenance
 
+## Current upstream suite entry points
+
+The normal `graphics-cts` package builds original pinned upstream `deqp-egl`,
+`deqp-gles2` and data through the SDK/package resolver. The recorded executable
+inventories contain 4,117 EGL cases and 19,825 GLES2 cases. Enumeration is not
+assertion execution. The [upstream coverage map](../../docs/graphics/cts-coverage-v1.md)
+links 92 case families to baseline areas, preserves inventory hashes and keeps
+conditional extension/configuration applicability distinct from missing work.
+
+`scripts/test-graphics-cts.sh` runs complete bounded GLES2 groups in headless
+Playwright Chromium, Firefox and WebKit. Supported selectors currently are
+`negative-state`, `negative-api` and `color-clear`; exact case manifests and QPA
+accounting preserve upstream outcomes, missing cases and diagnostics. The latest
+normal rendering evidence, source/artifact identities and failures are in the
+[compatibility ledger](../../docs/graphics/compatibility-v1.md). These selected
+groups are not full graphics conformance or formal certification.
+
+The separate `graphics-cts-egl` package and its browser runner below are an
+earlier adapted subset retaining selected original assertions. Full `deqp-egl`
+execution beyond inventory and those adapted checks remains acceptance work;
+the two harnesses must not be confused.
+
+The current user-directed phase is complete combined implementation, using quick
+compile checks and focused causal controls. Broad rebuilds and suite execution
+are deferred until that implementation pass is complete. Existing inventories
+and specifications guide implementation now; focused failure-injection tests
+supplement upstream acceptance rather than replacing it.
+
+## Initial adapted EGL harness
+
 Upstream: https://github.com/KhronosGroup/VK-GL-CTS
 Revision: `a119e62de3bb38dae67f05abee8acd011e0c729c` (inspected 2026-10-23).
 License: Apache-2.0 for the inspected EGL/GLES2 modules; preserve individual

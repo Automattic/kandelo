@@ -8,6 +8,17 @@ tests retain both guest address widths. It is not a conformance
 claim. An ordinary defect remains open until implementation and executable
 validation cover it; a passing demo does not close an API family.
 
+## Upstream coverage guide for the implementation pass
+
+[The upstream case-family map](cts-coverage-v1.md) links 92 recorded EGL/GLES2
+families to this inventory, covering all 19,825 GLES2 and 4,117 EGL case paths.
+It preserves exact case-list hashes and separates enumeration, applicability,
+implementation and executed evidence. Use those families and their specifications
+to review the complete model now; broad execution remains deferred until the
+combined implementation pass is complete. The full normal upstream executables
+and the earlier adapted EGL subset are distinct consumers. GBM/DRM/KMS, platform
+failure injection and POSIX coverage remain separate requirements.
+
 ## Landing scope
 
 On 2026-10-29 the user split delivery into the bounded cage/sway landing
@@ -75,9 +86,10 @@ and nine NotSupported in each engine; its strict fixture remains failed. WebKit
 also emits 38 native diagnostics, preserved without suppression or an unsupported
 claim that they are expected.
 
-The canonical graphics source gate passes 1,565 cases across 51 files. The current
-Rust workspace suite passes 3,518 cases, with no failures, ignored or filtered
-cases; xtask separately passes 835 unit and eight integration cases. The combined
+At that normally built source checkpoint, the graphics source gate passed 1,565
+cases across 51 files. Its Rust workspace suite passed 3,518 cases, with no
+failures, ignored or filtered cases; xtask separately passed 835 unit and eight
+integration cases. The combined
 native C/UBSan cohort passes 337 cases. Public retained-query scheduling and
 physical graphics cleanup are being implemented separately; partial mapping
 retirement, remaining API/transport gaps, full CTS, full host, browser-memory and
@@ -19653,3 +19665,31 @@ beyond the request budget and synchronous progress observers. This is source
 transport evidence. Rust/controller Forgetting and explicit final metadata
 consumption, public async activation and normal runtime validation remain in
 progress; no full graphics completion is claimed.
+
+
+### Original Memory and partial mapping cleanup, combined source stage
+
+Mapping change `c6645d5ebc` is integrated with the CPU allocation retirement
+receiver, retaining both sets of controls and original authorship. Each mapping
+retains its original actual Memory and immutable lineage. Partial cleanup follows
+only true split descendants and the original byte range; numeric/address reuse
+cannot authorize copying successor bytes or removing a later mapping. Captured
+process batches reserve atomically, preserve pending copy failures and separate
+retirement from abandonment/metadata Forget.
+
+Normal mmap priming now reports refusal to the actual worker caller, which uses
+the existing rollback/error path. PRIME and fork announce the actual mapping
+extent, including valid page padding; pixel copies independently clip to BO
+storage. A padding-only surviving child mapping retains mapping custody without
+inventing source pixel reads.
+
+The original source evidence includes five registry failures, two actual mmap
+caller failures and one PRIME length failure (16,384 announced versus 65,536
+mapped). Final separate controls pass 286 host and 20 native Rust cases, plus
+focused types and wasm_api parsing. Evidence is in primary
+`.context/graphics-mapping-completeness-r1/.context/mapping-completeness-evidence-r1/`,
+manifest SHA256 `ba3302f12f01bfc3a9dfb795856f8b5ae153f8202734bd7fa59d4adada5430b1`.
+After merging both mapping and CPU-allocation source changes, the two adjacent
+registry/final-render-node suites pass 112 controls. Typed general final-effects
+routing and lifecycle activation remain required; these source results do not
+establish rebuilt runtime or broad acceptance.
