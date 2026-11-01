@@ -626,11 +626,19 @@ describe("shared buffer deletion", () => {
     const savedRead = gl.createBuffer(), savedWrite = gl.createBuffer(); gl.bindBuffer(0x8f36,savedRead); gl.bindBuffer(0x8f37,savedWrite);
     send(a,O.OP_DRAW_ELEMENTS,[3,40000,0x1401,1]);
     expect(gl.indexDraws).toHaveLength(1);
-    expect(gl.indexDraws[0]).toMatchObject({mode:3,count:40000,type:0x1403,offset:0});
-    expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(Uint16Array.from(values.subarray(1)));
+    // The whole buffer is widened once; the draw starts at index 1 of it.
+    expect(gl.indexDraws[0]).toMatchObject({mode:3,count:40000,type:0x1403,offset:2});
+    expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(Uint16Array.from(values));
+    // One scan finds 255; one widening pass reads in bounded chunks.
     expect(gl.log.filter(([name]) => name === "getBufferSubData")).toEqual([
-      ["getBufferSubData",[0x8f36,1,32768]], ["getBufferSubData",[0x8f36,32769,7232]]]);
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(1);
+      ["getBufferSubData",[0x8f36,0,32768]],
+      ["getBufferSubData",[0x8f36,0,32768]], ["getBufferSubData",[0x8f36,32768,7233]]]);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
+    // Unchanged contents draw again without reading or converting indices.
+    const reads = gl.log.filter(([name]) => name === "getBufferSubData").length;
+    send(a,O.OP_DRAW_ELEMENTS,[3,40000,0x1401,1]);
+    expect(gl.log.filter(([name]) => name === "getBufferSubData")).toHaveLength(reads);
+    expect(gl.indexDraws[1]).toMatchObject({mode:3,count:40000,type:0x1403,offset:2});
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.bufferStores.size).toBe(1);
     expect(gl.bufferContents.get(object)).toEqual(values);
     expect(gl.getParameter(0x8f36)).toBe(savedRead); expect(gl.getParameter(0x8f37)).toBe(savedWrite);
@@ -644,8 +652,8 @@ describe("shared buffer deletion", () => {
     send(a,O.OP_BUFFER_SUB_DATA,[0x8893,0,bytes.length],bytes);
     send(a,O.OP_DRAW_ELEMENTS,[5,3,0x1403,2]);
     expect(gl.indexDraws).toHaveLength(1);
-    expect(gl.indexDraws[0]).toMatchObject({mode:5,count:3,type:0x1405,offset:0});
-    expect(new Uint32Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint32Array([0,65535,1]));
+    expect(gl.indexDraws[0]).toMatchObject({mode:5,count:3,type:0x1405,offset:4});
+    expect(new Uint32Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint32Array([123,0,65535,1]));
     expect(gl.bufferContents.get(a.buffers.get(71)!)).toEqual(bytes); expect(a.errors).toEqual([]);
   });
 
@@ -670,21 +678,25 @@ describe("shared buffer deletion", () => {
     const read = gl.getBufferSubData.bind(gl); gl.getBufferSubData = () => { errors.push(0x505); };
     send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
     expect(gl.indexDraws).toEqual([]);
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(1);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.bufferStores.get(object)!.source).toBe(object);
     expect(gl.getParameter(0x8f36)).toBeNull(); expect(gl.getParameter(0x8f37)).toBeNull();
     gl.getBufferSubData = read; send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
     expect(new Uint16Array(gl.indexDraws[0].data.buffer)).toEqual(new Uint16Array([255]));
-    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(2);
+    expect(gl.log.filter(([name]) => name === "deleteBuffer")).toHaveLength(0);
+    expect(gl.boundBuffers.get(0x8893)).toBe(object);
     expect(a.errors).toContain(0x505);
   });
 
   it("keeps the original element binding after promotion allocation fails", () => {
     const {gl,a,send} = setup();
     send(a,O.OP_BIND_BUFFER,[0x8893,71]); send(a,O.OP_BUFFER_DATA,[0x8893,1,0x88e4]);
+    // A stored 255 needs the widened form, whose buffer cannot be allocated.
+    send(a,O.OP_BUFFER_SUB_DATA,[0x8893,0,1],new Uint8Array([255]));
     const object = a.buffers.get(71)!, calls = gl.log.length;
     gl.createBuffer = () => null as any; send(a,O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]);
-    expect(gl.log.length).toBe(calls); expect(gl.indexDraws).toEqual([]);
+    expect(gl.log.slice(calls).some(([name]) => name === "drawElements" || name === "bufferData")).toBe(false);
+    expect(gl.indexDraws).toEqual([]);
     expect(a.vertexArrays.get(0)!.element).toBe(object); expect(a.errors).toContain(0x505);
   });
 

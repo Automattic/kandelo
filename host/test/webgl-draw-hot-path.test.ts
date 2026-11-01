@@ -136,6 +136,29 @@ class CountingGl {
     if (storage) storage.content = ++this.contents;
     if (storage && this.mask[3]) storage.alpha = alpha;
   }
+  /** Buffer model: binding per target and contents per buffer. */
+  boundBuffers = new Map<number, object | null>();
+  bufferContents = new Map<object, Uint8Array>();
+  elementDraws: { type: number; indices: number[] }[] = [];
+  bindBuffer(target: number, buffer: object | null) { this.boundBuffers.set(target, buffer); }
+  bufferData(target: number, data: number | Uint8Array) {
+    const buffer = this.boundBuffers.get(target);
+    if (buffer) this.bufferContents.set(buffer, typeof data === "number" ? new Uint8Array(data) : new Uint8Array(data));
+  }
+  bufferSubData(target: number, offset: number, data: ArrayBufferView) {
+    this.bufferContents.get(this.boundBuffers.get(target)!)!.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength), offset);
+  }
+  getBufferSubData(target: number, offset: number, out: ArrayBufferView) {
+    const bytes = this.bufferContents.get(this.boundBuffers.get(target)!)!;
+    new Uint8Array(out.buffer, out.byteOffset, out.byteLength).set(bytes.subarray(offset, offset + out.byteLength));
+  }
+  drawElements(_mode: number, count: number, type: number, offset: number) {
+    const bytes = this.bufferContents.get(this.boundBuffers.get(0x8893)!)!, view = new DataView(bytes.buffer, bytes.byteOffset);
+    const width = type === 0x1401 ? 1 : type === 0x1403 ? 2 : 4;
+    const indices = Array.from({ length: count }, (_, i) =>
+      width === 1 ? view.getUint8(offset + i) : width === 2 ? view.getUint16(offset + i * 2, true) : view.getUint32(offset + i * 4, true));
+    this.elementDraws.push({ type, indices });
+  }
   clear(mask: number) { if (mask & 0x4000) this.writeAlpha(this.clearValue[3]); }
   drawArrays() {
     if (this.rejectDraws) { this.error ||= 0x502; return; }
@@ -163,7 +186,10 @@ function setup() {
     get(target, key: string) {
       const value = Reflect.get(target, key);
       const count = () => gl.calls.set(key, (gl.calls.get(key) ?? 0) + 1);
-      if (typeof value === "function") return (...args: unknown[]) => { count(); return value.apply(target, args); };
+      if (typeof value === "function") return (...args: unknown[]) => {
+        count();
+        return value.apply(target, args);
+      };
       return value ?? (() => { count(); });
     },
   });
@@ -680,6 +706,50 @@ describe("client-array draws", () => {
     const { calls } = perDraw(h, 16, "client", false);
     // Stream bind (checked), upload + pointer group, draw, restoration group.
     expect(calls).toEqual({ getError: 6, bindBuffer: 3, bufferData: 1, vertexAttribPointer: 2, drawArrays: 1 });
+    expect(h.error()).toBe(0);
+  });
+});
+
+
+describe("DrawElements", () => {
+  const indexed = (h: ReturnType<typeof setup>, offset = 0, count = 6) => h.send(O.OP_DRAW_ELEMENTS, [4, count, 0x1403, offset]);
+
+  // [C8]
+  it("draws stored indices directly, reading and converting nothing per draw", () => {
+    const h = setup();
+    h.elements(80, [0, 1, 2, 2, 1, 3]);
+    indexed(h);
+    expect(h.gl.elementDraws.at(-1)).toEqual({ type: 0x1403, indices: [0, 1, 2, 2, 1, 3] });
+    h.counting();
+    for (let i = 0; i < 16; i++) indexed(h);
+    expect(Object.fromEntries(h.gl.calls)).toEqual({ drawElements: 16 });
+    expect(h.error()).toBe(0);
+  });
+
+  // [C8]
+  it("widens once per contents when an index is the restart value, and follows every change", () => {
+    const h = setup();
+    h.elements(80, [0, 1, 2, 2, 1, 3]);
+    indexed(h);
+    // 0xFFFF is an ordinary vertex in GLES 2 but restarts WebGL 2 primitives.
+    const sub = new Uint8Array(14), sv = new DataView(sub.buffer);
+    [0x8893, 6, 2].forEach((word, i) => sv.setUint32(i * 4, word, true)); sv.setUint16(12, 0xffff, true);
+    h.sendBytes(O.OP_BUFFER_SUB_DATA, sub);
+    indexed(h);
+    expect(h.gl.elementDraws.at(-1)).toEqual({ type: 0x1405, indices: [0, 1, 2, 0xffff, 1, 3] });
+    h.counting();
+    for (let i = 0; i < 16; i++) indexed(h);
+    expect(h.gl.calls.get("getBufferSubData") ?? 0).toBe(0);
+    expect(h.gl.calls.get("bufferData") ?? 0).toBe(0);
+    expect(h.gl.calls.get("drawElements")).toBe(16);
+    // An unaligned offset (valid GLES 2) draws from its own widened form.
+    indexed(h, 1, 2);
+    const bytes = new Uint8Array(new Uint16Array([0, 1, 2, 0xffff, 1, 3]).buffer), bv = new DataView(bytes.buffer);
+    expect(h.gl.elementDraws.at(-1)).toEqual({ type: 0x1405, indices: [bv.getUint16(1, true), bv.getUint16(3, true)] });
+    // New contents without the restart value draw directly again.
+    h.elements(80, [3, 2, 1, 1, 2, 0]);
+    indexed(h);
+    expect(h.gl.elementDraws.at(-1)).toEqual({ type: 0x1403, indices: [3, 2, 1, 1, 2, 0] });
     expect(h.error()).toBe(0);
   });
 });

@@ -18,6 +18,8 @@ export type GlBufferStore = {
   source: WebGLBuffer;
   size: number;
   usage: number;
+  /** Drawable index forms of the contents (index-data.ts). */
+  indexForms?: Map<string, { valid: boolean; direct: boolean; native: WebGLBuffer | null }>;
 };
 
 export function canonicalBuffer(b: GlBinding, native: WebGLBuffer): WebGLBuffer {
@@ -146,6 +148,7 @@ function updateSource(store: GlBufferStore, target: number): void {
   const source = store.views.get(target)!;
   for (const view of store.views.values()) view.valid = view === source;
   for (const view of store.converted.values()) view.valid = false;
+  for (const form of store.indexForms?.values() ?? []) form.valid = false;
   store.source = source.native;
 }
 
@@ -222,7 +225,8 @@ export function retireBufferObjects(b: GlBinding, object: WebGLBuffer, natives: 
 /** Both native classes and converted stores end with the logical last reference. */
 export function destroyBufferStorage(b: GlBinding, object: WebGLBuffer): boolean {
   const store = b.bufferStores.get(object);
-  const natives = new Set([object, ...[...(store?.views.values() ?? []), ...(store?.converted.values() ?? [])].map(view => view.native)]);
+  const natives = new Set([object, ...[...(store?.views.values() ?? []), ...(store?.converted.values() ?? [])].map(view => view.native),
+    ...[...(store?.indexForms?.values() ?? [])].flatMap(form => form.native ? [form.native] : [])]);
   if (!retireBufferObjects(b,object,natives)) return false;
   for (const native of natives) { b.bufferViewOwners.delete(native); b.bufferRetirements.delete(native); }
   b.bufferStores.delete(object);

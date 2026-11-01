@@ -599,7 +599,7 @@ it("rejects invalid vertex formats and native-limit indices before allocation or
   }
 });
 
-for (const type of [0x1401,0x1403]) it(`retains promoted-index restoration and cleanup without replaying the draw (type ${type})`, () => {
+for (const type of [0x1401,0x1403]) it(`retains promoted-index restoration without replaying the draw (type ${type})`, () => {
   const {b,gl,query} = setup(); query(ELEMENT,17); const object = b.buffers.get(17)!;
   const bytes = type === 0x1401 ? new Uint8Array([255,1,2]) : new Uint8Array(new Uint16Array([65535,1,2]).buffer);
   b.bufferStores.get(object)!.size = bytes.length; gl.contents.set(object,bytes.slice());
@@ -617,11 +617,12 @@ for (const type of [0x1401,0x1403]) it(`retains promoted-index restoration and c
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
   expect([...out]).toEqual([165,165,165,165]);
   block = false;
-  expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(-5);
-  expect(gl.bindings.get(ELEMENT)).toBe(object); expect(draws).toBe(1);
-  blockCleanup = false;
   expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),out)).toBe(4);
-  expect(draws).toBe(1); expect(gl.alive.size).toBe(1); expect(gl.contents.get(object)).toEqual(bytes);
+  expect(gl.bindings.get(ELEMENT)).toBe(object); expect(draws).toBe(1);
+  // The widened index form lives with the buffer object: nothing is deleted
+  // per draw, so no cleanup can be left pending.
+  expect(blockCleanup).toBe(true);
+  expect(draws).toBe(1); expect(gl.alive.size).toBe(2); expect(gl.contents.get(object)).toEqual(bytes);
 });
 
 it("recreates a converted cache view after pending cleanup completed on a query", () => {
