@@ -764,6 +764,8 @@ function queryParameter(b: GlBinding, pname: number): unknown {
     case 0x8ca7: // RENDERBUFFER_BINDING
       return nameForObject(b.rbos, value ? canonicalRenderbuffer(b,value as WebGLRenderbuffer) : null)
         || (value ? b.retiredRenderbuffers.get(canonicalRenderbuffer(b,value as WebGLRenderbuffer)) : 0) || 0;
+    case 0x8b9a: // IMPLEMENTATION_COLOR_READ_TYPE: GLES 2 names half float
+      return value === GL_HALF_FLOAT ? GL_HALF_FLOAT_OES : value;
     default: return value;
   }
 }

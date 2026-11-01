@@ -178,18 +178,13 @@ describe("ES2 RenderbufferStorage internalformat admission (section 4.4.3)", () 
     expect(nativeCalls(log, "renderbufferStorage")).toEqual([[ "renderbufferStorage", [RENDERBUFFER, internal, 4, 4]]]);
   });
 
-  it("admits half-float color buffers only when the host advertises them", () => {
-    const { b, log } = binding(["EXT_color_buffer_half_float"]);
-    expect(storage(b, rbStorage(0x881a))).toBe(1);
-    expect(storage(b, rbStorage(0x8814))).toBe(0); // RGBA32F needs EXT_color_buffer_float
-    expect(b.errors).toEqual([INVALID_ENUM]);
-    expect(nativeCalls(log, "renderbufferStorage")).toHaveLength(1);
-  });
-
-  it("admits 32-bit float color buffers when EXT_color_buffer_float is advertised", () => {
-    const { b } = binding(["EXT_color_buffer_float"]);
-    expect(storage(b, rbStorage(0x8814))).toBe(1);
-    expect(storage(b, rbStorage(0x881a))).toBe(1);
-    expect(b.errors).toEqual([]);
-  });
+  // The color-buffer float extensions are not advertised to a GLES 2
+  // context (webgl-capabilities.test.ts), even when the browser has them.
+  it.each([0x881a, 0x881b, 0x822f, 0x822d, 0x8814, 0x8230, 0x822e, 0x8c3a])(
+    "rejects float renderbuffer format %i although the browser could render it", internal => {
+      const { b, log } = binding(["EXT_color_buffer_float", "EXT_color_buffer_half_float"]);
+      expect(storage(b, rbStorage(internal))).toBe(0);
+      expect(b.errors).toEqual([INVALID_ENUM]);
+      expect(nativeCalls(log, "renderbufferStorage")).toEqual([]);
+    });
 });

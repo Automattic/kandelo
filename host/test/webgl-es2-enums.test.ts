@@ -102,6 +102,16 @@ describe("glGet* pnames (section 6.1, tables 6.2-6.21)", () => {
   });
 });
 
+describe("implementation read type (OES_texture_half_float tokens)", () => {
+  it("reports WebGL 2's HALF_FLOAT read type as GLES 2's HALF_FLOAT_OES", () => {
+    const { b, query } = binding();
+    const gl = b.gl as unknown as { getParameter: (pname: number) => unknown };
+    gl.getParameter = (pname: number) => pname === 0x8b9a ? 0x140b : 0;
+    expect(query(O.QOP_GET_INTEGERV, [0x8b9a])).toEqual({ rc: 4, value: 0x8d61 });
+    expect(b.errors).toEqual([]);
+  });
+});
+
 describe("glGetProgramiv pnames (section 6.1.8)", () => {
   it.each([
     ["TRANSFORM_FEEDBACK_BUFFER_MODE", 0x8c7f], ["TRANSFORM_FEEDBACK_VARYINGS", 0x8c83],

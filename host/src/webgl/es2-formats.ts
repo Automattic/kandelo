@@ -62,10 +62,7 @@ const RENDERBUFFER_ROWS: ReadonlyArray<readonly [number, Requirement]> = [
   [0x8051, ["GL_OES_rgb8_rgba8"]], [0x8058, ["GL_OES_rgb8_rgba8"]],
   [0x88f0, ["GL_OES_packed_depth_stencil"]],
   [0x8229, [RG_EXT]], [0x822b, [RG_EXT]],
-  // RGBA16F, RGB16F, RG16F, R16F.
-  ...[0x881a, 0x881b, 0x822f, 0x822d].map(format => [format, ["GL_EXT_color_buffer_half_float"]] as const),
-  // RGBA32F, RG32F, R32F, R11F_G11F_B10F.
-  ...[0x8814, 0x8230, 0x822e, 0x8c3a].map(format => [format, ["GL_EXT_color_buffer_float"]] as const),
+  // No color-buffer float extension is advertised to GLES 2 (capabilities.ts).
 ];
 
 const INVALID_ENUM = 0x500, INVALID_VALUE = 0x501, INVALID_OPERATION = 0x502;

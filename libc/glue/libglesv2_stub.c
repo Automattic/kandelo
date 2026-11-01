@@ -2242,17 +2242,14 @@ static GLenum copy_texture_format_error(GLenum internal) {
     }
 }
 
-/* Section 4.4.3 RenderbufferStorage formats plus every extension format the
- * host can advertise. Core, OES_rgb8_rgba8, OES_packed_depth_stencil and
- * EXT_texture_rg are always advertised. The color-buffer float formats
- * depend on the browser: the host probes them in the same checked storage
- * request and raises INVALID_ENUM itself when they are not advertised. */
+/* Section 4.4.3 RenderbufferStorage formats plus the extension formats the
+ * host advertises: OES_rgb8_rgba8, OES_packed_depth_stencil and
+ * EXT_texture_rg. No color-buffer float extension is advertised to GLES 2
+ * (host/src/webgl/capabilities.ts), so 16F/32F formats are INVALID_ENUM. */
 static GLenum renderbuffer_format_error(GLenum internal) {
     switch (internal) {
         case GL_RGBA4: case GL_RGB5_A1: case GL_RGB565: case GL_DEPTH_COMPONENT16: case GL_STENCIL_INDEX8:
         case GL_RGB8_OES: case GL_RGBA8_OES: case GL_DEPTH24_STENCIL8_OES: case GL_R8_EXT: case GL_RG8_EXT:
-        case 0x881a: case 0x881b: case 0x822f: case 0x822d: /* RGBA16F RGB16F RG16F R16F */
-        case 0x8814: case 0x8230: case 0x822e: case 0x8c3a: /* RGBA32F RG32F R32F R11F_G11F_B10F */
             return GL_NO_ERROR;
         default:
             return GL_INVALID_ENUM;

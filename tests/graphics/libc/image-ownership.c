@@ -5640,19 +5640,21 @@ int main(int argc, char **argv) {
             assert(glGetError() == GL_NO_ERROR && copy_tex_image_commands == copies + 7);
         } else {
             assert(!strcmp(argv[1], "encoder-format-renderbuffer"));
-            const GLenum rejected[] = {0x81a6 /* DEPTH_COMPONENT24 */, 0x8059 /* RGB10_A2 */, 0x8c43, 0x8d7c, GL_RGBA, 0};
+            /* The color-buffer float extensions are not advertised to GLES 2:
+             * RGBA16F and RGBA32F are rejected without a host round trip. */
+            const GLenum rejected[] = {0x81a6 /* DEPTH_COMPONENT24 */, 0x8059 /* RGB10_A2 */, 0x8c43, 0x8d7c, GL_RGBA, 0,
+                                       0x881a, 0x8814, 0x8c3a};
             for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
                 glRenderbufferStorage(GL_RENDERBUFFER,rejected[i],1,1);
                 assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
             }
             assert(image_mutation_queries == queries);
-            /* Core, always-advertised and host-probed (half float) formats
-             * reach the host, which owns the advertised-extension decision. */
+            /* Core and always-advertised formats reach the host. */
             const GLenum admitted[] = {GL_RGBA4, GL_RGB5_A1, GL_RGB565, GL_DEPTH_COMPONENT16, GL_STENCIL_INDEX8,
-                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b, 0x881a};
+                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b};
             for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++)
                 glRenderbufferStorage(GL_RENDERBUFFER,admitted[i],1,1);
-            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 11);
+            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 10);
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
