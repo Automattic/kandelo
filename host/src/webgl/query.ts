@@ -1,3 +1,4 @@
+import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import {
@@ -31,7 +32,7 @@ import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageS
 import { collectRetiredImages, deleteImageObject, attachImageObject, bindFramebufferObject } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
 import { runUniformLookup, uniformLocation } from "./uniform-queries.js";
-import { checkedQueryReply, runStateQuery } from "./state-query.js";
+import { capabilityEnabled, checkedQueryReply, runStateQuery } from "./state-query.js";
 import { runObjectQuery } from "./object-query.js";
 import { runShaderSourceUpload } from "./shader-source.js";
 import { collectRetiredBuffers, deleteBufferNames } from "./buffer-references.js";
@@ -66,6 +67,158 @@ const GL_UNSIGNED_SHORT_5_6_5 = 0x8363;
 const GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368;
 const GL_UNSIGNED_INT_24_8 = 0x84FA;
 const GL_UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B;
+
+// Numeric getParameter names from the WebGL 1/2 state tables. Capability
+// toggles and extended pixel-store names reuse their existing owners below.
+// String names belong to QOP_GET_STRING. GLES-only compiler/format-count
+// names are derived in queryParameter, rather than sent to WebGL.
+// https://registry.khronos.org/webgl/specs/latest/1.0/#GETPARAMETER
+// https://registry.khronos.org/webgl/specs/latest/2.0/#GETPARAMETER
+const numericParameterNames = new Set([
+  // WebGL 1 core (the native renderer is WebGL2).
+  0x84e0, // ACTIVE_TEXTURE
+  0x846e, // ALIASED_LINE_WIDTH_RANGE
+  0x846d, // ALIASED_POINT_SIZE_RANGE
+  0x0d55, // ALPHA_BITS
+  0x8894, // ARRAY_BUFFER_BINDING
+  0x8005, // BLEND_COLOR
+  0x80ca, // BLEND_DST_ALPHA
+  0x80c8, // BLEND_DST_RGB
+  0x883d, // BLEND_EQUATION_ALPHA
+  0x8009, // BLEND_EQUATION_RGB
+  0x80cb, // BLEND_SRC_ALPHA
+  0x80c9, // BLEND_SRC_RGB
+  0x0d54, // BLUE_BITS
+  0x0c22, // COLOR_CLEAR_VALUE
+  0x0c23, // COLOR_WRITEMASK
+  0x86a3, // COMPRESSED_TEXTURE_FORMATS
+  0x0b45, // CULL_FACE_MODE
+  0x8b8d, // CURRENT_PROGRAM
+  0x0d56, // DEPTH_BITS
+  0x0b73, // DEPTH_CLEAR_VALUE
+  0x0b74, // DEPTH_FUNC
+  0x0b70, // DEPTH_RANGE
+  0x0b72, // DEPTH_WRITEMASK
+  0x8895, // ELEMENT_ARRAY_BUFFER_BINDING
+  0x8ca6, // FRAMEBUFFER_BINDING
+  0x0b46, // FRONT_FACE
+  0x8192, // GENERATE_MIPMAP_HINT
+  0x0d53, // GREEN_BITS
+  0x8b9b, // IMPLEMENTATION_COLOR_READ_FORMAT
+  0x8b9a, // IMPLEMENTATION_COLOR_READ_TYPE
+  0x0b21, // LINE_WIDTH
+  0x8b4d, // MAX_COMBINED_TEXTURE_IMAGE_UNITS
+  0x851c, // MAX_CUBE_MAP_TEXTURE_SIZE
+  0x8dfd, // MAX_FRAGMENT_UNIFORM_VECTORS
+  0x84e8, // MAX_RENDERBUFFER_SIZE
+  0x8872, // MAX_TEXTURE_IMAGE_UNITS
+  0x0d33, // MAX_TEXTURE_SIZE
+  0x8dfc, // MAX_VARYING_VECTORS
+  0x8869, // MAX_VERTEX_ATTRIBS
+  0x8b4c, // MAX_VERTEX_TEXTURE_IMAGE_UNITS
+  0x8dfb, // MAX_VERTEX_UNIFORM_VECTORS
+  0x0d3a, // MAX_VIEWPORT_DIMS
+  0x0d05, // PACK_ALIGNMENT
+  0x8038, // POLYGON_OFFSET_FACTOR
+  0x2a00, // POLYGON_OFFSET_UNITS
+  0x0d52, // RED_BITS
+  0x8ca7, // RENDERBUFFER_BINDING
+  0x80a8, // SAMPLE_BUFFERS
+  0x80ab, // SAMPLE_COVERAGE_INVERT
+  0x80aa, // SAMPLE_COVERAGE_VALUE
+  0x80a9, // SAMPLES
+  0x0c10, // SCISSOR_BOX
+  0x8801, // STENCIL_BACK_FAIL
+  0x8800, // STENCIL_BACK_FUNC
+  0x8802, // STENCIL_BACK_PASS_DEPTH_FAIL
+  0x8803, // STENCIL_BACK_PASS_DEPTH_PASS
+  0x8ca3, // STENCIL_BACK_REF
+  0x8ca4, // STENCIL_BACK_VALUE_MASK
+  0x8ca5, // STENCIL_BACK_WRITEMASK
+  0x0d57, // STENCIL_BITS
+  0x0b91, // STENCIL_CLEAR_VALUE
+  0x0b94, // STENCIL_FAIL
+  0x0b92, // STENCIL_FUNC
+  0x0b95, // STENCIL_PASS_DEPTH_FAIL
+  0x0b96, // STENCIL_PASS_DEPTH_PASS
+  0x0b97, // STENCIL_REF
+  0x0b93, // STENCIL_VALUE_MASK
+  0x0b98, // STENCIL_WRITEMASK
+  0x0d50, // SUBPIXEL_BITS
+  0x8069, // TEXTURE_BINDING_2D
+  0x8514, // TEXTURE_BINDING_CUBE_MAP
+  0x0cf5, // UNPACK_ALIGNMENT
+  0x9243, // UNPACK_COLORSPACE_CONVERSION_WEBGL
+  0x9240, // UNPACK_FLIP_Y_WEBGL
+  0x9241, // UNPACK_PREMULTIPLY_ALPHA_WEBGL
+  0x0ba2, // VIEWPORT
+  // WebGL 2 core (the native renderer is WebGL2).
+  0x8f36, // COPY_READ_BUFFER_BINDING
+  0x8f37, // COPY_WRITE_BUFFER_BINDING
+  0x8b8b, // FRAGMENT_SHADER_DERIVATIVE_HINT
+  0x8073, // MAX_3D_TEXTURE_SIZE
+  0x88ff, // MAX_ARRAY_TEXTURE_LAYERS
+  0x9247, // MAX_CLIENT_WAIT_TIMEOUT_WEBGL
+  0x8cdf, // MAX_COLOR_ATTACHMENTS
+  0x8a33, // MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS
+  0x8a2e, // MAX_COMBINED_UNIFORM_BLOCKS
+  0x8a31, // MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS
+  0x8824, // MAX_DRAW_BUFFERS
+  0x8d6b, // MAX_ELEMENT_INDEX
+  0x80e9, // MAX_ELEMENTS_INDICES
+  0x80e8, // MAX_ELEMENTS_VERTICES
+  0x9125, // MAX_FRAGMENT_INPUT_COMPONENTS
+  0x8a2d, // MAX_FRAGMENT_UNIFORM_BLOCKS
+  0x8b49, // MAX_FRAGMENT_UNIFORM_COMPONENTS
+  0x8905, // MAX_PROGRAM_TEXEL_OFFSET
+  0x8d57, // MAX_SAMPLES
+  0x9111, // MAX_SERVER_WAIT_TIMEOUT
+  0x84fd, // MAX_TEXTURE_LOD_BIAS
+  0x8c8a, // MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS
+  0x8c8b, // MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS
+  0x8c80, // MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS
+  0x8a30, // MAX_UNIFORM_BLOCK_SIZE
+  0x8a2f, // MAX_UNIFORM_BUFFER_BINDINGS
+  0x8b4b, // MAX_VARYING_COMPONENTS
+  0x9122, // MAX_VERTEX_OUTPUT_COMPONENTS
+  0x8a2b, // MAX_VERTEX_UNIFORM_BLOCKS
+  0x8b4a, // MAX_VERTEX_UNIFORM_COMPONENTS
+  0x8904, // MIN_PROGRAM_TEXEL_OFFSET
+  0x88ed, // PIXEL_PACK_BUFFER_BINDING
+  0x88ef, // PIXEL_UNPACK_BUFFER_BINDING
+  0x8c89, // RASTERIZER_DISCARD
+  0x0c02, // READ_BUFFER
+  0x8caa, // READ_FRAMEBUFFER_BINDING
+  0x8919, // SAMPLER_BINDING
+  0x8c1d, // TEXTURE_BINDING_2D_ARRAY
+  0x806a, // TEXTURE_BINDING_3D
+  0x8e24, // TRANSFORM_FEEDBACK_ACTIVE
+  0x8e25, // TRANSFORM_FEEDBACK_BINDING
+  0x8c8f, // TRANSFORM_FEEDBACK_BUFFER_BINDING
+  0x8e23, // TRANSFORM_FEEDBACK_PAUSED
+  0x8a28, // UNIFORM_BUFFER_BINDING
+  0x8a34, // UNIFORM_BUFFER_OFFSET_ALIGNMENT
+  0x85b5, // VERTEX_ARRAY_BINDING
+  0x8df8, 0x8df9, 0x8dfa, 0x86a2, // GLES compiler and format counts
+]);
+const extraPixelStoreNames = new Set(EXTRA_PIXEL_STORE_DEFAULTS.map(([name]) => name));
+
+function validNumericParameter(b: GlBinding, pname: number): boolean {
+  return numericParameterNames.has(pname) || capabilityEnabled(b, pname) !== undefined
+    || extraPixelStoreNames.has(pname)
+    || (pname >= 0x8825 && pname <= 0x8834); // DRAW_BUFFER0..15
+}
+
+const shaderParameterNames = new Set([
+  0x8b4f, 0x8b80, 0x8b81, GL_INFO_LOG_LENGTH, 0x8b88,
+  // SHADER_TYPE, DELETE_STATUS, COMPILE_STATUS, INFO_LOG_LENGTH, SOURCE_LENGTH
+]);
+const programParameterNames = new Set([
+  0x8b80, 0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89,
+  GL_INFO_LOG_LENGTH, GL_ACTIVE_UNIFORM_MAX_LENGTH, 0x8b8a,
+  // WebGL2 transform feedback and uniform-block queries remain supported.
+  0x8c7f, 0x8c83, 0x8a36,
+]);
 
 function normalizeHalfFloatType(type: number): number {
   return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
@@ -299,6 +452,10 @@ export function runGlQuery(
     case O.QOP_GET_INTEGERV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
+      if (!validNumericParameter(b, pname)) {
+        recordGlError(b, 0x500);
+        return -22;
+      }
       if (pname === GL_VIEWPORT) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, false, pname);
       }
@@ -314,6 +471,10 @@ export function runGlQuery(
     case O.QOP_GET_FLOATV: {
       if (input.byteLength < 4 || out.byteLength < 4) return -22;
       const pname = inDv.getUint32(0, true);
+      if (!validNumericParameter(b, pname)) {
+        recordGlError(b, 0x500);
+        return -22;
+      }
       if (pname === GL_VIEWPORT) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.viewport, true, pname);
       }
@@ -361,6 +522,10 @@ export function runGlQuery(
         return -22;
       }
       const pname = inDv.getUint32(4, true);
+      if (!shaderParameterNames.has(pname)) {
+        recordGlError(b, 0x500);
+        return -22;
+      }
       const sourceLength = b.shaderSources.get(sh)?.length ?? 0;
       let v: unknown;
       if (!checkedGlCall(b, () => {
@@ -406,6 +571,10 @@ export function runGlQuery(
         return -22;
       }
       const pname = inDv.getUint32(4, true);
+      if (!programParameterNames.has(pname)) {
+        recordGlError(b, 0x500);
+        return -22;
+      }
       let v: unknown;
       if (!checkedGlCall(b, () => {
         if (pname === 0x8b80) {

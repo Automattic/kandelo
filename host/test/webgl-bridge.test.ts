@@ -1400,6 +1400,87 @@ describe("query handler", () => {
     return { gl, b };
   }
 
+  it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("numeric getter %i rejects unsupported pnames before native access", (op) => {
+    const { b, gl } = setup();
+    let calls = 0;
+    gl.getParameter = () => { calls++; return 42; };
+    for (const pname of [0xffffffff, 0, 0x1f00, 0x821b]) {
+      const request = new Uint8Array(new Uint32Array([pname]).buffer);
+      const reply = new Uint8Array(16).fill(0xa5);
+      expect(runGlQuery(b, op, request, reply)).toBe(-22);
+      expect([...reply]).toEqual(Array(16).fill(0xa5));
+      expect(b.errors.splice(0)).toEqual([0x500]);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it.each([O.QOP_GET_SHADERIV, O.QOP_GET_PROGRAMIV])("object getter %i rejects unsupported pnames before native access", (op) => {
+    const { b, gl } = setup();
+    b.shaders.set(7, {} as WebGLShader);
+    b.programs.set(9, {} as WebGLProgram);
+    let calls = 0;
+    gl.getShaderParameter = () => { calls++; return true; };
+    gl.getProgramParameter = () => { calls++; return 42; };
+    for (const pname of [0xffffffff, 0, 0x8b8d]) {
+      const request = new Uint8Array(new Uint32Array([op === O.QOP_GET_SHADERIV ? 7 : 9, pname]).buffer);
+      const reply = new Uint8Array(4).fill(0xa5);
+      expect(runGlQuery(b, op, request, reply)).toBe(-22);
+      expect([...reply]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+      expect(b.errors.splice(0)).toEqual([0x500]);
+    }
+    expect(calls).toBe(0);
+  });
+
+  it.each([O.QOP_GET_SHADERIV, O.QOP_GET_PROGRAMIV])("object getter %i preserves name/kind error precedence for an invalid pname", (op) => {
+    const { b } = setup();
+    b.shaders.set(7, {} as WebGLShader);
+    b.programs.set(9, {} as WebGLProgram);
+    for (const [name, error] of [[0xffffffff, 0x501], [op === O.QOP_GET_SHADERIV ? 9 : 7, 0x502]]) {
+      const reply = new Uint8Array(4).fill(0xa5);
+      expect(runGlQuery(b, op, new Uint8Array(new Uint32Array([name, 0xffffffff]).buffer), reply)).toBe(-22);
+      expect([...reply]).toEqual([0xa5, 0xa5, 0xa5, 0xa5]);
+      expect(b.errors.splice(0)).toEqual([error]);
+    }
+  });
+
+  it("rejecting a pname preserves prior native errors and confines logical errors to the owner", () => {
+    const { b, gl } = setup();
+    const peer = setup().b;
+    let pending = 0x505;
+    gl.getError = () => { const error = pending; pending = 0; return error; };
+    const reply = new Uint8Array(4).fill(0xa5);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([0xffffffff]).buffer), reply)).toBe(-22);
+    const errors: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      expect(runGlQuery(b, O.QOP_GET_ERROR, new Uint8Array(), reply)).toBe(4);
+      errors.push(new DataView(reply.buffer).getUint32(0, true));
+    }
+    expect(errors.slice(0, 2).sort()).toEqual([0x500, 0x505]);
+    expect(errors[2]).toBe(0);
+    expect(peer.errors).toEqual([]);
+  });
+
+  it.each([0x0d33, 0x8b49, 0x8b8b, 0x8cdf, 0x8a34, 0x8d6b, 0x882f, 0x0d03, 0x806e])("preserves supported GLES/WebGL2 state pname %i", (pname) => {
+    const { b, gl } = setup();
+    const seen: number[] = [];
+    gl.getParameter = (name: number) => { seen.push(name); return 23; };
+    const reply = new Uint8Array(4);
+    expect(runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([pname]).buffer), reply)).toBe(4);
+    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(23);
+    expect(seen).toEqual([pname]);
+  });
+
+  it.each([0x8b82, 0x8b83, 0x8b85, 0x8b86, 0x8b89, 0x8c7f, 0x8c83, 0x8a36])("preserves supported program pname %i", (pname) => {
+    const { b, gl } = setup();
+    b.programs.set(9, {} as WebGLProgram);
+    const seen: number[] = [];
+    gl.getProgramParameter = (_program: unknown, name: number) => { seen.push(name); return 23; };
+    const reply = new Uint8Array(4);
+    expect(runGlQuery(b, O.QOP_GET_PROGRAMIV, new Uint8Array(new Uint32Array([9, pname]).buffer), reply)).toBe(4);
+    expect(new DataView(reply.buffer).getInt32(0, true)).toBe(23);
+    expect(seen).toEqual([pname]);
+  });
+
   it.each([O.QOP_GET_INTEGERV, O.QOP_GET_FLOATV])("query %i returns guest object names instead of native objects", (op) => {
     const { b, gl } = setup();
     const cases: [number, Map<number, any>][] = [
