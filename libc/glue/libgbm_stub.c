@@ -10,7 +10,8 @@
  * Surface implemented (v1):
  *   - gbm_create_device / gbm_device_destroy
  *   - gbm_device_is_format_supported (scanout fourccs; per-usage planes)
- *   - gbm_bo_create        (linear; RGB565 as CPU-tier storage only)
+ *   - gbm_bo_create        (linear; R8, GR88, RGB565, 8888, 2101010 and
+ *                           16161616F: see k_formats for each format's tiers)
  *   - gbm_bo_create_with_modifiers / gbm_bo_create_with_modifiers2
  *                          (LINEAR or implicit modifiers only)
  *   - gbm_bo_destroy
@@ -267,27 +268,50 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *h
     return _wpk_gbm_surface_metadata(window, width, height, &format, &flags);
 }
 
-static uint32_t format_bpp(uint32_t fourcc) {
-    /* The formats the KMS primary plane scans out. CREATE_DUMB accepts
-     * any bpp, so RGB565 is a 16-bpp dumb allocation. */
-    switch (fourcc) {
-    case DRM_FORMAT_ARGB8888:
-    case DRM_FORMAT_XRGB8888:
-    case DRM_FORMAT_ABGR8888:
-    case DRM_FORMAT_XBGR8888:
-        return 32;
-    case DRM_FORMAT_RGB565:
-        return 16;
-    default:
-        return 0;
-    }
+/* The single-plane formats a Kandelo buffer holds exactly, and the planes
+ * and windows that can use them:
+ * - bpp: drm_format_info's bytes per pixel, times 8. CREATE_DUMB accepts
+ *   any bpp, so every format has CPU-tier (dumb) storage.
+ * - scanout: the KMS primary plane scans it out (kms::PRIMARY_PLANE_FORMATS).
+ * - window: an EGL window surface can render to it. Kandelo's EGL configs
+ *   name 32-bpp 8888 windows, whose fronts are RGBA8 renders.
+ * Every format is a GL render target in both tiers: GPU-tier storage is a
+ * WebGL 2 texture of the format's own internal format (R8, RG8, RGB565,
+ * RGBA8, RGB10_A2, RGBA16F; the kernel's gpu_storage_format_cpp lists the
+ * same set), and a CPU-tier buffer imported as an EGLImage is mirrored in
+ * that same texture format with an exact byte conversion each way. */
+struct wpk_gbm_format { uint32_t fourcc; uint32_t bpp; int scanout, window; };
+static const struct wpk_gbm_format k_formats[] = {
+    {DRM_FORMAT_R8, 8, 1, 0},
+    {DRM_FORMAT_GR88, 16, 1, 0},
+    {DRM_FORMAT_RGB565, 16, 1, 0},
+    {DRM_FORMAT_XRGB8888, 32, 1, 1},
+    {DRM_FORMAT_ARGB8888, 32, 1, 1},
+    {DRM_FORMAT_XBGR8888, 32, 1, 1},
+    {DRM_FORMAT_ABGR8888, 32, 1, 1},
+    {DRM_FORMAT_XRGB2101010, 32, 0, 0},
+    {DRM_FORMAT_ARGB2101010, 32, 0, 0},
+    {DRM_FORMAT_XBGR2101010, 32, 0, 0},
+    {DRM_FORMAT_ABGR2101010, 32, 0, 0},
+    {DRM_FORMAT_XBGR16161616F, 64, 0, 0},
+    {DRM_FORMAT_ABGR16161616F, 64, 0, 0},
+};
+
+static const struct wpk_gbm_format *format_info(uint32_t fourcc) {
+    for (unsigned i = 0; i < sizeof k_formats / sizeof k_formats[0]; i++)
+        if (k_formats[i].fourcc == fourcc) return &k_formats[i];
+    return NULL;
 }
 
-/* GPU-tier storage and EGL window surfaces are 32-bpp RGBA (Kandelo's EGL
- * configs and the WebGL texture backing are 8888), so a GL render target
- * needs a 32-bpp format; RGB565 is CPU-tier storage only. */
-static int format_renderable(uint32_t fourcc) {
-    return format_bpp(fourcc) == 32;
+static uint32_t format_bpp(uint32_t fourcc) {
+    const struct wpk_gbm_format *info = format_info(fourcc);
+    return info ? info->bpp : 0;
+}
+
+/* A gbm_surface exists to back an EGL window surface. */
+static int format_surface(uint32_t fourcc) {
+    const struct wpk_gbm_format *info = format_info(fourcc);
+    return info && info->window;
 }
 
 /* Usages Kandelo can provide. Protected content and fixed-rate compression
@@ -426,7 +450,7 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
     format = canonical_format(format);
     uint32_t bpp = format_bpp(format);
     if (!gbm || !bpp || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)
-        || ((flags & GBM_BO_USE_RENDERING) && !format_renderable(format))) {
+        || ((flags & GBM_BO_USE_SCANOUT) && !format_info(format)->scanout)) {
         errno = EINVAL;
         return NULL;
     }
@@ -596,8 +620,10 @@ static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
         if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) bo->is_gpu = 0;
         else if (errno == EINVAL) bo->is_gpu = 1;
         else error = errno;
-        /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. */
+        /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. As in
+         * bo_create, scanout needs a primary-plane format. */
         if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
+        if (!error && (usage & GBM_BO_USE_SCANOUT) && !format_info(format)->scanout) error = EINVAL;
     }
     if (error) {
         release_handle_locked(gbm, req.handle);
@@ -905,20 +931,20 @@ uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
     return bo->offset;
 }
 
-/* Report what an allocation with these usages can actually scan out. Like
- * Mesa's DRI backend, a cursor is never also a render target, and unknown
- * or unsupported usages are unsupported. The kernel cursor plane takes only
- * ARGB8888 (kms::CURSOR_PLANE_FORMATS); the primary plane takes all four
- * 32-bpp formats GBM allocates. */
+/* Report what an allocation with these usages can actually do. Like Mesa's
+ * DRI backend, a cursor is never also a render target, and unknown or
+ * unsupported usages are unsupported. The kernel cursor plane takes only
+ * ARGB8888 (kms::CURSOR_PLANE_FORMATS), the primary plane the k_formats
+ * marked scanout; every format is a render target. */
 int gbm_device_is_format_supported(struct gbm_device *gbm,
                                    uint32_t format, uint32_t flags) {
     (void) gbm;
     format = canonical_format(format);
-    if (!format_bpp(format) || (flags & ~WPK_GBM_SUPPORTED_USAGE)) return 0;
-    if ((flags & GBM_BO_USE_RENDERING) && !format_renderable(format)) return 0;
+    const struct wpk_gbm_format *info = format_info(format);
+    if (!info || (flags & ~WPK_GBM_SUPPORTED_USAGE)) return 0;
     if (flags & GBM_BO_USE_CURSOR)
         return !(flags & GBM_BO_USE_RENDERING) && format == GBM_FORMAT_ARGB8888;
-    return 1;
+    return !(flags & GBM_BO_USE_SCANOUT) || info->scanout;
 }
 
 /* The render back is private GPU storage. Public CPU-facing usage flags
@@ -937,7 +963,7 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
                                        uint32_t width, uint32_t height,
                                        uint32_t format, uint32_t flags) {
     format = canonical_format(format);
-    if (!gbm || !width || !height || !format_renderable(format) ||
+    if (!gbm || !width || !height || !format_surface(format) ||
         (flags & ~WPK_GBM_SUPPORTED_USAGE)) {
         errno = EINVAL;
         return NULL;

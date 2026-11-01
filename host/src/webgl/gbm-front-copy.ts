@@ -91,15 +91,19 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
   } catch { return -5; }
 }
 
-/** Read the private render back into independent bottom-row-first RGBA bytes.
+/** Read the private render back into independent bottom-row-first RGBA bytes
+ * (or, for a CPU image mirror, the readback its storage format needs).
  * The CPU publication caller packs/normalizes those owned bytes only after
  * native restoration has succeeded. No guest view enters a repair record. */
-export function readGbmFront(surface: GlSurfaceResources,
-  capturePriorErrors: () => void): {rc: number; pixels?: Uint8Array<ArrayBuffer>} {
+export function readGbmFront<T extends ArrayBufferView = Uint8Array<ArrayBuffer>>(surface: GlSurfaceResources,
+  capturePriorErrors: () => void,
+  read: {format: number; type: number; buffer: (pixels: number) => T} =
+    {format: 0x1908, type: 0x1401, buffer: pixels => new Uint8Array(pixels * 4) as unknown as T}):
+  {rc: number; pixels?: T} {
   if (!validGbmFrontRead(surface)) return {rc: -22};
   const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
-  let pixels: Uint8Array<ArrayBuffer>;
-  try { pixels = new Uint8Array(size.width * size.height * 4); }
+  let pixels: T;
+  try { pixels = read.buffer(size.width * size.height); }
   catch { return {rc: -12}; }
   const owner = {gl, errors: [] as number[], shadow: {}};
   const failed = () => ({rc: owner.errors.includes(0x505) ? -12 : -5});
@@ -135,7 +139,7 @@ export function readGbmFront(surface: GlSurfaceResources,
         restore: nativeInverse(owner, [["pixelStorei", field, values[index]]])
       })),
       {apply: () => checkedGlCall(owner, () => gl.readPixels(0, 0, size.width, size.height,
-        0x1908, 0x1401, pixels)), restore: nativeInverse(owner)},
+        read.format, read.type, pixels)), restore: nativeInverse(owner)},
     ], {shared: true, finalizer: nativeInverse(owner, readGroup,
       [["bindFramebuffer", READ, oldRead]], [["bindBuffer", 0x88eb, oldPack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});

@@ -1,6 +1,7 @@
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement,
   type NativeRetirement } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
+import { RGBA8_STORAGE, type GpuStorageFormat } from "./gpu-storage-format.js";
 
 export type GlGpuAllocation = {
   gl: WebGL2RenderingContext;
@@ -11,13 +12,15 @@ export type GlGpuAllocation = {
   w: number;
   h: number;
   retirement: NativeRetirement;
+  /** The texture's texImage2D triple; sibling views are made with it. */
+  storage: GpuStorageFormat;
 };
 
 /** Reserve native ownership before creating any member. Publication follows
  * checked allocation and complete restoration of the selected peer's state.
  * Failed cleanup/inverses remain in the physical renderer's native journal. */
 export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: number, texId: number,
-  publish: (allocation: GlGpuAllocation) => void): boolean {
+  publish: (allocation: GlGpuAllocation) => void, storage: GpuStorageFormat = RGBA8_STORAGE): boolean {
   const owner = {gl,errors:[] as number[]};
   let active = 0, texture: WebGLTexture | null = null, renderbuffer: WebGLRenderbuffer | null = null;
   let read: WebGLFramebuffer | null = null, draw: WebGLFramebuffer | null = null;
@@ -30,7 +33,7 @@ export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: num
   if (!retirement) return false;
   let published = false;
   try {
-    const allocation = {gl,w,h,texId,retirement,tex:null,fbo:null,depthStencil:null} as unknown as GlGpuAllocation;
+    const allocation = {gl,w,h,texId,retirement,storage,tex:null,fbo:null,depthStencil:null} as unknown as GlGpuAllocation;
     const restore = nativeInverse(owner,
       [["activeTexture",active],["bindTexture",0x0de1,texture]],
       [["bindRenderbuffer",0x8d41,renderbuffer]],
@@ -40,7 +43,7 @@ export function allocateGpuStorage(gl: WebGL2RenderingContext, w: number, h: num
       if (!checkedGlCall(owner,()=>{retirement.calls[0][1] = allocation.fbo = gl.createFramebuffer()!;}) || !allocation.fbo) return false;
       if (!checkedGlCall(owner,()=>{retirement.calls[1][1] = allocation.depthStencil = gl.createRenderbuffer()!;}) || !allocation.depthStencil) return false;
       if (!checkedGlCall(owner,()=>gl.bindTexture(0x0de1,allocation.tex)) ||
-          !checkedGlCall(owner,()=>gl.texImage2D(0x0de1,0,0x1908,w,h,0,0x1908,0x1401,null))) return false;
+          !checkedGlCall(owner,()=>gl.texImage2D(0x0de1,0,storage.internalFormat,w,h,0,storage.format,storage.type,null))) return false;
       for (const [pname,value] of [[0x2801,0x2601],[0x2800,0x2601],[0x2802,0x812f],[0x2803,0x812f]])
         if (!checkedGlCall(owner,()=>gl.texParameteri(0x0de1,pname,value))) return false;
       if (!checkedGlCall(owner,()=>gl.bindFramebuffer(0x8d40,allocation.fbo)) ||

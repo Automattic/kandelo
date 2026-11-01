@@ -4608,6 +4608,38 @@ pub mod dri {
     pub const DRM_FORMAT_XBGR8888: u32 = 0x34324258;
     /// `fourcc('R','G','1','6')` — 5-6-5 RGB.
     pub const DRM_FORMAT_RGB565: u32 = 0x36314752;
+    /// `fourcc('R','8',' ',' ')` — one 8-bit red channel.
+    pub const DRM_FORMAT_R8: u32 = 0x20203852;
+    /// `fourcc('G','R','8','8')` — R then G bytes in little-endian memory.
+    pub const DRM_FORMAT_GR88: u32 = 0x38385247;
+    /// `fourcc('A','R','3','0')` — 2-10-10-10 alpha + RGB, blue in the low bits.
+    pub const DRM_FORMAT_ARGB2101010: u32 = 0x30335241;
+    /// `fourcc('X','R','3','0')` — 2-10-10-10 padding + RGB, blue in the low bits.
+    pub const DRM_FORMAT_XRGB2101010: u32 = 0x30335258;
+    /// `fourcc('A','B','3','0')` — 2-10-10-10 alpha + BGR, red in the low bits.
+    pub const DRM_FORMAT_ABGR2101010: u32 = 0x30334241;
+    /// `fourcc('X','B','3','0')` — 2-10-10-10 padding + BGR, red in the low bits.
+    pub const DRM_FORMAT_XBGR2101010: u32 = 0x30334258;
+    /// `fourcc('A','B','4','H')` — four little-endian IEEE half floats, R first.
+    pub const DRM_FORMAT_ABGR16161616F: u32 = 0x48344241;
+    /// `fourcc('X','B','4','H')` — RGB half floats then a padding half.
+    pub const DRM_FORMAT_XBGR16161616F: u32 = 0x48344258;
+
+    /// Bytes per pixel (`drm_format_info.cpp[0]`) of a format a GPU-tier
+    /// buffer can hold: one whose single plane a WebGL 2 texture stores
+    /// exactly and can render into (R8, RG8, RGB565, RGBA8, RGB10_A2,
+    /// RGBA16F). None for any other format.
+    pub const fn gpu_storage_format_cpp(format: u32) -> Option<u32> {
+        match format {
+            DRM_FORMAT_R8 => Some(1),
+            DRM_FORMAT_GR88 | DRM_FORMAT_RGB565 => Some(2),
+            DRM_FORMAT_ARGB8888 | DRM_FORMAT_XRGB8888 | DRM_FORMAT_ABGR8888 | DRM_FORMAT_XBGR8888
+            | DRM_FORMAT_ARGB2101010 | DRM_FORMAT_XRGB2101010 | DRM_FORMAT_ABGR2101010
+            | DRM_FORMAT_XBGR2101010 => Some(4),
+            DRM_FORMAT_ABGR16161616F | DRM_FORMAT_XBGR16161616F => Some(8),
+            _ => None,
+        }
+    }
 
     // --- marshalled structs ------------------------------------------------
 
@@ -6000,6 +6032,29 @@ mod dri_tests {
         assert_eq!(DRM_FORMAT_RGB565, fourcc(b'R', b'G', b'1', b'6'));
         assert_eq!(DRM_FORMAT_ABGR8888, fourcc(b'A', b'B', b'2', b'4'));
         assert_eq!(DRM_FORMAT_XBGR8888, fourcc(b'X', b'B', b'2', b'4'));
+        assert_eq!(DRM_FORMAT_R8, fourcc(b'R', b'8', b' ', b' '));
+        assert_eq!(DRM_FORMAT_GR88, fourcc(b'G', b'R', b'8', b'8'));
+        assert_eq!(DRM_FORMAT_ARGB2101010, fourcc(b'A', b'R', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_XRGB2101010, fourcc(b'X', b'R', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_ABGR2101010, fourcc(b'A', b'B', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_XBGR2101010, fourcc(b'X', b'B', b'3', b'0'));
+        assert_eq!(DRM_FORMAT_ABGR16161616F, fourcc(b'A', b'B', b'4', b'H'));
+        assert_eq!(DRM_FORMAT_XBGR16161616F, fourcc(b'X', b'B', b'4', b'H'));
+    }
+
+    #[test]
+    fn gpu_storage_formats_have_their_drm_cpp() {
+        for (format, cpp) in [(DRM_FORMAT_R8, 1), (DRM_FORMAT_GR88, 2), (DRM_FORMAT_RGB565, 2),
+            (DRM_FORMAT_XRGB8888, 4), (DRM_FORMAT_ARGB8888, 4), (DRM_FORMAT_XBGR8888, 4),
+            (DRM_FORMAT_ABGR8888, 4), (DRM_FORMAT_XRGB2101010, 4), (DRM_FORMAT_ARGB2101010, 4),
+            (DRM_FORMAT_XBGR2101010, 4), (DRM_FORMAT_ABGR2101010, 4),
+            (DRM_FORMAT_XBGR16161616F, 8), (DRM_FORMAT_ABGR16161616F, 8)] {
+            assert_eq!(gpu_storage_format_cpp(format), Some(cpp), "{format:#x}");
+        }
+        // Multi-plane YUV and formats without exact WebGL 2 storage.
+        for format in [0, 0x3231564e /* NV12 */, 0x34324752 /* RGB888 */] {
+            assert_eq!(gpu_storage_format_cpp(format), None, "{format:#x}");
+        }
     }
 
     #[test]

@@ -2580,7 +2580,7 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
             assert(eglGetError() == EGL_NOT_INITIALIZED && count == -1 && modifier == 7);
             if (pass) break;
             assert(eglInitialize(dpy, NULL, NULL));
-            assert(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count == 4);
+            assert(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count == 13);
             assert(eglQueryDmaBufModifiersEXT(dpy, 0x34324241, 1, &modifier, NULL, &count));
             assert(count == 1 && modifier == 0);
             assert(eglTerminate(dpy)); count = -1; modifier = 7;
@@ -3048,9 +3048,9 @@ int main(int argc, char **argv) {
          * the exported bo's rows are 32-bpp. */
         EGLContext context = eglCreateContext(gbm, (EGLConfig)1, EGL_NO_CONTEXT, attrs);
         assert(context && eglMakeCurrent(gbm, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
-        GLuint textures[2];
-        glGenTextures(2, textures);
-        for (unsigned i = 0; i < 2; i++) {
+        GLuint textures[7];
+        glGenTextures(7, textures);
+        for (unsigned i = 0; i < 7; i++) {
             glBindTexture(GL_TEXTURE_2D, textures[i]);
             glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 4, 4, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
         }
@@ -3062,6 +3062,20 @@ int main(int argc, char **argv) {
         assert(plane.width == 4 && plane.height == 4 && plane.format == 0x34324241 &&
                plane.stride == 16 && plane.offset == 0);
         assert(close(plane.fd) == 0);
+        /* Other sized formats name their DRM format, and the bo's rows are
+         * that format's bytes per pixel, rounded to 4 bytes. */
+        static const struct { uint32_t internal, fourcc, stride; } sized[] = {
+            {0x8229, 0x20203852, 4}, {0x822b, 0x38385247, 8}, {0x8d62, 0x36314752, 8},
+            {0x8059, 0x30334241, 16}, {0x881a, 0x48344241, 32}};
+        for (unsigned i = 0; i < sizeof sized / sizeof sized[0]; i++) {
+            image_export_format = sized[i].internal;
+            EGLImageKHR typed = eglCreateImageKHR(gbm, context, EGL_GL_TEXTURE_2D,
+                (EGLClientBuffer)(uintptr_t)textures[2 + i], NULL);
+            assert(typed != EGL_NO_IMAGE_KHR);
+            assert(_wpk_egl_image_export_gbm(typed, device, wayland_native_identity, &plane) == 0);
+            assert(plane.format == sized[i].fourcc && plane.stride == sized[i].stride && plane.width == 4);
+            assert(close(plane.fd) == 0 && eglDestroyImageKHR(gbm, typed));
+        }
         /* A host-reported RGBA32F image has no DRM format to describe it. */
         image_export_format = 0x8814;
         EGLImageKHR wide = eglCreateImageKHR(gbm, context, EGL_GL_TEXTURE_2D,
@@ -3072,7 +3086,7 @@ int main(int argc, char **argv) {
         assert(eglDestroyImageKHR(gbm, wide));
         assert(_wpk_egl_image_export_gbm(wide, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
         assert(eglMakeCurrent(gbm, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
-        glDeleteTextures(2, textures);
+        glDeleteTextures(7, textures);
         assert(eglDestroyContext(gbm, context) && eglTerminate(gbm));
         assert(_wpk_egl_image_export_gbm(gpu, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
         assert(_wpk_egl_image_export_gbm(texture, device, wayland_native_identity, &plane) < 0 && errno == EINVAL);
@@ -3571,6 +3585,47 @@ int main(int argc, char **argv) {
             value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,small);
             assert(value && destroy(dpy,value));
             assert(!munmap(guard,page*2));
+        } else if (!strcmp(argv[1],"dmabuf-formats")) {
+            /* EXT_image_dma_buf_import: every single-plane format a Kandelo
+             * bo holds is importable, with its own bytes per pixel bounding
+             * the pitch and the plane's extent within the dma-buf (16 KiB
+             * here); formats no bo holds are EGL_BAD_MATCH. */
+            static const struct { EGLint fourcc, cpp; } formats[] = {
+                {0x34325241,4},{0x34325258,4},{0x34324241,4},{0x34324258,4},{0x36314752,2},
+                {0x20203852,1},{0x38385247,2},{0x30335241,4},{0x30335258,4},{0x30334241,4},
+                {0x30334258,4},{0x48344241,8},{0x48344258,8}};
+            EGLint count = 0, listed[16];
+            assert(eglQueryDmaBufFormatsEXT(dpy, 16, listed, &count) && count == 13);
+            for (unsigned i = 0; i < 13; i++) {
+                EGLint fourcc = formats[i].fourcc, cpp = formats[i].cpp;
+                EGLint height = 16384 / (64 * cpp) < 64 ? 16384 / (64 * cpp) : 64;
+                assert(listed[i] == fourcc);
+                EGLuint64KHR modifier = 7; EGLBoolean external = EGL_TRUE; EGLint modifiers = 0;
+                assert(eglQueryDmaBufModifiersEXT(dpy, fourcc, 1, &modifier, &external, &modifiers));
+                assert(modifiers == 1 && modifier == 0 && external == EGL_FALSE);
+                EGLint attributes[13] = {EGL_WIDTH,64,EGL_HEIGHT,height,EGL_LINUX_DRM_FOURCC_EXT,fourcc,
+                    EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,
+                    EGL_DMA_BUF_PLANE0_PITCH_EXT,64 * cpp,EGL_NONE};
+                EGLImageKHR value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes);
+                assert(value && eglDestroyImageKHR(dpy,value));
+                /* A CPU-tier plane whose last row ends exactly at the end
+                 * of the dma-buf, and one byte further. */
+                dmabuf_cpu_tier = 1;
+                attributes[9] = 16384 - 64 * cpp * height;
+                value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes);
+                assert(value && eglDestroyImageKHR(dpy,value));
+                attributes[9] += 1;
+                assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes));
+                assert(eglGetError() == EGL_BAD_ACCESS);
+                dmabuf_cpu_tier = 0;
+                attributes[9] = 0; attributes[11] = 64 * cpp - 1;
+                assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes));
+                assert(eglGetError() == EGL_BAD_ACCESS);
+            }
+            EGLint nv12[13]; memcpy(nv12,narrow,sizeof nv12); nv12[5] = 0x3231564e;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12));
+            assert(eglGetError() == EGL_BAD_MATCH);
+            assert(imports == closes && imports == 26);
         } else if (!strcmp(argv[1],"dmabuf-required")) {
             for (unsigned omit = 0; omit < 6; omit++) {
                 EGLint incomplete[11]; unsigned cursor = 0;

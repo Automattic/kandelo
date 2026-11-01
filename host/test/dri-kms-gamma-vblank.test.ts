@@ -160,3 +160,31 @@ it("expands RGB565 scanout by bit replication before the LUT, as the CPU stage d
   expect([...r.screen.data]).toEqual([255 - 24, 20, 128, 255]);
   expect(r.counts.readPixels).toBe(0);
 });
+
+it.each([
+  // R8 shows red only; GR88 red and green. Both through the LUT exactly.
+  ["R8", 0x20203852, 1, [10, 200], [[10, 0, 0], [200, 0, 0]]],
+  ["GR88", 0x38385247, 2, [10, 20, 200, 100], [[10, 20, 0], [200, 100, 0]]],
+])("presents %s scanout with its missing channels zero, plain and through the LUT", (_name, pixel_format, cpp, bytes, colors) => {
+  const kernel = makeKernel();
+  const fb = { fb_id: 10, bo_id: 100, width: 2, height: 1, pixel_format, pitch: 2 * cpp, x: 0, y: 0, offset: 0 };
+  const kms = kernel.kms as unknown as Record<string, unknown>;
+  kms.currentFb = () => fb;
+  kms.scanoutBytes = () => new Uint8Array(bytes);
+  kms.cursorSnapshot = () => cursor(5, 1);
+  const r = canvasGl(2, 1), display = canvas2d();
+  kernel.attachKmsCanvas(1, r.canvas, undefined, { mode: "webgl2-scanout" });
+  kernel.attachKmsCanvas(2, display.canvas, undefined, { mode: "2d" });
+  (kms as { currentFb: (crtc: number) => unknown }).currentFb = () => fb;
+  vi.advanceTimersByTime(17);
+  const plain = colors.flatMap(c => [...c, 255]);
+  expect([...r.screen.data]).toEqual(plain);
+  expect(display.painted.at(-1)).toEqual([0, 0, ...plain]);
+  kernel.kms.setGamma(1, testLut());
+  kernel.kms.setGamma(2, testLut());
+  vi.advanceTimersByTime(17);
+  const corrected = colors.flatMap(([red, green]) => [255 - red, green, 128, 255]);
+  expect([...r.screen.data]).toEqual(corrected);
+  expect(display.painted.at(-1)).toEqual([0, 0, ...corrected]);
+  expect(r.counts.readPixels).toBe(0);
+});

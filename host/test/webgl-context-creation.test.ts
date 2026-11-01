@@ -37,7 +37,7 @@ it("allocates device storage from an attached renderer before EGL context creati
   kernel.gl.attachCanvas(7,{ getContext } as unknown as OffscreenCanvas);
   const binding = kernel.gl.get(7,11)!;
   expect(binding.gl).toBeNull(); expect(binding.contextId).toBeNull();
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);
   expect(kernel.gl.gpuBo(41)?.gl).toBe(gl);
   expect(getContext).toHaveBeenCalledWith("webgl2", expect.any(Object));
   expect(binding.contextId).toBeNull();
@@ -55,7 +55,7 @@ it("retires a GPU BO through the kernel destroy callback without CPU metadata", 
   kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
   const binding = kernel.gl.get(7,11)!;
   binding.gl = gl; binding.contextId = 21; setMaster(7);
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);
   const allocation = kernel.gl.gpuBo(41)!;
   expect(allocation).toBeDefined();
   expect(kernel.bos.get(7,41)).toBeUndefined();
@@ -80,9 +80,9 @@ it("preserves selected-owner errors before GPU BO allocation and refuses unread 
   kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});setMaster(7);
   const b=kernel.gl.get(7,11)!;b.gl=gl;b.contextId=21;
   expect(imports.host_gl_submit(7,0,0,11)).toBe(0);errors.push(0x500);
-  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0,0)).toBe(0);expect(b.errors).toEqual([0x500]);
+  expect(imports.host_gbm_gpu_bo_create(7,41,2,2,0x34324241,0)).toBe(0);expect(b.errors).toEqual([0x500]);
   const read=gl.getError;gl.getError=()=>{throw new Error("error read rejected");};
-  expect(imports.host_gbm_gpu_bo_create(7,42,2,2,0,0)).toBe(-5);expect(kernel.gl.gpuBo(42)).toBeUndefined();
+  expect(imports.host_gbm_gpu_bo_create(7,42,2,2,0x34324241,0)).toBe(-5);expect(kernel.gl.gpuBo(42)).toBeUndefined();
   gl.getError=read;expect(kernel.gl.destroyGpuBo(41)).toBe(true);kernel.releaseProcessViews(7);
 });
 

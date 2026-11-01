@@ -20,6 +20,8 @@ type Image = {
 };
 type Program = { fragment: string; uniforms: Map<string, number[]> };
 
+const bytesPerTexel = (internal: number) => internal === 0x8229 ? 1 : internal === 0x8d62 || internal === 0x822b ? 2 : 4;
+
 export function pixelGl(width: number, height: number) {
   const textures = new Map<object, Image>();
   const framebuffers = new Map<object, { color: object | null }>();
@@ -70,6 +72,11 @@ export function pixelGl(width: number, height: number) {
     const mipmapped = minFilter !== 0x2600 && minFilter !== 0x2601;
     if (mipmapped && !found.mipmaps) return [0, 0, 0, 255];
     if (x < 0 || y < 0 || x >= found.w || y >= found.h) return [0, 0, 0, 0];
+    if (found.internal === 0x8229) return [found.data[y * found.w + x], 0, 0, 255];
+    if (found.internal === 0x822b) {
+      const at = (y * found.w + x) * 2;
+      return [found.data[at], found.data[at + 1], 0, 255];
+    }
     if (found.internal === 0x8d62) {
       const at = (y * found.w + x) * 2;
       const word = found.data[at] | (found.data[at + 1] << 8);
@@ -204,7 +211,7 @@ export function pixelGl(width: number, height: number) {
         uploads.push(Uint8Array.from(bytes));
         counts.texUploads++;
       }
-      const bpp = internal === 0x8d62 ? 2 : 4;
+      const bpp = bytesPerTexel(internal);
       Object.assign(boundTexture(), { w, h, internal, mipmaps: false,
         data: bytes ? Uint8Array.from(bytes) : new Uint8Array(w * h * bpp) });
     },
@@ -213,7 +220,7 @@ export function pixelGl(width: number, height: number) {
       const bytes = new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength);
       uploads.push(Uint8Array.from(bytes));
       counts.texUploads++;
-      const target = boundTexture(), bpp = target.internal === 0x8d62 ? 2 : 4;
+      const target = boundTexture(), bpp = bytesPerTexel(target.internal);
       for (let row = 0; row < h; row++) {
         target.data.set(bytes.subarray(row * w * bpp, (row + 1) * w * bpp), ((y + row) * target.w + x) * bpp);
       }

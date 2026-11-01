@@ -347,6 +347,16 @@ describe("DRM scanout pixel layouts", () => {
     ]);
   });
 
+  it("shows R8 as red and GR88 as red and green, the channels they lack zero", () => {
+    // 3-pixel rows with one padding byte (R8) or two (GR88).
+    const r8 = snapshotScanout({ width: 3, height: 1, pitch: 4, pixel_format: 0x20203852 }, new Uint8Array([7, 0, 255, 99]));
+    expect(Array.from(scanoutRgba(0x20203852, r8))).toEqual([7, 0, 0, 255, 0, 0, 0, 255, 255, 0, 0, 255]);
+    const gr88 = snapshotScanout({ width: 2, height: 1, pitch: 6, pixel_format: 0x38385247 },
+      new Uint8Array([7, 8, 255, 1, 99, 99]));
+    expect(Array.from(scanoutRgba(0x38385247, gr88))).toEqual([7, 8, 0, 255, 255, 1, 0, 255]);
+    expect(() => scanoutRgba(0x38385247, new Uint8Array(3))).toThrow(RangeError);
+  });
+
   it("rejects unknown formats and incomplete geometry before copying", () => {
     const fb = { width: 2, height: 2, pitch: 8, pixel_format: 0x34324241 };
     for (const geometry of [

@@ -31523,13 +31523,13 @@ export class CentralizedKernelWorker {
       }
       const format = scanoutFormat(fb.pixel_format);
       const scratch = this.kmsScratchFor(crtc_id, pixels, pixels.byteLength);
-      const rgb565 = format.bytesPerPixel === 2;
+      const rgb565 = format.rgb565;
       const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      const external = rgb565 ? gl.RGB : gl.RGBA;
-      const type = rgb565 ? gl.UNSIGNED_SHORT_5_6_5 : gl.UNSIGNED_BYTE;
+      // R8 and GR88 sample as (r, 0, 0) and (r, g, 0), their scanout colors.
+      const { internalFormat, format: external, type } = format.gl;
       if (presenter.texW !== fb.width || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format) {
-        gl.texImage2D(gl.TEXTURE_2D, 0, rgb565 ? gl.RGB565 : gl.RGBA8,
+        gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat,
           fb.width, fb.height, 0, external, type, data);
         presenter.texW = fb.width;
         presenter.texH = fb.height;

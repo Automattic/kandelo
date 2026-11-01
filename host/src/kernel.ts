@@ -84,7 +84,7 @@ import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFr
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, repairNativeState, retireNativeRetirement } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
-import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
+import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
   blitPresentTarget,
@@ -3128,7 +3128,7 @@ export class WasmPosixKernel {
               let linear: Uint8Array<ArrayBuffer>;
               try { linear = new Uint8Array(canonical.byteLength); } catch { return -12; }
               if (!validGbmFrontRead(b.surface)) return -22;
-              let read: ReturnType<typeof readGbmFront> = {rc: -5};
+              let read: ReturnType<typeof readGbmFront<Uint8Array<ArrayBuffer>>> = {rc: -5};
               try {
                 read = this.withRestoredGraphicsState(gl, () => {
                   read = readGbmFront(b.surface, capture);
@@ -3489,7 +3489,8 @@ export class WasmPosixKernel {
           const mirror = this.gl.cpuImages.acquire(b, boId >>> 0, this.bos, layout);
           if (!mirror || !this.gl.cpuImages.prepare(b, this.bos,
             gl => this.gl_muxers.get(gl)?.captureCurrentErrors())) return -5;
-          return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout));
+          return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout),
+            gpuSourceStorage(mirror.storage));
           } catch { return -5; }
         },
         // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
@@ -3541,7 +3542,7 @@ export class WasmPosixKernel {
           const gpu = this.gl.gpuBo(boId);
           if (gpu) {
             if (b.gl !== gpu.gl) return -5;                     // EIO
-            if(glTarget===WPK_IMAGE_SOURCE_TARGET)return registerImageSource(b,boId,gpu.tex,gpu.w,gpu.h);
+            if(glTarget===WPK_IMAGE_SOURCE_TARGET)return registerImageSource(b,boId,gpu.tex,gpu.w,gpu.h,undefined,gpuSourceStorage(gpu.storage));
             this.glMuxerFor(b.gl).switchTo(b);
             const name = bindGpuForeignTexture(b, boId, gpu);
             if (name <= 0) this.gl_muxers.get(b.gl)?.invalidateCurrent();

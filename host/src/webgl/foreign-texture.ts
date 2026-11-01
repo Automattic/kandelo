@@ -16,7 +16,13 @@
  * state (active unit, unit-0 TEXTURE_2D binding, unpack state) is saved and
  * restored so the upload does not become part of that owner's GL state.
  */
-import { importImageStorage, registerImageSource } from "./image-storage.js";
+import { importImageStorage, registerImageSource, type GlImageStorage } from "./image-storage.js";
+import type { GpuStorageFormat } from "./gpu-storage-format.js";
+
+/** A GPU bo's views are made in the bo's own storage format. */
+export function gpuSourceStorage(storage: GpuStorageFormat | undefined): GlImageStorage {
+  return storage ? { internalFormat: storage.internalFormat, format: storage.format, type: storage.type } : {};
+}
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { replaceTextureLevels } from "./texture-levels.js";
 import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
@@ -39,7 +45,7 @@ function allocateForeignName(b: GlBinding, preferred = b.nextForeignTexId): numb
 /** The BO owns canonical GPU pixels; its public names own distinct logical
  * views, so delete/reimport and respecification cannot recycle its identity. */
 export function bindGpuForeignTexture(b: GlBinding, bo: number,
-    gpu: {tex: WebGLTexture; texId: number; w: number; h: number}): number {
+    gpu: {tex: WebGLTexture; texId: number; w: number; h: number; storage?: GpuStorageFormat}): number {
   if (!b.gl) return -5;
   if (!repairNativeState(b.gl)) return -5;
   let entry = b.foreignTextures.get(bo);
@@ -48,7 +54,7 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
     catch { return -12; }
     b.foreignTextures.delete(bo); entry = undefined;
   }
-  const token = registerImageSource(b, bo, gpu.tex, gpu.w, gpu.h);
+  const token = registerImageSource(b, bo, gpu.tex, gpu.w, gpu.h, undefined, gpuSourceStorage(gpu.storage));
   if (token <= 0) return token;
   if (entry) {
     if (b.textureViews.get(entry.tex)?.source?.token === token) return entry.texId;

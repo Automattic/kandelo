@@ -195,8 +195,10 @@ describe("RGB16F_EXT renderbuffers on RGBA16F storage", () => {
   });
 });
 
-describe("XRGB8888 GPU buffers on RGBA8 storage", () => {
-  it.each([[0x34325258, true], [0x34324258, true], [0x34325241, false]])("format %i starts opaque: %s", (format, opaque) => {
+describe("GPU buffers of formats without alpha on storage with alpha", () => {
+  it.each([[0x34325258, true], [0x34324258, true], [0x34325241, false],
+    [0x30335258, true], [0x30334258, true], [0x30334241, false],
+    [0x48344258, true], [0x48344241, false]])("format %i starts opaque: %s", (format, opaque) => {
     const reg = new GlContextRegistry();
     const fake = new FakeWebGL2();
     const gl = new Proxy(fake, {

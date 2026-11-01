@@ -36,10 +36,13 @@ pub const GAMMA_SIZE: u32 = 256;
 pub const COLOR_LUT_ENTRY_BYTES: usize = 8;
 pub const CURSOR_PLANE_FORMATS: [u32; 1] = [DRM_FORMAT_ARGB8888];
 
-/// The pixel formats `DRM_IOCTL_MODE_ADDFB2` accepts for scanout.
-pub const PRIMARY_PLANE_FORMATS: [u32; 5] = [
+/// The pixel formats `DRM_IOCTL_MODE_ADDFB2` accepts for scanout: those
+/// whose every value the host's 8-bit-per-channel presenters show exactly.
+/// A single-channel R8 or two-channel GR88 plane shows its red (and green)
+/// channel with the missing channels zero, as the format defines them.
+pub const PRIMARY_PLANE_FORMATS: [u32; 7] = [
     DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888, DRM_FORMAT_RGB565,
-    DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
+    DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888, DRM_FORMAT_R8, DRM_FORMAT_GR88,
 ];
 
 pub enum PropertyKind {

@@ -32,7 +32,9 @@ static unsigned created;              /* last allocated GEM handle */
 static unsigned live[MAX_HANDLES];    /* GEM handle reference: 1 while open */
 static unsigned closes[MAX_HANDLES];  /* drmCloseBufferHandle calls per handle */
 static int gpu_handle[MAX_HANDLES];   /* MAP_DUMB answers EINVAL (GPU tier) */
-static unsigned map_dumb_calls, allocations;
+static unsigned map_dumb_calls, allocations, gpu_allocations;
+static int gpu_context;               /* WPK_CREATE_GPU_BO succeeds */
+static uint32_t last_gpu_format, last_dumb_bpp;
 static struct { int fd; uint32_t handle; } primes[8];
 
 int graphics_gbm_munmap(void *address, size_t length) { return munmap(address, length); }
@@ -65,12 +67,29 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
         struct drm_mode_create_dumb *d = data;
         ++allocations;
+        last_dumb_bpp = d->bpp;
         /* The kernel's dumb rule: any nonzero bpp, rows rounded to 4 bytes. */
         d->handle = new_handle(0); d->pitch = ((d->width * d->bpp + 7) / 8 + 3) & ~3u;
         d->size = (uint64_t)d->pitch * d->height;
         return 0;
     }
-    if (request == 0xc01064e0u) { errno = ENOSYS; return -1; } /* no shared GL context */
+    if (request == 0xc01064e0u) {
+        /* WPK_CREATE_GPU_BO: no shared GL context unless a case provides
+         * one. The kernel strides GPU storage by the format's cpp. */
+        if (!gpu_context) { errno = ENOSYS; return -1; }
+        uint32_t *words = data, cpp = 0;
+        switch (words[2]) {
+        case DRM_FORMAT_R8: cpp = 1; break;
+        case DRM_FORMAT_GR88: case DRM_FORMAT_RGB565: cpp = 2; break;
+        case DRM_FORMAT_ABGR16161616F: case DRM_FORMAT_XBGR16161616F: cpp = 8; break;
+        default: cpp = 4; break;
+        }
+        ++gpu_allocations;
+        last_gpu_format = words[2];
+        words[2] = new_handle(1);
+        words[3] = (words[0] * cpp + 3) & ~3u;
+        return 0;
+    }
     if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE) {
         struct drm_prime_handle *prime = data;
         for (unsigned i = 0; i < sizeof primes / sizeof primes[0]; ++i) {
@@ -464,26 +483,117 @@ static void usage_flags(void) {
     close_device(device);
 }
 
-/* RGB565, the 16-bpp format the primary plane scans out, is a CPU-tier
- * (dumb) allocation: scanout, write and linear usages, but no GL render
- * target or cursor, since Kandelo's EGL configs and cursor plane are 32-bpp. */
+/* RGB565, the 16-bpp format the primary plane scans out: CPU-tier (dumb)
+ * storage for scanout, write and linear usages, and a GL render target in
+ * both tiers (an RGB565 texture, or a CPU buffer mirrored through one); not
+ * a cursor (the cursor plane is ARGB8888) or an EGL window (configs are
+ * 8888). */
 static void rgb565(void) {
     struct gbm_device *device = open_device();
     assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR) == 1);
-    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING) == 0);
+    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING) == 1);
+    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING) == 1);
     assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_CURSOR) == 0);
     struct gbm_bo *bo = gbm_bo_create(device, 5, 3, GBM_FORMAT_RGB565,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE);
     assert(bo && gbm_bo_get_bpp(bo) == 16 && gbm_bo_get_stride(bo) == 12);
     assert(gbm_bo_get_format(bo) == GBM_FORMAT_RGB565);
     gbm_bo_destroy(bo);
-    errno = 0;
-    assert(!gbm_bo_create(device, 5, 3, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING) && errno == EINVAL);
+    gpu_context = 1;
+    bo = gbm_bo_create(device, 5, 3, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING);
+    assert(bo && last_gpu_format == GBM_FORMAT_RGB565 && gbm_bo_get_stride(bo) == 12);
+    gbm_bo_destroy(bo);
     errno = 0;
     assert(!gbm_surface_create(device, 5, 3, GBM_FORMAT_RGB565, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING)
         && errno == EINVAL);
     assert(gbm_device_get_format_modifier_plane_count(device, GBM_FORMAT_RGB565, DRM_FORMAT_MOD_LINEAR) == 1);
+    close_device(device);
+}
+
+/* The single-plane formats clients use for planes and render targets
+ * (wlroots' R8/GR88 YUV planes and FP16 render buffers, 10-bit
+ * framebuffers): each has its drm_format_info bpp and LINEAR stride, CPU
+ * storage, a render target in its own format, and is reported for exactly
+ * the usages it can serve. */
+static void widened_formats(void) {
+    struct gbm_device *device = open_device();
+    /* scanout: the primary plane shows every value exactly (R8 and GR88
+     * with their missing channels zero); 10-bit and half-float values do
+     * not fit the 8-bit presenters. */
+    static const struct { uint32_t format, bpp, stride; int scanout; } formats[] = {
+        {GBM_FORMAT_R8, 8, 8, 1}, {GBM_FORMAT_GR88, 16, 12, 1},
+        {GBM_FORMAT_XRGB2101010, 32, 20, 0}, {GBM_FORMAT_ARGB2101010, 32, 20, 0},
+        {GBM_FORMAT_XBGR2101010, 32, 20, 0}, {GBM_FORMAT_ABGR2101010, 32, 20, 0},
+        {GBM_FORMAT_XBGR16161616F, 64, 40, 0}, {GBM_FORMAT_ABGR16161616F, 64, 40, 0},
+    };
+    const uint64_t linear = DRM_FORMAT_MOD_LINEAR;
+    for (unsigned i = 0; i < sizeof formats / sizeof formats[0]; ++i) {
+        uint32_t format = formats[i].format;
+        /* CPU storage: a dumb buffer of the format's bpp. */
+        assert(gbm_device_is_format_supported(device, format,
+            GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING) == 1);
+        struct gbm_bo *bo = gbm_bo_create(device, 5, 3, format,
+            GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+        assert(bo && last_dumb_bpp == formats[i].bpp);
+        assert(gbm_bo_get_bpp(bo) == formats[i].bpp && gbm_bo_get_stride(bo) == formats[i].stride);
+        assert(gbm_bo_get_format(bo) == format && gbm_bo_get_plane_count(bo) == 1);
+        gbm_bo_destroy(bo);
+        /* A render-only buffer is GPU storage of the format through both
+         * entry points, and CPU storage without a GL renderer. */
+        gpu_context = 1;
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_RENDERING) == 1);
+        bo = gbm_bo_create(device, 5, 3, format, GBM_BO_USE_RENDERING);
+        assert(bo && last_gpu_format == format && gbm_bo_get_stride(bo) == formats[i].stride);
+        assert(gbm_bo_get_bpp(bo) == formats[i].bpp);
+        gbm_bo_destroy(bo);
+        bo = gbm_bo_create_with_modifiers2(device, 5, 3, format, &linear, 1, GBM_BO_USE_RENDERING);
+        assert(bo && last_gpu_format == format);
+        gbm_bo_destroy(bo);
+        gpu_context = 0;
+        bo = gbm_bo_create(device, 5, 3, format, GBM_BO_USE_RENDERING);
+        assert(bo && last_dumb_bpp == formats[i].bpp);
+        gbm_bo_destroy(bo);
+        /* The primary plane exactly where it shows the format exactly. */
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_SCANOUT) == formats[i].scanout);
+        errno = 0;
+        bo = gbm_bo_create(device, 5, 3, format, GBM_BO_USE_SCANOUT);
+        assert(formats[i].scanout ? bo != NULL : (!bo && errno == EINVAL));
+        if (bo) gbm_bo_destroy(bo);
+        gpu_context = 1;
+        errno = 0;
+        bo = gbm_bo_create_with_modifiers2(device, 5, 3, format, &linear, 1,
+            GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+        assert(formats[i].scanout ? bo && last_gpu_format == format : (!bo && errno == EINVAL));
+        if (bo) gbm_bo_destroy(bo);
+        gpu_context = 0;
+        /* No cursor or EGL window. */
+        assert(gbm_device_is_format_supported(device, format, GBM_BO_USE_CURSOR) == 0);
+        errno = 0;
+        assert(!gbm_surface_create(device, 5, 3, format, GBM_BO_USE_RENDERING) && errno == EINVAL);
+        assert(gbm_device_get_format_modifier_plane_count(device, format, DRM_FORMAT_MOD_LINEAR) == 1);
+        /* dma-buf import: the stride must hold a row of this format. */
+        bo = gbm_bo_create(device, 5, 3, format, GBM_BO_USE_LINEAR);
+        assert(bo);
+        int fd = prime_fd(gbm_bo_get_handle(bo).u32, (off_t)formats[i].stride * 3);
+        struct gbm_import_fd_data data = {.fd = fd, .width = 5, .height = 3,
+            .stride = formats[i].stride, .format = format};
+        struct gbm_bo *imported = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data,
+            GBM_BO_USE_LINEAR | GBM_BO_USE_RENDERING);
+        assert(imported && gbm_bo_get_bpp(imported) == formats[i].bpp && gbm_bo_get_format(imported) == format);
+        gbm_bo_destroy(imported);
+        data.stride = 5 * formats[i].bpp / 8 - 1;
+        errno = 0;
+        assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_LINEAR) && errno == EINVAL);
+        data.stride = formats[i].stride;
+        errno = 0;
+        imported = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_SCANOUT);
+        assert(formats[i].scanout ? imported != NULL : (!imported && errno == EINVAL));
+        if (imported) gbm_bo_destroy(imported);
+        close(fd);
+        gbm_bo_destroy(bo);
+    }
     close_device(device);
 }
 
@@ -521,6 +631,7 @@ int main(int argc, char **argv) {
         {"usage-flags", usage_flags},
         {"plane-accessors", plane_accessors},
         {"rgb565", rgb565},
+        {"widened-formats", widened_formats},
         {"import-egl-image", import_egl_image},
     };
     if (argc != 2) { fprintf(stderr, "usage: %s <case>\n", argv[0]); return 2; }

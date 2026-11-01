@@ -6,6 +6,7 @@ import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { readGbmFront } from "./gbm-front-copy.js";
 import { applyNativeChanges, nativeInverse, retireNativeRetirement, NativeRetirementReceipt } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
+import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
@@ -16,7 +17,7 @@ type Mirror = {
   snapshot: Uint8Array<ArrayBuffer> | null;
   /** Accepted GL work must reach CPU storage before another CPU upload. */
   dirty: boolean;
-  pending: Uint8Array<ArrayBuffer> | null;
+  pending: CpuImageReadback | null;
 };
 type MirrorContexts=Map<WebGL2RenderingContext,Map<string,Mirror>>;
 type Closing={bo:number;store:WeakRef<GbmBoRegistry>;allocation:GbmAllocationRetirement;contexts:MirrorContexts;
@@ -98,10 +99,13 @@ export class CpuImageStorage {
       ||!record.prefixes.some(prefix=>prefix.permits(b.operations))))return null;
     const gl = b.gl, bytes = store.pixelView(bo);
     const {width, height, format, pitch, offset} = layout;
-    const span = offset + (height - 1) * pitch + width * 4;
+    // The mirror's texture holds the plane's own format (cpu-image-codec.ts).
+    const codec = cpuImageCodec(format);
+    if (!codec) return null;
+    const span = offset + (height - 1) * pitch + width * codec.cpp, align = Math.min(codec.cpp, 4);
     if (!gl || !bytes || ![width,height,format,pitch,offset,span].every(Number.isSafeInteger) ||
-        width <= 0 || height <= 0 || offset < 0 || offset % 4 || pitch < width * 4 || pitch % 4 ||
-        span > bytes.byteLength || ![0x34325241,0x34325258,0x34324241,0x34324258].includes(format)) return null;
+        width <= 0 || height <= 0 || offset < 0 || offset % align || pitch < width * codec.cpp || pitch % align ||
+        span > bytes.byteLength) return null;
     let contexts = record?.contexts ?? this.mirrors.get(bo);
     if (!contexts) { contexts = new Map(); this.mirrors.set(bo, contexts); }
     let views = contexts.get(gl);
@@ -111,11 +115,11 @@ export class CpuImageStorage {
     let result: GlGpuAllocation | null = null;
     if (!allocateGpuStorage(gl, width, height, 0, allocation => {
       views!.set(key, {allocation, layout: {...layout}, snapshot: null, dirty: false, pending: null});
-      // XRGB/XBGR uploads set alpha 1.0; rendering never writes it
+      // A padding channel uploads as alpha 1.0; rendering never writes it
       // (opaque-alpha.ts), so every reader keeps seeing 1.0.
-      setOpaqueAlphaStorage(allocation.tex, format === 0x34325258 || format === 0x34324258);
+      setOpaqueAlphaStorage(allocation.tex, codec.storage.opaque);
       result = allocation;
-    })) {
+    }, codec.storage)) {
       if (!views.size) contexts.delete(gl);
       if (!contexts.size) this.mirrors.delete(bo);
     }
@@ -129,18 +133,12 @@ export class CpuImageStorage {
 
   private upload(b: GlBinding, mirror: Mirror, bytes: Uint8Array): boolean {
     const gl = b.gl!, {w, h, tex} = mirror.allocation;
-    let snapshot: Uint8Array<ArrayBuffer>, pixels: Uint8Array<ArrayBuffer>;
+    const codec = cpuImageCodec(mirror.layout.format);
+    if (!codec) return false;
+    let snapshot: Uint8Array<ArrayBuffer>, pixels: ArrayBufferView;
     try {
       snapshot = new Uint8Array(bytes);
-      pixels = new Uint8Array(w * h * 4);
-      const {offset, pitch, format} = mirror.layout;
-      const bgra = format === 0x34325241 || format === 0x34325258;
-      const opaque = format === 0x34325258 || format === 0x34324258;
-      for (let row = 0; row < h; row++) for (let col = 0; col < w; col++) {
-        const src = offset + row * pitch + col * 4, dst = (row * w + col) * 4;
-        pixels[dst] = snapshot[src + (bgra ? 2 : 0)]; pixels[dst + 1] = snapshot[src + 1];
-        pixels[dst + 2] = snapshot[src + (bgra ? 0 : 2)]; pixels[dst + 3] = opaque ? 255 : snapshot[src + 3];
-      }
+      pixels = codec.pack(snapshot, mirror.layout.offset, mirror.layout.pitch, w, h);
     } catch { return false; }
     // Typed-array uploads must not inherit a public unpack buffer, skips,
     // orientation, premultiplication, or browser color-space conversion.
@@ -163,7 +161,7 @@ export class CpuImageStorage {
         restore: nativeInverse(owner, [["pixelStorei", field, values[index]]])
       })),
       {apply: () => checkedGlCall(owner, () => gl.texSubImage2D(0x0de1, 0, 0, 0, w, h,
-        0x1908, 0x1401, pixels)), restore: nativeInverse(owner)},
+        codec.storage.format, codec.storage.type, pixels)), restore: nativeInverse(owner)},
     ], {shared: true, finalizer: nativeInverse(owner,
       [["bindTexture", 0x0de1, texture]], [["bindBuffer", 0x88ec, unpack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});
@@ -204,11 +202,14 @@ export class CpuImageStorage {
       if (!mirror.dirty || mirror.allocation.retirement.pending) continue;
       const bytes = store.pixelView(bo);
       if (!bytes || !mirror.snapshot) return false;
+      const codec = cpuImageCodec(mirror.layout.format);
+      if (!codec) return false;
       if (!mirror.pending) {
         const {allocation} = mirror;
         const result = readGbmFront({gl: b.gl, renderTargetFbo: allocation.fbo,
           surfaceSize: {width: allocation.w, height: allocation.h}} as Parameters<typeof readGbmFront>[0],
-          () => captureErrors(b.gl!));
+          () => captureErrors(b.gl!),
+          {format: codec.readFormat, type: codec.readType, buffer: codec.readback});
         if (result.rc || !result.pixels) return false;
         mirror.pending = result.pixels;
       }
@@ -217,29 +218,24 @@ export class CpuImageStorage {
         // disjoint siblings must not overwrite a newer writer. Preserve bytes
         // outside the image, row padding, and X bits without guest views.
         store.syncToSab(bo);
-        const next = new Uint8Array(bytes), {width, height, format, pitch, offset} = mirror.layout;
-        const bgra = format === 0x34325241 || format === 0x34325258;
-        const opaque = format === 0x34325258 || format === 0x34324258;
-        let changed = false;
-        for (let row = 0; row < height; row++) for (let col = 0; col < width; col++)
-          for (let channel = 0; channel < (opaque ? 3 : 4); channel++) {
-            const dst = offset + row * pitch + col * 4 + (bgra && channel !== 1 && channel !== 3 ? 2 - channel : channel);
-            const value = mirror.pending[(row * width + col) * 4 + channel];
-            if (value !== mirror.snapshot[dst]) { next[dst] = value; changed = true; }
-          }
-        if (changed && !store.publishDevicePixels(bo, next)) return false;
+        const next = new Uint8Array(bytes), {width, height, pitch, offset} = mirror.layout;
         // Preserve the bytes represented by this native view. Other sibling
         // changes trigger another upload at the next command boundary.
         const represented = new Uint8Array(mirror.snapshot);
-        for (let row = 0; row < height; row++) for (let col = 0; col < width; col++)
-          for (let channel = 0; channel < (opaque ? 3 : 4); channel++) {
-            const dst = offset + row * pitch + col * 4 + (bgra && channel !== 1 && channel !== 3 ? 2 - channel : channel);
-            represented[dst] = mirror.pending[(row * width + col) * 4 + channel];
-          }
-        // XRGB has no writable alpha channel. Re-upload before the next
-        // command if native rendering wrote one, so reads/sampling see one.
-        mirror.snapshot = opaque && mirror.pending.some((value,index) => index % 4 === 3 && value !== 255)
-          ? null : represented;
+        const cpp = codec.cpp;
+        let changed = false, alphaWritten = false;
+        for (let row = 0; row < height; row++) for (let col = 0; col < width; col++) {
+          const at = offset + row * pitch + col * cpp, index = row * width + col;
+          codec.encode(mirror.pending, index, mirror.snapshot, represented, at);
+          alphaWritten ||= codec.alphaWritten(mirror.pending, index);
+          for (let k = at; k < at + cpp; k++)
+            if (represented[k] !== mirror.snapshot[k]) { next[k] = represented[k]; changed = true; }
+        }
+        if (changed && !store.publishDevicePixels(bo, next)) return false;
+        // A format without alpha has no writable alpha channel. Re-upload
+        // before the next command if native rendering wrote one, so reads
+        // and sampling see one.
+        mirror.snapshot = alphaWritten ? null : represented;
         mirror.pending = null;
         mirror.dirty = false;
       } catch { return false; }

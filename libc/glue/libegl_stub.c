@@ -2976,9 +2976,12 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
 
 /* ----- EGL_EXT_image_dma_buf_import ------------------------------- */
 
-/* The dma-buf formats a bo can carry: the 32-bpp fourccs the kernel's
- * buffer allocators accept, each a single linear plane. Spelled out
- * because libEGL must not depend on libdrm headers. */
+/* The dma-buf formats a bo can carry: the single-plane fourccs Kandelo's
+ * buffers hold exactly (libgbm's k_formats, the kernel's
+ * gpu_storage_format_cpp), each one linear plane, with drm_format_info's
+ * bytes per pixel. Spelled out because libEGL must not depend on libdrm
+ * headers. A GPU-tier image samples and renders the bo's texture; a
+ * CPU-tier one is mirrored in a texture of the same format. */
 #define WPK_FOURCC_ARGB8888 0x34325241u /* 'AR24' */
 #define WPK_FOURCC_XRGB8888 0x34325258u /* 'XR24' */
 #define WPK_FOURCC_ABGR8888 0x34324241u /* 'AB24' */
@@ -2986,19 +2989,30 @@ void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle) {
 #define WPK_MOD_LINEAR      0x0000000000000000ull
 #define WPK_MOD_INVALID     0x00ffffffffffffffull
 
-static const EGLint k_dmabuf_formats[] = {
-    (EGLint)WPK_FOURCC_ARGB8888, (EGLint)WPK_FOURCC_XRGB8888,
-    (EGLint)WPK_FOURCC_ABGR8888, (EGLint)WPK_FOURCC_XBGR8888,
+static const struct { EGLint fourcc; uint32_t cpp; } k_dmabuf_formats[] = {
+    {(EGLint)WPK_FOURCC_ARGB8888, 4}, {(EGLint)WPK_FOURCC_XRGB8888, 4},
+    {(EGLint)WPK_FOURCC_ABGR8888, 4}, {(EGLint)WPK_FOURCC_XBGR8888, 4},
+    {(EGLint)0x36314752u, 2}, /* 'RG16' RGB565 */
+    {(EGLint)0x20203852u, 1}, /* 'R8  ' */
+    {(EGLint)0x38385247u, 2}, /* 'GR88' */
+    {(EGLint)0x30335241u, 4}, /* 'AR30' ARGB2101010 */
+    {(EGLint)0x30335258u, 4}, /* 'XR30' XRGB2101010 */
+    {(EGLint)0x30334241u, 4}, /* 'AB30' ABGR2101010 */
+    {(EGLint)0x30334258u, 4}, /* 'XB30' XBGR2101010 */
+    {(EGLint)0x48344241u, 8}, /* 'AB4H' ABGR16161616F */
+    {(EGLint)0x48344258u, 8}, /* 'XB4H' XBGR16161616F */
 };
 #define WPK_DMABUF_FORMAT_COUNT \
     ((EGLint)(sizeof k_dmabuf_formats / sizeof k_dmabuf_formats[0]))
 
-static int dmabuf_format_supported(EGLint fourcc) {
+/* Bytes per pixel of a dma-buf format, 0 when no bo can carry it. */
+static uint32_t dmabuf_format_cpp(EGLint fourcc) {
     for (EGLint i = 0; i < WPK_DMABUF_FORMAT_COUNT; i++) {
-        if (k_dmabuf_formats[i] == fourcc) return 1;
+        if (k_dmabuf_formats[i].fourcc == fourcc) return k_dmabuf_formats[i].cpp;
     }
     return 0;
 }
+static int dmabuf_format_supported(EGLint fourcc) { return dmabuf_format_cpp(fourcc) != 0; }
 
 /* Import plane 0 of a dma-buf. The import holds its own GEM reference, so
  * the caller may close the fd afterwards. Whether the bo has a CPU mapping
@@ -3068,6 +3082,7 @@ static uint32_t gl_image_fourcc(uint32_t internal_format) {
     case 0x8229: return 0x20203852; /* R8 */
     case 0x822b: return 0x38385247; /* RG8: GR88 */
     case 0x881a: return 0x48344241; /* RGBA16F: ABGR16161616F */
+    case 0x8059: return 0x30334241; /* RGB10_A2: ABGR2101010 */
     default: return 0;
     }
 }
@@ -3135,10 +3150,12 @@ static EGLImageKHR create_gl_image_locked(struct egl_generation *generation, EGL
     image->public_handle = g_next_object_handle++;
     image->width = request.width;
     image->height = request.height;
-    /* The exported bo is a 32-bpp GPU-tier registry entry sized to the image
-     * (DRM_IOCTL_WPK_EXPORT_IMAGE), so its rows are width * 4 bytes. */
+    /* The exported bo is a GPU-tier registry entry sized to the image in
+     * its format's bytes per pixel (32-bpp for an image no fourcc names),
+     * with rows rounded to 4 bytes (DRM_IOCTL_WPK_EXPORT_IMAGE). */
     image->fourcc = gl_image_fourcc(request.internal_format);
-    image->pitch = request.width * 4u;
+    uint32_t cpp = image->fourcc ? dmabuf_format_cpp((EGLint)image->fourcc) : 4u;
+    image->pitch = (request.width * cpp + 3u) & ~3u;
     image->references = 1;
     image->public_live = 1;
     pthread_mutex_lock(&g_image_mutex);
@@ -3307,8 +3324,9 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_BAD_MATCH;
         return EGL_NO_IMAGE_KHR;
     }
+    uint64_t cpp = dmabuf_format_cpp((EGLint)(uint32_t)fourcc);
     if (width == 0 || height == 0 || offset < 0
-        || (uint64_t)pitch < (uint64_t)width * 4u) {
+        || (uint64_t)pitch < (uint64_t)width * cpp) {
         g_last_error = EGL_BAD_ACCESS;
         return EGL_NO_IMAGE_KHR;
     }
@@ -3318,7 +3336,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         return EGL_NO_IMAGE_KHR;
     }
     uint64_t last = (uint64_t)offset + (uint64_t)pitch * (uint64_t)(height - 1)
-                  + (uint64_t)width * 4u;
+                  + (uint64_t)width * cpp;
     if (last > (uint64_t)st.st_size) {
         g_last_error = EGL_BAD_ACCESS;
         return EGL_NO_IMAGE_KHR;
@@ -3540,7 +3558,7 @@ EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
     }
     EGLint n = max_formats < WPK_DMABUF_FORMAT_COUNT ? max_formats
                                                      : WPK_DMABUF_FORMAT_COUNT;
-    for (EGLint i = 0; i < n; i++) formats[i] = k_dmabuf_formats[i];
+    for (EGLint i = 0; i < n; i++) formats[i] = k_dmabuf_formats[i].fourcc;
     *num_formats = n;
     return EGL_TRUE;
 }

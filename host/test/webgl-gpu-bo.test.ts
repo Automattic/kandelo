@@ -130,6 +130,34 @@ describe("GlContextRegistry — GPU-tier bo (WPK_CREATE_GPU_BO)", () => {
     ]);
   });
 
+  it.each([
+    ["R8", 0x20203852, 0x8229, 0x1903, 0x1401],
+    ["GR88", 0x38385247, 0x822b, 0x8227, 0x1401],
+    ["RGB565", 0x36314752, 0x8d62, 0x1907, 0x8363],
+    ["ARGB8888", 0x34325241, 0x8058, 0x1908, 0x1401],
+    ["ABGR2101010", 0x30334241, 0x8059, 0x1908, 0x8368],
+    ["ARGB2101010", 0x30335241, 0x8059, 0x1908, 0x8368],
+    ["ABGR16161616F", 0x48344241, 0x881a, 0x1908, 0x140b],
+  ])("stores a %s GPU bo in its exact WebGL 2 internal format", (_name, fourcc, internal, format, type) => {
+    const { gl, calls } = makeFakeGl();
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, fourcc)).not.toBeNull();
+    expect(calls.texImage2D[0]).toEqual([GL.TEXTURE_2D, 0, internal, 5, 3, 0, format, type, null]);
+  });
+
+  it("does not publish storage the renderer cannot render into (RGBA16F without EXT_color_buffer_float)", () => {
+    const { gl } = makeFakeGl();
+    (gl as unknown as { checkFramebufferStatus: () => number }).checkFramebufferStatus = () => 0x8cd6;
+    const reg = new GlContextRegistry();
+    expect(reg.createGpuBo(42, gl, 5, 3, 0x48344241)).toBeNull();
+    expect(reg.gpuBo(42)).toBeUndefined();
+  });
+
+  it("refuses a format the kernel never admits loudly, as a host fault", () => {
+    const { gl } = makeFakeGl();
+    expect(() => new GlContextRegistry().createGpuBo(42, gl, 5, 3, 0x3231564e)).toThrow("no texture storage");
+  });
+
   it("distinct bos get distinct ids from the GPU band", () => {
     const { gl } = makeFakeGl();
     const reg = new GlContextRegistry();

@@ -5,6 +5,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { CpuImageStorage, type CpuImageRetirement } from "./cpu-image-storage.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
+import { gpuStorageFormat } from "./gpu-storage-format.js";
 import { clearStorageAlphaToOne, setOpaqueAlphaStorage } from "./opaque-alpha.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
@@ -781,7 +782,7 @@ export class GlContextRegistry {
     gl: WebGL2RenderingContext,
     w: number,
     h: number,
-    format = 0,
+    format = 0x34324241,
   ): number | null {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
@@ -793,14 +794,17 @@ export class GlContextRegistry {
     if (existing) return !existing.retirement.pending && existing.gl === gl && existing.w === w && existing.h === h
       ? existing.texId : null;
     if (this.nextGpuBoTexId > 0x7fff_ffff) return null;
+    // The kernel admits only formats with exact texture storage.
+    const storage = gpuStorageFormat(format);
+    if (!storage) throw new Error(`GPU BO ${bo_id} has no texture storage for format ${format}`);
     const texId = this.nextGpuBoTexId;
     if (!allocateGpuStorage(gl,w,h,texId,allocation=>{
       this.gpuBos.set(bo_id,allocation);
       this.nextGpuBoTexId++;
-    })) return null;
-    // XRGB8888/XBGR8888 have no alpha but live in RGBA8 storage: alpha starts
-    // at 1.0 and is never written (opaque-alpha.ts).
-    if (format === 0x34325258 || format === 0x34324258) {
+    },storage)) return null;
+    // A format without alpha lives in storage with alpha: alpha starts at
+    // 1.0 and is never written (opaque-alpha.ts).
+    if (storage.opaque) {
       const allocation = this.gpuBos.get(bo_id)!;
       if (!checkedGlCall({gl,errors:[]},()=>clearStorageAlphaToOne(gl,
           target=>gl.framebufferTexture2D(target,0x8ce0,0x0de1,allocation.tex,0)))) {

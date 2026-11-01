@@ -106,16 +106,17 @@ impl BoRegistry {
         Some(self.map.get_mut(&id).unwrap())
     }
 
-    /// Set the extent of a GPU-tier bo whose size is decided by its host
-    /// storage after allocation (an exported GLES image). The LINEAR-
-    /// equivalent stride/size follow the same arithmetic as allocation.
-    pub fn set_gpu_extent(&mut self, id: BoId, width: u32, height: u32) -> Option<()> {
+    /// Set the extent and pixel size of a GPU-tier bo whose storage is
+    /// decided by the host after allocation (an exported GLES image). The
+    /// LINEAR-equivalent stride/size follow the same arithmetic as
+    /// allocation.
+    pub fn set_gpu_extent(&mut self, id: BoId, width: u32, height: u32, bpp: u32) -> Option<()> {
         let bo = self.map.get_mut(&id)?;
-        if bo.tier != BoTier::GpuTexture { return None; }
-        let bytes_per_row = width.checked_mul(bo.bpp)?.checked_add(7)? / 8;
+        if bo.tier != BoTier::GpuTexture || bpp == 0 { return None; }
+        let bytes_per_row = width.checked_mul(bpp)?.checked_add(7)? / 8;
         let stride = bytes_per_row.checked_add(3)? & !3;
         let size = (stride as u64).checked_mul(height as u64)?;
-        bo.width = width; bo.height = height; bo.stride = stride; bo.size = size;
+        bo.width = width; bo.height = height; bo.bpp = bpp; bo.stride = stride; bo.size = size;
         Some(())
     }
 
