@@ -1679,7 +1679,8 @@ fn capture_gl_query_info(
         {
             return Err(Errno::EINVAL);
         }
-        if info.in_buf_len != 0 || info.out_buf_len != 16 {
+        if info.in_buf_len != 0 || (info.out_buf_len != gl::SURFACE_CAPABILITIES_LEN
+            && info.out_buf_len != gl::SURFACE_CAPABILITIES_SAMPLES_LEN) {
             return Err(Errno::EINVAL);
         }
     } else if info.op == gl::QOP_SERVER_WAIT {
@@ -2464,7 +2465,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
             let attrs = info.attrs;
             if info.surface_id != 0
-                || attrs.config_id != 1
+                || !gl::surface_config_valid(attrs.config_id)
                 || attrs.reserved[1..] != [0; 3]
                 || attrs.width > i32::MAX as u32
                 || attrs.height > i32::MAX as u32
@@ -2555,7 +2556,7 @@ fn handle_dri_ioctl(
             // destination is resolved from this file's GEM namespace and held
             // until the synchronous host receipt, even on rejected copies.
             if attrs.reserved[1] != 0 {
-                if attrs.kind != gl::WPK_SURFACE_DEFAULT || attrs.config_id != 1
+                if attrs.kind != gl::WPK_SURFACE_DEFAULT || attrs.config_id != gl::WPK_SURFACE_CONFIG_RGBA8_D24S8
                     || attrs.reserved[0] != 0 {
                     return Err(Errno::EINVAL);
                 }
@@ -2596,7 +2597,7 @@ fn handle_dri_ioctl(
                 };
             }
             if attrs.kind != gl::WPK_SURFACE_DEFAULT
-                || attrs.config_id != 1
+                || attrs.config_id != gl::WPK_SURFACE_CONFIG_RGBA8_D24S8
                 || attrs.reserved[0] == 0
                 || attrs.reserved[1..] != [0; 3]
             {
@@ -60360,6 +60361,48 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_create_surface_accepts_multisampled_storage_configs() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let sz = core::mem::size_of::<gl::GlSurfaceCreateInfo>();
+        let mut nullbuf = [0u8; 0];
+        let create = |config_id: u32, kind: u32, proc: &mut Process, host: &mut MockHostIO| {
+            let mut sbuf = vec![0u8; sz];
+            let attrs = gl::GlSurfaceAttrs { kind, width: 16, height: 8, config_id, reserved: [0; 4] };
+            unsafe { core::ptr::write_unaligned(sbuf.as_mut_ptr() as *mut gl::GlSurfaceAttrs, attrs) };
+            sys_ioctl(proc, host, fd, gl::GLIO_CREATE_SURFACE, &mut sbuf)
+        };
+        // Single-sampled storage and every multisampled count the config
+        // word can name reach the host, which validates renderer support.
+        let accepted = [
+            gl::WPK_SURFACE_CONFIG_RGBA8_D24S8,
+            gl::surface_config(2),
+            gl::surface_config(4),
+            gl::surface_config(gl::WPK_SURFACE_CONFIG_MAX_SAMPLES),
+        ];
+        for (index, config) in accepted.into_iter().enumerate() {
+            for kind in [gl::WPK_SURFACE_DEFAULT, gl::WPK_SURFACE_PBUFFER] {
+                create(config, kind, &mut proc, &mut host).unwrap();
+                let call = host.gl_create_surface_calls.last().unwrap();
+                assert_eq!(u32::from_le_bytes(call.2[12..16].try_into().unwrap()), config);
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_DESTROY_SURFACE, &mut nullbuf).unwrap();
+            }
+            assert_eq!(host.gl_create_surface_calls.len(), 2 * (index + 1));
+        }
+        // One sample is not a multisample buffer; other format codes, counts
+        // above the field maximum and stray high bits are not storage configs.
+        for config in [0, 2, gl::surface_config(1), 1 | (32 << gl::WPK_SURFACE_CONFIG_SAMPLES_SHIFT),
+            gl::surface_config(4) | 0x1_0000, 0x8000_0001] {
+            assert_eq!(create(config, gl::WPK_SURFACE_DEFAULT, &mut proc, &mut host), Err(Errno::EINVAL));
+        }
+        assert_eq!(host.gl_create_surface_calls.len(), 2 * accepted.len());
+    }
+
+    #[test]
     fn glio_submit_rejects_out_of_range_range() {
         use wasm_posix_shared::gl;
         use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ, PROT_WRITE};
@@ -60754,6 +60797,34 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_surface_limits_accept_the_sample_count_reply() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        glio_map_test(&mut proc, &mut host, fd);
+        let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+        let session = gl_session_id(&proc, ofd).unwrap();
+        // The extended reply appends the supported sample-count mask before
+        // the completion magic; the original 16-byte reply stays valid.
+        for len in [gl::SURFACE_CAPABILITIES_LEN, gl::SURFACE_CAPABILITIES_SAMPLES_LEN] {
+            let info = gl::GlQueryInfo {
+                op: gl::QOP_SURFACE_CAPABILITIES,
+                out_buf_ptr: 32,
+                out_buf_len: len,
+                ..Default::default()
+            };
+            let mut bytes = [0u8; core::mem::size_of::<gl::GlQueryInfo>()];
+            unsafe {
+                core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, info);
+            }
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut bytes).unwrap();
+        }
+        assert_eq!(host.gl_query_sessions, vec![session, session]);
+    }
+
+    #[test]
     fn glio_surface_limits_preflight_exact_shape_destination_and_live_root() {
         use wasm_posix_shared::gl;
         let mut proc = Process::new(1);
@@ -60801,7 +60872,14 @@ impl HostIO for RelSymlinkMock {
             ),
             (
                 gl::GlQueryInfo {
-                    out_buf_len: 20,
+                    out_buf_len: 24,
+                    ..valid
+                },
+                Errno::EINVAL,
+            ),
+            (
+                gl::GlQueryInfo {
+                    out_buf_len: 19,
                     ..valid
                 },
                 Errno::EINVAL,

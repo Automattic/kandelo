@@ -218,6 +218,14 @@ export const QOP_BIND_BUFFER = 0x002B;
 export const QOP_DELETE_BUFFER = 0x002C;
 // V16: immutable surface limits before any logical context is current.
 export const QOP_SURFACE_CAPABILITIES = 0x002D;
+/** Reply lengths: limits + magic, or limits + sample-count mask + magic. */
+export const SURFACE_CAPABILITIES_LEN = 16;
+export const SURFACE_CAPABILITIES_SAMPLES_LEN = 20;
+/** Surface creation config word (shared::gl::surface_config): RGBA8/D24S8
+ * storage in the low byte, color/depth/stencil sample count in bits 8..16. */
+export const WPK_SURFACE_CONFIG_RGBA8_D24S8 = 1;
+export const WPK_SURFACE_CONFIG_SAMPLES_SHIFT = 8;
+export const WPK_SURFACE_CONFIG_MAX_SAMPLES = 31;
 
 // V17: retained native fences with caller-known cancellation identities.
 export const QOP_CREATE_FENCE = 0x002E;

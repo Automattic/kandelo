@@ -4040,6 +4040,35 @@ pub mod gl {
     /// `kind` value for an off-screen pbuffer surface (Phase C).
     pub const WPK_SURFACE_PBUFFER: u32 = 2;
 
+    // --- surface storage configs ------------------------------------------
+
+    /// Low byte of `GlSurfaceAttrs.config_id`: RGBA8 color with
+    /// DEPTH24_STENCIL8 ancillary storage, the only surface format.
+    pub const WPK_SURFACE_CONFIG_RGBA8_D24S8: u32 = 1;
+    /// Bits 8..16 of a creation `config_id`: color/depth/stencil sample
+    /// count. Zero is single-sampled storage; a multisampled surface renders
+    /// into renderbuffers of exactly this many samples and resolves them into
+    /// its single-sampled storage. One sample is not a multisample buffer.
+    pub const WPK_SURFACE_CONFIG_SAMPLES_SHIFT: u32 = 8;
+    /// Largest sample count the creation word and capability mask can name.
+    pub const WPK_SURFACE_CONFIG_MAX_SAMPLES: u32 = 31;
+    /// Creation `config_id` for RGBA8/D24S8 storage with `samples` samples.
+    pub const fn surface_config(samples: u32) -> u32 {
+        WPK_SURFACE_CONFIG_RGBA8_D24S8 | (samples << WPK_SURFACE_CONFIG_SAMPLES_SHIFT)
+    }
+    /// The kernel validates the shape of the word; the host validates the
+    /// sample count against its renderer's supported counts.
+    pub const fn surface_config_valid(config_id: u32) -> bool {
+        let samples = config_id >> WPK_SURFACE_CONFIG_SAMPLES_SHIFT;
+        config_id & 0xff == WPK_SURFACE_CONFIG_RGBA8_D24S8
+            && (samples == 0 || (samples >= 2 && samples <= WPK_SURFACE_CONFIG_MAX_SAMPLES))
+    }
+    /// `QOP_SURFACE_CAPABILITIES` reply lengths: [max width, max height,
+    /// max pixels, QUERY_REPLY_MAGIC], or with the u32 supported sample-count
+    /// mask (bit n = n samples) inserted before the magic.
+    pub const SURFACE_CAPABILITIES_LEN: u32 = 16;
+    pub const SURFACE_CAPABILITIES_SAMPLES_LEN: u32 = 20;
+
     /// Upper bound on `GlQueryInfo.in_buf_len` / `out_buf_len`. The
     /// kernel allocates scratch buffers of these sizes before forwarding
     /// the query to the host; capping prevents a malicious wasm process
@@ -4298,7 +4327,8 @@ pub mod gl {
     /// V15: name (4 bytes), checked accepted deletion (12-byte reply).
     pub const QOP_DELETE_BUFFER: u32 = 0x002C;
     /// V16: read-only renderer limits before a context is current. No input;
-    /// width/height/pixels and QUERY_REPLY_MAGIC, exactly 16 output bytes.
+    /// width/height/pixels and QUERY_REPLY_MAGIC in 16 output bytes, or a
+    /// 20-byte reply that also carries the supported sample-count mask.
     pub const QOP_SURFACE_CAPABILITIES: u32 = 0x002D;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
@@ -4386,7 +4416,8 @@ pub mod gl {
         pub width: u32,
         /// Requested height, replaced by accepted height on creation.
         pub height: u32,
-        /// EGL config id (opaque; v1 reports a single config "1").
+        /// Surface storage config: `surface_config(samples)` on creation;
+        /// updates name single-sampled RGBA8/D24S8 storage (1).
         pub config_id: u32,
         /// First word is the caller's target GEM handle; remaining words zero.
         pub reserved: [u32; 4],

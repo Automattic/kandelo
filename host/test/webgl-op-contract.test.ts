@@ -33,6 +33,21 @@ it("keeps GLES command and query tags identical in Rust, C and TypeScript", () =
   }
 });
 
+it("keeps the multisampled surface config word and capability reply identical in Rust, C and TypeScript", () => {
+  const root = resolve(import.meta.dirname, "../..");
+  const rust = readFileSync(resolve(root, "crates/shared/src/lib.rs"), "utf8");
+  const c = readFileSync(resolve(root, "libc/glue/gl_abi.h"), "utf8");
+  for (const [name, cName] of [["WPK_SURFACE_CONFIG_RGBA8_D24S8", "WPK_SURFACE_CONFIG_RGBA8_D24S8"],
+    ["WPK_SURFACE_CONFIG_SAMPLES_SHIFT", "WPK_SURFACE_CONFIG_SAMPLES_SHIFT"],
+    ["WPK_SURFACE_CONFIG_MAX_SAMPLES", "WPK_SURFACE_CONFIG_MAX_SAMPLES"],
+    ["SURFACE_CAPABILITIES_LEN", "WPK_SURFACE_CAPABILITIES_LEN"],
+    ["SURFACE_CAPABILITIES_SAMPLES_LEN", "WPK_SURFACE_CAPABILITIES_SAMPLES_LEN"]] as const) {
+    const value = Number(rust.match(new RegExp(`pub const ${name}: u32 = (\\d+);`))![1]);
+    expect((hostOps as Record<string, unknown>)[name]).toBe(value);
+    expect(c).toMatch(new RegExp(`#define ${cName}\\s+${value}u\\b`));
+  }
+});
+
 it("binds opaque compressed staging to the shared Program contract and exact source limits",()=>{
   const root=resolve(import.meta.dirname,"../.."),snapshot=JSON.parse(readFileSync(resolve(root,"abi/snapshot.json"),"utf8"));
   const wire=snapshot.gl_compressed_upload;

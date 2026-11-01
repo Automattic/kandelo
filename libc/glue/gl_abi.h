@@ -41,6 +41,13 @@
 /* Surface kind tags. */
 #define WPK_SURFACE_DEFAULT  1u
 #define WPK_SURFACE_PBUFFER  2u
+/* Surface creation config word: RGBA8/D24S8 storage in the low byte and the
+ * color/depth/stencil sample count in bits 8..16 (0 = single-sampled). */
+#define WPK_SURFACE_CONFIG_RGBA8_D24S8 1u
+#define WPK_SURFACE_CONFIG_SAMPLES_SHIFT 8u
+#define WPK_SURFACE_CONFIG_MAX_SAMPLES 31u
+#define WPK_SURFACE_CONFIG(samples) \
+    (WPK_SURFACE_CONFIG_RGBA8_D24S8 | ((uint32_t)(samples) << WPK_SURFACE_CONFIG_SAMPLES_SHIFT))
 
 /* Cmdbuf op tags (TLV: u16 op, u16 payload_len, payload). */
 #define OP_CLEAR                       0x0001u
@@ -211,9 +218,13 @@
 #define QOP_BIND_BUFFER 0x002Bu
 /* V15: name (4 bytes), checked accepted deletion (12-byte reply). */
 #define QOP_DELETE_BUFFER 0x002Cu
-/* V16: no input; width, height, pixels and completion marker (16 bytes).
- * Requires a live display's mapped object session, not a current context. */
+/* V16: no input; width, height, pixels and completion marker (16 bytes),
+ * or the 20-byte reply with the supported sample-count mask (bit n = n
+ * samples) before the marker. Requires a live display's mapped object
+ * session, not a current context. */
 #define QOP_SURFACE_CAPABILITIES 0x002Du
+#define WPK_SURFACE_CAPABILITIES_LEN 16u
+#define WPK_SURFACE_CAPABILITIES_SAMPLES_LEN 20u
 #define QOP_CREATE_FENCE 0x002Eu
 #define QOP_FENCE_STATUS 0x002Fu
 #define QOP_RELEASE_FENCE 0x0030u
