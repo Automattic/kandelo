@@ -1,4 +1,6 @@
 import type { GlBinding } from "./registry.js";
+import { repairNativeState } from "./native-recovery.js";
+import { checkedGlCall, recordGlError } from "./program-objects.js";
 
 export const GL_FRAMEBUFFER = 0x8d40;
 export const GL_READ_FRAMEBUFFER = 0x8ca8;
@@ -36,4 +38,20 @@ export function isDefaultFramebuffer(b: GlBinding, framebuffer: WebGLFramebuffer
 export function replaceDefaultFramebuffer(b: GlBinding, previous: WebGLFramebuffer | null): void {
   if (b.shadow.fbo === previous) b.shadow.fbo = defaultFramebuffer(b);
   if (b.shadow.readFbo === previous) b.shadow.readFbo = defaultFramebuffer(b, true);
+}
+
+/** GLES draw framebuffer errors remain observable with no installed program.
+ * WebGL's draw validation can reject that program state before framebuffer
+ * completeness. Check the actual selected target before dependent draw work;
+ * installed executables continue through ordinary native draw validation. */
+export function validateDrawFramebufferWithoutProgram(b: GlBinding): boolean {
+  if (b.currentProgram) return true;
+  if (!b.gl || !repairNativeState(b.gl)) return false;
+  let status: unknown;
+  if (!checkedGlCall(b, () => { status = b.gl!.checkFramebufferStatus(GL_DRAW_FRAMEBUFFER); })) return false;
+  if (typeof status !== "number" || !Number.isInteger(status) || status <= 0 || status > 0xffff_ffff) {
+    recordGlError(b, 0x502); return false;
+  }
+  if (status !== 0x8cd5) { recordGlError(b, 0x506); return false; }
+  return true;
 }

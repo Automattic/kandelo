@@ -1,4 +1,5 @@
 import type { GlBinding } from "./registry.js";
+import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { activeVertexArray } from "./buffer-references.js";
 import { allocateNativeBuffer, prepareBufferDraw } from "./buffer-storage.js";
 import { prepareImageDraw } from "./image-storage.js";
@@ -82,6 +83,7 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
         recordGlError(b,0x502); return result;
       }
     }
+    if (!validateDrawFramebufferWithoutProgram(b)) return result;
     if (!repairNativeState(gl) || !prepareBufferDraw(b,false) || !prepareImageDraw(b)) return result;
 
     // Copy only the referenced packed elements. These bounded private bytes are

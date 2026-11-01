@@ -1004,3 +1004,125 @@ describe("shader and program query name errors", () => {
     expect(invoke(peer,O.QOP_GET_PROGRAMIV,20,0x8b82).rc).toBe(4);
   });
 });
+
+
+describe("CTS shader/program boundary contracts", () => {
+  const mutations = [
+    ["compile unknown", O.OP_COMPILE_SHADER, [0xffff_ffff], "compileShader", 0x501],
+    ["compile wrong kind", O.OP_COMPILE_SHADER, [20], "compileShader", 0x502],
+    ["attach wrong program kind", O.OP_ATTACH_SHADER, [10,10], "attachShader", 0x502],
+    ["attach wrong shader kind", O.OP_ATTACH_SHADER, [20,20], "attachShader", 0x502],
+    ["attach unknown", O.OP_ATTACH_SHADER, [20,0xffff_ffff], "attachShader", 0x501],
+    ["detach wrong program kind", O.OP_DETACH_SHADER, [10,10], "detachShader", 0x502],
+    ["detach wrong shader kind", O.OP_DETACH_SHADER, [20,20], "detachShader", 0x502],
+    ["detach unknown", O.OP_DETACH_SHADER, [20,0xffff_ffff], "detachShader", 0x501],
+    ["attribute bind unknown", O.OP_BIND_ATTRIB_LOCATION, [0xffff_ffff,3,8], "bindAttribLocation", 0x501],
+    ["attribute bind wrong kind", O.OP_BIND_ATTRIB_LOCATION, [10,3,8], "bindAttribLocation", 0x502],
+  ] as const;
+  for (const [label, op, words, method, error] of mutations) it(label, () => {
+    const {b,native,send,query}=setup();
+    const call=vi.fn(); Object.assign(native,{[method]:call});
+    b.errors.push(0x505); native.error=0x500;
+    send(op,[...words],op===O.OP_BIND_ATTRIB_LOCATION?"position":"");
+    expect(b.errors).toEqual([0x505,error]);
+    expect(native.error).toBe(0x500); // invalid logical name never enters native API
+    expect(call).not.toHaveBeenCalled();
+    expect(b.programShaders.get(20)).toEqual(new Set([10,11]));
+    expect(b.programAttributeBindings.get(20)).toEqual(new Map([["position",3]]));
+    expect([query(O.QOP_GET_ERROR),query(O.QOP_GET_ERROR),query(O.QOP_GET_ERROR)])
+      .toEqual([0x505,error,0x500]);
+  });
+  function location(b: ReturnType<typeof setup>["b"], op: number, name: number) {
+    const text=new TextEncoder().encode("position"), input=new Uint8Array(8+text.length);
+    const v=new DataView(input.buffer);v.setUint32(0,name,true);v.setUint32(4,text.length,true);input.set(text,8);
+    const out=new Uint8Array(4).fill(0xa7);
+    return {rc:runGlQuery(b,op,input,out),out};
+  }
+  for (const op of [O.QOP_GET_ATTRIB_LOC,O.QOP_GET_UNIFORM_LOC]) for(const name of [0,0xffff_ffff,10])
+    it(`location query${op} rejects name${name} without touching output`, () => {
+      const {b,native}=setup(), lookup=vi.fn(()=>3);
+      Object.assign(native,{getAttribLocation:lookup});
+      const linked=vi.spyOn(native,"getProgramParameter");
+      const result=location(b,op,name);
+      expect(result.rc).toBe(-22);expect(result.out).toEqual(new Uint8Array(4).fill(0xa7));
+      expect(b.errors).toEqual([name===10?0x502:0x501]);
+      expect(lookup).not.toHaveBeenCalled();expect(linked).not.toHaveBeenCalled();
+    });
+  it("attribute location requires actual accepted link status and checked native lookup", () => {
+    const {b,native,send}=setup();
+    const lookup=vi.fn(()=>3);Object.assign(native,{getAttribLocation:lookup});
+    send(O.OP_CREATE_PROGRAM,[30]);
+    expect(location(b,O.QOP_GET_ATTRIB_LOC,30).rc).toBe(-22);
+    expect(b.errors.splice(0)).toEqual([0x502]);expect(lookup).not.toHaveBeenCalled();
+    native.error=0x505;
+    const accepted=location(b,O.QOP_GET_ATTRIB_LOC,20);
+    expect(accepted.rc).toBe(4);expect(new DataView(accepted.out.buffer).getInt32(0,true)).toBe(3);
+    expect(b.errors.splice(0)).toEqual([0x505]);
+    lookup.mockImplementation(()=>{native.error=0x501;return 3;});
+    const refused=location(b,O.QOP_GET_ATTRIB_LOC,20);
+    expect(refused.rc).toBe(-22);expect(refused.out).toEqual(new Uint8Array(4).fill(0xa7));
+    expect(b.errors).toEqual([0x501]);
+  });
+  it("keeps deferred shader/program names valid and rejects their actual final retirement", () => {
+    const {b,native,send}=setup();
+    const compile=vi.fn();Object.assign(native,{compileShader:compile,getAttribLocation:()=>3});
+    send(O.OP_DELETE_SHADER,[10]);send(O.OP_DELETE_PROGRAM,[20]);
+    send(O.OP_COMPILE_SHADER,[10]);expect(compile).toHaveBeenCalledTimes(1);
+    expect(location(b,O.QOP_GET_ATTRIB_LOC,20).rc).toBe(4);expect(b.errors).toEqual([]);
+    send(O.OP_USE_PROGRAM,[0]);
+    send(O.OP_COMPILE_SHADER,[10]);expect(compile).toHaveBeenCalledTimes(1);
+    expect(b.errors.splice(0)).toEqual([0x501]);
+    expect(location(b,O.QOP_GET_ATTRIB_LOC,20).rc).toBe(-22);expect(b.errors).toEqual([0x501]);
+  });
+  it("keeps mutation/query errors in the invoking context of the shared namespace", () => {
+    const parent=setup();parent.b.contextId=21;
+    parent.registry.bind({pid:1,sessionId:12,cmdbufAddr:0,cmdbufLen:32});
+    const peer=parent.registry.get(1,12)!;peer.gl=parent.gl;peer.contextId=22;
+    expect(parent.registry.shareObjects(1,12,0)).toBe(true);
+    parent.b.errors.push(0x505);peer.errors.push(0x500);
+    expect(location(peer,O.QOP_GET_ATTRIB_LOC,10).rc).toBe(-22);
+    expect(peer.errors).toEqual([0x500,0x502]);expect(parent.b.errors).toEqual([0x505]);
+  });
+});
+
+
+describe("CTS missing-program framebuffer contract", () => {
+  for (const [op,words] of [[O.OP_DRAW_ARRAYS,[0,0,1]],[O.OP_DRAW_ELEMENTS,[0,1,0x1401,0]]] as const)
+    it(`reports incomplete draw framebuffer before dependent no-program draw${op}`, () => {
+      const {b,native,send,query}=setup();send(O.OP_USE_PROGRAM,[0]);
+      const status=vi.fn(()=>0x8cd7), draw=vi.fn(()=>{native.error=0x502;});
+      Object.assign(native,{checkFramebufferStatus:status,drawArrays:draw,drawElements:draw});
+      send(op,[...words]);
+      expect(query(O.QOP_GET_ERROR)).toBe(0x506);
+      expect(draw).not.toHaveBeenCalled();expect(status).toHaveBeenCalledWith(0x8ca9);
+      expect(b.currentProgram).toBeNull();
+    });
+  it("retains argument errors before incomplete-framebuffer preflight", () => {
+    const {native,send,query}=setup();send(O.OP_USE_PROGRAM,[0]);
+    const status=vi.fn(()=>0x8cd7);Object.assign(native,{checkFramebufferStatus:status});
+    for(const [op,words,error] of [[O.OP_DRAW_ARRAYS,[7,0,1],0x500],
+      [O.OP_DRAW_ARRAYS,[0,0,-1],0x501], [O.OP_DRAW_ELEMENTS,[0,1,0,0],0x500],
+      [O.OP_DRAW_ELEMENTS,[0,-1,0x1401,0],0x501], [O.OP_DRAW_ELEMENTS,[0,1,0x1403,1],0x502]] as const) {
+      send(op,[...words]);expect(query(O.QOP_GET_ERROR)).toBe(error);
+    }
+    expect(status).not.toHaveBeenCalled();
+  });
+  it("keeps error custody and stops on a rejected native completeness query", () => {
+    const {b,native,send,query}=setup();send(O.OP_USE_PROGRAM,[0]);
+    const status=vi.fn(()=>{native.error=0x502;return 0x8cd7;}), draw=vi.fn();
+    Object.assign(native,{checkFramebufferStatus:status,drawArrays:draw});
+    b.errors.push(0x505);native.error=0x500;
+    send(O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect([query(O.QOP_GET_ERROR),query(O.QOP_GET_ERROR),query(O.QOP_GET_ERROR)])
+      .toEqual([0x505,0x500,0x502]);
+    expect(draw).not.toHaveBeenCalled();
+  });
+  it("keeps accepted native draw validation for an installed retained executable", () => {
+    const {native,send,query}=setup();
+    const status=vi.fn(()=>0x8cd7), draw=vi.fn(()=>{native.error=0x506;});
+    Object.assign(native,{checkFramebufferStatus:status,drawArrays:draw});
+    send(O.OP_DRAW_ARRAYS,[0,0,1]);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x506);expect(draw).toHaveBeenCalledTimes(1);
+    expect(status).not.toHaveBeenCalled();
+  });
+});

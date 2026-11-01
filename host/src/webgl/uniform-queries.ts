@@ -2,7 +2,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlUniformLookupBytes } from "./uniform-lookup-bytes.js";
 import type { GlUniformMetadata, GlUniformLocationRecord, GlObjectGroup } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, recordGlError, programLinkGeneration } from "./program-objects.js";
+import { checkedGlCall, recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 
 export class GlUniformLookup {
@@ -18,15 +18,6 @@ export function replaceUniformLookup(b: GlBinding, next: GlUniformLookup | null)
   b.uniformLookup?.release();b.uniformLookup=next;
 }
 
-
-function validProgram(b: GlBinding, name: number): WebGLProgram | null {
-  const program = b.programs.get(name);
-  if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return null; }
-  let linked = false;
-  if (!checkedGlCall(b,() => { linked = !!b.gl!.getProgramParameter(program,0x8b82); })) return null;
-  if (!linked) { recordGlError(b,0x502); return null; }
-  return program;
-}
 
 /** Structs/struct arrays are reduced by native reflection to fundamental
  * fields. Only a final array selector denotes the remaining uniform array;
@@ -127,7 +118,7 @@ export function reserveUniformLocation(b: GlBinding, name: number, text: string,
 
 /** Immediate queries share the same reservation/publication authority. */
 export function uniformLocation(b: GlBinding, name: number, text: string): number | null {
-  const program=validProgram(b,name);
+  const program=linkedProgramForQuery(b,name);
   if(!program) return null;
   const reservation=reserveUniformLocation(b,name,text,program);
   if(!reservation) return null;
@@ -149,7 +140,7 @@ export function runUniformLookup(b: GlBinding, input: Uint8Array, out: Uint8Arra
     let location = -1;
     if (action === 0 || action === 1) {
       if (token <= b.uniformLookupSerial) return invalid();
-      const executable=validProgram(b,program);
+      const executable=linkedProgramForQuery(b,program);
       if (!executable) return -22;
       b.uniformLookupSerial = token;
       replaceUniformLookup(b,null);
@@ -176,7 +167,7 @@ export function runUniformLookup(b: GlBinding, input: Uint8Array, out: Uint8Arra
           pending.bytes.set(input.subarray(16),arg); pending.cursor+=input.length-16;
         } else {
           if (pending.cursor !== pending.bytes.length) {replaceUniformLookup(b,null);return invalid();}
-          const executable=validProgram(b,program);
+          const executable=linkedProgramForQuery(b,program);
           if(!executable) {replaceUniformLookup(b,null);return -22;}
           if(executable!==pending.executable || programLinkGeneration(b,executable).value!==pending.generation) {replaceUniformLookup(b,null);return invalid();}
           const text=new TextDecoder().decode(pending.bytes);
