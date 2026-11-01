@@ -66,8 +66,7 @@ const vertex = "attribute vec4 p;\nvoid main() { gl_Position = p; }\n";
 const fragment = "precision mediump float;\nuniform sampler2D uDepth;\nuniform sampler2D uColor;\n" +
   "void main() { gl_FragColor = texture2D(uDepth, vec2(0.5)) + texture2D(uColor, vec2(0.5)); }\n";
 
-function setup() {
-  const gl = new SamplingGl();
+function setup(gl = new SamplingGl(), vertexSource = vertex, bindings: [string, number][] = []) {
   const proxy = new Proxy(gl, { get(target, key) {
     const value = Reflect.get(target, key);
     return typeof value === "function" ? value.bind(target) : value ?? (() => {});
@@ -102,13 +101,14 @@ function setup() {
   };
   send(O.OP_CREATE_SHADER, [0x8b31, 10]);
   send(O.OP_CREATE_SHADER, [0x8b30, 11]);
-  send(O.OP_SHADER_SOURCE, [10, vertex.length], vertex);
+  send(O.OP_SHADER_SOURCE, [10, vertexSource.length], vertexSource);
   send(O.OP_SHADER_SOURCE, [11, fragment.length], fragment);
   send(O.OP_COMPILE_SHADER, [10]);
   send(O.OP_COMPILE_SHADER, [11]);
   send(O.OP_CREATE_PROGRAM, [20]);
   send(O.OP_ATTACH_SHADER, [20, 10]);
   send(O.OP_ATTACH_SHADER, [20, 11]);
+  for (const [name, at] of bindings) send(O.OP_BIND_ATTRIB_LOCATION, [20, at, name.length], name);
   send(O.OP_LINK_PROGRAM, [20]);
   send(O.OP_USE_PROGRAM, [20]);
   const primary = gl.current!;
@@ -187,5 +187,59 @@ describe("OES_depth_texture luminance sampling (issue 2)", () => {
     send(O.OP_USE_PROGRAM, [0]);
     send(O.OP_DELETE_PROGRAM, [20]);
     expect(gl.deleted.has(both) && gl.deleted.has(depthOnly)).toBe(true);
+  });
+});
+
+/** Adds WebGL's aliasing rule: linking fails when two attributes the vertex
+ * source uses are bound to one location (WebGL 1.0 "Attribute Aliasing"). */
+class AliasingSamplingGl extends SamplingGl {
+  bound = new Map<Program, Map<string, number>>();
+  attributes = new Map<Program, Map<string, number>>();
+  bindAttribLocation(p: Program, at: number, name: string) {
+    if (!this.bound.has(p)) this.bound.set(p, new Map());
+    this.bound.get(p)!.set(name, at);
+  }
+  linkProgram(p: Program) {
+    super.linkProgram(p);
+    const bound = this.bound.get(p) ?? new Map<string, number>(), active = new Map<string, number>();
+    for (const m of p.vertex.matchAll(/attribute\s+(?:\w+\s+)?\w+\s+(\w+)\s*;/g)) {
+      if (p.vertex.split(new RegExp(`\\b${m[1]}\\b`)).length - 1 < 2) continue;
+      const at = bound.get(m[1]) ?? active.size + 8;
+      if ([...active.values()].includes(at)) { p.linked = false; return; }
+      active.set(m[1], at);
+    }
+    this.attributes.set(p, active);
+  }
+  getProgramParameter(p: Program, pname: number) {
+    if (pname === 0x8b89) return this.attributes.get(p)?.size ?? 0;
+    return super.getProgramParameter(p, pname);
+  }
+  getActiveAttrib(p: Program, i: number) {
+    const name = [...(this.attributes.get(p)?.keys() ?? [])][i];
+    return name ? { name, size: 1, type: 0x8b52 } : null;
+  }
+  getAttribLocation(p: Program, name: string) { return this.attributes.get(p)?.get(name) ?? -1; }
+}
+
+describe("depth sampling with an attribute-aliasing executable", () => {
+  it("rewrites the aliasing executable's own sources and keeps its alias slots", () => {
+    const aliasing = "attribute mediump vec2 a_0;\nattribute mediump vec4 a_1;\nuniform float u_A;\n" +
+      "void main() { gl_Position = u_A != 0.0 ? vec4(a_0, 0.0, 1.0) : a_1; }\n";
+    const gl = new AliasingSamplingGl();
+    const { send, error } = setup(gl, aliasing, [["a_0", 3], ["a_1", 3]]);
+    const executable = gl.current!;
+    expect(executable.vertex).toContain("attribute highp vec4 kandelo_alias_3;");
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    expect(error()).toBe(0);
+    const variant = gl.draws[0].program;
+    expect(variant).not.toBe(executable);
+    expect(variant.linked).toBe(true);
+    // The variant starts from the aliasing executable's vertex shader ...
+    expect(variant.vertex).toContain("a_0 = kandelo_alias_3.xy; a_1 = kandelo_alias_3;");
+    expect(gl.bound.get(variant)?.get("kandelo_alias_3")).toBe(3);
+    // ... and samples the depth texture as luminance.
+    expect(variant.fragment).toContain("kandelo_depth_texel(true, texture2D(uDepth, vec2(0.5)))");
+    expect(gl.draws[0].units).toEqual(new Map([["uDepth", 1], ["uColor", 2]]));
+    expect(gl.current).toBe(executable);
   });
 });

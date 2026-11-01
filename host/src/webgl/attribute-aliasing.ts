@@ -118,26 +118,22 @@ function attributeDeclarations(source: string): Declaration[] | null {
   return declarations;
 }
 
-/** Link a private executable for a program whose native link failed, if (and
- * only if) the guest's bindings alias between declared attributes. Returns
- * the linked executable, or null with no native objects left behind (the
- * guest then observes the original native link failure). */
-export function linkAliasedExecutable(b: GlBinding, name: number, attached: readonly WebGLShader[]): WebGLProgram | null {
-  const gl = b.gl!;
-  let vertexShader: WebGLShader | undefined, fragmentShader: WebGLShader | undefined;
-  if (!checkedGlCall(b, () => {
-    for (const shader of attached) {
-      const type = Number(gl.getShaderParameter(shader, 0x8b4f));
-      if (type === VERTEX_SHADER) vertexShader = shader;
-      else if (type === FRAGMENT_SHADER) fragmentShader = shader;
-    }
-  }) || !vertexShader || !fragmentShader) return null;
-  const vertex = compiledShaderSource(vertexShader), fragment = compiledShaderSource(fragmentShader);
-  // ES 3.00 shaders forbid aliasing; only GLSL ES 1.00 permits it.
-  if (vertex === undefined || fragment === undefined || /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(vertex)) return null;
+export type GlAliasRewrite = {
+  source: string;
+  aliased: ReadonlySet<string>;
+  slots: readonly number[];
+  used: ReadonlySet<string>;
+  declarations: readonly Declaration[];
+  declared: ReadonlyMap<string, { type: string; precision: string; location: number }>;
+};
+
+/** The private vertex shader for a GLSL ES 1.00 source whose bindings alias,
+ * or null when no declared, bound attributes overlap (or the declarations
+ * are outside the supported grammar). Pure: used by the link path and by
+ * the real-compiler check in tests/graphics/shader-rewrite-check. */
+export function aliasedVertexShaderSource(vertex: string, bindings: ReadonlyMap<string, number>): GlAliasRewrite | null {
   const declarations = attributeDeclarations(vertex);
   if (!declarations) return null;
-  const bindings = b.programAttributeBindings.get(name) ?? new Map<string, number>();
 
   // Locations covered by each declared, bound attribute.
   const declared = new Map<string, { type: string; precision: string; location: number }>();
@@ -182,6 +178,31 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
   });
   rewritten += `\n${[...slots].sort((x, y) => x - y).map(l => `attribute highp vec4 ${ALIAS_PREFIX}${l};`).join("\n")}\n` +
     `void main() { ${assignments.join(" ")} ${MAIN}(); }\n`;
+
+  return { source: rewritten, aliased, slots: [...slots].sort((x, y) => x - y), used, declarations, declared };
+}
+
+/** Link a private executable for a program whose native link failed, if (and
+ * only if) the guest's bindings alias between declared attributes. Returns
+ * the linked executable, or null with no native objects left behind (the
+ * guest then observes the original native link failure). */
+export function linkAliasedExecutable(b: GlBinding, name: number, attached: readonly WebGLShader[]): WebGLProgram | null {
+  const gl = b.gl!;
+  let vertexShader: WebGLShader | undefined, fragmentShader: WebGLShader | undefined;
+  if (!checkedGlCall(b, () => {
+    for (const shader of attached) {
+      const type = Number(gl.getShaderParameter(shader, 0x8b4f));
+      if (type === VERTEX_SHADER) vertexShader = shader;
+      else if (type === FRAGMENT_SHADER) fragmentShader = shader;
+    }
+  }) || !vertexShader || !fragmentShader) return null;
+  const vertex = compiledShaderSource(vertexShader), fragment = compiledShaderSource(fragmentShader);
+  // ES 3.00 shaders forbid aliasing; only GLSL ES 1.00 permits it.
+  if (vertex === undefined || fragment === undefined || /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(vertex)) return null;
+  const bindings = b.programAttributeBindings.get(name) ?? new Map<string, number>();
+  const rewrite = aliasedVertexShaderSource(vertex, bindings);
+  if (!rewrite) return null;
+  const { source: rewritten, aliased, slots, used, declarations, declared } = rewrite;
 
   let shader: WebGLShader | null = null, program: WebGLProgram | null = null, linked = false;
   try {

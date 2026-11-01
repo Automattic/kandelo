@@ -173,7 +173,7 @@ export function noteUniformWrite(program: WebGLProgram | null): void {
 /** One private draw executable of a guest executable. A draw may need a
  * reversed depth range and/or luminance sampling of depth textures
  * (depth-sampling.ts); each combination is one variant, keyed by both. */
-type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[] };
+export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[] };
 type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number };
 const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
@@ -198,7 +198,7 @@ export function releaseReversedDepthTwin(owner: CheckedGlOwner, program: WebGLPr
 
 /** One stage of a variant: depth-sampler lookups first, then the reversed
  * depth wrapper around the (already renamed-free) result. */
-function variantStageSource(source: string, vertex: boolean, options: VariantOptions): string | null {
+export function variantStageSource(source: string, vertex: boolean, options: VariantOptions): string | null {
   let result: string | null = source;
   if (options.depthSamplers.length) result = depthSamplingShaderSource(source, new Set(options.depthSamplers));
   if (result !== null && options.reversedDepth) result = reversedDepthShaderSource(result, vertex);

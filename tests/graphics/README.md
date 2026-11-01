@@ -111,6 +111,16 @@ are the source-only checks of selection, chunking and accounting. The
 bounded `scripts/test-graphics-cts.sh` runner above is unchanged; the full
 runner is the one for the combined validation phase.
 
+## Host GLSL rewrite check
+
+`node tests/graphics/shader-rewrite-check/run.mjs [output-dir] [engine...]`
+compiles, links and draws the host's private GLSL rewrites (reversed depth
+range, attribute aliasing including the dEQP-GLES2 `bind_aliasing` templates,
+depth-texture luminance sampling, and their combinations) with the real WebGL 2
+compiler of headless Chromium, Firefox and WebKit, proving the ES 2.0 results
+by pixel readback. It bundles the rewriters from `host/src/webgl` and needs no
+Kandelo build; it is not the runtime path or a conformance suite.
+
 ## Initial adapted EGL harness
 
 Upstream: https://github.com/KhronosGroup/VK-GL-CTS
