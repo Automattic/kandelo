@@ -3922,6 +3922,54 @@ int main(int argc, char **argv) {
             assert(eglDestroyImageKHR(dpy,value));
             assert(eglDestroyContext(dpy,context) && eglReleaseThread());
             dmabuf_cpu_tier = 0;
+        } else if (!strcmp(argv[1],"dmabuf-export")) {
+            /* EGL_MESA_image_dma_buf_export: an image's DRM format, planes,
+             * modifiers (LINEAR for CPU bytes, an implicit INVALID layout
+             * for GPU-tier storage) and one PRIME descriptor, pitch and
+             * offset per plane. */
+            PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC query =
+                (PFNEGLEXPORTDMABUFIMAGEQUERYMESAPROC)eglGetProcAddress("eglExportDMABUFImageQueryMESA");
+            PFNEGLEXPORTDMABUFIMAGEMESAPROC exporter =
+                (PFNEGLEXPORTDMABUFIMAGEMESAPROC)eglGetProcAddress("eglExportDMABUFImageMESA");
+            assert(query == eglExportDMABUFImageQueryMESA && exporter == eglExportDMABUFImageMESA);
+            assert(strstr(eglQueryString(dpy, EGL_EXTENSIONS), "EGL_MESA_image_dma_buf_export"));
+            const EGLuint64KHR invalid = 0x00ffffffffffffffull;
+            EGLImageKHR gpu = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,narrow);
+            assert(gpu);
+            int fourcc = 0, planes = 0, fds[3] = {-2,-2,-2}; EGLuint64KHR modifiers[3] = {7,7,7};
+            EGLint strides[3] = {0}, offsets[3] = {0};
+            assert(query(dpy,gpu,&fourcc,&planes,modifiers) && fourcc == 0x34324241 && planes == 1);
+            assert(modifiers[0] == invalid && modifiers[1] == 7);
+            assert(exporter(dpy,gpu,fds,strides,offsets));
+            assert(fds[0] >= 200 && fds[0] < 208 && prime_exports[fds[0] - 200].handle == 77 && fds[1] == -2);
+            assert(strides[0] == 256 && offsets[0] == 0 && close(fds[0]) == 0);
+            assert(query(dpy,gpu,NULL,NULL,NULL) && exporter(dpy,gpu,NULL,NULL,NULL));
+            /* A CPU-tier plane keeps its byte offset. */
+            dmabuf_cpu_tier = 1;
+            EGLint offset[13]; memcpy(offset,narrow,sizeof offset); offset[3] = 32; offset[9] = 640;
+            EGLImageKHR cpu = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,offset);
+            assert(cpu && query(dpy,cpu,NULL,&planes,modifiers) && planes == 1 && modifiers[0] == 0);
+            assert(exporter(dpy,cpu,fds,strides,offsets) && offsets[0] == 640 && strides[0] == 256);
+            assert(close(fds[0]) == 0 && eglDestroyImageKHR(dpy,cpu));
+            /* NV12: a descriptor per plane, both naming the frame's dma-buf. */
+            EGLint nv12[] = {EGL_WIDTH,64,EGL_HEIGHT,32,EGL_LINUX_DRM_FOURCC_EXT,0x3231564e,
+                EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,EGL_DMA_BUF_PLANE0_PITCH_EXT,64,
+                EGL_DMA_BUF_PLANE1_FD_EXT,100,EGL_DMA_BUF_PLANE1_OFFSET_EXT,2048,EGL_DMA_BUF_PLANE1_PITCH_EXT,64,EGL_NONE};
+            EGLImageKHR yuv = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12);
+            modifiers[1] = 7;
+            assert(yuv && query(dpy,yuv,&fourcc,&planes,modifiers) && fourcc == 0x3231564e && planes == 2);
+            assert(modifiers[0] == 0 && modifiers[1] == 0);
+            fds[2] = -2;
+            assert(exporter(dpy,yuv,fds,strides,offsets));
+            assert(prime_exports[fds[0] - 200].handle == 77 && prime_exports[fds[1] - 200].handle == 77 && fds[2] == -2);
+            assert(strides[0] == 64 && strides[1] == 64 && offsets[0] == 0 && offsets[1] == 2048);
+            assert(close(fds[0]) == 0 && close(fds[1]) == 0 && eglDestroyImageKHR(dpy,yuv));
+            dmabuf_cpu_tier = 0;
+            /* Not an image of this display. */
+            assert(!query(dpy,(EGLImageKHR)(uintptr_t)0x7fff0000u,NULL,NULL,NULL) && eglGetError() == EGL_BAD_PARAMETER);
+            assert(!exporter(EGL_NO_DISPLAY,gpu,NULL,NULL,NULL) && eglGetError() == EGL_BAD_DISPLAY);
+            assert(eglDestroyImageKHR(dpy,gpu));
+            assert(!exporter(dpy,gpu,fds,NULL,NULL) && eglGetError() == EGL_BAD_PARAMETER);
         } else if (!strcmp(argv[1],"dmabuf-hints")) {
             EGLint hints[23]; memcpy(hints,narrow,12*sizeof *narrow);
             const EGLint keys[] = {EGL_YUV_COLOR_SPACE_HINT_EXT,EGL_SAMPLE_RANGE_HINT_EXT,

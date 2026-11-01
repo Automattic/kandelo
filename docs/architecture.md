@@ -3892,6 +3892,18 @@ views copy it only after a conversion. With the image write-count audit
 on (the graphics test gate), an unchanged count with changed plane bytes
 is a fatal fault.
 
+`EGL_MESA_image_dma_buf_export` describes any image with a DRM format as
+dma-bufs: `eglExportDMABUFImageQueryMESA` reports the format, its plane
+count and each plane's modifier, and `eglExportDMABUFImageMESA` returns a
+caller-owned PRIME descriptor, pitch and byte offset per plane (one per
+plane even when planes share a dma-buf, as current Mesa exports them).
+A plane of CPU bytes reports LINEAR; GPU-tier storage (an exported GLES
+image or a GPU BO) reports `DRM_FORMAT_MOD_INVALID`, an implicit layout,
+because a native texture has no byte layout to name; importing either
+works. An image no DRM format describes (for example an RGBA32F texture
+image) cannot be exported: `EGL_BAD_MATCH`, where Mesa returns
+`EGL_FALSE` with no error, so a caller can tell why.
+
 In the image-backed producer path, rendering resources and presenting them
 are separate operations. Authorized KMS operations select a framebuffer;
 the vblank pump presents its retained GPU BO even when the producer uses

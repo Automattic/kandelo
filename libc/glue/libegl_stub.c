@@ -2430,6 +2430,7 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
         case EGL_EXTENSIONS:
             return "EGL_EXT_image_dma_buf_import "
                    "EGL_EXT_image_dma_buf_import_modifiers "
+                   "EGL_MESA_image_dma_buf_export "
                    "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image "
                    "EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_renderbuffer_image "
                    "EGL_KHR_no_config_context "
@@ -2679,6 +2680,8 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(eglCreatePbufferSurface);
     WPK_MAP_GL(eglQueryDmaBufFormatsEXT);
     WPK_MAP_GL(eglQueryDmaBufModifiersEXT);
+    WPK_MAP_GL(eglExportDMABUFImageQueryMESA);
+    WPK_MAP_GL(eglExportDMABUFImageMESA);
     return NULL;
 }
 
@@ -3907,5 +3910,94 @@ EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
     if (max_modifiers == 0) return EGL_TRUE;
     modifiers[0] = WPK_MOD_LINEAR;
     if (external_only) external_only[0] = dmabuf_format(format)->is_yuv ? EGL_TRUE : EGL_FALSE;
+    return EGL_TRUE;
+}
+
+/* ----- EGL_MESA_image_dma_buf_export ------------------------------- */
+
+/* The live image `image` of `dpy`'s initialized generation, retained, or
+ * NULL with the EGL error set. */
+static struct wpk_egl_image *exportable_image(EGLDisplay dpy, EGLImageKHR image) {
+    if (!display_record(dpy)) { g_last_error = EGL_BAD_DISPLAY; return NULL; }
+    lock_context();
+    struct egl_generation *generation = active_generation(dpy);
+    struct wpk_egl_image *found = NULL;
+    if (!generation || !generation->initialized) g_last_error = EGL_NOT_INITIALIZED;
+    else {
+        pthread_mutex_lock(&g_image_mutex);
+        for (struct wpk_egl_image *candidate = g_images; candidate; candidate = candidate->next)
+            if (candidate->public_handle == (uintptr_t)image && candidate->public_live
+                && candidate->generation == generation) {
+                candidate->references++;
+                found = candidate;
+                break;
+            }
+        pthread_mutex_unlock(&g_image_mutex);
+        /* An image is described by a DRM format, or not exportable. */
+        if (!found) g_last_error = EGL_BAD_PARAMETER;
+        else if (!found->fourcc) {
+            g_last_error = EGL_BAD_MATCH;
+            _wpk_egl_image_release(found);
+            found = NULL;
+        }
+    }
+    unlock_context();
+    return found;
+}
+
+static unsigned export_plane_count(const struct wpk_egl_image *image) {
+    return image->external_only ? image->plane_count : 1;
+}
+
+/* The image's DRM format, planes and their modifiers: LINEAR for an image
+ * whose planes are CPU bytes, DRM_FORMAT_MOD_INVALID (an implicit layout)
+ * for one whose storage is a GPU-tier texture, which has no byte layout to
+ * name. Importing the result accepts both. */
+EGLBoolean eglExportDMABUFImageQueryMESA(EGLDisplay dpy, EGLImageKHR image, int *fourcc,
+                                         int *num_planes, EGLuint64KHR *modifiers) {
+    egl_call_begin();
+    struct wpk_egl_image *img = exportable_image(dpy, image);
+    if (!img) return EGL_FALSE;
+    unsigned planes = export_plane_count(img);
+    if (fourcc) *fourcc = (int)img->fourcc;
+    if (num_planes) *num_planes = (int)planes;
+    if (modifiers)
+        for (unsigned p = 0; p < planes; p++) modifiers[p] = img->pixels ? WPK_MOD_LINEAR : WPK_MOD_INVALID;
+    _wpk_egl_image_release(img);
+    return EGL_TRUE;
+}
+
+/* One caller-owned PRIME descriptor per plane, with the plane's pitch and
+ * byte offset within it. */
+EGLBoolean eglExportDMABUFImageMESA(EGLDisplay dpy, EGLImageKHR image, int *fds,
+                                    EGLint *strides, EGLint *offsets) {
+    egl_call_begin();
+    struct wpk_egl_image *img = exportable_image(dpy, image);
+    if (!img) return EGL_FALSE;
+    unsigned planes = export_plane_count(img);
+    int exported[3] = {-1, -1, -1};
+    EGLBoolean result = EGL_TRUE;
+    for (unsigned p = 0; p < planes && fds; p++) {
+        struct wpk_drm_prime_handle req = {.flags = O_CLOEXEC | O_RDWR, .fd = -1,
+            .handle = img->external_only ? img->planes[p].handle : img->handle};
+        if (ioctl(img->generation->fd, WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD, &req) != 0) {
+            g_last_error = errno == ENOMEM || errno == EMFILE ? EGL_BAD_ALLOC : EGL_BAD_ACCESS;
+            result = EGL_FALSE;
+            break;
+        }
+        exported[p] = req.fd;
+    }
+    if (!result) {
+        for (unsigned p = 0; p < planes; p++) if (exported[p] >= 0) close(exported[p]);
+        _wpk_egl_image_release(img);
+        return EGL_FALSE;
+    }
+    for (unsigned p = 0; p < planes; p++) {
+        if (fds) fds[p] = exported[p];
+        if (strides) strides[p] = (EGLint)(img->external_only ? img->planes[p].pitch : img->pitch);
+        if (offsets) offsets[p] = (EGLint)(img->external_only ? img->planes[p].offset
+            : img->pixels ? (uint32_t)(img->pixels - (const uint8_t *)img->map) : 0);
+    }
+    _wpk_egl_image_release(img);
     return EGL_TRUE;
 }
