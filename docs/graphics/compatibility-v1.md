@@ -67,6 +67,11 @@ primary540b desktop producer and do not establish combined guest,
 application, browser or full conformance acceptance. Exact source cuts,
 commands, failures and identities appear in the dated entries below.
 
+The combined native Rust workspace now passes 3,501 tests with no failed,
+ignored or filtered cases. Normal host bundles and declarations also
+build successfully. The separate xtask suite, full host inventory and
+the graphics/browser/POSIX acceptance gates remain pending.
+
 Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated by
 merge `bc182981fb`. The combined resolver bundle regenerates and passes its
 standalone check; all ten SDL recipe source checks pass. Normal combined
@@ -18322,3 +18327,25 @@ upstream CTS, desktop/browser rendering, browser-memory and required
 POSIX suites remain pending. The separate primary540b desktop producer
 is still running; neither this kernel nor narrow host controls create
 a new available preview.
+
+### Combined native Rust workspace and normal host bundles
+
+At `b87e6eb971c894f02850bb7b9d3ab8d13c3942c6`, job
+`graphics-rust-workspace-r1-1031-203639-d7b8` finishes 0 in 156 seconds.
+The declared-shell command is `cargo test --workspace --exclude xtask
+--target aarch64-apple-darwin`. Across 98 binary/doc-test result groups,
+3,501 tests pass with zero failed, ignored or filtered cases. Exact HEAD
+and all guarded Rust/Cargo source bytes remain unchanged during the run.
+Evidence: primary `.context/graphics-main-integration-review-r1/`
+`rust-workspace-r1/`, including raw log, exit status, source guard and
+summary. Raw log SHA256:
+`d121afd8a8ca407404d997d809a2cb8f279de47279e51ee1fa78e39675d8faa8`.
+The excluded xtask crate has its own required suite, still pending here.
+
+The same combined host source passes normal `scripts/build-host.sh`,
+including bundles and TypeScript declarations. Host source and lockfile
+remain unchanged. Its 86 output files and build stamp are captured in
+`combined-host-build-r1-identities.json` beside the raw build log.
+These are native Rust and normal host build results, not upstream CTS,
+browser rendering, normal combined application/image products,
+browser-memory or POSIX conformance acceptance.
