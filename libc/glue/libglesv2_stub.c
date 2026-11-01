@@ -2015,10 +2015,9 @@ void glActiveTexture(GLenum unit) {
     g_active_unit = index;
 }
 
-/* Bytes-per-pixel for the GL (format,type) pairs we know how to
- * marshal. Returns 0 for unknown combos so glTexImage2D / glTexSubImage2D
- * drops the upload rather than emit a garbled record. Extend when a
- * demo needs a new combo. */
+/* Bytes per pixel of a glReadPixels destination. Unknown combinations
+ * return 0 and are rejected by the native read query. Texture uploads use
+ * the admission table below instead. */
 static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
     uint32_t channels;
     switch (format) {
@@ -2040,6 +2039,95 @@ static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
         case GL_UNSIGNED_SHORT_4_4_4_4: case GL_UNSIGNED_SHORT_5_5_5_1:
             return format == GL_RGBA ? 2 : 0;
         default: return 0;
+    }
+}
+
+/* GLES 2.0.25 table 3.4 plus the texture formats of the extensions this
+ * platform advertises: the host (host/src/webgl/capabilities.ts) always lists
+ * OES_texture_float, OES_texture_half_float, EXT_texture_rg,
+ * OES_depth_texture and OES_packed_depth_stencil, and this encoder adds
+ * EXT_texture_format_BGRA8888. WebGL 2 would also accept GLES 3 sized,
+ * integer and sRGB formats, so admission must happen here, before the checked
+ * storage request: one table selects the error and supplies the bytes per
+ * pixel used to pack rows, so an admitted upload always has a packing rule.
+ * host/src/webgl/es2-formats.ts holds the host's copy of this table. */
+static const struct { GLenum format, type; uint8_t bytes; } k_texture_pixels[] = {
+    {GL_RGBA, GL_UNSIGNED_BYTE, 4}, {GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4, 2},
+    {GL_RGBA, GL_UNSIGNED_SHORT_5_5_5_1, 2}, {GL_RGB, GL_UNSIGNED_BYTE, 3},
+    {GL_RGB, GL_UNSIGNED_SHORT_5_6_5, 2}, {GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE, 2},
+    {GL_LUMINANCE, GL_UNSIGNED_BYTE, 1}, {GL_ALPHA, GL_UNSIGNED_BYTE, 1},
+    /* OES_texture_float and OES_texture_half_float. */
+    {GL_RGBA, GL_FLOAT, 16}, {GL_RGBA, GL_HALF_FLOAT_OES, 8},
+    {GL_RGB, GL_FLOAT, 12}, {GL_RGB, GL_HALF_FLOAT_OES, 6},
+    {GL_LUMINANCE_ALPHA, GL_FLOAT, 8}, {GL_LUMINANCE_ALPHA, GL_HALF_FLOAT_OES, 4},
+    {GL_LUMINANCE, GL_FLOAT, 4}, {GL_LUMINANCE, GL_HALF_FLOAT_OES, 2},
+    {GL_ALPHA, GL_FLOAT, 4}, {GL_ALPHA, GL_HALF_FLOAT_OES, 2},
+    /* EXT_texture_rg, including its float/half-float interactions. */
+    {GL_RED_EXT, GL_UNSIGNED_BYTE, 1}, {GL_RED_EXT, GL_FLOAT, 4}, {GL_RED_EXT, GL_HALF_FLOAT_OES, 2},
+    {GL_RG_EXT, GL_UNSIGNED_BYTE, 2}, {GL_RG_EXT, GL_FLOAT, 8}, {GL_RG_EXT, GL_HALF_FLOAT_OES, 4},
+    /* OES_depth_texture and OES_packed_depth_stencil. */
+    {GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, 2}, {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, 4},
+    {GL_DEPTH_STENCIL_OES, GL_UNSIGNED_INT_24_8_OES, 4},
+    /* EXT_texture_format_BGRA8888 (sent to the host as swizzled RGBA). */
+    {GL_BGRA_EXT, GL_UNSIGNED_BYTE, 4},
+};
+
+static int texture_format_known(GLenum format) {
+    for (size_t i = 0; i < sizeof k_texture_pixels / sizeof k_texture_pixels[0]; i++)
+        if (k_texture_pixels[i].format == format) return 1;
+    return 0;
+}
+
+/* Section 3.7.1/3.7.2: a format or type no advertised API accepts is
+ * INVALID_ENUM; a pair outside table 3.4 is INVALID_OPERATION. */
+static GLenum texture_pixel_error(GLenum format, GLenum type, uint32_t *bpp) {
+    int type_known = 0;
+    for (size_t i = 0; i < sizeof k_texture_pixels / sizeof k_texture_pixels[0]; i++) {
+        if (k_texture_pixels[i].type != type) continue;
+        type_known = 1;
+        if (k_texture_pixels[i].format == format) {
+            *bpp = k_texture_pixels[i].bytes;
+            return GL_NO_ERROR;
+        }
+    }
+    return type_known && texture_format_known(format) ? GL_INVALID_OPERATION : GL_INVALID_ENUM;
+}
+
+/* Section 3.7.1: an internal format outside the base formats is
+ * INVALID_VALUE, and one that differs from format is INVALID_OPERATION. */
+static GLenum texture_image_error(GLint internal, GLenum format, GLenum type, uint32_t *bpp) {
+    GLenum error = texture_pixel_error(format, type, bpp);
+    if (error == GL_INVALID_ENUM) return error;
+    if (!texture_format_known((GLenum)internal)) return GL_INVALID_VALUE;
+    if ((GLenum)internal != format) return GL_INVALID_OPERATION;
+    return error;
+}
+
+/* Section 3.7.2 CopyTexImage2D base formats, plus EXT_texture_rg. */
+static GLenum copy_texture_format_error(GLenum internal) {
+    switch (internal) {
+        case GL_ALPHA: case GL_LUMINANCE: case GL_LUMINANCE_ALPHA: case GL_RGB: case GL_RGBA:
+        case GL_RED_EXT: case GL_RG_EXT:
+            return GL_NO_ERROR;
+        default:
+            return GL_INVALID_ENUM;
+    }
+}
+
+/* Section 4.4.3 RenderbufferStorage formats plus every extension format the
+ * host can advertise. Core, OES_rgb8_rgba8, OES_packed_depth_stencil and
+ * EXT_texture_rg are always advertised. The color-buffer float formats
+ * depend on the browser: the host probes them in the same checked storage
+ * request and raises INVALID_ENUM itself when they are not advertised. */
+static GLenum renderbuffer_format_error(GLenum internal) {
+    switch (internal) {
+        case GL_RGBA4: case GL_RGB5_A1: case GL_RGB565: case GL_DEPTH_COMPONENT16: case GL_STENCIL_INDEX8:
+        case GL_RGB8_OES: case GL_RGBA8_OES: case GL_DEPTH24_STENCIL8_OES: case GL_R8_EXT: case GL_RG8_EXT:
+        case 0x881a: case 0x881b: case 0x822f: case 0x822d: /* RGBA16F RGB16F RG16F R16F */
+        case 0x8814: case 0x8230: case 0x822e: case 0x8c3a: /* RGBA32F RG32F R32F R11F_G11F_B10F */
+            return GL_NO_ERROR;
+        default:
+            return GL_INVALID_ENUM;
     }
 }
 
@@ -2084,10 +2172,9 @@ static void copy_row(uint8_t *dst, const uint8_t *src, uint32_t bytes,
  * is (rows-1)*stride + width*bpp. */
 static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
                           GLsizei width, GLsizei height,
-                          GLenum format, GLenum type,
+                          GLenum format, GLenum type, uint32_t bpp,
                           const uint8_t *src, uint32_t src_stride) {
-    uint32_t bpp = bytes_per_pixel(format, type);
-    if (bpp == 0 || src == NULL || width <= 0 || height <= 0) return;
+    if (src == NULL || width <= 0 || height <= 0) return;
     int swap = format == GL_BGRA_EXT;
     uint32_t stride = unpack_row_stride(width, bpp);
     uint32_t tail = (uint32_t)width * bpp;
@@ -2120,16 +2207,15 @@ static void emit_tex_rows(GLenum target, GLint level, GLint xoff, GLint yoff,
 static void emit_tex_sub_image_2d(GLenum target, GLint level,
                                   GLint xoff, GLint yoff,
                                   GLsizei width, GLsizei height,
-                                  GLenum format, GLenum type,
+                                  GLenum format, GLenum type, uint32_t bpp,
                                   const void *data) {
-    uint32_t bpp = bytes_per_pixel(format, type);
-    if (bpp == 0 || data == NULL) return;
+    if (data == NULL) return;
     GLsizei row_pixels = g_unpack_row_length > 0 ? g_unpack_row_length : width;
     uint32_t src_stride = unpack_row_stride(row_pixels, bpp);
     const uint8_t *src = (const uint8_t *)data
         + (uint32_t)g_unpack_skip_rows * src_stride
         + (uint32_t)g_unpack_skip_pixels * bpp;
-    emit_tex_rows(target, level, xoff, yoff, width, height, format, type,
+    emit_tex_rows(target, level, xoff, yoff, width, height, format, type, bpp,
                   src, src_stride);
 }
 
@@ -2137,6 +2223,12 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
     if (!_wpk_gl_current_encoder()) return;
+    uint32_t bpp = 0;
+    GLenum error = texture_image_error(internalFormat, format, type, &bpp);
+    if (error) {
+        raise_client_error(error);
+        return;
+    }
     if (internalFormat == GL_BGRA_EXT)
         internalFormat = GL_RGBA;
     uint32_t words[10] = {OP_TEX_IMAGE_2D,
@@ -2156,7 +2248,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     if (target == GL_TEXTURE_2D &&
         !sync_object_image(1, g_texture_units[g_active_unit].texture_object))
         return;
-    emit_tex_sub_image_2d(target, level, 0, 0, width, height, format, type, data);
+    emit_tex_sub_image_2d(target, level, 0, 0, width, height, format, type, bpp, data);
 }
 
 void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
@@ -2164,8 +2256,10 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
                      GLenum format, GLenum type, const void *data) {
     if (!_wpk_gl_current_encoder()) return;
     /* Validate the original pair before BGRA normalization or pixel access. */
-    if (packed_pixel_format_mismatch(format, type)) {
-        raise_client_error(GL_INVALID_OPERATION);
+    uint32_t bpp = 0;
+    GLenum error = texture_pixel_error(format, type, &bpp);
+    if (error) {
+        raise_client_error(error);
         return;
     }
     uint32_t words[10] = {OP_TEX_SUB_IMAGE_2D, target, (uint32_t)level,
@@ -2174,7 +2268,7 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
     if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1)
         return;
     emit_tex_sub_image_2d(target, level, xoff, yoff, width, height,
-                          format, type, data);
+                          format, type, bpp, data);
 }
 
 void glGenerateMipmap(GLenum target) {
@@ -3218,6 +3312,11 @@ void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint 
 void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat,
                       GLint x, GLint y, GLsizei width, GLsizei height, GLint border) {
     if (!_wpk_gl_current_encoder()) return;
+    GLenum error = copy_texture_format_error(internalformat);
+    if (error) {
+        raise_client_error(error);
+        return;
+    }
     EMIT_BEGIN(OP_COPY_TEX_IMAGE_2D, 32)
     w_u32(&_c, (uint32_t)target);
     w_i32(&_c, level);
@@ -3514,6 +3613,11 @@ void glBindRenderbuffer(GLenum target, GLuint rb) {
 void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) {
     if (!_wpk_gl_current_encoder())
         return;
+    GLenum error = renderbuffer_format_error(internalformat);
+    if (error) {
+        raise_client_error(error);
+        return;
+    }
     uint32_t words[5] = {OP_RENDERBUFFER_STORAGE, target, internalformat, (uint32_t)width,
                          (uint32_t)height};
     if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 5) != 1)

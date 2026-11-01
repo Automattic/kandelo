@@ -397,7 +397,7 @@ static unsigned compressed_begins, compressed_chunks, compressed_commits, compre
 static int compressed_supported, compressed_fail_action, compressed_fail_mode;
 static const uint8_t *compressed_expected;
 static uint32_t compressed_expected_size;
-static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates;
+static unsigned image_failure, image_queries, fail_image_storage, image_pixel_updates, copy_tex_image_commands;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
@@ -1028,6 +1028,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
             if (op == OP_TEX_SUB_IMAGE_2D)
                 image_pixel_updates++;
+            if (op == OP_COPY_TEX_IMAGE_2D)
+                copy_tex_image_commands++;
             if (op == OP_CLEAR) { clear_commands++; slot->clears++; }
             if (op == 0x030b) validate_commands++;
             if (op == OP_BUFFER_DATA) {
@@ -5395,6 +5397,90 @@ int main(int argc, char **argv) {
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-format-", 15)) {
+        /* GLES 2.0.25 sections 3.7.1, 3.7.2 and 4.4.3: the encoder admits
+         * only ES2 formats plus advertised extensions, before any checked
+         * storage request, so no admitted upload lacks a packing rule. */
+        const uint8_t pixel[16] = {0};
+        unsigned queries = image_mutation_queries, updates = image_pixel_updates;
+        if (!strcmp(argv[1], "encoder-format-teximage")) {
+            const struct { GLint internal; GLenum format, type, error; } rejected[] = {
+                {0x8058, GL_RGBA, GL_UNSIGNED_BYTE, GL_INVALID_VALUE},       /* RGBA8 */
+                {0x8c43, GL_RGBA, GL_UNSIGNED_BYTE, GL_INVALID_VALUE},       /* SRGB8_ALPHA8 */
+                {0, GL_RGBA, GL_UNSIGNED_BYTE, GL_INVALID_VALUE},
+                {GL_RGBA, 0, GL_UNSIGNED_BYTE, GL_INVALID_ENUM},
+                {GL_RGBA, GL_RGBA, 0x140b, GL_INVALID_ENUM},                 /* ES3 HALF_FLOAT */
+                {GL_RGBA, GL_RGBA, 0x8368, GL_INVALID_ENUM},                 /* 2_10_10_10_REV */
+                {0x8d99, 0x8d99, GL_UNSIGNED_BYTE, GL_INVALID_ENUM},         /* RGBA_INTEGER */
+                {GL_RGB, GL_RGBA, GL_UNSIGNED_BYTE, GL_INVALID_OPERATION},
+                {GL_RGBA, GL_BGRA_EXT, GL_UNSIGNED_BYTE, GL_INVALID_OPERATION},
+                {GL_RGBA, GL_RGBA, GL_UNSIGNED_SHORT, GL_INVALID_OPERATION},
+                {GL_RGBA, GL_RGBA, GL_UNSIGNED_SHORT_5_6_5, GL_INVALID_OPERATION},
+                {GL_DEPTH_COMPONENT, GL_DEPTH_COMPONENT, GL_FLOAT, GL_INVALID_OPERATION},
+                {GL_BGRA_EXT, GL_BGRA_EXT, GL_FLOAT, GL_INVALID_OPERATION},
+            };
+            for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+                glTexImage2D(GL_TEXTURE_2D,0,rejected[i].internal,1,1,0,rejected[i].format,rejected[i].type,pixel);
+                assert(glGetError() == rejected[i].error && glGetError() == GL_NO_ERROR);
+            }
+            glFlush();
+            assert(image_mutation_queries == queries && image_pixel_updates == updates);
+            const struct { GLenum format, type; } admitted[] = {
+                {GL_RGBA, GL_UNSIGNED_BYTE}, {GL_RGB, GL_UNSIGNED_SHORT_5_6_5}, {GL_LUMINANCE_ALPHA, GL_UNSIGNED_BYTE},
+                {GL_BGRA_EXT, GL_UNSIGNED_BYTE}, {GL_RGBA, GL_HALF_FLOAT_OES}, {GL_LUMINANCE, GL_FLOAT},
+                {GL_RED_EXT, GL_UNSIGNED_BYTE}, {GL_RG_EXT, GL_FLOAT}, {GL_DEPTH_COMPONENT, GL_UNSIGNED_INT},
+                {GL_DEPTH_STENCIL_OES, GL_UNSIGNED_INT_24_8_OES},
+            };
+            for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++) {
+                glTexImage2D(GL_TEXTURE_2D,0,(GLint)admitted[i].format,1,1,0,admitted[i].format,admitted[i].type,pixel);
+                glFlush();
+                assert(glGetError() == GL_NO_ERROR);
+                assert(image_mutation_queries == queries + i + 1 && image_pixel_updates == updates + i + 1);
+            }
+        } else if (!strcmp(argv[1], "encoder-format-subimage")) {
+            const struct { GLenum format, type, error; } rejected[] = {
+                {0x8058, GL_UNSIGNED_BYTE, GL_INVALID_ENUM}, {GL_RGBA, 0x140b, GL_INVALID_ENUM},
+                {GL_RGBA, GL_UNSIGNED_INT, GL_INVALID_OPERATION}, {GL_LUMINANCE, GL_UNSIGNED_SHORT_4_4_4_4, GL_INVALID_OPERATION},
+            };
+            for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+                glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,rejected[i].format,rejected[i].type,pixel);
+                assert(glGetError() == rejected[i].error && glGetError() == GL_NO_ERROR);
+            }
+            glFlush();
+            assert(image_mutation_queries == queries && image_pixel_updates == updates);
+        } else if (!strcmp(argv[1], "encoder-format-copy")) {
+            const unsigned copies = copy_tex_image_commands;
+            const GLenum rejected[] = {0x8058, 0x8051, GL_DEPTH_COMPONENT, GL_DEPTH_STENCIL_OES, GL_BGRA_EXT, 0};
+            for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+                glCopyTexImage2D(GL_TEXTURE_2D,0,rejected[i],0,0,1,1,0);
+                assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            }
+            glFlush(); assert(copy_tex_image_commands == copies);
+            const GLenum admitted[] = {GL_ALPHA, GL_LUMINANCE, GL_LUMINANCE_ALPHA, GL_RGB, GL_RGBA, GL_RED_EXT, GL_RG_EXT};
+            for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++)
+                glCopyTexImage2D(GL_TEXTURE_2D,0,admitted[i],0,0,1,1,0);
+            glFlush();
+            assert(glGetError() == GL_NO_ERROR && copy_tex_image_commands == copies + 7);
+        } else {
+            assert(!strcmp(argv[1], "encoder-format-renderbuffer"));
+            const GLenum rejected[] = {0x81a6 /* DEPTH_COMPONENT24 */, 0x8059 /* RGB10_A2 */, 0x8c43, 0x8d7c, GL_RGBA, 0};
+            for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+                glRenderbufferStorage(GL_RENDERBUFFER,rejected[i],1,1);
+                assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+            }
+            assert(image_mutation_queries == queries);
+            /* Core, always-advertised and host-probed (half float) formats
+             * reach the host, which owns the advertised-extension decision. */
+            const GLenum admitted[] = {GL_RGBA4, GL_RGB5_A1, GL_RGB565, GL_DEPTH_COMPONENT16, GL_STENCIL_INDEX8,
+                                       0x8058, 0x8051, 0x88f0, 0x8229, 0x822b, 0x881a};
+            for (size_t i = 0; i < sizeof admitted / sizeof admitted[0]; i++)
+                glRenderbufferStorage(GL_RENDERBUFFER,admitted[i],1,1);
+            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 11);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strncmp(argv[1], "encoder-subimage-", 17)) {
         const unsigned queries = image_mutation_queries, updates = image_pixel_updates;

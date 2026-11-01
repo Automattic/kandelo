@@ -52,6 +52,16 @@ const OPTIONAL_WEBGL_TO_GLES_EXTENSIONS = [
   },
 ] as const;
 
+/** True when the GLES extension string this host returns names `name`.
+ * Optional groups are probed through getExtension, which also enables the
+ * WebGL capability, so an admitted format is one the native call accepts. */
+export function glesExtensionAdvertised(gl: MaybeExtensionProvider, name: string): boolean {
+  if ((WEBGL2_CORE_GLES2_EXTENSIONS as readonly string[]).includes(name)) return true;
+  if (typeof gl.getExtension !== "function") return false;
+  return OPTIONAL_WEBGL_TO_GLES_EXTENSIONS.some(group =>
+    (group.gles as readonly string[]).includes(name) && group.webgl.some(webgl => gl.getExtension?.(webgl)));
+}
+
 export function getGlesExtensionString(gl: MaybeExtensionProvider): string {
   const extensions = new Set<string>(WEBGL2_CORE_GLES2_EXTENSIONS);
   if (typeof gl.getExtension === "function") {

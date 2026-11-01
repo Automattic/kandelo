@@ -1738,7 +1738,8 @@ describe("GLES texture upload marshalling", () => {
     });
   }
 
-  it("translates GLES2 allocation formats while preserving sized requests", () => {
+  // Sized GLES3 requests are rejected before this point (webgl-es2-formats).
+  it("translates GLES2 allocation formats to their WebGL 2 sized equivalents", () => {
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
     for (const [internal, format, type, expected] of [
@@ -1746,7 +1747,6 @@ describe("GLES texture upload marshalling", () => {
       [0x8227, 0x8227, 0x1406, 0x8230], // RG float -> RG32F
       [0x1902, 0x1902, 0x1403, 0x81a5], // depth short -> depth16
       [0x84f9, 0x84f9, 0x84fa, 0x88f0], // packed depth/stencil
-      [0x8058, 0x1908, 0x1401, 0x8058], // explicit RGBA8
     ]) {
       const t = new Tlv(b.cmdbufView!.buffer);
       const h = t.op(O.OP_TEX_IMAGE_2D, 36);

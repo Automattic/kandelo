@@ -30,6 +30,7 @@ import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
+import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
@@ -286,7 +287,8 @@ function normalizeTextureType(type: number): number {
 
 function normalizeTextureInternalFormat(internal: number, format: number, type: number): number {
   // GLES2 extensions use unsized RED/RG and floating-point formats. WebGL2
-  // requires their sized GLES3 equivalents; preserve explicit sized formats.
+  // requires their sized GLES3 equivalents. es2-formats.ts has already
+  // required internal === format, so only those unsized pairs arrive here.
   if (internal !== format) return internal;
   switch (format) {
     case 0x1903 /* RED */:
@@ -504,6 +506,17 @@ function dispatch(
   const error = stateArgumentError(op, v);
   if (error !== 0) {
     recordGlError(b, error);
+    return;
+  }
+  // GLES 2 format admission precedes target materialization and native calls:
+  // WebGL 2 would otherwise accept GLES 3 sized/integer formats.
+  const formatError =
+    op === O.OP_TEX_IMAGE_2D ? texImageFormatError(gl,v.getUint32(p+8,true),v.getUint32(p+24,true),v.getUint32(p+28,true))
+    : op === O.OP_TEX_SUB_IMAGE_2D ? texSubImageFormatError(gl,v.getUint32(p+24,true),v.getUint32(p+28,true))
+    : op === O.OP_COPY_TEX_IMAGE_2D ? copyTexImageFormatError(gl,v.getUint32(p+8,true))
+    : op === O.OP_RENDERBUFFER_STORAGE ? renderbufferFormatError(gl,v.getUint32(p+4,true)) : 0;
+  if (formatError !== 0) {
+    recordGlError(b, formatError);
     return;
   }
   switch (op) {
@@ -839,10 +852,6 @@ function dispatch(
         if (xoff < 0 || yoff < 0 || width < 0 || height < 0 ||
             endX > 0x7fff_ffff || endY > 0x7fff_ffff) {
           recordGlError(b,0x501); return false;
-        }
-        if ((type === 0x8363 && format !== 0x1907) ||
-            ((type === 0x8033 || type === 0x8034) && format !== 0x1908)) {
-          recordGlError(b,0x502); return false;
         }
         let unpackBuffer: WebGLBuffer | null = null;
         if (!checkedGlCall(b,()=>{ unpackBuffer=gl.getParameter(0x88ef); })) return false;
