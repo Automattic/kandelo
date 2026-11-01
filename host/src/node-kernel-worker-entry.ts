@@ -1000,6 +1000,10 @@ async function handleInit(msg: InitMessage) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
+      onHostDiagnostic: (diagnostic) => {
+        console.error(diagnostic.message);
+        post({ type: "host_diagnostic", ...diagnostic });
+      },
       onFork: ({
         parentPid,
         childPid,

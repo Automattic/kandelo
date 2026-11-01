@@ -52,7 +52,14 @@ export type GbmBoEntry = {
   /** This pid's binding, or null if the pid holds a handle but
    *  hasn't mmap'd (post-create / post-unbind). */
   binding: GbmBoBinding | null;
+  /** True once a kernel-unmapped CPU mapping's final writeback could not be
+   * published: the BO no longer holds every byte its writers stored. */
+  publicationLost: boolean;
 };
+
+/** A CPU mapping detached after the kernel unmapped it whose final
+ * writeback could not be published into the BO. */
+export type GbmLostPublication = { pid: number; addr: number; len: number; reason: string };
 
 export type GbmBoChangeEvent = "create" | "bind" | "unbind" | "destroy";
 export type GbmBoChangeListener = (
@@ -86,6 +93,8 @@ type InternalEntry = {
   pids: Set<number>;
   bindingsByPid: Map<number, Map<number, InternalBinding>>;
   pendingReaders: Set<number>;
+  /** Sticky until destroy: later readers see the BO is missing writes. */
+  lostPublications: GbmLostPublication[];
 };
 
 type MappingRetirement = {
@@ -155,6 +164,8 @@ export interface GbmBoRegistryOptions {
    * registration may authenticate its Memory at first prime/capture instead. No later
    * publication, import or retirement resolves the PID again. */
   getProcessMemory?: ProcessMemoryResolver;
+  /** A kernel-unmapped mapping was detached without its final writeback. */
+  onPublicationLost?: (event: GbmLostPublication & { bo_id: number }) => void;
 }
 
 export class GbmBoRegistry {
@@ -238,9 +249,11 @@ export class GbmBoRegistry {
     return last;
   }
   private getProcessMemory: ProcessMemoryResolver | null;
+  private onPublicationLost: GbmBoRegistryOptions["onPublicationLost"] | null;
 
   constructor(opts: GbmBoRegistryOptions = {}) {
     this.getProcessMemory = opts.getProcessMemory ?? null;
+    this.onPublicationLost = opts.onPublicationLost ?? null;
   }
 
   setProcessMemoryResolver(fn: ProcessMemoryResolver | null): void {
@@ -267,6 +280,7 @@ export class GbmBoRegistry {
         pids: new Set([b.pid]),
         bindingsByPid: new Map(),
         pendingReaders: new Set(),
+        lostPublications: [],
       });
     }
     for (const l of this.listeners) l(b.pid, b.bo_id, "create");
@@ -420,19 +434,36 @@ export class GbmBoRegistry {
     } finally { this.mutating = false; }
   }
 
+  /**
+   * The kernel has already unmapped this range (munmap, exec or exit), so
+   * the binding is always detached: a binding left for an unmapped range
+   * would publish whatever the process later stores at a reused address.
+   * Returns false when a final writeback could not be published; that loss
+   * is recorded on the BO (publicationLost) and reported to
+   * onPublicationLost. Also false for invalid arguments or reentry.
+   */
   unbind(pid: number, bo_id: number, addr?: number, len?: number): boolean {
     const entry = this.bos.get(bo_id);
     if (this.mutating) return false;
     if (!entry) return true;
     if (addr !== undefined && (!Number.isSafeInteger(addr) || addr < 0 ||
         (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return false;
-    return this.removeMappings(entry, pid, addr, len);
+    return this.removeMappings(entry, pid, addr, len, undefined, true);
+  }
+
+  /** Writebacks lost when kernel-unmapped mappings were detached. */
+  publicationLost(bo_id: number): readonly GbmLostPublication[] {
+    return this.bos.get(bo_id)?.lostPublications ?? [];
   }
 
   /** Stage all descendants and baselines before the first publication. The
-   * optional lineage is capability authority, not a numeric selector. */
+   * optional lineage is capability authority, not a numeric selector.
+   * `unmapped`: the kernel already unmapped the range, so detachment commits
+   * even if a publication fails (the loss is recorded); otherwise (captured
+   * retirement, whose custody keeps the range reserved) a failure leaves
+   * every mapping and fragment pending for a retry. */
   private removeMappings(entry: InternalEntry, pid: number, addr?: number, len?: number,
-    lineage?: MappingLineage): boolean {
+    lineage?: MappingLineage, unmapped = false): boolean {
     if (this.mutating) return false;
     this.mutating = true;
     let committed = false;
@@ -463,15 +494,31 @@ export class GbmBoRegistry {
       const counts = new Map(this.bindingCounts);
       const count = (counts.get(pid) ?? 0) - removed.length + added.length;
       if (count) counts.set(pid,count); else counts.delete(pid);
+      const lost: GbmLostPublication[] = [];
       for (const binding of removed) {
         this.startPublication(binding);
-        if (!this.flushMemoryToSab(entry,binding)) return false;
+        let published = false, reason = "publication failed";
+        try { published = this.flushMemoryToSab(entry,binding); }
+        catch (error) {
+          if (!unmapped || isKernelExportFailure(error)) throw error;
+          reason = String((error as Error)?.message ?? error);
+        }
+        if (published) continue;
+        if (!unmapped) return false;
+        lost.push({pid,addr:binding.addr,len:binding.len,reason});
       }
       for (const {binding,source} of baselines) binding.snapshot.set(source);
       entry.bindingsByPid = nextByPid; this.bindingCounts = counts;
       if (!aliases.size) entry.pendingReaders.delete(pid);
       committed = true;
       this.finishLineages(stagedLineages);
+      if (lost.length) {
+        entry.lostPublications.push(...lost);
+        for (const event of lost) {
+          try { this.onPublicationLost?.({...event,bo_id:entry.bo_id}); }
+          catch (error) { if (isKernelExportFailure(error)) throw error; }
+        }
+      }
       // A notification fault cannot turn an already detached mapping back
       // into a retryable publication. Preserve it separately on captures.
       for (const listener of this.listeners) {
@@ -481,7 +528,7 @@ export class GbmBoRegistry {
           if (isKernelExportFailure(error)) throw error;
         }
       }
-      return true;
+      return lost.length === 0;
     } catch (error) {
       if (isKernelExportFailure(error)) throw error;
       return committed;
@@ -565,7 +612,8 @@ export class GbmBoRegistry {
   }
 
   /** Exec replaces mappings, while non-CLOEXEC GEM handles remain open.
-   * Flush the retiring address space without discarding kernel-owned BOs. */
+   * Flush the retiring address space without discarding kernel-owned BOs.
+   * The mappings always detach; false reports a lost writeback. */
   releaseProcessMappings(pid: number): boolean {
     let complete = true;
     for (const [boId, entry] of this.bos) {
@@ -576,13 +624,16 @@ export class GbmBoRegistry {
 
   /**
    * Retire a process's observed mappings and metadata using each admitted
-   * original address space. A failed publication keeps its mapping pending. Kernel handles (including unmapped
+   * original address space. The process's mappings are gone, so they always
+   * detach; false reports a lost writeback (see unbind). Kernel handles (including unmapped
    * imports) determine storage lifetime; only destroy() can release a BO.
    */
   releaseProcess(pid: number): boolean {
     let complete = true;
     for (const [bo_id, e] of Array.from(this.bos)) {
-      if (e.bindingsByPid.has(pid) && !this.unbind(pid,bo_id)) { complete = false; continue; }
+      if (e.bindingsByPid.has(pid) && !this.unbind(pid,bo_id)) complete = false;
+      // Only a refused reentrant unbind can leave a mapping here.
+      if (e.bindingsByPid.has(pid)) continue;
       if (!e.pids.delete(pid)) continue;
       // pids records observed mappings, not all kernel references. An
       // importer may hold a valid GEM/cursor/PRIME reference without mapping.
@@ -825,6 +876,7 @@ export class GbmBoRegistry {
       h: e.h,
       stride: e.stride,
       binding: (() => { const value = this.latestBinding(e,pid); return value ? {addr:value.addr,len:value.len,...(value.boOffset ? {boOffset:value.boOffset} : {})} : null; })(),
+      publicationLost: e.lostPublications.length > 0,
     };
   }
 }

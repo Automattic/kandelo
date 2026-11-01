@@ -99,9 +99,10 @@ about one native draw per triangle when the faces differ; this is unmeasured.
 
 **Still open in the implementation pass:** `OES_depth_texture` luminance
 sampling and API rules; ADDFB2 offsets and SETCRTC panning at scanout;
-restartable interrupted vblank waits; remaining KMS authority details; a
-`GbmBoRegistry.unbind` flush failure that leaves a mapping attached; and the
-maintainer's decision on the test-only forwarding path.
+restartable interrupted vblank waits; remaining KMS authority details; and
+the maintainer's decision on the test-only forwarding path. (A
+`GbmBoRegistry.unbind` flush failure now always detaches the unmapped range
+and records a per-BO lost publication with a host diagnostic.)
 
 ## Landing scope
 

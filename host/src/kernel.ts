@@ -1,3 +1,4 @@
+import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
 import { cpuImageKey } from "./webgl/cpu-image-storage.js";
@@ -818,6 +819,9 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /** A host-runtime failure the guest cannot observe through a syscall,
+   * delivered as a host_diagnostic message by the worker entry. */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /**
    * Observe a persistent kernel-realm wrapper of process Memory for weak
    * retirement telemetry. This callback must not retain either argument.
@@ -999,7 +1003,12 @@ export class WasmPosixKernel {
    * consumers read pixels by projecting that range onto the process
    * Memory SAB (same model as the mmap-based framebuffer binding).
    */
-  readonly bos = new GbmBoRegistry();
+  // A kernel-unmapped CPU mapping always detaches; a final writeback that
+  // could not be published is recorded on the BO and reported here.
+  readonly bos = new GbmBoRegistry({ onPublicationLost: ({ pid, bo_id, addr, len, reason }) =>
+    this.callbacks.onHostDiagnostic?.({ pid, source: "GBM buffer mapping",
+      message: `GBM BO ${bo_id}: the final writeback of the unmapped range 0x${addr.toString(16)}+${len} `
+        + `could not be published (${reason}); the buffer is missing those writes` }) });
   readonly kms = new KmsRegistry(this.bos, (bo, width, height) => this.gpuCursor(bo, width, height));
   /**
    * Live `/dev/dri/renderD128` GLES sessions. The kernel reports
@@ -1362,6 +1371,8 @@ export class WasmPosixKernel {
       // WHY: Rust already closed CLOEXEC descriptors. Remaining GEM handles,
       // scanout and cursor references belong to surviving open descriptions,
       // not to the old address space. Only their mappings retire here.
+      // Like exit below, these mappings always detach; a false result only
+      // reports lost writebacks, already recorded and diagnosed per BO.
       this.bos.releaseProcessMappings(pid);
     } else {
       this.bos.releaseProcess(pid);
@@ -2781,6 +2792,9 @@ export class WasmPosixKernel {
           len: KernelPointer,
         ): void => {
           const range = this.#checkedKernelSpan(addr,len,Number.MAX_SAFE_INTEGER,"host_gbm_bo_unbind BO range");
+          // The kernel has unmapped the range: the registry always detaches
+          // it. A false result means a lost final writeback, which the
+          // registry records on the BO and reports via onHostDiagnostic.
           this.bos.unbind(pid, bo_id, range.offset, range.length);
         },
         // /dev/dri/renderD128 GL hooks. The cmdbuf lives in the process's

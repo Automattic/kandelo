@@ -1,3 +1,4 @@
+import type { HostDiagnostic } from "./host-diagnostic.js";
 import { KMS_CURSOR_RECORD_BYTES } from "./dri/kms-cursor-protocol.js";
 import type { GlResultOwner } from "./webgl/owned-result.js";
 import { GLIO_QUERY } from "./webgl/ops.js";
@@ -2113,6 +2114,8 @@ export interface CentralizedKernelCallbacks {
     memory: WebAssembly.Memory,
     target: object,
   ) => void;
+  /** Kernel-realm host diagnostics (for example a lost GBM writeback). */
+  onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
   /**
    * Called exactly once when the kernel instance can no longer be used
    * safely by any process.
@@ -3451,6 +3454,9 @@ export class CentralizedKernelWorker {
         target: object,
       ): void => {
         this.callbacks.onProcessMemoryTarget?.(memory, target);
+      },
+      onHostDiagnostic: (diagnostic: HostDiagnostic): void => {
+        this.callbacks.onHostDiagnostic?.(diagnostic);
       },
       // KMS scanout canvas lookup for the GL bridge's auto-attach
       // path. `host_gl_create_context` calls this when a DRM-master
