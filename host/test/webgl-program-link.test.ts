@@ -121,6 +121,38 @@ function setup() {
 }
 
 describe("program link attempts and installed executables", () => {
+  it("merges fallback and native error flags once in the ordinary query handler", () => {
+    const {b,native,query} = setup();
+    b.errors.push(0x501);
+    native.error = 0x502;
+    const flags = [query(O.QOP_GET_ERROR,[0x67])];
+    for (let i=0;i<4;i++) flags.push(query(O.QOP_GET_ERROR));
+    expect(new Set(flags)).toEqual(new Set([0x500,0x501,0x502,0x505,0x506]));
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+    expect(b.errors).toEqual([]);
+    expect(query(O.QOP_GET_ERROR,[1])).toBe(0x500);
+    expect(query(O.QOP_GET_ERROR)).toBe(0);
+  });
+
+  it.each([
+    ["short input",new Uint8Array(1),4],
+    ["long input",new Uint8Array(8),4],
+    ["unsupported flag",new Uint8Array([8,0,0,0]),4],
+    ["high flag",new Uint8Array([0,0,0,128]),4],
+    ["short output",new Uint8Array([1,0,0,0]),3],
+  ] as const)("rejects %s without draining the ordinary error owner", (_name,input,capacity) => {
+    const {b,native} = setup();
+    b.errors.push(0x501);
+    native.error = 0x502;
+    const calls = vi.spyOn(native,"getError");
+    const output = new Uint8Array(capacity).fill(0xcc);
+    expect(runGlQuery(b,O.QOP_GET_ERROR,input,output)).toBe(-22);
+    expect(calls).not.toHaveBeenCalled();
+    expect(b.errors).toEqual([0x501]);
+    expect(native.error).toBe(0x502);
+    expect([...output]).toEqual(Array(capacity).fill(0xcc));
+  });
+
   it.each(["named","current","query pin"] as const)("never deletes an unknown %s owner while eligibility inspection is failing",kind=>{
     const parent=setup();let target=parent.b;
     let lease:ReturnType<GlContextRegistry["retainContextExecution"]>=null,pin:GlProgramQueryPin|null=null;

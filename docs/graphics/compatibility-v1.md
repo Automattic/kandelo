@@ -18245,3 +18245,67 @@ identities are in mutable worktree
 `results/final-identities.json`. This evidence establishes normal Node
 guest callback behavior. It does not establish Start-menu navigation,
 ScummVM rendering, browser parity, performance or full POSIX conformance.
+
+### Ordinary host error-mask admission on the combined source
+
+The ordinary `runGlQuery` GET_ERROR handler previously ignored the optional
+four-byte C fallback mask, although the private retained-query adapter
+already supported it. The shared handler now validates the input mask
+and output capacity before its native work, merges the five GLES 2.0
+flags into the same logical owner as native and command-trailer flags,
+and writes the reply before removing its queue head. Both ordinary and
+private retained-query paths use one mask parser. No operation number,
+wire layout or numeric ABI changes.
+
+Four focused host suites pass 154 cases, including six new ordinary-route
+cases for fallback/native deduplication and malformed input/output
+preserving the native and logical error owners. Evidence is in primary
+`.context/graphics-main-integration-review-r1/error-mask-r2/`. The first
+private runner configuration fails to resolve its Vitest import before
+loading any tests; that startup failure remains separately recorded in
+`error-mask-r1/`. The corrected configuration imports the checkout's
+normal host configuration and selects actual host functions with native
+device doubles. It does not load guest kernels/programs or a browser.
+
+This closes optional-mask handling in that shared function, not the
+end-to-end result transaction. Host-to-kernel and kernel-to-guest copyout
+failures, forwarding acknowledgments, retained public query scheduling
+and final open-file-description retirement remain ordinary open work.
+No browser, guest, rendering, POSIX or baseline completion is claimed.
+
+### Canonical combined ABI and own SDK reconstruction
+
+Integration `2f2fceb7c5fe4ab79ae616c0610fdf9b423c3dce` preserves the
+broader follow-up, newer ports/main merge, repaired C transport controls
+and the child-watch source/evidence commits through a normal merge.
+Job `graphics-canonical-abi-r2-1031-202953-c9a2` finishes 0 in 220 seconds.
+It compiles the actual combined kernel, regenerates ABI outputs from its
+exports, builds both own complete SDK widths, passes canonical layout
+and ABI checks, and regenerates/checks the standalone resolver. The
+previously provisional export unions match the canonical outputs
+byte-for-byte; no generated source diff or numeric ABI bump results.
+Program 56 / host 3 / GL 17 / fork 21 remains coherent. Program digest:
+`cdd38c6387544155c1a25773a0a6f3bcae6a50548bf8e33341c87dfd48075cd8`.
+
+The unstamped canonical kernel is 1,864,501 bytes, SHA256
+`0edf6af8c04d7e63762f78ed3a62812b91496f7c43fc907f027b168380da2ac0`.
+Snapshot SHA256 is
+`a2f193c248572b3eda1744b76bb14787864dc1d865b0f40e8e8db918a23313c4`;
+generated host constants SHA256 is
+`4184cdaba7a74c17902c25d13412acbf1d1cfe584047902ac9fe75a9e84fc451`.
+Exact logs, input hashes and output receipt are in primary
+`.context/graphics-main-integration-review-r1/canonical-abi-r2/`.
+Its outer job metadata records the primary driver checkout; the helper
+explicitly changes to the integration checkout and guards its actual
+HEAD and Rust/Cargo inputs before and after. Both checkouts' declared
+flake and dev-shell sources are identical. The earlier R1 fails its
+layout check because the retired integration sysroot is absent; that
+provisioning failure remains recorded. R2 reconstructs the own sysroots
+through the normal path and does not borrow another checkout's SDK.
+
+These are canonical generation/build checks. Normal resolver-stamped
+combined program/kernel/image products, complete Rust/host suites,
+upstream CTS, desktop/browser rendering, browser-memory and required
+POSIX suites remain pending. The separate primary540b desktop producer
+is still running; neither this kernel nor narrow host controls create
+a new available preview.

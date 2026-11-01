@@ -15,8 +15,8 @@ import { glSubmitExecuting, runGlRendererOperation } from "./submit-drain.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import { runGlQuery } from "./query.js";
 import { prepareGlUniformQuery, validGlUniformQueryShape, type GlUniformQueryCandidate } from "./uniform-query-candidate.js";
-import { prepareGlErrorQuery } from "./error-query.js";
-import { GL_CLIENT_ERROR_MASK, captureNativeGlErrors } from "./errors.js";
+import { prepareGlErrorQuery, readGlErrorQueryMask } from "./error-query.js";
+import { captureNativeGlErrors } from "./errors.js";
 import { repairNativeState } from "./native-recovery.js";
 import * as O from "./ops.js";
 
@@ -50,8 +50,7 @@ function validShape(b:QueryBegin):number {
   if (b.op===O.QOP_GET_UNIFORM_LOC || b.op===O.QOP_LOOKUP_UNIFORM)
     return validGlUniformQueryShape(b.op,b.input,b.capacity) ? 0 : E.EINVAL;
   if (b.op===O.QOP_GET_ERROR) {
-    if (b.capacity!==4 || (b.input.byteLength!==0 && b.input.byteLength!==4)) return E.EINVAL;
-    return b.input.byteLength && (new DataView(b.input.buffer,b.input.byteOffset,4).getUint32(0,true)&~GL_CLIENT_ERROR_MASK) ? E.EINVAL : 0;
+    return b.capacity===4 && readGlErrorQueryMask(b.input)!==null ? 0 : E.EINVAL;
   }
   if (sourceFence(b.op) || b.op===O.QOP_CREATE_FENCE)
     return b.input.byteLength===4 && b.capacity===16 && new DataView(b.input.buffer,b.input.byteOffset,4).getUint32(0,true)!==0 ? 0 : E.EINVAL;

@@ -40,7 +40,8 @@ import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, currentProgramName, recordGlError } from "./program-objects.js";
-import { captureNativeGlErrors } from "./errors.js";
+import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
+import { readGlErrorQueryMask } from "./error-query.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
 const GL_VENDOR = 0x1F00;
@@ -137,6 +138,8 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
+  const errorMask = op === O.QOP_GET_ERROR ? readGlErrorQueryMask(input) : 0;
+  if (op === O.QOP_GET_ERROR && (errorMask === null || out.byteLength < 4)) return -22;
   if (interruptUniformUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
@@ -261,9 +264,12 @@ export function runGlQuery(
 
   switch (op) {
     case O.QOP_GET_ERROR:
-      if (out.byteLength < 4) return -22;
       captureNativeGlErrors(gl, b);
-      outDv.setUint32(0, b.errors.shift() ?? 0, true);
+      // Failed command submission can leave C flags for this fallback route.
+      // Merge into the same owner as native/trailer flags, without duplicates.
+      mergeClientGlErrors(b, errorMask!);
+      outDv.setUint32(0, b.errors[0] ?? 0, true);
+      b.errors.shift();
       return 4;
 
     // in: u32 name, optional u32 opVersion for extensions;
