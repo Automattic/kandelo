@@ -3889,12 +3889,22 @@ int main(int argc, char **argv) {
             modified[length - 3 + 5] = 1;
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modified));
             assert(eglGetError() == EGL_BAD_PARAMETER);
-            /* A plane in GPU-tier storage has no CPU bytes to convert. */
+            /* GPU-tier planes are textures read from their origins, each of
+             * the plane's own format (the kernel checks R8, then GR88). */
             dmabuf_cpu_tier = 0;
-            unsigned imported = imports, closed = closes;
+            unsigned imported = imports, closed = closes, checks = format_checks;
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12));
-            /* The first plane's import is released again. */
-            assert(eglGetError() == EGL_BAD_ACCESS && imports == imported + 1 && closes == closed + 1);
+            /* A chroma plane past a texture's origin: both imports released. */
+            assert(eglGetError() == EGL_BAD_ACCESS && imports == imported + 2 && closes == closed + 1);
+            EGLint origins[sizeof nv12 / sizeof nv12[0]]; memcpy(origins,nv12,sizeof nv12); origins[15] = 0;
+            value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,origins);
+            assert(value && format_checks == checks + 3 && checked_format == 0x38385247u);
+            assert(eglDestroyImageKHR(dpy,value));
+            /* Storage of another format is EGL_BAD_MATCH. */
+            check_format_errno = EINVAL;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,origins));
+            assert(eglGetError() == EGL_BAD_MATCH && checked_format == 0x20203852u);
+            check_format_errno = 0;
             dmabuf_cpu_tier = 1;
             /* The image is external-only: TEXTURE_2D and renderbuffers refuse
              * it; TEXTURE_EXTERNAL_OES imports its planes and conversion. */

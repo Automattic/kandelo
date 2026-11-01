@@ -3,19 +3,21 @@ import type { GbmBoRegistry } from "../dri/registry.js";
 import type { GlBinding } from "./registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { readGbmFront } from "./gbm-front-copy.js";
-import { applyNativeChanges, nativeInverse, retireNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
+import { applyNativeChanges, nativeGlFault, nativeInverse, retireNativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./image-writes.js";
-import { drmFormatInfo, planeHeight, rowBytes } from "./drm-format-info.js";
+import { drmFormatInfo, planeHeight, planeWidth, rowBytes } from "./drm-format-info.js";
 import { convertYuv, yuvOutputBits, type YuvColorSpace } from "./yuv-convert.js";
-import type { GpuStorageFormat } from "./gpu-storage-format.js";
+import { gpuStorageFormat, type GpuStorageFormat } from "./gpu-storage-format.js";
+import { YuvGpuConverter, yuvGpuFormat } from "./yuv-gpu-convert.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
 
-/** A YUV dma-buf image (DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE): one CPU-tier
- * plane per plane of the format, and its conversion. `siting` holds the
+/** A YUV dma-buf image (DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE): one plane per
+ * plane of the format, each in CPU-tier bytes or GPU-tier storage of its
+ * plane format, and its conversion. `siting` holds the
  * WPK_CHROMA_SITING_* bits (1: horizontal 0.5, 2: vertical 0.5). */
 export type PlanarImageLayout = {width: number; height: number; format: number;
   planes: readonly {bo: number; pitch: number; offset: number}[];
@@ -43,10 +45,41 @@ export function planarImageRecord(record: DataView): PlanarImageLayout | null {
  * for P010, so no sample loses precision to the image. */
 const RGBA8_IMAGE: GpuStorageFormat = {internalFormat: 0x8058, format: 0x1908, type: 0x1401, opaque: true};
 const RGB10_A2_IMAGE: GpuStorageFormat = {internalFormat: 0x8059, format: 0x1908, type: 0x8368, opaque: true};
+/** GPU-tier storage of a YUV plane's object (a GBM GPU buffer or an
+ * exported GLES image): its native texture or renderbuffer, whose write
+ * count (image-writes.ts) tells when it changed, and a framebuffer reading
+ * it. */
+export type PlanarPlaneStorage = {
+  gl: WebGL2RenderingContext;
+  native: object;
+  read: WebGLFramebuffer;
+  w: number;
+  h: number;
+  internalFormat: number;
+};
+/** What a GPU-tier plane needs from the kernel host. */
+export type PlanarGpuHost = {
+  /** The GPU-tier storage of `bo`; undefined for a CPU-tier object. */
+  plane(bo: number): PlanarPlaneStorage | undefined;
+  /** Run `work` in a private native pass on `b.gl` and select `b` again
+   *  after it. False when the renderer was lost; a native error in the
+   *  pass is a fatal host fault. */
+  pass(b: GlBinding, work: () => void): boolean;
+};
+/** One plane of a GPU-converted YUV image: the private texture the shader
+ * reads (yuv-gpu-convert.ts), and where its contents come from. */
+type PlanarStage = {
+  allocation: GlGpuAllocation;
+  /** GPU-tier storage; null for a CPU-tier plane, uploaded from bytes. */
+  source: PlanarPlaneStorage | null;
+  /** The source's write count (storage or bo) when last staged. */
+  staged: number | null;
+};
 /** A YUV image converted to RGBA. It is never rendered to (external
  * textures and YUV images are never render targets), so it is never read
- * back; it is converted again only when a plane's canonical bytes were
- * written (GbmBoRegistry.writeCount). */
+ * back; it is converted again only when a plane was written: a CPU-tier
+ * plane's canonical bytes (GbmBoRegistry.writeCount) or a GPU-tier plane's
+ * storage (image-writes.ts). */
 type PlanarMirror = {
   layout: PlanarImageLayout;
   allocation: GlGpuAllocation;
@@ -54,6 +87,8 @@ type PlanarMirror = {
   converted: Map<number, number> | null;
   /** With the write-count audit on: the plane bos' bytes converted. */
   audited: Map<number, Uint8Array<ArrayBuffer>> | null;
+  /** With any GPU-tier plane: every plane staged for the GPU converter. */
+  stages: PlanarStage[] | null;
 };
 type Mirror = {
   layout: CpuImageLayout;
@@ -74,6 +109,10 @@ export class CpuImageStorage {
   private mirrors = new Map<number, Map<WebGL2RenderingContext, Map<string, Mirror>>>();
   private planar = new Map<WebGL2RenderingContext, Map<string, PlanarMirror>>();
   private planarByBo = new Map<number, Set<PlanarMirror>>();
+  private planarGpu: PlanarGpuHost | null = null;
+
+  /** The kernel host gives GPU-tier YUV planes their storage and passes. */
+  attachPlanarGpu(host: PlanarGpuHost): void { this.planarGpu = host; }
 
   acquire(b: GlBinding, bo: number, store: GbmBoRegistry, layout: CpuImageLayout): GlGpuAllocation | null {
     const gl = b.gl, bytes = store.pixelView(bo);
@@ -106,13 +145,28 @@ export class CpuImageStorage {
   }
 
   /** The converted image of a YUV dma-buf, made on first import of this
-   * layout in this renderer. Null when a plane's object is not CPU storage
-   * or cannot hold the plane's rows. */
+   * layout in this renderer. Null when a plane's object cannot hold the
+   * plane's rows or its GPU storage lives in another renderer. */
   acquirePlanar(b: GlBinding, store: GbmBoRegistry, layout: PlanarImageLayout): GlGpuAllocation | null {
     const gl = b.gl, info = drmFormatInfo(layout.format), {width, height, planes} = layout;
     if (!gl || !info?.isYuv || planes.length !== info.numPlanes || !Number.isSafeInteger(width) ||
         !Number.isSafeInteger(height) || width <= 0 || height <= 0) return null;
+    const sources: (PlanarPlaneStorage | null)[] = [];
     for (const [index, plane] of planes.entries()) {
+      const source = this.planarGpu?.plane(plane.bo) ?? null;
+      sources.push(source);
+      if (source) {
+        // The kernel admitted this plane only as GPU storage of the
+        // plane's own format at its origin; anything else here means the
+        // kernel and host disagree about the object.
+        const expected = gpuStorageFormat(info.planeFormats[index])?.internalFormat;
+        if (!yuvGpuFormat(layout.format) || plane.offset !== 0 || source.internalFormat !== expected ||
+            source.w < planeWidth(info, width, index) || source.h < planeHeight(info, height, index))
+          nativeGlFault(`YUV plane ${index} (bo ${plane.bo}) is not GPU storage the kernel admitted`);
+        // A WebGL texture belongs to one context.
+        if (source.gl !== gl) return null;
+        continue;
+      }
       const bytes = store.pixelView(plane.bo), row = rowBytes(info, width, index);
       const span = plane.offset + (planeHeight(info, height, index) - 1) * plane.pitch + row;
       if (!bytes ||
@@ -123,11 +177,28 @@ export class CpuImageStorage {
     let views = this.planar.get(gl);
     const old = views?.get(key);
     if (old) return old.allocation.retirement.pending ? null : old.allocation;
+    // A GPU-tier plane makes the whole image a GPU conversion: every plane
+    // is staged in a texture of its plane format.
+    let stages: PlanarStage[] | null = null;
+    if (sources.some(source => source)) {
+      stages = [];
+      for (const [index, source] of sources.entries()) {
+        const storage = gpuStorageFormat(info.planeFormats[index])!;
+        let stage: PlanarStage | null = null;
+        allocateGpuStorage(gl, planeWidth(info, width, index), planeHeight(info, height, index), 0,
+          allocation => { stage = {allocation, source, staged: null}; }, storage);
+        if (!stage) {
+          for (const made of stages) retireNativeRetirement(made.allocation.retirement);
+          return null;
+        }
+        stages.push(stage);
+      }
+    }
     const storage = yuvOutputBits(layout.format) === 10 ? RGB10_A2_IMAGE : RGBA8_IMAGE;
     let result: GlGpuAllocation | null = null;
     allocateGpuStorage(gl, width, height, 0, allocation => {
       const mirror: PlanarMirror = {layout: {...layout, planes: planes.map(plane => ({...plane}))},
-        allocation, converted: null, audited: null};
+        allocation, converted: null, audited: null, stages};
       if (!views) { views = new Map(); this.planar.set(gl, views); }
       views.set(key, mirror);
       for (const plane of planes) {
@@ -137,6 +208,7 @@ export class CpuImageStorage {
       }
       result = allocation;
     }, storage);
+    if (!result && stages) for (const made of stages) retireNativeRetirement(made.allocation.retirement);
     return result;
   }
 
@@ -144,6 +216,7 @@ export class CpuImageStorage {
    * conversion. The canonical bytes' write counts decide: a CPU writer's
    * mapping is merged (syncToSab) before its count is read. */
   private preparePlanar(b: GlBinding, store: GbmBoRegistry, mirror: PlanarMirror): boolean {
+    if (mirror.stages) return this.preparePlanarGpu(b, store, mirror, mirror.stages);
     const bos = [...new Set(mirror.layout.planes.map(plane => plane.bo))];
     const counts = new Map<number, number>();
     for (const bo of bos) {
@@ -159,7 +232,7 @@ export class CpuImageStorage {
       for (const bo of bos) {
         const bytes = store.pixelView(bo)!, before = mirror.audited?.get(bo);
         if (before && (before.length !== bytes.length || bytes.some((value, i) => value !== before[i])))
-          throw new Error(`YUV image plane bo ${bo} changed without a counted write`);
+          nativeGlFault(`YUV image plane bo ${bo} changed without a counted write`);
       }
       return true;
     }
@@ -175,6 +248,54 @@ export class CpuImageStorage {
     if (!this.uploadPixels(b, mirror.allocation, pixels, storage.format, storage.type)) return false;
     mirror.converted = counts;
     mirror.audited = imageWriteAudit() ? new Map(bos.map(bo => [bo, new Uint8Array(store.pixelView(bo)!)])) : null;
+    return true;
+  }
+
+  /** Convert a YUV image with GPU-tier planes on the GPU, only when a
+   * plane was written since it was last staged: a GPU-tier plane's storage
+   * write count, a CPU-tier plane's canonical bytes' write count. Only the
+   * planes written are staged again. */
+  private preparePlanarGpu(b: GlBinding, store: GbmBoRegistry, mirror: PlanarMirror,
+      stages: readonly PlanarStage[]): boolean {
+    const counts: number[] = [];
+    for (const [index, stage] of stages.entries()) {
+      if (stage.source) { counts.push(storageWrites(stage.source.native).count); continue; }
+      const bo = mirror.layout.planes[index].bo;
+      store.syncToSab(bo);
+      const count = store.writeCount(bo);
+      if (count === undefined) return false;
+      counts.push(count);
+    }
+    const written = stages.flatMap((stage, index) => stage.staged === counts[index] ? [] : [index]);
+    if (!written.length) return true;
+    const {layout, allocation} = mirror, info = drmFormatInfo(layout.format)!;
+    // CPU-tier rows are packed before the pass, so a malformed plane fails
+    // before any native work.
+    const rows = new Map<number, Uint8Array>();
+    for (const index of written) {
+      if (stages[index].source) continue;
+      const {bo, offset, pitch} = layout.planes[index], bytes = store.pixelView(bo);
+      if (!bytes) return false;
+      const row = rowBytes(info, layout.width, index), count = planeHeight(info, layout.height, index);
+      const packed = new Uint8Array(row * count);
+      for (let y = 0; y < count; y++) packed.set(bytes.subarray(offset + y * pitch, offset + y * pitch + row), y * row);
+      rows.set(index, packed);
+    }
+    const planesOf = stages.map(stage => stage.allocation.tex);
+    const conversion = {colorSpace: layout.colorSpace, fullRange: layout.fullRange,
+      sitingH: layout.siting & 1 ? 0.5 as const : 0 as const, sitingV: layout.siting & 2 ? 0.5 as const : 0 as const};
+    if (!this.planarGpu?.pass(b, () => {
+      const converter = YuvGpuConverter.for(allocation.gl);
+      for (const index of written) {
+        const stage = stages[index], {w, h} = stage.allocation;
+        if (stage.source) converter.copy(stage.source.read, stage.allocation.fbo, w, h);
+        else converter.upload(stage.allocation.tex, w, h, stage.allocation.storage.format, rows.get(index)!);
+      }
+      converter.convert(allocation.fbo, planesOf, layout.format, layout.width, layout.height, conversion);
+    })) return false;
+    for (const index of written) stages[index].staged = counts[index];
+    // Siblings sampling the image copy it again (image-writes.ts).
+    noteStorageWrite(allocation.tex);
     return true;
   }
 
@@ -326,7 +447,9 @@ export class CpuImageStorage {
     // A YUV image needs every plane: any plane's object retiring retires it.
     let complete = true;
     for (const mirror of [...this.planarByBo.get(bo) ?? []]) {
-      if (!retireNativeRetirement(mirror.allocation.retirement)) { complete = false; continue; }
+      let retired = true;
+      for (const stage of mirror.stages ?? []) retired = retireNativeRetirement(stage.allocation.retirement) && retired;
+      if (!retireNativeRetirement(mirror.allocation.retirement) || !retired) { complete = false; continue; }
       const gl = mirror.allocation.gl, views = this.planar.get(gl);
       views?.delete(planarImageKey(mirror.layout));
       if (views && !views.size) this.planar.delete(gl);

@@ -686,9 +686,8 @@ static void release_plane_handles_locked(struct gbm_device *dev, const uint32_t 
  * stride * rows must fit in that plane's dma-buf, whose size PRIME
  * lseek(SEEK_END) reports (Linux dma_buf_llseek). The tier comes from the
  * kernel too: MAP_DUMB fails with EINVAL only for an unmappable GPU-tier BO,
- * which is then marked exactly as a native GPU allocation is. A YUV plane
- * is read from CPU bytes when its image is converted, so it must not be
- * GPU-tier storage. */
+ * which is then marked exactly as a native GPU allocation is; its storage
+ * must be the plane's format. */
 static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, const int *fds,
                                     uint32_t width, uint32_t height, uint32_t format,
                                     const uint32_t *strides, const uint32_t *offsets, uint32_t usage) {
@@ -712,7 +711,7 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
     struct gbm_bo *bo = calloc(1, sizeof *bo);
     if (!bo) { release_device(gbm); errno = ENOMEM; return NULL; }
     uint32_t handles[GBM_MAX_PLANES] = {0};
-    int error = 0;
+    int error = 0, any_gpu = 0;
     pthread_mutex_lock(&handle_mutex);
     for (unsigned plane = 0; plane < count && !error; plane++) {
         struct drm_prime_handle req = {.fd = fds[plane]};
@@ -730,18 +729,22 @@ static struct gbm_bo *import_planes(struct gbm_device *gbm, unsigned count, cons
         if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) gpu = 0;
         else if (errno == EINVAL) gpu = 1;
         else { error = errno; break; }
-        if (gpu && layout->is_yuv) { error = EINVAL; break; }
         /* A GPU-tier BO is a texture of its own format: the claimed format
-         * must name that storage (Mesa's import likewise rejects a format
-         * the driver cannot sample the buffer as). */
+         * (for a YUV plane, the plane's format: NV12's luma R8, its chroma
+         * GR88) must name that storage (Mesa's import likewise rejects a
+         * format the driver cannot sample the buffer as). */
         if (gpu) {
-            struct wpk_drm_check_bo_format check = {.handle = req.handle, .format = format};
+            /* A texture has no byte addressing: a plane starts at its
+             * origin or nowhere. */
+            if (layout->is_yuv && offsets[plane] != 0) { error = EINVAL; break; }
+            struct wpk_drm_check_bo_format check = {.handle = req.handle, .format = layout->plane_formats[plane]};
             if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) { error = errno; break; }
         }
         if (plane == 0) bo->is_gpu = gpu;
+        any_gpu |= gpu;
     }
-    /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. */
-    if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
+    /* gbm_bo_write needs CPU storage a GPU-tier plane does not have. */
+    if (!error && any_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
     if (error) {
         release_plane_handles_locked(gbm, handles, count);
         pthread_mutex_unlock(&handle_mutex);

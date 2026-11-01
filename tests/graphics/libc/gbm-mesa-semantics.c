@@ -832,14 +832,33 @@ static void import_yuv(void) {
         assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &bad[i], 0) && errno == EINVAL);
         assert(!live[handle] && !live[chroma]); /* no name outlives a refusal */
     }
-    /* A GPU-tier object has no CPU bytes for a YUV plane to be read from. */
-    uint32_t gpu = new_handle(1);
-    int gpu_fd = prime_fd(gpu, 40);
+    /* GPU-tier planes are textures of the plane formats: NV12 luma R8 and
+     * chroma GR88, each at its object's origin. */
+    uint32_t gpu = new_handle(1), gpu_chroma = new_handle(1);
+    gpu_format[gpu] = DRM_FORMAT_R8; gpu_format[gpu_chroma] = DRM_FORMAT_GR88;
+    int gpu_fd = prime_fd(gpu, 40), gpu_chroma_fd = prime_fd(gpu_chroma, 40);
     struct gbm_import_fd_modifier_data texture = base;
-    texture.fds[0] = texture.fds[1] = gpu_fd;
+    texture.fds[0] = gpu_fd; texture.fds[1] = gpu_chroma_fd; texture.offsets[1] = 0;
+    unsigned checks = format_checks;
+    bo = gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &texture, 0);
+    assert(bo && format_checks == checks + 2 && gbm_bo_get_handle_for_plane(bo, 1).u32 == gpu_chroma);
+    gbm_bo_destroy(bo);
+    assert(!live[gpu] && !live[gpu_chroma]);
+    /* gbm_bo_write needs CPU bytes no GPU plane has, even beside a CPU one. */
+    struct gbm_import_fd_modifier_data mixed = texture;
+    mixed.fds[0] = fd;
     errno = 0;
-    assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &texture, 0) && errno == EINVAL);
-    assert(!live[gpu]);
+    assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &mixed, GBM_BO_USE_WRITE) && errno == EINVAL);
+    assert(!live[handle] && !live[gpu_chroma]);
+    struct gbm_import_fd_modifier_data wrong[3] = {texture, texture, texture};
+    wrong[0].fds[0] = gpu_chroma_fd;   /* a GR88 texture is not a luma plane */
+    wrong[1].fds[1] = gpu_fd;          /* nor is an R8 texture a chroma plane */
+    wrong[2].offsets[1] = 24;          /* a texture has no byte offsets */
+    for (unsigned i = 0; i < 3; ++i) {
+        errno = 0;
+        assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD_MODIFIER, &wrong[i], 0) && errno == EINVAL);
+        assert(!live[gpu] && !live[gpu_chroma]);
+    }
     /* GBM_BO_IMPORT_FD names one plane: a packed YUV format, not NV12. */
     struct gbm_import_fd_data single = {.fd = fd, .width = 5, .height = 3, .stride = 8,
         .format = GBM_FORMAT_NV12};
@@ -852,7 +871,7 @@ static void import_yuv(void) {
     single.stride = 10; /* 5 pixels end inside a third Y0,Cb,Y1,Cr group */
     errno = 0;
     assert(!gbm_bo_import(device, GBM_BO_IMPORT_FD, &single, 0) && errno == EINVAL);
-    close(gpu_fd); close(chroma_fd); close(fd);
+    close(gpu_fd); close(gpu_chroma_fd); close(chroma_fd); close(fd);
     close_device(device);
 }
 

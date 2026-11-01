@@ -5,8 +5,8 @@ import { DRM_FORMATS, drmFormatInfo, planeHeight, planeWidth, rowBytes } from ".
 
 const root = resolve(import.meta.dirname, "../..");
 type Row = { format: number; numPlanes: number; cpp: number[]; hsub: number; vsub: number; isYuv: boolean;
-  gpuStorage: number; opaque: boolean };
-const host: Row[] = DRM_FORMATS.map(info => ({ ...info, cpp: [...info.cpp] }));
+  gpuStorage: number; opaque: boolean; planeFormats: number[] };
+const host: Row[] = DRM_FORMATS.map(info => ({ ...info, cpp: [...info.cpp], planeFormats: [...info.planeFormats] }));
 
 it("keeps one DRM format table in Rust, C and TypeScript", () => {
   const rust = readFileSync(resolve(root, "crates/shared/src/lib.rs"), "utf8");
@@ -20,22 +20,21 @@ it("keeps one DRM format table in Rust, C and TypeScript", () => {
     if (kind === "rgb") {
       const [cpp, gpuStorage, opaque] = rest.split(", ");
       return { format, numPlanes: 1, cpp: [Number(cpp), 0, 0], hsub: 1, vsub: 1, isYuv: false,
-        gpuStorage: storage.get(gpuStorage)!, opaque: opaque === "true" };
+        gpuStorage: storage.get(gpuStorage)!, opaque: opaque === "true", planeFormats: [format, 0, 0] };
     }
-    const [planes, cpp, h, v] = rest.match(/^(\d+), \[(\d+), (\d+), (\d+)\], (\d+), (\d+)$/)!.slice(1).map(Number)
-      .reduce<[number, number[], number, number]>((acc, n, i) => {
-        if (i === 0) acc[0] = n; else if (i <= 3) acc[1].push(n); else if (i === 4) acc[2] = n; else acc[3] = n;
-        return acc;
-      }, [0, [], 0, 0]);
-    return { format, numPlanes: planes, cpp, hsub: h, vsub: v, isYuv: true, gpuStorage: 0, opaque: false };
+    const [, planes, c0, c1, c2, h, v, formats] =
+      rest.match(/^(\d+), \[(\d+), (\d+), (\d+)\], (\d+), (\d+), \[([^\]]*)\]$/)!;
+    const planeFormats = formats.split(", ").map(name => name === "0" ? 0 : constants.get(name)!);
+    return { format, numPlanes: Number(planes), cpp: [c0, c1, c2].map(Number), hsub: Number(h), vsub: Number(v),
+      isYuv: true, gpuStorage: 0, opaque: false, planeFormats };
   });
   const c = readFileSync(resolve(root, "libc/glue/drm_format_info.h"), "utf8");
   const cRows: Row[] = [...c.matchAll(/^\s*WPK_FMT_(RGB|YUV)\((0x[0-9a-f]+)u, ([^)]*)\),/gm)].map(([, kind, fourcc, rest]) => {
     const format = Number(fourcc), values = rest.split(",").map(value => Number(value.trim().replace(/u$/, "")));
     if (kind === "RGB") return { format, numPlanes: 1, cpp: [values[0], 0, 0], hsub: 1, vsub: 1, isYuv: false,
-      gpuStorage: values[1], opaque: values[2] === 1 };
+      gpuStorage: values[1], opaque: values[2] === 1, planeFormats: [format, 0, 0] };
     return { format, numPlanes: values[0], cpp: values.slice(1, 4), hsub: values[4], vsub: values[5], isYuv: true,
-      gpuStorage: 0, opaque: false };
+      gpuStorage: 0, opaque: false, planeFormats: values.slice(6, 9) };
   });
   expect(host.length).toBe(20);
   expect(rustRows).toEqual(host);

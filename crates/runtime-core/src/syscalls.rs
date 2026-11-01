@@ -2338,16 +2338,24 @@ pub(crate) fn handle_dri_ioctl(
                 let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
             }
-            // The host reads each plane's bytes when it converts the image,
-            // so every plane is CPU-tier storage that holds its rows: a
-            // pitch of at least one row and a last row inside the object.
+            // Every plane holds its rows: a pitch of at least one row, and
+            // a CPU-tier plane's last row inside its object. A GPU-tier
+            // plane is a texture of the plane's own format (an NV12 luma
+            // plane R8, its chroma GR88; drm_format_info's plane formats),
+            // read from its origin and within its extent; storage of any
+            // other format is not that plane (as CHECK_BO_FORMAT decides).
             for plane in 0..planes {
                 let row = info.row_bytes(req.width, plane);
                 let rows = u64::from(info.plane_height(req.height, plane));
                 let span = u64::from(req.offsets[plane]) + (rows - 1) * u64::from(req.pitches[plane]) + row;
                 let valid = u64::from(req.pitches[plane]) >= row && crate::dri::with_registry(|r|
-                    r.get(record.bo_handles[plane]).map(|bo|
-                        bo.tier == crate::dri::bo::BoTier::CpuShared && span <= bo.size).unwrap_or(false));
+                    r.get(record.bo_handles[plane]).map(|bo| match bo.tier {
+                        crate::dri::bo::BoTier::CpuShared => span <= bo.size,
+                        crate::dri::bo::BoTier::GpuTexture => req.offsets[plane] == 0
+                            && gpu_storage_import_compatible(bo.format, info.plane_formats[plane])
+                            && info.plane_width(req.width, plane) <= bo.width
+                            && info.plane_height(req.height, plane) <= bo.height,
+                    }).unwrap_or(false));
                 if !valid { return Err(Errno::EINVAL); }
             }
             require_gl_current(proc, ofd_idx)?;
@@ -58183,6 +58191,38 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(bytes, original);
         }
         assert_eq!(host.gl_import_planar_image_calls.len(), calls, "no host call on reject");
+        // GPU-tier planes are textures of the planes' own formats: an R8
+        // luma plane and a GR88 chroma plane, from their origins.
+        let gpu = |proc: &mut Process, host: &mut MockHostIO, width: u32, height: u32, format: u32| {
+            let mut bytes = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+            let request = WpkDrmGpuBoCreate {width, height, format, usage: 0x4};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut bytes).unwrap();
+            let out: WpkDrmGpuBoCreate = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const _) };
+            (out.format, out.usage)
+        };
+        let (luma, luma_stride) = gpu(&mut proc, &mut host, 6, 4, DRM_FORMAT_R8);
+        let (pairs, pairs_stride) = gpu(&mut proc, &mut host, 3, 2, DRM_FORMAT_GR88);
+        let (rgba, _) = gpu(&mut proc, &mut host, 6, 4, DRM_FORMAT_ABGR8888);
+        let textures = WpkDrmImportPlanarImage {bo_handles: [luma, pairs, 0],
+            pitches: [luma_stride, pairs_stride, 0], offsets: [0, 0, 0], ..good};
+        import(&mut proc, &mut host, textures).unwrap();
+        // A CPU luma plane with GPU chroma works too.
+        import(&mut proc, &mut host, WpkDrmImportPlanarImage {bo_handles: [frame, pairs, 0],
+            pitches: [8, pairs_stride, 0], offsets: [0, 0, 0], ..good}).unwrap();
+        let calls = host.gl_import_planar_image_calls.len();
+        for bad in [
+            // Storage of another format, swapped planes, an offset, a
+            // smaller texture, and planes no GPU buffer stores (P010).
+            WpkDrmImportPlanarImage {bo_handles: [rgba, pairs, 0], ..textures},
+            WpkDrmImportPlanarImage {bo_handles: [pairs, luma, 0], ..textures},
+            WpkDrmImportPlanarImage {offsets: [0, 2, 0], ..textures},
+            WpkDrmImportPlanarImage {width: 7, ..textures},
+            WpkDrmImportPlanarImage {format: DRM_FORMAT_P010, pitches: [luma_stride * 2, pairs_stride * 2, 0], ..textures},
+        ] {
+            assert_eq!(import(&mut proc, &mut host, bad), Err(Errno::EINVAL), "{bad:?}");
+        }
+        assert_eq!(host.gl_import_planar_image_calls.len(), calls);
         // The host's failure is the renderer's: EIO, with nothing published.
         host.gl_bind_foreign_texture_rc = -(Errno::ENOMEM as i32);
         assert_eq!(import(&mut proc, &mut host, good), Err(Errno::EIO));

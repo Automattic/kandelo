@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { GbmBoRegistry } from "../src/dri/registry";
 import { foreignTextureGl } from "./support/foreign-texture-gl";
-import { imageWriteAudit, storageWrites, setImageWriteAudit } from "../src/webgl/image-writes";
+import { imageWriteAudit, noteStorageWrite, storageWrites, setImageWriteAudit } from "../src/webgl/image-writes";
 import { GlContextRegistry } from "../src/webgl/registry";
 import { createWasmPosixKernelTestHarness, type WasmPosixKernel } from "../src/kernel";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 import { pixelGl } from "./support/kms-color-gl";
+import { NativeGlFault } from "../src/webgl/native-recovery";
 
 /**
  * YUV dma-buf images (EGL_EXT_image_dma_buf_import with
@@ -328,5 +329,152 @@ describe("the kernel's planar image import", () => {
     expect(imports.env.host_gl_import_planar_image(PID, 1, record, 64)).toBeLessThan(0);
     new Uint32Array(memory.buffer, record + 12, 1)[0] = 0x34324241;
     expect(imports.env.host_gl_import_planar_image(PID, 1, record, 72)).toBe(-22);
+  });
+});
+
+describe("YUV images with GPU-tier planes", () => {
+  const R8 = 0x20203852, GR88 = 0x38385247, PID = 101, RECORD = 0x3000;
+  /** A kernel with one context on a pixel-modelling renderer, and GPU-tier
+   * buffers whose texels a test sets as a guest's rendering would. */
+  function gpuKernel() {
+    const r = pixelGl(8, 8);
+    Object.assign(r.gl, { renderbufferStorage: () => {}, framebufferRenderbuffer: () => {} });
+    const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+    const canvas = { width: 8, height: 8, getContext: () => r.gl };
+    const kernel = createWasmPosixKernelTestHarness({
+      io: {} as any,
+      callbacks: { getKmsCanvas: () => canvas, getKmsCrtcIds: () => [1], markKmsCanvasGlOwned: () => {},
+        getKmsDisplaySize: () => ({ width: 8, height: 8 }) } as any,
+      memory, pointerWidth: 4,
+      instance: createKernelScratchTestInstance(4, memory, () => ({}), () => 4096),
+    }) as WasmPosixKernel & Record<string, any>;
+    const imports = kernel.testAuthority.buildImportObject(memory) as { env: Record<string, (...args: any[]) => any> };
+    kernel.gl.bind({ displayFileId: 1n, pid: PID, cmdbufAddr: 128, cmdbufLen: 0 });
+    kernel.gl.get(PID)!.cmdbufView = new Uint8Array(memory.buffer, 128, 0);
+    imports.env.host_kms_set_master(PID, 1n, 1n);
+    imports.env.host_kms_addfb(PID, 9, 99, 8, 8, 0x34325258, 32, 0);
+    imports.env.host_kms_set_fb(PID, 1, 9, 0, 0, 8, 8);
+    expect(imports.env.host_gl_create_context(PID, 1, 0, 0)).toBe(0);
+    /** A GPU-tier bo of `format` holding `bytes` (rows of w texels). */
+    const gpuBo = (bo: number, w: number, h: number, format: number, bytes: number[]) => {
+      expect(kernel.gl.createGpuBo(bo, r.gl, w, h, format)).not.toBeNull();
+      const tex = kernel.gl.gpuBo(bo)!.tex;
+      r.textures.get(tex)!.data.set(bytes);
+      return tex as object;
+    };
+    const record = (format: number, width: number, height: number, bos: number[], pitches: number[],
+      hints: [number, number, number] = [0, 0, 0]) => {
+      const words = new Uint32Array(memory.buffer, RECORD, 18);
+      words.fill(0);
+      words.set([1, width, height, format]);
+      words.set(bos, 4); words.set(pitches, 7); words.set(hints, 13);
+    };
+    const imageOf = (token: number) => {
+      const source = kernel.gl.get(PID)!.imageSources.get(token)!;
+      return r.textures.get(source.texture!)!;
+    };
+    return { r, kernel, imports, gpuBo, record, imageOf, importImage: () => imports.env.host_gl_import_planar_image(PID, 1, RECORD, 72) };
+  }
+  const bytes = (count: number, seed: number) => Array.from({ length: count }, (_, i) => (i * 97 + seed * 31 + 13) % 256);
+  const cpuPlanes = (planes: number[][], pitches: number[]) =>
+    planes.map((plane, i) => ({ bytes: Uint8Array.from(plane), offset: 0, pitch: pitches[i] }));
+
+  it("converts on the GPU exactly as the CPU converter, never reading pixels back", async () => {
+    const convert = await load();
+    const cases: [number, number, number, [0 | 1 | 2, boolean, number]][] = [
+      [NV12, 5, 3, [0, false, 0]], [NV21, 6, 4, [1, true, 1]], [YUV420, 5, 4, [2, false, 3]], [YVU420, 3, 3, [0, true, 2]],
+    ];
+    for (const [format, width, height, [colorSpace, fullRange, siting]] of cases) {
+      const { r, gpuBo, record, imageOf, importImage } = gpuKernel();
+      const cw = Math.ceil(width / 2), ch = Math.ceil(height / 2), semi = format === NV12 || format === NV21;
+      const luma = bytes(width * height, format & 7), chroma = bytes(cw * ch * (semi ? 2 : 1), 3), other = bytes(cw * ch, 5);
+      gpuBo(51, width, height, R8, luma);
+      gpuBo(52, cw, ch, semi ? GR88 : R8, chroma);
+      if (!semi) gpuBo(53, cw, ch, R8, other);
+      record(format, width, height, semi ? [51, 52] : [51, 52, 53], semi ? [width, cw * 2] : [width, cw, cw],
+        [colorSpace, fullRange ? 1 : 0, siting]);
+      const reads = r.counts.readPixels;
+      const token = importImage();
+      expect(token, format.toString(16)).toBeGreaterThan(0);
+      expect(r.counts.readPixels).toBe(reads);
+      const expected = convert(format, width, height,
+        cpuPlanes(semi ? [luma, chroma] : [luma, chroma, other], semi ? [width, cw * 2] : [width, cw, cw]),
+        { colorSpace, fullRange, sitingH: siting & 1 ? 0.5 : 0, sitingV: siting & 2 ? 0.5 : 0 }) as Uint8Array;
+      expect([...imageOf(token).data], format.toString(16)).toEqual([...expected]);
+    }
+  });
+
+  it("converts again only after a plane's storage is written, staging only that plane", () => {
+    const { r, kernel: k, gpuBo, record, imageOf, importImage } = gpuKernel();
+    const kernelSource = (token: number) => k.gl.get(PID)!.imageSources.get(token)!.texture as object;
+    gpuBo(51, 4, 2, R8, new Array(8).fill(81));
+    const chroma = gpuBo(52, 2, 1, GR88, [90, 240, 90, 240]);
+    record(NV12, 4, 2, [51, 52], [4, 4]);
+    const token = importImage();
+    const image = imageOf(token);
+    expect([...image.data.slice(0, 4)]).toEqual([254, 0, 0, 255]);
+    const { draws, blits } = r.counts;
+    const written = storageWrites(kernelSource(token)).count;
+    // Importing and preparing again with nothing written does no GPU work.
+    for (let i = 0; i < 3; i++) expect(importImage()).toBe(token);
+    expect([r.counts.draws, r.counts.blits]).toEqual([draws, blits]);
+    // The guest renders neutral chroma into the chroma buffer: its storage
+    // write count advances, and the next submission converts again.
+    r.textures.get(chroma)!.data.set([128, 128, 128, 128]);
+    noteStorageWrite(chroma);
+    expect(importImage()).toBe(token);
+    expect([r.counts.draws, r.counts.blits]).toEqual([draws + 1, blits + 1]);
+    expect([...image.data.slice(0, 4)]).toEqual([76, 76, 76, 255]);
+    expect(storageWrites(kernelSource(token)).count).toBeGreaterThan(written);
+    // The chroma buffer's end retires the image and its staging textures
+    // with the buffer's own storage.
+    const textures = r.textures.size, converted = kernelSource(token);
+    expect(k.gl.retireForeignBo(52)).toBe(true);
+    expect(textures - r.textures.size).toBe(4);
+    expect(r.textures.has(converted)).toBe(false);
+    expect(k.gl.get(PID)!.imageSources.has(token)).toBe(false);
+  });
+
+  it("stages a CPU-tier plane beside GPU-tier ones when its bytes are written", async () => {
+    const convert = await load();
+    const { r, kernel: k, gpuBo, record, imageOf, importImage } = gpuKernel();
+    k.bos.create({ pid: PID, bo_id: 41, size: 16, w: 4, h: 2, stride: 8 });
+    const luma = [81, 82, 83, 84, 0, 0, 0, 0, 85, 86, 87, 88, 0, 0, 0, 0];
+    expect(k.bos.publishDevicePixels(41, Uint8Array.from(luma))).toBe(true);
+    gpuBo(52, 2, 1, GR88, [90, 240, 100, 230]);
+    record(NV12, 4, 2, [41, 52], [8, 4]);
+    const token = importImage();
+    expect(token).toBeGreaterThan(0);
+    const expected = (y: number[]) => [...(convert(NV12, 4, 2, cpuPlanes([y, [90, 240, 100, 230]], [8, 4]),
+      { colorSpace: 0, fullRange: false, sitingH: 0, sitingV: 0 }) as Uint8Array)];
+    expect([...imageOf(token).data]).toEqual(expected(luma));
+    const { draws, blits, texUploads } = r.counts;
+    expect(importImage()).toBe(token);
+    expect([r.counts.draws, r.counts.blits, r.counts.texUploads]).toEqual([draws, blits, texUploads]);
+    const next = [...luma]; next[0] = 200;
+    expect(k.bos.publishDevicePixels(41, Uint8Array.from(next))).toBe(true);
+    expect(importImage()).toBe(token);
+    // Only the luma plane is staged again (an upload, no copy).
+    expect([r.counts.draws, r.counts.blits, r.counts.texUploads]).toEqual([draws + 1, blits, texUploads + 1]);
+    expect([...imageOf(token).data]).toEqual(expected(next));
+  });
+
+  it("refuses GPU storage in another renderer and faults on storage the kernel could not have admitted", () => {
+    const { r, kernel: k, gpuBo, record, importImage } = gpuKernel();
+    gpuBo(51, 4, 2, R8, new Array(8).fill(81));
+    gpuBo(52, 2, 1, GR88, [90, 240, 90, 240]);
+    // A luma plane in RG8 storage contradicts the kernel's format check.
+    record(NV12, 4, 2, [52, 52], [4, 4]);
+    expect(() => importImage()).toThrow(NativeGlFault);
+    // So does a GPU-tier plane of a format with no GPU storage.
+    record(YUYV, 4, 2, [51], [8]);
+    expect(() => importImage()).toThrow(NativeGlFault);
+    // Textures of another context cannot be sampled here: EIO.
+    const other = pixelGl(4, 4);
+    Object.assign(other.gl, { renderbufferStorage: () => {}, framebufferRenderbuffer: () => {} });
+    expect(k.gl.createGpuBo(54, other.gl, 2, 1, GR88)).not.toBeNull();
+    record(NV12, 4, 2, [51, 54], [4, 4]);
+    expect(importImage()).toBe(-5);
+    void r;
   });
 });

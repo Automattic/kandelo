@@ -3566,9 +3566,10 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     image->fourcc = (uint32_t)fourcc;
     image->pitch = (uint32_t)planes[0].pitch;
     if (layout->is_yuv) {
-        /* A YUV image is converted from its planes' CPU bytes, so every
-         * plane is a mapped CPU-tier dma-buf; the mappings stay for the
-         * image's lifetime like a CPU-tier RGB image's. */
+        /* A YUV image is converted from its planes when they change. A
+         * CPU-tier plane stays mapped for the image's lifetime like a
+         * CPU-tier RGB image; a GPU-tier plane is a texture of the plane's
+         * own format (NV12: R8 luma, GR88 chroma), read from its origin. */
         image->external_only = 1;
         image->plane_count = layout->num_planes;
         image->color_space = color_space == EGL_ITU_REC709_EXT ? WPK_YUV_BT709
@@ -3583,11 +3584,23 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             image->planes[p].handle = import_dmabuf_handle(generation, (int)planes[p].fd);
             if (!image->planes[p].handle) { error = EGL_BAD_ACCESS; break; }
             void *map = mmap(NULL, sizes[p], PROT_READ, MAP_SHARED, (int)planes[p].fd, 0);
-            /* A GPU-tier bo has no CPU mapping (EINVAL): no bytes to
-             * convert. */
-            if (map == MAP_FAILED) { error = errno == EINVAL ? EGL_BAD_ACCESS : EGL_BAD_ALLOC; break; }
-            image->planes[p].map = map;
-            image->planes[p].map_len = sizes[p];
+            if (map != MAP_FAILED) {
+                image->planes[p].map = map;
+                image->planes[p].map_len = sizes[p];
+                continue;
+            }
+            /* A GPU-tier bo has no CPU mapping (EINVAL). Its texture is the
+             * whole bo, so the plane starts at its origin, and the storage
+             * must be the plane's format (the kernel compares it with the
+             * bo's recorded format, as for an RGB import). */
+            if (errno != EINVAL) { error = EGL_BAD_ALLOC; break; }
+            if (planes[p].offset != 0) { error = EGL_BAD_ACCESS; break; }
+            struct wpk_drm_check_bo_format check = {.handle = image->planes[p].handle,
+                .format = layout->plane_formats[p]};
+            if (ioctl(generation->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) {
+                error = errno == EINVAL ? EGL_BAD_MATCH : EGL_BAD_ACCESS;
+                break;
+            }
         }
         if (error != EGL_SUCCESS) {
             pthread_mutex_lock(&g_image_mutex);
@@ -3601,7 +3614,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             return EGL_NO_IMAGE_KHR;
         }
         image->handle = image->planes[0].handle;
-        image->pixels = (const uint8_t *)image->planes[0].map + image->planes[0].offset;
+        image->pixels = image->planes[0].map ? (const uint8_t *)image->planes[0].map + image->planes[0].offset : NULL;
         image->references = 1;
         image->public_live = 1;
         pthread_mutex_lock(&g_image_mutex);
@@ -3702,7 +3715,7 @@ static void image_release_locked(struct wpk_egl_image *image) {
     if (image->external_only) {
         /* Each plane holds its own import reference and mapping. */
         for (unsigned p = 0; p < image->plane_count; p++) {
-            munmap(image->planes[p].map, image->planes[p].map_len);
+            if (image->planes[p].map) munmap(image->planes[p].map, image->planes[p].map_len);
             close_bo_handle(image->generation, image->planes[p].handle);
         }
         free(image);
@@ -3961,8 +3974,11 @@ EGLBoolean eglExportDMABUFImageQueryMESA(EGLDisplay dpy, EGLImageKHR image, int 
     unsigned planes = export_plane_count(img);
     if (fourcc) *fourcc = (int)img->fourcc;
     if (num_planes) *num_planes = (int)planes;
+    /* Every plane carries the same modifier: LINEAR when all are CPU bytes. */
+    int linear = img->external_only ? 1 : img->pixels != NULL;
+    for (unsigned p = 0; img->external_only && p < planes; p++) linear &= img->planes[p].map != NULL;
     if (modifiers)
-        for (unsigned p = 0; p < planes; p++) modifiers[p] = img->pixels ? WPK_MOD_LINEAR : WPK_MOD_INVALID;
+        for (unsigned p = 0; p < planes; p++) modifiers[p] = linear ? WPK_MOD_LINEAR : WPK_MOD_INVALID;
     _wpk_egl_image_release(img);
     return EGL_TRUE;
 }

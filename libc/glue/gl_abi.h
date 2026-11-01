@@ -354,9 +354,10 @@ void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
  * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
  * through the host texture the bo owns; a CPU-tier bo is read from
  * `pixels`, the caller's mapping of the dma-buf. A YUV image
- * (`external_only`) holds one CPU-tier plane per plane of its format and
- * is sampled only through TEXTURE_EXTERNAL_OES, converted to RGBA by the
- * host when its planes' bytes change. */
+ * (`external_only`) holds one plane per plane of its format (CPU bytes, or
+ * a GPU-tier texture of the plane's format) and is sampled only through
+ * TEXTURE_EXTERNAL_OES, converted to RGBA by the host when a plane is
+ * written. */
 struct egl_generation;
 struct wpk_egl_image {
     struct egl_generation *generation; /* owns the imported GEM handle */

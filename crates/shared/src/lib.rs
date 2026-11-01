@@ -4703,13 +4703,24 @@ pub mod dri {
         /// The format's alpha position is padding (X...): its storage keeps
         /// a stored alpha of 1.0 that rendering never writes.
         pub opaque: bool,
+        /// The single-plane format each plane is read as (Mesa's per-plane
+        /// DRI formats): NV12's luma is R8 and its chroma GR88, a planar
+        /// YUV420 plane R8, P010's planes R16 and GR1616. A GPU-tier plane
+        /// must be storage of that format. A single-plane format is itself.
+        pub plane_formats: [u32; 3],
     }
 
+    /// `fourcc('R','1','6',' ')` and `fourcc('G','R','3','2')`: P010's
+    /// planes. No Kandelo buffer stores them on the GPU tier.
+    pub const DRM_FORMAT_R16: u32 = 0x20363152;
+    pub const DRM_FORMAT_GR1616: u32 = 0x32335247;
+
     const fn rgb(format: u32, cpp: u32, gpu_storage: u32, opaque: bool) -> DrmFormatInfo {
-        DrmFormatInfo { format, num_planes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, is_yuv: false, gpu_storage, opaque }
+        DrmFormatInfo { format, num_planes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, is_yuv: false, gpu_storage, opaque,
+            plane_formats: [format, 0, 0] }
     }
-    const fn yuv(format: u32, num_planes: u32, cpp: [u32; 3], hsub: u32, vsub: u32) -> DrmFormatInfo {
-        DrmFormatInfo { format, num_planes, cpp, hsub, vsub, is_yuv: true, gpu_storage: 0, opaque: false }
+    const fn yuv(format: u32, num_planes: u32, cpp: [u32; 3], hsub: u32, vsub: u32, plane_formats: [u32; 3]) -> DrmFormatInfo {
+        DrmFormatInfo { format, num_planes, cpp, hsub, vsub, is_yuv: true, gpu_storage: 0, opaque: false, plane_formats }
     }
     const R8_STORAGE: u32 = 0x8229;
     const RG8_STORAGE: u32 = 0x822b;
@@ -4733,13 +4744,13 @@ pub mod dri {
         rgb(DRM_FORMAT_ABGR2101010, 4, RGB10_A2_STORAGE, false),
         rgb(DRM_FORMAT_XBGR16161616F, 8, RGBA16F_STORAGE, true),
         rgb(DRM_FORMAT_ABGR16161616F, 8, RGBA16F_STORAGE, false),
-        yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2),
-        yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2),
-        yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2),
-        yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2),
-        yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1),
-        yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1),
-        yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2),
+        yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),
+        yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),
+        yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]),
+        yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]),
+        yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_YUYV, 0, 0]),
+        yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_UYVY, 0, 0]),
+        yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2, [DRM_FORMAT_R16, DRM_FORMAT_GR1616, 0]),
     ];
 
     pub const fn drm_format_info(format: u32) -> Option<DrmFormatInfo> {

@@ -7,7 +7,9 @@
  * - the CRTC color stage (kms-color-stage.ts), recognized by `u_lut`, is
  *   evaluated per fragment exactly as its GLSL states;
  * - the scanout presenter (kernel-worker.ts), recognized by `u_scanout`, is
- *   evaluated at 1:1 scale (texel centers, so filtering returns the texel).
+ *   evaluated at 1:1 scale (texel centers, so filtering returns the texel);
+ * - the YUV converter (yuv-gpu-convert.ts), recognized by `u_luma`, is
+ *   evaluated per fragment exactly as its GLSL states (float32 arithmetic).
  *
  * texelFetch on an incomplete texture returns (0, 0, 0, 1), as GLSL ES 3.00
  * specifies, so a missing sampler or mip chain shows in the pixels.
@@ -135,6 +137,29 @@ export function pixelGl(width: number, height: number) {
     }
     return [...color, flag("u_opaque") ? 255 : t[3]];
   };
+  const yuvFragment = (program: Program, fx: number, fy: number): number[] => {
+    const f32 = Math.fround, u = (name: string) => uniform(program, name).map(f32);
+    const [chX, chY] = uniform(program, "u_channels"), [cw, ch] = uniform(program, "u_chroma");
+    const [subX, subY] = u("u_sub"), [oX, oY] = u("u_origin"), range = u("u_range"), [kr, kb] = u("u_k");
+    const sample8 = (unit: number, x: number, y: number, channel: number) =>
+      Math.floor(f32(f32(texel(unit, x, y)[channel] / 255) * 255) + 0.5);
+    const ux = f32(f32(fx - oX) / subX), uy = f32(f32(fy - oY) / subY);
+    const bx = Math.floor(ux), by = Math.floor(uy), fxw = f32(ux - bx), fyw = f32(uy - by);
+    const clamp = (v: number, hi: number) => Math.min(Math.max(v, 0), hi);
+    const i = [clamp(bx, cw - 1), clamp(bx + 1, cw - 1)], j = [clamp(by, ch - 1), clamp(by + 1, ch - 1)];
+    const chroma = (unit: number, channel: number) => {
+      const [a, b, c, d] = [[i[0], j[0]], [i[1], j[0]], [i[0], j[1]], [i[1], j[1]]].map(([x, y]) => sample8(unit, x, y, channel));
+      return f32(f32(f32(a * f32(1 - fxw)) + f32(b * fxw)) * f32(1 - fyw) + f32(f32(c * f32(1 - fxw)) + f32(d * fxw)) * fyw);
+    };
+    const units = ["u_luma", "u_cb", "u_cr"].map(name => uniform(program, name)[0]);
+    const y = f32(f32(sample8(units[0], fx, fy, 0) - range[0]) / range[1]);
+    const pb = f32(f32(chroma(units[1], chX) - range[2]) / range[3]);
+    const pr = f32(f32(chroma(units[2], chY) - range[2]) / range[3]);
+    const r = f32(y + f32(f32(2 * f32(1 - kr)) * pr)), b = f32(y + f32(f32(2 * f32(1 - kb)) * pb));
+    const g = f32(f32(f32(y - f32(kr * r)) - f32(kb * b)) / f32(f32(1 - kr) - kb));
+    // floor(clamp(v) * 255 + 0.5) / 255 stored in 8 bits is exactly the value.
+    return [r, g, b].map(v => Math.floor(f32(Math.min(Math.max(v, 0), 1) * 255) + 0.5)).concat(255);
+  };
   const presenterFragment = (program: Program, fx: number, fy: number, vw: number, vh: number): number[] => {
     const unit = uniform(program, "u_scanout")[0];
     const texture = textures.get(unitTextures.get(unit)!)!;
@@ -178,6 +203,12 @@ export function pixelGl(width: number, height: number) {
       if (at) programs.get(at.program)!.uniforms.set(at.name, v);
     },
     uniform4i: (at: { program: object; name: string } | null, ...v: number[]) => {
+      if (at) programs.get(at.program)!.uniforms.set(at.name, v);
+    },
+    uniform2f: (at: { program: object; name: string } | null, ...v: number[]) => {
+      if (at) programs.get(at.program)!.uniforms.set(at.name, v);
+    },
+    uniform4f: (at: { program: object; name: string } | null, ...v: number[]) => {
       if (at) programs.get(at.program)!.uniforms.set(at.name, v);
     },
     deleteTexture: (t: object) => {
@@ -317,12 +348,13 @@ export function pixelGl(width: number, height: number) {
       if (!program) throw new Error("draw without a program");
       const target = image(state.get(0x8ca6));
       const [vx, vy, vw, vh] = state.get(0x0ba2) as number[];
-      const stage = program.fragment.includes("u_lut");
-      if (stage) expect(state.get(0x0bd0), "dithering may alter written values").toBe(false);
+      const stage = program.fragment.includes("u_lut"), yuv = program.fragment.includes("u_luma");
+      if (stage || yuv) expect(state.get(0x0bd0), "dithering may alter written values").toBe(false);
       const out: Array<[number, number[]]> = [];
       for (let fy = vy; fy < vy + vh; fy++) for (let fx = vx; fx < vx + vw; fx++) {
         if (fx < 0 || fy < 0 || fx >= target.w || fy >= target.h) continue;
-        const color = stage ? stageFragment(program, fx, fy) : presenterFragment(program, fx - vx, fy - vy, vw, vh);
+        const color = stage ? stageFragment(program, fx, fy) : yuv ? yuvFragment(program, fx, fy)
+          : presenterFragment(program, fx - vx, fy - vy, vw, vh);
         out.push([(fy * target.w + fx) * 4, color]);
       }
       // Fragments read their sources before any is written.

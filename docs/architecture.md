@@ -3870,7 +3870,14 @@ rendering, therefore fails too). `gbm_bo_get_bpp` is 0 for YUV, as Mesa
 reports. `GBM_BO_IMPORT_FD_MODIFIER` takes one fd, stride and offset per
 plane of the format (one object or several), checks each plane against
 its own object's size, and `GBM_BO_IMPORT_FD` names one plane, so it
-takes packed YUYV/UYVY but not a planar format.
+takes packed YUYV/UYVY but not a planar format. A plane may also be a
+GPU-tier object whose storage is the plane's own format (NV12's luma R8
+and chroma GR88; each YUV420/YVU420 plane R8), at offset 0, since a
+texture has no byte addressing; `DRM_IOCTL_WPK_CHECK_BO_FORMAT` checks it
+against that plane format (EINVAL otherwise), and an import with any
+GPU-tier plane refuses `GBM_BO_USE_WRITE`, whose bytes it does not have.
+P010 and the packed formats have no GPU-tier plane: no GPU buffer has
+R16, GR1616 or YUYV storage.
 
 `EGL_EXT_image_dma_buf_import` imports those YUV formats with one fd,
 offset and pitch per plane (planes 0 to 2; a plane the format lacks is
@@ -3882,13 +3889,16 @@ hints select the conversion; absent hints are BT.601, narrow range and
 siting 0, Mesa's defaults. `eglQueryDmaBufModifiersEXT` reports the YUV
 formats `external_only`: a YUV image is the sibling of an external texture
 only (`GL_OES_EGL_image_external`), and a TEXTURE_2D or renderbuffer
-target is `GL_INVALID_OPERATION`. Each plane must be CPU-tier storage, and
+target is `GL_INVALID_OPERATION`. A plane is CPU-tier bytes or GPU-tier
+storage of the plane's format at offset 0 (as for GBM above; another
+format is `EGL_BAD_MATCH`, an offset `EGL_BAD_ACCESS`), and
 `GBM_BO_IMPORT_EGL_IMAGE` of a YUV image yields a bo with all of its
 planes. Binding the image through `DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE`
 gives the host the planes' bo ids and the conversion; the kernel checks
-each plane against its CPU-tier object first. The host
-(`host/src/webgl/yuv-convert.ts`, `cpu-image-storage.ts`) converts the
-planes to an RGBA texture (RGBA8 for 8-bit formats, RGB10_A2 for P010, so
+each plane against its object first (CPU bytes against the object's size,
+GPU storage against the plane format it recorded and the plane's size).
+The host (`host/src/webgl/yuv-convert.ts`, `yuv-gpu-convert.ts`,
+`cpu-image-storage.ts`) converts the planes to an RGBA texture (RGBA8 for 8-bit formats, RGB10_A2 for P010, so
 no sample loses precision) with the BT.601, BT.709 or BT.2020 matrix and
 narrow or full range, reconstructing chroma by linear interpolation
 between the samples where the siting hints place them, and no transfer
@@ -3898,8 +3908,16 @@ private uniforms, so `REQUIRED_TEXTURE_IMAGE_UNITS_OES` is 1 and no
 advertised limit shrinks; converting only when a plane's canonical bytes
 were written (each BO's write count, advanced when a CPU writer's mapping
 is merged or a device writes it) means no draw and no unchanged frame
-pays for it. The converted texture's own write count then lets sibling
-views copy it only after a conversion. With the image write-count audit
+pays for it. An image with a GPU-tier plane is converted on the GPU, so
+those pixels never leave it: each plane is copied (GPU planes) or
+uploaded (CPU planes) into a private texture of its plane format only
+when its write count changed (a GPU plane's storage write count, advanced
+by every draw, clear, texture command or copy into it), and a fragment
+shader computing exactly the CPU converter's arithmetic writes the RGBA8
+image in a private native pass after which the guest's context is
+replayed; a native error in that pass is a fatal host fault. The
+converted texture's own write count then lets sibling views copy it only
+after a conversion. With the image write-count audit
 on (the graphics test gate), an unchanged count with changed plane bytes
 is a fatal fault.
 

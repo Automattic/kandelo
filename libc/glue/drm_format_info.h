@@ -25,10 +25,12 @@ struct wpk_drm_format_info {
     int is_yuv;
     uint32_t gpu_storage; /* WebGL 2 internal format of a GPU-tier buffer, 0: none */
     int opaque;           /* alpha position is padding (X...), stored as 1.0 */
+    uint32_t plane_formats[3]; /* the single-plane format each plane is read as */
 };
 
-#define WPK_FMT_RGB(fourcc, bytes, storage, x) {fourcc, 1, {bytes, 0, 0}, 1, 1, 0, storage, x}
-#define WPK_FMT_YUV(fourcc, planes, c0, c1, c2, h, v) {fourcc, planes, {c0, c1, c2}, h, v, 1, 0, 0}
+#define WPK_FMT_RGB(fourcc, bytes, storage, x) {fourcc, 1, {bytes, 0, 0}, 1, 1, 0, storage, x, {fourcc, 0, 0}}
+#define WPK_FMT_YUV(fourcc, planes, c0, c1, c2, h, v, f0, f1, f2) \
+    {fourcc, planes, {c0, c1, c2}, h, v, 1, 0, 0, {f0, f1, f2}}
 
 static const struct wpk_drm_format_info wpk_drm_formats[] = {
     WPK_FMT_RGB(0x20203852u, 1, 0x8229u, 0), /* R8 */
@@ -44,13 +46,13 @@ static const struct wpk_drm_format_info wpk_drm_formats[] = {
     WPK_FMT_RGB(0x30334241u, 4, 0x8059u, 0), /* ABGR2101010 */
     WPK_FMT_RGB(0x48344258u, 8, 0x881au, 1), /* XBGR16161616F */
     WPK_FMT_RGB(0x48344241u, 8, 0x881au, 0), /* ABGR16161616F */
-    WPK_FMT_YUV(0x3231564eu, 2, 1, 2, 0, 2, 2), /* NV12: Y, then Cb,Cr pairs */
-    WPK_FMT_YUV(0x3132564eu, 2, 1, 2, 0, 2, 2), /* NV21: Y, then Cr,Cb pairs */
-    WPK_FMT_YUV(0x32315559u, 3, 1, 1, 1, 2, 2), /* YUV420: Y, Cb, Cr */
-    WPK_FMT_YUV(0x32315659u, 3, 1, 1, 1, 2, 2), /* YVU420: Y, Cr, Cb */
-    WPK_FMT_YUV(0x56595559u, 1, 2, 0, 0, 2, 1), /* YUYV: Y0,Cb,Y1,Cr */
-    WPK_FMT_YUV(0x59565955u, 1, 2, 0, 0, 2, 1), /* UYVY: Cb,Y0,Cr,Y1 */
-    WPK_FMT_YUV(0x30313050u, 2, 2, 4, 0, 2, 2), /* P010: 16-bit NV12, 10 high bits */
+    WPK_FMT_YUV(0x3231564eu, 2, 1, 2, 0, 2, 2, 0x20203852u, 0x38385247u, 0), /* NV12: Y, then Cb,Cr pairs */
+    WPK_FMT_YUV(0x3132564eu, 2, 1, 2, 0, 2, 2, 0x20203852u, 0x38385247u, 0), /* NV21: Y, then Cr,Cb pairs */
+    WPK_FMT_YUV(0x32315559u, 3, 1, 1, 1, 2, 2, 0x20203852u, 0x20203852u, 0x20203852u), /* YUV420: Y, Cb, Cr */
+    WPK_FMT_YUV(0x32315659u, 3, 1, 1, 1, 2, 2, 0x20203852u, 0x20203852u, 0x20203852u), /* YVU420: Y, Cr, Cb */
+    WPK_FMT_YUV(0x56595559u, 1, 2, 0, 0, 2, 1, 0x56595559u, 0, 0), /* YUYV: Y0,Cb,Y1,Cr */
+    WPK_FMT_YUV(0x59565955u, 1, 2, 0, 0, 2, 1, 0x59565955u, 0, 0), /* UYVY: Cb,Y0,Cr,Y1 */
+    WPK_FMT_YUV(0x30313050u, 2, 2, 4, 0, 2, 2, 0x20363152u, 0x32335247u, 0), /* P010: 16-bit NV12, 10 high bits */
 };
 
 #undef WPK_FMT_RGB

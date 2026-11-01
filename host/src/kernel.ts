@@ -1,7 +1,7 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
-import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord } from "./webgl/cpu-image-storage.js";
+import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord, type PlanarPlaneStorage } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -83,7 +83,7 @@ import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { hasNativeRepair, NativeGlFault, repairNativeState, retireNativeRetirement, rethrowNativeGlFault, setNativeGlFaultReporter } from "./webgl/native-recovery";
+import { hasNativeRepair, NativeGlFault, nativeGlFault, repairNativeState, retireNativeRetirement, rethrowNativeGlFault, setNativeGlFaultReporter } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import { noteStorageWrite } from "./webgl/image-writes";
@@ -1134,6 +1134,52 @@ export class WasmPosixKernel {
     } finally { muxer.invalidateCurrent(); }
   }
 
+  /** GPU-tier storage of a YUV plane's bo: a GBM GPU buffer, or an exported
+   * GLES image read through its scanout framebuffer. */
+  #planarPlaneStorage(bo: number): PlanarPlaneStorage | undefined {
+    const gpu = this.gl.gpuBo(bo);
+    if (gpu) return { gl: gpu.gl, native: gpu.tex, read: gpu.fbo, w: gpu.w, h: gpu.h, internalFormat: gpu.internalFormat };
+    const exported = this.gl.exportedImage(bo);
+    if (!exported) return undefined;
+    const scanout = this.scanoutStorage(bo);
+    // Every format a plane can have (R8, RG8) is readable; a missing reader
+    // is a renderer that failed or was lost, not a CPU-tier plane.
+    if (!scanout) throw new Error(`Exported image of bo ${bo} has no reader`);
+    return { gl: exported.gl, native: exported.native, read: scanout.fbo, w: exported.width, h: exported.height,
+      internalFormat: exported.format };
+  }
+
+  /** A private native pass converting a YUV image (yuv-gpu-convert.ts),
+   * entered from inside `b`'s command stream: the outgoing owner's errors are
+   * captured first, the guest context is replayed in full afterwards, and
+   * `b` is selected again before its next command. The pass runs host code
+   * on validated objects, so a native error in it is a fatal host fault. */
+  #planarConversionPass(b: GlBinding, work: () => void): boolean {
+    const gl = b.gl;
+    if (!gl || gl.isContextLost()) return false;
+    const muxer = this.glMuxerFor(gl);
+    if (!muxer.prepareRetirement(true) || !repairNativeState(gl)) {
+      muxer.invalidateCurrent();
+      return false;
+    }
+    try {
+      work();
+      const errors: number[] = [];
+      captureNativeGlErrors(gl, { errors });
+      if (errors.length && !gl.isContextLost())
+        nativeGlFault(`YUV image conversion raised GL errors ${errors.map(e => `0x${e.toString(16)}`).join(",")}`);
+    } catch (caught) {
+      rethrowNativeGlFault(caught);
+      muxer.invalidateCurrent();
+      if (gl.isContextLost()) return false;
+      nativeGlFault("YUV image conversion failed", caught);
+    }
+    muxer.invalidateCurrent();
+    if (gl.isContextLost()) return false;
+    muxer.switchTo(b);
+    return true;
+  }
+
   /** Only fixed scanout and GBM front helpers may borrow selected device state:
    * success proves their complete checked inverse, unlike a generic presenter. */
   private withRestoredGraphicsState<T>(gl: WebGL2RenderingContext, work: () => T): T {
@@ -1680,6 +1726,10 @@ export class WasmPosixKernel {
     // A refused native GL deletion or restoration (native-recovery.ts) is a
     // fatal host fault. This kernel owns the renderers of its worker realm.
     setNativeGlFaultReporter(fault => this.callbacks.onHostFault?.(fault));
+    this.gl.cpuImages.attachPlanarGpu({
+      plane: bo => this.#planarPlaneStorage(bo),
+      pass: (b, work) => this.#planarConversionPass(b, work),
+    });
     if (arguments[3] === wasmPosixKernelTestCapability) {
       const testRuntime = arguments[4] as
         | WasmPosixKernelTestHarnessOptions
@@ -3600,8 +3650,9 @@ export class WasmPosixKernel {
         // DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: a YUV dma-buf image. `record`
         // is the kernel's 72-byte WpkDrmImportPlanarImage copy with the
         // planes' bo ids; the kernel has checked each plane against its
-        // CPU-tier object. The image is converted to RGBA (cpu-image-
-        // storage.ts) whenever a plane's bytes change; the reply is the
+        // object: CPU-tier bytes, or GPU-tier storage of the plane's format.
+        // The image is converted to RGBA (cpu-image-storage.ts, on the GPU
+        // for GPU-tier planes) whenever a plane is written; the reply is the
         // share group's source token, sampled through external textures.
         host_gl_import_planar_image: (pid: number, ctxId: number, recordPtr: KernelPointer,
           recordLen: KernelPointer): number => {
@@ -3618,7 +3669,7 @@ export class WasmPosixKernel {
               gl => this.gl_muxers.get(gl)?.captureCurrentErrors())) return -5;
             return registerImageSource(b, layout.planes[0].bo, image.tex, image.w, image.h, planarImageKey(layout),
               {...gpuSourceStorage(image.storage), bos: [...new Set(layout.planes.map(plane => plane.bo))]});
-          } catch { return -5; }
+          } catch (caught) { rethrowNativeGlFault(caught); return -5; }
         },
         // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
         // renderbuffer of context `ctxId` as GPU-tier bo `boId`. `attrs` is

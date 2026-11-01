@@ -23,12 +23,18 @@ export interface DrmFormatInfo {
   gpuStorage: number;
   /** The alpha position is padding (X...), stored as 1.0. */
   opaque: boolean;
+  /** The single-plane format each plane is read as (Mesa's per-plane
+   * formats: NV12 is R8 + GR88); a GPU-tier plane is storage of it. */
+  planeFormats: readonly [number, number, number];
 }
 
 const rgb = (format: number, cpp: number, gpuStorage: number, opaque: boolean): DrmFormatInfo =>
-  ({ format, numPlanes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, isYuv: false, gpuStorage, opaque });
-const yuv = (format: number, numPlanes: number, cpp: [number, number, number], hsub: number, vsub: number): DrmFormatInfo =>
-  ({ format, numPlanes, cpp, hsub, vsub, isYuv: true, gpuStorage: 0, opaque: false });
+  ({ format, numPlanes: 1, cpp: [cpp, 0, 0], hsub: 1, vsub: 1, isYuv: false, gpuStorage, opaque, planeFormats: [format, 0, 0] });
+const yuv = (format: number, numPlanes: number, cpp: [number, number, number], hsub: number, vsub: number,
+  planeFormats: [number, number, number]): DrmFormatInfo =>
+  ({ format, numPlanes, cpp, hsub, vsub, isYuv: true, gpuStorage: 0, opaque: false, planeFormats });
+export const DRM_FORMAT_R8 = 0x20203852, DRM_FORMAT_GR88 = 0x38385247;
+const DRM_FORMAT_R16 = 0x20363152, DRM_FORMAT_GR1616 = 0x32335247;
 const R8 = 0x8229, RG8 = 0x822b, RGB565 = 0x8d62, RGBA8 = 0x8058, RGB10_A2 = 0x8059, RGBA16F = 0x881a;
 
 export const DRM_FORMAT_NV12 = 0x3231564e, DRM_FORMAT_NV21 = 0x3132564e;
@@ -50,13 +56,13 @@ export const DRM_FORMATS: readonly DrmFormatInfo[] = [
   rgb(0x30334241, 4, RGB10_A2, false), // ABGR2101010
   rgb(0x48344258, 8, RGBA16F, true), // XBGR16161616F
   rgb(0x48344241, 8, RGBA16F, false), // ABGR16161616F
-  yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2),   // Y, then Cb,Cr pairs
-  yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2),   // Y, then Cr,Cb pairs
-  yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2), // Y, Cb, Cr
-  yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2), // Y, Cr, Cb
-  yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1),   // Y0,Cb,Y1,Cr
-  yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1),   // Cb,Y0,Cr,Y1
-  yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2),   // 16-bit NV12, 10 high bits
+  yuv(DRM_FORMAT_NV12, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),   // Y, then Cb,Cr pairs
+  yuv(DRM_FORMAT_NV21, 2, [1, 2, 0], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_GR88, 0]),   // Y, then Cr,Cb pairs
+  yuv(DRM_FORMAT_YUV420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]), // Y, Cb, Cr
+  yuv(DRM_FORMAT_YVU420, 3, [1, 1, 1], 2, 2, [DRM_FORMAT_R8, DRM_FORMAT_R8, DRM_FORMAT_R8]), // Y, Cr, Cb
+  yuv(DRM_FORMAT_YUYV, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_YUYV, 0, 0]),   // Y0,Cb,Y1,Cr
+  yuv(DRM_FORMAT_UYVY, 1, [2, 0, 0], 2, 1, [DRM_FORMAT_UYVY, 0, 0]),   // Cb,Y0,Cr,Y1
+  yuv(DRM_FORMAT_P010, 2, [2, 4, 0], 2, 2, [DRM_FORMAT_R16, DRM_FORMAT_GR1616, 0]),   // 16-bit NV12, 10 high bits
 ];
 
 const byFormat = new Map(DRM_FORMATS.map(info => [info.format, info]));
