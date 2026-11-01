@@ -3293,9 +3293,10 @@ pub extern "C" fn kernel_fork_process(parent_pid: u32, caller_tid: u32, mode: u3
             // Announce exact kernel-owned aliases while they are still
             // pending. The host primes them only after cloning child Memory.
             let accepted = table.get(child_pid).unwrap().dri_bindings.iter().all(|binding| {
-                let len = crate::dri::with_registry(|registry| registry.get(binding.bo_id)
-                    .map(|bo| binding.len.min(usize::try_from(bo.size.saturating_sub(binding.bo_offset)).unwrap_or(usize::MAX)))).expect("retained child CPU BO");
-                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, len, binding.bo_offset) >= 0
+                // Inherit the actual mapping extent, including a surviving
+                // padding-only fragment. Host pixel baselines remain clipped
+                // independently to BO storage, never to cleanup authority.
+                host.gbm_bo_bind(child_pid as i32, binding.bo_id, binding.addr, binding.len, binding.bo_offset) >= 0
             });
             if !accepted {
                 if let Some(result) = table.remove_process(child_pid) { finish_removed_process(child_pid,result); }

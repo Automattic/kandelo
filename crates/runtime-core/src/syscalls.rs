@@ -13640,7 +13640,7 @@ pub fn sys_mmap(
             if len > aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
-            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id, len.min(bo_size as usize));
+            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id);
         }
 
         // /dev/dri/{renderD128,card0}: the caller obtained `offset` from
@@ -13748,7 +13748,7 @@ pub fn sys_mmap(
             if len != bo_size as usize && len != aligned_bo_size {
                 return Err(Errno::EINVAL);
             }
-            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id, len);
+            return mmap_dri_bo(proc, host, addr, len, prot, flags, bo_id);
         }
 
         // A rootfs file whose bytes the image only names (a URL-backed lazy
@@ -13865,7 +13865,6 @@ fn mmap_dri_bo(
     prot: u32,
     flags: u32,
     bo_id: crate::dri::BoId,
-    bind_len: usize,
 ) -> Result<usize, Errno> {
     proc.dri_bindings
         .try_reserve(1)
@@ -13874,7 +13873,10 @@ fn mmap_dri_bo(
     let mut hold = DriMappingHold(Some(bo_id));
     let allocation = DeviceMapAllocation::prepare(proc, addr, len, prot, flags)?;
     let mapped = allocation.addr;
-    if host.gbm_bo_bind(proc.pid as i32, bo_id, mapped, bind_len, 0) < 0 {
+    // Announce the exact mapping extent, including permitted page padding.
+    // The host clips pixel copies to BO storage independently; cleanup must
+    // retain the same range as DriBoBinding rather than a shorter pixel view.
+    if host.gbm_bo_bind(proc.pid as i32, bo_id, mapped, len, 0) < 0 {
         allocation.rollback(proc);
         return Err(Errno::ENOMEM);
     }
@@ -55303,6 +55305,33 @@ impl HostIO for RelSymlinkMock {
             sys_mmap(&mut proc, &mut host, 0, size, PROT_READ, MAP_SHARED, exported.fd, 0).unwrap();
         assert_eq!(host.gbm_bo_bind_calls, vec![(proc.pid as i32, bo_id, addr, size)]);
         assert_eq!(proc.dri_bindings.last().map(|b| b.bo_id), Some(bo_id));
+    }
+
+    #[test]
+    fn mmap_prime_fd_preserves_full_host_range_for_padding_cleanup() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::mmap::{MAP_SHARED, PROT_READ};
+        let _g = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let (fd, offset, size) = dri_alloc_dumb_for_mmap(&mut proc,&mut host,64,64);
+        let bo_id = (offset >> 12) as u32;
+        let handle = *dri_state(&proc,proc.fd_table.get(fd).unwrap().ofd_ref.0)
+            .unwrap().gem.borrow().handles.iter().find(|(_,id)| **id == bo_id).unwrap().0;
+        let exported = kms_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_PRIME_HANDLE_TO_FD,
+            WpkDrmPrimeHandle {handle,flags:0,fd:-1}).unwrap();
+        let mapped_len = (size + 0xFFFF) & !0xFFFF;
+        assert!(mapped_len > size, "this case must actually include non-BO page padding");
+        let address = sys_mmap(&mut proc,&mut host,0,mapped_len,PROT_READ,MAP_SHARED,exported.fd,0).unwrap();
+        assert_eq!(host.gbm_bo_bind_calls,[(proc.pid as i32,bo_id,address,mapped_len)],
+            "host custody must cover the same range later carried by UnbindBo");
+        assert_eq!(proc.dri_bindings[0].len,mapped_len);
+        sys_munmap(&mut proc,&mut host,address,mapped_len).unwrap();
+        assert_eq!(host.gbm_bo_unbind_calls,[(proc.pid as i32,bo_id,address,mapped_len)]);
+        assert!(proc.dri_bindings.is_empty());
+        sys_close(&mut proc,&mut host,exported.fd).unwrap();
+        sys_close(&mut proc,&mut host,fd).unwrap();
+        assert_eq!(host.gbm_bo_destroy_calls,[(proc.pid as i32,bo_id)]);
     }
 
     #[test]

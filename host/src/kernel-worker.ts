@@ -13889,7 +13889,22 @@ export class CentralizedKernelWorker {
           const mmapAddr = retVal;
           const boId = this.#kernel.bos.findBindingByAddr(channel.pid, mmapAddr);
           if (boId !== undefined) {
-            this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory, mmapAddr);
+            if (!this.#kernel.bos.primeBindFromSab(channel.pid, boId, channel.memory, mmapAddr)) {
+              // The numeric PID/address is not authority to prime a successor
+              // Memory. Roll back the reserved VMA before publishing mmap EIO.
+              // A failed rollback is not acknowledged as successful cleanup.
+              const rollback = this.runSyntheticMemorySyscall(
+                channel, SYS_MUNMAP,
+                [mmapAddr, alignWasmPageLength(origArgs[1])], entry,
+              );
+              if (this.hostReaped?.has(channel.pid)) return;
+              if (rollback.retVal !== 0 || rollback.errVal !== 0) {
+                this.#failBlockingRetryProtocol("DRI mmap prime rollback failed");
+              }
+              retVal = -1;
+              publicationRetVal = -1;
+              errVal = EIO;
+            }
           }
         }
       }

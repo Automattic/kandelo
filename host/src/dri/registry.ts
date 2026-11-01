@@ -1,6 +1,14 @@
 import { mergeChangedByteRuns } from "../shared-byte-runs";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 
+const mappingMemoryBufferGetter = Object.getOwnPropertyDescriptor(WebAssembly.Memory.prototype,"buffer")!.get!;
+const mappingApply = Reflect.apply;
+function mappingMemoryBuffer(memory: WebAssembly.Memory): ArrayBuffer {
+  // Authenticate the native Memory receiver; an own `buffer` property cannot
+  // redirect original mapping authority into another address space.
+  return mappingApply(mappingMemoryBufferGetter,memory,[]) as ArrayBuffer;
+}
+
 /**
  * The kernel owns BO lifetime through GEM, PRIME, framebuffer and cursor
  * references. This worker-local store owns bounded independent pixel backing.
@@ -25,7 +33,8 @@ export type GbmBoCreateInput = {
 export type GbmBoBinding = {
   /** Offset within the process's wasm Memory. */
   addr: number;
-  /** Length in bytes — equal to or less than `size`. */
+  /** Exact process mapping length, including permitted trailing page padding.
+   * Coherence copies are independently clipped to canonical BO storage. */
   len: number;
   /** Offset in canonical BO storage; omitted for the original zero-offset view. */
   boOffset?: number;
@@ -58,6 +67,13 @@ type InternalBinding = GbmBoBinding & {
   /** Independent baseline; never a guest memory view. */
   snapshot: Uint8Array;
   primed: boolean;
+  /** One admission identity; splits retain it, replacements never do. */
+  lineage: MappingLineage;
+};
+type MappingLineage = {
+  memory: WebAssembly.Memory | null;
+  fragments: Set<InternalBinding>;
+  captures: Set<GbmMappingRetirement>;
 };
 type InternalEntry = {
   bo_id: number;
@@ -75,8 +91,10 @@ type InternalEntry = {
 type MappingRetirement = {
   owner: WeakRef<GbmBoRegistry>;
   backing: SharedArrayBuffer | null;
-  binding: InternalBinding | null;
-  memory: WebAssembly.Memory | null;
+  lineage: MappingLineage | null;
+  addr: number;
+  end: number;
+  listeners: Set<() => void>;
   pid: number;
   bo: number;
   started: boolean;
@@ -101,20 +119,41 @@ export class GbmMappingRetirement {
   constructor() { Object.freeze(this); }
   get complete(): boolean { return mappingRetirements.get(this)?.state === "retired"; }
   get notificationFault(): boolean { return mappingRetirements.get(this)?.notificationFault ?? false; }
+  retire(): boolean { return mappingRetirements.get(this)?.owner.deref()?.retireCapturedMapping(this) ?? false; }
+  abandon(): boolean { return mappingRetirements.get(this)?.owner.deref()?.abandonMappingRetirement(this) ?? false; }
+  /** Completion notification carries no address-space or BO reference. */
+  watch(listener: () => void): () => void {
+    const record = mappingRetirements.get(this);
+    if (!record || record.state === "abandoned") return () => {};
+    if (record.state === "retired") {
+      try { listener(); } catch (error) {
+        record.notificationFault = true;
+        if (isKernelExportFailure(error)) throw error;
+      }
+      return () => {};
+    }
+    record.listeners.add(listener);
+    return () => { record.listeners.delete(listener); };
+  }
+  /** Forget only terminal custody, never a pending publication. */
+  forget(): boolean {
+    const record = mappingRetirements.get(this);
+    if (!record || record.state === "captured") return false;
+    record.listeners.clear();
+    return true;
+  }
 }
 
-/** Per-pid Memory resolver. Returning `undefined` for a pid that
- *  currently has a binding signals the bind/unbind path that the
- *  process has gone away (post-exit) and the sync should be
- *  skipped for that pid. */
+/** Consulted only for a NEW mapping admission. Later coherence and cleanup
+ * retain that exact Memory, including across PID registration replacement. */
 export type ProcessMemoryResolver = (
   pid: number,
 ) => WebAssembly.Memory | undefined;
 
 export interface GbmBoRegistryOptions {
-  /** Lets `bind`/`unbind` reach a pid's `WebAssembly.Memory` to
-   *  flush/prime the bo's SAB. When omitted, the registry is
-   *  pure-metadata and bind/unbind do not touch any Memory. */
+  /** Resolves a new binding's original Memory once. A binding admitted before
+   * registration may authenticate its Memory at first prime/capture instead. No later
+   * publication, import or retirement resolves the PID again. */
   getProcessMemory?: ProcessMemoryResolver;
 }
 
@@ -125,13 +164,58 @@ export class GbmBoRegistry {
    *  process's poll/epoll/select return; this lets a process that maps no bo
    *  at all -- nearly every process -- answer without scanning every bo. */
   private bindingCounts = new Map<number, number>();
-  private mappingRetirements = new Map<InternalBinding, GbmMappingRetirement>();
+  /** External change observers may inspect but not reenter a staged mutation. */
+  private mutating = false;
 
-  private setBinding(e: InternalEntry, pid: number, binding: InternalBinding): void {
-    let aliases = e.bindingsByPid.get(pid);
-    if (!aliases) { aliases = new Map(); e.bindingsByPid.set(pid, aliases); }
-    if (!aliases.has(binding.addr)) this.bindingCounts.set(pid, (this.bindingCounts.get(pid) ?? 0) + 1);
-    aliases.set(binding.addr, binding);
+  private stageLineages(removed: InternalBinding[], added: InternalBinding[]): Map<MappingLineage, Set<InternalBinding>> {
+    const staged = new Map<MappingLineage, Set<InternalBinding>>();
+    for (const binding of [...removed, ...added]) {
+      if (!staged.has(binding.lineage)) staged.set(binding.lineage, new Set(binding.lineage.fragments));
+    }
+    for (const binding of removed) staged.get(binding.lineage)!.delete(binding);
+    for (const binding of added) staged.get(binding.lineage)!.add(binding);
+    return staged;
+  }
+
+  private startPublication(binding: InternalBinding): void {
+    for (const capability of binding.lineage.captures) {
+      const record = mappingRetirements.get(capability)!;
+      if (binding.addr < record.end && record.addr < binding.addr + binding.len) record.started = true;
+    }
+  }
+
+  private finishLineages(staged: Map<MappingLineage, Set<InternalBinding>>): void {
+    // Publish every descendant set and terminal record before invoking any
+    // completion observer. A later observer fault cannot undo physical detach.
+    for (const [lineage, fragments] of staged) lineage.fragments = fragments;
+    for (const [lineage] of staged) {
+      for (const capability of lineage.captures) {
+        const record = mappingRetirements.get(capability)!;
+        let surviving = false;
+        for (const binding of lineage.fragments)
+          if (binding.addr < record.end && record.addr < binding.addr + binding.len) { surviving = true; break; }
+        if (surviving) continue;
+        record.state = "retired";
+        record.lineage = null; record.backing = null;
+      }
+    }
+    let fatal: unknown;
+    for (const [lineage] of staged) {
+      for (const capability of lineage.captures) {
+        const record = mappingRetirements.get(capability)!;
+        if (record.state !== "retired") continue;
+        lineage.captures.delete(capability);
+        for (const listener of record.listeners) {
+          try { listener(); } catch (error) {
+            record.notificationFault = true;
+            if (isKernelExportFailure(error)) fatal ??= error;
+          }
+        }
+        record.listeners.clear();
+      }
+      if (!lineage.fragments.size && !lineage.captures.size) lineage.memory = null;
+    }
+    if (fatal !== undefined) throw fatal;
   }
 
   private deleteBinding(e: InternalEntry, pid: number, addr?: number): void {
@@ -164,6 +248,7 @@ export class GbmBoRegistry {
   }
 
   create(b: GbmBoCreateInput): void {
+    if (this.mutating) throw new Error("Reentrant BO mapping mutation");
     const existing = this.bos.get(b.bo_id);
     if (existing) {
       // Defensive: a second create for the same bo_id should never
@@ -188,6 +273,7 @@ export class GbmBoRegistry {
   }
 
   destroy(pid: number, bo_id: number): void {
+    if (this.mutating) throw new Error("Reentrant BO mapping mutation");
     const e = this.bos.get(bo_id);
     if (!e) return;
     for (const holder of Array.from(e.bindingsByPid.keys())) this.deleteBinding(e, holder);
@@ -227,13 +313,15 @@ export class GbmBoRegistry {
   bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0,
     allocationLength?: number): number {
     const entry = this.bos.get(bo_id);
-    if (!entry || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
+    if (this.mutating || !entry || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
         !Number.isSafeInteger(boOffset) || addr < 0 || len < 0 || boOffset < 0 ||
-        boOffset > entry.size || !Number.isSafeInteger(addr + len)) return -1;
+        !Number.isSafeInteger(boOffset + len) || !Number.isSafeInteger(addr + len)) return -1;
     if (allocationLength !== undefined && (!Number.isSafeInteger(allocationLength) ||
         allocationLength <= 0 || allocationLength < len || !Number.isSafeInteger(addr + allocationLength))) return -1;
 
     const previousBos = this.bos, previousCounts = this.bindingCounts;
+    this.mutating = true;
+    let committed = false;
     try {
       // Stage complete metadata before publishing a replacement. Canonical
       // publication may happen during admission, but failed admission must
@@ -253,7 +341,7 @@ export class GbmBoRegistry {
         return staged.next;
       };
       const retiring: {entry: InternalEntry; binding: InternalBinding}[] = [];
-      const fragments: {snapshot: Uint8Array; source: Uint8Array}[] = [];
+      const fragments: {binding: InternalBinding; source: Uint8Array}[] = [];
       const unbound = new Set<number>();
       if (allocationLength !== undefined) {
         const end = addr + allocationLength;
@@ -268,9 +356,10 @@ export class GbmBoRegistry {
             const fragment = (offset: number, length: number) => {
               const source = binding.snapshot.subarray(offset, offset + length);
               const snapshot = new Uint8Array(source.byteLength);
-              aliases.set(binding.addr + offset, {...binding, addr: binding.addr + offset,
-                len: length, boOffset: binding.boOffset + offset, snapshot});
-              fragments.push({snapshot,source});
+              const child = {...binding, addr: binding.addr + offset,
+                len: length, boOffset: binding.boOffset + offset, snapshot};
+              aliases.set(child.addr, child);
+              fragments.push({binding:child,source});
             };
             if (start > binding.addr) fragment(0, start - binding.addr);
             if (stop < binding.addr + binding.len) fragment(stop - binding.addr, binding.addr + binding.len - stop);
@@ -281,8 +370,18 @@ export class GbmBoRegistry {
       }
       const target = cloneEntry(entry);
       target.pids.add(pid);
-      target.bindingsByPid.get(pid)!.set(addr, {pid,addr,len,boOffset,primed:false,
-        snapshot:new Uint8Array(Math.min(len,entry.size-boOffset))});
+      // Same-address admission without a VMA replacement is still a new
+      // generation. Publish/detach the old object, never silently overwrite it.
+      const previous = target.bindingsByPid.get(pid)!.get(addr);
+      if (previous) { retiring.push({entry,binding:previous}); unbound.add(bo_id); }
+      const lineage: MappingLineage = {memory:this.getProcessMemory?.(pid) ?? null,
+        fragments:new Set(), captures:new Set()};
+      if (lineage.memory) mappingMemoryBuffer(lineage.memory);
+      const admitted: InternalBinding = {pid,addr,len,boOffset,primed:false,lineage,
+        snapshot:new Uint8Array(Math.max(0,Math.min(len,entry.size-boOffset)))};
+      target.bindingsByPid.get(pid)!.set(addr, admitted);
+      const stagedLineages = this.stageLineages(retiring.map(value => value.binding),
+        [...fragments.map(value => value.binding), admitted]);
       const nextCounts = new Map(this.bindingCounts);
       let count = 0;
       for (const candidate of nextBos.values()) count += candidate.bindingsByPid.get(pid)?.size ?? 0;
@@ -291,8 +390,11 @@ export class GbmBoRegistry {
 
       // The process bytes still contain the old mappings here. The kernel
       // worker zero-fills/populates the accepted mmap only after this return.
-      for (const record of retiring) this.flushMemoryToSab(record.entry,record.binding);
-      for (const {snapshot,source} of fragments) snapshot.set(source);
+      for (const record of retiring) {
+        this.startPublication(record.binding);
+        if (!this.flushMemoryToSab(record.entry,record.binding)) throw new Error("Original mapping publication failed");
+      }
+      for (const {binding,source} of fragments) binding.snapshot.set(source);
       for (const {original,next} of changed.values()) {
         next.pendingReaders = new Set(original.pendingReaders);
         if (!next.bindingsByPid.get(pid)?.size) {
@@ -304,146 +406,189 @@ export class GbmBoRegistry {
       this.bindingCounts = nextCounts;
       for (const oldBo of unbound) for (const listener of this.listeners) listener(pid,oldBo,"unbind");
       for (const listener of this.listeners) listener(pid,bo_id,"bind");
+      committed = true;
+      this.finishLineages(stagedLineages);
       return 0;
-    } catch {
+    } catch (error) {
+      if (committed) throw error;
       // Flushes above can legitimately publish old dirty bytes. Restoring the
       // old metadata retains those updated baselines, without admitting the
       // replacement or losing any old alias if a later allocation/observer fails.
       this.bos = previousBos;
       this.bindingCounts = previousCounts;
       return -1;
-    }
+    } finally { this.mutating = false; }
   }
 
-  unbind(pid: number, bo_id: number, addr?: number, len?: number): void {
-    const e = this.bos.get(bo_id);
-    if (!e) return;
+  unbind(pid: number, bo_id: number, addr?: number, len?: number): boolean {
+    const entry = this.bos.get(bo_id);
+    if (this.mutating) return false;
+    if (!entry) return true;
     if (addr !== undefined && (!Number.isSafeInteger(addr) || addr < 0 ||
-        (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return;
-    const removed: InternalBinding[] = [], fragments: InternalBinding[] = [];
-    for (const binding of e.bindingsByPid.get(pid)?.values() ?? []) {
-      if (addr !== undefined && len === undefined && binding.addr !== addr) continue;
-      const start = addr === undefined || len === undefined ? binding.addr : Math.max(addr,binding.addr);
-      const end = addr === undefined || len === undefined ? binding.addr + binding.len : Math.min(addr + len,binding.addr + binding.len);
-      if (start >= end) continue;
-      // Flush while the retiring bytes still belong to this address space.
-      // Snapshot fragments remain independent storage, never guest views.
-      this.flushMemoryToSab(e,binding);
-      removed.push(binding);
-      if (start > binding.addr) fragments.push({...binding, len: start - binding.addr,
-        snapshot: binding.snapshot.slice(0,start-binding.addr)});
-      if (end < binding.addr + binding.len) {
-        const delta = end - binding.addr;
-        fragments.push({...binding, addr: end, len: binding.addr + binding.len - end,
-          boOffset: binding.boOffset + delta, snapshot: binding.snapshot.slice(delta)});
+        (len !== undefined && (!Number.isSafeInteger(len) || len < 0 || !Number.isSafeInteger(addr + len))))) return false;
+    return this.removeMappings(entry, pid, addr, len);
+  }
+
+  /** Stage all descendants and baselines before the first publication. The
+   * optional lineage is capability authority, not a numeric selector. */
+  private removeMappings(entry: InternalEntry, pid: number, addr?: number, len?: number,
+    lineage?: MappingLineage): boolean {
+    if (this.mutating) return false;
+    this.mutating = true;
+    let committed = false;
+    try {
+      const aliases = new Map(entry.bindingsByPid.get(pid));
+      const removed: InternalBinding[] = [], added: InternalBinding[] = [];
+      const baselines: {binding: InternalBinding; source: Uint8Array}[] = [];
+      for (const binding of aliases.values()) {
+        if (lineage && binding.lineage !== lineage) continue;
+        if (addr !== undefined && len === undefined && binding.addr !== addr) continue;
+        const start = addr === undefined || len === undefined ? binding.addr : Math.max(addr,binding.addr);
+        const end = addr === undefined || len === undefined ? binding.addr + binding.len : Math.min(addr + len,binding.addr + binding.len);
+        if (start >= end) continue;
+        aliases.delete(binding.addr); removed.push(binding);
+        const fragment = (offset: number, length: number) => {
+          const source = binding.snapshot.subarray(offset,offset+length);
+          const child = {...binding,addr:binding.addr+offset,len:length,boOffset:binding.boOffset+offset,
+            snapshot:new Uint8Array(source.length)};
+          aliases.set(child.addr,child); added.push(child); baselines.push({binding:child,source});
+        };
+        if (start > binding.addr) fragment(0,start-binding.addr);
+        if (end < binding.addr+binding.len) fragment(end-binding.addr,binding.addr+binding.len-end);
       }
-    }
-    // A flush above can make a surviving alias stale. Preserve that wakeup
-    // even when removing the last original entry temporarily clears the pid.
-    const pending = e.pendingReaders.has(pid);
-    for (const binding of removed) this.deleteBinding(e,pid,binding.addr);
-    for (const binding of fragments) this.setBinding(e,pid,binding);
-    if (pending && e.bindingsByPid.has(pid)) e.pendingReaders.add(pid);
-    for (const l of this.listeners) l(pid, bo_id, "unbind");
-  }
-
-  /** Capture one whole kernel-recorded mapping from a removal vector. The
-   * caller supplies its already authenticated original Memory registration;
-   * retirement never resolves a possibly replaced pid. Partial-range legacy
-   * munmap remains outside this narrow retained receiver. No bytes are written
-   * and no public mapping is detached during capture. */
-  captureMappingRetirement(pid: number, bo: number, addr: number, len: number,
-    memory: WebAssembly.Memory | null): GbmMappingRetirement | null {
-    const entry = this.bos.get(bo), binding = entry?.bindingsByPid.get(pid)?.get(addr);
-    if (!entry || !binding || binding.len !== len || this.mappingRetirements.has(binding)) return null;
-    const length = Math.min(binding.len, entry.size - binding.boOffset);
-    if (binding.primed && (!memory || binding.snapshot.byteLength !== length ||
-        binding.addr + length > memory.buffer.byteLength)) return null;
-    const capability = new GbmMappingRetirement();
-    try {
-      mappingRetirements.set(capability, {owner: new WeakRef(this), backing: entry.sab, binding, memory,
-        pid, bo, started: false, state: "captured", notificationFault: false});
-      this.mappingRetirements.set(binding, capability);
-      return capability;
-    } catch {
-      if (this.mappingRetirements.get(binding) === capability) this.mappingRetirements.delete(binding);
-      const record = mappingRetirements.get(capability);
-      if (record) { record.memory = null; record.backing = null; record.binding = null; }
-      mappingRetirements.delete(capability);
-      return null;
-    }
-  }
-
-  /** Publish this exact old mapping and detach it once. Source replacement
-   * refuses before reading any process bytes. Listener failure after detach
-   * is a notification fault, never authority to replay publication/removal. */
-  retireCapturedMapping(capability: GbmMappingRetirement): boolean {
-    const record = mappingRetirements.get(capability);
-    if (!record || record.owner.deref() !== this || record.state === "abandoned") return false;
-    if (record.state === "retired") return true;
-    // bind() may replace metadata while preserving the actual BO allocation
-    // and this mapping. Select current metadata so publication wakes newly
-    // admitted peers and removal updates the live alias inventory.
-    const entry = this.bos.get(record.bo), binding = record.binding;
-    if (!entry || !binding || entry.sab !== record.backing ||
-        entry.bindingsByPid.get(record.pid)?.get(binding.addr) !== binding ||
-        this.mappingRetirements.get(binding) !== capability) return false;
-    record.started = true;
-    try {
-      if (!this.flushMemoryToSab(entry, binding, Infinity, record.memory)) return false;
-      this.deleteBinding(entry, record.pid, binding.addr);
-      this.mappingRetirements.delete(binding);
-      record.state = "retired";
-      // Sever guest-address-space and backing roots before external observers.
-      record.memory = null; record.binding = null; record.backing = null;
+      const stagedLineages = this.stageLineages(removed,added);
+      const affectedCaptures = new Set(removed.flatMap(binding => [...binding.lineage.captures]));
+      const nextByPid = new Map(entry.bindingsByPid);
+      if (aliases.size) nextByPid.set(pid,aliases); else nextByPid.delete(pid);
+      const counts = new Map(this.bindingCounts);
+      const count = (counts.get(pid) ?? 0) - removed.length + added.length;
+      if (count) counts.set(pid,count); else counts.delete(pid);
+      for (const binding of removed) {
+        this.startPublication(binding);
+        if (!this.flushMemoryToSab(entry,binding)) return false;
+      }
+      for (const {binding,source} of baselines) binding.snapshot.set(source);
+      entry.bindingsByPid = nextByPid; this.bindingCounts = counts;
+      if (!aliases.size) entry.pendingReaders.delete(pid);
+      committed = true;
+      this.finishLineages(stagedLineages);
+      // A notification fault cannot turn an already detached mapping back
+      // into a retryable publication. Preserve it separately on captures.
       for (const listener of this.listeners) {
-        try { listener(record.pid, record.bo, "unbind"); }
+        try { listener(pid,entry.bo_id,"unbind"); }
         catch (error) {
-          record.notificationFault = true;
+          for (const capability of affectedCaptures) mappingRetirements.get(capability)!.notificationFault = true;
           if (isKernelExportFailure(error)) throw error;
         }
       }
       return true;
     } catch (error) {
       if (isKernelExportFailure(error)) throw error;
-      return false;
+      return committed;
+    } finally { this.mutating = false; }
+  }
+
+  /** Capture a strict subrange of one actual mapping admission. Splits retain
+   * its immutable lineage; later admissions at identical numbers do not. */
+  captureMappingRetirement(pid: number, bo: number, addr: number, len: number,
+    memory: WebAssembly.Memory | null): GbmMappingRetirement | null {
+    if (this.mutating || !Number.isSafeInteger(addr) || !Number.isSafeInteger(len) ||
+        addr < 0 || len <= 0 || !Number.isSafeInteger(addr+len)) return null;
+    const entry = this.bos.get(bo);
+    const binding = [...entry?.bindingsByPid.get(pid)?.values() ?? []]
+      .find(value => value.addr <= addr && addr+len <= value.addr+value.len);
+    if (!entry || !binding) return null;
+    const lineage = binding.lineage;
+    // Inherited mappings can precede child registration. Only an unprimed,
+    // unleased admission can accept its original Memory once at capture.
+    if (lineage.memory !== memory && (lineage.memory !== null || binding.primed || lineage.captures.size !== 0)) return null;
+    const length = Math.max(0,Math.min(binding.len,entry.size-binding.boOffset));
+    try {
+      if (memory) mappingMemoryBuffer(memory);
+      if (binding.primed && (!memory || binding.snapshot.length !== length || binding.addr+binding.len > mappingMemoryBuffer(memory).byteLength)) return null;
+    } catch { return null; }
+    for (const capability of lineage.captures) {
+      const record = mappingRetirements.get(capability)!;
+      if (addr < record.end && record.addr < addr+len) return null;
+    }
+    const capability = new GbmMappingRetirement();
+    try {
+      mappingRetirements.set(capability,{owner:new WeakRef(this),backing:entry.sab,lineage,addr,end:addr+len,
+        pid,bo,started:false,state:"captured",notificationFault:false,listeners:new Set()});
+      lineage.captures.add(capability);
+      if (memory && lineage.memory === null) lineage.memory = memory;
+      return capability;
+    } catch { mappingRetirements.delete(capability); lineage.captures.delete(capability); return null; }
+  }
+
+  /** Reserve the actual live fragments before process cleanup revokes any
+   * native/storage owner. A failed reservation rolls back this batch only. */
+  captureProcessMappingRetirements(pid: number, memory: WebAssembly.Memory): GbmMappingRetirement[] | null {
+    if (this.mutating) return null;
+    const captured: GbmMappingRetirement[] = [];
+    try {
+      for (const entry of this.bos.values()) {
+        for (const binding of entry.bindingsByPid.get(pid)?.values() ?? []) {
+          const capability = this.captureMappingRetirement(pid,entry.bo_id,binding.addr,binding.len,memory);
+          if (!capability) throw new Error("Process mapping reservation refused");
+          captured.push(capability);
+        }
+      }
+      return captured;
+    } catch {
+      for (const capability of captured) capability.abandon();
+      return null;
     }
   }
 
-  /** Roll back only a capture which has never begun publishing. This releases
-   * our reservation, not the actual mapping, and is not retirement proof. */
+  retireCapturedMapping(capability: GbmMappingRetirement): boolean {
+    const record = mappingRetirements.get(capability);
+    if (!record || record.owner.deref() !== this || record.state === "abandoned") return false;
+    if (record.state === "retired") return true;
+    const entry = this.bos.get(record.bo), lineage = record.lineage;
+    if (this.mutating || !entry || entry.sab !== record.backing || !lineage || !lineage.captures.has(capability)) return false;
+    // Validate every actual surviving descendant, not a successor found by
+    // re-resolving an address or PID. Wrong-order BO destruction is not ACK.
+    if (![...lineage.fragments].every(binding => entry.bindingsByPid.get(record.pid)?.get(binding.addr) === binding)) return false;
+    const result = this.removeMappings(entry,record.pid,record.addr,record.end-record.addr,lineage);
+    return result && capability.complete;
+  }
+
   abandonMappingRetirement(capability: GbmMappingRetirement): boolean {
     const record = mappingRetirements.get(capability);
-    if (!record || record.owner.deref() !== this || record.state === "retired" || record.started) return false;
+    if (!record || record.owner.deref() !== this || record.state === "retired" || record.started || this.mutating) return false;
     if (record.state === "abandoned") return true;
-    if (record.binding && this.mappingRetirements.get(record.binding) === capability)
-      this.mappingRetirements.delete(record.binding);
+    record.lineage?.captures.delete(capability);
     record.state = "abandoned";
-    record.memory = null; record.binding = null; record.backing = null;
+    record.lineage = null; record.backing = null; record.listeners.clear();
     return true;
   }
 
   /** Exec replaces mappings, while non-CLOEXEC GEM handles remain open.
    * Flush the retiring address space without discarding kernel-owned BOs. */
-  releaseProcessMappings(pid: number): void {
+  releaseProcessMappings(pid: number): boolean {
+    let complete = true;
     for (const [boId, entry] of this.bos) {
-      if (entry.bindingsByPid.has(pid)) this.unbind(pid, boId);
+      if (entry.bindingsByPid.has(pid) && !this.unbind(pid,boId)) complete = false;
     }
+    return complete;
   }
 
   /**
-   * Retire a process's observed mappings and metadata. Flush while the old
-   * address space is still resolvable. Kernel handles (including unmapped
+   * Retire a process's observed mappings and metadata using each admitted
+   * original address space. A failed publication keeps its mapping pending. Kernel handles (including unmapped
    * imports) determine storage lifetime; only destroy() can release a BO.
    */
-  releaseProcess(pid: number): void {
+  releaseProcess(pid: number): boolean {
+    let complete = true;
     for (const [bo_id, e] of Array.from(this.bos)) {
-      if (e.bindingsByPid.has(pid)) this.unbind(pid, bo_id);
+      if (e.bindingsByPid.has(pid) && !this.unbind(pid,bo_id)) { complete = false; continue; }
       if (!e.pids.delete(pid)) continue;
       // pids records observed mappings, not all kernel references. An
       // importer may hold a valid GEM/cursor/PRIME reference without mapping.
       // Storage dies only on destroy(), driven by the kernel's last ref.
     }
+    return complete;
   }
 
   /** Find the bo bound for `pid` at `addr`. Used by kernel-worker's
@@ -466,26 +611,35 @@ export class GbmBoRegistry {
     bo_id: number,
     memory: WebAssembly.Memory,
     addr?: number,
-  ): void {
-    const e = this.bos.get(bo_id);
-    if (!e) return;
-    const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
-    if (!binding) return;
-    for (const other of this.bindings(e)) if (other !== binding) this.flushMemoryToSab(e, other);
-    const copyLen = Math.min(binding.len, e.size - binding.boOffset);
-    if (binding.addr + copyLen > memory.buffer.byteLength) return;
-    const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
-    const src = new Uint8Array(e.sab, binding.boOffset, copyLen);
-    dst.set(src);
-    binding.snapshot.set(src);
-    binding.primed = true;
-    e.pendingReaders.delete(pid);
+  ): boolean {
+    try {
+      const e = this.bos.get(bo_id);
+      if (!e) return false;
+      const binding = addr === undefined ? this.latestBinding(e,pid) : e.bindingsByPid.get(pid)?.get(addr);
+      if (!binding || this.mutating || (binding.lineage.memory !== null && binding.lineage.memory !== memory) ||
+          (!binding.primed && binding.lineage.captures.size !== 0)) return false;
+      const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
+      if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== copyLen) return false;
+      for (const other of this.bindings(e)) if (other !== binding && !this.flushMemoryToSab(e, other)) return false;
+      const dst = new Uint8Array(mappingMemoryBuffer(memory), binding.addr, copyLen);
+      const src = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
+      dst.set(src);
+      binding.snapshot.set(src);
+      binding.lineage.memory = memory;
+      binding.primed = true;
+      e.pendingReaders.delete(pid);
+      return true;
+    } catch (error) {
+      if (isKernelExportFailure(error)) throw error;
+      return false;
+    }
   }
 
   /** Prime kernel-announced inherited aliases after the child's clone is
    * complete. Preflight every destination before exposing any child mapping.
    * Pending clone bytes never become a writer. Local guest views do not escape. */
   primeProcessMappings(pid: number, memory: WebAssembly.Memory): boolean {
+    if (this.mutating) return false;
     if (!this.bindingCounts.has(pid)) return true;
     try {
       const targets: {entry: InternalEntry; binding: InternalBinding;
@@ -495,16 +649,18 @@ export class GbmBoRegistry {
         if (!aliases) continue;
         this.syncToSab(entry.bo_id);
         for (const binding of aliases.values()) {
+          if ((binding.lineage.memory !== null && binding.lineage.memory !== memory) ||
+              (!binding.primed && binding.lineage.captures.size !== 0)) return false;
           if (binding.primed) continue;
-          const length = Math.min(binding.len, entry.size - binding.boOffset);
-          if (binding.addr + length > memory.buffer.byteLength || binding.snapshot.length !== length) return false;
+          const length = Math.max(0,Math.min(binding.len, entry.size - binding.boOffset));
+          if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength || binding.snapshot.length !== length) return false;
           targets.push({entry, binding, length,
-            destination: new Uint8Array(memory.buffer,binding.addr,length), source: new Uint8Array(entry.sab,binding.boOffset,length)});
+            destination: new Uint8Array(mappingMemoryBuffer(memory),binding.addr,length), source: new Uint8Array(entry.sab,Math.min(binding.boOffset,entry.size),length)});
         }
       }
       if (targets.some(target => target.destination.byteLength !== target.length)) return false;
       for (const {entry,binding,destination,source} of targets) {
-        destination.set(source); binding.snapshot.set(source); binding.primed=true;
+        destination.set(source); binding.snapshot.set(source); binding.lineage.memory=memory; binding.primed=true;
         entry.pendingReaders.delete(pid);
       }
       return true;
@@ -515,16 +671,15 @@ export class GbmBoRegistry {
     e: InternalEntry,
     binding: InternalBinding,
     byteLimit = Infinity,
-    capturedMemory?: WebAssembly.Memory | null,
   ): boolean {
-    const resolver = this.getProcessMemory;
     if (!binding.primed) return true;
-    const mem = capturedMemory === undefined ? resolver?.(binding.pid) : capturedMemory;
+    const mem = binding.lineage.memory;
     if (!mem) return false;
     const copyLen = Math.max(0, Math.min(binding.len, e.size - binding.boOffset, byteLimit - binding.boOffset));
-    if (binding.addr + copyLen > mem.buffer.byteLength) return false;
-    const dst = new Uint8Array(e.sab, binding.boOffset, copyLen);
-    const src = new Uint8Array(mem.buffer, binding.addr, copyLen);
+    if (binding.addr + binding.len > mappingMemoryBuffer(mem).byteLength || binding.snapshot.length < copyLen) return false;
+    if (!copyLen) return true;
+    const dst = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
+    const src = new Uint8Array(mappingMemoryBuffer(mem), binding.addr, copyLen);
     const snapshot = binding.snapshot;
     if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
       // A reader must consume the final publication even if this writer's
@@ -571,17 +726,17 @@ export class GbmBoRegistry {
       for (const binding of this.bindings(e)) {
         if (!binding.primed) continue;
         const pid = binding.pid;
-        const memory = this.getProcessMemory?.(pid);
-        if (!memory) continue;
-        const length = Math.min(binding.len, e.size - binding.boOffset);
+        const memory = binding.lineage.memory;
+        if (!memory) return false;
+        const length = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
         const snapshot = binding.snapshot;
         if (!snapshot || snapshot.byteLength !== length ||
-            binding.addr + length > memory.buffer.byteLength) return false;
-        targets.push({pid, length, view: new Uint8Array(memory.buffer, binding.addr, length),
+            binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength) return false;
+        targets.push({pid, length, view: new Uint8Array(mappingMemoryBuffer(memory), binding.addr, length),
           source: canonical.subarray(binding.boOffset, binding.boOffset + length), snapshot});
       }
-      // A resolver callback may replace or grow an unshared test memory.
-      // Allocate every source view and recheck all destinations before writing.
+      // All destinations belong to their original mapping admissions.
+      // Allocate every view and recheck all destinations before writing.
       if (targets.some(target => target.view.byteLength !== target.length) || pixels.byteLength !== e.size)
         return false;
       canonical.set(pixels);
@@ -643,10 +798,11 @@ export class GbmBoRegistry {
       let complete = true;
       for (const binding of aliases.values()) {
         if (!binding.primed) continue;
-        const copyLen = Math.min(binding.len, e.size - binding.boOffset);
-        if (binding.addr + copyLen > memory.buffer.byteLength) { complete = false; continue; }
-        const dst = new Uint8Array(memory.buffer, binding.addr, copyLen);
-        dst.set(new Uint8Array(e.sab, binding.boOffset, copyLen));
+        if (binding.lineage.memory !== memory) { complete = false; continue; }
+        const copyLen = Math.max(0,Math.min(binding.len, e.size - binding.boOffset));
+        if (binding.addr + binding.len > mappingMemoryBuffer(memory).byteLength) { complete = false; continue; }
+        const dst = new Uint8Array(mappingMemoryBuffer(memory), binding.addr, copyLen);
+        dst.set(new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen));
         binding.snapshot.set(dst);
       }
       if (complete) e.pendingReaders.delete(pid);
