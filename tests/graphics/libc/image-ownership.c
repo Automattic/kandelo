@@ -2265,6 +2265,27 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(version && !strcmp(version, "1.5 wpk") && eglGetError() == EGL_SUCCESS);
         assert(eglTerminate(dpy));
         assert(!eglQueryString(dpy, EGL_VENDOR) && eglGetError() == EGL_NOT_INITIALIZED);
+    } else if (!strcmp(name, "egl-spec-wait-native")) {
+        /* EGL 1.5 section 3.8. Without a current context there is nothing
+         * to synchronize with. */
+        assert(eglWaitNative(-1) && eglGetError() == EGL_SUCCESS);
+        assert(eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        const EGLint size[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+        EGLSurface surface = eglCreatePbufferSurface(dpy, (EGLConfig)1, size);
+        assert(context && surface && eglMakeCurrent(dpy, surface, surface, context));
+        assert(!eglWaitNative(-1) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(!eglWaitNative(0) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglWaitNative(EGL_CORE_NATIVE_ENGINE) && eglGetError() == EGL_SUCCESS);
+        /* A destroyed current draw surface stays bound but is invalid. */
+        assert(eglDestroySurface(dpy, surface));
+        assert(eglGetCurrentSurface(EGL_DRAW) == surface);
+        assert(!eglWaitNative(EGL_CORE_NATIVE_ENGINE) && eglGetError() == EGL_BAD_CURRENT_SURFACE);
+        /* A surfaceless binding has no native surface to wait for. */
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        assert(eglWaitNative(EGL_CORE_NATIVE_ENGINE) && eglGetError() == EGL_SUCCESS);
+        assert(!eglWaitNative(-1) && eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglDestroyContext(dpy, context) && eglReleaseThread() && eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;

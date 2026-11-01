@@ -2271,10 +2271,30 @@ EGLBoolean eglWaitGL(void) {
     return eglWaitClient();
 }
 
+/* EGL 1.5 section 3.8. Kandelo has no native renderer that draws into EGL
+ * surfaces, so a valid wait has nothing to order and succeeds. The checks
+ * still report the caller's real binding: no current context is a no-op,
+ * a current draw surface that was destroyed (or whose Wayland connection
+ * ended) is EGL_BAD_CURRENT_SURFACE, and only EGL_CORE_NATIVE_ENGINE is a
+ * recognized marking engine. A surfaceless binding has no surface to
+ * invalidate. */
 EGLBoolean eglWaitNative(EGLint engine) {
     egl_call_begin();
-    (void) engine;
-    return EGL_TRUE;
+    lock_context();
+    struct egl_thread_binding *binding = &g_thread_binding;
+    EGLBoolean result = EGL_FALSE;
+    if (!binding->object)
+        result = EGL_TRUE;
+    else if (binding->draw && (binding->draw->delete_pending ||
+             (binding->generation->wayland_hold && _wpk_wl_display_alive &&
+              !_wpk_wl_display_alive(binding->generation->wayland_hold))))
+        g_last_error = EGL_BAD_CURRENT_SURFACE;
+    else if (engine != EGL_CORE_NATIVE_ENGINE)
+        g_last_error = EGL_BAD_PARAMETER;
+    else
+        result = EGL_TRUE;
+    unlock_context();
+    return result;
 }
 
 EGLenum eglQueryAPI(void) {
