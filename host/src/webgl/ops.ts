@@ -233,3 +233,6 @@ export const GL_QUERY_NEEDS_OWNED_ADMISSION = -2147483647;
 export const QOP_COMPRESSED_UPLOAD = 0x0032;
 // Reserved ABI56: one native read followed by independent copied-byte chunks.
 export const QOP_READBACK_CAPTURE = 0x0033;
+
+// Captured shader/program variable queries: BEGIN, CHUNK, RELEASE.
+export const QOP_OBJECT_CAPTURE = 0x0034;

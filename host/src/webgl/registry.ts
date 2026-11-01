@@ -1,3 +1,4 @@
+import type { GlObjectCapture } from "./object-capture.js";
 import type { GlCompressedUpload } from "./compressed-upload.js";
 import type { GlReadbackCapture } from "./readback-capture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
@@ -110,6 +111,8 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   compressedUploadSerial: number;
   shaderUpload: GlShaderSourceUpload | null;
   shaderUploadSerial: number;
+  objectCapture: GlObjectCapture | null;
+  objectCaptureSerial: number;
   readbackCapture: GlReadbackCapture | null;
   readbackCaptureSerial: number;
   /** No attachments: native framebuffer operations enforce surfaceless
@@ -395,6 +398,8 @@ export class GlContextRegistry {
       compressedUploadSerial: 0,
       shaderUpload: null,
       shaderUploadSerial: 0,
+      objectCapture: null,
+      objectCaptureSerial: 0,
       readbackCapture: null,
       readbackCaptureSerial: 0,
       forward,
@@ -502,7 +507,7 @@ export class GlContextRegistry {
   private retireContextBinding(b: GlBinding, replace: boolean): void {
     // Copied replies own no native execution; public context retirement revokes
     // their private transfer immediately, even while native work is retained.
-    b.readbackCapture = null;
+    b.objectCapture = null; b.readbackCapture = null;
     b.compressedUpload = null;
     const record = this.executions.get(b);
     if (record && record.references > 0) {
@@ -562,7 +567,7 @@ export class GlContextRegistry {
     const target = this.get(pid,targetSession), source = this.get(pid,sourceSession);
     if (!target || !source || target === source || !target.gl || target.gl !== source.gl
         || target.contextId === null || source.contextId === null || target.hasBeenCurrent || target.savedClientArrayBuffer !== undefined
-        || target.compressedUpload !== null || target.uniformUpload !== null || target.uniformLookup !== null || target.readbackCapture !== null || target.objects.members.size !== 1) return false;
+        || target.compressedUpload !== null || target.uniformUpload !== null || target.uniformLookup !== null || target.objectCapture !== null || target.readbackCapture !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
         || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
@@ -609,7 +614,7 @@ export class GlContextRegistry {
 
   detachCanvas(pid: number): void {
     this.pendingCanvases.delete(pid);
-    for (const b of this.list()) if (b.pid === pid) { b.readbackCapture = null; b.compressedUpload = null; b.canvas = null; b.gl = null; }
+    for (const b of this.list()) if (b.pid === pid) { b.objectCapture = null; b.readbackCapture = null; b.compressedUpload = null; b.canvas = null; b.gl = null; }
   }
 
   /** Bound canvas, or staged `pendingCanvases` entry if `attachCanvas`
@@ -827,7 +832,8 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.compressedUploadSerial = 0;
   b.shaderUpload = null;
   b.shaderUploadSerial = 0;
-  b.readbackCapture = null;
+  b.objectCapture = null; b.readbackCapture = null;
+  b.objectCaptureSerial = 0;
   b.readbackCaptureSerial = 0;
   b.savedClientArrayBuffer = undefined;
   b.clientArrayRestore = undefined;

@@ -705,6 +705,9 @@ int graphics_munmap(void *a, size_t len) {
     assert(found && len == WPK_GL_CMDBUF_LEN);
     return 0;
 }
+static uint8_t object_capture_bytes[100000];
+static uint32_t object_capture_token,object_capture_size,object_capture_op,object_log_size=4;
+static unsigned object_capture_chunks,object_fail_chunk,object_lost_begin,object_lost_release,object_bad_magic,object_bad_count;
 static unsigned log_queries;
 static int log_query_failure;
 static unsigned read_capture_token, read_capture_total, read_capture_chunks, read_capture_fail_chunk, read_capture_lost_release, read_capture_lost_begin, read_capture_bad_magic, read_capture_bad_count;
@@ -1682,6 +1685,50 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(q->out_buf_len >= 8);
             memcpy(latest_allocation,&size,4);memcpy((uint8_t *)latest_allocation+4,"abcd",4);
             return 0;
+        }
+        if (q->op == 0x34) {
+            const uint32_t *input=allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint32_t *reply=allocation_for(q->out_buf_ptr,q->out_buf_len);
+            const unsigned action=input[0],token=input[1];uint32_t count=0;
+            assert(token && q->out_buf_len>=16);memset(reply,0,q->out_buf_len);
+            if(action==1) {
+                assert(q->in_buf_len==24 && q->out_buf_len==16);
+                object_capture_op=input[2];object_capture_token=0;object_capture_chunks=0;
+                const int log=object_capture_op==QOP_GET_SHADER_INFO_LOG || object_capture_op==QOP_GET_PROGRAM_INFO_LOG;
+                if(log)log_queries++;else core_calls++;
+                if(log && log_query_failure){query_gl_error=GL_INVALID_VALUE;reply[0]=1;}
+                else if(query_status){reply[0]=query_status;}
+                else {
+                    unsigned header=object_capture_op==0x18 || object_capture_op==0x20?12:4;
+                    unsigned unit=object_capture_op==0x19?4:1,total=log?object_log_size:core_total;
+                    unsigned n=total<input[5]?total:input[5];
+                    count=object_capture_size=header+n*unit;assert(count<=sizeof object_capture_bytes);
+                    memcpy(object_capture_bytes,&total,4);
+                    if(header==12){const uint32_t meta[2]={1,GL_FLOAT_VEC4};memcpy(object_capture_bytes+4,meta,8);}
+                    for(unsigned i=0;i<n;i++){
+                        if(unit==4){uint32_t shader=11+i;memcpy(object_capture_bytes+header+4*i,&shader,4);}
+                        else object_capture_bytes[header+i]='a'+i%26;
+                    }
+                    object_capture_token=token;
+                }
+                if(object_lost_begin){object_lost_begin=0;errno=EIO;return -1;}
+            } else if(action==2) {
+                assert(q->in_buf_len==16 && token==object_capture_token);
+                const int log=object_capture_op==QOP_GET_SHADER_INFO_LOG || object_capture_op==QOP_GET_PROGRAM_INFO_LOG;
+                if(!log)core_calls++;
+                object_capture_chunks++;
+                if((object_fail_chunk && object_capture_chunks==object_fail_chunk) || (core_fail_at && core_calls==core_fail_at)){errno=EIO;return -1;}
+                count=input[3];assert(input[2]+count<=object_capture_size && q->out_buf_len==count+16);
+                memcpy((uint8_t *)reply+12,object_capture_bytes+input[2],count);
+                if(object_bad_count)count++;
+            } else {
+                assert(action==3 && q->in_buf_len==8 && q->out_buf_len==16);
+                assert(!object_capture_token || token==object_capture_token);object_capture_token=0;
+                if(object_lost_release){object_lost_release=0;errno=EIO;return -1;}
+            }
+            reply[1]=token;reply[2]=count;
+            uint32_t magic=action==1 && object_bad_magic?0:WPK_GL_QUERY_REPLY_MAGIC;
+            memcpy((uint8_t *)reply+q->out_buf_len-4,&magic,4);return 0;
         }
         if (q->op == 0x33) {
             const uint32_t *input = allocation_for(q->in_buf_ptr,q->in_buf_len);
@@ -5153,6 +5200,37 @@ int main(int argc, char **argv) {
         log_query_failure=0;
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count()==0);puts("PASS encoder-params-reject");return 0;
+    }
+    if (!strncmp(argv[1],"encoder-object-",15)) {
+        void (*const getters[])(GLuint,GLsizei,GLsizei *,GLchar *)={glGetShaderInfoLog,glGetProgramInfoLog};
+        char *output=malloc(70001);assert(output);object_log_size=70000;
+        for(unsigned i=0;i<2;i++) {
+            memset(output,'!',70001);GLsizei length=91;unsigned before=log_queries;
+            object_fail_chunk=!strcmp(argv[1],"encoder-object-chunk")?2:0;
+            object_lost_begin=!strcmp(argv[1],"encoder-object-begin");
+            object_lost_release=!strcmp(argv[1],"encoder-object-release");
+            object_bad_magic=!strcmp(argv[1],"encoder-object-magic");
+            object_bad_count=!strcmp(argv[1],"encoder-object-count");
+            if(!strcmp(argv[1],"encoder-object-oom")) {
+                for(int failure=0;failure<3;failure++) {
+                    malloc_before_failure=failure;getters[i](42,70001,&length,output);malloc_before_failure=-1;
+                    assert(length==91 && glGetError()==GL_OUT_OF_MEMORY && object_capture_token==0);
+                    for(unsigned j=0;j<70001;j++)assert(output[j]=='!');
+                }
+            } else {
+                getters[i](42,70001,&length,output);
+                if(!strcmp(argv[1],"encoder-object-large-log")) {
+                    assert(length==70000 && output[70000]==0 && glGetError()==GL_NO_ERROR);
+                    for(unsigned j=0;j<70000;j++)assert(output[j]=='a'+j%26);
+                } else {
+                    assert(length==91 && glGetError()==GL_INVALID_OPERATION);
+                    for(unsigned j=0;j<70001;j++)assert(output[j]=='!');
+                }
+                assert(log_queries==before+1 && object_capture_token==0);
+            }
+        }
+        free(output);assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count()==0);printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strncmp(argv[1],"encoder-log-",12)) {
         void (*const getters[])(GLuint,GLsizei,GLsizei *,GLchar *)={glGetShaderInfoLog,glGetProgramInfoLog};

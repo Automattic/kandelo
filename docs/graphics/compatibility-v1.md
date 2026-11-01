@@ -28,9 +28,11 @@ follow-up; no missing API is reclassified as a platform boundary.
 
 ## Latest desktop checkpoint, 2026-10-31
 
-The user's latest sequencing is graphics-platform completion and validation
-first, followed by ScummVM-specific troubleshooting and remaining application
-failures. Standalone performance experiments follow compatibility and
+The user's latest sequencing is a complete graphics implementation pass first,
+using quick compile checks and focused causal tests as needed. Repeated normal
+rebuilds, broad suites and browser/CTS runs are deferred until the combined
+implementation pass is complete. Combined validation follows, then ScummVM and
+remaining application troubleshooting. Standalone performance experiments follow compatibility and
 correctness; their evidence is preserved. The pending Start-to-ScummVM
 reproduction is deferred. Numeric program ABI remains 56, host 3 / GL table 17 /
 fork 21. Desktop progress is in [PR #1601](https://github.com/Automattic/kandelo/pull/1601);
@@ -19531,3 +19533,38 @@ filtered cases. Separate `graphics-transfer-xtask-r1-1031-235313-7b7f` reports
 835 unit and eight integration Pass; its two earlier focused controls are
 recorded separately and not added to that inventory. Broader acceptance remains
 open as recorded above.
+
+
+### Immutable shader/program query transfer, source implementation
+
+The C shader/program information-log getters no longer impose a 1,024-byte
+buffer. Logs, shader source, active attributes/uniforms and attached shader lists
+now use one context-owned snapshot of original metadata and the caller-requested
+prefix, followed by bounded copied chunks and acknowledged release. A shared
+object can change or disappear after capture without mixing bytes from different
+versions into one successful result. Native log/reflection reads are not repeated
+for chunks or unknown replies. Metadata-only calls still validate the object and
+index. Caller length, metadata and payload are published only after complete
+transfer and release acknowledgment; errors preserve every caller output.
+
+Additive `QOP_OBJECT_CAPTURE` 0x34 has BEGIN/CHUNK/RELEASE requests, monotonic
+context-local tokens and checked replies. RELEASE rejects every nonmatching
+pending token. Copied storage carries original native/logical context and shadow
+identity; public context retirement and canvas detachment revoke it immediately.
+A 64 MiB copied-storage budget is separate from the RPC limit and returns
+OUT_OF_MEMORY. Small caller prefixes remain possible for larger source objects.
+Program snapshot generation records the new protocol under reserved ABI56/GL17
+using the preceding normally built kernel export surface; it does not make that
+kernel or linked artifacts fresh. Normal combined regeneration/build remains in
+the later validation phase.
+
+Focused evidence in `.context/object-capture-r1/` retains 11 failing initial host
+controls and four failing actual-C controls against `07f5dd8da2`. The implemented
+path passes 14 focused host controls, 13 native C/UBSan controls (seven new plus
+six existing log/reflection/source cases), and a strict production TypeScript
+closure. Controls cover large UTF-8 logs, mutable shared source, reflection and
+list metadata, late failures, missing acknowledgments, malformed receipts,
+allocation refusal, stale cancellation, context retirement and reentrant
+replacement. These are bounded source controls, not browser rendering, full
+conformance or desktop acceptance. No broad suite or normal artifact rebuild is
+run for this increment, following the updated implementation-first sequencing.

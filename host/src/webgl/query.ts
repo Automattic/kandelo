@@ -1,3 +1,4 @@
+import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
 import { EXTRA_PIXEL_STORE_DEFAULTS } from "./shadow.js";
@@ -319,6 +320,7 @@ export function runGlQuery(
     if (op === O.QOP_COMPRESSED_UPLOAD) b.compressedUpload = null;
     return -5;
   }
+  if (op === O.QOP_OBJECT_CAPTURE) return runObjectCapture(b,input,out);
   if (op === O.QOP_READBACK_CAPTURE) return runReadbackCapture(b,input,out,(metadata,bytes)=>readNativePixels(b,metadata,bytes));
   if (op === O.QOP_LOOKUP_UNIFORM) return runUniformLookup(b,input,out);
   if (op === O.QOP_COMPRESSED_UPLOAD) return runCompressedUpload(b,input,out);

@@ -4391,6 +4391,28 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
     s.add(Program, "gl_compressed_upload", gl_compressed_upload());
+    s.add(Program, "gl_object_capture", json!({
+        "opcode": shared::gl::QOP_OBJECT_CAPTURE,
+        "queries": {"shader_log":shared::gl::QOP_GET_SHADER_INFO_LOG,
+            "program_log":shared::gl::QOP_GET_PROGRAM_INFO_LOG,
+            "shader_source":shared::gl::QOP_GET_SHADER_SOURCE,
+            "active_attribute":shared::gl::QOP_GET_ACTIVE_ATTRIB,
+            "active_uniform":shared::gl::QOP_GET_ACTIVE_UNIFORM_INFO,
+            "attached_shaders":shared::gl::QOP_GET_ATTACHED_SHADERS},
+        "value": "original-unit-count,[active-size,active-type],requested-prefix",
+        "units": "bytes-except-attached-shaders-u32",
+        "byte_order": "little-endian",
+        "begin_bytes": 24, "begin_fields": ["action","token","query","object","index","limit_units"],
+        "chunk_bytes": 16, "chunk_fields": ["action","token","offset_bytes","count_bytes"],
+        "release_bytes": 8, "release_fields": ["action","token"],
+        "actions": {"begin":1,"chunk":2,"release":3},
+        "reply": "status,token,count,chunk-bytes,magic",
+        "reply_fixed_bytes": 16, "max_chunk_bytes": 65520,
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "tokens": "monotonic-per-context-no-query-replay",
+        "snapshot": "original-metadata-and-truncated-payload-one-query",
+        "copyout": "after-complete-transfer-and-release-ack"
+    }));
     s.add(Program, "gl_readback_capture", json!({
         "opcode": shared::gl::QOP_READBACK_CAPTURE,
         "byte_order": "little-endian",

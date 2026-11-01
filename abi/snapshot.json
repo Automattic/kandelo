@@ -24,6 +24,7 @@
       "gl_compressed_upload",
       "gl_image_container_receipts",
       "gl_inline_client_draw",
+      "gl_object_capture",
       "gl_readback_capture",
       "gl_submit_query",
       "host_env_imports",
@@ -1500,6 +1501,53 @@
     "op_version": 17,
     "opcode": 1286,
     "public_buffer_names": false
+  },
+  "gl_object_capture": {
+    "actions": {
+      "begin": 1,
+      "chunk": 2,
+      "release": 3
+    },
+    "begin_bytes": 24,
+    "begin_fields": [
+      "action",
+      "token",
+      "query",
+      "object",
+      "index",
+      "limit_units"
+    ],
+    "byte_order": "little-endian",
+    "chunk_bytes": 16,
+    "chunk_fields": [
+      "action",
+      "token",
+      "offset_bytes",
+      "count_bytes"
+    ],
+    "copyout": "after-complete-transfer-and-release-ack",
+    "max_chunk_bytes": 65520,
+    "opcode": 52,
+    "queries": {
+      "active_attribute": 24,
+      "active_uniform": 32,
+      "attached_shaders": 25,
+      "program_log": 10,
+      "shader_log": 8,
+      "shader_source": 26
+    },
+    "release_bytes": 8,
+    "release_fields": [
+      "action",
+      "token"
+    ],
+    "reply": "status,token,count,chunk-bytes,magic",
+    "reply_fixed_bytes": 16,
+    "reply_magic": 1196510259,
+    "snapshot": "original-metadata-and-truncated-payload-one-query",
+    "tokens": "monotonic-per-context-no-query-replay",
+    "units": "bytes-except-attached-shaders-u32",
+    "value": "original-unit-count,[active-size,active-type],requested-prefix"
   },
   "gl_readback_capture": {
     "actions": {

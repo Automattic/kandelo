@@ -220,6 +220,7 @@
 #define QOP_FLUSH 0x0031u
 #define QOP_COMPRESSED_UPLOAD 0x0032u
 #define WPK_GL_COMPRESSED_UPLOAD_MAX_BYTES 16777216u
+#define QOP_OBJECT_CAPTURE 0x0034u
 #define QOP_READBACK_CAPTURE 0x0033u
 /* Private mode of the existing BO bind ioctl, returning a source token. */
 #define WPK_GL_IMAGE_SOURCE_TARGET 0x57504b49u

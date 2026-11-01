@@ -4949,6 +4949,19 @@ lifecycle intent scheduling, owned forwarding, remaining mutating-query
 candidates and ordinary signal-driven exit integration remain required before
 production asynchronous query activation.
 
+Variable shader/program queries use a context-owned copied-result transaction.
+The C facade requests one original log, source, active-variable record or
+attached-shader list through `QOP_OBJECT_CAPTURE` (0x34). BEGIN captures both
+metadata and the requested prefix; CHUNK copies those independent bytes and
+never re-reads an object that another shared context may have changed. RELEASE
+acknowledges disposal before C publishes any caller output. Unknown completion
+never replays the original query. Each context admits monotonic caller tokens;
+stale cancellation cannot dispose of a later capture. Public context retirement
+and canvas detachment revoke copied storage separately from native execution
+custody. The 64 MiB copied-storage budget is independent of the 64 KiB transport
+limit and fails with OUT_OF_MEMORY rather than silently truncating a query.
+This source implementation still requires rebuilt runtime validation.
+
 The main-thread fallback supports synchronous queries through one reusable
 65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
 limit. Input and command bytes are copied out of guest memory. A timed-out

@@ -290,6 +290,7 @@ struct wpk_gles_context {
     uint32_t next_uniform_lookup;
     uint32_t next_uniform_upload;
     uint32_t next_readback_capture;
+    uint32_t next_object_capture;
     GLuint array_buffer;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
@@ -2671,26 +2672,20 @@ void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
     *params = out;
 }
 
-void glGetShaderInfoLog(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
+static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
+                             uint32_t header_size, uint32_t unit, uint32_t limit,
+                             uint8_t **bytes, uint32_t *count, uint32_t header[3]);
+
+void glGetShaderInfoLog(GLuint object, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
     if (!_wpk_gl_current_encoder()) return;
     if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
     if (bufSize > 0 && !infoLog) return;
-    /* Even a zero-size destination must validate the object at the host.
-     * Publish caller bytes only after that query has been accepted. */
-    uint32_t s = shader;
-    uint8_t out[1024 + 4];
-    if (_wpk_gl_query_into(QOP_GET_SHADER_INFO_LOG, &s, 4, out, sizeof out) != 0) return;
-    uint32_t slen;
-    memcpy(&slen, out, 4);
-    if (slen > sizeof out - 4) slen = sizeof out - 4;
-    GLsizei copy = (GLsizei)slen;
-    if (bufSize == 0) copy = 0;
-    else {
-        if (copy > bufSize - 1) copy = bufSize - 1;
-        memcpy(infoLog, out + 4, (size_t)copy);
-        infoLog[copy] = '\0';
-    }
-    if (length) *length = copy;
+    uint32_t input[3]={object,0,0},count,header[3];uint8_t *bytes;
+    uint32_t limit=bufSize>0?(uint32_t)bufSize-1:0;
+    if (!query_object_blob(QOP_GET_SHADER_INFO_LOG,input,3,4,1,limit,&bytes,&count,header)) return;
+    if (bufSize>0) { if(count)memcpy(infoLog,bytes,count);infoLog[count]='\0'; }
+    if(length)*length=(GLsizei)count;
+    free(bytes);
 }
 
 void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
@@ -2704,26 +2699,16 @@ void glGetProgramiv(GLuint program, GLenum pname, GLint *params) {
     *params = out;
 }
 
-void glGetProgramInfoLog(GLuint program, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
+void glGetProgramInfoLog(GLuint object, GLsizei bufSize, GLsizei *length, GLchar *infoLog) {
     if (!_wpk_gl_current_encoder()) return;
     if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
     if (bufSize > 0 && !infoLog) return;
-    /* Even a zero-size destination must validate the object at the host.
-     * Publish caller bytes only after that query has been accepted. */
-    uint32_t s = program;
-    uint8_t out[1024 + 4];
-    if (_wpk_gl_query_into(QOP_GET_PROGRAM_INFO_LOG, &s, 4, out, sizeof out) != 0) return;
-    uint32_t slen;
-    memcpy(&slen, out, 4);
-    if (slen > sizeof out - 4) slen = sizeof out - 4;
-    GLsizei copy = (GLsizei)slen;
-    if (bufSize == 0) copy = 0;
-    else {
-        if (copy > bufSize - 1) copy = bufSize - 1;
-        memcpy(infoLog, out + 4, (size_t)copy);
-        infoLog[copy] = '\0';
-    }
-    if (length) *length = copy;
+    uint32_t input[3]={object,0,0},count,header[3];uint8_t *bytes;
+    uint32_t limit=bufSize>0?(uint32_t)bufSize-1:0;
+    if (!query_object_blob(QOP_GET_PROGRAM_INFO_LOG,input,3,4,1,limit,&bytes,&count,header)) return;
+    if (bufSize>0) { if(count)memcpy(infoLog,bytes,count);infoLog[count]='\0'; }
+    if(length)*length=(GLsizei)count;
+    free(bytes);
 }
 
 /* ----- strings / state getters -------------------------------------- */
@@ -3940,36 +3925,66 @@ GLboolean glIsEnabled(GLenum cap) {
     return value ? GL_TRUE : GL_FALSE;
 }
 
-/* The v4 string/list queries fetch metadata first, then bounded chunks.
- * Accumulate privately so later allocation/device failure leaves every
- * public output unchanged instead of exposing a partial successful query. */
+/* Each variable query owns one independent snapshot, including metadata.
+ * Preallocate the transport/cancellation buffer before BEGIN. A failed chunk,
+ * allocation, or RELEASE preserves every public output and never re-queries. */
+static int object_capture_query(int fd, uint32_t request[6], uint32_t input_len,
+                                uint8_t *reply, uint32_t output_len,
+                                uint32_t token, uint32_t *count, int quiet) {
+    memset(reply,0,output_len);
+    struct gl_query_info info={.op=QOP_OBJECT_CAPTURE,
+        .in_buf_ptr=(uintptr_t)request,.in_buf_len=input_len,
+        .out_buf_ptr=(uintptr_t)reply,.out_buf_len=output_len,.reserved=0};
+    if(ioctl(fd,GLIO_QUERY,&info)!=0)goto invalid;
+    uint32_t status,echoed,magic;
+    memcpy(&status,reply,4);memcpy(&echoed,reply+4,4);memcpy(&magic,reply+output_len-4,4);
+    if(status>1 || magic!=WPK_GL_QUERY_REPLY_MAGIC)goto invalid;
+    if(status)return 0;
+    if(echoed!=token)goto invalid;
+    memcpy(count,reply+8,4);return 1;
+invalid:
+    if(!quiet)raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
 static int query_object_blob(uint32_t op, uint32_t *input, uint32_t words,
                              uint32_t header_size, uint32_t unit, uint32_t limit,
                              uint8_t **bytes, uint32_t *count, uint32_t header[3]) {
-    uint8_t meta[20];
-    input[words-2] = input[words-1] = 0;
-    if (!checked_query_reply(op,input,words*4,meta,header_size)) return 0;
-    memcpy(header,meta+4,header_size);
-    uint32_t total = header[0], wanted = total < limit ? total : limit;
-    if (wanted > (SIZE_MAX-1)/unit) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
-    *bytes = NULL; *count = 0;
-    if (!wanted) return 1;
-    uint32_t per_chunk = (65536u-8-header_size)/unit;
-    uint32_t chunk = wanted < per_chunk ? wanted : per_chunk;
-    uint8_t *result = malloc((size_t)wanted*unit), *reply = malloc(header_size+chunk*unit+8);
-    if (!result || !reply) { free(result); free(reply); raise_client_error(GL_OUT_OF_MEMORY); return 0; }
-    for (uint32_t offset=0; offset<wanted;) {
-        uint32_t n = wanted-offset < chunk ? wanted-offset : chunk;
-        input[words-2] = offset; input[words-1] = n;
-        if (!checked_query_reply(op,input,words*4,reply,header_size+n*unit)) goto failed;
-        if (memcmp(reply+4,header,header_size)) { raise_client_error(GL_INVALID_OPERATION); goto failed; }
-        memcpy(result+(size_t)offset*unit,reply+4+header_size,(size_t)n*unit);
-        offset += n;
+    struct wpk_gles_context *state=_wpk_gl_current_encoder();
+    if(state->next_object_capture==UINT32_MAX){raise_client_error(GL_OUT_OF_MEMORY);return 0;}
+    uint32_t *request=malloc(24);uint8_t *reply=malloc(65536),*result=NULL;int success=0;
+    if(!request || !reply){free(request);free(reply);raise_client_error(GL_OUT_OF_MEMORY);return 0;}
+    if(flush_commands()!=0){free(request);free(reply);return 0;}
+    const int fd=_wpk_gl_fd();const uint32_t token=++state->next_object_capture;
+    uint32_t begin[6]={1,token,op,input[0],words==4?input[1]:0,limit},total=0,got=0;
+    memcpy(request,begin,sizeof begin);
+    if(!object_capture_query(fd,request,24,reply,16,token,&total,0))goto abort;
+    if(total<header_size || total>64u*1024u*1024u ||
+        (uint64_t)total>(uint64_t)header_size+(uint64_t)limit*unit)goto malformed;
+    result=malloc(total);
+    if(!result){raise_client_error(GL_OUT_OF_MEMORY);goto abort;}
+    for(uint32_t offset=0;offset<total;) {
+        uint32_t n=total-offset;if(n>65520u)n=65520u;
+        request[0]=2;request[2]=offset;request[3]=n;
+        if(!object_capture_query(fd,request,16,reply,n+16,token,&got,0))goto abort;
+        if(got!=n)goto malformed;
+        memcpy(result+offset,reply+12,n);offset+=n;
     }
-    free(reply); *bytes = result; *count = wanted; return 1;
-failed:
-    free(reply); free(result); return 0;
+    memcpy(header,result,header_size);
+    uint32_t wanted=header[0]<limit?header[0]:limit;
+    if((uint64_t)header_size+(uint64_t)wanted*unit!=total)goto malformed;
+    request[0]=3;
+    if(!object_capture_query(fd,request,8,reply,16,token,&got,0))goto abort;
+    if(got!=0)goto malformed;
+    memmove(result,result+header_size,(size_t)wanted*unit);
+    *bytes=result;*count=wanted;result=NULL;success=1;goto done;
+malformed:
+    raise_client_error(GL_INVALID_OPERATION);
+abort:
+    request[0]=3;(void)object_capture_query(fd,request,8,reply,16,token,&got,1);
+done:
+    free(result);free(reply);free(request);return success;
 }
+
 void glGetShaderSource(GLuint shader, GLsizei bufSize, GLsizei *length, GLchar *source) {
     if (!_wpk_gl_current_encoder()) return;
     if (bufSize < 0) { raise_client_error(GL_INVALID_VALUE); return; }
