@@ -1352,22 +1352,28 @@ static void shm_pool_free(struct shm_pool *p) {
 
 /* Import + map the client's dumb-bo on first use; the mapping aliases the
  * shared host buffer, so later reads see the client's latest pixels. A
- * buffer may sit at any offset in the pool (GTK packs several there), so
- * the import covers every row up to the buffer's end and the base pointer
- * walks to the buffer's own first row. */
+ * buffer may sit at any byte offset in the pool (GTK packs several there),
+ * so it is imported as a single-plane FD_MODIFIER dma-buf at its own offset,
+ * stride and size: the mapping then starts at the buffer's first row. */
 static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
     if (b->import_failed) return NULL;
     if (!b->bo) {
-        uint32_t rows = (uint32_t)((b->offset + b->stride * b->height
-                                    + b->stride - 1) / b->stride);
-        struct gbm_import_fd_data d = {
-            .fd = b->pool->fd,
-            .width = (uint32_t)(b->stride / 4),
-            .height = rows,
-            .stride = (uint32_t)b->stride,
-            .format = DRM_FORMAT_XRGB8888,
+        /* wl_shm's ARGB8888 (0) and XRGB8888 (1) are the DRM fourccs of the
+         * same byte layout; linux-dmabuf buffers already carry a fourcc. */
+        uint32_t format = b->format == WL_SHM_FORMAT_ARGB8888 ? DRM_FORMAT_ARGB8888
+                        : b->format == WL_SHM_FORMAT_XRGB8888 ? DRM_FORMAT_XRGB8888
+                        : b->format;
+        struct gbm_import_fd_modifier_data d = {
+            .width = (uint32_t)b->width,
+            .height = (uint32_t)b->height,
+            .format = format,
+            .num_fds = 1,
+            .fds = {b->pool->fd},
+            .strides = {b->stride},
+            .offsets = {b->offset},
+            .modifier = DRM_FORMAT_MOD_LINEAR,
         };
-        b->bo = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD, &d,
+        b->bo = gbm_bo_import(g.gbm, GBM_BO_IMPORT_FD_MODIFIER, &d,
                               GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
         if (!b->bo) {
             perror("gbm_bo_import");
@@ -1375,7 +1381,7 @@ static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
             return NULL;
         }
         uint32_t ms = 0;
-        unsigned char *base = gbm_bo_map(b->bo, 0, 0, d.width, rows, 0, &ms,
+        unsigned char *base = gbm_bo_map(b->bo, 0, 0, d.width, d.height, 0, &ms,
                                          &b->map_data);
         if (!base) {
             perror("gbm_bo_map");
@@ -1384,10 +1390,7 @@ static uint32_t *shm_buffer_pixels(struct shm_buffer *b, uint32_t *stride_px) {
             b->import_failed = 1;
             return NULL;
         }
-        /* The mapping's own stride is what separates its rows, so the
-         * client's offset is walked as whole rows plus the remainder. */
-        b->pixels = (uint32_t *)(base + (size_t)(b->offset / b->stride) * ms
-                                 + (size_t)(b->offset % b->stride));
+        b->pixels = (uint32_t *)base;
         b->map_stride_px = ms / 4;
     }
     *stride_px = b->map_stride_px;
