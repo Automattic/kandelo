@@ -19216,3 +19216,74 @@ test/production types pass. Evidence is
 `.context/kms-fixture-storage-r1/HANDOFF.md` in the integration worktree. These
 are shared source controls with native doubles, not compiled kernel/GPU or
 browser-memory acceptance.
+
+
+### Cross-engine negative API extension and shared mip-limit repair
+
+The separate normal `d75cb3febc` artifacts were reused without rebuilding to
+execute the same 246 cases on Firefox 155.0 and WebKit 26.6. Job
+`graphics-cts-negative-api-browser-peers-1031-230419-b008` exits 1 after 42s,
+with source/artifact guards unchanged. Firefox records 233 Pass / four Fail /
+nine NotSupported, guest exit 1. WebKit records 237 Pass / zero Fail / nine
+NotSupported, guest exit 0. The four Firefox failures are out-of-range 2D/cube
+TexSubImage and CopyTexSubImage levels returning INVALID_OPERATION instead of
+INVALID_VALUE. These are platform admission errors, not accepted engine
+exceptions.
+
+Commit `b114baa69a` (integrated as `50c28370e2`) validates uncompressed image
+levels against the actual accepted immutable native-context texture/cube limits
+before destination access. Negative levels reject directly; compressed extension
+rules remain separate. Native refusal or an invalid capability value is not
+cached. Eight causal controls fail first; the repaired focused file passes 51
+and scoped strict types pass. The earlier 47-file invocation still records its
+known 22 incomplete KMS-fixture failures; their correction is recorded separately.
+
+Only the host was rebuilt for the Firefox rerun; SDK/kernel/program/image bytes
+were reused and rehashed unchanged. Job
+`graphics-cts-texture-level-firefox-r1-1031-231120-c7cd` executes all 246 cases,
+now 237 Pass / zero Fail / nine NotSupported, guest exit 0, after 47s. The strict
+fixture still exits 1 on the nine unsupported-format results. Both observed
+workers close, destroy returns and all page/console/guest/cleanup/memory-boundary
+diagnostics are empty. Exact source and artifacts remain guarded. The actual
+normal browser exit, server termination and refused post-run port are retained.
+QPA SHA256 is
+`a6a98b9e962aa7f2eaeddd3e17a551b85496fee7acb61ad49b946a0d75cc1fc1`.
+Mutable evidence is `.context/cts-texture-level-firefox-r1/results/release.json`;
+the preceding peer results remain at `.context/cts-negative-api-peers-r1/results/`.
+
+The WebKit peer report also contains 45 native validation diagnostics and only
+one observed worker. Its strict fixture is already red on NotSupported before
+later assertions; the additional recorded conditions remain unresolved. A
+read-only audit finds the messages text-compatible with passing QPA error
+checks, but cannot authenticate their operation/source joins from the old
+text-only collection. They are not classified as expected or filtered out.
+Audit manifest SHA256 is
+`4689cbd6b2766bdd5c91e33591ec3a8a439c57afd50af51a08f3a67ece8b7bd8`,
+under the primary `.context/cts-negative-console-policy-review-r1/`.
+
+After integrating mip validation, exact process observations and corrected KMS
+fixtures, the canonical `host/vitest.graphics.config.ts` gate passes all 1,527
+tests in 50 files with zero skips. Root's exact command and output are retained
+at `.context/cts-api-combined-r1/canonical-graphics-r3.log`. This resolves the
+earlier source-fixture failures; it is not native pixel, complete CTS, full raw
+TypeScript, browser-memory or POSIX acceptance.
+
+
+### Exact retirement evidence in the public CTS consumer
+
+The public consumer now subscribes before init and retains the exact child's
+realm/image admission, exit and committed retirement before destroy. It requires
+cooperative lease disposition, every real main/thread ACK, unchanged identity,
+matching exit status and no post-commit failure. Forced/missing/ambiguous states
+fail. It also requires the actual kernel worker to close and preserves closure
+checks for every worker Playwright does expose. It no longer mistakes nested
+worker enumeration for ownership proof. This does not claim native process-worker
+thread join or garbage collection.
+
+Both successful and failed runs preserve a separate pre-destroy event snapshot;
+the original workload failure remains primary. Console errors remain failures,
+now with bounded public worker URL, source location and timestamps retained for
+future correlation. There is no prefix allowlist or extra GL error drain. All
+21 QPA/retirement parser controls pass and collection finds all three headless
+projects. The new combined normal runtime run is pending; historical results
+retain their original fixture and cannot be relabeled by these source changes.

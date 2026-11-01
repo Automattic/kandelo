@@ -8,6 +8,7 @@ import { ensureDirRecursive, writeVfsBinary } from "../../../host/src/vfs/image-
 import { KandeloImageFs } from "../../../images/vfs/lib/kandelo-image-fs";
 import { GLES2_NEGATIVE_STATE_CASES, parseCtsQpa } from "../../../tests/graphics/cts-qpa.mjs";
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
+import { inspectCtsRetirement } from "../../../tests/graphics/cts-retirement.mjs";
 
 test.use({ headless: true, serviceWorkers: "block" });
 const group = process.env.KANDELO_CTS_GLES2_GROUP ?? "negative-state";
@@ -60,11 +61,17 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
     scope: `Complete ${expectedCases.length}-case ${group} group; not full conformance`,
     engine: browserName, version: browser.version(), args,
     artifacts: { program: sha(program), data: sha(data), kernel: sha(kernelBytes), image: sha(imageBytes) },
-    expectedCases, pageErrors: [], consoleErrors: [], cleanupErrors: [], workers: [],
+    expectedCases, pageErrors: [], consoleErrors: [], consoleOverflow: false, cleanupErrors: [], workers: [],
   };
   page.on("pageerror", error => report.pageErrors.push(error.message));
   page.on("console", message => {
-    if (message.type() === "error") report.consoleErrors.push(message.text());
+    if (message.type() !== "error") return;
+    const text = message.text();
+    if (report.consoleErrors.length >= 512 || text.length > 65536) report.consoleOverflow = true;
+    if (report.consoleErrors.length < 512) report.consoleErrors.push({
+      text: text.slice(0,65536), location: message.location(),
+      worker: message.worker()?.url() ?? null, timestamp: message.timestamp(), observedAt: Date.now(),
+    });
   });
   page.on("worker", worker => {
     const row = { url: worker.url(), closed: false };
@@ -86,7 +93,8 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
     await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, args }) => {
       const scope = globalThis as any;
       const state = { stdout: "", stderr: "", bytes: { stdout: 0, stderr: 0 },
-        overflow: false, exit: null as number | null, error: null as string | null, diagnostics: [] as unknown[] };
+        overflow: false, exit: null as number | null, error: null as string | null, diagnostics: [] as unknown[],
+        pid: null as number | null, generationEvents: [] as unknown[], generationOverflow: false };
       scope.__gles2CtsState = state;
       const decoders = { stdout: new TextDecoder(), stderr: new TextDecoder() };
       const append = (stream: "stdout" | "stderr", bytes: Uint8Array) => {
@@ -101,7 +109,11 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
       const kernel = new BrowserKernel({ kernelOwnedFs: true, maxWorkers: 4,
         onStdout: (bytes: Uint8Array) => append("stdout", bytes),
         onStderr: (bytes: Uint8Array) => append("stderr", bytes),
-        onHostDiagnostic: (diagnostic: unknown) => state.diagnostics.push(diagnostic) });
+        onHostDiagnostic: (diagnostic: unknown) => state.diagnostics.push(diagnostic),
+        onProcessGenerationEvent: (event: unknown) => {
+          if (state.generationEvents.length >= 512) state.generationOverflow = true;
+          else state.generationEvents.push(event);
+        } });
       scope.__gles2CtsKernel = kernel;
       await kernel.initFromImage({ kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
         vfsImage: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()) });
@@ -111,6 +123,7 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
       kernel.kmsSetDisplaySize(1, 16, 16);
       kernel.kmsAttachCanvas(1, canvas.transferControlToOffscreen(), new SharedArrayBuffer(32), { mode: "webgl2-scanout" });
       const child = await kernel.spawnFromVfs("/bin/deqp-gles2", args, { env: [], uid: 1000, gid: 1000 });
+      state.pid = child.pid;
       child.exit.then((code: number) => { flush(); state.exit = code; },
         (error: unknown) => { flush(); state.error = String(error); });
     }, { moduleUrl: new URL(`/@fs${modulePath}`, baseURL).href, kernelUrl, imageUrl, args });
@@ -118,12 +131,27 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
       const state = (globalThis as any).__gles2CtsState;
       return state && (state.exit !== null || state.error !== null || state.overflow);
     }, undefined, { timeout: 120_000 });
+    // Semantic exit alone is not an ownership fence. Capture the exact receipt
+    // before destroy, so forced teardown cannot manufacture passing evidence.
+    await page.waitForFunction(() => {
+      const state = (globalThis as any).__gles2CtsState;
+      return state?.generationOverflow || state?.generationEvents.some((event: any) =>
+        event.kind === "retired" && event.pid === state.pid);
+    }, undefined, { timeout: 10_000 });
+    report.preDestroyGenerationEvents = await page.evaluate(() =>
+      (globalThis as any).__gles2CtsState.generationEvents);
   } catch (error) {
     workloadFailed = true;
     workloadError = error;
     report.workloadError = String(error);
   } finally {
-    try { report.guest = await page.evaluate(() => (globalThis as any).__gles2CtsState); }
+    try {
+      report.guest = await page.evaluate(() => (globalThis as any).__gles2CtsState);
+      // Preserve failure causality too: later forced teardown must not replace
+      // the only copy of admission/exit/fence evidence from before destroy.
+      report.preDestroyGenerationEvents ??= report.guest?.generationEvents;
+      report.preDestroyGuestExit = report.guest?.exit;
+    }
     catch (error) { report.cleanupErrors.push(`snapshot: ${error}`); }
     try {
       report.qpa = await page.evaluate(async () => {
@@ -158,6 +186,7 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
       try { await testInfo.attach("upstream.qpa", { body: report.qpa, contentType: "text/plain" }); }
       catch (error) { report.cleanupErrors.push(`QPA attachment: ${error}`); }
     }
+    report.processRetirement = inspectCtsRetirement(report.preDestroyGenerationEvents, report.guest?.pid, report.guest?.exit);
     try { await testInfo.attach("cts-evidence.json", { body: JSON.stringify(report, null, 2), contentType: "application/json" }); }
     catch (error) { report.cleanupErrors.push(`evidence attachment: ${error}`); }
   }
@@ -171,9 +200,16 @@ test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page,
   expect(report.guest.diagnostics).toEqual([]);
   expect(report.pageErrors).toEqual([]);
   expect(report.consoleErrors).toEqual([]);
+  expect(report.consoleOverflow).toBe(false);
   expect(report.cleanupErrors).toEqual([]);
   expect(report.memoryBoundaryFailures).toEqual([]);
   expect(report.destroyReturned).toBe(true);
-  expect(report.workers.length).toBeGreaterThanOrEqual(2);
+  expect(report.guest.generationOverflow).toBe(false);
+  expect(report.processRetirement.errors).toEqual([]);
+  expect(report.processRetirement.ok).toBe(true);
+  // Every engine observes the top-level kernel worker. Nested process worker
+  // enumeration differs; exact guest-memory retirement is checked separately.
+  expect(report.workers.filter((worker: any) =>
+    worker.url.split("?")[0].endsWith("/browser-kernel-worker-entry.ts"))).toHaveLength(1);
   expect(report.workers.every((worker: any) => worker.closed)).toBe(true);
 });

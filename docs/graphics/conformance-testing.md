@@ -34,6 +34,17 @@ failed or unsupported cases fail the gate. Worker closure and memory-boundary
 checks are required. Passing this group does not establish the complete
 graphics baseline or the broader browser-memory regression gate.
 
+The consumer subscribes to normal process-generation observations before init.
+It requires the exact child's admission, semantic exit and cooperative retirement
+in one realm/image identity, with all real main/thread acknowledgments and no
+post-commit failure. The proof snapshot is captured before destroy, including
+failed runs. Forced teardown cannot satisfy that proof. Native kernel-worker
+closure and every worker closure actually exposed by Playwright remain separate
+checks; nested process-worker enumeration alone is incomplete across engines.
+These receipts establish guest-memory retirement, not native thread join or GC.
+Console errors remain failures. Bounded records now retain their public worker,
+source location and timestamps; unknown provenance is not treated as expected.
+
 The same consumer can probe the complete pinned 246-case negative API group:
 
 ```sh
