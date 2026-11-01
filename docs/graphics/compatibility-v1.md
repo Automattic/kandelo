@@ -180,6 +180,41 @@ access to the share group, so contexts sharing objects may differ in it.
 test-only main-thread GL forwarding path; GL always executes in the kernel
 worker on both hosts (row H02).
 
+**Explicit synchronization, source level (S0–S5).** Decisions D-17
+(fence completion in submission order on the shared native context),
+D-18 (IGT porting deferred; Rust tests mirror its subtests by name) and
+D-19 (dma-buf sync ioctls implemented) govern this unit. Implemented with
+focused causal tests, none of them browser, guest or CTS validation:
+
+- S0: the kernel fence core (`dma_fence`, fence arrays, fence chains),
+  software/KMS/host-GL sources, waiter wakeups through a coalesced
+  reserved-index wake record, and host polling of separate-context GL
+  fences only after a waiter enables them.
+- S1: `sync_file` descriptors (poll, merge, file info, deadline hint, fork,
+  dup, `SCM_RIGHTS`, fstat).
+- S2: binary and timeline DRM sync objects with every ioctl in the plan,
+  both caps advertised, render-node allowed, both pointer widths.
+- S3: `EGL_ANDROID_native_fence_sync` (advertised), with
+  `DRM_IOCTL_WPK_EXPORT_FENCE`, the kernel-only `QOP_EXPORT_FENCE` and the
+  sync_file form of `QOP_SERVER_WAIT` (additive in ABI 56 / host 3).
+- S4: atomic KMS `IN_FENCE_FD` (a plane latches at the first vblank after
+  its fence signals; blocking commits wait for it interruptibly) and
+  `OUT_FENCE_PTR` (a sync_file on the CRTC's fence context that signals
+  at the completing vblank); Rust tests mirror IGT `kms_atomic`
+  `plane-invalid-params-fence`/`crtc-invalid-params-fence` and
+  `kms_atomic_transition` `plane-all-transition-fencing`.
+- S5: dma-buf `EXPORT_SYNC_FILE`/`IMPORT_SYNC_FILE` and dma-buf poll over a
+  per-buffer reservation; KMS plane updates wait for their buffer's
+  implicit writers unless an explicit in-fence overrides them.
+
+Open: wlroots' `linux-drm-syncobj-v1` path is unexercised by a running
+compositor until the combined validation. Whether GL sampling of an imported dma-buf must
+wait for fences another program imported into its reservation is a
+maintainer question (no Kandelo producer creates such fences today).
+The sysroot now carries `linux/sync_file.h` and the implicit-fence part of
+`linux/dma-buf.h`, which wlroots probes at configure time; packages built
+before them still need the normal rebuild to see them.
+
 ## Landing scope
 
 On 2026-10-29 the user split delivery into the bounded cage/sway landing
@@ -509,7 +544,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | K03 | Shared OFD GEM/FB authority, PRIME and final references | Shared GEM namespace/allocator, KMS FBs and inherited graphics cleanup/BO holds are implemented. Device-wide GETFB returns fresh master-only handles; creator-only removal and cross-file cursor cleanup have focused native evidence. Final combined guest validation and remaining KMS-file authority gaps stay open | OFD, process/fork/spawn/exec/close, BO registry | Rust + real Node lifecycle/dup/fork/spawn tests | open |
 | K04 | Legacy modeset/flip/vblank/master handoff | Main display owner and cleanup; cage changes automatic master and CLOSEFB. Legacy SETCRTC, PAGE_FLIP, SETPLANE, CURSOR/CURSOR2, DPMS, SETGAMMA and OBJ_SETPROPERTY are now internal commits through the atomic check (K06); DPMS is an ACTIVE commit (Standby/Suspend read back Off) | KMS, host scanout | Pending flip drop/exit/crash/master replacement, no stale event/scanout | partial |
 | K05 | GPU scanout, CPU fallback and context loss | Device-wide render-node-first resources are independent of master. Selected GPU framebuffers use native blit or owned readback for a 2D/different native display. Focused three-engine rendering passes; complete format views, CPU/GPU coherence and lost-resource reconstruction remain open | host GPU registry/present target/KMS pump | Render imports to scanout; orientation/pixels three engines | partial |
-| K06 | Atomic KMS: properties, DRM_IOCTL_MODE_ATOMIC, TEST_ONLY/NONBLOCK/ALLOW_MODESET, FLIP_COMPLETE events, blocking commits | One KmsDevice state and one commit path (`dri/atomic.rs`); atomic properties listed only with `DRM_CLIENT_CAP_ATOMIC`, which is advertised (D-13); copy-once request parsing in Linux element order; check after `drm_atomic_check_only`; events from the real vblank pump; blocking commits on the EAGAIN retry path. Approved spec-conformant choices: primary + cursor planes only, no scaling (D-12; the uAPI leaves planes and their limits to the driver), and linear buffers with no modifiers or IN_FORMATS (D-15; GPU-tier storage is opaque, a tiled layout would be fiction). Blocking commits wait uninterruptibly (caught signals stay pending), as Linux's commit tail does; ACTIVE off shows black on every presenter and stats slot 9 on Node and browser. Open: `IN_FENCE_FD` takes -1 only and a real `OUT_FENCE_PTR` commit returns `EOPNOTSUPP` until the explicit-sync work's sync_file fences attach at the S4 hooks. Focused Rust tests mirror IGT kms_atomic/kms_properties subtests; no guest, compositor or browser run yet | kernel dri/kms + dri/atomic, host scanout/cursor/gamma | Rust IGT mirrors; wlroots atomic sessions (cage/sway) on Node and three browser engines; atomic vs `WLR_DRM_NO_ATOMIC=1` frame cost | partial |
+| K06 | Atomic KMS: properties, DRM_IOCTL_MODE_ATOMIC, TEST_ONLY/NONBLOCK/ALLOW_MODESET, FLIP_COMPLETE events, blocking commits | One KmsDevice state and one commit path (`dri/atomic.rs`); atomic properties listed only with `DRM_CLIENT_CAP_ATOMIC`, which is advertised (D-13); copy-once request parsing in Linux element order; check after `drm_atomic_check_only`; events from the real vblank pump; blocking commits on the EAGAIN retry path. Approved spec-conformant choices: primary + cursor planes only, no scaling (D-12; the uAPI leaves planes and their limits to the driver), and linear buffers with no modifiers or IN_FORMATS (D-15; GPU-tier storage is opaque, a tiled layout would be fiction). Blocking commits wait uninterruptibly (caught signals stay pending), as Linux's commit tail does; ACTIVE off shows black on every presenter and stats slot 9 on Node and browser. `IN_FENCE_FD` and `OUT_FENCE_PTR` use kernel sync_file fences (explicit synchronization, S4). Focused Rust tests mirror IGT kms_atomic/kms_properties subtests; no guest, compositor or browser run yet | kernel dri/kms + dri/atomic, host scanout/cursor/gamma | Rust IGT mirrors; wlroots atomic sessions (cage/sway) on Node and three browser engines; atomic vs `WLR_DRM_NO_ATOMIC=1` frame cost | partial |
 | K07 | Virtual connector EDID (D-14) | Kandelo-identified E-EDID 1.4 base block: stable make `KDL`/product `Kandelo`/serial `0001` for output naming, preferred detailed timing equal to the first advertised mode, range limits covering every mode, connector physical size; rebuilt on probe only when mode or size changed. Rust unit and uAPI tests; no compositor or libdisplay-info run yet | kernel dri/edid, host mode/size metadata | Rust EDID tests; wlroots/libdisplay-info output naming in a compositor session | partial |
 | H01 | Command framing, complete validation and bounded results | Owned bounded submission snapshots make structural validation and dispatch observe the same bytes in kernel-worker dispatch; one-shot frames restore cached views and discard on purge. Source execution leases retain revoked context owners and owned drawable allocations independently; borrowed GPU allocations also have independent source leases; drain remains synchronous pending per-work drawable selection and server-wait ordering. Kernel query dispatch preprobes nonempty guest destinations, rejects nonzero reserved fields/null inputs, and rejects oversized host replies without copying output. Focused Rust/host source evidence is recorded below; complete guest coverage remains open | bridge, submit queue/drain | Malformed trailing command leaves earlier state untouched; query output sizes | partial |
 | H02 | Synchronous query ordering on the kernel-worker path | GL always executes in the kernel worker on Node and browser hosts. Queries use copied input and preflighted guest destinations; retained query receipts use only the kernel worker's native adapter; shared native contexts use one muxer. The main-thread GL forwarding fallback (first arrived in #678, no production caller) and its owned-query client, final-render-node, retirement and mailbox code were removed | kernel query controls, native query adapter, query | Kernel import preflight at both pointer widths; source-only host query tests | partial; full guest and memory-cycle gate pending |
@@ -522,9 +557,9 @@ reproduction and correct observable failure; none is inferred from a stub.
 GLES3 requires its complete API, GLSL ES 3.00, state/query tables, formats,
 transform feedback, instancing, uniform blocks, sync and CTS groups before
 advertising it. WebGL2 backing alone is not GLES3 support. Atomic KMS is implemented
-for the single display (K06). Explicit synchronization needs cross-API fence
-ownership, completion and import/export semantics; serialized command order
-alone does not supply that contract. Multiple displays and non-linear or
+for the single display (K06). Explicit synchronization (fence objects,
+`sync_file`, DRM sync objects, dma-buf sync ioctls, EGL native fences and
+KMS in/out fences) is implemented at source level. Multiple displays and non-linear or
 multi-plane dma-bufs require distinct format/layout and display authority.
 These are outside this baseline and cannot excuse EGL1.5 core sync gaps.
 Normal graphics guests now use both wasm32 and wasm64 SDKs, including

@@ -3678,7 +3678,7 @@ This section is the implementation walk-through; [Linux-compatible graphics devi
 `crates/runtime-core/src/dri/ioctl_kms.rs` (with the device state in `dri/kms.rs`, the commit engine in `dri/atomic.rs` and the buffer registry in `dri/bo.rs`; the shared render-node ioctls stay in `syscalls.rs`) handles DRM_IOCTL_VERSION, GET_CAP, SET_CLIENT_CAP, GET_MAGIC / AUTH_MAGIC, SET_MASTER / DROP_MASTER, MODE_GETRESOURCES, MODE_GETCONNECTOR, MODE_GETENCODER, MODE_GETCRTC, MODE_SETCRTC, MODE_GETPLANERESOURCES, MODE_GETPLANE, MODE_OBJ_GETPROPERTIES, MODE_GETPROPERTY, MODE_GETPROPBLOB, MODE_OBJ_SETPROPERTY / MODE_SETPROPERTY, MODE_CURSOR / CURSOR2, MODE_ADDFB / ADDFB2 / GETFB / GETFB2 / RMFB / CLOSEFB, MODE_DIRTYFB, MODE_GETGAMMA / SETGAMMA, MODE_CREATEPROPBLOB / DESTROYPROPBLOB, GET_UNIQUE, MODE_PAGE_FLIP, MODE_ATOMIC, WAIT_VBLANK, GEM_CLOSE, PRIME_HANDLE_TO_FD / FD_TO_HANDLE, and the dumb-buffer create / map / destroy path. These are the legacy and atomic KMS interfaces a wlroots compositor such as cage or sway drives:
 
 - **Mode objects.** One CRTC (id 1), one virtual encoder (2), one virtual connector (3) and one primary plane (4). Linux allocates every mode object and property from one id space, and libdrm clients read properties with `DRM_MODE_OBJECT_ANY`, so no two objects share an id (`crates/runtime-core/src/dri/kms.rs`). The primary plane is listed by MODE_GETPLANERESOURCES only after `DRM_CLIENT_CAP_UNIVERSAL_PLANES`, and reports the formats ADDFB2 accepts (XRGB8888, ARGB8888, RGB565, ABGR8888, XBGR8888, R8, GR88, the four 2101010 orders, ABGR16161616F and XBGR16161616F). R8 and GR88 show their channels with the channels they lack zero; 10-bit and half-float planes are reduced to 8 bits per channel (see the scanout formats below). The legacy cursor ioctl is available separately; the general plane list contains the primary plane.
-- **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS`, `ASYNC_PAGE_FLIP`, `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 0. SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES`, `ASPECT_RATIO` and `ATOMIC` (0, 1 or 2, as `drm_setclientcap` takes it; it sets universal planes alike), and `WRITEBACK_CONNECTORS` only after `ATOMIC` (there are no writeback connectors to list). The atomic cap is advertised as soon as atomic commits are implemented (decision D-13), so a compositor that probes it takes the atomic path by itself.
+- **Capabilities.** GET_CAP answers every capability Linux defines and fails with `EINVAL` for an unknown one, as `drm_getcap` does. `CRTC_IN_VBLANK_EVENT` and `TIMESTAMP_MONOTONIC` are 1 (flip events carry the CRTC id and a `CLOCK_MONOTONIC` timestamp); `ADDFB2_MODIFIERS` and `ASYNC_PAGE_FLIP` are 0; `SYNCOBJ` and `SYNCOBJ_TIMELINE` are 1 on both nodes (see [explicit synchronization](#explicit-synchronization-fences-sync_file-and-drm-sync-objects)). SET_CLIENT_CAP accepts `STEREO_3D`, `UNIVERSAL_PLANES`, `ASPECT_RATIO` and `ATOMIC` (0, 1 or 2, as `drm_setclientcap` takes it; it sets universal planes alike), and `WRITEBACK_CONNECTORS` only after `ATOMIC` (there are no writeback connectors to list). The atomic cap is advertised as soon as atomic commits are implemented (decision D-13), so a compositor that probes it takes the atomic path by itself.
 - **Properties.** The planes carry the immutable `type` enum (Primary, Cursor). The connector carries `EDID` (an immutable blob, below), `DPMS`, `link-status` (Good) and `non-desktop` (0). The CRTC carries `GAMMA_LUT` and the immutable `GAMMA_LUT_SIZE` (256). The atomic properties are attached as Linux attaches them and, as Linux does, listed by OBJ_GETPROPERTIES and GETCONNECTOR only to a file that enabled `DRM_CLIENT_CAP_ATOMIC`: each plane's `FB_ID`, `CRTC_ID`, `SRC_X`/`Y`/`W`/`H` (16.16), `CRTC_X`/`Y` (signed), `CRTC_W`/`H`, `IN_FENCE_FD` and `FB_DAMAGE_CLIPS`; the CRTC's `ACTIVE`, `MODE_ID` and `OUT_FENCE_PTR`; the connector's `CRTC_ID` (one property shared with the planes). They carry `DRM_MODE_PROP_ATOMIC` and Linux's types (object, signed range, range, blob). There is no `IN_FORMATS`: no format modifiers are advertised (decision D-15, below). Any file can still read a property by id, and the master can set any mutable one through OBJ_SETPROPERTY, which becomes a one-property commit (below).
 - **Legacy gamma.** The CRTC has a 256-entry gamma ramp per channel, as common 8-bit legacy drivers report through MODE_GETCRTC's `gamma_size`, following `drivers/gpu/drm/drm_color_mgmt.c`. The ramp (`gamma_store`) starts as the identity `i << 8`. MODE_GETGAMMA copies it to anyone; MODE_SETGAMMA needs the master. Both fail with `ENOENT` for another CRTC and `EINVAL` for another size, and copy red, green and blue in turn, so a fault is `EFAULT` after the channels before it moved. A complete SETGAMMA then does what `drm_atomic_helper_legacy_gamma_set` does: it makes `GAMMA_LUT` a new kernel-owned blob of 256 `drm_color_lut` entries (no file may destroy it), which `kms_color`'s legacy-gamma-reset reads back. `OBJ_SETPROPERTY` sets `GAMMA_LUT` to 0 (no LUT) or to any blob of exactly 256 entries (`EINVAL` otherwise) without touching the ramp. The CRTC holds a reference on the blob it uses, so it outlives its creator's DESTROYPROPBLOB or close and is freed when replaced. Each change of the LUT reaches the host through `host_kms_set_gamma(crtc, lut, entries)` (0 entries: none).
 - **Scanout state.** SETCRTC validates its connector list as Linux does and records the mode and framebuffer, which MODE_GETCRTC and MODE_GETPLANE report. The mode lives in a kernel-owned `MODE_ID` blob (a new one only when the mode changes), as `drm_atomic_set_mode_for_crtc` keeps it.
@@ -3686,7 +3686,7 @@ This section is the implementation walk-through; [Linux-compatible graphics devi
 - **Atomic commits.** MODE_ATOMIC needs the current master and the atomic cap (`EINVAL` without it, `EACCES` on the render node). It copies each element of the request arrays into the kernel once and parses that copy, in the order Linux's `get_user` loop reaches the elements (in bounded chunks, falling back to the one element a chunk past the caller's memory would hide), so a fault or an invalid object or property id reports Linux's errno at the same element (`EFAULT`, `ENOENT`). Values are checked as `drm_property_change_valid_get` checks them (`EINVAL` for an immutable property, a value out of range, or an id that is not a live object of the property's type), then staged as `drm_atomic_set_property` stages them, and the result is checked as `drm_atomic_check_only` checks it: plane `CRTC_ID` and `FB_ID` together or not at all, formats, coordinates (`ERANGE`), sources inside the framebuffer (`ENOSPC`), damage rectangles, `ACTIVE` only with a mode, an enabled CRTC driving its connector and showing a mode the connector advertises, the primary plane present while the CRTC has a mode, and `DRM_MODE_ATOMIC_ALLOW_MODESET` for any mode, active or routing change. `TEST_ONLY` runs the check and nothing else: no host effects, events or fences (and `TEST_ONLY` with `PAGE_FLIP_EVENT` is `EINVAL`). `NONBLOCK` is `EBUSY` while the previous commit is pending. A blocking commit waits for the previous commit, applies, then waits for its own flip, and neither wait is interrupted by a signal. WHY: Linux's `drm_atomic_helper_commit` swaps in the new state at its point of no return and waits for the previous commit (`drm_atomic_helper_wait_for_dependencies`) and its own flip (`drm_atomic_helper_wait_for_vblanks`) with uninterruptible waits, so a blocking commit never fails with `EINTR` and never runs twice. Kandelo applies after the previous commit completes rather than before, so that commit's frame still gets its vblank, as Linux programs the hardware only then. Both waits park the caller on the host's ordinary EAGAIN retry path under a per-thread wait record; while the record exists the kernel leaves the thread's caught signals pending (`kernel_dequeue_signal` delivers none), as in `TASK_UNINTERRUPTIBLE`, and delivers them when the ioctl returns; default actions such as termination still apply. The parked thread cannot issue another system call, so the host's retry of its ioctl is the only call that finds the record: the retry of an applied commit only waits. `PAGE_FLIP_EVENT` reserves event space (`ENOMEM` when full; `EINVAL` when no CRTC is in the commit) and queues `DRM_EVENT_FLIP_COMPLETE` with the request's `user_data`, the CRTC id and the real vblank sequence and time when the host's vblank pump completes the commit, or at once when the commit turns the CRTC off. `PAGE_FLIP_ASYNC` is `EINVAL` (`DRM_CAP_ATOMIC_ASYNC_PAGE_FLIP` is 0). WHY the hot path stays allocation-free: a compositor issues one atomic commit per frame plus TEST_ONLY probes for direct scanout, so staging copies fixed-size state, the arrays are copied through stack buffers, and the mode list and blobs are read only when a commit changes them.
 - **Planes (decision D-12).** The CRTC has a primary plane and a cursor plane and no overlay planes, and neither plane scales. WHY: the DRM uAPI leaves the plane set and each plane's limits to the driver, the host presenters show exactly an unscaled primary that covers the CRTC plus a positioned cursor, and no program Kandelo runs needs overlays or scaling. The check refuses the rest the way Linux drivers with the same planes do through `drm_atomic_helper_check_plane_state` with no scaling: scaling is `ERANGE`; positioning, partial coverage or a sub-pixel source origin of the primary, a primary on a disabled CRTC, and no primary on an enabled CRTC are `EINVAL`. The cursor plane is positioned freely (negative and off-screen positions included) but takes only a packed, zero-offset ARGB8888 image of up to 64×64, uncropped (`EINVAL`). A larger primary framebuffer still pans by whole pixels through `SRC_X`/`SRC_Y`, which GETCRTC reports as `x`/`y`.
 - **Modifiers (decision D-15).** Framebuffers are linear, and no plane carries `IN_FORMATS`. WHY: CPU buffers are linear by definition and GPU-tier buffers are opaque native textures, so advertising a tiled layout or modifier list would describe a layout that does not exist (the same reason `DRM_CAP_ADDFB2_MODIFIERS` is 0).
-- **Fences.** `IN_FENCE_FD` takes -1 (no fence); any other fd is not a sync_file, since none exist yet, and fails with `EINVAL` as `sync_file_get_fence` fails on Linux. A nonzero `OUT_FENCE_PTR` receives -1 when staged (`EFAULT` for a bad pointer), and a TEST_ONLY commit with one succeeds as on Linux; a real commit that asks for an out-fence currently fails with `EOPNOTSUPP` without taking effect, because Kandelo has no sync_file yet. The explicit-synchronization work (in progress) adds sync_file fences and a kernel fence core; the in-fence and out-fence attach at the marked hooks in `dri/atomic.rs` and `dri/mod.rs`, after which both properties behave as on Linux.
+- **Fences.** `IN_FENCE_FD` takes -1 (no fence) or a `sync_file` fd, whose fence the plane waits for; any other fd is `EINVAL`, as `sync_file_get_fence` fails on Linux, and so is a second `IN_FENCE_FD` on one plane in one commit. A nonblocking commit with an unsignaled in-fence swaps its state in at once (GET reports it) but latches its host effects (scanout, cursor, color stage, and the releases that follow them) at the first vblank after the fence signals; its flip events and out-fence complete at that vblank, and the CRTC stays busy (`EBUSY` for another nonblocking commit) until then. A blocking commit waits for its in-fences before its state is swapped in, interruptibly, as `drm_atomic_helper_commit` does, so it parks with no commit record and a signal can end it; legacy `OBJ_SETPROPERTY` commits do the same. A nonzero `OUT_FENCE_PTR` receives -1 when staged (`EFAULT` for a bad pointer). A TEST_ONLY commit makes no fence. A real commit creates the CRTC's next fence (one fence context per CRTC, `drm_crtc_create_fence`), installs a close-on-exec `sync_file` for it and writes the fd once the commit is certain to apply (after its check and busy test; a fault fails the commit untouched); the vblank that completes the commit signals it with that vblank's time, a commit that leaves the CRTC dark signals it at once, and a CRTC turned off by removing its framebuffer signals it with the last vblank's time. See [explicit synchronization](#explicit-synchronization-fences-sync_file-and-drm-sync-objects).
 - **ACTIVE and DPMS.** `ACTIVE` off keeps the mode and planes but scans out nothing: the host is told to show no framebuffer, the cursor transport reports no image, and the vblank counter stops. A dark CRTC's output is black on every presenter (the 2D blit, the WebGL2 scanout presenter, direct GPU scanout and a GL session that owns the canvas, whose window frames do not reach a dark CRTC), cleared once per dark period, and the stats buffer's slot 9 reads 0 on Node and in the browser alike; a CRTC whose scanned framebuffer was removed is dark too. WHY: a display that is off shows nothing, so keeping the last frame on screen would present a state the system is not in. Legacy DPMS is an `ACTIVE` commit, as `drm_atomic_connector_commit_dpms` makes it: On lights the CRTC, Standby, Suspend and Off darken it and read back as Off, and after every modeset DPMS follows `ACTIVE`. Atomic writes to `DPMS` are `EINVAL`, as on Linux.
 - **EDID (decision D-14).** The connector's `EDID` is a Kandelo-identified E-EDID 1.4 base block (`dri/edid.rs`) with a stable identity: manufacturer `KDL` (a code chosen for Kandelo, not an assigned PNP ID), product code 1, product name `Kandelo`, serial 1 and serial string `0001`. WHY: compositors name outputs by EDID make, model and serial, and their configuration matches on that name, so a stable identity lets a user's output configuration keep applying. Its preferred detailed timing is the connector's first mode exactly as GETCONNECTOR lists it, a display range limits descriptor (no timing formula) bounds every advertised mode, and its sizes are the connector's `mm_width`/`mm_height` (undefined when the host reports none). It claims no established or standard timings, because those name VESA timings that differ from the virtual modes. `KDL` is an unregistered virtual-device identity: EDID parsers accept any three-letter code and show an unknown one as it is, so a registered ID is not needed for correct parsing; registration guarantees uniqueness among physical products, and `KDL` is unassigned in the UEFI PNP ID registry today. Probing the connector (GETCONNECTOR, or OBJ_GETPROPERTIES on it) rebuilds the blob when the host's preferred mode or size changed, as `drm_connector_update_edid_property` replaces it, and keeps the same blob otherwise. A preferred mode that cannot be a detailed timing is a host fault (the host bounds it at 3840×2160) and stops the kernel.
 - **Damage.** `FB_DAMAGE_CLIPS` is a hint: its rectangles are validated (`EINVAL` for a blob that is not whole `drm_mode_rect`s, or an empty or negative rectangle) and the blob is held by the plane state, but the host presents the whole plane each vblank.
@@ -4014,6 +4014,128 @@ stats buffer layout, and ABI 50 are unchanged.
 `MODE_PAGE_FLIP` latches the new framebuffer as the host-side scanout immediately (`host_kms_set_fb`, same call `MODE_SETCRTC` makes, carrying the CRTC's viewport: the mode's active area at its panning offset; `host_kms_addfb` carries the plane offset, and every presenter shows exactly that region of the BO); the flip completes at the next `kernel_vblank` tick of the host's 60 Hz vblank pump, which retires a `DRM_EVENT_FLIP_COMPLETE` into the fd's event ring only when the caller passed `DRM_MODE_PAGE_FLIP_EVENT`. Until that tick the CRTC is busy (`EBUSY`) whichever file queued the flip. Two consequences: libdrm's `drmModePageFlip → poll → drmHandleEvent` loop runs at refresh rate rather than ioctl rate, and any host-side consumer of the current scanout (the vblank pump's WebGL2 scanout presenter or the legacy 2D canvas blit used by CPU-rendered demos) always reads the most recently flipped buffer, never a double-buffered client's back buffer. The immediate latch is race-free because a well-behaved client fully paints a bo before flipping to it and only reuses the old bo after the flip-complete event.
 
 The same tick drives `DRM_IOCTL_WAIT_VBLANK`. The kernel keeps a 64-bit vblank counter for the one CRTC, stamped with each tick's `CLOCK_MONOTONIC` time, and follows `drm_wait_vblank_ioctl`: `RELATIVE`, `ABSOLUTE` and `NEXTONMISS` resolve a target once; a blocking wait returns `EAGAIN` onto the host's ordinary blocking-retry path, and the kernel keeps the resolved target per waiting task so the host's retries of the unchanged request continue the same wait; `_DRM_VBLANK_EVENT` queues a `DRM_EVENT_VBLANK` for the target vblank within the file's 4 KiB event space. When a tick queues an event or reaches a parked waiter's target, the kernel raises a coalesced flag that the host takes with `kernel_kms_take_vblank_wake` and wakes its parked retries at that vblank (Node and browser run the same pump). The counter runs only while the CRTC is lit (a mode set and connector DPMS On); turning it off sends queued vblank events and ends parked waits successfully, as `drm_crtc_vblank_off` does. Like Linux, the parked attempt leaves the request rewritten to its absolute target (`RELATIVE` cleared). When a handler signal ends the wait, the host's `EINTR` completion publishes that in/out argument (as it publishes every failed ioctl's argument), so libdrm's `drmWaitVBlank` retry, or an `SA_RESTART` resubmission, waits for the same vblank; the kernel forgets the task's record, so a later identical request is a new wait.
+
+### Explicit synchronization (fences, `sync_file` and DRM sync objects)
+
+Explicit synchronization lets independent programs order their GPU work
+without implicit kernel bookkeeping: a Wayland client hands the compositor a
+point on a timeline that becomes complete when its rendering is done
+(`linux-drm-syncobj-v1`), and the compositor hands back a release point.
+Every interface involved (`sync_file`, DRM sync objects, the dma-buf
+implicit-fence ioctls, `EGL_ANDROID_native_fence_sync`, KMS in/out fences)
+is defined over one Linux kernel object, the `dma_fence`, and two shapes
+built from it: the fence array a `SYNC_IOC_MERGE` produces and the fence
+chain a timeline sync object grows. `crates/runtime-core/src/dri/fence.rs`
+reproduces those three shapes rather than modelling each interface, so the
+cross-interface behavior programs rely on (merge a timeline point with
+another fence, import that into a dma-buf, wait on it through a syncobj
+eventfd) follows from one model.
+
+**Fences and their sources.** A leaf fence is pending on one source until
+it signals once, with an error (a negative errno) or without. A second
+signal is a kernel invariant violation and stops the kernel. Sources:
+
+- *Software*: signaled by a kernel operation. `DRM_IOCTL_SYNCOBJ_SIGNAL`
+  and `TIMELINE_SIGNAL` attach already-signaled stubs, as Linux does; the
+  kernel's software timeline (`SwTimeline`, Linux's `sw_sync`) is the shape
+  a CRTC's out-fences use.
+- *KMS*: a commit's completion at the vblank that retires it
+  (`OUT_FENCE_PTR`), on the CRTC's own fence context; see the atomic
+  **Fences** notes above for in-fences and latching.
+- *Host GL*: a GL fence. Decision D-17 makes a fence on the virtual GPU's
+  shared native context complete in submission order: every Kandelo
+  consumer of its results (another session on that context, the KMS
+  presenter) runs later in that same command stream, exactly as
+  `eglWaitSync` already treats it, so it is created signaled and costs
+  nothing. A fence on a *separate* native context has no shared command
+  stream; the host retains it under a kernel-issued export id and the fence
+  stays pending until the host observes its native status. The host polls
+  only fences a waiter has enabled (poll/epoll, a parked wait, an armed
+  eventfd), once per worker turn, because WebGL updates a sync's status
+  only between tasks. Enabling is sticky, as Linux's
+  `dma_fence_enable_sw_signaling` is, so a fence that a timed-out waiter
+  enabled is still polled until it completes. A context loss completes the
+  fence with `-EIO`, as a device loss completes Linux fences with an error.
+  The host learns of new work, and of fences the kernel released, only from
+  the coalesced `IDX_FENCE_HOST_WORK` wake event, so a machine with no
+  waited separate-context fence does no fence work at all.
+
+**Waking waiters.** A signal (or a sync object gaining a fence) queues one
+coalesced `TYPE_READABLE` wake record with the reserved index
+`IDX_FENCE_READY`, which names no pipe; the host's existing broad retry then
+re-runs parked sync-object waits and poll/select/epoll calls. It also
+notifies epoll interests on `sync_file` and dma-buf descriptions and fires
+armed sync-object eventfds. Nothing here runs while no fence changes.
+
+**`sync_file`.** A read-only anonymous descriptor holding one fence:
+`poll` reports `POLLIN` once it has signaled (a poller enables it);
+`SYNC_IOC_MERGE` makes a new close-on-exec file whose fence completes when
+both inputs have (signaled leaves drop out, one fence per context
+survives, an all-signaled merge is a stub carrying the latest timestamp);
+`SYNC_IOC_FILE_INFO` reports the file's name and status and, on request,
+each unwrapped fence's timeline, driver, status and timestamp;
+`SYNC_IOC_SET_DEADLINE` records a hint that no Kandelo source can act on.
+`read` is `EINVAL`, `lseek` `ESPIPE`, other ioctls `ENOTTY`, and `fstat`
+reports mode `0600` with no type bits, as for Linux's anonymous inode. The
+descriptor shares its object across `dup`, `fork`, `posix_spawn` and
+`SCM_RIGHTS`; the fork wire carries only the object's identity.
+
+**DRM sync objects.** Every sync-object ioctl is render-allowed and works
+on both nodes: `CREATE` (optionally signaled), `DESTROY`, `HANDLE_TO_FD`
+and `FD_TO_HANDLE` (a close-on-exec syncobj fd, or `sync_file`
+export/import at a point), `WAIT` and `TIMELINE_WAIT` (`WAIT_ALL`,
+`WAIT_FOR_SUBMIT`, `WAIT_AVAILABLE`, `WAIT_DEADLINE` as a hint),
+`RESET`, `SIGNAL`, `TIMELINE_SIGNAL`, `QUERY` (`LAST_SUBMITTED`),
+`TRANSFER` and `EVENTFD`. Handles belong to the DRM open file description
+(lowest free handle first, like Linux's idr) and are shared by its
+aliases. A timeline point completes once it and every earlier point have
+signaled; an unordered point starts a new chain context, as
+`dma_fence_chain_init` does. Every pointer member is a `__u64`, so one
+layout serves wasm32 and wasm64; the shorter encodings that older headers
+produce (before `drm_syncobj_handle.point` and the waits' `deadline_nsec`
+were added) are accepted too, zero-extended as `drm_ioctl` does. A blocking wait parks on the host's EAGAIN retry path
+with Linux's snapshot rule: the fences a wait observes are those its
+objects held when it began, or, with `WAIT_FOR_SUBMIT`, the first fence
+attached afterwards. The kernel keeps that snapshot per waiting task across
+retries and drops it when the call completes, its absolute deadline passes
+(`ETIME`), a handler signal interrupts it, or the task or process goes
+away. `TRANSFER` with `WAIT_FOR_SUBMIT` parks the same way for at most
+five seconds. `EVENTFD` holds a reference on its eventfd and adds one to
+its counter when the point's fence signals (or, with `WAIT_AVAILABLE`,
+when it is attached).
+
+**dma-buf implicit fences.** A PRIME descriptor's buffer carries its
+reservation (`dma_resv`) for its lifetime. `DMA_BUF_IOCTL_IMPORT_SYNC_FILE`
+adds a `sync_file`'s fences as writers or readers;
+`DMA_BUF_IOCTL_EXPORT_SYNC_FILE` returns, as a new close-on-exec
+`sync_file`, what an access must wait for (a read waits for writers, a
+write for every fence; a stub when nothing is pending); and dma-buf `poll`
+reports `POLLIN` once writers have signaled and `POLLOUT` once every fence
+has. A KMS plane update without an explicit `IN_FENCE_FD` waits for its
+framebuffer buffer's unsignaled writers, as `drm_gem_plane_helper_prepare_fb`
+does (an explicit in-fence overrides them); while no buffer holds a fence
+that costs one integer test per commit. GL rendering adds no implicit
+fences: under D-17 it is complete in submission order. Whether GL sampling of an imported buffer must wait for
+fences another program imported into it is an open question recorded in
+the graphics inventory.
+
+**EGL_ANDROID_native_fence_sync.** `eglCreateSync(KHR)` with
+`EGL_SYNC_NATIVE_FENCE_ANDROID` creates a GL fence (condition
+`PRIOR_COMMANDS_COMPLETE`), or, given `EGL_SYNC_NATIVE_FENCE_FD_ANDROID`,
+takes ownership of that `sync_file` (condition
+`NATIVE_FENCE_SIGNALED_ANDROID`; a descriptor that is not a `sync_file` is
+`EGL_BAD_ATTRIBUTE` and stays the caller's). `eglDupNativeFenceFDANDROID`
+exports a GL fence once through the private render-node ioctl
+`DRM_IOCTL_WPK_EXPORT_FENCE` (the kernel asks the host with the
+kernel-only query `QOP_EXPORT_FENCE` whether the fence is on the shared
+context or must be retained) and returns close-on-exec duplicates.
+Client waits and status on an imported sync poll its descriptor.
+`eglWaitSync` on an imported sync sends `QOP_SERVER_WAIT` with the
+descriptor and token 0: the kernel answers itself when nothing is pending
+(`ORDERED`) or when a pending fence has no native command stream to wait in
+(`CLIENT_SIGNAL`, after which the caller waits on the descriptor), and
+forwards exactly one pending host fence to the host, which issues the
+native `waitSync` when the destination shares that fence's context.
 
 ## Wayland kiosk compositor (`cage`)
 
