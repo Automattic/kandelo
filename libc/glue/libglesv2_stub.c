@@ -2204,7 +2204,10 @@ static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
         case GL_LUMINANCE_ALPHA: case 0x8227: /* RG */ channels = 2; break;
         case GL_RGB: channels = 3; break;
         case GL_RGBA: channels = 4; break;
-        case GL_BGRA_EXT: return type == GL_UNSIGNED_BYTE ? 4 : 0;
+        case GL_BGRA_EXT:
+            return type == GL_UNSIGNED_BYTE ? 4
+                 : type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT
+                   || type == GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT ? 2 : 0;
         case 0x84F9: /* DEPTH_STENCIL */ return type == 0x84FA ? 4 : 0;
         default: return 0;
     }
@@ -3025,6 +3028,49 @@ done:
     free(request);free(reply);return success;
 }
 
+/* GL_EXT_read_format_bgra destination types. */
+static int read_bgra_type(GLenum type) {
+    return type == GL_UNSIGNED_BYTE || type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT
+        || type == GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT;
+}
+
+/* GL_EXT_read_format_bgra: valid ReadPixels format and type enums that do
+ * not form one of its three pairs. GLES 2.0.25 section 4.3.1 makes such a
+ * combination INVALID_OPERATION; an unknown enum is left to the host, whose
+ * INVALID_ENUM is authoritative. */
+static int read_bgra_mismatch(GLenum format, GLenum type) {
+    if (format == GL_BGRA_EXT)
+        return !read_bgra_type(type)
+            && (bytes_per_pixel(GL_RGBA, type) || type == GL_UNSIGNED_SHORT_5_6_5);
+    return (type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT || type == GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT)
+        && bytes_per_pixel(format, GL_UNSIGNED_BYTE);
+}
+
+/* Convert one row of RGBA8 staging into GL_EXT_read_format_bgra layout.
+ * Packed types use the GL normalized fixed-point conversion
+ * round(c / 255 * (2^n - 1)); with format BGRA the first (least
+ * significant) component of a _REV type is blue, so 4_4_4_4_REV is
+ * ARGB4444 and 1_5_5_5_REV is ARGB1555 in a native-endian short. */
+static void pack_bgra_row(uint8_t *dst, const uint8_t *rgba, uint32_t width, GLenum type) {
+    for (uint32_t i = 0; i < width; i++, rgba += 4) {
+        const uint32_t r = rgba[0], g = rgba[1], b = rgba[2], a = rgba[3];
+        if (type == GL_UNSIGNED_BYTE) {
+            dst[0] = (uint8_t)b; dst[1] = (uint8_t)g; dst[2] = (uint8_t)r; dst[3] = (uint8_t)a;
+            dst += 4;
+            continue;
+        }
+        uint16_t value;
+        if (type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT)
+            value = (uint16_t)(((a * 15u + 127u) / 255u) << 12 | ((r * 15u + 127u) / 255u) << 8
+                             | ((g * 15u + 127u) / 255u) << 4 | (b * 15u + 127u) / 255u);
+        else
+            value = (uint16_t)(((a + 127u) / 255u) << 15 | ((r * 31u + 127u) / 255u) << 10
+                             | ((g * 31u + 127u) / 255u) << 5 | (b * 31u + 127u) / 255u);
+        memcpy(dst, &value, 2);
+        dst += 2;
+    }
+}
+
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, void *pixels) {
     if (!_wpk_gl_current_encoder()) return;
@@ -3034,15 +3080,25 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     }
     /* GLES 2.0 sections 3.6.2/4.3.1 require INVALID_OPERATION for these
      * packed-component mismatches, independently of destination storage. */
-    if (packed_pixel_format_mismatch(format, type)) {
+    if (packed_pixel_format_mismatch(format, type) || read_bgra_mismatch(format, type)) {
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }
     uint32_t bpp = bytes_per_pixel(format, type);
+    /* GL_EXT_read_format_bgra (a client extension, advertised below): WebGL 2
+     * reads no BGRA layout, so the host performs the native RGBA/UNSIGNED_BYTE
+     * read and this encoder converts the staged rows. That native read is
+     * accepted from normalized fixed-point color buffers and rejected (with
+     * the host's error) from float ones, so BGRA reads follow the same rule.
+     * The host's PACK_ALIGNMENT is the guest's, so staging rows use the
+     * caller's alignment at four bytes per pixel. */
+    const int bgra = format == GL_BGRA_EXT && read_bgra_type(type);
+    const uint32_t staged_bpp = bgra ? 4 : bpp;
     uint8_t in[24];
     int32_t xi = x, yi = y;
     int32_t wi = width, hi = height;
-    uint32_t fmt = (uint32_t)format, t = (uint32_t)type;
+    uint32_t fmt = bgra ? GL_RGBA : (uint32_t)format;
+    uint32_t t = bgra ? GL_UNSIGNED_BYTE : (uint32_t)type;
     memcpy(in,      &xi,  4);
     memcpy(in + 4,  &yi,  4);
     memcpy(in + 8,  &wi,  4);
@@ -3056,16 +3112,19 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
         return;
     }
     if (!pixels) return;
+    const uint64_t align_mask = (uint64_t)(uint32_t)g_pack_alignment - 1u;
     uint64_t row = (uint64_t)(uint32_t)width * bpp;
-    uint64_t stride = (row + (uint32_t)g_pack_alignment - 1u)
-                      & ~((uint64_t)(uint32_t)g_pack_alignment - 1u);
+    uint64_t stride = (row + align_mask) & ~align_mask;
+    uint64_t staged_row = (uint64_t)(uint32_t)width * staged_bpp;
+    uint64_t staged_stride = (staged_row + align_mask) & ~align_mask;
     /* Bound before multiplication: oversized signed dimensions and wide
-     * component types must never wrap into a smaller destination allocation. */
-    if (stride > UINT32_MAX) {
+     * component types must never wrap into a smaller destination allocation.
+     * Staging is never narrower than the destination. */
+    if (staged_stride > UINT32_MAX) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
     }
-    uint64_t required = (uint64_t)((uint32_t)height - 1u) * stride + row;
+    uint64_t required = (uint64_t)((uint32_t)height - 1u) * staged_stride + staged_row;
     if (required > UINT32_MAX || required > SIZE_MAX) {
         raise_client_error(GL_OUT_OF_MEMORY);
         return;
@@ -3081,9 +3140,12 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     if (accepted) {
         /* Pack padding belongs to the caller. Transport staging must never
          * overwrite it, nor publish any pixel after a rejected native read. */
-        for (uint32_t r = 0; r < (uint32_t)height; ++r)
-            memcpy((uint8_t *)pixels + r * (uint32_t)stride,
-                   reply + r * (uint32_t)stride, (size_t)row);
+        for (uint32_t r = 0; r < (uint32_t)height; ++r) {
+            uint8_t *dst = (uint8_t *)pixels + r * (uint32_t)stride;
+            const uint8_t *src = reply + r * (uint32_t)staged_stride;
+            if (bgra) pack_bgra_row(dst, src, (uint32_t)width, type);
+            else memcpy(dst, src, (size_t)row);
+        }
     }
     free(reply);
 }
@@ -3163,6 +3225,10 @@ static char *wpk_host_string(GLenum name, char *buf, size_t cap) {
 }
 
 static const char *const k_client_extensions[] = {
+    /* ReadPixels BGRA layouts are converted from the native RGBA read by
+     * glReadPixels; the host's IMPLEMENTATION_COLOR_READ pair stays its own
+     * native layout. */
+    "GL_EXT_read_format_bgra",
     "GL_EXT_texture_format_BGRA8888",
     "GL_EXT_unpack_subimage",
     "GL_OES_EGL_image",

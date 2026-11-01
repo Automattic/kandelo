@@ -749,6 +749,37 @@ static unsigned read_capture_token, read_capture_total, read_capture_chunks, rea
 static unsigned read_pixels_queries;
 static uint32_t read_pixels_capacity;
 static int read_pixels_failure;
+/* The format/type pair the host was asked to read, and an optional
+ * position-dependent fill so a test can tell staging bytes apart. */
+static uint32_t read_pixels_format, read_pixels_type;
+static int read_pixels_pattern;
+static uint8_t read_pattern_pixel[4];
+/* Pattern 1 varies every staging byte; pattern 2 repeats one RGBA pixel. */
+static uint8_t read_pattern_byte(uint32_t offset) {
+    return read_pixels_pattern == 2 ? read_pattern_pixel[offset % 4] : (uint8_t)(offset * 7u + 3u);
+}
+/* EXT_read_format_bgra destination pixel for one RGBA8 source pixel,
+ * computed independently with the GL normalized-fixed-point conversion
+ * (round(c / 255 * (2^n - 1))). Packed shorts are host-endian. */
+static void expected_bgra_pixel(uint8_t *dst, const uint8_t rgba[4], GLenum type) {
+    if (type == GL_UNSIGNED_BYTE) {
+        dst[0] = rgba[2]; dst[1] = rgba[1]; dst[2] = rgba[0]; dst[3] = rgba[3];
+        return;
+    }
+    const int four = type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT;
+    unsigned q[4];
+    for (unsigned k = 0; k < 4; k++) {
+        const double max = four ? 15.0 : k == 3 ? 1.0 : 31.0;
+        q[k] = (unsigned)(rgba[k] / 255.0 * max + 0.5);
+    }
+    const uint16_t value = four
+        ? (uint16_t)(q[3] << 12 | q[0] << 8 | q[1] << 4 | q[2])
+        : (uint16_t)(q[3] << 15 | q[0] << 10 | q[1] << 5 | q[2]);
+    memcpy(dst, &value, 2);
+}
+static unsigned read_align(unsigned bytes, unsigned alignment) {
+    return (bytes + alignment - 1) & ~(alignment - 1);
+}
 
 int graphics_ioctl(int fd, unsigned long request, ...) {
     va_list args; va_start(args, request);
@@ -1849,6 +1880,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (action == 1) {
                 assert(q->in_buf_len==36 && q->out_buf_len==16);
                 read_pixels_queries++; read_capture_total=input[2]; count=input[2];
+                read_pixels_format=input[7]; read_pixels_type=input[8];
                 if (read_pixels_failure) {query_gl_error=GL_INVALID_FRAMEBUFFER_OPERATION;reply[0]=1;}
                 else read_capture_token=token;
                 if (read_capture_lost_begin) {read_capture_lost_begin=0;errno=EIO;return -1;}
@@ -1857,7 +1889,8 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 count=input[3]; assert(input[2]+count<=read_capture_total && q->out_buf_len==count+16);
                 read_capture_chunks++;
                 if (read_capture_fail_chunk && read_capture_chunks==read_capture_fail_chunk) {errno=EIO;return -1;}
-                memset((uint8_t *)reply+12,0x3c,count);
+                if (read_pixels_pattern) for (uint32_t j=0;j<count;j++) ((uint8_t *)reply)[12+j]=read_pattern_byte(input[2]+j);
+                else memset((uint8_t *)reply+12,0x3c,count);
             } else {
                 assert(action==3 && q->in_buf_len==8 && q->out_buf_len==16);
                 assert(!read_capture_token || token==read_capture_token);
@@ -1872,7 +1905,13 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(q->in_buf_len == 24);
             read_pixels_queries++;
             read_pixels_capacity = q->out_buf_len;
-            if (q->out_buf_len)
+            /* glReadPixels passes its metadata from the stack. */
+            memcpy(&read_pixels_format, (const uint8_t *)(uintptr_t)q->in_buf_ptr + 16, 4);
+            memcpy(&read_pixels_type, (const uint8_t *)(uintptr_t)q->in_buf_ptr + 20, 4);
+            if (q->out_buf_len && read_pixels_pattern) {
+                uint8_t *staging = allocation_for(q->out_buf_ptr, q->out_buf_len);
+                for (uint32_t j = 0; j < q->out_buf_len; j++) staging[j] = read_pattern_byte(j);
+            } else if (q->out_buf_len)
                 memset(allocation_for(q->out_buf_ptr, q->out_buf_len), 0x3c, q->out_buf_len);
             if (read_pixels_failure) {
                 query_gl_error = GL_INVALID_FRAMEBUFFER_OPERATION;
@@ -6128,6 +6167,135 @@ int main(int argc, char **argv) {
             glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,GL_BGRA_EXT,GL_UNSIGNED_SHORT_4_4_4_4,(void *)(uintptr_t)1);
             assert(image_mutation_queries == queries && image_pixel_updates == updates);
             assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-bgra-read-", 18)) {
+        /* GL_EXT_read_format_bgra: WebGL 2 has no BGRA read, so the encoder
+         * reads RGBA/UNSIGNED_BYTE natively and converts into the caller's
+         * BGRA layout under the caller's PACK_ALIGNMENT. */
+        const GLenum types[3] = {GL_UNSIGNED_BYTE, GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT,
+                                 GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT};
+        if (!strcmp(argv[1], "encoder-bgra-read-extension")) {
+            const char *list = (const char *)glGetString(GL_EXTENSIONS);
+            assert(list && glGetError() == GL_NO_ERROR);
+            const char *name = "GL_EXT_read_format_bgra", *hit = strstr(list, name);
+            assert(hit && (hit == list || hit[-1] == ' '));
+            assert(hit[strlen(name)] == '\0' || hit[strlen(name)] == ' ');
+            assert(!strstr(hit + 1, name));
+        } else if (!strcmp(argv[1], "encoder-bgra-read-layout")) {
+            /* Odd width so every alignment above 1 pads the destination
+             * differently from the RGBA8 staging rows. */
+            enum {width = 3, height = 3};
+            read_pixels_pattern = 1;
+            for (unsigned t = 0; t < 3; t++) for (unsigned a = 1; a <= 8; a *= 2) {
+                uint8_t pixels[64], expected[64];
+                memset(pixels, 0xa5, sizeof pixels); memset(expected, 0xa5, sizeof expected);
+                glPixelStorei(GL_PACK_ALIGNMENT, (GLint)a);
+                read_pixels_format = read_pixels_type = 0;
+                glReadPixels(0, 0, width, height, GL_BGRA_EXT, types[t], pixels + 1);
+                assert(glGetError() == GL_NO_ERROR);
+                assert(read_pixels_format == GL_RGBA && read_pixels_type == GL_UNSIGNED_BYTE);
+                const unsigned host_stride = read_align(width * 4, a);
+                assert(read_pixels_capacity == (height - 1) * host_stride + width * 4);
+                const unsigned bpp = t ? 2 : 4, stride = read_align(width * bpp, a);
+                for (unsigned r = 0; r < height; r++) for (unsigned c = 0; c < width; c++) {
+                    uint8_t rgba[4];
+                    for (unsigned k = 0; k < 4; k++) rgba[k] = read_pattern_byte(r * host_stride + c * 4 + k);
+                    expected_bgra_pixel(expected + 1 + r * stride + c * bpp, rgba, types[t]);
+                }
+                assert(!memcmp(pixels, expected, sizeof pixels));
+            }
+        } else if (!strcmp(argv[1], "encoder-bgra-read-values")) {
+            /* Hand-computed BGRA_EXT layouts: B,G,R,A bytes; ARGB4444 and
+             * ARGB1555 shorts with blue in the least-significant bits. */
+            const uint8_t sources[2][4] = {{0xff,0x00,0x00,0xff}, {0x11,0x22,0x33,0x80}};
+            const uint8_t bytes[2][4] = {{0x00,0x00,0xff,0xff}, {0x33,0x22,0x11,0x80}};
+            const uint16_t argb4444[2] = {0xff00, 0x8123}, argb1555[2] = {0xfc00, 0x8886};
+            read_pixels_pattern = 2;
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            for (unsigned i = 0; i < 2; i++) {
+                memcpy(read_pattern_pixel, sources[i], 4);
+                uint8_t out[8]; uint16_t packed[2];
+                glReadPixels(0, 0, 2, 1, GL_BGRA_EXT, GL_UNSIGNED_BYTE, out);
+                assert(!memcmp(out, bytes[i], 4) && !memcmp(out + 4, bytes[i], 4));
+                glReadPixels(0, 0, 2, 1, GL_BGRA_EXT, GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT, packed);
+                assert(packed[0] == argb4444[i] && packed[1] == argb4444[i]);
+                glReadPixels(0, 0, 2, 1, GL_BGRA_EXT, GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT, packed);
+                assert(packed[0] == argb1555[i] && packed[1] == argb1555[i]);
+                assert(glGetError() == GL_NO_ERROR);
+            }
+        } else if (!strcmp(argv[1], "encoder-bgra-read-errors")) {
+            /* Valid format and type enums outside the extension's three
+             * pairs are an INVALID_OPERATION combination, raised before any
+             * host query (GLES 2.0.25 section 4.3.1). */
+            const GLenum pairs[][2] = {
+                {GL_BGRA_EXT, GL_FLOAT}, {GL_BGRA_EXT, GL_UNSIGNED_SHORT_5_6_5},
+                {GL_BGRA_EXT, GL_UNSIGNED_SHORT_4_4_4_4}, {GL_BGRA_EXT, GL_UNSIGNED_SHORT_5_5_5_1},
+                {GL_BGRA_EXT, GL_UNSIGNED_SHORT}, {GL_BGRA_EXT, GL_HALF_FLOAT_OES},
+                {GL_RGBA, GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT}, {GL_RGB, GL_UNSIGNED_SHORT_1_5_5_5_REV_EXT},
+                {GL_ALPHA, GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT},
+            };
+            for (unsigned i = 0; i < sizeof pairs / sizeof pairs[0]; i++) {
+                glReadPixels(0, 0, 1, 1, pairs[i][0], pairs[i][1], (void *)(uintptr_t)1);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+            assert(read_pixels_queries == 0);
+            /* An unknown enum stays the host's INVALID_ENUM: it is forwarded
+             * unchanged rather than mapped onto the RGBA read. */
+            glReadPixels(0, 0, 1, 1, GL_BGRA_EXT, 0x1234, (void *)(uintptr_t)1);
+            assert(read_pixels_queries == 1 && read_pixels_capacity == 0);
+            assert(read_pixels_format == GL_BGRA_EXT && read_pixels_type == 0x1234);
+            glReadPixels(0, 0, 1, 1, 0x1234, GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT, (void *)(uintptr_t)1);
+            assert(read_pixels_queries == 2 && read_pixels_format == 0x1234);
+            assert(read_pixels_type == GL_UNSIGNED_SHORT_4_4_4_4_REV_EXT);
+            /* Empty reads still validate framebuffer and read-buffer class
+             * through the native RGBA read the conversion relies on. */
+            for (unsigned t = 0; t < 3; t++) {
+                glReadPixels(0, 0, 0, 4, GL_BGRA_EXT, types[t], NULL);
+                assert(read_pixels_queries == 3 + t && read_pixels_capacity == 0);
+                assert(read_pixels_format == GL_RGBA && read_pixels_type == GL_UNSIGNED_BYTE);
+            }
+            assert(glGetError() == GL_NO_ERROR);
+            /* A host rejection (e.g. a float read buffer) publishes nothing. */
+            uint8_t pixels[16]; memset(pixels, 0xa5, sizeof pixels);
+            read_pixels_failure = 1;
+            for (unsigned t = 0; t < 3; t++) {
+                glReadPixels(0, 0, 2, 1, GL_BGRA_EXT, types[t], pixels);
+                for (unsigned i = 0; i < sizeof pixels; i++) assert(pixels[i] == 0xa5);
+                assert(glGetError() == GL_INVALID_FRAMEBUFFER_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+        } else {
+            assert(!strcmp(argv[1], "encoder-bgra-read-large"));
+            /* The RGBA8 staging (133,124 bytes) exceeds one reply even where
+             * the packed 16-bit destination is smaller, so the captured
+             * readback carries it; padding and the trailing byte survive. */
+            enum {width = 257, height = 129};
+            const unsigned host_stride = read_align(width * 4, 8);
+            const unsigned host_total = (height - 1) * host_stride + width * 4;
+            read_pixels_pattern = 1;
+            glPixelStorei(GL_PACK_ALIGNMENT, 8);
+            for (unsigned t = 0; t < 3; t++) {
+                const unsigned bpp = t ? 2 : 4, stride = read_align(width * bpp, 8);
+                const unsigned total = (height - 1) * stride + width * bpp;
+                uint8_t *pixels = malloc(total + 2), *expected = malloc(total + 2);
+                assert(pixels && expected);
+                memset(pixels, 0xa5, total + 2); memset(expected, 0xa5, total + 2);
+                read_pixels_queries = read_capture_chunks = 0;
+                glReadPixels(0, 0, width, height, GL_BGRA_EXT, types[t], pixels + 1);
+                assert(glGetError() == GL_NO_ERROR);
+                assert(read_pixels_queries == 1 && read_capture_total == host_total && read_capture_chunks == 3);
+                assert(read_pixels_format == GL_RGBA && read_pixels_type == GL_UNSIGNED_BYTE);
+                for (unsigned r = 0; r < height; r++) for (unsigned c = 0; c < width; c++) {
+                    uint8_t rgba[4];
+                    for (unsigned k = 0; k < 4; k++) rgba[k] = read_pattern_byte(r * host_stride + c * 4 + k);
+                    expected_bgra_pixel(expected + 1 + r * stride + c * bpp, rgba, types[t]);
+                }
+                assert(!memcmp(pixels, expected, total + 2));
+                free(pixels); free(expected);
+            }
         }
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);

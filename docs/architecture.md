@@ -3969,7 +3969,13 @@ the client's status. It reaches the platform the way a Linux compositor does:
   renderbuffer and renders into it, and the page flip that scans it out
   blits it onto the display canvas, which cage's GL context claimed. A
   client's `wl_shm` buffer is uploaded as a texture with
-  `GL_EXT_texture_format_BGRA8888` and `GL_EXT_unpack_subimage`; a
+  `GL_EXT_texture_format_BGRA8888` and `GL_EXT_unpack_subimage`. A
+  readback into an XRGB8888 or ARGB8888 buffer (screencopy, for example)
+  uses `glReadPixels` with `GL_BGRA_EXT`, which wlroots refuses without
+  `GL_EXT_read_format_bgra`. WebGL 2 reads no BGRA layout, so the guest
+  encoder asks the host for the native RGBA/UNSIGNED_BYTE read and
+  converts the rows itself (byte swizzle, or ARGB4444/ARGB1555 packing)
+  under the caller's pack alignment. A
   `linux-dmabuf` buffer is imported with `EGL_EXT_image_dma_buf_import`,
   zero-copy for a GPU-tier buffer (a GL client's) and copied from the
   dma-buf mapping for a CPU-tier one. The Node host has no WebGL2, so the
