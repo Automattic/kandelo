@@ -402,9 +402,13 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::oss::SNDCTL_DSP_SETFRAGMENT, InOut, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_RMFB, In, 4),
     pointer!(crate::dri::DRM_IOCTL_MODE_DESTROY_DUMB, In, 4),
+    pointer!(crate::dri::DRM_IOCTL_MODE_DESTROYPROPBLOB, In, 4),
+    // `struct drm_unique` is `(size_t, char *)`: one request per width.
+    pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE, InOut, wasm32 8),
     pointer!(crate::dri::DRM_IOCTL_MODE_CLOSEFB, In, 8),
     pointer!(crate::dri::DRM_IOCTL_PRIME_HANDLE_TO_FD, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE, InOut, 12),
+    pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE_WASM64, InOut, wasm64 16),
     pointer!(crate::dri::DRM_IOCTL_GET_CAP, InOut, 16),
     // `union drm_wait_vblank` holds `unsigned long`/`long` fields, so each
     // pointer width has its own request number and layout (as VERSION).
@@ -413,6 +417,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPBLOB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_MAP_DUMB, InOut, 16),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANERESOURCES, InOut, 16),
+    pointer!(crate::dri::DRM_IOCTL_MODE_CREATEPROPBLOB, InOut, 16),
     // width / height / format / usage in; handle and stride out in the
     // format/usage slots (WpkDrmGpuBoCreate). Without an entry
     // the host stages a zero-length buffer and the kernel handler rejects
@@ -426,10 +431,14 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_GETENCODER, InOut, 20),
     pointer!(crate::dri::DRM_IOCTL_WAIT_VBLANK_WASM64, InOut, wasm64 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_PAGE_FLIP, In, 24),
+    pointer!(crate::dri::DRM_IOCTL_MODE_DIRTYFB, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_SETPROPERTY, In, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_LEASE, InOut, 24),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR, In, 28),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETFB, InOut, 28),
+    pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB, InOut, 28),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETGAMMA, In, 32),
+    pointer!(crate::dri::DRM_IOCTL_MODE_SETGAMMA, In, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_CREATE_DUMB, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPLANE, InOut, 32),
     pointer!(crate::dri::DRM_IOCTL_MODE_OBJ_GETPROPERTIES, InOut, 32),
@@ -445,6 +454,7 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCRTC, InOut, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETCRTC, In, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_ADDFB2, InOut, 104),
+    pointer!(crate::dri::DRM_IOCTL_MODE_GETFB2, InOut, 104),
 ];
 
 pub fn request_contract(request: u32) -> Option<IoctlRequestContract> {

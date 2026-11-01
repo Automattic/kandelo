@@ -3170,25 +3170,54 @@ fn handle_dri_card_ioctl(
                 DRM_FORMAT_RGB565 => (16, 16),
                 _ => return Err(Errno::EINVAL),
             };
-            // GETFB metadata is unprivileged. Only the exact current master
-            // receives a new GEM name; no CAP_SYS_ADMIN capability is exposed.
-            let handle = if kms_file_is_current_master(proc, ofd_idx)? {
-                let dri = dri_state_mut(proc, ofd_idx)?;
-                let mut gem = dri.gem.borrow_mut();
-                let handle = gem.next_handle;
-                let next = handle.checked_add(1).filter(|_| handle != 0).ok_or(Errno::EMFILE)?;
-                crate::dri::with_registry(|r| {
-                    r.get(fb.bo_id).ok_or(Errno::ENOENT)?.refcount
-                        .checked_add(1).ok_or(Errno::EOVERFLOW)?;
-                    r.incref(fb.bo_id);
-                    Ok(())
-                })?;
-                gem.handles.insert(handle, fb.bo_id);
-                gem.next_handle = next;
-                handle
-            } else { 0 };
+            let handle = kms_getfb_handle(proc, ofd_idx, &fb)?;
             write_dri_struct(buf, WpkDrmModeFbCmd { fb_id: req.fb_id,
                 width: fb.width, height: fb.height, pitch: fb.stride, bpp, depth, handle });
+            Ok(())
+        }
+        DRM_IOCTL_MODE_GETFB2 => {
+            // drm_mode_getfb2_ioctl: unprivileged metadata for every plane
+            // slot (one plane here; the rest zero), the same handle rule as
+            // GETFB, and no modifiers (DRM_CAP_ADDFB2_MODIFIERS is 0, so
+            // neither DRM_MODE_FB_MODIFIERS nor modifier[] is reported).
+            let req: WpkDrmModeFbCmd2 = read_dri_struct(buf)?;
+            let fb = kms::framebuffer(req.fb_id).ok_or(Errno::ENOENT)?;
+            let handle = kms_getfb_handle(proc, ofd_idx, &fb)?;
+            let mut reply = WpkDrmModeFbCmd2 {
+                fb_id: req.fb_id,
+                width: fb.width,
+                height: fb.height,
+                pixel_format: fb.pixel_format,
+                ..Default::default()
+            };
+            reply.handles[0] = handle;
+            reply.pitches[0] = fb.stride;
+            reply.offsets[0] = fb.offset;
+            write_dri_struct(buf, reply);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_ADDFB => {
+            // drm_mode_addfb: map the legacy (bpp, depth) pair through
+            // drm_driver_legacy_fb_format, then the shared ADDFB2 core so
+            // validation cannot diverge. Pairs Linux maps to formats the
+            // primary plane does not scan out are refused there (EINVAL).
+            let mut req: WpkDrmModeFbCmd = read_dri_struct(buf)?;
+            let pixel_format = match (req.bpp, req.depth) {
+                (16, 16) => DRM_FORMAT_RGB565,
+                (32, 24) => DRM_FORMAT_XRGB8888,
+                (32, 32) => DRM_FORMAT_ARGB8888,
+                _ => return Err(Errno::EINVAL),
+            };
+            let mut fb2 = WpkDrmModeFbCmd2 {
+                width: req.width,
+                height: req.height,
+                pixel_format,
+                ..Default::default()
+            };
+            fb2.handles[0] = req.handle;
+            fb2.pitches[0] = req.pitch;
+            req.fb_id = kms_add_framebuffer(proc, host, ofd_idx, &fb2)?;
+            write_dri_struct(buf, req);
             Ok(())
         }
         DRM_IOCTL_MODE_SETPLANE => {
@@ -3532,8 +3561,103 @@ fn handle_dri_card_ioctl(
             Ok(())
         }
         DRM_IOCTL_MODE_GETPROPBLOB => {
-            read_dri_struct::<WpkDrmModeGetBlob>(buf)?;
-            Err(Errno::ENOENT)
+            // drm_mode_getblob_ioctl: copy only when the caller's length is
+            // exactly the blob's, and always report the blob's length.
+            let mut req: WpkDrmModeGetBlob = read_dri_struct(buf)?;
+            let data = kms::blob(req.blob_id).ok_or(Errno::ENOENT)?;
+            if req.length as usize == data.len() && !data.is_empty() {
+                let pointer = probe_dri_process_pointer(host, pid, req.data, data.len())?;
+                write_dri_bytes(host, pid, pointer, &data)?;
+            }
+            req.length = data.len() as u32;
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_CREATEPROPBLOB => {
+            // drm_mode_createblob_ioctl: any primary-node client; the blob
+            // belongs to this file and dies with it.
+            let mut req = read_dri_struct::<[u32; 4]>(buf)?;
+            let data_ptr = u64::from(req[0]) | (u64::from(req[1]) << 32);
+            let length = req[2] as usize;
+            if length == 0 || length > i32::MAX as usize {
+                return Err(Errno::EINVAL);
+            }
+            if length > kms::MAX_BLOB_BYTES {
+                return Err(Errno::ENOMEM);
+            }
+            let pointer = probe_dri_process_pointer(host, pid, data_ptr, length)?;
+            let mut data = alloc::vec![0u8; length];
+            if host.proc_read_bytes(pid, pointer, &mut data) < 0 {
+                return Err(Errno::EFAULT);
+            }
+            let owner = kms_state(proc, ofd_idx)?.master_identity.ok_or(Errno::EBADF)?;
+            req[3] = kms::create_blob(owner, data)?;
+            write_dri_struct(buf, req);
+            Ok(())
+        }
+        DRM_IOCTL_MODE_DESTROYPROPBLOB => {
+            // drm_mode_destroyblob_ioctl: an unknown blob is EINVAL; a blob
+            // another file created is EPERM.
+            let blob_id = read_dri_struct::<u32>(buf)?;
+            let owner = kms_state(proc, ofd_idx)?.master_identity.ok_or(Errno::EBADF)?;
+            kms::destroy_blob(blob_id, owner)
+        }
+        DRM_IOCTL_MODE_GETGAMMA | DRM_IOCTL_MODE_SETGAMMA => {
+            // struct drm_mode_crtc_lut { crtc_id, gamma_size, red, green, blue }.
+            // The virtual CRTC has no gamma LUT (GETCRTC reports
+            // gamma_size 0): the host presents framebuffer values as they
+            // are. GETGAMMA of size 0 therefore succeeds and copies nothing;
+            // SETGAMMA is DRM_MASTER and, with no gamma_set hook, ENOSYS.
+            let [crtc_id, gamma_size, ..] = read_dri_struct::<[u32; 8]>(buf)?;
+            if request == DRM_IOCTL_MODE_SETGAMMA && !kms_file_is_current_master(proc, ofd_idx)? {
+                return Err(Errno::EACCES);
+            }
+            if crtc_id != kms::CRTC_ID {
+                return Err(Errno::ENOENT);
+            }
+            if request == DRM_IOCTL_MODE_SETGAMMA {
+                return Err(Errno::ENOSYS);
+            }
+            if gamma_size != 0 {
+                return Err(Errno::EINVAL);
+            }
+            Ok(())
+        }
+        DRM_IOCTL_MODE_DIRTYFB => {
+            // drm_mode_dirtyfb_ioctl. The host samples the scanout every
+            // vblank, so flushing damage is the drm_atomic_helper_dirtyfb
+            // no-op once the request is valid.
+            let [fb_id, flags, _color, num_clips, clips_lo, clips_hi] = read_dri_struct::<[u32; 6]>(buf)?;
+            if !kms_file_is_current_master(proc, ofd_idx)? {
+                return Err(Errno::EACCES);
+            }
+            kms::framebuffer(fb_id).ok_or(Errno::ENOENT)?;
+            let clips = u64::from(clips_lo) | (u64::from(clips_hi) << 32);
+            const DRM_MODE_FB_DIRTY_ANNOTATE_COPY: u32 = 0x01;
+            const DRM_MODE_FB_DIRTY_MAX_CLIPS: u32 = 256;
+            if (num_clips == 0) != (clips == 0)
+                || (flags & DRM_MODE_FB_DIRTY_ANNOTATE_COPY != 0 && num_clips % 2 != 0)
+                || num_clips > DRM_MODE_FB_DIRTY_MAX_CLIPS
+            {
+                return Err(Errno::EINVAL);
+            }
+            if num_clips != 0 {
+                // struct drm_clip_rect is four u16s.
+                probe_dri_process_pointer(host, pid, clips, num_clips as usize * 8)?;
+            }
+            Ok(())
+        }
+        DRM_IOCTL_GET_UNIQUE | DRM_IOCTL_GET_UNIQUE_WASM64 => {
+            // drm_getunique reports the master's bus id, which only the
+            // legacy SET_VERSION ioctl (absent here) ever sets: the unique
+            // string is empty, so nothing is copied and unique_len is 0.
+            let len = if request == DRM_IOCTL_GET_UNIQUE_WASM64 { 16 } else { 8 };
+            let word = if len == 16 { 8 } else { 4 };
+            if buf.len() < len {
+                return Err(Errno::EINVAL);
+            }
+            buf[..word].fill(0);
+            Ok(())
         }
         DRM_IOCTL_MODE_OBJ_SETPROPERTY => {
             let req: WpkDrmModeObjSetProperty = read_dri_struct(buf)?;
@@ -3575,6 +3699,28 @@ fn handle_dri_card_ioctl(
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
     }
+}
+
+/// GETFB/GETFB2 metadata is unprivileged. Only the exact current master
+/// receives a new, reference-owning GEM name (otherwise 0); Kandelo exposes
+/// no CAP_SYS_ADMIN override for it.
+fn kms_getfb_handle(proc: &mut Process, ofd_idx: usize, fb: &crate::ofd::KmsFb) -> Result<u32, Errno> {
+    if !kms_file_is_current_master(proc, ofd_idx)? {
+        return Ok(0);
+    }
+    let dri = dri_state_mut(proc, ofd_idx)?;
+    let mut gem = dri.gem.borrow_mut();
+    let handle = gem.next_handle;
+    let next = handle.checked_add(1).filter(|_| handle != 0).ok_or(Errno::EMFILE)?;
+    crate::dri::with_registry(|r| {
+        r.get(fb.bo_id).ok_or(Errno::ENOENT)?.refcount
+            .checked_add(1).ok_or(Errno::EOVERFLOW)?;
+        r.incref(fb.bo_id);
+        Ok(())
+    })?;
+    gem.handles.insert(handle, fb.bo_id);
+    gem.next_handle = next;
+    Ok(handle)
 }
 
 /// Largest framebuffer dimension, as `GETRESOURCES` reports
@@ -4171,6 +4317,9 @@ pub fn collect_dri_release_effects(
                 }
                 if let Some(bo_id) = kms.cursor_bo {
                     release_bo(&mut effects, bo_id);
+                }
+                if let Some(owner) = kms.master_identity {
+                    kms::release_blobs(owner);
                 }
                 // Framebuffers retain one BO reference per shared table entry.
                 for (fb_id, fb) in kms.fbs.into_last().into_iter().flatten() {
@@ -55876,6 +56025,143 @@ impl HostIO for RelSymlinkMock {
         proc.seteuid(0).unwrap();
         sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
         sys_ioctl(&mut proc, &mut host, other, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_legacy_addfb_maps_bpp_depth_and_getfb2_reports_the_plane() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let bo = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 64, height: 64, bpp: 32, ..Default::default() }).unwrap();
+        let legacy = |bpp, depth| WpkDrmModeFbCmd { width: 64, height: 64, pitch: bo.pitch, bpp, depth,
+            handle: bo.handle, ..Default::default() };
+        // kms_addfb_basic legacy-format: drm_driver_legacy_fb_format.
+        for (bpp, depth, format) in [(32, 24, DRM_FORMAT_XRGB8888), (32, 32, DRM_FORMAT_ARGB8888),
+            (16, 16, DRM_FORMAT_RGB565)] {
+            let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB, legacy(bpp, depth)).unwrap();
+            assert_ne!(fb.fb_id, 0);
+            let info = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETFB2,
+                WpkDrmModeFbCmd2 { fb_id: fb.fb_id, ..Default::default() }).unwrap();
+            assert_eq!((info.width, info.height, info.pixel_format, info.pitches[0], info.flags),
+                (64, 64, format, bo.pitch, 0));
+            assert_ne!(info.handles[0], 0, "the current master receives a handle");
+            assert_eq!((info.handles[1], info.pitches[1], info.modifier[0]), (0, 0, 0));
+        }
+        for (bpp, depth) in [(8, 8), (24, 24), (32, 30), (16, 15), (0, 0)] {
+            assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB, legacy(bpp, depth)).map(|_| ()),
+                Err(Errno::EINVAL), "bpp {bpp} depth {depth}");
+        }
+        // The shared ADDFB2 rules apply: a pitch below width * cpp.
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB,
+            WpkDrmModeFbCmd { pitch: 64, ..legacy(32, 24) }).map(|_| ()), Err(Errno::EINVAL));
+        // GETFB2 is unprivileged metadata; a non-master gets handle 0.
+        let fb = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_ADDFB, legacy(32, 24)).unwrap().fb_id;
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let info = kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETFB2,
+            WpkDrmModeFbCmd2 { fb_id: fb, ..Default::default() }).unwrap();
+        assert_eq!((info.width, info.handles[0]), (64, 0));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETFB2,
+            WpkDrmModeFbCmd2 { fb_id: 0xffff_fff0, ..Default::default() }).map(|_| ()), Err(Errno::ENOENT));
+        sys_close(&mut proc, &mut host, plain).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_gamma_dirtyfb_and_unique_follow_linux_for_a_crtc_without_a_lut() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        let _g_reg = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let lut = |crtc: u32, size: u32| [crtc, size, 0, 0, 0, 0, 0, 0];
+        // GETCRTC reports gamma_size 0: GETGAMMA of 0 entries succeeds for
+        // anyone, any other size is EINVAL; SETGAMMA is master-only and
+        // has no gamma_set hook (ENOSYS).
+        kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 0)).unwrap();
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(kms::CRTC_ID, 256)).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_GETGAMMA, lut(9, 0)).map(|_| ()), Err(Errno::ENOENT));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 0)).map(|_| ()), Err(Errno::EACCES));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(9, 0)).map(|_| ()), Err(Errno::ENOENT));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_SETGAMMA, lut(kms::CRTC_ID, 0)).map(|_| ()), Err(Errno::ENOSYS));
+
+        // DIRTYFB: master, fb, clip/flag rules, then the continuous-scanout
+        // no-op.
+        let fb = kms_fb(&mut proc, &mut host, fd, 64, 64, DRM_FORMAT_XRGB8888);
+        let dirty = |fb: u32, flags: u32, clips: u32, ptr: u64| [fb, flags, 0, clips, ptr as u32, (ptr >> 32) as u32];
+        assert_eq!(kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 0, 0)).map(|_| ()), Err(Errno::EACCES));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(0xffff_fff0, 0, 0, 0)).map(|_| ()), Err(Errno::ENOENT));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 1, 0)).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 0, 0x2000)).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 1, 1, 0x2000)).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 257, 0x2000)).map(|_| ()), Err(Errno::EINVAL));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 1, 1 << 40)).map(|_| ()), Err(Errno::EFAULT));
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 0, 0, 0)).unwrap();
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DIRTYFB, dirty(fb, 1, 2, 0x2000)).unwrap();
+
+        // GET_UNIQUE: no SET_VERSION bus id, so the unique string is empty.
+        let unique = kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_GET_UNIQUE, [64u32, 0x2000]).unwrap();
+        assert_eq!(unique, [0, 0x2000]);
+        let unique = kms_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_GET_UNIQUE_WASM64, [64u64, 0x2000]).unwrap();
+        assert_eq!(unique, [0, 0x2000]);
+        sys_close(&mut proc, &mut host, plain).unwrap();
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        kms::reset_for_test();
+    }
+
+    #[test]
+    fn kms_property_blobs_are_file_owned_and_readable_device_wide() {
+        use crate::dri::kms;
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = kms_master_card0(&mut proc, &mut host);
+        let other = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        host.proc_memory[0x2000..0x2006].copy_from_slice(b"kandel");
+        let create = |proc: &mut Process, host: &mut MockHostIO, fd: i32, data: u64, length: u32| {
+            kms_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATEPROPBLOB,
+                [data as u32, (data >> 32) as u32, length, 0]).map(|r| r[3])
+        };
+        // kms_prop_blob invalid-*: empty or unreadable data.
+        assert_eq!(create(&mut proc, &mut host, other, 0x2000, 0), Err(Errno::EINVAL));
+        assert_eq!(create(&mut proc, &mut host, other, 1 << 40, 6), Err(Errno::EFAULT));
+        assert_eq!(create(&mut proc, &mut host, other, 0, 6), Err(Errno::EFAULT));
+        // blob-prop-core: any client may create; anyone may read it.
+        let blob = create(&mut proc, &mut host, other, 0x2000, 6).unwrap();
+        assert_eq!(kms::object_type(blob), Some(DRM_MODE_OBJECT_BLOB));
+        let sized = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB,
+            WpkDrmModeGetBlob { blob_id: blob, length: 0, data: 0x3000 }).unwrap();
+        assert_eq!(sized.length, 6);
+        assert_eq!(&host.proc_memory[0x3000..0x3006], &[0; 6], "a mismatched length copies nothing");
+        kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB,
+            WpkDrmModeGetBlob { blob_id: blob, length: 6, data: 0x3000 }).unwrap();
+        assert_eq!(&host.proc_memory[0x3000..0x3006], b"kandel");
+        // blob-prop-lifetime: only the creating file destroys it (EPERM);
+        // an unknown blob is EINVAL; the creator's last close frees it.
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_DESTROYPROPBLOB, blob).map(|_| ()), Err(Errno::EPERM));
+        assert_eq!(kms_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_DESTROYPROPBLOB, 0xffff_fff0u32).map(|_| ()), Err(Errno::EINVAL));
+        kms_ioctl(&mut proc, &mut host, other, DRM_IOCTL_MODE_DESTROYPROPBLOB, blob).unwrap();
+        assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_GETPROPBLOB,
+            WpkDrmModeGetBlob { blob_id: blob, ..Default::default() }).map(|_| ()), Err(Errno::ENOENT));
+        let kept = create(&mut proc, &mut host, other, 0x2000, 6).unwrap();
+        sys_close(&mut proc, &mut host, other).unwrap();
+        assert!(kms::blob(kept).is_none());
+        sys_close(&mut proc, &mut host, fd).unwrap();
         kms::reset_for_test();
     }
 

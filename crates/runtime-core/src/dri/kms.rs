@@ -120,6 +120,7 @@ pub fn object_type(id: u32) -> Option<u32> {
         PRIMARY_PLANE_ID | CURSOR_PLANE_ID => Some(DRM_MODE_OBJECT_PLANE),
         PROP_PLANE_TYPE..=PROP_NON_DESKTOP => Some(DRM_MODE_OBJECT_PROPERTY),
         _ if framebuffer(id).is_some() => Some(DRM_MODE_OBJECT_FB),
+        _ if blob(id).is_some() => Some(DRM_MODE_OBJECT_BLOB),
         _ => None,
     }
 }
@@ -316,6 +317,45 @@ pub fn clear_cursor_plane(lease_id: u64) {
     }
 }
 
+/// Largest property blob a file may create. Linux bounds a blob only by
+/// INT_MAX and allocation; the kernel heap here is far smaller, so a larger
+/// request fails as an allocation does (ENOMEM).
+pub const MAX_BLOB_BYTES: usize = 1 << 20;
+
+/// User-created property blobs (`CREATEPROPBLOB`), keyed by object id and
+/// owned by the creating DRM file.
+struct GlobalBlobs(UnsafeCell<BTreeMap<u32, (crate::lock::OfdId, alloc::rc::Rc<[u8]>)>>);
+unsafe impl Sync for GlobalBlobs {}
+static BLOBS: GlobalBlobs = GlobalBlobs(UnsafeCell::new(BTreeMap::new()));
+
+/// Blob ids come from the one mode-object id space.
+pub fn create_blob(owner: crate::lock::OfdId, data: alloc::vec::Vec<u8>) -> Result<u32, Errno> {
+    let id = allocate_fb_id()?;
+    unsafe { &mut *BLOBS.0.get() }.insert(id, (owner, data.into()));
+    Ok(id)
+}
+
+pub fn blob(id: u32) -> Option<alloc::rc::Rc<[u8]>> {
+    unsafe { &*BLOBS.0.get() }.get(&id).map(|(_, data)| data.clone())
+}
+
+pub fn destroy_blob(id: u32, owner: crate::lock::OfdId) -> Result<(), Errno> {
+    let blobs = unsafe { &mut *BLOBS.0.get() };
+    match blobs.get(&id) {
+        None => Err(Errno::EINVAL),
+        Some((creator, _)) if *creator != owner => Err(Errno::EPERM),
+        Some(_) => {
+            blobs.remove(&id);
+            Ok(())
+        }
+    }
+}
+
+/// The DRM file's last close frees the blobs it created.
+pub fn release_blobs(owner: crate::lock::OfdId) {
+    unsafe { &mut *BLOBS.0.get() }.retain(|_, (creator, _)| *creator != owner);
+}
+
 /// An fb that `CLOSEFB` dropped while the CRTC scanned it out. Linux keeps
 /// such an fb alive on the plane until the next modeset or flip.
 pub struct ClosedScanout {
@@ -365,6 +405,7 @@ pub fn reset_for_test() {
     NEXT_FB_ID.store(CURSOR_PLANE_ID + 1, Ordering::Relaxed);
     unsafe { *CURSOR.0.get() = None };
     unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
+    unsafe { &mut *BLOBS.0.get() }.clear();
     set_crtc_fb(0);
     set_crtc_mode(None);
     complete_pending_flip();

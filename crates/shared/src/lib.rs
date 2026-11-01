@@ -4950,6 +4950,7 @@ pub mod dri {
     pub const DRM_MODE_OBJECT_PROPERTY: u32 = 0xb0b0_b0b0;
     pub const DRM_MODE_OBJECT_PLANE: u32 = 0xeeee_eeee;
     pub const DRM_MODE_OBJECT_FB: u32 = 0xfbfb_fbfb;
+    pub const DRM_MODE_OBJECT_BLOB: u32 = 0xbbbb_bbbb;
 
     pub const DRM_MODE_PROP_RANGE: u32 = 1 << 1;
     pub const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;

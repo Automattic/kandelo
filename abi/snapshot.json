@@ -2518,6 +2518,18 @@
       "wasm32Size": 4,
       "wasm64Size": 4
     },
+    "3221513406": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221775361": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 8,
+      "wasm64Size": null
+    },
     "3221775568": {
       "argKind": "pointer",
       "direction": "in",
@@ -2535,6 +2547,12 @@
       "direction": "inout",
       "wasm32Size": 12,
       "wasm64Size": 12
+    },
+    "3222299649": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": null,
+      "wasm64Size": 16
     },
     "3222299660": {
       "argKind": "pointer",
@@ -2572,6 +2590,12 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
+    "3222299837": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
     "3222299872": {
       "argKind": "pointer",
       "direction": "inout",
@@ -2602,6 +2626,12 @@
       "wasm32Size": 24,
       "wasm64Size": 24
     },
+    "3222824113": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
     "3222824122": {
       "argKind": "pointer",
       "direction": "in",
@@ -2625,6 +2655,24 @@
       "direction": "inout",
       "wasm32Size": 28,
       "wasm64Size": 28
+    },
+    "3223086254": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 28,
+      "wasm64Size": 28
+    },
+    "3223348388": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223348389": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 32,
+      "wasm64Size": 32
     },
     "3223348402": {
       "argKind": "pointer",
@@ -2705,6 +2753,12 @@
       "wasm64Size": 104
     },
     "3228067000": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 104,
+      "wasm64Size": 104
+    },
+    "3228067022": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 104,
