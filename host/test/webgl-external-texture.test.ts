@@ -254,6 +254,58 @@ it("keeps an external sampler resolvable when a depth texture shares the program
   expect(variant).not.toContain("kandelo_depth_texel(true, texture2D(uVideo");
 });
 
+describe("samplerExternalOES misuse", () => {
+  const header = "#extension GL_OES_EGL_image_external : require\n#extension GL_EXT_shader_texture_lod : enable\n" +
+    "precision mediump float;\nuniform samplerExternalOES uVideo;\nuniform samplerExternalOES frames[2];\n" +
+    "struct Layer { samplerExternalOES image; };\nuniform Layer layer;\nuniform sampler2D uPlain;\nvarying vec2 uv;\n";
+  const rewrite = async (body: string) => (await externalShaderSource(header + body)).text;
+
+  it("fails the compile of a lookup the extension does not define, naming it", async () => {
+    // Every lookup samplerExternalOES has no overload for is an undeclared
+    // function after the rewrite, which the compiler reports by name.
+    for (const [call, name] of [
+      ["texture2DLodEXT(uVideo, uv, 0.0)", "texture2DLodEXT"],
+      ["texture2DGradEXT(frames[1], uv, uv, uv)", "texture2DGradEXT"],
+      ["texture2DProjLodEXT(layer.image, vec3(uv, 1.0), 0.0)", "texture2DProjLodEXT"],
+      ["texture2D(uVideo, uv, 1.0)", "texture2D_with_bias"],
+      ["textureCube(uVideo, vec3(uv, 1.0))", "textureCube"],
+    ]) {
+      const text = await rewrite(`void main() { gl_FragColor = ${call}; }\n`);
+      expect(text, call).toContain(`samplerExternalOES_cannot_use_${name}(`);
+    }
+    // The extension's own lookups, and other samplers' lookups, are left alone.
+    const ok = await rewrite("void main() { gl_FragColor = texture2D(uVideo, uv) + texture2DProj(frames[0], vec3(uv, 1.0))" +
+      " + texture2DLodEXT(uPlain, uv, 0.0) + texture2D(uPlain, uv, 1.0); }\n");
+    expect(ok).not.toContain("samplerExternalOES_cannot_use");
+  });
+
+  it("follows external samplers through function parameters", async () => {
+    const through = await rewrite("vec4 grad(samplerExternalOES s, vec2 p) { return texture2DGradEXT(s, p, p, p); }\n" +
+      "vec4 plain(samplerExternalOES s, vec2 p) { return texture2D(s, p); }\n" +
+      "void main() { gl_FragColor = grad(uVideo, uv) + plain(uVideo, uv); }\n");
+    expect(through).toContain("return samplerExternalOES_cannot_use_texture2DGradEXT(s, p, p, p)");
+    expect(through).toContain("return texture2D(s, p)");
+    // An external sampler given to a sampler2D parameter, and the reverse.
+    const mismatch = await rewrite("vec4 f(sampler2D s) { return texture2D(s, uv); }\n" +
+      "vec4 g(samplerExternalOES s) { return texture2D(s, uv); }\n" +
+      "void main() { gl_FragColor = f(uVideo) + g(uPlain) + f(uPlain) + g(layer.image); }\n");
+    expect(mismatch).toContain("samplerExternalOES_argument_mismatch_f(uVideo)");
+    expect(mismatch).toContain("samplerExternalOES_argument_mismatch_g(uPlain)");
+    expect(mismatch).toContain(" f(uPlain)");
+    expect(mismatch).toContain(" g(layer.image)");
+  });
+
+  it("keeps overloads that differ only between sampler2D and samplerExternalOES apart", async () => {
+    const text = await rewrite("vec4 h(sampler2D s, vec2 p);\n" +
+      "vec4 h(sampler2D s, vec2 p) { return texture2D(s, p); }\n" +
+      "vec4 h(samplerExternalOES s, vec2 p) { return texture2D(s, p) * 0.5; }\n" +
+      "void main() { gl_FragColor = h(uPlain, uv) + h(uVideo, uv) + h(frames[1], uv); }\n");
+    expect(text.match(/vec4 h_kandelo_2n\(/g)).toHaveLength(2);
+    expect(text).toContain("vec4 h_kandelo_en(");
+    expect(text).toContain("h_kandelo_2n(uPlain, uv) + h_kandelo_en(uVideo, uv) + h_kandelo_en(frames[1], uv)");
+  });
+});
+
 describe("TEXTURE_EXTERNAL_OES", () => {
   it("binds per unit without a native binding and reports the binding", () => {
     const h = setup();

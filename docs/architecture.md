@@ -3779,6 +3779,17 @@ exists exactly where the extension is enabled, even under conditional
 compilation, `GL_OES_EGL_image_external` is defined as 1, and `#line`
 keeps the guest's line numbers; `glGetShaderSource` still returns the
 guest's text. Reflection reports `SAMPLER_EXTERNAL_OES` for those samplers.
+Because WebGL then sees sampler2Ds, the rewrite also checks sampler flow
+the way a conforming compiler types it, through global uniforms, array
+elements, struct members and function parameters: a lookup the extension
+does not define for an external sampler (any Lod, Grad, projective-Lod,
+cube, 3D or shadow lookup, or `texture2D`/`texture2DProj` with a bias) and
+an external sampler given to a parameter of another sampler type (or the
+reverse) become calls to an undeclared function named for the misuse
+(`samplerExternalOES_cannot_use_texture2DLodEXT`), so the compile fails
+with that name in the info log; overloads that differ only between
+sampler2D and samplerExternalOES are renamed per sampler signature and
+each call to the overload its arguments select, so they stay distinct.
 A sampler2D and a samplerExternalOES reading one unit are two sampler
 types on one unit, which ES 2.0 section 2.10.4 makes `INVALID_OPERATION`
 at draw and a `glValidateProgram` failure; WebGL compiles both as
