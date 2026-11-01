@@ -15799,3 +15799,39 @@ sysroot path and failed at missing time.h; the corrected command derives
 the exact sysroot/compiler/header arguments from the existing type report.
 This source stage is separate from the frozen primary540b normal build;
 it claims no new menu, browser, application or POSIX acceptance.
+
+### Normal child-watch and upstream callback validation at fc00303c42
+
+The separate normal cohort at source
+`fc00303c42769e7e6cb781b5505021191c67ac02` builds its own complete
+Wasm32/Wasm64 SDKs, release xtask, six-package projection, kernel and host.
+Job `child-watch-normal-r1-1031-201452-5106` finishes exit 1 in 512.3
+seconds: all provisioning, build, selected kernel ABI and identity guards
+pass; the unchanged upstream signals target remains a failure. This is
+not a clean overall test run.
+
+All 77 focused actual-library guest cases pass, including both real
+child-watch spawn/exec/status/cleanup/reap routes. The separately recorded
+upstream selection passes 9 of 10 targets. Basic-signals, closure,
+defaultiface, dynamictype and accumulator now pass with their original
+assertions retained. Signals still exits 134 on generated libffi signature
+key `87964688318624` (`0x5000e00000a0`): void result, twenty arguments,
+including float, double and two 64-bit integers. Its empty host-diagnostic
+array is retained with the explicit guest failure; this unsupported
+dispatch family is ordinary implementation work, not a platform boundary.
+The two selections respectively exclude 10 and 77 cases by selection;
+they do not silently skip the failing target.
+
+The actual child-watch program is 820,022 bytes, SHA256
+`8479379c1c016ab67190f91a353a10056aedba7f87cdbb7e6946d49fc83fd25e`.
+The selected kernel is 1,839,996 bytes, SHA256
+`f7550341870d8c922c5c6ba8bcb6c7744c7350c7d2a7ffa2c2dc60780b040456`.
+The projection manifest SHA256 is
+`c7e564109a3ccc8ba39769d7a54830942abe25260596569786bd5b1180a2d62a`.
+Own SDK, host and complete projection identities remain unchanged across
+the tests. Exact commands, raw logs, both test reports and per-artifact
+identities are in mutable worktree
+`.context/child-watch-normal-r1/`, including `summary.json` and
+`results/final-identities.json`. This evidence establishes normal Node
+guest callback behavior. It does not establish Start-menu navigation,
+ScummVM rendering, browser parity, performance or full POSIX conformance.
