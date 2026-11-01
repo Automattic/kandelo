@@ -32,7 +32,7 @@ import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
-import { issueGlesDraw } from "./draw-state.js";
+import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { recordGeneratedMipmaps, recordRenderbufferSize, recordTextureImage, requireFramebufferDimensions } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
@@ -1240,8 +1240,9 @@ function dispatch(
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
       if (!requireFramebufferDimensions(b) || !validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
-      issueGlesDraw(b,{empty:v.getInt32(p+8,true) === 0,
-        issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true))});
+      issueGlesDraw(b,{mode:v.getUint32(p,true),empty:v.getInt32(p+8,true) === 0,
+        issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true)),
+        vertices:() => sequentialVertices(v.getInt32(p+4,true),v.getInt32(p+8,true))});
       return;
     case O.OP_DRAW_ELEMENTS:
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }

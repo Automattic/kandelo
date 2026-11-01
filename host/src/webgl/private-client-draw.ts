@@ -5,7 +5,7 @@ import { allocateNativeBuffer, prepareBufferDraw } from "./buffer-storage.js";
 import { prepareImageDraw } from "./image-storage.js";
 import { packedVertexLayout } from "./vertex-data.js";
 import { checkedGlSequence, recordGlError } from "./program-objects.js";
-import { issueGlesDraw } from "./draw-state.js";
+import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { requireFramebufferDimensions } from "./image-sizes.js";
 import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_BYTES, INLINE_DRAW_MAX_ATTRIBUTES } from "./ops.js";
 import {
@@ -137,10 +137,10 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
       };
     });
     changes.push({apply:() => {
-      result.accepted = issueGlesDraw(b,{issue:() => {
+      result.accepted = issueGlesDraw(b,{mode:draw.mode,issue:() => {
         result.attempted = true;
         gl.drawArrays(draw.mode,draw.first,draw.count);
-      }});
+      },vertices:() => sequentialVertices(draw.first,draw.count)});
       return result.accepted;
     },restore:nativeInverse(b)});
     // Success must undo the private overrides too. On failure the same exact

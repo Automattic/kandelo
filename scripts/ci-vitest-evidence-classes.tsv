@@ -522,6 +522,7 @@ host/test/webgl-registry.test.ts	source-only
 host/test/webgl-shader-precision.test.ts	source-only
 host/test/webgl-shader-upload.test.ts	source-only
 host/test/webgl-shadow.test.ts	source-only
+host/test/webgl-stencil-faces.test.ts	source-only
 host/test/webgl-submit-drain.test.ts	source-only
 host/test/webgl-submit-execution.test.ts	source-only
 host/test/webgl-submit-queue.test.ts	source-only
