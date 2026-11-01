@@ -4949,6 +4949,16 @@ lifecycle intent scheduling, owned forwarding, remaining mutating-query
 candidates and ordinary signal-driven exit integration remain required before
 production asynchronous query activation.
 
+The retained server-wait source model separates command custody from result
+custody. A queue owns the exact source `GlFenceLease`, destination execution and
+operation ticket; an accepted wait survives result cancellation or Forget.
+Same-native ordering uses the captured sync handle, while foreign-native
+ordering polls that source on later host turns without blocking peer streams.
+A fence lease also pins its actual native-retirement journal, so physical cleanup
+receipts cannot delete a sync still owned by a query or wait. Public kernel
+source-fd capture, scheduling and lifecycle activation remain required before
+this source model supports end-to-end EGL server waits.
+
 Variable shader/program queries use a context-owned copied-result transaction.
 The C facade requests one original log, source, active-variable record or
 attached-shader list through `QOP_OBJECT_CAPTURE` (0x34). BEGIN captures both

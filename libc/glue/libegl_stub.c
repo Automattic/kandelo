@@ -1806,6 +1806,64 @@ EGLint eglClientWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags, EGLTime t
     return result;
 }
 
+/* Waiting in the server is a destination command, not a client polling
+ * loop. The kernel captures the source OFD from this fd once, and the host
+ * owns the actual fence and destination ordering ticket after admission. */
+struct egl_server_wait_wire {
+    struct egl_sync_record *sync;
+    uint32_t input[2],reply[4];
+};
+static void release_server_wait(void *value) {
+    struct egl_server_wait_wire *wire=value;
+    release_sync_waiter(wire->sync);
+    free(wire);
+}
+EGLBoolean eglWaitSync(EGLDisplay dpy, EGLSync handle, EGLint flags) {
+    int cancel_state;
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&cancel_state);
+    lock_context();
+    struct egl_sync_record *sync=find_sync_locked(dpy,handle);
+    struct egl_context_record *context=g_thread_binding.object;
+    struct egl_server_wait_wire *wire=NULL;
+    int destination_fd=-1;
+    if(sync) {
+        if(flags!=0)g_last_error=EGL_BAD_PARAMETER;
+        else if(g_bound_api!=EGL_OPENGL_ES_API || !context || context->session->fd<0)
+            g_last_error=EGL_BAD_MATCH;
+        else if(sync->waiters==UINT32_MAX)g_last_error=EGL_BAD_ALLOC;
+        else {
+            wire=calloc(1,sizeof *wire);
+            if(!wire)g_last_error=EGL_BAD_ALLOC;
+            else {
+                wire->sync=sync;wire->input[0]=(uint32_t)sync->session->fd;wire->input[1]=sync->token;
+                destination_fd=context->session->fd;sync->waiters++;
+            }
+        }
+    }
+    unlock_context();
+    if(!wire){pthread_setcancelstate(cancel_state,NULL);return EGL_FALSE;}
+    EGLBoolean result=EGL_FALSE;
+    pthread_cleanup_push(release_server_wait,wire);
+    pthread_setcancelstate(cancel_state,NULL);
+    if(_wpk_gl_flush_checked()!=0)g_last_error=EGL_BAD_ACCESS;
+    else {
+        struct gl_query_info info={.op=QOP_SERVER_WAIT,
+            .in_buf_ptr=(uintptr_t)wire->input,.in_buf_len=sizeof wire->input,
+            .out_buf_ptr=(uintptr_t)wire->reply,.out_buf_len=sizeof wire->reply,.reserved=0};
+        if(ioctl(destination_fd,GLIO_QUERY,&info)!=0 || wire->reply[0]!=0 ||
+            wire->reply[1]!=wire->input[1] || wire->reply[2]!=0 ||
+            wire->reply[3]!=WPK_GL_QUERY_REPLY_MAGIC)g_last_error=EGL_BAD_ACCESS;
+        else result=EGL_TRUE;
+    }
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,NULL);
+    pthread_cleanup_pop(1);
+    pthread_setcancelstate(cancel_state,NULL);
+    return result;
+}
+EGLint eglWaitSyncKHR(EGLDisplay dpy, EGLSyncKHR sync, EGLint flags) {
+    return (EGLint)eglWaitSync(dpy,(EGLSync)sync,flags);
+}
+
 /* KHR fence sync predates the pointer-width core attribute list and reports
  * an unsupported sync type as BAD_ATTRIBUTE, not core's BAD_PARAMETER. Do
  * not cast either the input list or the output pointer between these APIs. */
@@ -1872,6 +1930,8 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(eglCreateSync);
     WPK_MAP_GL(eglDestroySync);
     WPK_MAP_GL(eglClientWaitSync);
+    WPK_MAP_GL(eglWaitSync);
+    WPK_MAP_GL(eglWaitSyncKHR);
     WPK_MAP_GL(eglGetSyncAttrib);
     WPK_MAP_GL(eglCreateSyncKHR);
     WPK_MAP_GL(eglDestroySyncKHR);

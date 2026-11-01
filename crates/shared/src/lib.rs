@@ -4315,6 +4315,7 @@ pub mod gl {
     /// BEGIN(action1,token,total,x,y,w,h,format,type)=36 bytes;
     /// CHUNK(action2,token,offset,count)=16; RELEASE(action3,token)=8.
     /// Checked reply: status,token,count,chunk bytes,QUERY_REPLY_MAGIC.
+    pub const QOP_SERVER_WAIT: u32 = 0x0035;
     pub const QOP_OBJECT_CAPTURE: u32 = 0x0034;
     pub const QOP_READBACK_CAPTURE: u32 = 0x0033;
 
@@ -6205,6 +6206,7 @@ mod gl_tests {
             QOP_RELEASE_FENCE,
             QOP_FLUSH,
             QOP_COMPRESSED_UPLOAD,
+            QOP_SERVER_WAIT,
             QOP_OBJECT_CAPTURE,
             QOP_READBACK_CAPTURE,
         ];

@@ -1,9 +1,10 @@
+import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlOperationStream } from "./operation-stream.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import {
   reserveNativeRetirement, repairNativeState, retireNativeRetirement,
-  type NativeRetirement, NativeRetirementReceipt,
+  type NativeRetirement, NativeRetirementReceipt, retainNativeRetirement, type NativeRetirementLease,
 } from "./native-recovery.js";
 
 type Fence = {
@@ -40,7 +41,8 @@ export type GlFenceSource = Readonly<{pid:number;sessionId:number;operations:GlO
 const fenceLeaseMint = Symbol("retained GL fence lease");
 export class GlFenceLease {
   private released = false;
-  constructor(private store: GlFenceOwner, private fence: Fence, authority: typeof fenceLeaseMint) {
+  constructor(private store: GlFenceOwner, private fence: Fence, authority: typeof fenceLeaseMint,
+    private native: NativeRetirementLease) {
     if (authority !== fenceLeaseMint) throw new Error("GL fence lease requires native owner authority");
   }
   get context(): WebGL2RenderingContext { return this.fence.owner.gl!; }
@@ -56,8 +58,11 @@ export class GlFenceLease {
   releaseRetirement(): boolean {
     if (!this.released) {
       this.released = true;
-      return this.store.release(this.fence);
+      // Logical and physical references are separate. A final cleanup receipt
+      // may already request deletion; it must observe this actual native pin.
+      this.store.release(this.fence);
     }
+    if (!this.native.release(null)) return false;
     return this.store.retryRetirement(this.fence);
   }
   poll(currentErrors: GlErrorState | null): boolean | null {
@@ -76,6 +81,17 @@ export class GlFenceLease {
       if (status === 0x9118) return false; // UNSIGNALED
     } catch { /* No successful completion was observed. */ }
     return null;
+  }
+  /** Native server waits may only consume a handle from the very same
+   * physical context. Foreign-context waits use off-turn polling instead. */
+  enqueueNativeWait(destination: WebGL2RenderingContext, currentErrors: GlErrorState | null): boolean | null {
+    if (this.released || destination !== this.context) return null;
+    try {
+      captureNativeGlErrors(destination,currentErrors);
+      if (!repairNativeState(destination) || destination.isContextLost()) return null;
+      if (!checkedGlCall(this.fence.owner,()=>destination.waitSync(this.fence.deletion[1]!,0,-1))) return null;
+      return true;
+    } catch(error) {if(isKernelExportFailure(error))throw error;return null;}
   }
   release(): void {
     if (this.released) return;
@@ -160,12 +176,14 @@ export class GlFenceOwner {
   acquire(token: number): GlFenceLease | null {
     const fence = this.fences.get(token);
     if (!fence?.published || fence.destroyed || fence.references >= Number.MAX_SAFE_INTEGER) return null;
-    // A failed lease allocation must not increment its reference count.
+    const native=retainNativeRetirement(fence.retirement);
+    if(!native)return null;
+    // A failed lease allocation returns its actual native pin as well.
     try {
-      const lease = new GlFenceLease(this, fence, fenceLeaseMint);
+      const lease = new GlFenceLease(this, fence, fenceLeaseMint,native);
       fence.references++;
       return lease;
-    } catch { return null; }
+    } catch {native.release(null);return null;}
   }
   contextFor(token: number): WebGL2RenderingContext | null {
     const fence=this.fences.get(token);

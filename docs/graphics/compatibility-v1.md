@@ -327,7 +327,7 @@ reproduction and correct observable failure; none is inferred from a stub.
 | E05 | EGLImage identity, source/target lifetime; KHR_image_base | GPU image/FBO holds retain GEM backing; separate private source handles and logical native views preserve object state and storage identity. Confirmed C holds belong to retained shared object records with revision-ordered publication; uncertain import/attachment candidates belong to the shared group. Raw GPU views use the same independent storage model; BO retirement tracks every retained raw generation and retries native cleanup. CPU layout mirrors now retain mapped/native siblings with changed-byte publication and retryable readback/writeback; four-format normal guest evidence is recorded below. Forwarded BO registration and complete lifecycle validation remain open | EGL, GLES object/storage model, kernel BO references | Producer handles closed, destroy image, surviving texture/renderbuffer; varied order | partial |
 | E06 | Respecification orphans sibling without altering others; OES_EGL_image | GPU view replacement preserves sibling parameters and canonical pixels, retargets logical FBOs and handles definite rejection before C backing release. C retains backing by object identity and rejects stale association completions. Raw GPU respecification and refresh preserve private canonical storage and independent parameters. CPU native mirrors retain distinct layout identities and backing storage; full CPU respecification, multi-failure recovery and guest CTS remain open | GLES storage model, host object/attachment tracking | Redefine imported texture, sample both siblings, retained FBO | partial |
 | E07 | dma-buf validation, multiple import and format/modifier enumeration; EXT import | Core EGLAttrib and KHR EGLint image creation share retained dma-buf storage and destruction. Parsing rejects wide aliases, missing mandatory fields and malformed modifier pairs before import, validates preservation and hint values, and ignores valid YUV hints for supported RGB formats. The explicit CPU import request validates dimensions, format, pitch, offset and backing bounds before publication; normal four-format mapped/native checks pass. Full negative/rollback coverage remains open | EGL, PRIME, GBM | CPU/GPU imports, bad fd/stride/offset/modifier; repeated import lifetime | open |
-| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. eglWaitSync server ordering remains open; EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
+| E08 | EGL1.5 sync, waits, core images, thread release and errors | Core image symbols resolve for retained dma-buf imports. Native fence candidates, waiter leases and retryable cleanup now have retained source models. Table 17 adds caller-known create/status/release tokens, accepted-reply publication, cancellation and mapped object-session authority without a current context. Native and forwarded source rendering pass. Core C create/destroy/query/client-wait now use generation-owned records, retained sessions, serialized replies, monotonic timeouts and cancellation-safe waiter references; public glFlush requests acknowledged native flush. Focused C and three-engine source evidence is recorded below. The four KHR_fence_sync aliases share these records with width-correct lists/output and 64-bit timeouts; EGL_KHR_fence_sync and client GL_OES_EGL_sync are declared. Core/KHR server-wait facade and retained queue now have source controls; authoritative public routing, later command/query/present ordering and combined validation remain open. EGL_KHR_wait_sync is not advertised. GL-source images and full lifecycle/errors/guest validation remain open | EGL, ordered submits, host completion | CTS sync/negative API and getProcAddress | open |
 | B01 | GBM allocation/import/export and plane metadata | Dumb/GPU tiers and modifier admission use checked metadata; borrowed surface leases preserve old GPU storage after public retirement/ID reuse. Explicit CPU layout mirrors retain native/mapped siblings. Distinct GBM wrappers over one duplicated/transferred DRM file now share GEM-name lifetime while retaining separate private descriptors; focused both-width/three-engine guests pass. Full negative/lifecycle and combined validation remain open | GBM, DRM BOs, host registry | SDK guest fixtures both widths; unsupported format/flags | partial |
 | B02 | GBM map/unmap coherence and authority | Kernel-owned mapping BO references and live-parent fork/vfork inheritance; independent host aliases by process/address with post-clone priming, changed-run publication, and successful frozen-retry/kernel-wait visibility boundaries. Partial munmap trims/splits retain canonical offsets and references across fork, including anonymous reuse of the hole; focused both-width Node/browser checks pass. Fixed anonymous/private-file and new device replacement retire only affected intervals; DRI/PRIME admission flushes old aliases before same-BO population, with allocator/reference rollback on rejection. Both-width Node/three-engine guest evidence is recorded below. Device mremap shrink/no-op retain backing; growth has Linux GEM EFAULT behavior. Broader remap flags/partial-file coverage, cleanup/failure and final combined conformance remain open | GBM, kernel maps, DRI registry | Importer writes, stale readers, unmap/exit/exec; browser pixels | partial |
 | B03 | Surface ring lock/release/destroy ownership | Retained EGL leases and a bounded GPU pool publish a top-row-first copy only after accepted swaps, preserving the private render back and locked fronts. Rendered retention/exhaustion/retirement and asymmetric KMS visibility/orientation pass both guest widths in all three engines, through WebGL and 2D scanout. WRITE/LINEAR/CURSOR fronts retain CPU storage with a private GPU render back, with normal both-width/three-engine image and scanout evidence below. Forwarding and broader combined validation remain open | GBM, EGL native windows | Ring exhaustion, invalid/double release, destroy with locks; asymmetric KMS pixels | partial |
@@ -19568,3 +19568,59 @@ allocation refusal, stale cancellation, context retirement and reentrant
 replacement. These are bounded source controls, not browser rendering, full
 conformance or desktop acceptance. No broad suite or normal artifact rebuild is
 run for this increment, following the updated implementation-first sequencing.
+
+
+### Complete implementation pass: physical cleanup and server-wait source models
+
+The physical receiver change `fd13b51c4c` is integrated as `1bccc14752`,
+preserving authorship. It reserves the actual canonical CPU allocation and
+admitted operation prefixes before source closure. Only genuinely running
+pre-cut tickets may create delayed mirrors; later numeric acquisitions cannot.
+Native journals are captured after the admitted prefix completes. Forwarded
+Forget requires the actual receiver acknowledgment, and lost acknowledgments do
+not replay native cleanup. Its own seven focused suites pass 183 controls and
+strict source/test types pass; the source cohort is recorded in
+`.context/graphics-query-activation-r1/.context/final-receiver-completeness-r1/`
+in the primary workspace. This does not activate the still-pending public query
+and lifecycle endpoints or prove rebuilt runtime cleanup.
+
+The server-wait source model follows the core
+[eglWaitSync contract](https://raw.githubusercontent.com/KhronosGroup/EGL-Registry/main/sdk/docs/man/eglWaitSync.xml)
+and [KHR_wait_sync specification](https://registry.khronos.org/EGL/extensions/KHR/EGL_KHR_wait_sync.txt).
+The core/KHR C facade validates original sync/current-context ownership and flags,
+retains a cancellation-safe source waiter, flushes preceding C commands and
+submits `[source_fd, source_fence_token]` on the destination file description.
+It does not implement a client polling loop or glFinish substitute. Checked
+admission replies preserve unknown completion as failure. The KHR spelling now
+resolves, while the extension string remains unadvertised pending activation.
+
+`GlServerWaitQueue` owns the actual source fence lease, destination execution and
+its stream ticket beyond query-result cancellation or Forget. Same-native waits
+issue the original native waitSync once. Foreign-native waits poll the captured
+source on later host turns, hold only the destination stream and never pass a
+foreign sync handle into WebGL. Unsignaled waits are not continuously runnable.
+Exact closed/retired destination authority is required to withdraw an accepted
+pending barrier. Failed native ordering never counts as a signal. Physical
+cleanup failure retains the same owners for later progress.
+
+This work also exposes and repairs a shared fence lifetime defect: logical
+GlFenceLease references previously did not pin the NativeRetirement used by
+physical cleanup receipts. A receiver could delete a native fence still held
+by a waiter/query. Each fence lease now owns an actual native retirement lease;
+logical and native release occur once, and failed native deletion remains
+retryable. The new causal control fails before the pin repair and passes after.
+
+Focused source evidence is `.context/server-wait-r1/`: nine new host controls
+plus 25 existing fence controls pass (34 total), seven native C/UBSan controls
+pass, and strict production types pass. Initial native fixture placement and
+missing ES2 attributes failed before exercising the facade; corrected controls
+ran the reported checks. These are not normal-artifact or browser acceptance.
+
+Public source-fd resolution/pinning, authenticated source metadata, owned-query
+admission, queue progress and physical lifecycle activation are still being
+connected in the shared implementation lane. Ordinary submit/query/present and
+make-current must all respect accepted destination barriers before server waits
+can be called implemented end to end. General lifecycle physical effects and
+mapping retirement likewise remain explicit work; no missing receiver is
+acknowledged as cleanup. Broader rebuild/test work remains deferred until the
+entire combined implementation pass is complete.

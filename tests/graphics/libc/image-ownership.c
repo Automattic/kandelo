@@ -328,6 +328,8 @@ static unsigned finish_queries;
 static int finish_failure;
 static pthread_mutex_t fence_driver_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t fence_driver_changed = PTHREAD_COND_INITIALIZER;
+static unsigned server_wait_queries;
+static int server_wait_failure,server_wait_destination,server_wait_source;
 static unsigned fence_creates, fence_polls, fence_releases, flush_queries;
 static _Thread_local int *fence_wait_started;
 static int fence_create_failure, fence_status_failure, fence_release_failure, flush_failure;
@@ -1208,6 +1210,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(8, fd, NULL, 0);
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
+        if(q->op==0x35) {
+            assert(q->in_buf_len==8 && q->out_buf_len==16 && q->reserved==0);
+            const uint32_t *input=allocation_for(q->in_buf_ptr,8);uint32_t *reply=allocation_for(q->out_buf_ptr,16);
+            assert(input[0]>=10 && input[0]<18 && input[1]);
+            struct device_slot *source=&device_slots[input[0]-10];unsigned index=0;
+            while(index<32 && source->fence_tokens[index]!=input[1])index++;
+            assert(index<32);server_wait_queries++;server_wait_destination=fd;server_wait_source=(int)input[0];
+            if(server_wait_failure==1){errno=EIO;return -1;}
+            reply[0]=server_wait_failure==2?1:0;reply[1]=input[1];reply[2]=0;
+            reply[3]=server_wait_failure==3?0:WPK_GL_QUERY_REPLY_MAGIC;return 0;
+        }
         if (q->op >= 0x2e && q->op <= 0x30) {
             assert(q->in_buf_len == 4 && q->out_buf_len == 16 && q->reserved == 0);
             const uint32_t token = *(uint32_t *)allocation_for(q->in_buf_ptr,4);
@@ -2207,6 +2220,41 @@ int main(int argc, char **argv) {
     }
     assert(eglInitialize(dpy, NULL, NULL));
     const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
+    if(!strncmp(argv[1],"server-wait-",12)) {
+        EGLBoolean (*wait)(EGLDisplay,EGLSync,EGLint)=(void *)eglGetProcAddress("eglWaitSync");
+        EGLint (*wait_khr)(EGLDisplay,EGLSyncKHR,EGLint)=(void *)eglGetProcAddress("eglWaitSyncKHR");
+        assert(wait && wait_khr);
+        EGLContext source=eglCreateContext(dpy,(EGLConfig)(uintptr_t)1,EGL_NO_CONTEXT,attrs);assert(source);
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,source));
+        EGLSync sync=eglCreateSync(dpy,EGL_SYNC_FENCE,NULL);assert(sync);
+        if(!strcmp(argv[1],"server-wait-errors")) {
+            assert(!wait(dpy,sync,1) && eglGetError()==EGL_BAD_PARAMETER && !server_wait_queries);
+            assert(!wait(dpy,EGL_NO_SYNC,0) && eglGetError()==EGL_BAD_PARAMETER && !server_wait_queries);
+            assert(eglReleaseThread());assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_MATCH && !server_wait_queries);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,source));
+        } else if(!strcmp(argv[1],"server-wait-allocation")) {
+            fail_calloc=1;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ALLOC && !server_wait_queries);fail_calloc=0;
+        } else if(!strcmp(argv[1],"server-wait-prefix")) {
+            glClearColor(1,0,0,1);fail_submit=1;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ACCESS && !server_wait_queries);
+            fail_submit=0;assert(glGetError()==GL_INVALID_OPERATION);
+        } else if(!strcmp(argv[1],"server-wait-receipts")) {
+            for(int failure=1;failure<=3;failure++){server_wait_failure=failure;assert(!wait(dpy,sync,0) && eglGetError()==EGL_BAD_ACCESS);}
+            assert(server_wait_queries==3);server_wait_failure=0;
+        } else {
+            EGLContext destination=EGL_NO_CONTEXT;
+            if(!strcmp(argv[1],"server-wait-peer")) {
+                destination=eglCreateContext(dpy,(EGLConfig)(uintptr_t)1,EGL_NO_CONTEXT,attrs);assert(destination);
+                assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,destination));
+            } else assert(!strcmp(argv[1],"server-wait-basic"));
+            unsigned before=fence_polls;glClearColor(1,0,0,1);
+            assert(wait(dpy,sync,0) && wait_khr(dpy,(EGLSyncKHR)sync,0)==EGL_TRUE);
+            assert(server_wait_queries==2 && fence_polls==before && eglGetError()==EGL_SUCCESS);
+            assert(destination?(server_wait_destination!=server_wait_source):(server_wait_destination==server_wait_source));
+            if(destination)assert(eglDestroyContext(dpy,destination));
+        }
+        assert(eglDestroySync(dpy,sync) && eglReleaseThread() && eglDestroyContext(dpy,source) && eglTerminate(dpy));
+        assert(allocation_count()==0);printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strncmp(argv[1],"sync-",5)) {
         PFNEGLCREATESYNCPROC create = (PFNEGLCREATESYNCPROC)eglGetProcAddress("eglCreateSync");
         PFNEGLDESTROYSYNCPROC destroy = (PFNEGLDESTROYSYNCPROC)eglGetProcAddress("eglDestroySync");
@@ -2223,7 +2271,7 @@ int main(int argc, char **argv) {
         }
         EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
         assert(context && eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
-        if (!strncmp(argv[1],"sync-khr-",9)) {
+    if (!strncmp(argv[1],"sync-khr-",9)) {
             PFNEGLCREATESYNCKHRPROC make = (PFNEGLCREATESYNCKHRPROC)eglGetProcAddress("eglCreateSyncKHR");
             PFNEGLDESTROYSYNCKHRPROC drop = (PFNEGLDESTROYSYNCKHRPROC)eglGetProcAddress("eglDestroySyncKHR");
             PFNEGLGETSYNCATTRIBKHRPROC get = (PFNEGLGETSYNCATTRIBKHRPROC)eglGetProcAddress("eglGetSyncAttribKHR");
@@ -2231,7 +2279,7 @@ int main(int argc, char **argv) {
             assert(make && drop && get && await);
             assert(strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_fence_sync"));
             assert(!strstr(eglQueryString(dpy,EGL_EXTENSIONS),"EGL_KHR_wait_sync"));
-            assert(eglGetProcAddress("eglWaitSyncKHR") == NULL);
+            assert(eglGetProcAddress("eglWaitSyncKHR") != NULL);
             string_generation = 1;
             const char *extensions = (const char *)glGetString(GL_EXTENSIONS); assert(extensions);
             assert(strstr(extensions,"GL_OES_EGL_sync") && glGetError() == GL_NO_ERROR);

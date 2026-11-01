@@ -236,3 +236,6 @@ export const QOP_READBACK_CAPTURE = 0x0033;
 
 // Captured shader/program variable queries: BEGIN, CHUNK, RELEASE.
 export const QOP_OBJECT_CAPTURE = 0x0034;
+
+// Destination server ordering on a kernel-resolved source fence OFD.
+export const QOP_SERVER_WAIT = 0x0035;

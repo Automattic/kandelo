@@ -4391,6 +4391,18 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
     s.add(Program, "spawn_contract", spawn_contract());
     s.add(Program, "gl_inline_client_draw", gl_inline_client_draw());
     s.add(Program, "gl_compressed_upload", gl_compressed_upload());
+    s.add(Program, "gl_server_wait", json!({
+        "opcode": shared::gl::QOP_SERVER_WAIT,
+        "byte_order": "little-endian", "request_bytes": 8,
+        "request_fields": ["source_fd","source_fence_token"],
+        "destination": "ioctl-open-file-description",
+        "source": "capture-and-pin-original-source-ofd-once-before-admission",
+        "reply_bytes": 16, "reply_fields": ["status","source_fence_token","zero","magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "admission": "retain-exact-source-fence-and-destination-operation-ticket",
+        "completion": "native-same-context-wait-or-foreign-source-signaled",
+        "result_cancel": "accepted-server-command-survives-result-cancellation"
+    }));
     s.add(Program, "gl_object_capture", json!({
         "opcode": shared::gl::QOP_OBJECT_CAPTURE,
         "queries": {"shader_log":shared::gl::QOP_GET_SHADER_INFO_LOG,
