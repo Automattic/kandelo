@@ -3352,6 +3352,19 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_BAD_ACCESS;
         return EGL_NO_IMAGE_KHR;
     }
+    /* A GPU-tier bo is a texture of the format it was made with, so the
+     * claimed fourcc must name that storage (the kernel compares it with
+     * the bo's recorded format); CPU-tier bytes take any format. */
+    struct wpk_drm_check_bo_format check = {.handle = image->handle, .format = (uint32_t)fourcc};
+    if (ioctl(generation->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) {
+        EGLint error = errno == EINVAL ? EGL_BAD_MATCH : EGL_BAD_ACCESS;
+        pthread_mutex_lock(&g_image_mutex);
+        close_bo_handle(generation, image->handle);
+        pthread_mutex_unlock(&g_image_mutex);
+        free(image);
+        g_last_error = error;
+        return EGL_NO_IMAGE_KHR;
+    }
     image->width = (uint32_t)width;
     image->height = (uint32_t)height;
     image->fourcc = (uint32_t)fourcc;

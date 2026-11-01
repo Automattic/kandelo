@@ -82,6 +82,11 @@ struct wpk_drm_gpu_bo_create {
     uint32_t usage;    /* in: GBM_BO_USE_*.  out: stride (bytes) */
 };
 
+/* WPK_CHECK_BO_FORMAT (mirrors wasm_posix_shared::dri): EINVAL when a
+ * GPU-tier bo's texture storage cannot be named by `format`. */
+#define WPK_DRM_IOCTL_CHECK_BO_FORMAT 0xc00864e4u  /* _IOWR('d', 0xE4, 8) */
+struct wpk_drm_check_bo_format { uint32_t handle, format; };
+
 /* Devices over dup/SCM_RIGHTS aliases share the DRM file's GEM namespace.
  * Retain a shared file identity through all wrapper/BO lifetimes, including
  * wrappers withdrawn from the public registry. Each wrapper still owns its
@@ -623,6 +628,13 @@ static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
         /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. As in
          * bo_create, scanout needs a primary-plane format. */
         if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
+        /* A GPU-tier BO is a texture of its own format: the claimed format
+         * must name that storage (Mesa's import likewise rejects a format
+         * the driver cannot sample the buffer as). */
+        if (!error && bo->is_gpu) {
+            struct wpk_drm_check_bo_format check = {.handle = req.handle, .format = format};
+            if (drmIoctl(gbm->fd, WPK_DRM_IOCTL_CHECK_BO_FORMAT, &check) != 0) error = errno;
+        }
         if (!error && (usage & GBM_BO_USE_SCANOUT) && !format_info(format)->scanout) error = EINVAL;
     }
     if (error) {

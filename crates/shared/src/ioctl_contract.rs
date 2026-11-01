@@ -406,6 +406,8 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     // `struct drm_unique` is `(size_t, char *)`: one request per width.
     pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE, InOut, wasm32 8),
     pointer!(crate::dri::DRM_IOCTL_MODE_CLOSEFB, In, 8),
+    // handle and claimed fourcc in; the result is the errno alone.
+    pointer!(crate::dri::DRM_IOCTL_WPK_CHECK_BO_FORMAT, In, 8),
     pointer!(crate::dri::DRM_IOCTL_PRIME_HANDLE_TO_FD, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_PRIME_FD_TO_HANDLE, InOut, 12),
     pointer!(crate::dri::DRM_IOCTL_GET_UNIQUE_WASM64, InOut, wasm64 16),
@@ -447,6 +449,9 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_VERSION, InOut, wasm32 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_CURSOR2, In, 36),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETPLANE, In, 48),
+    // EGL image export: ctx/target/name/level in; bo handle, extent,
+    // internal format and sibling identity out (WpkDrmExportImage).
+    pointer!(crate::dri::DRM_IOCTL_WPK_EXPORT_IMAGE, InOut, 48),
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPERTY, InOut, 64),

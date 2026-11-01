@@ -712,6 +712,10 @@ int graphics_close(int fd) {
 #endif
     assert(fd == 10); return 0;
 }
+/* WPK_CHECK_BO_FORMAT: the errno the kernel answers a claimed fourcc with. */
+static int check_format_errno;
+static unsigned format_checks;
+static uint32_t checked_format;
 /* A CPU-tier dma-buf: its mapping is real memory. */
 static int dmabuf_cpu_tier;
 static uint8_t dmabuf_cpu_storage[64 * 64 * 4];
@@ -870,6 +874,11 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             transferred_sources[fd - 10] = prime_exports[words[2] - 200].handle;
             transfers++;
         }
+    } else if (request == 0xc00864e4u) { /* WPK_CHECK_BO_FORMAT */
+        uint32_t *words = arg;
+        assert(words[0] == 77);
+        format_checks++; checked_format = words[1];
+        if (check_format_errno) { errno = check_format_errno; return -1; }
     } else if (request == 0x40086409u) {
         uint32_t handle = *(uint32_t *)arg;
         if (handle == 99) {
@@ -3650,6 +3659,22 @@ int main(int argc, char **argv) {
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12));
             assert(eglGetError() == EGL_BAD_MATCH);
             assert(imports == closes && imports == 26);
+        } else if (!strcmp(argv[1],"dmabuf-gpu-format")) {
+            /* The kernel compares the claimed fourcc with the storage the bo
+             * was made with: a mismatch is EGL_BAD_MATCH, and the imported
+             * handle is released; any other refusal is EGL_BAD_ACCESS. */
+            EGLint gr88[13]; memcpy(gr88,narrow,sizeof gr88); gr88[5] = 0x38385247; gr88[11] = 128;
+            check_format_errno = EINVAL;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,gr88));
+            assert(eglGetError() == EGL_BAD_MATCH && format_checks == 1 && checked_format == 0x38385247);
+            assert(imports == 1 && closes == 1);
+            check_format_errno = ENOENT;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,gr88));
+            assert(eglGetError() == EGL_BAD_ACCESS && imports == 2 && closes == 2);
+            check_format_errno = 0;
+            EGLImageKHR value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,gr88);
+            assert(value && format_checks == 3 && checked_format == 0x38385247);
+            assert(eglDestroyImageKHR(dpy,value) && closes == 3);
         } else if (!strcmp(argv[1],"dmabuf-required")) {
             for (unsigned omit = 0; omit < 6; omit++) {
                 EGLint incomplete[11]; unsigned cursor = 0;

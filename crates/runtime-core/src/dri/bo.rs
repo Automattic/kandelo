@@ -52,6 +52,11 @@ pub struct GbmBo {
     pub refcount: u32,
     pub prime_cookie: Option<PrimeCookie>,
     pub tier: BoTier,
+    /// The DRM fourcc a GPU-tier bo's texture storage holds (from
+    /// `WPK_CREATE_GPU_BO` or an exported image's internal format); 0 for a
+    /// CPU-tier bo, whose bytes any format may describe, or an exported
+    /// image no DRM format describes.
+    pub format: u32,
 }
 
 pub struct BoRegistry {
@@ -101,6 +106,7 @@ impl BoRegistry {
             refcount: 1,
             prime_cookie: None,
             tier,
+            format: 0,
         };
         self.map.insert(id, bo);
         Some(self.map.get_mut(&id).unwrap())
@@ -110,9 +116,10 @@ impl BoRegistry {
     /// decided by the host after allocation (an exported GLES image). The
     /// LINEAR-equivalent stride/size follow the same arithmetic as
     /// allocation.
-    pub fn set_gpu_extent(&mut self, id: BoId, width: u32, height: u32, bpp: u32) -> Option<()> {
+    pub fn set_gpu_extent(&mut self, id: BoId, width: u32, height: u32, bpp: u32, format: u32) -> Option<()> {
         let bo = self.map.get_mut(&id)?;
         if bo.tier != BoTier::GpuTexture || bpp == 0 { return None; }
+        bo.format = format;
         let bytes_per_row = width.checked_mul(bpp)?.checked_add(7)? / 8;
         let stride = bytes_per_row.checked_add(3)? & !3;
         let size = (stride as u64).checked_mul(height as u64)?;

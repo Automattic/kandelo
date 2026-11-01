@@ -1908,7 +1908,7 @@ fn handle_dri_ioctl(
             // host failure.
             let (bo_id, stride) = crate::dri::with_registry(|r| {
                 r.try_alloc_gpu(req.width, req.height, cpp.unwrap_or(4) * 8)
-                    .map(|bo| (bo.id, bo.stride))
+                    .map(|bo| { bo.format = req.format; (bo.id, bo.stride) })
             })
             .ok_or(Errno::EINVAL)?;
             let host_rc =
@@ -2136,12 +2136,28 @@ fn handle_dri_ioctl(
             }
             Ok(())
         }
+        DRM_IOCTL_WPK_CHECK_BO_FORMAT => {
+            if buf.len() < core::mem::size_of::<WpkDrmCheckBoFormat>() { return Err(Errno::EINVAL); }
+            let req: WpkDrmCheckBoFormat = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            let bo_id = *dri_state(proc, ofd_idx)?.gem.borrow().handles.get(&req.handle).ok_or(Errno::ENOENT)?;
+            let compatible = crate::dri::with_registry(|r| r.get(bo_id).map(|bo|
+                bo.tier == crate::dri::bo::BoTier::CpuShared
+                    || gpu_storage_import_compatible(bo.format, req.format)))
+                .ok_or(Errno::ENOENT)?;
+            if compatible { Ok(()) } else { Err(Errno::EINVAL) }
+        }
         DRM_IOCTL_WPK_IMPORT_IMAGE => {
             if buf.len() < core::mem::size_of::<WpkDrmImportImage>() { return Err(Errno::EINVAL); }
             let mut req: WpkDrmImportImage = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.width == 0 || req.height == 0 || req.source != 0 || req.offset % 4 != 0
-                || req.pitch % 4 != 0 || (req.pitch as u64) < req.width as u64 * 4
-                || !matches!(req.format, 0x34325241 | 0x34325258 | 0x34324241 | 0x34324258) {
+            // Any single-plane format a mirror texture holds exactly
+            // (gpu_storage_format_cpp; host/src/webgl/cpu-image-codec.ts),
+            // its rows and plane aligned to its component size.
+            let Some(cpp) = wasm_posix_shared::dri::gpu_storage_format_cpp(req.format) else {
+                return Err(Errno::EINVAL);
+            };
+            let align = cpp.min(4);
+            if req.width == 0 || req.height == 0 || req.source != 0 || req.offset % align != 0
+                || req.pitch % align != 0 || (req.pitch as u64) < req.width as u64 * cpp as u64 {
                 return Err(Errno::EINVAL);
             }
             let bo_id = {
@@ -2151,9 +2167,12 @@ fn handle_dri_ioctl(
                 if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
                 bo_id
             };
-            let span = req.offset as u64 + (req.height as u64 - 1) * req.pitch as u64 + req.width as u64 * 4;
+            let span = req.offset as u64 + (req.height as u64 - 1) * req.pitch as u64
+                + req.width as u64 * cpp as u64;
+            // A CPU-tier bo is bytes: any format may describe them, within
+            // its size (a dma-buf import reinterprets, as on Linux).
             let valid = crate::dri::with_registry(|r| r.get(bo_id).map(|bo|
-                bo.tier == crate::dri::bo::BoTier::CpuShared && bo.bpp == 32 && span <= bo.size).unwrap_or(false));
+                bo.tier == crate::dri::bo::BoTier::CpuShared && span <= bo.size).unwrap_or(false));
             if !valid { return Err(Errno::EINVAL); }
             require_gl_current(proc, ofd_idx)?;
             let source = host.gl_import_image(pid, req.ctx_id, bo_id, req.width, req.height, req.format, req.pitch, req.offset);
@@ -2206,8 +2225,11 @@ fn handle_dri_ioctl(
             let reply: WpkDrmExportImage = unsafe { core::ptr::read_unaligned(attrs.as_ptr() as *const _) };
             if reply.width == 0 || reply.height == 0 || reply.width > i32::MAX as u32
                 || reply.height > i32::MAX as u32 || reply.source == 0
-                || crate::dri::with_registry(|r| r.set_gpu_extent(bo_id, reply.width, reply.height,
-                    gl_image_storage_cpp(reply.internal_format) * 8)).is_none() {
+                || crate::dri::with_registry(|r| {
+                    let format = gl_image_fourcc(reply.internal_format);
+                    let cpp = wasm_posix_shared::dri::gpu_storage_format_cpp(format).unwrap_or(4);
+                    r.set_gpu_extent(bo_id, reply.width, reply.height, cpp * 8, format)
+                }).is_none() {
                 retire(host);
                 return Err(Errno::EIO);
             }
@@ -3839,16 +3861,22 @@ fn kms_getfb_handle(proc: &mut Process, ofd_idx: usize, fb: &crate::ofd::KmsFb) 
 
 /// Largest framebuffer dimension, as `GETRESOURCES` reports
 /// (`mode_config.max_width` / `max_height`).
-/// Bytes per pixel of an exported GLES image's storage, from its sized
-/// internal format: the formats a DRM fourcc names (libEGL's
-/// `gl_image_fourcc`) have that fourcc's `cpp`; every other image is
-/// described as 32-bpp storage and carries no fourcc.
-fn gl_image_storage_cpp(internal_format: u32) -> u32 {
+/// The DRM format naming an exported GLES image's sized internal format,
+/// as libEGL's `gl_image_fourcc` (and Mesa's DRI image formats) name it; 0
+/// when no DRM format describes the image. The image's bo is described in
+/// that format's bytes per pixel, or as 32-bpp storage without a format.
+fn gl_image_fourcc(internal_format: u32) -> u32 {
+    use wasm_posix_shared::dri::*;
     match internal_format {
-        0x8229 => 1,          // R8
-        0x822b | 0x8d62 => 2, // RG8, RGB565
-        0x881a => 8,          // RGBA16F
-        _ => 4,
+        0x8058 => DRM_FORMAT_ABGR8888,      // RGBA8
+        0x8051 => DRM_FORMAT_XBGR8888,      // RGB8
+        0x93a1 => DRM_FORMAT_ARGB8888,      // BGRA8_EXT
+        0x8d62 => DRM_FORMAT_RGB565,        // RGB565
+        0x8229 => DRM_FORMAT_R8,            // R8
+        0x822b => DRM_FORMAT_GR88,          // RG8
+        0x881a => DRM_FORMAT_ABGR16161616F, // RGBA16F
+        0x8059 => DRM_FORMAT_ABGR2101010,   // RGB10_A2
+        _ => 0,
     }
 }
 
@@ -54029,6 +54057,42 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn dri_ioctl_check_bo_format_compares_a_gpu_bo_with_its_recorded_storage() {
+        use wasm_posix_shared::dri::*;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let check = |proc: &mut Process, host: &mut MockHostIO, handle: u32, format: u32| {
+            let mut buf = [0u8; core::mem::size_of::<WpkDrmCheckBoFormat>()];
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, WpkDrmCheckBoFormat { handle, format }); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CHECK_BO_FORMAT, &mut buf)
+        };
+        let gpu = |proc: &mut Process, host: &mut MockHostIO, format: u32| {
+            let mut buf = [0u8; core::mem::size_of::<WpkDrmGpuBoCreate>()];
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _,
+                WpkDrmGpuBoCreate { width: 4, height: 4, format, usage: 0x4 }); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_CREATE_GPU_BO, &mut buf).unwrap();
+            u32::from_le_bytes(buf[8..12].try_into().unwrap())
+        };
+        // Same-size formats with different storage are not the same buffer.
+        let gr88 = gpu(&mut proc, &mut host, DRM_FORMAT_GR88);
+        assert_eq!(check(&mut proc, &mut host, gr88, DRM_FORMAT_GR88), Ok(()));
+        assert_eq!(check(&mut proc, &mut host, gr88, DRM_FORMAT_RGB565), Err(Errno::EINVAL));
+        let argb = gpu(&mut proc, &mut host, DRM_FORMAT_ARGB8888);
+        assert_eq!(check(&mut proc, &mut host, argb, DRM_FORMAT_ABGR8888), Ok(()));
+        assert_eq!(check(&mut proc, &mut host, argb, DRM_FORMAT_XRGB8888), Err(Errno::EINVAL));
+        assert_eq!(check(&mut proc, &mut host, argb, DRM_FORMAT_ABGR2101010), Err(Errno::EINVAL));
+        // A CPU-tier bo is bytes any format may describe.
+        let mut dumb = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        unsafe { core::ptr::write_unaligned(dumb.as_mut_ptr() as *mut _,
+            WpkDrmModeCreateDumb { width: 4, height: 4, bpp: 32, ..Default::default() }); }
+        sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut dumb).unwrap();
+        let cpu: WpkDrmModeCreateDumb = unsafe { core::ptr::read_unaligned(dumb.as_ptr() as *const _) };
+        assert_eq!(check(&mut proc, &mut host, cpu.handle, DRM_FORMAT_RGB565), Ok(()));
+        assert_eq!(check(&mut proc, &mut host, 999, DRM_FORMAT_ABGR8888), Err(Errno::ENOENT));
+    }
+
+    #[test]
     fn dri_ioctl_map_dumb_rejects_gpu_tier_bo() {
         use wasm_posix_shared::dri::*;
         let mut proc = Process::new(1);
@@ -58882,6 +58946,29 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(out.source, 7);
             assert_eq!(host.gl_import_image_calls.last(), Some(&(1, ctx_id, 2, [1, 2, format, 12, 4])));
         }
+        // Every format a mirror texture holds, aligned to its component
+        // size and bounded by its own bytes per pixel, whatever bpp the
+        // dumb object was created with (the bytes are reinterpreted).
+        for (format, offset, pitch) in [(DRM_FORMAT_R8, 1, 3), (DRM_FORMAT_GR88, 2, 6),
+            (DRM_FORMAT_RGB565, 2, 6), (DRM_FORMAT_ABGR2101010, 4, 12), (DRM_FORMAT_XRGB2101010, 4, 12),
+            (DRM_FORMAT_ABGR16161616F, 4, 12), (DRM_FORMAT_XBGR16161616F, 4, 8)] {
+            let request = WpkDrmImportImage {format, offset, pitch, ..good};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes).unwrap();
+            assert_eq!(host.gl_import_image_calls.last(), Some(&(1, ctx_id, 2, [1, 2, format, pitch, offset])));
+            let cpp = gpu_storage_format_cpp(format).unwrap();
+            for bad in [WpkDrmImportImage {pitch: cpp - 1, ..request},
+                WpkDrmImportImage {offset: 64 * 32 * 4 - pitch - cpp + 1, ..request}] {
+                unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, bad); }
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes),
+                    Err(Errno::EINVAL), "{format:#x}");
+            }
+        }
+        for format in [0x3231564e /* NV12 */, 0x34324752 /* RGB888 */] {
+            let request = WpkDrmImportImage {format, ..good};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_IMAGE, &mut bytes), Err(Errno::EINVAL));
+        }
         host.gl_bind_foreign_texture_rc = -(Errno::ENOMEM as i32);
         unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, good); }
         let original = bytes;
@@ -58951,6 +59038,8 @@ impl HostIO for RelSymlinkMock {
             let (_, _, bo_id, _) = *host.gl_export_image_calls.last().unwrap();
             let bo = crate::dri::with_registry(|r| r.get(bo_id).cloned()).unwrap();
             assert_eq!((bo.stride, bo.size), (stride, u64::from(stride) * 8), "{internal_format:#x}");
+            assert_eq!(bo.format, gl_image_fourcc(internal_format));
+            assert_ne!(bo.format, 0);
         }
         // An implausible host extent is a renderer fault, not an image.
         host.gl_export_image_reply = [0, 8, 0x1908, 5, 3];

@@ -4646,6 +4646,38 @@ pub mod dri {
         }
     }
 
+    /// The WebGL 2 sized internal format a GPU-tier buffer of `format` is
+    /// stored in, and whether the format lacks alpha (its stored alpha is
+    /// 1.0). A GPU buffer has no CPU bytes, so formats that differ only in
+    /// channel order within a pixel (ARGB/ABGR) share storage.
+    pub const fn gpu_storage_format(format: u32) -> Option<(u32, bool)> {
+        match format {
+            DRM_FORMAT_R8 => Some((0x8229, false)),
+            DRM_FORMAT_GR88 => Some((0x822b, false)),
+            DRM_FORMAT_RGB565 => Some((0x8d62, false)),
+            DRM_FORMAT_ARGB8888 | DRM_FORMAT_ABGR8888 => Some((0x8058, false)),
+            DRM_FORMAT_XRGB8888 | DRM_FORMAT_XBGR8888 => Some((0x8058, true)),
+            DRM_FORMAT_ARGB2101010 | DRM_FORMAT_ABGR2101010 => Some((0x8059, false)),
+            DRM_FORMAT_XRGB2101010 | DRM_FORMAT_XBGR2101010 => Some((0x8059, true)),
+            DRM_FORMAT_ABGR16161616F => Some((0x881a, false)),
+            DRM_FORMAT_XBGR16161616F => Some((0x881a, true)),
+            _ => None,
+        }
+    }
+
+    /// Whether a GPU-tier buffer allocated (or exported) as `real` can be
+    /// imported as `claimed`: the claimed format must name the same texture
+    /// storage, and a claimed format without alpha needs storage whose
+    /// alpha is the 1.0 that format reads (a view cannot hide stored alpha).
+    /// `real` 0 is a GPU buffer no DRM format describes.
+    pub const fn gpu_storage_import_compatible(real: u32, claimed: u32) -> bool {
+        match (gpu_storage_format(real), gpu_storage_format(claimed)) {
+            (Some((real_storage, real_opaque)), Some((claimed_storage, claimed_opaque))) =>
+                real_storage == claimed_storage && (real_opaque || !claimed_opaque),
+            _ => false,
+        }
+    }
+
     // --- marshalled structs ------------------------------------------------
 
     /// Linux `struct drm_mode_create_dumb` (32 bytes, identical layout on
@@ -4777,6 +4809,21 @@ pub mod dri {
         pub source: u32,
     }
 
+
+    /// `_IOWR('d', 0xE4, WpkDrmCheckBoFormat)` — check that the bo named by
+    /// `handle` can be imported as a dma-buf of fourcc `format`. A CPU-tier
+    /// bo is bytes and holds any format (0); a GPU-tier bo is a texture of
+    /// the format it was allocated or exported with, and an import claiming
+    /// a format with other storage is `EINVAL` (`gpu_storage_import_compatible`).
+    /// Unknown handle: `ENOENT`.
+    pub const DRM_IOCTL_WPK_CHECK_BO_FORMAT: u32 = 0xc008_64e4;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct WpkDrmCheckBoFormat {
+        pub handle: u32, // 0  in
+        pub format: u32, // 4  in  the dma-buf's claimed DRM fourcc
+    }
 
     /// Publish one GLES object image as an EGLImage source (EGL 1.5 section
     /// 3.9, KHR_gl_texture_2D_image, KHR_gl_texture_cubemap_image and
@@ -6002,6 +6049,33 @@ mod dri_tests {
     fn wpk_extension_sizes_match_wasm32() {
         assert_eq!(size_of::<WpkDrmGpuBoCreate>(), 16);
         assert_eq!(size_of::<WpkDrmBindForeignTexture>(), 16);
+        assert_eq!(size_of::<WpkDrmCheckBoFormat>(), 8);
+        assert_eq!(DRM_IOCTL_WPK_CHECK_BO_FORMAT,
+            ioc(IOC_READ | IOC_WRITE, 'd' as u32, 0xE4, size_of::<WpkDrmCheckBoFormat>() as u32));
+    }
+
+    #[test]
+    fn gpu_storage_import_compatibility_follows_texture_storage() {
+        // Same storage, either channel order.
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_ARGB8888, DRM_FORMAT_ABGR8888));
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_XRGB2101010, DRM_FORMAT_XBGR2101010));
+        // Alpha storage read as a format with alpha; opaque storage either way.
+        assert!(gpu_storage_import_compatible(DRM_FORMAT_XRGB8888, DRM_FORMAT_ARGB8888));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888));
+        // Same size, different storage.
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_GR88, DRM_FORMAT_RGB565));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ABGR8888, DRM_FORMAT_ABGR2101010));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_R8, DRM_FORMAT_GR88));
+        // A buffer no format describes, or an unknown claim.
+        assert!(!gpu_storage_import_compatible(0, DRM_FORMAT_ABGR8888));
+        assert!(!gpu_storage_import_compatible(DRM_FORMAT_ABGR8888, 0x3231564e));
+        for format in [DRM_FORMAT_R8, DRM_FORMAT_GR88, DRM_FORMAT_RGB565, DRM_FORMAT_XRGB8888,
+            DRM_FORMAT_ARGB8888, DRM_FORMAT_XBGR8888, DRM_FORMAT_ABGR8888, DRM_FORMAT_XRGB2101010,
+            DRM_FORMAT_ARGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010,
+            DRM_FORMAT_XBGR16161616F, DRM_FORMAT_ABGR16161616F] {
+            assert!(gpu_storage_import_compatible(format, format));
+            assert_eq!(gpu_storage_format(format).is_some(), gpu_storage_format_cpp(format).is_some());
+        }
     }
 
     #[test]

@@ -3740,7 +3740,16 @@ as an EGLImage is mirrored in a texture of the same internal format, with
 an exact byte conversion each way (`host/src/webgl/cpu-image-codec.ts`:
 10-bit fields swap for the ARGB order, half floats read back as float32
 and convert to the same half, padding bits are preserved). An exported
-GLES image's BO is described in its format's bytes per pixel. EGL window
+GLES image's BO is described in its format's bytes per pixel. The kernel
+records each GPU-tier BO's format (the allocation's fourcc, or the DRM
+format naming an exported image's internal format), and libgbm and libEGL
+check a dma-buf import's claimed fourcc against it with
+`DRM_IOCTL_WPK_CHECK_BO_FORMAT`: a GPU BO is a texture of that format, so
+a claim naming other storage (GR88 over RGB565, ABGR8888 over
+ABGR2101010) or a format without alpha over storage with alpha fails
+(`EINVAL`; `EGL_BAD_MATCH`), while channel order alone (ARGB over ABGR) is
+not observable on a GPU BO and is accepted. CPU-tier BOs are bytes that
+any format may describe, as on Linux. EGL window
 surfaces, and therefore `gbm_surface`s, remain 8888 only, because
 Kandelo's EGL configs are 8888 configs. General CPU/GPU coherence,
 format reinterpretation and native GBM ring posting remain incomplete;

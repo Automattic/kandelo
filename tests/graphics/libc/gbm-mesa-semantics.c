@@ -32,6 +32,24 @@ static unsigned created;              /* last allocated GEM handle */
 static unsigned live[MAX_HANDLES];    /* GEM handle reference: 1 while open */
 static unsigned closes[MAX_HANDLES];  /* drmCloseBufferHandle calls per handle */
 static int gpu_handle[MAX_HANDLES];   /* MAP_DUMB answers EINVAL (GPU tier) */
+static uint32_t gpu_format[MAX_HANDLES]; /* the kernel's recorded GPU storage format */
+static unsigned format_checks;
+/* The kernel's GPU storage of a format (shared::dri::gpu_storage_format):
+ * internal format * 2 + 1 when the format has no alpha; 0 when unknown. */
+static uint32_t storage_of(uint32_t format) {
+    switch (format) {
+    case DRM_FORMAT_R8: return 0x8229 * 2;
+    case DRM_FORMAT_GR88: return 0x822b * 2;
+    case DRM_FORMAT_RGB565: return 0x8d62 * 2;
+    case DRM_FORMAT_ARGB8888: case DRM_FORMAT_ABGR8888: return 0x8058 * 2;
+    case DRM_FORMAT_XRGB8888: case DRM_FORMAT_XBGR8888: return 0x8058 * 2 + 1;
+    case DRM_FORMAT_ARGB2101010: case DRM_FORMAT_ABGR2101010: return 0x8059 * 2;
+    case DRM_FORMAT_XRGB2101010: case DRM_FORMAT_XBGR2101010: return 0x8059 * 2 + 1;
+    case DRM_FORMAT_ABGR16161616F: return 0x881a * 2;
+    case DRM_FORMAT_XBGR16161616F: return 0x881a * 2 + 1;
+    default: return 0;
+    }
+}
 static unsigned map_dumb_calls, allocations, gpu_allocations;
 static int gpu_context;               /* WPK_CREATE_GPU_BO succeeds */
 static uint32_t last_gpu_format, last_dumb_bpp;
@@ -87,6 +105,7 @@ int drmIoctl(int fd, unsigned long request, void *data) {
         ++gpu_allocations;
         last_gpu_format = words[2];
         words[2] = new_handle(1);
+        gpu_format[words[2]] = last_gpu_format;
         words[3] = (words[0] * cpp + 3) & ~3u;
         return 0;
     }
@@ -101,6 +120,18 @@ int drmIoctl(int fd, unsigned long request, void *data) {
             }
         }
         errno = EBADF; return -1;
+    }
+    if (request == 0xc00864e4u) { /* WPK_CHECK_BO_FORMAT */
+        uint32_t *words = data;
+        ++format_checks;
+        if (!words[0] || words[0] >= MAX_HANDLES || !live[words[0]]) { errno = ENOENT; return -1; }
+        if (!gpu_handle[words[0]]) return 0;
+        uint32_t real = storage_of(gpu_format[words[0]]), claimed = storage_of(words[1]);
+        /* Same storage; a format without alpha needs storage without it. */
+        if (!real || !claimed || real >> 1 != claimed >> 1 || ((claimed & 1) && !(real & 1))) {
+            errno = EINVAL; return -1;
+        }
+        return 0;
     }
     if (request == DRM_IOCTL_MODE_MAP_DUMB) {
         struct drm_mode_map_dumb *d = data;
@@ -256,6 +287,7 @@ static void import_fd_modifier(void) {
 static void import_gpu_tier(void) {
     struct gbm_device *device = open_device();
     uint32_t handle = new_handle(1);
+    gpu_format[handle] = GBM_FORMAT_XBGR8888;
     int fd = prime_fd(handle, 48);
     struct gbm_import_fd_data data = {.fd = fd, .width = 4, .height = 3, .stride = 16,
         .format = GBM_FORMAT_XBGR8888};
@@ -309,6 +341,7 @@ static void import_egl_image(void) {
     egl_device = device;
     struct egl_image_double gpu = {new_handle(1), 48,
         {.width = 4, .height = 3, .format = GBM_FORMAT_ABGR8888, .stride = 16}};
+    gpu_format[gpu.handle] = GBM_FORMAT_ABGR8888;
     struct egl_image_double cpu = {new_handle(0), 96,
         {.width = 4, .height = 3, .format = GBM_FORMAT_XRGB8888, .stride = 16, .offset = 32}};
     struct egl_image_double unknown = {0};
@@ -597,6 +630,56 @@ static void widened_formats(void) {
     close_device(device);
 }
 
+/* A GPU-tier buffer is a texture of the format it was made with (the
+ * kernel records it): a dma-buf import must claim a format naming that
+ * storage. Same-size formats with other storage (GR88 vs RGB565, ABGR8888
+ * vs ABGR2101010) and a format without alpha over storage with alpha fail
+ * with EINVAL; channel order alone (ARGB vs ABGR) is not observable on a
+ * GPU buffer. CPU-tier bytes take any format. */
+static void import_gpu_format(void) {
+    struct gbm_device *device = open_device();
+    gpu_context = 1;
+    static const struct { uint32_t real, claimed; int ok; } cases[] = {
+        {GBM_FORMAT_GR88, GBM_FORMAT_GR88, 1}, {GBM_FORMAT_GR88, GBM_FORMAT_RGB565, 0},
+        {GBM_FORMAT_RGB565, GBM_FORMAT_GR88, 0}, {GBM_FORMAT_ABGR8888, GBM_FORMAT_ARGB8888, 1},
+        {GBM_FORMAT_ABGR8888, GBM_FORMAT_ABGR2101010, 0}, {GBM_FORMAT_ARGB8888, GBM_FORMAT_XRGB8888, 0},
+        {GBM_FORMAT_XRGB8888, GBM_FORMAT_ARGB8888, 1}, {GBM_FORMAT_ABGR16161616F, GBM_FORMAT_XBGR16161616F, 0},
+    };
+    for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
+        struct gbm_bo *bo = gbm_bo_create(device, 4, 4, cases[i].real, GBM_BO_USE_RENDERING);
+        assert(bo && gpu_handle[gbm_bo_get_handle(bo).u32]);
+        int fd = prime_fd(gbm_bo_get_handle(bo).u32, (off_t)gbm_bo_get_stride(bo) * 4);
+        uint32_t cpp = gbm_bo_get_bpp(bo) / 8;
+        struct gbm_import_fd_data data = {.fd = fd, .width = 4, .height = 4,
+            .stride = gbm_bo_get_stride(bo), .format = cases[i].claimed};
+        (void)cpp;
+        unsigned checks = format_checks;
+        errno = 0;
+        struct gbm_bo *imported = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_RENDERING);
+        assert(format_checks == checks + 1);
+        if (cases[i].ok) {
+            assert(imported && gbm_bo_get_format(imported) == cases[i].claimed);
+            gbm_bo_destroy(imported);
+        } else {
+            assert(!imported && errno == EINVAL);
+        }
+        close(fd);
+        gbm_bo_destroy(bo);
+    }
+    /* A CPU buffer's bytes are reinterpreted without a kernel check. */
+    struct gbm_bo *bo = gbm_bo_create(device, 4, 4, GBM_FORMAT_GR88, GBM_BO_USE_LINEAR);
+    int fd = prime_fd(gbm_bo_get_handle(bo).u32, 64);
+    struct gbm_import_fd_data data = {.fd = fd, .width = 4, .height = 4, .stride = 8,
+        .format = GBM_FORMAT_RGB565};
+    unsigned checks = format_checks;
+    struct gbm_bo *imported = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, GBM_BO_USE_LINEAR);
+    assert(imported && format_checks == checks);
+    gbm_bo_destroy(imported);
+    close(fd);
+    gbm_bo_destroy(bo);
+    close_device(device);
+}
+
 /* Mesa: an absent plane has handle .s32 == -1 / stride 0 / offset 0 with
  * errno EINVAL; handle 0 would name "no buffer" to libdrm callers. */
 static void plane_accessors(void) {
@@ -632,6 +715,7 @@ int main(int argc, char **argv) {
         {"plane-accessors", plane_accessors},
         {"rgb565", rgb565},
         {"widened-formats", widened_formats},
+        {"import-gpu-format", import_gpu_format},
         {"import-egl-image", import_egl_image},
     };
     if (argc != 2) { fprintf(stderr, "usage: %s <case>\n", argv[0]); return 2; }

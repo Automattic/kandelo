@@ -368,6 +368,13 @@ struct wpk_egl_image {
     size_t map_len;
 };
 
+/* DRM_IOCTL_WPK_CHECK_BO_FORMAT mirrors shared::dri::WpkDrmCheckBoFormat:
+ * EINVAL when the GPU-tier bo `handle` was allocated (or exported) in
+ * storage another `format` cannot name; a CPU-tier bo holds any format. */
+#define WPK_DRM_IOCTL_CHECK_BO_FORMAT 0xc00864e4u
+struct wpk_drm_check_bo_format { uint32_t handle, format; };
+_Static_assert(sizeof(struct wpk_drm_check_bo_format) == 8, "check bo format layout");
+
 /* DRM_IOCTL_WPK_EXPORT_IMAGE mirrors shared::dri::WpkDrmExportImage: publish
  * a texture level, cube-map face level or renderbuffer of `ctx_id` as a new
  * GPU-tier bo whose storage is that object's image (EGL 1.5 section 3.9).
