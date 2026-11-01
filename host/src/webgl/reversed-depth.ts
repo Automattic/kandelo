@@ -26,6 +26,7 @@
  */
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
+import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-sampling.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -77,7 +78,7 @@ export function renameIdentifiers(source: string, names: ReadonlyMap<string, str
 /** Offset just past the leading #version/#extension/#pragma directive lines.
  * Declarations must follow #version, and ESSL 3.00 also requires #extension
  * before the first non-preprocessor token. */
-function headerEnd(source: string): number {
+export function headerEnd(source: string): number {
   let i = 0, end = 0;
   const n = source.length;
   for (;;) {
@@ -169,21 +170,45 @@ export function noteUniformWrite(program: WebGLProgram | null): void {
 
 // --- twins ----------------------------------------------------------------------
 
+/** One private draw executable of a guest executable. A draw may need a
+ * reversed depth range and/or luminance sampling of depth textures
+ * (depth-sampling.ts); each combination is one variant, keyed by both. */
+type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[] };
 type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number };
-const twins = new WeakMap<WebGLProgram, Twin>();
+const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
-/** Every path that deletes a guest executable releases its private twin. */
-export function releaseReversedDepthTwin(owner: CheckedGlOwner, program: WebGLProgram): void {
-  const twin = twins.get(program);
-  if (!twin || !owner.gl) return;
-  twins.delete(program);
+function variantKey(options: VariantOptions): string {
+  return `${options.reversedDepth ? 1 : 0}|${options.depthSamplers.join(",")}`;
+}
+
+function deleteTwin(owner: CheckedGlOwner, twin: Twin): void {
   checkedGlCall(owner, () => {
     if (owner.gl!.getParameter(0x8b8d) === twin.program) owner.gl!.useProgram(null);
     owner.gl!.deleteProgram(twin.program);
   });
 }
 
-function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources): Twin | null {
+/** Every path that deletes a guest executable releases all its variants. */
+export function releaseReversedDepthTwin(owner: CheckedGlOwner, program: WebGLProgram): void {
+  const variants = twins.get(program);
+  if (!variants || !owner.gl) return;
+  twins.delete(program);
+  for (const twin of variants.values()) deleteTwin(owner, twin);
+}
+
+/** One stage of a variant: depth-sampler lookups first, then the reversed
+ * depth wrapper around the (already renamed-free) result. */
+function variantStageSource(source: string, vertex: boolean, options: VariantOptions): string | null {
+  let result: string | null = source;
+  if (options.depthSamplers.length) result = depthSamplingShaderSource(source, new Set(options.depthSamplers));
+  if (result !== null && options.reversedDepth) result = reversedDepthShaderSource(result, vertex);
+  return result;
+}
+
+function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, options: VariantOptions): Twin | null {
+  const vertexSource = variantStageSource(sources.vertex, true, options);
+  const fragmentSource = variantStageSource(sources.fragment, false, options);
+  if (vertexSource === null || fragmentSource === null) return null;
   const gl = b.gl!;
   let vs: WebGLShader | null = null, fs: WebGLShader | null = null, program: WebGLProgram | null = null;
   let linked = false;
@@ -193,8 +218,8 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources):
     }) || !vs || !fs || !program) return null;
     const v = vs as WebGLShader, f = fs as WebGLShader, p = program as WebGLProgram;
     if (!checkedGlCall(b, () => {
-      gl.shaderSource(v, reversedDepthShaderSource(sources.vertex, true));
-      gl.shaderSource(f, reversedDepthShaderSource(sources.fragment, false));
+      gl.shaderSource(v, vertexSource);
+      gl.shaderSource(f, fragmentSource);
       gl.compileShader(v); gl.compileShader(f);
       gl.attachShader(p, v); gl.attachShader(p, f);
       // Pin every active attribute to the guest executable's location, so
@@ -280,18 +305,28 @@ function copyUniforms(b: GlBinding, primary: WebGLProgram, twin: WebGLProgram): 
  * draw path reports that). Null means an error was recorded: the twin could
  * not be built, so the draw is refused rather than rendered with the wrong
  * depth mapping. */
-export function reversedDepthExecutable(b: GlBinding): WebGLProgram | null | undefined {
+export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undefined {
   const primary = b.currentProgram;
   if (!primary) return undefined;
+  const reversedDepth = depthRangeReversed(b.shadow.depthRange);
+  const depthSamplers = depthSamplersForDraw(b);
+  if (depthSamplers === null) return null;
+  // Draws needing neither run the guest executable itself.
+  if (!reversedDepth && !depthSamplers.length) return undefined;
+  const options = { reversedDepth, depthSamplers }, key = variantKey(options);
   const sources = linkedSources.get(primary);
-  let twin = twins.get(primary);
-  if (twin && twin.sources !== sources) { releaseReversedDepthTwin(b, primary); twin = undefined; }
+  let variants = twins.get(primary);
+  if (variants && [...variants.values()].some(twin => twin.sources !== sources)) {
+    releaseReversedDepthTwin(b, primary); variants = undefined;
+  }
+  let twin = variants?.get(key);
   if (!twin) {
-    const built = sources ? buildTwin(b, primary, sources) : null;
+    const built = sources ? buildTwin(b, primary, sources, options) : null;
     // INVALID_OPERATION is the WebGL boundary error the draw would otherwise
-    // raise; recording it keeps an unemulated reversed draw visible.
+    // raise; recording it keeps an unemulated draw visible.
     if (!built) { recordGlError(b, 0x502); return null; }
-    twins.set(primary, twin = built);
+    if (!variants) twins.set(primary, variants = new Map());
+    variants.set(key, twin = built);
   }
   return twin.program;
 }
@@ -299,8 +334,9 @@ export function reversedDepthExecutable(b: GlBinding): WebGLProgram | null | und
 /** Install-time half of a reversed draw: the twin is current; refresh its
  * uniform values if the guest changed any since the last copy. */
 export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLProgram): boolean {
-  const primary = b.currentProgram, twin = primary && twins.get(primary);
-  if (!primary || !twin || twin.program !== twinProgram) { recordGlError(b, 0x502); return false; }
+  const primary = b.currentProgram;
+  const twin = primary ? [...twins.get(primary)?.values() ?? []].find(variant => variant.program === twinProgram) : undefined;
+  if (!primary || !twin) { recordGlError(b, 0x502); return false; }
   const generation = uniformWrites.get(primary) ?? 0;
   if (twin.uniforms === generation) return true;
   if (!copyUniforms(b, primary, twin.program)) return false;

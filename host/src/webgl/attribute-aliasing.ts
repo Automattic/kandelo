@@ -62,25 +62,29 @@ export function aliasedAttributeLocation(program: WebGLProgram, name: string): n
   return layout.locations.get(name);
 }
 
-type Token = { text: string; start: number; end: number };
-/** GLSL ES tokens outside comments; `directives` keeps preprocessor lines. */
-function tokens(source: string, directives: boolean): Token[] {
-  const out: Token[] = [];
+export type GlslToken = { text: string; start: number; end: number; directive: boolean };
+/** GLSL ES tokens outside comments; `directives` keeps preprocessor lines
+ * (marked), otherwise they are skipped. */
+export function glslTokens(source: string, directives: boolean): GlslToken[] {
+  const out: GlslToken[] = [];
   const n = source.length;
-  let i = 0, lineStart = true;
+  let i = 0, lineStart = true, directive = false;
   const ident = (c: string) => /[A-Za-z0-9_]/.test(c);
   while (i < n) {
     const c = source[i];
-    if (c === "\n") { lineStart = true; i++; continue; }
+    if (c === "\n") { lineStart = true; directive = false; i++; continue; }
     if (c === " " || c === "\t" || c === "\r" || c === "\f" || c === "\v") { i++; continue; }
     if (c === "/" && source[i + 1] === "/") { while (i < n && source[i] !== "\n") i++; continue; }
     if (c === "/" && source[i + 1] === "*") { const e = source.indexOf("*/", i + 2); i = e < 0 ? n : e + 2; continue; }
-    if (c === "#" && lineStart && !directives) { while (i < n && source[i] !== "\n") i++; continue; }
+    if (c === "#" && lineStart) {
+      if (!directives) { while (i < n && source[i] !== "\n") i++; continue; }
+      directive = true;
+    }
     lineStart = false;
     const start = i;
     if (ident(c)) { while (i < n && (ident(source[i]) || (/[0-9]/.test(source[start]) && source[i] === "."))) i++; }
     else i++;
-    out.push({ text: source.slice(start, i), start, end: i });
+    out.push({ text: source.slice(start, i), start, end: i, directive });
   }
   return out;
 }
@@ -88,7 +92,7 @@ function tokens(source: string, directives: boolean): Token[] {
 type Declaration = { start: number; end: number; precision: string; type: string; names: string[] };
 /** `attribute [precision] type name {, name} ;` at global scope. */
 function attributeDeclarations(source: string): Declaration[] | null {
-  const list = tokens(source, false), declarations: Declaration[] = [];
+  const list = glslTokens(source, false), declarations: Declaration[] = [];
   let depth = 0;
   for (let i = 0; i < list.length; i++) {
     const t = list[i].text;
@@ -154,7 +158,7 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
 
   // Static use outside the declarations, including macro bodies.
   const used = new Set<string>();
-  for (const t of tokens(vertex, true)) {
+  for (const t of glslTokens(vertex, true)) {
     if (aliased.has(t.text) && !declarations.some(d => t.start >= d.start && t.end <= d.end)) used.add(t.text);
   }
 

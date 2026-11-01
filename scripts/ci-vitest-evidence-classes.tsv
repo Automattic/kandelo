@@ -487,6 +487,8 @@ host/test/webgl-capabilities.test.ts	source-only
 host/test/webgl-context-creation.test.ts	source-only
 host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-cpu-image-storage.test.ts	source-only
+host/test/webgl-depth-sampling-draw.test.ts	source-only
+host/test/webgl-depth-sampling-source.test.ts	source-only
 host/test/webgl-depth-range.test.ts	source-only
 host/test/webgl-depth-texture.test.ts	source-only
 host/test/webgl-error-query.test.ts	source-only

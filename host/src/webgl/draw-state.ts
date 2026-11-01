@@ -27,7 +27,7 @@ import type { GlBinding } from "./registry.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
 import { allocateNativeBuffer } from "./buffer-storage.js";
 import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
-import { depthRangeReversed, reversedDepthExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
+import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
 import type { GlStencilFaceState } from "./shadow.js";
 
 const FRONT = 0x0404, BACK = 0x0405, FRONT_AND_BACK = 0x0408;
@@ -131,14 +131,15 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   const gl = b.gl!;
   const stencil = stencilPlan(b, draw);
   if (!stencil) return false;
-  const twin = !draw.empty && depthRangeReversed(b.shadow.depthRange) ? reversedDepthExecutable(b) : undefined;
+  // Reversed depth ranges and depth-texture lookups run a private variant.
+  const twin = draw.empty ? undefined : drawVariantExecutable(b);
   if (twin === null) return false;
   if (twin === undefined && stencil.kind === "none") return checkedGlCall(b, draw.issue);
 
   const changes: NativeChange[] = [], finalizer: NativeCall[][] = [];
   if (twin) {
     // The guest executable stays installed in every logical record; only
-    // this draw runs its reversed-depth twin.
+    // this draw runs its private variant (reversed depth, depth sampling).
     changes.push({ apply: () => checkedGlCall(b, () => gl.useProgram(twin)) && synchronizeReversedDepthTwin(b, twin),
       restore: nativeInverse(b) });
     finalizer.push([["useProgram", b.currentProgram]]);

@@ -38,6 +38,7 @@ import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, 
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
+import { noteSamplerWrite } from "./depth-sampling.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
@@ -583,6 +584,8 @@ function dispatch(
     if(count===null || count===0) return;
     uniformCount=count;
     noteUniformWrite(b.currentProgram);
+    // Sampler units, which select depth-sampling variants, change only here.
+    if (op === O.OP_UNIFORM1I || op === O.OP_UNIFORM1IV) noteSamplerWrite(b.currentProgram);
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
