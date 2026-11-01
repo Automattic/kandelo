@@ -448,6 +448,7 @@ static int capture_array_upload;
 static unsigned char captured_bytes[524288];
 static uint32_t captured_size, captured_type, captured_stride, captured_offset, captured_pointers;
 static unsigned framebuffer_bind_commands, framebuffer_gen_names;
+static const char *attrib_expected; static unsigned attrib_lookups, attrib_bind_records, attrib_bind_length; static GLenum attrib_lookup_error;
 static unsigned captured_chunks;
 static unsigned inline_draws, buffer_binds, buffer_deletes;
 static uint32_t inline_first, inline_count, inline_attributes, inline_payload_size;
@@ -998,6 +999,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             }
             if (op == OP_BIND_FRAMEBUFFER) { framebuffer_bind_commands++; (void)native_framebuffer_bind(slot,words[0],words[1]); }
             if (op == OP_GEN_FRAMEBUFFERS) framebuffer_gen_names += words[0];
+            if (op == OP_BIND_ATTRIB_LOCATION) {
+                uint32_t length; memcpy(&length,commands+at+12,4);
+                assert(len == 12+length && attrib_expected && strlen(attrib_expected) == length &&
+                       !memcmp(commands+at+16,attrib_expected,length));
+                attrib_bind_records++; attrib_bind_length = length;
+            }
             if (op == OP_BIND_BUFFER)
                 (void)native_buffer_bind(slot, words[0], words[1]);
             if (op == OP_DELETE_BUFFERS)
@@ -1696,6 +1703,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 }
             } else
                 memcpy(latest_allocation, values, q->out_buf_len < 16 ? q->out_buf_len : 16);
+            return 0;
+        }
+        if (q->op == QOP_GET_ATTRIB_LOC && attrib_expected) {
+            const uint8_t *input = allocation_for(q->in_buf_ptr,q->in_buf_len);
+            uint32_t header[2]; memcpy(header,input,8);
+            assert(header[0] == 9 && header[1] == strlen(attrib_expected) && q->in_buf_len == 8+header[1]);
+            assert(!memcmp(input+8,attrib_expected,header[1]) && q->out_buf_len == 4);
+            attrib_lookups++;
+            if (attrib_lookup_error) { query_gl_error = attrib_lookup_error; errno = EINVAL; return -1; }
+            const GLint location = 5; memcpy(allocation_for(q->out_buf_ptr,4),&location,4);
             return 0;
         }
         if (q->op == QOP_GET_INTEGERV && q->in_buf_len == 4 &&
@@ -4259,6 +4276,38 @@ int main(int argc, char **argv) {
         glShaderSource(9,-1,NULL,NULL); assert(glGetError() == GL_INVALID_VALUE);
         free(text); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-core-source"); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-attrib-names")) {
+        /* ES 2.0 section 2.10.4 sets no name-length limit. Every name the
+         * query transport can carry reaches the renderer, which owns the
+         * lookup and its program errors. */
+        char *name = malloc(65531); assert(name);
+        for (unsigned length = 249; length <= 65528; length = length == 249 ? 300 : length == 300 ? 65528 : 65529) {
+            memset(name,'a',length); name[length] = 0; attrib_expected = name;
+            const unsigned before = attrib_lookups;
+            assert(glGetAttribLocation(9,name) == 5 && attrib_lookups == before+1 && glGetError() == GL_NO_ERROR);
+        }
+        attrib_lookup_error = GL_INVALID_OPERATION;
+        assert(glGetAttribLocation(9,name) == -1 && glGetError() == GL_INVALID_OPERATION);
+        attrib_lookup_error = 0;
+        /* A name the transport cannot carry fails visibly, never as -1 alone. */
+        memset(name,'a',65529); name[65529] = 0;
+        unsigned before = attrib_lookups;
+        assert(glGetAttribLocation(9,name) == -1 && attrib_lookups == before && glGetError() == GL_OUT_OF_MEMORY);
+        name[300] = 0; fail_malloc = 1;
+        assert(glGetAttribLocation(9,name) == -1); fail_malloc = 0;
+        assert(attrib_lookups == before && glGetError() == GL_OUT_OF_MEMORY);
+        /* Binding: the longest name one command record carries is sent;
+         * a longer one fails visibly instead of silently doing nothing. */
+        memset(name,'b',65524); name[65523] = 0; attrib_expected = name;
+        glBindAttribLocation(9,3,name); glFlush();
+        assert(attrib_bind_records == 1 && attrib_bind_length == 65523 && glGetError() == GL_NO_ERROR);
+        name[65523] = 'b'; name[65524] = 0;
+        glBindAttribLocation(9,3,name); glFlush();
+        assert(attrib_bind_records == 1 && glGetError() == GL_OUT_OF_MEMORY);
+        attrib_expected = NULL; free(name);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS encoder-attrib-names"); return 0;
     }
     if (!strcmp(argv[1], "encoder-uniform-lookup")) {
         char *name = malloc(140002);

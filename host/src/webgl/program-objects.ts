@@ -55,6 +55,32 @@ export function linkedProgramForQuery(b: GlBinding, name: number): WebGLProgram 
   return program;
 }
 
+/** ES 2.0 section 2.10.4: an inactive or "gl_"-prefixed attribute name is -1
+ * without an error; only the program can fail the lookup. Attributes are
+ * plain identifiers (no arrays or structures), so any other spelling is
+ * inactive, and WebGL's INVALID_VALUE for its character set is never
+ * imported. WebGL also limits lookup strings to 256 characters (WebGL 1.0
+ * "Maximum Uniform and Attribute Location Lengths"). A long name absent
+ * from actual reflection is inactive regardless of its length; an active
+ * one still asks the engine, whose limit error is the real boundary. */
+export function attributeLocation(b: GlBinding, program: WebGLProgram, text: string): number | null {
+  if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*$/.test(text)) return -1;
+  const gl = b.gl!;
+  if (text.length > 256) {
+    let count = 0, found = false;
+    if (!checkedGlCall(b, () => { count = Number(gl.getProgramParameter(program, 0x8b89)); })) return null;
+    for (let index = 0; index < count && !found; index++) {
+      let info: WebGLActiveInfo | null = null;
+      if (!checkedGlCall(b, () => { info = gl.getActiveAttrib(program, index); })) return null;
+      found = (info as WebGLActiveInfo | null)?.name === text;
+    }
+    if (!found) return -1;
+  }
+  let location = -1;
+  if (!checkedGlCall(b, () => { location = gl.getAttribLocation(program, text); })) return null;
+  return location;
+}
+
 /** Empty native receivers are reserved before creation. Even a native call
  * which returns a handle and an error leaves that handle owned for rollback. */
 export function createShaderIfAccepted(b: GlBinding, type: number, name: number): void {

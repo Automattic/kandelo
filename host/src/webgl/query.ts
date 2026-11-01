@@ -42,7 +42,7 @@ import { bindBufferObject, canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
-import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery } from "./program-objects.js";
+import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
 import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
 import { readGlErrorQueryMask } from "./error-query.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
@@ -477,8 +477,8 @@ export function runGlQuery(
       const program = linkedProgramForQuery(b, programName);
       if (!program) return -22;
       const attrName = new TextDecoder().decode(input.subarray(8, 8 + nameLen));
-      let loc = -1;
-      if (!checkedGlCall(b, () => { loc = gl.getAttribLocation(program, attrName); })) return -22;
+      const loc = attributeLocation(b, program, attrName);
+      if (loc === null) return -22;
       outDv.setInt32(0, loc, true);
       return 4;
     }

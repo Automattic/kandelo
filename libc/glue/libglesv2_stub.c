@@ -842,7 +842,13 @@ void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
     if (!_wpk_gl_current_encoder()) return;
     if (!name) return;
     size_t nlen = strlen(name);
-    if (nlen > 0xFFFFu - 12u) return;
+    /* ES 2.0 sets no name-length limit; one command record carries at most
+     * 65523 name bytes. Report the transport limit rather than silently
+     * dropping the binding and the renderer's program/index errors. */
+    if (nlen > 0xFFFFu - 12u) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return;
+    }
     EMIT_BEGIN(OP_BIND_ATTRIB_LOCATION, 12u + (uint32_t)nlen)
     w_u32(&_c, program);
     w_u32(&_c, (uint32_t)index);
@@ -1420,19 +1426,33 @@ void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum binaryformat,
     raise_client_error(GL_INVALID_ENUM);
 }
 
+/* Matches the kernel's MAX_QUERY_IN_LEN for one GLIO_QUERY request. */
+#define WPK_GL_MAX_QUERY_INPUT 65536u
+
 GLint glGetAttribLocation(GLuint program, const GLchar *name) {
     if (!_wpk_gl_current_encoder()) return 0;
     if (!name) return -1;
-    uint8_t in[256];
     size_t nlen = strlen(name);
-    if (8 + nlen > sizeof in) return -1;
+    /* The renderer owns the lookup and its program errors for every name
+     * one query can carry. A longer name exceeds the transport, so report
+     * that instead of a -1 that skipped the program checks. */
+    if (nlen > WPK_GL_MAX_QUERY_INPUT - 8u) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return -1;
+    }
+    uint8_t *in = malloc(8 + nlen);
+    if (!in) {
+        raise_client_error(GL_OUT_OF_MEMORY);
+        return -1;
+    }
     uint32_t prog_u32 = program, nlen_u32 = (uint32_t)nlen;
     memcpy(in,     &prog_u32, 4);
     memcpy(in + 4, &nlen_u32, 4);
     memcpy(in + 8, name, nlen);
     int32_t loc = -1;
-    if (_wpk_gl_query_into(QOP_GET_ATTRIB_LOC, in, (uint32_t)(8 + nlen), &loc, 4) != 0) return -1;
-    return loc;
+    const int rc = _wpk_gl_query_into(QOP_GET_ATTRIB_LOC, in, (uint32_t)(8 + nlen), &loc, 4);
+    free(in);
+    return rc != 0 ? -1 : loc;
 }
 
 /* ----- textures ----------------------------------------------------- */
