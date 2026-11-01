@@ -1705,6 +1705,14 @@ static EGLSync create_sync_locked(EGLDisplay dpy, EGLenum type, const EGLAttrib 
         g_last_error = EGL_BAD_DISPLAY;
         return EGL_NO_SYNC;
     }
+    /* EGL_SYNC_CL_EVENT is a core type whose EGL_CL_EVENT_HANDLE must name
+     * a valid OpenCL event (EGL 1.5 section 3.8.1). Kandelo has no OpenCL
+     * runtime, so no handle can be valid: EGL_BAD_ATTRIBUTE, not the
+     * unknown-type error. */
+    if (type == EGL_SYNC_CL_EVENT) {
+        g_last_error = EGL_BAD_ATTRIBUTE;
+        return EGL_NO_SYNC;
+    }
     if (type != EGL_SYNC_FENCE) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_SYNC;

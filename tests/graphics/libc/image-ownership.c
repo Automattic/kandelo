@@ -2347,6 +2347,20 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
             assert(eglGetError() == missing);
         }
         assert(eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-sync-cl-event")) {
+        /* EGL 1.5 section 3.8.1: EGL_SYNC_CL_EVENT is a core sync type whose
+         * missing or invalid EGL_CL_EVENT_HANDLE is EGL_BAD_ATTRIBUTE. No
+         * OpenCL runtime exists, so no handle can be valid. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLAttrib handle[] = {EGL_CL_EVENT_HANDLE, 1, EGL_NONE};
+        assert(eglCreateSync(dpy, EGL_SYNC_CL_EVENT, NULL) == EGL_NO_SYNC);
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+        assert(eglCreateSync(dpy, EGL_SYNC_CL_EVENT, handle) == EGL_NO_SYNC);
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+        assert(eglCreateSync(dpy, 0, NULL) == EGL_NO_SYNC && eglGetError() == EGL_BAD_PARAMETER);
+        assert(eglCreateSync(EGL_NO_DISPLAY, EGL_SYNC_CL_EVENT, handle) == EGL_NO_SYNC);
+        assert(eglGetError() == EGL_BAD_DISPLAY);
+        assert(eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
