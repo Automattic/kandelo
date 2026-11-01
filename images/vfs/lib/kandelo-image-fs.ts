@@ -96,6 +96,7 @@ interface ModuleExports extends Partial<PersistentWriterExports> {
   sm_overlay_activation_codec?: (operation: number, input: number, inputLength: number, output: number, outputCapacity: number) => number;
   sm_original_program_reference?: (program: number, length: number, originalLength: bigint, digest: number) => number;
   sm_package_inventory_begin?: (programAbi: number, digest: number, name: number, nameLength: number, version: number, versionLength: number) => number;
+  sm_package_inventory_inherit?: (pointer: number, length: number) => number;
   sm_package_inventory_add?: (path: number, length: number, declaredDigest: number) => number;
   sm_package_inventory_finish?: () => number;
   sm_package_inventory_read?: (offset: number, output: number, length: number) => number;
@@ -505,7 +506,7 @@ export class KandeloImageFs {
 
   buildPackageInventory(options: {
     name: string; version: string; programAbi: number; programDigest: string;
-    paths: Iterable<string>; deferredDigests?: ReadonlyMap<string, string>;
+    paths: Iterable<string>; deferredDigests?: ReadonlyMap<string, string>; parentInventory?: Uint8Array;
   }): Uint8Array {
     const { sm_package_inventory_begin: begin, sm_package_inventory_add: add,
       sm_package_inventory_finish: finish, sm_package_inventory_read: read,
@@ -517,6 +518,12 @@ export class KandeloImageFs {
       this.withPath(options.version, (version, versionLength) =>
         this.check(begin(options.programAbi, contract, name, nameLength, version, versionLength), "begin package inventory", options.name))));
     try {
+      if (options.parentInventory !== undefined) {
+        const inherit = this.exports.sm_package_inventory_inherit;
+        if (!inherit) throw new Error("Image module lacks native inventory inheritance; rebuild it");
+        if (options.parentInventory.byteLength > 8 * 1024 * 1024) throw new RangeError("Parent package inventory exceeds its size bound");
+        this.withBytes(options.parentInventory, (pointer, length) => this.check(inherit(pointer, length), "inherit package inventory", options.name));
+      }
       for (const path of options.paths) {
         const declared = options.deferredDigests?.get(path);
         this.withPath(path, (pointer, length) => {

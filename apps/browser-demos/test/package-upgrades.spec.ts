@@ -13,6 +13,7 @@ test("persistent package activation resumes after reload and rolls back without 
   const kernel = readFileSync(resolveBinary("kernel.wasm"));
   const root = resolve(import.meta.dirname, "../../..");
   const moduleUrl = new URL(`/@fs/${root}/host/src/browser-kernel-host.ts`, baseURL).href;
+  const clientUrl = new URL(`/@fs/${root}/apps/browser-demos/pages/kandelo/kernel-host/package-upgrade-client.ts`, baseURL).href;
   const kernelUrl = new URL("/package-upgrade-kernel.wasm", baseURL).href;
   const imageUrl = new URL("/package-upgrade-base.vfs", baseURL).href;
   const inventoryUrl = new URL("/package-upgrade-target.inventory", baseURL).href;
@@ -30,9 +31,15 @@ test("persistent package activation resumes after reload and rolls back without 
     return route.fulfill({ body: Buffer.from(after.lazy) });
   });
   await page.route(`${bodyBase}?*`, route => {
-    const path = new URL(route.request().url()).searchParams.get("path");
+    const query = new URL(route.request().url()).searchParams;
+    const path = query.get("path");
     const bytes = path === null ? undefined : after.bodies.get(path);
-    return route.fulfill({ status: bytes ? 200 : 404, body: bytes ? Buffer.from(bytes) : "Missing package fixture" });
+    const offset = Number(query.get("offset"));
+    const length = Number(query.get("length"));
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 1 || length > 65536) {
+      return route.fulfill({ status: 400, body: "Invalid package range" });
+    }
+    return route.fulfill({ status: bytes ? 200 : 404, body: bytes ? Buffer.from(bytes.subarray(offset, offset + length)) : "Missing package fixture" });
   });
   await page.route("https://packages.invalid/**", route => {
     unexpectedFetches.push(route.request().url());
@@ -62,8 +69,9 @@ test("persistent package activation resumes after reload and rolls back without 
     } finally { await host.destroy(); }
   }, { moduleUrl, kernelUrl, imageUrl, inventoryUrl });
   await page.reload();
-  const result = await page.evaluate(async ({ moduleUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name, wire }) => {
+  const result = await page.evaluate(async ({ moduleUrl, clientUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name }) => {
     const { BrowserKernel } = await import(moduleUrl);
+    const { PackageUpgradeClient } = await import(clientUrl);
     const bytes = async (url: string) => {
       const response = await fetch(url);
       if (!response.ok) throw new Error(`Fixture download failed: ${url}`);
@@ -78,12 +86,6 @@ test("persistent package activation resumes after reload and rolls back without 
       } catch (error) { await host.destroy(); throw error; }
     };
     let host = await boot();
-    const verify = async (action: "verifyInstalled" | "verifyStaged") => {
-      for (let step = 0; step < 1000; step++) {
-        if ((await host.packageMaintenance({ action, index: 65536 })).status === 1) return;
-      }
-      throw new Error(`${action} did not complete`);
-    };
     const text = async (path: string) => {
       const value = await host.readFileFromVfs(path);
       return value === null ? null : new TextDecoder().decode(value);
@@ -91,24 +93,13 @@ test("persistent package activation resumes after reload and rolls back without 
     try {
       await host.packageMaintenance({ action: "enter" });
       const pending = (await host.packageMaintenance({ action: "recovery" })).status;
-      await host.packageMaintenance({ action: "resume" });
-      await verify("verifyInstalled");
-      const progress = (await host.packageMaintenance({ action: "progress" })).data;
-      const count = new DataView(progress.buffer).getUint32(wire.PROGRESS_FILE_COUNT_OFFSET, true);
-      for (let index = 0; index < count; index++) {
-        const staged = (await host.packageMaintenance({ action: "stagingFile", index })).data;
-        const kind = new DataView(staged.buffer).getUint32(wire.STAGING_KIND_OFFSET, true);
-        if (kind === wire.STAGING_REMOVED) continue;
-        if (kind === wire.STAGING_KERNEL) { await host.packageMaintenance({ action: "stage", index }); continue; }
-        const path = new TextDecoder().decode(staged.subarray(wire.STAGING_HEADER_BYTES));
-        const body = await bytes(`${bodyBase}?path=${encodeURIComponent(path)}`);
-        for (let offset = 0; offset < body.length || offset === 0; offset += 65536) {
-          await host.packageMaintenance({ action: "stage", index, offset, data: body.subarray(offset, offset + 65536) });
-        }
-      }
-      await verify("verifyStaged");
-      await host.packageMaintenance({ action: "commit" });
-      await host.packageMaintenance({ action: "cancel" });
+      const inventory = await bytes(inventoryUrl);
+      const client = () => new PackageUpgradeClient((request: Parameters<typeof host.packageMaintenance>[0]) => host.packageMaintenance(request));
+      await client().run("resume", {
+        inventoryBytes: inventory.length,
+        readInventory: async (offset: number, length: number) => inventory.slice(offset, offset + length),
+        readFile: (path: string, offset: number, length: number) => bytes(`${bodyBase}?path=${encodeURIComponent(path)}&offset=${offset}&length=${length}`),
+      });
       await host.packageMaintenance({ action: "leave" });
       const liveLazyContents = await text("/software/lazy");
       await host.writeFileToVfs("/software/new/sub/user", new TextEncoder().encode("new browser user child"));
@@ -121,11 +112,7 @@ test("persistent package activation resumes after reload and rolls back without 
       const removed = await text("/software/remove");
       const lazyContents = await text("/software/lazy");
       await host.packageMaintenance({ action: "enter" });
-      await host.packageMaintenance({ action: "resume" });
-      await verify("verifyInstalled");
-      await verify("verifyStaged");
-      await host.packageMaintenance({ action: "commit" });
-      await host.packageMaintenance({ action: "cancel" });
+      await client().run("rollback");
       await host.packageMaintenance({ action: "leave" });
       await host.destroy();
       host = await boot();
@@ -134,7 +121,7 @@ test("persistent package activation resumes after reload and rolls back without 
         localConfig: await text("/software/config"), userData: await text("/user/notes"),
         newUserChild: await text("/software/new/sub/user") };
     } finally { await host.destroy(); }
-  }, { moduleUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name, wire });
+  }, { moduleUrl, clientUrl, kernelUrl, imageUrl, inventoryUrl, bodyBase, name });
   expect(result.pending).toBe(wire.RECOVERY_PENDING);
   expect(result.updated).toBe("new program\n".repeat(7000));
   expect(result.activeInventoryMatches).toBe(true);

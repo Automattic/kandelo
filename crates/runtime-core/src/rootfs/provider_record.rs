@@ -24,6 +24,28 @@ fn copy_bytes(bytes: &[u8]) -> Result<Vec<u8>, Errno> {
     Ok(output)
 }
 
+pub(super) fn archive_source_identity(bytes: &[u8]) -> Result<Option<[u8; 32]>, Errno> {
+    fn field(digest: &mut Sha256, bytes: &[u8]) {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    let decoded = decode(bytes)?;
+    let Some(archive) = decoded.section.archives.first() else { return Ok(None); };
+    let record = decoded.record();
+    let mut digest = Sha256::new();
+    digest.update(b"Kandelo archive source identity v1\0");
+    digest.update(record.size.to_le_bytes());
+    digest.update(record.digest);
+    field(&mut digest, &record.source_path);
+    field(&mut digest, &record.uri);
+    field(&mut digest, &record.payload);
+    digest.update(archive.bytes.to_le_bytes());
+    digest.update(archive.digest);
+    field(&mut digest, &archive.uri);
+    field(&mut digest, &archive.payload);
+    Ok(Some(digest.finalize().into()))
+}
+
 pub(super) fn describe(state: &RootfsState, inode: &Inode, digest: [u8; 32]) -> Result<OwnedMetadata, Errno> {
     if !inode.persistent_provider.is_empty() {
         let (size, expected) = identity(&inode.persistent_provider)?;

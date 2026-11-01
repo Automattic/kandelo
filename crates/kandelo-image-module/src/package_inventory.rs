@@ -30,6 +30,17 @@ pub unsafe extern "C" fn sm_package_inventory_begin(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn sm_package_inventory_inherit(pointer: usize, length: usize) -> i32 {
+    if pointer == 0 { return err(Errno::EINVAL); }
+    if length > runtime_core::package_inventory::MAX_BYTES { return err(Errno::E2BIG); }
+    let Some(State::Building(builder)) = (unsafe { &mut *STATE.0.get() }) else { return err(Errno::EINVAL); };
+    match builder.inherit(unsafe { slice(pointer, length) }) {
+        Ok(count) => count as i32,
+        Err(error) => err(error),
+    }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn sm_package_inventory_add(path: usize, length: usize, declared_digest: usize) -> i32 {
     if path == 0 || length > 4096 { return err(Errno::EINVAL); }
     let Some(State::Building(builder)) = (unsafe { &mut *STATE.0.get() }) else { return err(Errno::EINVAL); };
@@ -76,6 +87,11 @@ mod tests {
             name.as_ptr() as usize, name.len(), version.as_ptr() as usize, version.len()) };
         assert_eq!(begin(), 0);
         assert_eq!(begin(), err(Errno::EBUSY));
+        let parent = runtime_core::package_inventory::encode(55, digest,
+            &[runtime_core::package_inventory::PackageSpec { name: b"parent", version: b"1", content_digest: None, dependencies: &[] }], &[]).unwrap();
+        assert_eq!(unsafe { sm_package_inventory_inherit(0, parent.len()) }, err(Errno::EINVAL));
+        assert_eq!(unsafe { sm_package_inventory_inherit(parent.as_ptr() as usize, parent.len()) }, 0);
+        assert_eq!(unsafe { sm_package_inventory_inherit(parent.as_ptr() as usize, parent.len()) }, err(Errno::EBUSY));
         let path = b"/";
         assert_eq!(unsafe { sm_package_inventory_add(path.as_ptr() as usize, path.len(), 0) }, 0);
         let length = sm_package_inventory_finish();
@@ -87,6 +103,7 @@ mod tests {
         assert_eq!(inventory.files()[0].path, b"/");
         assert_eq!(unsafe { sm_package_inventory_read(bytes.len() + 1, bytes.as_mut_ptr() as usize, 1) }, err(Errno::EINVAL));
         sm_package_inventory_cancel();
+        assert_eq!(unsafe { sm_package_inventory_inherit(parent.as_ptr() as usize, parent.len()) }, err(Errno::EINVAL));
         assert_eq!(unsafe { sm_package_inventory_read(0, bytes.as_mut_ptr() as usize, 1) }, err(Errno::EINVAL));
         assert_eq!(begin(), 0);
         sm_reset(0o755, 0, 0);

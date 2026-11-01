@@ -10,6 +10,7 @@ import { ERRNO, PACKAGE_MAINTENANCE_WIRE as wire } from "../src/generated/abi";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { PackageMaintenanceError } from "../src/package-maintenance";
 import { softwareImage } from "./fixtures/package-upgrade-image";
+import { PackageUpgradeClient } from "../../apps/browser-demos/pages/kandelo/kernel-host/package-upgrade-client";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -65,6 +66,42 @@ async function boot(bytes: Uint8Array, journal?: string, existing = false): Prom
 }
 
 describe("real Node maintenance transport", () => {
+  it("runs the application driver through install, persistent reopen and rollback on Node", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-package-client-"));
+    let host: NodeKernelHost | undefined;
+    try {
+      const before = await softwareImage(1);
+      const after = await softwareImage(2);
+      const journal = join(directory, "journal");
+      host = await boot(before.bytes, journal);
+      const client = () => new PackageUpgradeClient(request => host!.packageMaintenance(request));
+      await host.writeFileToVfs("/user/notes", encoder.encode("application driver user data"));
+      await host.packageMaintenance({ action: "enter" });
+      const installed = await client().run("install", {
+        inventoryBytes: after.inventory.length,
+        readInventory: async (offset, length) => after.inventory.slice(offset, offset + length),
+        readFile: async (path, offset, length) => {
+          const body = after.bodies.get(path);
+          if (!body) throw new Error(`Missing software fixture: ${path}`);
+          return body.slice(offset, offset + length);
+        },
+      });
+      expect(installed.phase).toBe(wire.PHASE_ACTIVE);
+      await host.packageMaintenance({ action: "leave" });
+      await host.destroy();
+      host = await boot(before.bytes, journal, true);
+      expect(await host.readFileFromVfs("/software/tool")).toEqual(after.bodies.get("/software/tool"));
+      expect(await host.readFileFromVfs("/var/lib/kandelo/packages/installed")).toEqual(after.inventory);
+      await host.packageMaintenance({ action: "enter" });
+      expect((await client().run("rollback")).phase).toBe(wire.PHASE_ROLLED_BACK);
+      await host.packageMaintenance({ action: "leave" });
+      await host.destroy();
+      host = await boot(before.bytes, journal, true);
+      expect(await host.readFileFromVfs("/software/tool")).toEqual(before.bodies.get("/software/tool"));
+      expect(await host.readFileFromVfs("/user/notes")).toEqual(encoder.encode("application driver user data"));
+    } finally { await host?.destroy(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
   it("upgrades a producer-owned set after interruption, retains lazy bindings and user data, and rolls back", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-package-upgrade-"));
     const journal = join(directory, "journal");

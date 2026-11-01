@@ -51,6 +51,12 @@ impl OwnedFile {
     }
 }
 
+struct InheritedFile {
+    path: IoBuffer<u8>,
+    digest: [u8; 32],
+    source_identity: [u8; 32],
+}
+
 pub struct Builder {
     epoch: u64,
     program_abi: u32,
@@ -58,6 +64,7 @@ pub struct Builder {
     name: IoBuffer<u8>,
     version: IoBuffer<u8>,
     files: IoBuffer<OwnedFile>,
+    inherited: Option<IoBuffer<InheritedFile>>,
     bytes: usize,
 }
 
@@ -69,12 +76,32 @@ impl Builder {
         }], &[])?;
         Ok(Self { epoch: package_plan::filesystem_epoch()?, program_abi, program_digest,
             name: package_inventory::metadata_copy(name)?, version: package_inventory::metadata_copy(version)?,
-            files: package_inventory::metadata_buffer(), bytes: 512 })
+            files: package_inventory::metadata_buffer(), inherited: None, bytes: 512 })
     }
 
     fn require_source(&self) -> Result<(), Errno> {
         if fixed_persistence_enabled() || package_plan::filesystem_epoch()? != self.epoch { return Err(Errno::EBUSY); }
         Ok(())
+    }
+
+    pub fn inherit(&mut self, bytes: &[u8]) -> Result<usize, Errno> {
+        self.require_source()?;
+        if !self.files.is_empty() || self.inherited.is_some() { return Err(Errno::EBUSY); }
+        if bytes.len() > package_inventory::MAX_BYTES { return Err(Errno::E2BIG); }
+        let _input = crate::metadata_budget::PACKAGE_METADATA.reserve_temporary(bytes.len().checked_mul(2).ok_or(Errno::ENOMEM)?)?;
+        let inventory = package_inventory::Inventory::decode(bytes)?;
+        inventory.check_runtime(self.program_abi, self.program_digest)?;
+        let mut files = package_inventory::metadata_with_capacity(inventory.files().len())?;
+        for file in inventory.files() {
+            if let Content::Deferred { digest, provider, .. } = file.content {
+                if let Some(source_identity) = provider_record::archive_source_identity(provider)? {
+                    files.push(InheritedFile { path: package_inventory::metadata_copy(file.path)?, digest, source_identity });
+                }
+            }
+        }
+        let count = files.len();
+        self.inherited = Some(files);
+        Ok(count)
     }
 
     pub fn add(&mut self, path: &[u8], declared_digest: Option<[u8; 32]>, source: &mut Source<'_>) -> Result<(), Errno> {
@@ -92,13 +119,21 @@ impl Builder {
                 InodeKind::Special(_) => return Err(Errno::EOPNOTSUPP),
                 InodeKind::LazyMember { .. } | InodeKind::BaseRegular { source: BaseSource::Host, .. }
                     if matches!(inode.kind, InodeKind::LazyMember { .. }) || inode.deferred_base || !inode.deferred_payload.is_empty() => {
+                    let inherited = if inode.deferred_digest == crate::sdef::DIGEST_NONE && declared_digest.is_none() {
+                        self.inherited.as_ref().and_then(|files| files.binary_search_by(|file| file.path.as_ref().cmp(path)).ok().map(|index| &files[index]))
+                    } else { None };
                     let digest = if inode.deferred_digest == crate::sdef::DIGEST_NONE {
-                        declared_digest.filter(|digest| *digest != crate::sdef::DIGEST_NONE).ok_or(Errno::EOPNOTSUPP)?
+                        declared_digest.or_else(|| inherited.map(|file| file.digest))
+                            .filter(|digest| *digest != crate::sdef::DIGEST_NONE).ok_or(Errno::EOPNOTSUPP)?
                     } else {
                         if declared_digest.is_some_and(|digest| digest != inode.deferred_digest) { return Err(Errno::EIO); }
                         inode.deferred_digest
                     };
-                    Some(OwnedContent::Deferred { size: stamp.size, digest, provider: provider_record::describe(state, inode, digest)? })
+                    let provider = provider_record::describe(state, inode, digest)?;
+                    if let Some(inherited) = inherited {
+                        if provider_record::archive_source_identity(&provider)? != Some(inherited.source_identity) { return Err(Errno::EOPNOTSUPP); }
+                    }
+                    Some(OwnedContent::Deferred { size: stamp.size, digest, provider })
                 }
                 _ => None,
             })
@@ -141,6 +176,7 @@ impl Builder {
 
     pub fn finish(mut self) -> Result<IoBuffer<u8>, Errno> {
         self.require_source()?;
+        self.inherited = None;
         self.files.sort_unstable_by(|left, right| left.path.cmp(&right.path));
         if self.files.windows(2).any(|pair| pair[0].path == pair[1].path) { return Err(Errno::EEXIST); }
         let mut files = package_inventory::metadata_with_capacity(self.files.len())?;

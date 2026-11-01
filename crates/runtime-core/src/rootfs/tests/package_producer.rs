@@ -219,3 +219,110 @@ fn package_producer_archive_binding_proofs_and_reads_cannot_reuse_an_old_source_
     assert_eq!(read_file_at(b"/lazy/f", 0, &mut bytes, &mut source), Err(Errno::EIO));
     assert_eq!(calls.get(), 2);
 }
+
+fn inherited_archive_inventory() -> crate::IoBuffer<u8> {
+    let image = tiny_vfs_described();
+    load_image(image.len() as u64, &mut image_host(image)).unwrap();
+    declare_archive(71, 123_456).unwrap();
+    set_archive_source(71, b"https://packages.invalid/archive", &[10; 32]).unwrap();
+    set_archive_payload(71, b"transport").unwrap();
+    insert_lazy_file(b"/member", 71, b"bin/program", 42, 0o640, 12, 34, 701, b"", b"", b"").unwrap();
+    let mut producer = builder();
+    producer.add(b"/member", Some([11; 32]), &mut |_, _| panic!("archive fetch")).unwrap();
+    producer.finish().unwrap()
+}
+
+#[test]
+fn package_producer_inherits_archive_hash_without_fetching_or_retaining_input() {
+    let _guard = TestGuard::acquire();
+    let inventory = inherited_archive_inventory();
+    let mut producer = builder();
+    assert_eq!(producer.inherit(&inventory), Ok(1));
+    drop(inventory);
+    producer.add(b"/member", None, &mut |_, _| panic!("archive fetch")).unwrap();
+    let bytes = producer.finish().unwrap();
+    let parsed = Inventory::decode(&bytes).unwrap();
+    assert_eq!(parsed.files()[0].content.file_identity(), Some((42, [11; 32])));
+}
+
+#[test]
+fn package_producer_inheritance_uses_logical_archive_identity_not_local_ids() {
+    let _guard = TestGuard::acquire();
+    let inventory = inherited_archive_inventory();
+    unlink(b"/member").unwrap();
+    declare_archive(72, 123_456).unwrap();
+    set_archive_source(72, b"https://packages.invalid/archive", &[10; 32]).unwrap();
+    set_archive_payload(72, b"transport").unwrap();
+    insert_lazy_file(b"/member", 72, b"bin/program", 42, 0o640, 12, 34, 702, b"", b"", b"").unwrap();
+    let mut producer = builder();
+    producer.inherit(&inventory).unwrap();
+    producer.add(b"/member", None, &mut |_, _| panic!("archive fetch")).unwrap();
+    let bytes = producer.finish().unwrap();
+    let parsed = Inventory::decode(&bytes).unwrap();
+    let Content::Deferred { provider, .. } = parsed.files()[0].content else { panic!("provider missing") };
+    assert_eq!(crate::sdef::decode(provider).unwrap().records[0].archive_id, 72);
+}
+
+#[test]
+fn package_producer_inheritance_refuses_changed_sources_and_allows_explicit_hash_retry() {
+    let _guard = TestGuard::acquire();
+    for change in 0..6 {
+        let inventory = inherited_archive_inventory();
+        match change {
+            0 => set_archive_source(71, b"https://packages.invalid/other", &[10; 32]).unwrap(),
+            1 => set_archive_source(71, b"https://packages.invalid/archive", &[12; 32]).unwrap(),
+            2 => set_archive_payload(71, b"other transport").unwrap(),
+            3 => set_deferred_payload(b"/member", b"other member transport").unwrap(),
+            _ => {
+                unlink(b"/member").unwrap();
+                let (path, size) = if change == 4 { (b"bin/other".as_slice(), 42) } else { (b"bin/program".as_slice(), 43) };
+                insert_lazy_file(b"/member", 71, path, size, 0o640, 12, 34, 702, b"", b"", b"").unwrap();
+            }
+        }
+        let mut producer = builder();
+        producer.inherit(&inventory).unwrap();
+        assert_eq!(producer.add(b"/member", None, &mut |_, _| panic!("archive fetch")), Err(Errno::EOPNOTSUPP));
+        producer.add(b"/member", Some([13; 32]), &mut |_, _| panic!("archive fetch")).unwrap();
+        assert_eq!(Inventory::decode(&producer.finish().unwrap()).unwrap().files().len(), 1);
+    }
+}
+
+#[test]
+fn package_producer_inheritance_failure_does_not_publish_partial_state() {
+    let _guard = TestGuard::acquire();
+    let before = crate::metadata_budget::PACKAGE_METADATA.usage().0;
+    {
+        let inventory = inherited_archive_inventory();
+        let mut producer = builder();
+        assert_eq!(producer.inherit(b"bad inventory"), Err(Errno::EIO));
+        let incompatible = crate::package_inventory::encode(54, [8; 32],
+            &[crate::package_inventory::PackageSpec { name: b"base", version: b"1", content_digest: None, dependencies: &[] }], &[]).unwrap();
+        assert!(producer.inherit(&incompatible).is_err());
+        {
+            let used = crate::metadata_budget::PACKAGE_METADATA.usage().0;
+            let _limit = BudgetLimit::new(&crate::metadata_budget::PACKAGE_METADATA, used);
+            assert_eq!(producer.inherit(&inventory), Err(Errno::ENOMEM));
+        }
+        assert_eq!(producer.inherit(&inventory), Ok(1));
+        assert_eq!(producer.inherit(&inventory), Err(Errno::EBUSY));
+        producer.add(b"/member", None, &mut |_, _| panic!("archive fetch")).unwrap();
+        assert_eq!(producer.inherit(&inventory), Err(Errno::EBUSY));
+    }
+    assert_eq!(crate::metadata_budget::PACKAGE_METADATA.usage().0, before);
+}
+
+#[test]
+fn package_producer_inheritance_refuses_unproven_standalone_and_reloaded_sources() {
+    let _guard = TestGuard::acquire();
+    let inventory = inherited_archive_inventory();
+    unlink(b"/member").unwrap();
+    insert_lazy_file(b"/member", 0, b"", 42, 0o640, 12, 34, 702,
+        b"https://packages.invalid/archive", b"", b"").unwrap();
+    let mut producer = builder();
+    producer.inherit(&inventory).unwrap();
+    assert_eq!(producer.add(b"/member", None, &mut |_, _| panic!("source fetch")), Err(Errno::EOPNOTSUPP));
+    let image = tiny_vfs_described();
+    load_image(image.len() as u64, &mut image_host(image)).unwrap();
+    assert_eq!(producer.inherit(&inventory), Err(Errno::EBUSY));
+    assert!(matches!(producer.finish(), Err(Errno::EBUSY)));
+}

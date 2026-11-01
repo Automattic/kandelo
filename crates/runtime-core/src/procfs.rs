@@ -1877,10 +1877,10 @@ mod tests {
         let report = generate_content(&process, &entry).unwrap();
         let text = core::str::from_utf8(&report).unwrap();
         assert!(text.starts_with("version 1\nunits admission_credits\nlifetime kernel\naggregate current="));
-        for owner in ["namespace", "journal", "journal_writeback", "io", "io_writeback"] {
+        for owner in ["namespace", "packages", "journal", "journal_writeback", "io", "io_writeback"] {
             assert!(text.lines().any(|line| line.starts_with(&alloc::format!("{owner} live="))));
         }
-        assert_eq!(text.lines().count(), 9);
+        assert_eq!(text.lines().count(), 10);
     }
 
     #[test]

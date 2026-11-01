@@ -9,6 +9,7 @@ import { writeTrackedDemoConfig } from "./tracked-demo-config";
 import { installImageSessions } from "./image-session-files";
 import { parseComputerServices } from "../../../web-libs/kandelo-session/src/computer-services";
 import { renderWordPressConfig, wordpressConfigTemplate } from "../../../apps/browser-demos/lib/init/wordpress-runtime-config";
+import { INSTALLED_SOFTWARE, currentSoftwareContract, installSoftwareInventory } from "./software-inventory";
 
 function load(packageName: string, file: string): KandeloImageFs {
   const fs = KandeloImageFs.create();
@@ -73,6 +74,9 @@ export async function buildWebStackImage(output: string): Promise<void> {
   installImageSessions(fs, "web-stack-vfs");
   installServiceActivities(fs, serviceDeclarations("web-stack-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))));
   writeTrackedDemoConfig(fs, "packages/registry/web-stack-vfs/demo.json");
+  installSoftwareInventory(fs, "web-stack", {
+    contract: currentSoftwareContract(), parentInventory: fs.readFile(INSTALLED_SOFTWARE),
+  });
   await saveShellDerivedVfsImage(fs, output);
 }
 
@@ -166,6 +170,9 @@ if (strpos($uri, '/wp-content/') === 0) {
   installImageSessions(fs, "wordpress-family-vfs");
   installServiceActivities(fs, serviceDeclarations("wordpress-family-vfs"), new Uint8Array(readFileSync(resolveVfsArtifact("programs/service-activity-control.wasm", "service-activity-tools"))), 'backend=${target#wordpress-}; /usr/local/bin/kandelo-wordpress-select "$backend"');
   writeTrackedDemoConfig(fs, "packages/registry/wordpress-family-vfs/demo.json");
+  installSoftwareInventory(fs, "wordpress-family", {
+    contract: currentSoftwareContract(), parentInventory: fs.readFile(INSTALLED_SOFTWARE),
+  });
   await saveShellDerivedVfsImage(fs, output);
 }
 

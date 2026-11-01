@@ -27,6 +27,7 @@ host/test/browser-input-source.test.ts	source-only
 host/test/browser-kernel.test.ts	source-only
 host/test/browser-lazy-fetcher.test.ts	source-only
 host/test/browser-mitm-ca-env.test.ts	source-only
+host/test/browser-package-upgrade-client.test.ts	source-only
 host/test/browser-pcm-driver.test.ts	source-only
 host/test/browser-persistent-image-codec-worker.test.ts	source-only
 host/test/browser-persistent-image-codec.test.ts	source-only
@@ -628,6 +629,7 @@ tests/package-system/rootfs-verified-source-contract.test.ts	prepared-product
 tests/package-system/scummvm-play-download.test.ts	source-only
 tests/package-system/sdl-dsp-packages.test.ts	source-only
 tests/package-system/shell-lazy-url-resolution.test.ts	prepared-product
+tests/package-system/software-inventory.test.ts	prepared-product
 tests/package-system/source-only-vite-assets.test.ts	prepared-product
 tests/package-system/source-rootfs-shell-bridge.test.ts	prepared-product
 tests/package-system/validate-wasm-artifacts.test.ts	prepared-product

@@ -47,7 +47,9 @@ The installed inventory lives at `/var/lib/kandelo/packages/installed`.
 This state directory must be root-owned with mode 0700; inventory/control
 files use mode 0600. The image producer must emit the initial managed
 inventory, rather than adopting potentially edited user files on first
-upgrade. Product-build integration remains pending.
+upgrade. Canonical Base Shell, Web Stack and WordPress family recipes now
+emit a baseline during pristine image composition. Normal product builds
+and byte-for-byte recapture after loading their published images pass.
 
 The image module now has a native inventory-authoring primitive. Recipes
 select owned paths; Rust captures metadata, hashes resident content in at
@@ -55,6 +57,13 @@ most 64 KiB chunks, retains bounded provider descriptions, sorts paths and
 encodes the inventory. A trusted producer can supply a missing archive
 member digest derived from its verified prebuilt archive. This does not
 fetch deferred content or adopt an existing computer during an upgrade.
+Derived build images can instead inherit those member hashes from a trusted
+pristine parent inventory. Rust requires the same member path, length,
+archive length and digest, complete transport addresses and payloads; only
+local numeric archive identifiers may differ. A changed binding requires
+new hashes from the declared archive. Inheritance copies bounded lookup
+metadata, never retains a pointer into the caller's inventory, and releases
+the lookup before final encoding. It is not a runtime baseline-adoption API.
 Capture revalidates filesystem lifetime, file state and complete provider
 descriptions before finishing. Source changes invalidate dependent caches
 and previously captured proofs.
@@ -64,8 +73,27 @@ of a mounted journal is not evidence that imported bytes are pristine:
 an exported user-edited image is still an image. Production recipes and
 bundle selection must establish trusted inputs separately. The runtime
 maintenance API cannot create a missing installed baseline; that refusal
-must remain in place. No production image recipe invokes the new primitive
-yet, so existing first-release computers are not automatically upgradeable.
+must remain in place. Existing first-release computers are not automatically
+upgradeable: adding this producer hook does not retroactively establish
+their original software baseline.
+
+The first producer policy treats each complete image-family selection as
+one software package, assembled by the normal prebuilt dependency graph.
+Its content commitment changes when software changes; it is not a catalog
+of individually selectable package updates. The build driver supplies the
+current program digest through its native snapshot reader. The shell
+derives missing member hashes from its declared, digest-verified archives;
+derived families inherit only bindings that still match exactly.
+
+Managed paths cover shipped `/bin`, `/sbin`, `/lib`, `/usr`, `/etc` and
+`/var/www` software, plus the Web Stack's `/var/lib/todo/server.rb`.
+Explicit exclusions preserve credentials, host/network configuration,
+service/backend choices, generated trust certificates, WordPress secrets,
+`wp-config.php`, uploads, database data and the per-site database drop-in.
+Both independent WordPress sites remain outside the managed software set
+under `/var/lib/wordpress-sites`. New user-created files are not silently
+added to an installed baseline. Changed managed files still require the
+coordinator's conflict checks; database migrations remain explicit.
 
 ## Maintenance and conflict policy
 
@@ -124,6 +152,18 @@ maintenance release, both hosts refresh transfer limits from Rust's live
 provider descriptions. A newly installed URI therefore becomes readable
 without trusting a second host-owned filesystem inventory. This is tested
 transport, not yet a validated application upgrade UI.
+
+The application-side `PackageUpgradeClient` drives this interface using
+independent chunks of at most 64 KiB, native staging requests and native
+verification progress. Its caller must already own maintenance mode and
+retain kernel/storage ownership until the operation and cleanup settle.
+Cancellation joins outstanding work, then drops only volatile coordinator
+state; it never implicitly discards durable recovery or admits guests.
+Once commit is dispatched, late cancellation cannot hide its successful
+acknowledgement. Finalization errors retain whether commit was acknowledged;
+uncertain cleanup refuses another operation until the computer is reopened.
+The same driver passes real Node and three-engine browser fixture tests.
+It is not yet connected to the application's worker-retirement/recovery UI.
 
 ## Staging, activation and recovery
 
@@ -186,7 +226,7 @@ old versus new state.
 - Incoming sets must match the current supported program contract.
   Rollback refuses an old set unsupported by the current runtime. No
   privileged old runtime is retained or loaded.
-- Worker-retirement integration, build inventories/bundles, complete host
+- Worker-retirement integration, bundle consumption, complete host
   upgrade acceptance, UI, and real WordPress + MariaDB
   upgrade demonstrations remain open. Database migrations stay explicit.
 
