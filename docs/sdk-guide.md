@@ -76,6 +76,12 @@ This makes 8 CLI tools available globally:
 | `wasm32posix-pkg-config` | pkg-config with sysroot awareness |
 | `wasm32posix-configure` | Autoconf `./configure` wrapper |
 
+Each tool also has a `wasm64posix-` twin for the wasm64 (memory64) target;
+`cc`, `c++`, `pkg-config` and `configure` select `sysroot64` for it. `ar`,
+`ranlib` and `nm` are architecture-independent LLVM tools: they read no
+libc, so they need only the LLVM installation, not any sysroot. A tree that
+has built only `sysroot64` can therefore archive wasm64 objects.
+
 ### LLVM Discovery
 
 The SDK finds LLVM in this order:
