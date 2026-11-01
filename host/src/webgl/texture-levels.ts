@@ -24,13 +24,19 @@ export type GlTextureLevel = {
 /** GLES 2 view of a level. `type` uses WebGL's HALF_FLOAT for
  * HALF_FLOAT_OES. `expanded` marks a LUMINANCE/ALPHA float level stored as
  * RGBA (luminance-float.ts); `colorRenderable` is section 4.4.5 under the
- * advertised extensions (es2-formats.ts), which WebGL 2 does not apply. */
+ * advertised extensions (es2-formats.ts), which WebGL 2 does not apply.
+ * `depth` and `stencil` mark DEPTH_COMPONENT (OES_depth_texture) and
+ * DEPTH_STENCIL_OES (OES_packed_depth_stencil) levels, which are exactly the
+ * depth-renderable and stencil-renderable texture levels; their sampling
+ * as (d,d,d,1) is not yet emulated (WebGL 2 returns (d,0,0,1)). */
 export type GlesLevelFormat = {
   internalFormat: number;
   format: number;
   type: number;
   expanded: boolean;
   colorRenderable: boolean;
+  depth: boolean;
+  stencil: boolean;
 };
 
 const TEX = 0x0de1, CUBE = 0x8513, FACE0 = 0x8515;

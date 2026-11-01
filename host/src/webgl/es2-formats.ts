@@ -147,6 +147,21 @@ export function textureColorRenderable(internal: number, format: number, type: n
   return false;
 }
 
+/** OES_depth_texture / OES_packed_depth_stencil base formats. */
+export function depthTextureFormat(format: number): boolean {
+  return format === DEPTH_COMPONENT || format === DEPTH_STENCIL;
+}
+
+/** Section 4.4.5 as modified by OES_packed_depth_stencil: DEPTH_COMPONENT16
+ * and DEPTH24_STENCIL8_OES are depth-renderable; STENCIL_INDEX8 and
+ * DEPTH24_STENCIL8_OES are stencil-renderable. */
+export function renderbufferDepthRenderable(internal: number): boolean {
+  return internal === 0x81a5 || internal === 0x88f0;
+}
+export function renderbufferStencilRenderable(internal: number): boolean {
+  return internal === 0x8d48 || internal === 0x88f0;
+}
+
 /** CopyTexImage2D produces an unsized level of the read buffer's component
  * type; only its base format decides color-renderability here. */
 export function copiedTextureColorRenderable(internal: number): boolean {

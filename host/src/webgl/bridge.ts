@@ -25,15 +25,15 @@ import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniform
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
-import { boundTextureObject, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
+import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
 import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
-import { copiedTextureColorRenderable, nativeRenderbufferFormat, renderbufferColorRenderable,
-  textureColorRenderable } from "./es2-formats.js";
+import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
+  renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
@@ -297,6 +297,19 @@ function expandedUpload(b: GlBinding, format: number, type: number, bytes: Uint8
   return data;
 }
 
+/** 16-bit depth rows packed at the current UNPACK_ALIGNMENT, widened to
+ * tightly packed 32-bit values (c * 65537 maps 0xffff to 0xffffffff). */
+function widenedDepthUpload(b: GlBinding, bytes: Uint8Array, width: number, height: number): Uint32Array | null {
+  const alignment = b.shadow.unpackAlignment, stride = Math.ceil(width * 2 / alignment) * alignment;
+  if (width < 0 || height < 0 || (width && height && bytes.length < (height - 1) * stride + width * 2)) {
+    recordGlError(b, 0x502); return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength), out = new Uint32Array(width * height);
+  for (let r = 0; r < height; r++)
+    for (let x = 0; x < width; x++) out[r * width + x] = view.getUint16(r * stride + x * 2, true) * 65537;
+  return out;
+}
+
 function normalizeTextureType(type: number): number {
   // GLES2's OES_texture_half_float extension uses GL_HALF_FLOAT_OES, while
   // WebGL2 accepts the core GL_HALF_FLOAT token. Native renderers such as LOVE
@@ -536,6 +549,14 @@ function dispatch(
     : op === O.OP_RENDERBUFFER_STORAGE ? renderbufferFormatError(gl,v.getUint32(p+4,true)) : 0;
   if (formatError !== 0) {
     recordGlError(b, formatError);
+    return;
+  }
+  // OES_depth_texture and OES_packed_depth_stencil: depth and depth-stencil
+  // textures exist only for TEXTURE_2D; any other image target is
+  // INVALID_OPERATION (WebGL 2 accepts depth cube maps).
+  if ((op === O.OP_TEX_IMAGE_2D || op === O.OP_TEX_SUB_IMAGE_2D) &&
+      depthTextureFormat(v.getUint32(p+24,true)) && isCubeFace(v.getUint32(p,true))) {
+    recordGlError(b, 0x502);
     return;
   }
   switch (op) {
@@ -867,7 +888,8 @@ function dispatch(
       if (accepted) {
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat:native.internal,format:native.format,type,compressed:false,
-            gles:{internalFormat,format,type,expanded,colorRenderable:textureColorRenderable(internalFormat,format,type)}});
+            gles:{internalFormat,format,type,expanded,colorRenderable:textureColorRenderable(internalFormat,format,type),
+              depth:depthTextureFormat(format),stencil:format===0x84f9}});
       }
       return accepted;
     }
@@ -892,12 +914,23 @@ function dispatch(
       if ((expanded || logical?.expanded) && (!logical?.expanded || logical.format !== format || logical.type !== type)) {
         recordGlError(b,0x502); return false;
       }
+      // OES_packed_depth_stencil 3.8.1: depth data only for depth levels, and
+      // depth levels only from depth data.
+      if (logical && logical.depth !== depthTextureFormat(format)) { recordGlError(b,0x502); return false; }
+      // OES_depth_texture issue 3: the type only selects the bits supplied.
+      // WebGL 2 stores 32-bit depth as DEPTH_COMPONENT24, which accepts only
+      // UNSIGNED_INT, so 16-bit data is widened exactly (c * 65537).
+      const widenDepth = logical?.format === 0x1902 && logical.type === 0x1405 && format === 0x1902 && type === 0x1403;
+      const nativeType = widenDepth ? 0x1405 : type;
       const nativeFormat = expanded ? expandedNative(type).format : format;
       let data: ArrayBufferView | null;
       if (expanded && dataLen !== 0) {
         data = expandedUpload(b, format, type, copyBytes(v, p + 36, dataLen), width, height);
         if (!data) return false;
-      } else data = copyPixels(v, p + 36, dataLen, type);
+      } else if (widenDepth && dataLen !== 0) {
+        data = widenedDepthUpload(b, copyBytes(v, p + 36, dataLen), width, height);
+        if (!data) return false;
+      } else data = copyPixels(v, p + 36, dataLen, nativeType);
       if (destinationOnly) {
         // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.
         // A zero-area native update at the checked endpoint validates the same
@@ -913,12 +946,12 @@ function dispatch(
         return imageTextureOperation(b,target,false,()=>{
           // WebGL2 requires the offset overload exactly when a real unpack
           // buffer is bound. Neither branch changes that binding or reads data.
-          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,type,0);
-          else gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,type,data);
+          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,0);
+          else gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,data);
         });
       }
       return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
-        target, level, xoff, yoff, width, height, nativeFormat, type, data,
+        target, level, xoff, yoff, width, height, nativeFormat, nativeType, data,
       ));
     }
     case O.OP_TEX_PARAMETERI:
@@ -950,6 +983,11 @@ function dispatch(
     }
     case O.OP_GENERATE_MIPMAP: {
       const target = v.getUint32(p,true);
+      // OES_depth_texture issue 1 (resolution b): GenerateMipmap on a depth
+      // texture is INVALID_OPERATION. Depth textures are 2D only.
+      if (target === 0x0de1 && textureLevel(boundTextureObject(b,target)!,target,0)?.gles?.depth) {
+        recordGlError(b,0x502); return;
+      }
       if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target)))
         recordGeneratedMipmaps(boundTextureObject(b,target),target);
       return;
@@ -968,7 +1006,7 @@ function dispatch(
         // ES 2.0 section 4.4.5: compressed formats are not color-renderable.
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat,format:internalFormat,type:0,compressed:true,
-            gles:{internalFormat,format:internalFormat,type:0,expanded:false,colorRenderable:false}});
+            gles:{internalFormat,format:internalFormat,type:0,expanded:false,colorRenderable:false,depth:false,stencil:false}});
       }
       return;
     }
@@ -1003,12 +1041,17 @@ function dispatch(
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false,
             gles:{internalFormat,format:internalFormat,type:0x1401,expanded:false,
-              colorRenderable:copiedTextureColorRenderable(internalFormat)}});
+              colorRenderable:copiedTextureColorRenderable(internalFormat),depth:false,stencil:false}});
       }
       return;
     }
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
       if (!requireGlesFramebufferComplete(b,true)) return;
+      // OES_depth_texture: CopyTexSubImage2D is not supported for depth
+      // levels; the color read buffer has no components for them.
+      if (textureLevel(boundTextureObject(b,v.getUint32(p,true))!,v.getUint32(p,true),v.getInt32(p+4,true))?.gles?.depth) {
+        recordGlError(b,0x502); return;
+      }
       imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1390,7 +1433,8 @@ function dispatch(
         v.getInt32(p + 12, true),
       ));
       if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true),
-        internal,renderbufferColorRenderable(internal));
+        internal,{colorRenderable:renderbufferColorRenderable(internal),
+          depthRenderable:renderbufferDepthRenderable(internal),stencilRenderable:renderbufferStencilRenderable(internal)});
       return accepted;
     }
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName

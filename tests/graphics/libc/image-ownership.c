@@ -5821,6 +5821,22 @@ int main(int argc, char **argv) {
                 assert(glGetError() == GL_NO_ERROR);
                 assert(image_mutation_queries == queries + i + 1 && image_pixel_updates == updates + i + 1);
             }
+        } else if (!strcmp(argv[1], "encoder-format-depth-target")) {
+            /* OES_depth_texture / OES_packed_depth_stencil: depth and
+             * depth-stencil textures are TEXTURE_2D only; other targets are
+             * INVALID_OPERATION, rejected before any storage request. */
+            const GLenum faces[] = {GL_TEXTURE_CUBE_MAP_POSITIVE_X, GL_TEXTURE_CUBE_MAP_NEGATIVE_Z};
+            for (size_t i = 0; i < 2; i++) {
+                glTexImage2D(faces[i],0,GL_DEPTH_COMPONENT,1,1,0,GL_DEPTH_COMPONENT,GL_UNSIGNED_SHORT,NULL);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+                glTexImage2D(faces[i],0,GL_DEPTH_STENCIL_OES,1,1,0,GL_DEPTH_STENCIL_OES,GL_UNSIGNED_INT_24_8_OES,NULL);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+                glTexSubImage2D(faces[i],0,0,0,1,1,GL_DEPTH_COMPONENT,GL_UNSIGNED_INT,pixel);
+                assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+            }
+            assert(image_mutation_queries == queries);
+            glTexImage2D(GL_TEXTURE_2D,0,GL_DEPTH_COMPONENT,1,1,0,GL_DEPTH_COMPONENT,GL_UNSIGNED_SHORT,NULL);
+            assert(glGetError() == GL_NO_ERROR && image_mutation_queries == queries + 1);
         } else if (!strcmp(argv[1], "encoder-format-subimage")) {
             const struct { GLenum format, type, error; } rejected[] = {
                 {0x8058, GL_UNSIGNED_BYTE, GL_INVALID_ENUM}, {GL_RGBA, 0x140b, GL_INVALID_ENUM},

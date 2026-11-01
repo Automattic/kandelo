@@ -2290,6 +2290,16 @@ static GLenum texture_image_error(GLint internal, GLenum format, GLenum type, ui
     return error;
 }
 
+/* OES_depth_texture and OES_packed_depth_stencil: depth and depth-stencil
+ * textures exist only for TEXTURE_2D, and "using this format in conjunction
+ * with any other <target> will result in an INVALID_OPERATION error". Other
+ * invalid targets remain the host's INVALID_ENUM. */
+static GLenum depth_texture_target_error(GLenum target, GLenum format) {
+    return (format == GL_DEPTH_COMPONENT || format == GL_DEPTH_STENCIL_OES)
+        && target >= GL_TEXTURE_CUBE_MAP_POSITIVE_X && target <= GL_TEXTURE_CUBE_MAP_NEGATIVE_Z
+        ? GL_INVALID_OPERATION : GL_NO_ERROR;
+}
+
 /* Section 3.7.2 CopyTexImage2D base formats, plus EXT_texture_rg. */
 static GLenum copy_texture_format_error(GLenum internal) {
     switch (internal) {
@@ -2438,6 +2448,7 @@ void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
     if (!_wpk_gl_current_encoder()) return;
     uint32_t bpp = 0;
     GLenum error = texture_image_error(internalFormat, format, type, &bpp);
+    if (!error) error = depth_texture_target_error(target, format);
     if (error) {
         raise_client_error(error);
         return;
@@ -2470,6 +2481,7 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
     /* Validate the original pair before BGRA normalization or pixel access. */
     uint32_t bpp = 0;
     GLenum error = texture_pixel_error(format, type, &bpp);
+    if (!error) error = depth_texture_target_error(target, format);
     if (error) {
         raise_client_error(error);
         return;

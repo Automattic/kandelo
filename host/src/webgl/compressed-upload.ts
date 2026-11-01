@@ -102,7 +102,7 @@ export function runCompressedUpload(b: GlBinding, input: Uint8Array, out: Uint8A
     if (accepted && image)
       recordTextureLevel(upload.object,target,level,
         {width,height,internalFormat:format,format,type:0,compressed:true,
-          gles:{internalFormat:format,format,type:0,expanded:false,colorRenderable:false}});
+          gles:{internalFormat:format,format,type:0,expanded:false,colorRenderable:false,depth:false,stencil:false}});
     return accepted ? reply() : -5;
   });
 }

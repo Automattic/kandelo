@@ -25,14 +25,16 @@ import { recordGlError } from "./errors.js";
 import { textureLevel } from "./texture-levels.js";
 
 type Size = readonly [number, number];
-type Image = { size: Size; colorRenderable?: boolean };
+/** Renderability under ES 2.0 plus the advertised extensions; undefined
+ * fields (imported storage) leave that attachment to native completeness. */
+type Image = { size: Size; colorRenderable?: boolean; depthRenderable?: boolean; stencilRenderable?: boolean };
 const renderbufferImages = new WeakMap<WebGLRenderbuffer, Image & { internal?: number }>();
 
 /** `internal` is the guest's requested format (for RENDERBUFFER_INTERNAL_FORMAT
  * when native storage differs); omitted for imported storage. */
 export function recordRenderbufferSize(renderbuffer: WebGLRenderbuffer | null, width: number, height: number,
-                                       internal?: number, colorRenderable?: boolean): void {
-  if (renderbuffer) renderbufferImages.set(renderbuffer, { size: [width, height], internal, colorRenderable });
+                                       internal?: number, renderable?: Omit<Image, "size">): void {
+  if (renderbuffer) renderbufferImages.set(renderbuffer, { size: [width, height], internal, ...renderable });
 }
 
 /** The internal format the guest specified, when native storage differs. */
@@ -43,15 +45,23 @@ export function renderbufferLogicalFormat(renderbuffer: WebGLRenderbuffer | null
 function attachmentImage(image: GlImageAttachment): Image | undefined {
   if (image.kind !== "texture") return renderbufferImages.get(image.object);
   const level = textureLevel(image.object, image.target, image.level);
-  return level && { size: [level.width, level.height], colorRenderable: level.gles?.colorRenderable };
+  const gles = level?.gles;
+  return level && { size: [level.width, level.height], colorRenderable: gles?.colorRenderable,
+    depthRenderable: gles?.depth, stencilRenderable: gles?.stencil };
 }
 
-/** Section 4.4.5: the color attachment of a user framebuffer is not
- * color-renderable under ES 2.0 plus the advertised extensions. */
-export function framebufferColorUnrenderable(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
+/** Section 4.4.5: an attachment of a user framebuffer is not color-, depth-
+ * or stencil-renderable (by attachment point) under ES 2.0 plus the
+ * advertised extensions. */
+export function framebufferAttachmentUnrenderable(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
   if (!framebuffer || isDefaultFramebuffer(b, framebuffer)) return false;
-  const image = b.framebufferAttachments.get(framebuffer)?.get(0x8ce0);
-  return !!image && attachmentImage(image)?.colorRenderable === false;
+  for (const [point, image] of b.framebufferAttachments.get(framebuffer) ?? []) {
+    const recorded = attachmentImage(image);
+    const renderable = point === 0x8d00 ? recorded?.depthRenderable
+      : point === 0x8d20 ? recorded?.stencilRenderable : recorded?.colorRenderable;
+    if (renderable === false) return true;
+  }
+  return false;
 }
 
 /** True when two attached images of a user framebuffer have different sizes.
@@ -75,7 +85,7 @@ export function framebufferDimensionsDiffer(b: GlBinding, framebuffer: WebGLFram
  * INVALID_FRAMEBUFFER_OPERATION before any native side effect. */
 export function requireGlesFramebufferComplete(b: GlBinding, read = false): boolean {
   const framebuffer = read ? b.shadow.readFbo : b.shadow.fbo;
-  if (!framebufferColorUnrenderable(b, framebuffer) && !framebufferDimensionsDiffer(b, framebuffer)) return true;
+  if (!framebufferAttachmentUnrenderable(b, framebuffer) && !framebufferDimensionsDiffer(b, framebuffer)) return true;
   recordGlError(b, 0x506);
   return false;
 }
@@ -84,7 +94,7 @@ export function requireGlesFramebufferComplete(b: GlBinding, read = false): bool
  * attachments come before dimensions, which come before UNSUPPORTED. */
 export function glesFramebufferStatus(b: GlBinding, framebuffer: WebGLFramebuffer | null, nativeStatus: number): number {
   const passes = nativeStatus === 0x8cd5 || nativeStatus === 0x8cdd;
-  if (passes && framebufferColorUnrenderable(b, framebuffer)) return 0x8cd6;
+  if (passes && framebufferAttachmentUnrenderable(b, framebuffer)) return 0x8cd6;
   if (passes && framebufferDimensionsDiffer(b, framebuffer)) return 0x8cd9;
   return nativeStatus;
 }
