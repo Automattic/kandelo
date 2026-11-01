@@ -43,6 +43,7 @@ import { bindBufferObject, canonicalBuffer } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
+import { expandedColorAttachment } from "./luminance-float.js";
 import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
 import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
 import { readGlErrorQueryMask } from "./error-query.js";
@@ -642,6 +643,11 @@ export function runGlQuery(
         outDv.setUint32(0, 0, true);
         return 4;
       }
+      if (expandedColorAttachment(b, b.shadow.fbo)) {
+        // GLES 2 section 4.4.5: luminance/alpha are not color-renderable.
+        outDv.setUint32(0, 0x8cd6, true); // FRAMEBUFFER_INCOMPLETE_ATTACHMENT
+        return 4;
+      }
       const drawable = b.executionDrawable?.drawable ?? b.currentDrawable;
       const surface = target === 0x8ca8 ? drawable?.readSurfaceId : drawable?.drawSurfaceId;
       let status = surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
@@ -826,6 +832,7 @@ function normalizeNumericValues(value: unknown, pname: number): number[] {
 
 function readNativePixels(b: GlBinding, input: Uint8Array, out: Uint8Array): number {
       if (input.byteLength < 24) return -22;
+      if (expandedColorAttachment(b, b.shadow.readFbo)) { recordGlError(b, 0x506); return -22; }
       if (!requireFramebufferDimensions(b, true)) return -22;
       const inDv = new DataView(input.buffer,input.byteOffset,input.byteLength);
       const gl = b.gl!;

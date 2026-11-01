@@ -30,6 +30,8 @@ import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
+import { boundLogicalTexture, expandedColorAttachment, expandedFloatFormat, expandedLevel, expandedNative, expandedSourceBytes,
+  expandRows, generateExpandedMipmaps, setExpandedLevel } from "./luminance-float.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
@@ -279,6 +281,17 @@ function copyPixels(v: DataView, offset: number, length: number, type: number) {
       return new Uint32Array(bytes.buffer);
     default: return bytes;
   }
+}
+
+/** Expand guest rows packed at the current UNPACK_ALIGNMENT. A short
+ * payload is the same INVALID_OPERATION a native upload would raise. */
+function expandedUpload(b: GlBinding, format: number, type: number, bytes: Uint8Array,
+                        width: number, height: number): ArrayBufferView | null {
+  const alignment = b.shadow.unpackAlignment;
+  const stride = Math.ceil(width * expandedSourceBytes(format, type) / alignment) * alignment;
+  const data = width < 0 || height < 0 ? null : expandRows(format, type, bytes, width, height, stride);
+  if (!data) recordGlError(b, 0x502);
+  return data;
 }
 
 function normalizeTextureType(type: number): number {
@@ -539,6 +552,13 @@ function dispatch(
     case O.OP_GENERATE_MIPMAP:
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
       break;
+  }
+  // GLES 2 section 4.4.5: a luminance/alpha float level is not
+  // color-renderable, although its RGBA stand-in may be natively.
+  if ((op === O.OP_CLEAR || op === O.OP_COPY_TEX_IMAGE_2D || op === O.OP_COPY_TEX_SUB_IMAGE_2D) &&
+      expandedColorAttachment(b, op === O.OP_CLEAR ? b.shadow.fbo : b.shadow.readFbo)) {
+    recordGlError(b, 0x506);
+    return;
   }
   let uniformCount=1;
   if (op >= O.OP_UNIFORM1I && op <= O.OP_UNIFORM_MATRIX3FV) {
@@ -833,14 +853,26 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = dataLen === 0
-        ? null
-        : copyPixels(v, p + 36, dataLen, type);
-      const accepted = imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
-        target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
-        format, type, data,
-      ),v.getInt32(p+4,true)!==0);
-      if (accepted) recordTextureImage(b,target,level,width,height);
+      // Luminance/alpha float levels are stored as expanded RGBA (see
+      // luminance-float.ts); every other admitted triple maps directly.
+      const expanded = expandedFloatFormat(format, type);
+      let data: ArrayBufferView | null = null;
+      if (dataLen !== 0) {
+        data = expanded
+          ? expandedUpload(b, format, type, copyBytes(v, p + 36, dataLen), width, height)
+          : copyPixels(v, p + 36, dataLen, type);
+        if (!data) return false;
+      }
+      const native = expanded ? expandedNative(type)
+        : { internal: normalizeTextureInternalFormat(internalFormat, format, type), format };
+      const accepted = imageTextureOperation(b,target,true,()=>gl.texImage2D(
+        target, level, native.internal, width, height, border, native.format, type, data,
+      ),level!==0);
+      if (accepted) {
+        recordTextureImage(b,target,level,width,height);
+        setExpandedLevel(boundLogicalTexture(b,target),target,level,
+          expanded ? {format,type,width,height} : null);
+      }
       return accepted;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
@@ -856,7 +888,20 @@ function dispatch(
       const format = v.getUint32(p + 24, true);
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
-      const data = copyPixels(v, p + 36, dataLen, type);
+      // GLES 2 performs no format conversion. An expanded level accepts only
+      // its own logical format/type, and an expanded format reaches only such
+      // a level; the RGBA stand-in would otherwise accept RGBA data natively.
+      const expanded = expandedFloatFormat(format, type);
+      const logical = expandedLevel(boundLogicalTexture(b,target),target,level);
+      if ((expanded || logical) && (logical?.format !== format || logical.type !== type)) {
+        recordGlError(b,0x502); return false;
+      }
+      const nativeFormat = expanded ? expandedNative(type).format : format;
+      let data: ArrayBufferView | null;
+      if (expanded && dataLen !== 0) {
+        data = expandedUpload(b, format, type, copyBytes(v, p + 36, dataLen), width, height);
+        if (!data) return false;
+      } else data = copyPixels(v, p + 36, dataLen, type);
       if (destinationOnly) {
         // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.
         // A zero-area native update at the checked endpoint validates the same
@@ -872,12 +917,12 @@ function dispatch(
         return imageTextureOperation(b,target,false,()=>{
           // WebGL2 requires the offset overload exactly when a real unpack
           // buffer is bound. Neither branch changes that binding or reads data.
-          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,format,type,0);
-          else gl.texSubImage2D(target,level,endX,endY,0,0,format,type,data);
+          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,type,0);
+          else gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,type,data);
         });
       }
       return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
-        target, level, xoff, yoff, width, height, format, type, data,
+        target, level, xoff, yoff, width, height, nativeFormat, type, data,
       ));
     }
     case O.OP_TEX_PARAMETERI:
@@ -907,10 +952,14 @@ function dispatch(
       while (b.shadow.cubeTextureUnits.length <= index) b.shadow.cubeTextureUnits.push(null);
       return;
     }
-    case O.OP_GENERATE_MIPMAP:
-      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.generateMipmap(v.getUint32(p,true))))
-        recordGeneratedMipmaps(b,v.getUint32(p,true));
+    case O.OP_GENERATE_MIPMAP: {
+      const target = v.getUint32(p,true);
+      if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target))) {
+        recordGeneratedMipmaps(b,target);
+        generateExpandedMipmaps(boundLogicalTexture(b,target),target);
+      }
       return;
+    }
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
@@ -923,7 +972,8 @@ function dispatch(
         v.getInt32(p + 20, true),
         data,
       ),v.getInt32(p+4,true)!==0))
-        recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+12,true),v.getInt32(p+16,true));
+        { recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+12,true),v.getInt32(p+16,true));
+          setExpandedLevel(boundLogicalTexture(b,v.getUint32(p,true)),v.getUint32(p,true),v.getInt32(p+4,true),null); }
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
@@ -953,7 +1003,8 @@ function dispatch(
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
       ),v.getInt32(p+4,true)!==0))
-        recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+20,true),v.getInt32(p+24,true));
+        { recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+20,true),v.getInt32(p+24,true));
+          setExpandedLevel(boundLogicalTexture(b,v.getUint32(p,true)),v.getUint32(p,true),v.getInt32(p+4,true),null); }
       return;
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
       if (!requireFramebufferDimensions(b,true)) return;

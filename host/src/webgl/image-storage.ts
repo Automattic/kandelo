@@ -1,4 +1,5 @@
 import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall } from "./native-recovery.js";
+import { expandedColorAttachment, forgetExpandedLevels } from "./luminance-float.js";
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
@@ -332,6 +333,7 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
       if (replaceTextureView(b, object as WebGLTexture, view)) {
         transferCandidate(view); installed = true;
         recordTextureReplacement(object as WebGLTexture, source.width, source.height);
+        forgetExpandedLevels(object); // EGLImage storage replaces every level
         return true;
       }
       return false;
@@ -379,6 +381,7 @@ export function boundImageState(b: GlBinding, kind: number, target: number, sour
 /** Each sampling view has independent parameters. Refresh its pixels from the
  * canonical image before every draw, including writes made through other APIs. */
 export function prepareImageDraw(b: GlBinding): boolean {
+  if (expandedColorAttachment(b, b.shadow.fbo)) { recordGlError(b, 0x506); return false; }
   const seen = new Set<WebGLTexture>();
   for (const object of b.shadow.textureUnits) {
     if (!object || seen.has(object))

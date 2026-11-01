@@ -503,6 +503,7 @@ host/test/webgl-image-bindings.test.ts	source-only
 host/test/webgl-image-storage.test.ts	source-only
 host/test/webgl-image-transactions.test.ts	source-only
 host/test/webgl-inverse-sequence.test.ts	source-only
+host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-kernel-owned-forward.test.ts	source-only
 host/test/webgl-kernel-query-controls.test.ts	source-only
 host/test/webgl-kernel-query-wakes.test.ts	source-only
