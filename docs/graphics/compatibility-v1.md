@@ -79,6 +79,10 @@ truthful error):
   `EGL_BAD_MATCH`.
 - `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
 - Gamma LUT size 0; no format modifiers; no async or target page flips.
+- A host with no GLES renderer (Node without an embedder WebGL2 or
+  OffscreenCanvas, or a browser where WebGL2 context creation fails):
+  `eglInitialize` fails with `EGL_NOT_INITIALIZED` (EGL 1.5 §3.2), on both
+  hosts, instead of a later window-surface `EGL_BAD_ALLOC`.
 
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config

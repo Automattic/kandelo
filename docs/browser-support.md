@@ -2847,6 +2847,20 @@ not a confirmed engine defect. The ordered submit/query transport preserves
 this behavior; it does not establish the cause or a performance benefit.
 
 
+### Hosts without a GLES renderer
+
+Kandelo's EGL/GLES 2 renderer is the host's WebGL 2. A host that has none,
+which includes Node without an embedder-supplied WebGL 2 or
+`OffscreenCanvas` and a browser where WebGL 2 context creation fails, has no
+EGL display to initialize. `eglInitialize` then fails with
+`EGL_NOT_INITIALIZED`, the EGL 1.5 section 3.2 error for a display that
+cannot be initialized (Mesa reports the same when no driver loads). Node and
+browser report it identically, because both answer the renderer probe (the
+surface capability query `eglInitialize` issues) the same way when no WebGL 2
+context can be obtained. No software renderer, placeholder surface or zero
+config list is substituted. DRM/KMS dumb buffers and CPU-tier GBM buffers do
+not need a renderer and remain available.
+
 ### SharedArrayBuffer restrictions
 Chrome rejects SharedArrayBuffer-backed views in `TextDecoder.decode()` and `crypto.getRandomValues()`. Always copy to a temporary non-shared buffer first.
 

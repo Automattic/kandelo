@@ -337,6 +337,7 @@ EGLDisplay eglGetPlatformDisplayEXT(EGLenum platform, void *native_display,
 }
 
 static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor);
+static int probe_surface_limits(int fd, uint32_t limits[3]);
 EGLBoolean eglInitialize(EGLDisplay dpy, EGLint *major, EGLint *minor) {
     egl_call_begin();
     lock_context();
@@ -391,8 +392,23 @@ static EGLBoolean initialize_locked(EGLDisplay dpy, EGLint *major, EGLint *minor
         fprintf(stderr,"eglInitialize: cmdbuf mmap(len=%u) failed: errno=%d\n",
             (unsigned)WPK_GL_CMDBUF_LEN,errno);goto fail;
     }
+    /* EGL 1.5 section 3.2: "EGL_NOT_INITIALIZED is generated if display
+     * cannot be initialized." A host without a GLES renderer (Node without
+     * an embedder WebGL2/OffscreenCanvas, or a browser where WebGL2 context
+     * creation fails) has no display to initialize, as Mesa reports
+     * EGL_NOT_INITIALIZED when no driver loads. The surface capability query
+     * is the host's renderer probe; its limits are kept for the pbuffer
+     * attributes. Without this, initialization succeeded and the missing
+     * renderer surfaced later as EGL_BAD_ALLOC from window creation. */
+    uint32_t limits[3];
+    int probed=probe_surface_limits(fd,limits);
+    if(probed<0) {failure=EGL_BAD_ALLOC;goto fail;}
+    if(!probed) {
+        fprintf(stderr,"eglInitialize: no GLES renderer is available on this host\n");goto fail;
+    }
     if(!generation)generation=calloc(1,sizeof *generation);
     if(!generation) {failure=EGL_BAD_ALLOC;goto fail;}
+    memcpy(generation->pbuffer_limits,limits,sizeof limits);
     struct egl_session *session=calloc(1,sizeof *session);
     if(!session) {failure=EGL_BAD_ALLOC;goto fail;}
     *session =
@@ -581,18 +597,25 @@ EGLBoolean eglChooseConfig(EGLDisplay dpy, const EGLint *attrib_list,
 
 /* Read immutable renderer limits through the initialized object session,
  * without creating a public context or changing any thread's current state. */
-static int surface_limits_locked(struct egl_generation *generation) {
-    if (generation->pbuffer_limits[0]) return 1;
+/* The host answers QOP_SURFACE_CAPABILITIES from its GLES renderer, or
+ * fails it when the host has none (ENODEV at the host). 1 = renderer limits,
+ * 0 = no usable renderer, -1 = local allocation failure. */
+static int probe_surface_limits(int fd, uint32_t limits[3]) {
     uint32_t *reply = calloc(4,sizeof *reply);
-    if (!reply) { g_last_error = EGL_BAD_ALLOC; return 0; }
+    if (!reply) return -1;
     const struct gl_query_info query = {.op = QOP_SURFACE_CAPABILITIES,
         .out_buf_ptr = (uintptr_t)reply, .out_buf_len = 16};
-    int accepted = ioctl(generation->fd,GLIO_QUERY,&query) == 0 && reply[3] == WPK_GL_QUERY_REPLY_MAGIC &&
+    int accepted = ioctl(fd,GLIO_QUERY,&query) == 0 && reply[3] == WPK_GL_QUERY_REPLY_MAGIC &&
         reply[0] > 0 && reply[0] <= INT32_MAX && reply[1] > 0 && reply[1] <= INT32_MAX &&
         reply[2] > 0 && reply[2] <= INT32_MAX && (uint64_t)reply[2] <= (uint64_t)reply[0]*reply[1];
-    if (accepted) memcpy(generation->pbuffer_limits,reply,3*sizeof *reply);
-    else g_last_error = EGL_BAD_ACCESS;
+    if (accepted) memcpy(limits,reply,3*sizeof *reply);
     free(reply); return accepted;
+}
+/* eglInitialize obtained the limits; an initialized generation always has them. */
+static int surface_limits_locked(struct egl_generation *generation) {
+    if (generation->pbuffer_limits[0]) return 1;
+    g_last_error = EGL_BAD_ACCESS;
+    return 0;
 }
 EGLBoolean eglGetConfigAttrib(EGLDisplay dpy, EGLConfig config,
                               EGLint attribute, EGLint *value) {

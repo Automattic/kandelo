@@ -3491,7 +3491,10 @@ int main(int argc, char **argv) {
             EGLint attributes[] = {EGL_WIDTH,4,EGL_HEIGHT,3,EGL_LARGEST_PBUFFER,EGL_FALSE,EGL_MIPMAP_TEXTURE,EGL_TRUE,EGL_NONE};
             if (!strcmp(argv[1],"pbuffer-zero")) attributes[1] = attributes[3] = 0;
             if (!strcmp(argv[1],"pbuffer-limits")) {
+                /* eglInitialize obtains the renderer limits; a new display
+                 * generation observes the changed host. */
                 surface_limits[0] = 4; surface_limits[1] = 3; surface_limits[2] = 11;
+                assert(eglTerminate(dpy) && eglInitialize(dpy,NULL,NULL));
                 assert(!eglCreatePbufferSurface(dpy,(EGLConfig)1,attributes) && eglGetError() == EGL_BAD_ALLOC);
                 attributes[5] = EGL_TRUE;
             }
@@ -3532,6 +3535,9 @@ int main(int argc, char **argv) {
         assert(eglTerminate(dpy) && allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strncmp(argv[1],"surface-limits-",15)) {
+        /* eglInitialize probes the renderer once per display generation and
+         * keeps its limits; attribute queries never query or create a
+         * context, and a probe failure fails initialization. */
         EGLContext current = EGL_NO_CONTEXT;
         if (!strcmp(argv[1],"surface-limits-current")) {
             current = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(current);
@@ -3539,15 +3545,20 @@ int main(int argc, char **argv) {
             glBindBuffer(0xdead,17);
         }
         if (!strcmp(argv[1],"surface-limits-reject")) {
-            EGLint untouched = 71; fail_calloc = 1;
-            assert(!eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&untouched));
-            fail_calloc = 0;
-            assert(eglGetError() == EGL_BAD_ALLOC && untouched == 71 && surface_limit_queries == 0);
+            assert(eglTerminate(dpy));
+            EGLint major = 71; fail_calloc = 1;
+            assert(!eglInitialize(dpy,&major,NULL)); fail_calloc = 0;
+            assert(eglGetError() == EGL_BAD_ALLOC && major == 71);
             for (surface_limit_failure = 1; surface_limit_failure <= 4; surface_limit_failure++) {
+                const unsigned queries = surface_limit_queries;
+                assert(!eglInitialize(dpy,&major,NULL) && eglGetError() == EGL_NOT_INITIALIZED && major == 71);
+                assert(surface_limit_queries == queries + 1);
+                EGLint untouched = 71;
                 assert(!eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&untouched));
-                assert(eglGetError() == EGL_BAD_ACCESS && untouched == 71);
+                assert(eglGetError() == EGL_NOT_INITIALIZED && untouched == 71);
             }
             surface_limit_failure = 0;
+            assert(eglInitialize(dpy,NULL,NULL));
         }
         unsigned before = surface_limit_queries;
         for (unsigned i = 0; i < 3; i++) {
@@ -3556,7 +3567,7 @@ int main(int argc, char **argv) {
             assert(eglGetConfigAttrib(dpy,(EGLConfig)1,names[i],&value) && (uint32_t)value == surface_limits[i]);
             assert(eglGetCurrentContext() == current);
         }
-        assert(surface_limit_queries == before+1 && context_create_calls == !!current);
+        assert(surface_limit_queries == before && context_create_calls == !!current);
         if (!strcmp(argv[1],"surface-limits-render")) {
             EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
             EGLSurface surface = eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL); assert(surface);
@@ -3564,7 +3575,7 @@ int main(int argc, char **argv) {
             glClearColor(1,0,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
             assert(eglTerminate(dpy) && eglInitialize(dpy,NULL,NULL)); EGLint width;
             assert(eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&width) && (uint32_t)width == surface_limits[0]);
-            assert(eglGetCurrentContext() == context && surface_limit_queries == before+2);
+            assert(eglGetCurrentContext() == context && surface_limit_queries == before+1);
             glClearColor(0,1,0,1); glClear(GL_COLOR_BUFFER_BIT); glFlush();
             assert(eglReleaseThread() && eglTerminate(dpy) && allocation_count() == 0);
             puts("PASS surface-limits-render"); return 0;
@@ -3578,9 +3589,29 @@ int main(int argc, char **argv) {
             surface_limits[0] = surface_limits[1] = 4096; surface_limits[2] = 16777216;
             assert(eglInitialize(dpy,NULL,NULL)); EGLint value;
             assert(eglGetConfigAttrib(dpy,(EGLConfig)1,EGL_MAX_PBUFFER_WIDTH,&value) && value == 4096);
-            assert(surface_limit_queries == before+2 && eglTerminate(dpy));
+            assert(surface_limit_queries == before+1 && eglTerminate(dpy));
         }
         assert(allocation_count() == 0); printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1],"egl-no-renderer")) {
+        /* EGL 1.5 section 3.2: a host with no GLES renderer cannot initialize
+         * the display: EGL_NOT_INITIALIZED, with no partial generation, and
+         * no later window/context call reaches the host. Before, eglInitialize
+         * succeeded and window creation failed with EGL_BAD_ALLOC. */
+        assert(eglTerminate(dpy));
+        surface_limit_failure = 1; /* the host's ENODEV, as seen through GLIO_QUERY */
+        const unsigned windows = surface_create_attempts, contexts = context_create_calls;
+        EGLint major = 71, minor = 72;
+        assert(!eglInitialize(dpy,&major,&minor) && eglGetError() == EGL_NOT_INITIALIZED);
+        assert(major == 71 && minor == 72);
+        assert(eglCreateWindowSurface(dpy,(EGLConfig)1,(EGLNativeWindowType)&record_windows[0],NULL) == EGL_NO_SURFACE);
+        assert(eglGetError() == EGL_NOT_INITIALIZED);
+        assert(eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_NOT_INITIALIZED);
+        assert(surface_create_attempts == windows && context_create_calls == contexts);
+        surface_limit_failure = 0;
+        assert(eglInitialize(dpy,&major,&minor) && major == 1 && minor == 5 && eglTerminate(dpy));
+        assert(allocation_count() == 0); puts("PASS egl-no-renderer"); return 0;
     }
     if (!strcmp(argv[1], "encoder-allocation")) {
         fail_calloc = 1;
