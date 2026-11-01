@@ -7,9 +7,13 @@ const timeout = setTimeout(fail, 0);
 assert.strictEqual(timeout.hasRef(), true);
 assert.strictEqual(timeout.unref(), timeout);
 assert.strictEqual(timeout.hasRef(), false);
+assert.strictEqual(timeout.ref().ref(), timeout);
+assert.strictEqual(timeout.hasRef(), true); timeout.unref().unref();
 setInterval(fail, 1000).unref();
 const immediate = setImmediate(fail).unref();
 assert.strictEqual(immediate.hasRef(), false);
+assert.strictEqual(immediate.ref().ref(), immediate);
+assert.strictEqual(immediate.hasRef(), true); immediate.unref().unref();
 process.on('exit', () => console.log('node-timers-unref-only-ok'));
 ` },
   { name: 'mixed-references', source: `

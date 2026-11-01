@@ -1,0 +1,562 @@
+{
+  "schema": 1,
+  "module": "node:timers",
+  "relatedModule": "node:timers/promises",
+  "version": "26.13.0",
+  "sourceCommit": "18b32a3b1552e199a01f1a8d9fd64aa756d3b75b",
+  "document": {
+    "path": "doc/api/timers.md",
+    "sha256": "1521a90915f122a93a12aaede78258f1d5b3459489c2e2155fc274a9500a7702"
+  },
+  "surfaceReview": "All 24 class/method/function headings reviewed against the pinned document. This does not cover other core modules or all behavioral conditions.",
+  "fullCompatibility": false,
+  "controls": {
+    "path": "host/test/fixtures/node-timers.ts",
+    "sha256": "35f2ab1005c5cc5b977a5e3c94dc12582820aada78a0587e33fa4c16523456f9",
+    "sourceTest": "host/test/node-timers.test.ts",
+    "nodeProductTest": "host/test/node-core-compat.test.ts",
+    "browserProductTest": "apps/browser-demos/test/node-timers.spec.ts"
+  },
+  "upstreamSelection": "tests/nodejs/selections/timers.json",
+  "remainingReview": [
+    "All public descriptors and aliases, inherited standard-object behavior, full argument/error matrices, nextTick and I/O phase ordering, async-hooks/context propagation, abort listener resistance, warning CLI/diagnostics and primordial resilience require broader conformance work. These are implementation/review gaps, not established platform limits."
+  ],
+  "rows": [
+    {
+      "symbol": "Immediate",
+      "kind": "class",
+      "sourceLine": 17,
+      "nativeAndGuestControls": [
+        "immediate-turns",
+        "unref-only",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "immediate.hasRef()",
+      "kind": "operation",
+      "sourceLine": 28,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "immediate.ref()",
+      "kind": "operation",
+      "sourceLine": 38,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "immediate.unref()",
+      "kind": "operation",
+      "sourceLine": 53,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "immediate-turns"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "immediate[Symbol.dispose]()",
+      "kind": "operation",
+      "sourceLine": 66,
+      "nativeAndGuestControls": [
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "Timeout",
+      "kind": "class",
+      "sourceLine": 80,
+      "nativeAndGuestControls": [
+        "mixed-references",
+        "self-cancel",
+        "refresh",
+        "cancel-handles",
+        "entered-timer-batch"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout.close()",
+      "kind": "operation",
+      "sourceLine": 92,
+      "nativeAndGuestControls": [
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "legacy",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout.hasRef()",
+      "kind": "operation",
+      "sourceLine": 104,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "refresh",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout.ref()",
+      "kind": "operation",
+      "sourceLine": 114,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "refresh",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout.refresh()",
+      "kind": "operation",
+      "sourceLine": 128,
+      "nativeAndGuestControls": [
+        "refresh",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout.unref()",
+      "kind": "operation",
+      "sourceLine": 144,
+      "nativeAndGuestControls": [
+        "unref-only",
+        "mixed-references",
+        "entered-timer-batch"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout[Symbol.toPrimitive]()",
+      "kind": "operation",
+      "sourceLine": 157,
+      "nativeAndGuestControls": [
+        "cancel-handles",
+        "refresh",
+        "handle-key-strings"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timeout[Symbol.dispose]()",
+      "kind": "operation",
+      "sourceLine": 174,
+      "nativeAndGuestControls": [
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "setImmediate(callback[, ...args])",
+      "kind": "operation",
+      "sourceLine": 195,
+      "nativeAndGuestControls": [
+        "immediate-turns",
+        "warnings-validation",
+        "unref-only"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "setInterval(callback[, delay[, ...args]])",
+      "kind": "operation",
+      "sourceLine": 226,
+      "nativeAndGuestControls": [
+        "self-cancel",
+        "mixed-references",
+        "warnings-validation"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "setTimeout(callback[, delay[, ...args]])",
+      "kind": "operation",
+      "sourceLine": 254,
+      "nativeAndGuestControls": [
+        "monotonic-clock",
+        "warnings-validation",
+        "refresh",
+        "entered-timer-batch"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "clearImmediate(immediate)",
+      "kind": "operation",
+      "sourceLine": 367,
+      "nativeAndGuestControls": [
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "clearInterval(timeout)",
+      "kind": "operation",
+      "sourceLine": 378,
+      "nativeAndGuestControls": [
+        "self-cancel",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "clearTimeout(timeout)",
+      "kind": "operation",
+      "sourceLine": 389,
+      "nativeAndGuestControls": [
+        "handle-key-strings",
+        "cancel-handles"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timersPromises.setTimeout([delay[, value[, options]]])",
+      "kind": "operation",
+      "sourceLine": 430,
+      "nativeAndGuestControls": [
+        "promises",
+        "unref-promises"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timersPromises.setImmediate([value[, options]])",
+      "kind": "operation",
+      "sourceLine": 466,
+      "nativeAndGuestControls": [
+        "promises",
+        "unref-promises"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timersPromises.setInterval([delay[, value[, options]]])",
+      "kind": "operation",
+      "sourceLine": 500,
+      "nativeAndGuestControls": [
+        "promises",
+        "unref-promises"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "stable",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timersPromises.scheduler.wait(delay[, options])",
+      "kind": "operation",
+      "sourceLine": 553,
+      "nativeAndGuestControls": [
+        "promises",
+        "scheduler-receivers"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "experimental",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    },
+    {
+      "symbol": "timersPromises.scheduler.yield()",
+      "kind": "operation",
+      "sourceLine": 585,
+      "nativeAndGuestControls": [
+        "promises",
+        "scheduler-receivers"
+      ],
+      "perHostCoverage": {
+        "node": "partial: named controls passed; full behavior remains unreviewed",
+        "chromium": "partial: named controls passed; full behavior remains unreviewed",
+        "firefox": "partial: named controls passed; full behavior remains unreviewed",
+        "webkit": "partial: named controls passed; full behavior remains unreviewed"
+      },
+      "stability": "experimental",
+      "activationFlags": [],
+      "completion": "unproven; targeted passing scenarios are not full API conformance"
+    }
+  ],
+  "evidence": {
+    "productionHead": "7f6e0f6b52d5bbfb7cc820ce66144d2c51371a85",
+    "runtimeInputs": ".context/node26-timers-runtime-inputs/manifest.json",
+    "sourceReference": {
+      "log": ".context/node26-timers-source-current.log",
+      "passed": 142,
+      "skipped": 0
+    },
+    "nodeProduct": {
+      "path": ".context/node-prepared-reports/vitest.OgcsO7/report.json",
+      "sha256": "fa61ca3e6ccfc77628e1663f23e96c834b0f39a48d9f7fa40a73e7dd10ef4951",
+      "passed": 17
+    },
+    "browserProduct": {
+      "path": ".context/node26-timers-browser-reports/playwright.vuaudR/report.json",
+      "sha256": "ae8934c2ad71eddef7914baaeb10371acc05fdf286afb8adf6864b7684d99277",
+      "timerControlProjects": {
+        "chromium": "14 named timer programs passed; one browser test",
+        "firefox": "14 named timer programs passed; one browser test",
+        "webkit": "14 named timer programs passed; one browser test"
+      },
+      "fullReportCounts": {
+        "startTime": "2026-11-01T00:51:17.059Z",
+        "duration": 1075809.61,
+        "expected": 8,
+        "skipped": 0,
+        "unexpected": 1,
+        "flaky": 0
+      }
+    },
+    "unresolvedBroaderFailure": "Initial broad WebKit core spawn/PATH check returned ENOMEM. Unchanged fresh diagnostic replay passed. Original failure retained; cause unresolved, not an engine/platform exception.",
+    "upstream": {
+      "audit": ".context/node26-timers-upstream-audit.json",
+      "sha256": "6a88dc8291fe246d30b0776eae0f9eb4b9864f3c31a7c903af6a33bc357da662",
+      "countsPerHost": {
+        "node": {
+          "pass": 39,
+          "fail": 9,
+          "upstream-skip": 0,
+          "unsupported": 15,
+          "timeout": 1,
+          "harness-error": 0
+        },
+        "chromium": {
+          "pass": 39,
+          "fail": 9,
+          "upstream-skip": 0,
+          "unsupported": 15,
+          "timeout": 1,
+          "harness-error": 0
+        },
+        "firefox": {
+          "pass": 39,
+          "fail": 9,
+          "upstream-skip": 0,
+          "unsupported": 15,
+          "timeout": 1,
+          "harness-error": 0
+        },
+        "webkit": {
+          "pass": 39,
+          "fail": 9,
+          "upstream-skip": 0,
+          "unsupported": 15,
+          "timeout": 1,
+          "harness-error": 0
+        }
+      },
+      "pendingEachHost": 0,
+      "identicalStatusesExitCodes": true
+    }
+  },
+  "knownFollowupGroups": {
+    "async-context": [
+      "parallel/test-timers-clearImmediate-als.js"
+    ],
+    "legacy-domain": [
+      "parallel/test-timers-immediate-queue-throw.js",
+      "parallel/test-timers-reset-process-domain-on-throw.js"
+    ],
+    "sync-child-process-output": [
+      "parallel/test-timers-nan-duration-warning.js",
+      "parallel/test-timers-negative-duration-warning.js"
+    ],
+    "custom-fatal-hooks": [
+      "parallel/test-timers-interval-throw.js",
+      "parallel/test-timers-uncaught-exception.js",
+      "parallel/test-timers-unref-throw-then-ref.js"
+    ],
+    "beforeExit": [
+      "parallel/test-timers-unrefed-in-beforeexit.js"
+    ],
+    "socket-inactivity-timeout": [
+      "parallel/test-timers-socket-timeout-removes-other-socket-unref-timer.js"
+    ]
+  }
+}

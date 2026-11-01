@@ -87,7 +87,11 @@ particular:
   microtask checkpoints between callbacks. Promise timers implement
   signal/ref options, interval iterators and scheduler wait/yield; custom
   promisification selects these APIs. Duration normalization emits real
-  asynchronous process warnings. Complete nextTick/phase ordering, async
+  asynchronous process warnings. Fourteen named programs pass on all four
+  hosts; the unchanged 64-file follow-up is still partial (39 pass, nine
+  fail, 15 unsupported, one timeout on each host). The broader WebKit
+  spawn/PATH fixture had an ENOMEM failure; a fresh unchanged replay passed
+  but its cause remains open. Complete nextTick/phase ordering, async
   hooks/context propagation, warning stack/CLI policy and abort-listener
   resistance to stopImmediatePropagation still need conformance work.
 
