@@ -1,4 +1,5 @@
-/** Optional host-only final render-node cleanup. No Rust release is enabled. */
+/** Final render-node cleanup, acknowledged only by actual native and
+ * canonical-allocation retirement receipts. */
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
 import type { GlContextRegistry, GlBoRetirement } from "./registry.js";
@@ -48,28 +49,23 @@ export class GlFinalRenderNodeReceiver {
     if(!Number.isSafeInteger(owner.registration)||owner.registration<=0||!binding||binding.operations!==owner.operations)return false;
     let bytes:Uint8Array<ArrayBuffer>;
     try {bytes=new Uint8Array(input);}catch{return false;}
-    let capabilities=0,refuseCpuPrefix=false;
+    let capabilities=0;
     const seen=new Set<string>(),view=new DataView(bytes.buffer);
     for(let i=0;i<input.length;i+=8) {
       const kind=view.getUint32(i,true),source=view.getUint32(i+4,true),key=`${kind}/${source}`;
       if((kind!==1&&kind!==2)||source===0||seen.has(key)||kind===1&&source!==owner.sessionId)return false;
       if(kind===2&&(!this.registry.canCaptureBoRetirement(source)||!this.registry.gpuBo(source)&&!this.bos.dims(source)))return false;
-      // CPU mirror capture reserves its allocation scope. Refuse before capture
-      // while an accepted prefix might still create/use a mirror; a later
-      // numeric retry must not turn this rejection into final-device effects.
-      if(kind===2 && !this.registry.gpuBo(source) && owner.operations.immediateState()==="busy")refuseCpuPrefix=true;
       capabilities+=kind===1?3+binding.fences.retirementCaptureCost+this.registry.executionRetirementCaptureCost(owner.pid,owner.sessionId):this.registry.retirementCaptureCost(source);
       seen.add(key);
     }
-    if(refuseCpuPrefix)capabilities=0;
     if(capabilities>this.maxCapabilities-this.capabilities)return false;
     try {
       // Reserve/copy the entire record before taking the first capability.
       const weak=new WeakRef(this),notify=()=>weak.deref()?.progress(owner,token);
-      const record:Record={owner,token,bytes,sessions:(refuseCpuPrefix?[]:[...seen]).filter(key=>key.startsWith("1/")).map(()=>new GlForwardNativeRetirement("session",0,owner.pid,owner.sessionId,owner.operations,true)),bos:[],capabilities,prepared:false,started:false,waitingPrefix:false,dirty:true,notificationFault:false,state:refuseCpuPrefix?"rejected":"rejecting",notify};
+      const record:Record={owner,token,bytes,sessions:[...seen].filter(key=>key.startsWith("1/")).map(()=>new GlForwardNativeRetirement("session",0,owner.pid,owner.sessionId,owner.operations,true)),bos:[],capabilities,prepared:false,started:false,waitingPrefix:false,dirty:true,notificationFault:false,state:"rejecting",notify};
       this.records.set(this.key(owner,token),record);this.retained+=input.length;this.capabilities+=capabilities;
       for(const session of record.sessions)session.watch(record.notify);
-      if(!refuseCpuPrefix)try {if(this.capture(record))record.state="pending";}catch(error){if(isKernelExportFailure(error))throw error;}
+      try {if(this.capture(record))record.state="pending";}catch(error){if(isKernelExportFailure(error))throw error;}
       return true;
     }catch(error){if(isKernelExportFailure(error))throw error;return false;}
   }
@@ -95,7 +91,7 @@ export class GlFinalRenderNodeReceiver {
         if(!receiver.prepare(this.registry,this.muxers))return false;
       } else {
         let receiver=record.bos[boIndex++];
-        if(!receiver){receiver=this.registry.captureBoRetirement(source,!!this.bos.dims(source))!;if(!receiver)return false;record.bos.push(receiver);receiver.watch(record.notify);}
+        if(!receiver){receiver=this.registry.captureBoRetirement(source,!!this.bos.dims(source),this.bos)!;if(!receiver)return false;record.bos.push(receiver);receiver.watch(record.notify);}
       }
     }
     record.prepared=true;return true;
@@ -117,7 +113,7 @@ export class GlFinalRenderNodeReceiver {
     const records=[...this.records.values()];let visits=0;
     for(let i=0;i<records.length&&visits<quota;i++) {
       this.cursor%=records.length;const record=records[this.cursor];this.cursor=(this.cursor+1)%records.length;
-      if(record.waitingPrefix && record.owner.operations.immediateState()==="idle")record.dirty=true;
+      if(record.waitingPrefix && this.prefixReady(record))record.dirty=true;
       if(!record.dirty||record.state==="retired"||record.state==="rejected")continue;
       record.dirty=false;visits++;
       try {
@@ -129,7 +125,22 @@ export class GlFinalRenderNodeReceiver {
           if(released){record.state="rejected";record.dirty=false;record.wake?.();}continue;
         }
         if(!record.prepared)continue;
-        if(!record.started && record.owner.operations.immediateState()==="busy") {record.waitingPrefix=true;continue;}
+        if(!record.started) {
+          if(!this.prefixReady(record)){record.waitingPrefix=true;continue;}
+          record.waitingPrefix=false;
+          // Newly admitted prefix work may have created mirrors. Reserve the
+          // enlarged receipt inventory before observing its actual journals.
+          let needed=record.capabilities;
+          const view=new DataView(record.bytes.buffer);
+          let actual=0;for(let i=0;i<record.bytes.length;i+=8)actual+=view.getUint32(i,true)===1
+            ?3+(this.registry.get(record.owner.pid,record.owner.sessionId)?.fences.retirementCaptureCost??0)+this.registry.executionRetirementCaptureCost(record.owner.pid,record.owner.sessionId)
+            :this.registry.retirementCaptureCost(view.getUint32(i+4,true));
+          needed=Math.max(needed,actual);
+          if(needed-record.capabilities>this.maxCapabilities-this.capabilities)continue;
+          this.capabilities+=needed-record.capabilities;record.capabilities=needed;
+          let ready=true;for(const bo of record.bos)ready=this.registry.prepareBoRetirement(bo)&&ready;
+          if(!ready)continue;
+        }
         record.started=true;record.waitingPrefix=false;
         const contexts=new Set<WebGL2RenderingContext>();for(const bo of record.bos)for(const gl of bo.contexts())contexts.add(gl);
         if([...contexts].some(gl=>glSubmitExecuting(this.muxers.get(gl))))continue;
@@ -140,8 +151,13 @@ export class GlFinalRenderNodeReceiver {
         if(complete) {
           // Native cleanup is proven before CPU metadata notification. A
           // throwing observer is never retried as though it were cleanup.
-          for(const bo of record.bos)try {this.bos.destroy(record.owner.pid,bo.bo);}catch(error){if(isKernelExportFailure(error))throw error;record.notificationFault=true;}
-          record.state="retired";record.dirty=false;record.wake?.();
+          for(const bo of record.bos) {
+            if(bo.cpu) {
+              const retired=this.registry.retireCapturedCpuStorage(bo,record.owner.pid);
+              complete=retired.complete&&complete;record.notificationFault ||=retired.notificationFault;
+            } else try {this.bos.destroy(record.owner.pid,bo.bo);}catch(error){if(isKernelExportFailure(error))throw error;record.notificationFault=true;}
+          }
+          if(complete){record.state="retired";record.dirty=false;record.wake?.();}
         }
       }catch(error){if(isKernelExportFailure(error))throw error;record.dirty=false;}
     }
@@ -150,7 +166,7 @@ export class GlFinalRenderNodeReceiver {
   notificationFault(owner:GlFinalRenderNodeOwner,token:bigint):boolean {const record=this.records.get(this.key(owner,token));return record?.owner===owner && record.notificationFault;}
   forget(owner:GlFinalRenderNodeOwner,token:bigint):boolean {
     const record=this.records.get(this.key(owner,token));if(!record||record.owner!==owner||record.state!=="retired"&&record.state!=="rejected")return false;
-    for(const session of record.sessions)session.forget();for(const bo of record.bos)if(record.state==="retired")this.registry.forgetBoRetirement(bo);
+    for(const session of record.sessions)session.forget();for(const bo of record.bos)if(record.state==="retired"&&!this.registry.forgetBoRetirement(bo))return false;
     this.floors.set(owner,token>(this.floors.get(owner)??0n)?token:this.floors.get(owner)!);this.retained-=record.bytes.length;this.capabilities-=record.capabilities;this.records.delete(this.key(owner,token));return true;
   }
   sessionReceiver(owner:GlFinalRenderNodeOwner):GlForwardNativeRetirement|null {
@@ -159,10 +175,13 @@ export class GlFinalRenderNodeReceiver {
   retirementComplete(owner:GlFinalRenderNodeOwner):boolean {return [...this.records.values()].every(record=>record.owner!==owner||record.state==="retired"||record.state==="rejected");}
   forgetOwner(owner:GlFinalRenderNodeOwner):boolean {
     if(!this.retirementComplete(owner))return false;
-    for(const record of [...this.records.values()])if(record.owner===owner)this.forget(owner,record.token);return true;
+    for(const record of [...this.records.values()])if(record.owner===owner&&!this.forget(owner,record.token))return false;return true;
+  }
+  private prefixReady(record:Record):boolean {
+    return record.owner.operations.immediateState()!=="busy" && record.bos.every(bo=>this.registry.boRetirementReady(bo));
   }
   get retainedCapabilities():number {return this.capabilities;}
   get retainedBytes():number {return this.retained;}
   get pending():number {return this.records.size;}
-  get runnable():boolean {return [...this.records.values()].some(record=>(record.dirty || record.waitingPrefix && record.owner.operations.immediateState()==="idle")&&record.state!=="retired"&&record.state!=="rejected");}
+  get runnable():boolean {return [...this.records.values()].some(record=>(record.dirty || record.waitingPrefix && this.prefixReady(record))&&record.state!=="retired"&&record.state!=="rejected");}
 }

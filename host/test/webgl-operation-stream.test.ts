@@ -3,7 +3,7 @@ import { GlOperationStream, GlOperationTicket, type GlOperationKind } from "../s
 
 it("keeps accepted commands before every immediate-result operation family", () => {
   const stream = new GlOperationStream(), command = stream.reserve("commands")!;
-  const kinds: Exclude<GlOperationKind,"commands">[] = ["query","fence-create","fence-status","fence-release","present","make-current"];
+  const kinds: Exclude<GlOperationKind,"commands">[] = ["query","fence-create","fence-status","fence-release","present","make-current","server-wait"];
   for (const kind of kinds) expect(stream.tryBeginImmediate(kind)).toBeNull();
   expect(stream.pending).toBe(1);
   expect(command.start()).toBe(true);
@@ -44,4 +44,14 @@ it("distinguishes busy, closed, exhaustion and allocation refusal before immedia
   (stream as unknown as {serial:number}).serial=Number.MAX_SAFE_INTEGER;
   expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"exhausted"});stream.close();
   expect(stream.tryBeginImmediateTyped("query")).toEqual({state:"closed"});
+});
+
+it("grants closing resources only to the actual running pre-cut ticket",()=>{
+  const stream=new GlOperationStream(),peer=new GlOperationStream();
+  const first=stream.reserve("commands")!,second=stream.reserve("query")!,cut=stream.capturePrefix();
+  expect(cut.complete).toBe(false);expect(cut.permits(stream)).toBe(false);expect(cut.permits(peer)).toBe(false);
+  expect(first.start()).toBe(true);expect(cut.permits(stream)).toBe(true);first.finish();
+  expect(second.cancel()).toBe(true);expect(cut.complete).toBe(true);
+  const later=stream.reserve("commands")!;expect(later.start()).toBe(true);
+  expect(cut.permits(stream)).toBe(false);expect(cut.complete).toBe(true);later.finish();
 });

@@ -287,18 +287,22 @@ it("pairs rejecting rollback without closing owner admission, losing cleanup or 
   expect(f.client.pollFinal(f.remoteOwner,2n)).toBe("retired");expect(f.client.forgetFinal(f.remoteOwner,2n)).toBe(true);f.release();
 });
 
-it("rejects CPU mirror final admission before capture when accepted prefix work still needs it",()=>{
+it("keeps one CPU close reservation through a delayed accepted-prefix mirror and real physical receipt",()=>{
   const f=fixture();f.bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});
   const prefix=f.binding.operations.reserve("commands")!,input=finalRenderNodeEffects([[2,77]]);
-  const capture=vi.spyOn(f.registry,"captureBoRetirement");
+  const acquire=()=>f.registry.cpuImages.acquire(f.binding,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0});
   expect(f.receiver.begin(f.owner,1n,input)).toBe(true);
-  expect(f.receiver.poll(f.owner,1n)).toBe("rejected");expect(capture).not.toHaveBeenCalled();
-  expect(f.receiver.retainedCapabilities).toBe(0);expect(f.bos.dims(77)).toBeDefined();
-  const mirror=f.registry.cpuImages.acquire(f.binding,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0});expect(mirror).not.toBeNull();
-  prefix.cancel();f.receiver.drain(4);expect(f.receiver.begin(f.owner,1n,input)).toBe(true);expect(capture).not.toHaveBeenCalled();
-  expect(f.receiver.poll(f.owner,1n)).toBe("rejected");f.receiver.forget(f.owner,1n);
-  expect(f.receiver.begin(f.owner,1n,input)).toBe(false);expect(f.receiver.begin(f.owner,2n,input)).toBe(true);capture.mockRestore();
-  f.receiver.drain(4);expect(f.receiver.poll(f.owner,2n)).toBe("retired");f.receiver.forget(f.owner,2n);
+  expect(f.receiver.poll(f.owner,1n)).toBe("pending");
+  expect(acquire()).toBeNull();expect(prefix.start()).toBe(true);
+  const mirror=acquire()!;expect(mirror).not.toBeNull();
+  const hold=retainNativeRetirement(mirror.retirement)!;
+  prefix.finish();const later=f.binding.operations.reserve("commands")!;expect(later.start()).toBe(true);
+  expect(acquire()).toBeNull();later.finish();
+  expect(f.receiver.begin(f.owner,1n,input)).toBe(true);f.receiver.drain(4);
+  expect(f.receiver.poll(f.owner,1n)).toBe("pending");expect(f.live.has(mirror.tex)).toBe(true);expect(f.bos.dims(77)).toBeDefined();
+  expect(f.receiver.runnable).toBe(false);expect(hold.release(null)).toBe(true);f.receiver.drain(4);
+  expect(f.receiver.poll(f.owner,1n)).toBe("retired");expect(f.live.has(mirror.tex)).toBe(false);expect(f.bos.dims(77)).toBeUndefined();
+  expect(f.receiver.forget(f.owner,1n)).toBe(true);expect(f.receiver.retainedCapabilities).toBe(0);
 });
 
 it("never resurrects a paired terminal rejection after absent BO creation and Forget",()=>{
@@ -382,4 +386,105 @@ it("does not turn a transferred dependency into physical deletion proof",()=>{
   const journal=reserveNativeRetirement({gl:f.gl,errors:[]},[],[dependency])!,receipt=NativeRetirementReceipt.capture(journal)!;
   transferNativeRetirement(dependency);expect(retireNativeRetirement(journal)).toBe(true);
   expect(journal.complete).toBe(true);expect(receipt.complete).toBe(false);receipt.forget();
+});
+
+it("requires the exact Forget ACK and keeps lost ACK custody without a scheduling loop",()=>{
+  const f=paired();f.registry.createGpuBo(77,f.gl,2,2);
+  expect(f.client.beginFinal(f.remoteOwner,1n,finalRenderNodeEffects([[2,77]]))).toBe(true);f.drain();
+  expect(f.client.pollFinal(f.remoteOwner,1n)).toBe("retired");
+  f.renderer.hold=m=>m.type==="gl_owned_final_forgotten";
+  let wakes=0;f.client.watchFinal(f.remoteOwner,1n,()=>wakes++);
+  expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(false);
+  expect(f.server.retainedBytes).toBe(0);expect(f.client.retainedBytes).toBe(8);
+  expect(f.client.forgetFinal(f.remoteOwner,1n)).toBe(false);
+  const posts=f.sender.sent.length;f.drain();f.drain();
+  expect(f.sender.sent.length).toBe(posts);expect(f.client.runnableAfterDrain).toBe(false);
+  const ack=f.renderer.held[0],before=wakes;
+  for(const wrong of [{...ack,epoch:ack.epoch+1},{...ack,registration:ack.registration+1},
+    {...ack,clientRegistration:ack.clientRegistration+1},{...ack,tokenLow:2}])f.sender.fire(wrong);
+  expect(wakes).toBe(before);expect(f.client.retainedBytes).toBe(8);
+  f.renderer.hold=null;f.renderer.flush();expect(wakes).toBe(before+1);
+  f.sender.fire(ack);expect(wakes).toBe(before+1);
+  expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(true);
+  expect(f.client.retainedBytes).toBe(0);f.release();
+});
+it("recovers a dropped Forget ACK from the authenticated server tombstone without replaying cleanup",()=>{
+  const f=paired();f.registry.createGpuBo(77,f.gl,2,2);const allocation=f.registry.gpuBo(77)!;
+  expect(f.client.beginFinal(f.remoteOwner,1n,finalRenderNodeEffects([[2,77]]))).toBe(true);f.drain();
+  expect(f.client.pollFinal(f.remoteOwner,1n)).toBe("retired");const removed=f.removed.length;
+  f.renderer.hold=m=>m.type==="gl_owned_final_forgotten";
+  expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(false);f.renderer.held.length=0;
+  expect(f.registry.createGpuBo(77,f.gl,2,2)).not.toBeNull();const successor=f.registry.gpuBo(77)!;
+  f.renderer.hold=null;expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(true);
+  expect(f.live.has(allocation.tex)).toBe(false);expect(f.removed.length).toBe(removed);
+  expect(f.registry.gpuBo(77)).toBe(successor);expect(f.live.has(successor.tex)).toBe(true);
+  expect(f.server.retainedBytes).toBe(0);expect(f.client.retainedBytes).toBe(0);f.registry.retireForeignBo(77);f.release();
+});
+
+
+it("waits for an actual peer prefix and preserves backing identity through alias metadata replacement",()=>{
+  const f=fixture();f.bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});
+  f.registry.bind({pid:8,sessionId:12,cmdbufAddr:0,cmdbufLen:64});const peer=f.registry.get(8,12)!;peer.gl=f.gl;peer.contextId=22;
+  const prefix=peer.operations.reserve("commands")!;
+  expect(f.receiver.begin(f.owner,1n,finalRenderNodeEffects([[2,77]]))).toBe(true);f.receiver.drain(4);
+  expect(f.receiver.poll(f.owner,1n)).toBe("pending");expect(f.receiver.runnable).toBe(false);
+  expect(f.bos.bind(8,77,0,16)).toBe(0);expect(prefix.start()).toBe(true);
+  const mirror=f.registry.cpuImages.acquire(peer,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0})!;expect(mirror).not.toBeNull();
+  prefix.finish();expect(f.receiver.runnable).toBe(true);f.receiver.drain(4);
+  expect(f.receiver.poll(f.owner,1n)).toBe("retired");expect(f.live.has(mirror.tex)).toBe(false);expect(f.bos.listForPid(8)).toEqual([]);
+  expect(f.receiver.forget(f.owner,1n)).toBe(true);
+});
+it("never snapshots or destroys a successor CPU allocation under a retained original reservation",()=>{
+  const f=fixture();f.bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});const prefix=f.binding.operations.reserve("commands")!;
+  expect(f.receiver.begin(f.owner,1n,finalRenderNodeEffects([[2,77]]))).toBe(true);
+  f.bos.destroy(7,77);f.bos.create({pid:9,bo_id:77,w:2,h:2,stride:8,size:16});const successor=f.bos.pixelView(77)!;successor.fill(91);
+  expect(prefix.start()).toBe(true);
+  expect(f.registry.cpuImages.acquire(f.binding,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0})).toBeNull();prefix.finish();
+  f.receiver.drain(4);expect(f.receiver.poll(f.owner,1n)).toBe("pending");expect(f.receiver.runnable).toBe(false);
+  f.receiver.retry(f.owner,1n);f.receiver.drain(4);expect(f.bos.pixelView(77)?.buffer).toBe(successor.buffer);expect([...successor]).toEqual(Array(16).fill(91));
+  expect(f.receiver.forget(f.owner,1n)).toBe(false);
+});
+it("retains final metadata until every actual BO capability accepts Forget",()=>{
+  const f=fixture();f.registry.createGpuBo(77,f.gl,2,2);f.registry.createGpuBo(78,f.gl,2,2);
+  expect(f.receiver.begin(f.owner,1n,finalRenderNodeEffects([[2,77],[2,78]]))).toBe(true);f.receiver.drain(4);
+  expect(f.receiver.poll(f.owner,1n)).toBe("retired");
+  const forget=f.registry.forgetBoRetirement.bind(f.registry);let refused=false;
+  vi.spyOn(f.registry,"forgetBoRetirement").mockImplementation(capability=>{if(capability.bo===78&&!refused){refused=true;return false;}return forget(capability);});
+  expect(f.receiver.forget(f.owner,1n)).toBe(false);expect(f.receiver.retainedBytes).toBe(16);
+  expect(f.receiver.forget(f.owner,1n)).toBe(true);expect(f.receiver.retainedBytes).toBe(0);
+});
+
+it("joins a paired CPU prefix, exact session and mirror hold before strict final Forget ACK",()=>{
+  const f=paired();f.bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});
+  const prefix=f.binding.operations.reserve("commands")!;
+  expect(f.client.beginFinal(f.remoteOwner,1n,finalRenderNodeEffects([[1,11],[2,77]]))).toBe(true);f.drain();
+  expect(f.client.pollFinal(f.remoteOwner,1n)).toBe("pending");expect(f.registry.get(7,11)).toBe(f.binding);
+  const posts=f.sender.sent.length;f.drain();f.drain();expect(f.sender.sent.length).toBe(posts);
+  expect(prefix.start()).toBe(true);
+  const mirror=f.registry.cpuImages.acquire(f.binding,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0})!;expect(mirror).not.toBeNull();
+  const hold=retainNativeRetirement(mirror.retirement)!;prefix.finish();f.drain();
+  expect(f.registry.get(7,11)).toBeUndefined();expect(f.client.pollFinal(f.remoteOwner,1n)).toBe("pending");expect(f.bos.dims(77)).toBeDefined();
+  expect(hold.release(null)).toBe(true);f.drain();expect(f.client.pollFinal(f.remoteOwner,1n)).toBe("retired");
+  expect(f.bos.dims(77)).toBeUndefined();expect(f.live.has(mirror.tex)).toBe(false);
+  f.renderer.hold=m=>m.type==="gl_owned_final_forgotten";
+  expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(false);expect(f.client.retainedBytes).toBe(16);
+  f.renderer.hold=null;f.renderer.flush();expect(f.client.forgetFinalAcknowledged(f.remoteOwner,1n)).toBe(true);f.release();
+});
+it("retries failed post-prefix native receipt reservation against the same captured CPU scope",()=>{
+  const f=fixture();f.bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});const prefix=f.binding.operations.reserve("commands")!;
+  f.receiver.begin(f.owner,1n,finalRenderNodeEffects([[2,77]]));expect(prefix.start()).toBe(true);
+  const mirror=f.registry.cpuImages.acquire(f.binding,77,f.bos,{width:2,height:2,format:0x34325241,pitch:8,offset:0})!;prefix.finish();
+  const reserve=vi.spyOn(NativeRetirementReceipt,"capture").mockReturnValueOnce(null);
+  f.receiver.drain(4);expect(f.receiver.poll(f.owner,1n)).toBe("pending");expect(f.live.has(mirror.tex)).toBe(true);
+  expect(f.bos.dims(77)).toBeDefined();expect(f.receiver.runnable).toBe(false);reserve.mockRestore();
+  f.receiver.retry(f.owner,1n);f.receiver.drain(4);expect(f.receiver.poll(f.owner,1n)).toBe("retired");
+  expect(f.live.has(mirror.tex)).toBe(false);expect(f.receiver.forget(f.owner,1n)).toBe(true);
+});
+
+it("keeps acknowledged BO Forget idempotence scoped to the issuing registry and exact capability",()=>{
+  const f=fixture();f.registry.createGpuBo(77,f.gl,2,2);const capability=f.registry.captureBoRetirement(77)!;
+  expect(f.registry.retireCapturedBo(capability)).toBe(true);expect(f.registry.forgetBoRetirement(capability)).toBe(true);
+  expect(f.registry.forgetBoRetirement(capability)).toBe(true);
+  expect(new GlContextRegistry().forgetBoRetirement(capability)).toBe(false);
+  expect(f.registry.forgetBoRetirement({...capability} as typeof capability)).toBe(false);
 });

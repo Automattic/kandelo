@@ -1024,3 +1024,22 @@ describe("shared-byte changed-run scan", () => {
     checkMerge(current, 0, snapshot, 0, 512, 0);
   });
 });
+
+it("authenticates the allocator-backed retirement across alias metadata changes and observer faults",()=>{
+  const bos=new GbmBoRegistry(),peer=new GbmBoRegistry();
+  bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});const capability=bos.captureAllocationRetirement(77)!;
+  expect(peer.matchesAllocationRetirement(capability)).toBe(false);expect(peer.retireCapturedAllocation(capability,7)).toBe(false);
+  expect(bos.bind(8,77,0,16)).toBe(0);expect(bos.matchesAllocationRetirement(capability)).toBe(true);
+  let calls=0;bos.onChange((_pid,_bo,event)=>{if(event==="destroy"){calls++;throw Error("metadata observer refused");}});
+  expect(bos.retireCapturedAllocation(capability,7)).toBe(true);expect(capability.complete).toBe(true);expect(capability.notificationFault).toBe(true);
+  expect(bos.dims(77)).toBeUndefined();expect(bos.listForPid(8)).toEqual([]);
+  expect(bos.retireCapturedAllocation(capability,7)).toBe(true);expect(calls).toBe(1);
+});
+it("never uses a captured CPU allocation token to retire a reused numeric BO",()=>{
+  const bos=new GbmBoRegistry();bos.create({pid:7,bo_id:77,w:2,h:2,stride:8,size:16});
+  const capability=bos.captureAllocationRetirement(77)!;bos.destroy(7,77);bos.create({pid:8,bo_id:77,w:2,h:2,stride:8,size:16});
+  const replacement=bos.pixelView(77)!;replacement.fill(9);
+  expect(bos.matchesAllocationRetirement(capability)).toBe(false);expect(bos.retireCapturedAllocation(capability,7)).toBe(false);
+  expect(capability.complete).toBe(false);expect(bos.pixelView(77)?.buffer).toBe(replacement.buffer);
+  expect(bos.abandonAllocationRetirement(capability)).toBe(true);expect(bos.retireCapturedAllocation(capability,7)).toBe(false);
+});

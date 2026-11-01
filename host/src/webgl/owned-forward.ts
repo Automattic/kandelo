@@ -277,7 +277,9 @@ export class GlOwnedMainForwardController {
       } else if(message.type==="gl_owned_final_poll") {
         if(!this.finals.retry(owner.owner,token)){if(this.finals.admissionRevoked(owner.owner,token))this.rejectFinal(owner,token);return;}
       } else if(message.type==="gl_owned_final_forget") {
-        if(!this.finals.forget(owner.owner,token)&&!this.finals.admissionRevoked(owner.owner,token))return;this.maybeRelease();return;
+        if(!this.finals.forget(owner.owner,token)&&!this.finals.admissionRevoked(owner.owner,token))return;
+        this.send({...owner.grant,...finalWords(token),type:"gl_owned_final_forgotten"});
+        this.maybeRelease();return;
       } else return;
       const state=this.finals.poll(owner.owner,token);
       if(state)this.send({...owner.grant,...finalWords(token),type:"gl_owned_final_reply",finalState:state});
@@ -331,7 +333,9 @@ export class GlOwnedMainForwardController {
       this.retireScalar(owner,message.retirement,slot);this.requestWork();return;
     }
     if(message.type!=="gl_owned_control")return;
-    const bytes=independentBytes(message.bytes,48+CAP);if(!bytes)return;
+    // The request decoder admits the normal1MiB command-prefix payload only
+    // for its trusted internal operation; ordinary inputs remain64KiB.
+    const bytes=independentBytes(message.bytes,48+(1<<20));if(!bytes)return;
     let request;
     try {request=decodeQueryRequest(bytes);} catch {return;}
     let failure:unknown;
@@ -549,7 +553,7 @@ type ClientReceipt={token:bigint;begin:Omit<QueryBegin,"input">;custody:GlRemote
   execution:GlResultExecution|null;admission:"unsent"|"awaiting-native-admission"|"native-admitted";
   mode:GlResultMode|null;rejected:boolean;announced?:string};
 type ClientRetirement={sequence:number;source:number;state:"empty"|"queued"|"pending"|"complete"};
-type ClientFinal={bytes:Uint8Array<ArrayBuffer>;state:"unsent"|"awaiting-native-admission"|"pending"|"rejecting"|"retired"|"rejected";closesSession:boolean;dirty:boolean;wake?:()=>void};
+type ClientFinal={bytes:Uint8Array<ArrayBuffer>;state:"unsent"|"awaiting-native-admission"|"pending"|"rejecting"|"retired"|"rejected";closesSession:boolean;dirty:boolean;forgetting?:boolean;forgotten?:boolean;wake?:()=>void};
 type ClientOwner={owner:GlResultOwner;clientRegistration:number;grant:Grant|null;openRejected:boolean;closed:boolean;forgetting:boolean;receipts:Map<bigint,ClientReceipt>;finals:Map<bigint,ClientFinal>;
   serial:number;retirements:RetirementSlots<ClientRetirement>;ownerWake:((pid:number,session:number,registration:number)=>void)|undefined;workWake?:((pid:number,session:number,registration:number)=>void)};
 /** Kernel-side paired endpoint. Until the actual renderer Begin ACK this owns
@@ -625,10 +629,23 @@ export class GlOwnedForwardClient {
     const entry=this.owners.get(owner),receipt=entry?.finals.get(token);if(!entry||!receipt)return false;
     receipt.dirty=true;this.continueDrain=true;this.notifyWork(entry);return true;
   }
-  forgetFinal(owner:GlResultOwner,token:bigint):boolean {
+  /** Physical release callers require the remote metadata ACK as well as
+   * Retired. A successful post is only transfer intent, never this receipt.
+   * Repeated attempts retain the exact bytes/registration after a lost ACK. */
+  forgetFinalAcknowledged(owner:GlResultOwner,token:bigint):boolean {
     const entry=this.owners.get(owner),receipt=entry?.finals.get(token);
     if(!entry||!receipt||(receipt.state!=="retired"&&receipt.state!=="rejected"))return false;
+    if(receipt.forgotten)return this.forgetFinal(owner,token);
+    receipt.forgetting=true;
     if(entry.grant)this.post({...entry.grant,...finalWords(token),type:"gl_owned_final_forget"});
+    // A synchronous endpoint can acknowledge on this same stack.
+    return this.owners.get(owner)?.finals.get(token)?.forgotten===true && this.forgetFinal(owner,token);
+  }
+  forgetFinal(owner:GlResultOwner,token:bigint):boolean {
+    const entry=this.owners.get(owner),receipt=entry?.finals.get(token);
+    if(!entry||!receipt||(receipt.state!=="retired"&&receipt.state!=="rejected")
+      ||receipt.forgetting&&!receipt.forgotten)return false;
+    if(entry.grant&&!receipt.forgotten)this.post({...entry.grant,...finalWords(token),type:"gl_owned_final_forget"});
     this.finalBytes-=receipt.bytes.length;this.finalCount--;entry.finals.delete(token);this.finalFloors.set(owner,token>(this.finalFloors.get(owner)??0n)?token:this.finalFloors.get(owner)!);return true;
   }
   begin(owner:GlResultOwner,token:bigint,begin:QueryBegin):boolean {
@@ -805,6 +822,11 @@ export class GlOwnedForwardClient {
       if(slot.state!=="pending" || slot.sequence!==message.sequence || slot.source!==message.source)return;
       if(message.complete) {slot.state="complete";this.notifyOwner(entry);}
       return;
+    }
+    if(message.type==="gl_owned_final_forgotten") {
+      const token=finalToken(message),receipt=token===null?undefined:entry.finals.get(token);
+      if(!receipt||!receipt.forgetting||receipt.forgotten||(receipt.state!=="retired"&&receipt.state!=="rejected"))return;
+      receipt.forgotten=true;receipt.wake?.();this.notifyWork(entry);return;
     }
     if(message.type==="gl_owned_final_notify"||message.type==="gl_owned_final_reply") {
       const token=finalToken(message),receipt=token===null?undefined:entry.finals.get(token);if(!receipt)return;

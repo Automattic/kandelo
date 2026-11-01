@@ -2,7 +2,8 @@ import type { GlObjectCapture } from "./object-capture.js";
 import type { GlCompressedUpload } from "./compressed-upload.js";
 import type { GlReadbackCapture } from "./readback-capture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
-import { CpuImageStorage } from "./cpu-image-storage.js";
+import { CpuImageStorage, type CpuImageRetirement } from "./cpu-image-storage.js";
+import type { GbmBoRegistry } from "../dri/registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
@@ -306,12 +307,22 @@ function collectExecution(record: ExecutionRecord): boolean {
 export class GlBoRetirement {
   private started=false;
   private foreignComplete=false;
+  private wake:(()=>void)|undefined;
+  private receipts:readonly NativeRetirementReceipt[];
+  prepared:boolean;
   constructor(readonly bo:number,readonly gpu:GlGpuAllocation|undefined,
-    readonly native:readonly NativeRetirementReceipt[],readonly foreign:ReadonlyMap<GlObjectGroup,GlBinding>) {}
+    native:readonly NativeRetirementReceipt[],readonly foreign:ReadonlyMap<GlObjectGroup,GlBinding>,
+    readonly cpu:CpuImageRetirement|null=null) {this.prepared=cpu===null;this.receipts=native;}
+  get native():readonly NativeRetirementReceipt[]{return this.receipts;}
   contexts():Set<WebGL2RenderingContext> {
     return new Set([...this.native.map(value=>value.context),...[...this.foreign.values()].flatMap(value=>value.gl?[value.gl]:[])]);
   }
-  watch(wake:()=>void):void {for(const receipt of this.native)receipt.watch(wake);}
+  watch(wake:()=>void):void {this.wake=wake;for(const receipt of this.native)receipt.watch(wake);}
+  adopt(receipts:readonly NativeRetirementReceipt[]):void {
+    if(this.prepared)return;
+    this.receipts=receipts;this.prepared=true;
+    if(this.wake)for(const receipt of receipts)receipt.watch(this.wake);
+  }
   get armed():boolean {return this.started;}
   revokeForeign():boolean {
     this.started=true;
@@ -320,12 +331,13 @@ export class GlBoRetirement {
     this.foreignComplete=complete;return complete;
   }
   retire():boolean {let complete=true;for(const receipt of this.native)complete=receipt.retry()&&complete;return complete;}
-  get complete():boolean {return this.foreignComplete && this.native.every(value=>value.complete);}
+  get complete():boolean {return this.prepared && this.foreignComplete && this.native.every(value=>value.complete);}
   forget():void {for(const receipt of this.native)receipt.forget();}
 }
 
 export class GlContextRegistry {
   private bindings = new Map<string, GlBinding>();
+  private forgottenBoRetirements=new WeakSet<GlBoRetirement>();
   private executions = new WeakMap<GlBinding, ExecutionRecord>();
   private executionRecords = new Set<ExecutionRecord>();
   private listeners = new Set<GlChangeListener>();
@@ -653,10 +665,20 @@ export class GlContextRegistry {
     return 1+(this.gpuBos.has(bo)?1:0)+this.cpuImages.retirementCaptureCost(bo)+this.bindings.size+this.executionRecords.size;
   }
   canCaptureBoRetirement(bo:number):boolean {return !this.physicalBoRetirements.has(bo);}
-  captureBoRetirement(bo:number,knownCpu=false):GlBoRetirement|null {
+  captureBoRetirement(bo:number,knownCpu=false,cpuStore?:GbmBoRegistry):GlBoRetirement|null {
     const old=this.physicalBoRetirements.get(bo);if(old)return null;
     const gpu=this.gpuBos.get(bo);
     if(!gpu && !knownCpu && !this.foreignRetirements.has(bo))return null;
+    if(!gpu && knownCpu && cpuStore) {
+      const streams=new Set([...this.bindings.values(),...Array.from(this.executionRecords,record=>record.binding)].map(binding=>binding.operations));
+      let cpu:CpuImageRetirement|null=null;
+      try {
+        const prefixes=[...streams].map(stream=>stream.capturePrefix());
+        cpu=this.cpuImages.reserveRetirement(bo,cpuStore,prefixes);if(!cpu)return null;
+        const capability=new GlBoRetirement(bo,undefined,[],new Map(this.foreignRetirementOwners(bo,false)),cpu);
+        this.physicalBoRetirements.set(bo,capability);return capability;
+      }catch{if(cpu)this.cpuImages.forgetReservedRetirement(cpu,true);return null;}
+    }
     const cpu=this.cpuImages.captureRetirements(bo);
     if(!cpu)return null;
     const native=[...cpu];
@@ -671,8 +693,23 @@ export class GlContextRegistry {
       this.physicalBoRetirements.set(bo,capability);return capability;
     }catch {for(const value of native)value.forget();this.cpuImages.forgetRetirement(bo);return null;}
   }
-  retireCapturedBo(capability:GlBoRetirement):boolean {
+  boRetirementReady(capability:GlBoRetirement):boolean {
+    return this.physicalBoRetirements.get(capability.bo)===capability
+      && (!capability.cpu||this.cpuImages.reservationReady(capability.cpu));
+  }
+  prepareBoRetirement(capability:GlBoRetirement):boolean {
     if(this.physicalBoRetirements.get(capability.bo)!==capability)return false;
+    if(capability.prepared)return true;
+    if(!capability.cpu)return false;
+    const receipts=this.cpuImages.captureReservedRetirements(capability.cpu);if(!receipts)return false;
+    capability.adopt(receipts);return true;
+  }
+  retireCapturedCpuStorage(capability:GlBoRetirement,pid:number):{complete:boolean;notificationFault:boolean} {
+    if(this.physicalBoRetirements.get(capability.bo)!==capability||!capability.complete)return {complete:false,notificationFault:false};
+    return capability.cpu?this.cpuImages.retireCanonical(capability.cpu,pid):{complete:true,notificationFault:false};
+  }
+  retireCapturedBo(capability:GlBoRetirement):boolean {
+    if(this.physicalBoRetirements.get(capability.bo)!==capability||!this.prepareBoRetirement(capability))return false;
     const current=this.gpuBos.get(capability.bo);
     if(current && current!==capability.gpu)return false;
     this.foreignRetirements.set(capability.bo,new Map(capability.foreign));
@@ -686,11 +723,14 @@ export class GlContextRegistry {
   }
   abandonBoRetirement(capability:GlBoRetirement):boolean {
     if(this.physicalBoRetirements.get(capability.bo)!==capability||capability.armed)return false;
+    if(capability.cpu&&!this.cpuImages.forgetReservedRetirement(capability.cpu,true))return false;
     capability.forget();this.cpuImages.forgetRetirement(capability.bo);this.physicalBoRetirements.delete(capability.bo);return true;
   }
   forgetBoRetirement(capability:GlBoRetirement):boolean {
+    if(this.forgottenBoRetirements.has(capability))return true;
     if(this.physicalBoRetirements.get(capability.bo)!==capability || !capability.complete)return false;
-    capability.forget();this.cpuImages.forgetRetirement(capability.bo);this.physicalBoRetirements.delete(capability.bo);return true;
+    if(capability.cpu&&!this.cpuImages.forgetReservedRetirement(capability.cpu))return false;
+    capability.forget();this.cpuImages.forgetRetirement(capability.bo);this.physicalBoRetirements.delete(capability.bo);this.forgottenBoRetirements.add(capability);return true;
   }
 
 

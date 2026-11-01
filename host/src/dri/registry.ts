@@ -84,6 +84,16 @@ type MappingRetirement = {
   notificationFault: boolean;
 };
 const mappingRetirements = new WeakMap<GbmMappingRetirement, MappingRetirement>();
+type AllocationRetirement={owner:WeakRef<GbmBoRegistry>;bo:number;backing:SharedArrayBuffer|null;complete:boolean;notificationFault:boolean};
+const allocationRetirements=new WeakMap<GbmAllocationRetirement,AllocationRetirement>();
+
+/** An allocator-issued identity for independent BO storage. It never owns a
+ * process Memory. Numeric reuse cannot redirect this capability. */
+export class GbmAllocationRetirement {
+  constructor(){Object.freeze(this);}
+  get complete():boolean{return allocationRetirements.get(this)?.complete??false;}
+  get notificationFault():boolean{return allocationRetirements.get(this)?.notificationFault??false;}
+}
 
 /** Exact CPU mapping custody. A fabricated token has no registry authority.
  * Completed/abandoned tokens retain no Memory, BO entry or mapping object. */
@@ -183,6 +193,35 @@ export class GbmBoRegistry {
     for (const holder of Array.from(e.bindingsByPid.keys())) this.deleteBinding(e, holder);
     this.bos.delete(bo_id);
     for (const l of this.listeners) l(pid, bo_id, "destroy");
+  }
+
+  captureAllocationRetirement(bo:number):GbmAllocationRetirement|null {
+    const entry=this.bos.get(bo);if(!entry)return null;
+    try {const capability=new GbmAllocationRetirement();allocationRetirements.set(capability,
+      {owner:new WeakRef(this),bo,backing:entry.sab,complete:false,notificationFault:false});return capability;}
+    catch{return null;}
+  }
+  matchesAllocationRetirement(capability:GbmAllocationRetirement):boolean {
+    const record=allocationRetirements.get(capability);
+    return !!record && record.owner.deref()===this && !record.complete && record.backing!==null
+      && this.bos.get(record.bo)?.sab===record.backing;
+  }
+  retireCapturedAllocation(capability:GbmAllocationRetirement,pid:number):boolean {
+    const record=allocationRetirements.get(capability);
+    if(!record || record.owner.deref()!==this)return false;
+    if(record.complete)return true;
+    if(!this.matchesAllocationRetirement(capability))return false;
+    const entry=this.bos.get(record.bo)!;
+    for(const holder of Array.from(entry.bindingsByPid.keys()))this.deleteBinding(entry,holder);
+    this.bos.delete(record.bo);record.complete=true;record.backing=null;
+    for(const listener of this.listeners)try {listener(pid,record.bo,"destroy");}
+    catch(error){if(isKernelExportFailure(error))throw error;record.notificationFault=true;}
+    return true;
+  }
+  abandonAllocationRetirement(capability:GbmAllocationRetirement):boolean {
+    const record=allocationRetirements.get(capability);
+    if(!record || record.owner.deref()!==this || record.complete)return false;
+    record.backing=null;allocationRetirements.delete(capability);return true;
   }
 
   bind(pid: number, bo_id: number, addr: number, len: number, boOffset = 0,
