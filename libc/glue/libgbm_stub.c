@@ -9,8 +9,8 @@
  *
  * Surface implemented (v1):
  *   - gbm_create_device / gbm_device_destroy
- *   - gbm_device_is_format_supported (32-bpp fourccs; per-usage planes)
- *   - gbm_bo_create        (linear, 32-bpp formats only)
+ *   - gbm_device_is_format_supported (scanout fourccs; per-usage planes)
+ *   - gbm_bo_create        (linear; RGB565 as CPU-tier storage only)
  *   - gbm_bo_create_with_modifiers / gbm_bo_create_with_modifiers2
  *                          (LINEAR or implicit modifiers only)
  *   - gbm_bo_destroy
@@ -262,19 +262,26 @@ int _wpk_gbm_surface_dimensions(const void *window, uint32_t *width, uint32_t *h
 }
 
 static uint32_t format_bpp(uint32_t fourcc) {
-    /* v1: only the 32-bpp ARGB/XRGB/ABGR/XBGR variants are
-     * supported, matching what the kernel-side CREATE_DUMB
-     * accepts (bpp must be 32; see Phase A6). Extend here as
-     * new formats are wired through the kernel. */
+    /* The formats the KMS primary plane scans out. CREATE_DUMB accepts
+     * any bpp, so RGB565 is a 16-bpp dumb allocation. */
     switch (fourcc) {
     case DRM_FORMAT_ARGB8888:
     case DRM_FORMAT_XRGB8888:
     case DRM_FORMAT_ABGR8888:
     case DRM_FORMAT_XBGR8888:
         return 32;
+    case DRM_FORMAT_RGB565:
+        return 16;
     default:
         return 0;
     }
+}
+
+/* GPU-tier storage and EGL window surfaces are 32-bpp RGBA (Kandelo's EGL
+ * configs and the WebGL texture backing are 8888), so a GL render target
+ * needs a 32-bpp format; RGB565 is CPU-tier storage only. */
+static int format_renderable(uint32_t fourcc) {
+    return format_bpp(fourcc) == 32;
 }
 
 /* Usages Kandelo can provide. Protected content, front-buffer rendering and
@@ -403,7 +410,8 @@ static struct gbm_bo *bo_create(struct gbm_device *gbm,
                                 int gpu_tier, int owned_device) {
     format = canonical_format(format);
     uint32_t bpp = format_bpp(format);
-    if (!gbm || !bpp || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)) {
+    if (!gbm || !bpp || !width || !height || (flags & ~WPK_GBM_SUPPORTED_USAGE)
+        || ((flags & GBM_BO_USE_RENDERING) && !format_renderable(format))) {
         errno = EINVAL;
         return NULL;
     }
@@ -874,6 +882,7 @@ int gbm_device_is_format_supported(struct gbm_device *gbm,
     (void) gbm;
     format = canonical_format(format);
     if (!format_bpp(format) || (flags & ~WPK_GBM_SUPPORTED_USAGE)) return 0;
+    if ((flags & GBM_BO_USE_RENDERING) && !format_renderable(format)) return 0;
     if (flags & GBM_BO_USE_CURSOR)
         return !(flags & GBM_BO_USE_RENDERING) && format == GBM_FORMAT_ARGB8888;
     return 1;
@@ -895,7 +904,7 @@ struct gbm_surface *gbm_surface_create(struct gbm_device *gbm,
                                        uint32_t width, uint32_t height,
                                        uint32_t format, uint32_t flags) {
     format = canonical_format(format);
-    if (!gbm || !width || !height || !format_bpp(format) ||
+    if (!gbm || !width || !height || !format_renderable(format) ||
         (flags & ~WPK_GBM_SUPPORTED_USAGE)) {
         errno = EINVAL;
         return NULL;

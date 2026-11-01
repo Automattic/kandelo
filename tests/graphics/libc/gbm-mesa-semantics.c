@@ -64,7 +64,8 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     if (request == DRM_IOCTL_MODE_CREATE_DUMB) {
         struct drm_mode_create_dumb *d = data;
         ++allocations;
-        d->handle = new_handle(0); d->pitch = d->width * 4;
+        /* The kernel's dumb rule: any nonzero bpp, rows rounded to 4 bytes. */
+        d->handle = new_handle(0); d->pitch = ((d->width * d->bpp + 7) / 8 + 3) & ~3u;
         d->size = (uint64_t)d->pitch * d->height;
         return 0;
     }
@@ -361,7 +362,29 @@ static void usage_flags(void) {
     for (unsigned i = 0; i < 4; ++i)
         assert(gbm_device_is_format_supported(device, scanout[i],
             GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING | GBM_BO_USE_LINEAR) == 1);
-    assert(!gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_SCANOUT));
+    close_device(device);
+}
+
+/* RGB565, the 16-bpp format the primary plane scans out, is a CPU-tier
+ * (dumb) allocation: scanout, write and linear usages, but no GL render
+ * target or cursor, since Kandelo's EGL configs and cursor plane are 32-bpp. */
+static void rgb565(void) {
+    struct gbm_device *device = open_device();
+    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR) == 1);
+    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING) == 0);
+    assert(gbm_device_is_format_supported(device, GBM_FORMAT_RGB565, GBM_BO_USE_CURSOR) == 0);
+    struct gbm_bo *bo = gbm_bo_create(device, 5, 3, GBM_FORMAT_RGB565,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_WRITE);
+    assert(bo && gbm_bo_get_bpp(bo) == 16 && gbm_bo_get_stride(bo) == 12);
+    assert(gbm_bo_get_format(bo) == GBM_FORMAT_RGB565);
+    gbm_bo_destroy(bo);
+    errno = 0;
+    assert(!gbm_bo_create(device, 5, 3, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING) && errno == EINVAL);
+    errno = 0;
+    assert(!gbm_surface_create(device, 5, 3, GBM_FORMAT_RGB565, GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING)
+        && errno == EINVAL);
+    assert(gbm_device_get_format_modifier_plane_count(device, GBM_FORMAT_RGB565, DRM_FORMAT_MOD_LINEAR) == 1);
     close_device(device);
 }
 
@@ -398,6 +421,7 @@ int main(int argc, char **argv) {
         {"legacy-formats", legacy_formats},
         {"usage-flags", usage_flags},
         {"plane-accessors", plane_accessors},
+        {"rgb565", rgb565},
     };
     if (argc != 2) { fprintf(stderr, "usage: %s <case>\n", argv[0]); return 2; }
     for (unsigned i = 0; i < sizeof cases / sizeof cases[0]; ++i) {
