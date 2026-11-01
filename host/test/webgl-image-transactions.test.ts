@@ -266,7 +266,10 @@ it("does not bind a texture into the wrong unit after a failed active-unit selec
 it("validates allocation-only storage requests without publishing replies or touching native state", () => {
   const { b, gl } = setup();
   const valid = [O.OP_TEX_IMAGE_2D, TEX, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, 0];
-  for (const words of [[], valid.slice(0, -1), [...valid, 0], [...valid.slice(0, -1), 4], [O.OP_CLEAR, 0], [O.OP_RENDERBUFFER_STORAGE, RBO, 0x8056, 1]]) {
+  const subimage = [O.OP_TEX_SUB_IMAGE_2D,TEX,0,0,0,1,1,0x1908,0x1401,0];
+  for (const words of [[], valid.slice(0, -1), [...valid, 0], [...valid.slice(0, -1), 4],
+    subimage.slice(0,-1), [...subimage,0], [...subimage.slice(0,-1),4],
+    [O.OP_CLEAR, 0], [O.OP_RENDERBUFFER_STORAGE, RBO, 0x8056, 1]]) {
     const out = new Uint8Array(12).fill(0xa5);
     expect(runGlQuery(b, O.QOP_IMAGE_STORAGE, new Uint8Array(new Uint32Array(words).buffer), out)).toBe(-22);
     expect([...out]).toEqual(Array(12).fill(0xa5));
@@ -308,6 +311,80 @@ for (const kind of [1, 2]) {
     expect(sizes.get(old)).toBe(1);
   });
 }
+it("admits subimage destination metadata without uploading or respecifying pixels", () => {
+  const { b, gl, old, query } = setup();
+  const calls: unknown[][] = [];
+  Object.assign(gl, {
+    getParameter: () => null,
+    texSubImage2D: (...args: unknown[]) => { calls.push(args); },
+  });
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,2,1,4,3,0x1908,0x1401,0])).toEqual([0,1]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0].slice(0,8)).toEqual([TEX,0,6,4,0,0,0x1908,0x1401]);
+  expect(calls[0][8]).toBeInstanceOf(Uint8Array);
+  expect((calls[0][8] as Uint8Array).byteLength).toBe(0);
+  expect(b.textures.get(17)).toBe(old);
+  expect(gl.textures.get(0)).toBe(old);
+  expect(b.errors).toEqual([]);
+});
+it.each([
+  [-1,0,1,1], [0,-1,1,1], [0,0,-1,1], [0,0,1,-1],
+  [0x7fffffff,0,1,1], [0,0x7fffffff,1,1],
+])("rejects invalid subimage destination geometry %j before native effects", (x,y,w,h) => {
+  const { b, gl, query } = setup();
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,x,y,w,h,0x1908,0x1401,0])).toEqual([1,0]);
+  expect(b.errors).toEqual([0x501]);
+  expect(gl.calls).toEqual([]);
+});
+it("retains a native subimage refusal and never treats metadata failure as accepted", () => {
+  const { b, gl, query } = setup();
+  Object.assign(gl, {
+    getParameter: () => null,
+    texSubImage2D: () => { gl.errors.push(0x501); },
+  });
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,3,3,2,2,0x1908,0x1401,0])).toEqual([1,0]);
+  expect(b.errors).toEqual([0x501]);
+});
+it("selects the PBO offset overload only from the checked actual binding", () => {
+  const { b, gl, query } = setup();
+  const calls: unknown[][] = [], buffer = {};
+  Object.assign(gl, {
+    getParameter: (name: number) => { expect(name).toBe(0x88ef); return buffer; },
+    texSubImage2D: (...args: unknown[]) => { calls.push(args); },
+  });
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,0,0,1,1,0x1908,0x1401,0])).toEqual([0,1]);
+  expect(calls[0][8]).toBe(0);
+  gl.errors.push(0x500);
+  Object.assign(gl, { getParameter: () => { gl.errors.push(0x505); return buffer; } });
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,0,0,1,1,0x1908,0x1401,0])).toEqual([1,0]);
+  expect(calls).toHaveLength(1);
+  expect(b.errors).toEqual([0x500,0x505]);
+});
+it("admits imported subimage destinations against the actual shared source and restores selectors", () => {
+  const { b, gl, old, framebuffer, query } = setup(), sourceTexture = {};
+  const source = { token: 1, bo: 77, texture: sourceTexture, width: 4, height: 4 };
+  const view = { native: old, source, read: null };
+  b.textureViews.set(old,view);
+  let calls = 0;
+  Object.assign(gl, {
+    getParameter: (name: number) => name === 0x84e0 ? 0x84c0
+      : name === 0x8069 ? gl.textures.get(0)
+      : name === 0x8ca6 ? gl.draw : name === 0x8caa ? gl.read : null,
+    texSubImage2D: (...args: unknown[]) => {
+      calls++;
+      expect(gl.textures.get(0)).toBe(sourceTexture);
+      expect(args.slice(2,6)).toEqual([2,2,0,0]);
+    },
+  });
+  expect(query(O.QOP_IMAGE_STORAGE, [O.OP_TEX_SUB_IMAGE_2D,TEX,0,1,1,1,1,0x1908,0x1401,0])).toEqual([0,1]);
+  expect(calls).toBe(1);
+  expect(b.textureViews.get(old)).toBe(view);
+  expect(view.source).toBe(source);
+  expect(gl.textures.get(0)).toBe(old);
+  expect(gl.draw).toBe(framebuffer);
+  expect(gl.read).toBe(framebuffer);
+  expect(gl.deleted).toEqual([]);
+});
 it("checks exact framebuffer bind spans and selectors before native allocation", () => {
   const { b, gl, query } = setup();
   for (const [inputSize, replySize] of [[4, 12], [12, 12], [8, 8], [8, 16]]) {
