@@ -450,7 +450,9 @@ static const struct config_attribute config_attributes[] = {
     { EGL_MIN_SWAP_INTERVAL, 0, EGL_DONT_CARE, CFG_EXACT },
     { EGL_NATIVE_RENDERABLE, EGL_FALSE, EGL_DONT_CARE, CFG_BOOLEAN },
     { EGL_NATIVE_VISUAL_ID, GBM_FORMAT_ABGR8888, EGL_DONT_CARE, CFG_IGNORED },
-    { EGL_NATIVE_VISUAL_TYPE, EGL_NONE, EGL_DONT_CARE, CFG_IGNORED },
+    /* Table 3.4 matches the visual type exactly; only the visual ID and
+     * pbuffer maxima are ignored by eglChooseConfig. */
+    { EGL_NATIVE_VISUAL_TYPE, EGL_NONE, EGL_DONT_CARE, CFG_EXACT },
     { EGL_MAX_PBUFFER_WIDTH, 0, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_MAX_PBUFFER_HEIGHT, 0, EGL_DONT_CARE, CFG_IGNORED },
     { EGL_MAX_PBUFFER_PIXELS, 0, EGL_DONT_CARE, CFG_IGNORED },

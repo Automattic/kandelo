@@ -2361,6 +2361,19 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(eglCreateSync(EGL_NO_DISPLAY, EGL_SYNC_CL_EVENT, handle) == EGL_NO_SYNC);
         assert(eglGetError() == EGL_BAD_DISPLAY);
         assert(eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-native-visual-type")) {
+        /* EGL 1.5 Table 3.4: EGL_NATIVE_VISUAL_TYPE is an exact match. */
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLint values[][2] = {{0x1234, 0}, {EGL_NONE, 2}, {EGL_DONT_CARE, 2}};
+        for (unsigned i = 0; i < 3; i++) {
+            const EGLint list[] = {EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+                EGL_NATIVE_VISUAL_TYPE, values[i][0], EGL_NONE};
+            EGLConfig configs[2]; EGLint count = -1;
+            assert(eglChooseConfig(dpy, list, configs, 2, &count) && count == values[i][1]);
+        }
+        EGLint type = 0;
+        assert(eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_NATIVE_VISUAL_TYPE, &type) && type == EGL_NONE);
+        assert(eglTerminate(dpy));
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
