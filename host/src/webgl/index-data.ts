@@ -84,6 +84,79 @@ function indexForm(b: GlBinding, store: GlBufferStore, type: number, phase: numb
   return entry;
 }
 
+// --- robust buffer access (robust-access.ts) ----------------------------------
+
+const RANGE_BLOCK = 256;
+type IndexRange = { valid: boolean; values: Uint16Array; blocks: Uint16Array };
+
+/** The contents' index values from `phase` on and their per-block maxima,
+ * read once per contents for robust contexts only: the highest vertex of a
+ * draw is then found without reading the buffer back. */
+function indexRange(b: GlBinding, store: GlBufferStore, type: number, phase: number): IndexRange | null {
+  const key = `${type}:${phase}`;
+  const cached = store.indexRanges?.get(key);
+  if (cached?.valid) return cached;
+  const gl = b.gl!, width = type === BYTE ? 1 : 2;
+  const total = Math.max(0, Math.floor((store.size-phase)/width));
+  const perChunk = Math.floor(BUFFER_TRANSFER_BYTES/width);
+  let values: Uint16Array, blocks: Uint16Array, input: Uint8Array<ArrayBuffer>;
+  try {
+    values = new Uint16Array(total); blocks = new Uint16Array(Math.ceil(total/RANGE_BLOCK));
+    input = new Uint8Array(Math.min(Math.max(total,1),perChunk)*width);
+  } catch { recordGlError(b,0x505); return null; }
+  if (!withBufferTransfer(b,store.source,store.source,() => {
+    for (let first=0; first<total; first+=perChunk) {
+      const source = input.subarray(0,Math.min(perChunk,total-first)*width);
+      if (!checkedGlCall(b, () => gl.getBufferSubData(COPY_READ,phase+first*width,source))) return false;
+      const read = new DataView(source.buffer,source.byteOffset,source.byteLength);
+      for (let i=0; i<source.length/width; i++) {
+        const value = type === BYTE ? read.getUint8(i) : read.getUint16(i*2,true), at = first+i;
+        values[at] = value;
+        if (value > blocks[at/RANGE_BLOCK|0]) blocks[at/RANGE_BLOCK|0] = value;
+      }
+    }
+    return true;
+  })) return null;
+  const range: IndexRange = { valid: true, values, blocks };
+  try { (store.indexRanges ??= new Map()).set(key, range); }
+  catch { recordGlError(b,0x505); return null; }
+  return range;
+}
+
+/** Highest of `count` indices from position `first`; positions past the
+ * stored indices read as zero. */
+function rangeMax(range: IndexRange, first: number, count: number): number {
+  const end = Math.min(first+count, range.values.length);
+  let max = 0, i = first;
+  for (; i < end && i % RANGE_BLOCK; i++) if (range.values[i] > max) max = range.values[i];
+  for (; i+RANGE_BLOCK <= end; i += RANGE_BLOCK) if (range.blocks[i/RANGE_BLOCK] > max) max = range.blocks[i/RANGE_BLOCK];
+  for (; i < end; i++) if (range.values[i] > max) max = range.values[i];
+  return max;
+}
+
+/** A robust draw whose indices run past the end of the element buffer:
+ * the missing indices read as zero (EXT_robustness section 2.8), drawn from
+ * a private widened copy of this draw's indices. */
+function drawPaddedElements(b: GlBinding, mode: number, count: number, type: number, first: number,
+    range: IndexRange, previous: WebGLBuffer): void {
+  const gl = b.gl!;
+  let indices: Uint16Array | Uint32Array;
+  try { indices = type === BYTE ? new Uint16Array(count) : new Uint32Array(count); }
+  catch { recordGlError(b,0x505); return; }
+  const available = Math.max(0, Math.min(count, range.values.length-first));
+  for (let i=0; i<available; i++) indices[i] = range.values[first+i];
+  const retirement = reserveNativeRetirement(b,[["deleteBuffer",null]]); if (!retirement) return;
+  try {
+    const temporary = allocateNativeBuffer(b,retirement);
+    if (!temporary) return;
+    applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => {
+      gl.bindBuffer(ELEMENT,temporary); gl.bufferData(ELEMENT,indices,0x88e0);
+    }) && issueGlesDraw(b,{mode,cleanEntry:true,maxVertex:rangeMax(range,first,count),
+      issue:() => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,0),vertices:() => indices}),
+    restore:nativeInverse(b)}],{finalizer:batchedNativeInverse(b,[["bindBuffer",ELEMENT,previous]])});
+  } finally { retireNativeRetirement(retirement); }
+}
+
 /** GLES2's maximum byte/short indices are vertices: draw them through the
  * buffer's derived index form (GlIndexForm). */
 export function drawGlesElements(b: GlBinding, mode: number, count: number, type: number, offset: number): void {
@@ -98,13 +171,23 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   if (count === 0) { issueGlesDraw(b,{mode,empty:true,issue:() => gl.drawElements(mode,0,type,offset - offset % width),vertices:() => null}); return; }
   const object = activeVertexArray(b).element, store = object && b.bufferStores.get(object);
   const previous = store?.views.get(ELEMENT)?.native;
-  if (!store || !previous || offset < 0 || offset+count*width > store.size) { recordGlError(b,0x502); return; }
+  if (!store || !previous || offset < 0) { recordGlError(b,0x502); return; }
+  const robust = b.robustAccess, short = offset+count*width > store.size;
+  if (short && !robust) { recordGlError(b,0x502); return; }
   if (!prepareBufferDraw(b,true)) return;
-  const phase = offset % width, form = indexForm(b,store,type,phase,previous);
+  const phase = offset % width;
+  // Robust buffer access (robust-access.ts): the highest vertex comes from
+  // the contents' cached index range, never a per-draw readback.
+  const range = robust ? indexRange(b,store,type,phase) : undefined;
+  if (range === null) return;
+  const first = (offset-phase)/width;
+  if (range && short) { drawPaddedElements(b,mode,count,type,first,range,previous); return; }
+  const maxVertex = range ? rangeMax(range,first,count) : undefined;
+  const form = indexForm(b,store,type,phase,previous);
   if (!form) return;
   if (form.direct) {
     // The bound element buffer as stored: no restart value, aligned offset.
-    issueGlesDraw(b,{mode,observed:false,issue:() => gl.drawElements(mode,count,type,offset),
+    issueGlesDraw(b,{mode,observed:false,maxVertex,issue:() => gl.drawElements(mode,count,type,offset),
       vertices:() => {
         const indices = type === BYTE ? new Uint8Array(count) : new Uint16Array(count);
         gl.getBufferSubData(ELEMENT,offset,indices);
@@ -114,7 +197,7 @@ export function drawGlesElements(b: GlBinding, mode: number, count: number, type
   }
   const widened = form.native!, at = (offset-phase)/width*promotedWidth;
   applyNativeChanges(b,[{apply: () => checkedGlCall(b, () => gl.bindBuffer(ELEMENT,widened)) &&
-    issueGlesDraw(b,{mode,cleanEntry:true,issue:() => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,at),
+    issueGlesDraw(b,{mode,cleanEntry:true,maxVertex,issue:() => gl.drawElements(mode,count,type === BYTE ? SHORT : INT,at),
       vertices:() => {
         // Face passes read this draw's widened indices.
         const promoted = type === BYTE ? new Uint16Array(count) : new Uint32Array(count);

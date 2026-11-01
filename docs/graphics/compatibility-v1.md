@@ -154,12 +154,29 @@ tagged substitution of a private uniform.
 node as Kandelo's CPU allocator; primary-plane scaling and positioning are
 refused like Linux's legacy primary helper.
 
-**Still open:** robust buffer access contexts (`EGL_CONTEXT_OPENGL_ROBUST_ACCESS`
-`EGL_TRUE` is still refused: `EGL_BAD_MATCH`, or `EGL_BAD_CONFIG` for the EXT
-attribute; `CONTEXT_ROBUST_ACCESS` reads `GL_FALSE`). WebGL 1.0 §6.6, kept by
-WebGL 2.0, lets an out-of-range vertex fetch raise `INVALID_OPERATION` and draw
-nothing, where `EXT_robustness` §2.8 requires undefined attribute values and
-no error; this awaits a maintainer decision. Every validation phase item. The maintainer removed the
+**Robust buffer access (maintainer decision D-25, 2026-11-01): emulated for
+robust contexts only.** `EXT_robustness` §2.8 (`KHR_robustness` §10.3.1.1rob)
+makes an out-of-range vertex index give the attribute undefined values with no
+error, but WebGL 1.0 §6.6, kept by WebGL 2.0, lets the same draw raise
+`INVALID_OPERATION` and draw nothing, and the browsers do. Refusing robust
+contexts would have hidden a feature applications ask for; emulating it for
+every context would have charged every draw a range check. So contexts created
+with `EGL_CONTEXT_OPENGL_ROBUST_ACCESS(_EXT)` = `EGL_TRUE` (sent to the host as
+`GlContextAttrs.flags` bit 0) report `CONTEXT_ROBUST_ACCESS` `GL_TRUE`, and
+before each of their draws the host compares the highest vertex index read with
+every enabled buffer-backed attribute's native storage. An attribute that would
+read past the end draws from a private zero-padded copy (in-range values are
+the guest's, out-of-range values are zero, as §2.8 allows); indices past the
+end of the element buffer read as zero. An indexed draw's highest index comes
+from index values and block maxima derived once per element-buffer contents,
+never a per-draw readback; draws that stream client arrays get the same
+substitution for their buffer-backed attributes. The copy is a converted view of the
+buffer store: retired with it, invalidated by any write and rebuilt only when
+invalid or too small, never per draw. Other contexts pay one flag test per draw
+(`host/src/webgl/robust-access.ts`). Neither EGL specification ties robust
+access to the share group, so contexts sharing objects may differ in it.
+
+**Still open:** every validation phase item. The maintainer removed the
 test-only main-thread GL forwarding path; GL always executes in the kernel
 worker on both hosts (row H02).
 

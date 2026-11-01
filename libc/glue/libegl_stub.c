@@ -144,6 +144,8 @@ struct egl_context_record {
      * returned by glGetGraphicsResetStatus; a command ran after the reset
      * and GL_CONTEXT_LOST awaits glGetError. */
     int reset_reported, reset_error;
+    /* Created with EGL robust buffer access (host robust-access.ts). */
+    int robust_access;
 };
 struct egl_surface_record {
     EGLSurface handle;
@@ -358,13 +360,13 @@ GLenum _wpk_gl_graphics_reset_status(void) {
     return GL_UNKNOWN_CONTEXT_RESET_KHR;
 }
 /* CONTEXT_ROBUST_ACCESS and RESET_NOTIFICATION_STRATEGY (the EXT and KHR
- * tokens share values). Robust buffer access contexts are not created. */
+ * tokens share values), fixed at context creation. */
 int _wpk_gl_robustness_state(GLenum pname, GLint *value) {
     struct egl_context_record *context = g_thread_binding.object;
     if (!context)
         return 0;
     if (pname == GL_CONTEXT_ROBUST_ACCESS_KHR) {
-        *value = GL_FALSE;
+        *value = context->robust_access ? GL_TRUE : GL_FALSE;
         return 1;
     }
     if (pname == GL_RESET_NOTIFICATION_STRATEGY_KHR) {
@@ -994,20 +996,11 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_MATCH;
         return EGL_NO_CONTEXT;
     }
-    /* Robust buffer access is not provided: WebGL 1.0 section 6.6 (kept by
-     * WebGL 2.0) lets an out-of-range vertex fetch generate
-     * INVALID_OPERATION and draw nothing, where EXT_robustness section 2.8
-     * requires undefined attribute values and no error. EGL 1.5 section
-     * 3.7.1.5 fails the creation; EGL_EXT_create_context_robustness names
-     * EGL_BAD_CONFIG for its own attribute. */
-    if (robust == EGL_TRUE) {
-        g_last_error = EGL_BAD_MATCH;
-        return EGL_NO_CONTEXT;
-    }
-    if (robust_ext == EGL_TRUE) {
-        g_last_error = EGL_BAD_CONFIG;
-        return EGL_NO_CONTEXT;
-    }
+    /* Robust buffer access (EXT_robustness section 2.8): WebGL 1.0 section
+     * 6.6 lets an out-of-range vertex fetch fail the draw, so the host keeps
+     * every fetch of such a context in range (host robust-access.ts). Either
+     * spelling requests it; neither spec ties it to the share group. */
+    const int robust_access = robust == EGL_TRUE || robust_ext == EGL_TRUE;
     /* EGL_EXT_create_context_robustness and EXT_robustness issue 8: shared
      * objects require one reset notification behavior. */
     if (shared && shared->reset_strategy != reset) {
@@ -1029,6 +1022,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         return EGL_NO_CONTEXT;
     }
     context->reset_strategy = reset;
+    context->robust_access = robust_access;
     context->reset_group = shared ? shared->reset_group : calloc(1, sizeof *context->reset_group);
     if (!context->reset_group) {
         free(context);
@@ -1048,7 +1042,8 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     if (!session)
         goto fail;
     struct gl_context_attrs attrs = {.client_version = (uint32_t)version,
-                                     .share_context_id = shared ? shared->backend_id : 0};
+                                     .share_context_id = shared ? shared->backend_id : 0,
+                                     .flags = robust_access ? WPK_GL_CONTEXT_FLAG_ROBUST_ACCESS : 0};
     if (ioctl(session->fd, GLIO_CREATE_CONTEXT, &attrs) != 0 || !attrs.context_id) {
         /* The host found the share group's renderer lost. */
         if (shared && errno == ENODEV) {

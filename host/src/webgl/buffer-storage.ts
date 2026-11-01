@@ -20,6 +20,9 @@ export type GlBufferStore = {
   usage: number;
   /** Drawable index forms of the contents (index-data.ts). */
   indexForms?: Map<string, { valid: boolean; direct: boolean; native: WebGLBuffer | null }>;
+  /** Index values and block maxima of the contents, derived for robust
+   * buffer access contexts only (index-data.ts). */
+  indexRanges?: Map<string, { valid: boolean; values: Uint16Array; blocks: Uint16Array }>;
 };
 
 export function canonicalBuffer(b: GlBinding, native: WebGLBuffer): WebGLBuffer {
@@ -149,6 +152,7 @@ function updateSource(store: GlBufferStore, target: number): void {
   for (const view of store.views.values()) view.valid = view === source;
   for (const view of store.converted.values()) view.valid = false;
   for (const form of store.indexForms?.values() ?? []) form.valid = false;
+  for (const range of store.indexRanges?.values() ?? []) range.valid = false;
   store.source = source.native;
 }
 

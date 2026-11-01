@@ -176,6 +176,9 @@ export function collectConvertedVertexData(b: GlBinding): void {
     for (const a of vao.attributes.values()) if (a.view) referenced.add(a.view);
   }
   for (const store of b.bufferStores.values()) for (const [key,view] of store.converted) {
+    // Robust-access padded copies (robust-access.ts) are draw-time caches
+    // of the store, or of a packed view while that view is kept.
+    if (key === "robust" || (key.startsWith("robust:") && store.converted.has(key.slice(7)))) continue;
     if (!referenced.has(view.native) && retireBufferObjects(b,view.native,[view.native])) {
       store.converted.delete(key); b.bufferViewOwners.delete(view.native); b.bufferRetirements.delete(view.native);
     }

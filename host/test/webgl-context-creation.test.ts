@@ -514,7 +514,7 @@ describe("share group construction",()=>{
     expect(create(7,21,11)).toBe(0);
     kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
     const target=kernel.gl.get(7,12)!,original=target.objects;
-    for(const request of [[2,99,0,0],[2,21,1,0],[2,21,0,22],[1,21,0,0]]) {
+    for(const request of [[2,99,0,0],[2,21,2,0],[2,21,0,22],[1,21,0,0]]) {
       new Uint32Array(memory.buffer,64,4).set(request);
       expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-22);
       expect(target.contextId).toBeNull();expect(target.objects).toBe(original);

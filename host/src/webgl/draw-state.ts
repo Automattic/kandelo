@@ -31,6 +31,7 @@ import { checkedGlCall, checkedGlCallAfterClean, checkedGlSequence, recordGlErro
 import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
 import type { GlStencilFaceState } from "./shadow.js";
 import { prepareDrawTarget } from "./opaque-alpha.js";
+import { robustVertexDraw } from "./robust-access.js";
 
 const FRONT = 0x0404, BACK = 0x0405, FRONT_AND_BACK = 0x0408;
 const CULL_FACE = 0x0b44, RASTERIZER_DISCARD = 0x8c89, ELEMENT = 0x8893, UNSIGNED_INT = 0x1405;
@@ -52,6 +53,8 @@ export type GlesDraw = {
   /** The caller just checked the native error state clean (its own setup
    * step), so the draw's check needs no entry drain. */
   cleanEntry?: boolean;
+  /** The highest vertex index the draw reads (robust buffer access). */
+  maxVertex?: number;
 };
 
 type StencilPlan = { kind: "none" } | { kind: "mirror"; face: number } | { kind: "split" };
@@ -149,7 +152,11 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   // RGB color storage kept as RGBA: the native alpha is never written;
   // sampled siblings of the storage see the write.
   prepareDrawTarget(b);
-  if (twin === undefined && stencil.kind === "none") {
+  // Robust buffer access contexts keep every vertex fetch in range
+  // (robust-access.ts); others pay this one flag test.
+  const robust = b.robustAccess && !draw.empty ? robustVertexDraw(b, robustMaxVertex(b, draw)) : undefined;
+  if (robust === null) return false;
+  if (twin === undefined && stencil.kind === "none" && !robust) {
     if (draw.cleanEntry) return checkedGlCallAfterClean(b, draw.issue);
     if (draw.observed !== false) return checkedGlCall(b, draw.issue);
     draw.issue();
@@ -157,6 +164,7 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   }
 
   const changes: NativeChange[] = [], finalizer: NativeCall[][] = [];
+  if (robust) { changes.push(...robust.changes); finalizer.push(...robust.finalizer); }
   if (twin) {
     // The guest executable stays installed in every logical record; only
     // this draw runs its private variant (reversed depth, depth sampling).
@@ -171,6 +179,16 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
     changes.push({ apply: () => checkedGlCall(b, draw.issue), restore: nativeInverse(b) });
   } else return splitFaces(b, draw, changes, finalizer);
   return applyNativeChanges(b, changes, { finalizer: nativeInverse(b, ...finalizer) });
+}
+
+function robustMaxVertex(b: GlBinding, draw: GlesDraw): number {
+  if (draw.maxVertex !== undefined) return draw.maxVertex;
+  let vertices: ArrayLike<number> | null = null;
+  if (!checkedGlCall(b, () => { vertices = draw.vertices(); }) || !vertices) return 0;
+  const list = vertices as ArrayLike<number>;
+  let max = 0;
+  for (let i = 0; i < list.length; i++) if (list[i] > max) max = list[i];
+  return max;
 }
 
 function splitFaces(b: GlBinding, draw: GlesDraw, changes: NativeChange[], finalizer: NativeCall[][]): boolean {

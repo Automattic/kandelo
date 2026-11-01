@@ -526,6 +526,7 @@ host/test/webgl-program-link.test.ts	source-only
 host/test/webgl-readback-capture.test.ts	source-only
 host/test/webgl-registry.test.ts	source-only
 host/test/webgl-renderer-loss.test.ts	source-only
+host/test/webgl-robust-access.test.ts	source-only
 host/test/webgl-server-wait.test.ts	source-only
 host/test/webgl-shader-precision.test.ts	source-only
 host/test/webgl-shader-upload.test.ts	source-only

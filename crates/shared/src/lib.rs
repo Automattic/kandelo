@@ -4390,6 +4390,11 @@ pub mod gl {
         pub read_surface_id: u32,
     }
 
+    /// `GlContextAttrs::flags`: an EGL robust buffer access context
+    /// (EGL_CONTEXT_OPENGL_ROBUST_ACCESS). Every draw in it keeps its vertex
+    /// fetches in range instead of failing (EXT_robustness section 2.8).
+    pub const CONTEXT_FLAG_ROBUST_ACCESS: u32 = 1;
+
     /// Argument to `GLIO_CREATE_CONTEXT`. Total: 16 bytes.
     /// Sharing is resolved against live same-process, same-generation
     /// contexts before entering the renderer.
@@ -4400,8 +4405,8 @@ pub mod gl {
         pub client_version: u32,
         /// Source context identity, or zero for an independent object group.
         pub share_context_id: u32,
-        /// Reserved; must be zero.
-        pub reserved: u32,
+        /// `CONTEXT_FLAG_*` bits; any other bit is `EINVAL`.
+        pub flags: u32,
         /// Kernel-issued context identity. Zero on input, nonzero on success.
         pub context_id: u32,
     }
@@ -6254,7 +6259,7 @@ mod gl_tests {
         assert_eq!(size_of::<GlSubmitInfo>(), 8);
         assert_eq!(size_of::<GlContextAttrs>(), 16);
         assert_eq!(core::mem::offset_of!(GlContextAttrs, share_context_id), 4);
-        assert_eq!(core::mem::offset_of!(GlContextAttrs, reserved), 8);
+        assert_eq!(core::mem::offset_of!(GlContextAttrs, flags), 8);
         assert_eq!(core::mem::offset_of!(GlContextAttrs, context_id), 12);
         assert_eq!(size_of::<GlSurfaceAttrs>(), 32);
         assert_eq!(size_of::<GlSurfaceCreateInfo>(), 36);

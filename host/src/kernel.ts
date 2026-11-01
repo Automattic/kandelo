@@ -2995,7 +2995,7 @@ export class WasmPosixKernel {
           if (!b) return -5;
           ctxId >>>= 0;
           if (b.contextId !== null) return -16;
-          let shareContextId = 0;
+          let shareContextId = 0, robustAccess = false;
           try {
             const length = this.#checkedKernelIndex(attrsLen, "context creation length");
             // Empty attributes remain the embedder's independent-context path.
@@ -3004,9 +3004,11 @@ export class WasmPosixKernel {
               if (length !== 16) return -22;
               const bytes = this.#readKernelBytes(attrsPtr, 16);
               const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-              if (![2,3].includes(view.getUint32(0,true)) || view.getUint32(8,true) !== 0
+              // Word 2 is GlContextAttrs.flags: only CONTEXT_FLAG_ROBUST_ACCESS.
+              if (![2,3].includes(view.getUint32(0,true)) || (view.getUint32(8,true) & ~1) !== 0
                   || view.getUint32(12,true) !== 0) return -22;
               shareContextId = view.getUint32(4,true);
+              robustAccess = (view.getUint32(8,true) & 1) !== 0;
             }
           } catch { return -22; }
           const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
@@ -3024,6 +3026,8 @@ export class WasmPosixKernel {
               }
             }
             b.contextId = ctxId;
+            // EGL robust buffer access: draws keep fetches in range (robust-access.ts).
+            b.robustAccess = robustAccess;
             this.tryAttachKmsGlCanvas(b);
             if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
               // Losses of this renderer before now belong to earlier owners.

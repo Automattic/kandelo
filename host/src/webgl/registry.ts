@@ -126,6 +126,9 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
 
   /** Kernel-issued EGL backend context identity. */
   contextId: GlContextHandle | null;
+  /** Created with EGL robust buffer access (robust-access.ts): every draw
+   * keeps native vertex fetches in range instead of WebGL's error. */
+  robustAccess: boolean;
 
   objects: GlObjectGroup;
   errors: number[];
@@ -379,6 +382,7 @@ export class GlContextRegistry {
       operations,
       canvas,
       contextId: null,
+      robustAccess: false,
       errors: [],
       vaos: new Map(),
       fbos: new Map(),
@@ -984,5 +988,6 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.vertexArrayId = 0;
   b.vertexArrays.set(0,defaultVertexArray());
   b.contextId = null;
+  b.robustAccess = false;
   b.gl = null;
 }

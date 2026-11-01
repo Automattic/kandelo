@@ -2391,7 +2391,7 @@ fn handle_dri_ioctl(
                 unsafe { core::ptr::read_unaligned(attrs_bytes.as_ptr() as *const _) };
             if (attrs.client_version != 2 && attrs.client_version != 3)
                 || attrs.context_id != 0
-                || attrs.reserved != 0
+                || attrs.flags & !gl::CONTEXT_FLAG_ROBUST_ACCESS != 0
             {
                 return Err(Errno::EINVAL);
             }
@@ -58658,8 +58658,9 @@ impl HostIO for RelSymlinkMock {
             .as_mut()
             .unwrap()
             .owner_pid = 1;
+        // An unknown GlContextAttrs.flags bit (bit 0 is robust access).
         let mut reserved = glio_share_attrs(id);
-        reserved[8] = 1;
+        reserved[8] = 2;
         assert_eq!(
             sys_ioctl(
                 &mut proc,
@@ -58754,6 +58755,30 @@ impl HostIO for RelSymlinkMock {
     }
 
     #[test]
+    fn glio_create_context_passes_robust_access_and_rejects_unknown_flags() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        for flags in [2u32, 0x8000_0000, gl::CONTEXT_FLAG_ROBUST_ACCESS | 4] {
+            let attrs = gl::GlContextAttrs { client_version: 2, share_context_id: 0, flags, context_id: 0 };
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf), Err(Errno::EINVAL));
+        }
+        assert!(host.gl_create_context_attrs.is_empty());
+        // EGL robust buffer access reaches the renderer with the request.
+        let attrs = gl::GlContextAttrs {
+            client_version: 2, share_context_id: 0, flags: gl::CONTEXT_FLAG_ROBUST_ACCESS, context_id: 0,
+        };
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+        assert_eq!(host.gl_create_context_attrs.len(), 1);
+        assert_eq!(&host.gl_create_context_attrs[0][8..12], &gl::CONTEXT_FLAG_ROBUST_ACCESS.to_le_bytes());
+    }
+
+    #[test]
     fn glio_create_context_assigns_id_and_rejects_double_create() {
         use wasm_posix_shared::gl;
         let mut proc = Process::new(1);
@@ -58765,7 +58790,7 @@ impl HostIO for RelSymlinkMock {
 
         let attrs = gl::GlContextAttrs {
             client_version: 2,
-            share_context_id: 0, reserved: 0,
+            share_context_id: 0, flags: 0,
             context_id: 0,
         };
         let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
@@ -58827,7 +58852,7 @@ impl HostIO for RelSymlinkMock {
         }
         let bo: WpkDrmModeCreateDumb = unsafe { core::ptr::read_unaligned(allocation.as_ptr() as *const _) };
         glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
-        let attrs = gl::GlContextAttrs {client_version: 2, share_context_id: 0, reserved: 0, context_id: 0};
+        let attrs = gl::GlContextAttrs {client_version: 2, share_context_id: 0, flags: 0, context_id: 0};
         let mut context = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(context.as_mut_ptr() as *mut _, attrs); }
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut context).unwrap();
@@ -58992,7 +59017,7 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
-        let attrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
+        let attrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, flags: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();
@@ -60405,7 +60430,7 @@ impl HostIO for RelSymlinkMock {
         let mut ver_buf = [0u8; 4];
         ver_buf.copy_from_slice(&gl::OP_VERSION.to_le_bytes());
         glio_init_objects_test(&mut proc, &mut host, fd, u32::from_le_bytes(ver_buf[..4].try_into().unwrap())).unwrap();
-        let cattrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, reserved: 0, context_id: 0 };
+        let cattrs = gl::GlContextAttrs { client_version: 3, share_context_id: 0, flags: 0, context_id: 0 };
         let mut abuf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
         unsafe { core::ptr::write_unaligned(abuf.as_mut_ptr() as *mut gl::GlContextAttrs, cattrs) };
         sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut abuf).unwrap();

@@ -145,7 +145,7 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
         result.accepted = issueGlesDraw(b,{mode:draw.mode,cleanEntry:true,issue:() => {
           result.attempted = true;
           gl.drawArrays(draw.mode,draw.first,draw.count);
-        },vertices:() => sequentialVertices(draw.first,draw.count)});
+        },vertices:() => sequentialVertices(draw.first,draw.count),maxVertex:draw.first+draw.count-1});
         return result.accepted;
       },restore:nativeInverse(b)},
     ];

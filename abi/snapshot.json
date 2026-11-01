@@ -5160,7 +5160,7 @@
           "span": 4
         },
         {
-          "name": "reserved",
+          "name": "flags",
           "offset": 8,
           "span": 4
         },

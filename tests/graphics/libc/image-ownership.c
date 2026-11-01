@@ -754,6 +754,7 @@ static unsigned read_pixels_queries;
  * binding and sharing (host/src/webgl/renderer-loss.ts). */
 static int renderer_lost;
 static unsigned device_calls, renderer_lost_replies;
+static uint32_t last_context_flags;
 static uint32_t read_pixels_capacity;
 static int read_pixels_failure;
 /* The format/type pair the host was asked to read, and an optional
@@ -949,6 +950,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(next_image_group + 1 < sizeof image_groups / sizeof image_groups[0]);
             slot->image_group = ++next_image_group;
         }
+        last_context_flags = attrs->flags;
         attrs->context_id = slot->context = next_backend_context++;
         egl_trace(2, fd, attrs, sizeof *attrs);
     } else if (request == GLIO_SUBMIT_QUERY) {
@@ -2454,8 +2456,11 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
                  EGL_LOSE_CONTEXT_ON_RESET, EGL_NONE},
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_FALSE,
                  EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_LOSE_CONTEXT_ON_RESET_EXT, EGL_NONE},
+                /* Robust buffer access (EGL 1.5 section 3.7.1.5, both spellings). */
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_TRUE, EGL_NONE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_TRUE, EGL_NONE},
             };
-            for (unsigned i = 0; i < 4; i++) {
+            for (unsigned i = 0; i < 6; i++) {
                 EGLContext context = eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, accepted[i]);
                 assert(context != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
                 EGLint version = 0;
@@ -2474,10 +2479,6 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, 0,
                  EGL_BAD_ATTRIBUTE},
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_FLAGS_KHR, 0, EGL_BAD_ATTRIBUTE},
-                /* Robust buffer access is not provided (EGL 1.5 section
-                 * 3.7.1.5; EGL_EXT_create_context_robustness errors). */
-                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_TRUE, EGL_BAD_MATCH},
-                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_TRUE, EGL_BAD_CONFIG},
                 /* ES versions that do not exist. */
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 1, EGL_BAD_MATCH},
                 {EGL_CONTEXT_CLIENT_VERSION, 0, EGL_NONE, 0, EGL_BAD_MATCH},
@@ -2789,8 +2790,31 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
             assert(device_calls == calls);
             assert(glGetError() == GL_NO_ERROR);
         }
+        assert(last_context_flags == 0);
         const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
         assert(extensions && strstr(extensions, "GL_EXT_robustness") && strstr(extensions, "GL_KHR_robustness"));
+        /* Robust buffer access: requested through either spelling, sent to
+         * the renderer, reported by CONTEXT_ROBUST_ACCESS. Neither spec ties
+         * it to the share group's other members. */
+        const EGLint robust_lists[][7] = {
+            {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_TRUE,
+             EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_LOSE_CONTEXT_ON_RESET_EXT, EGL_NONE},
+            {EGL_CONTEXT_MAJOR_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_TRUE,
+             EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY, EGL_LOSE_CONTEXT_ON_RESET, EGL_NONE},
+        };
+        for (unsigned i = 0; i < 2; i++) {
+            EGLContext robust = eglCreateContext(dpy, (EGLConfig)1, i ? lose : EGL_NO_CONTEXT, robust_lists[i]);
+            assert(robust != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
+            assert(last_context_flags == WPK_GL_CONTEXT_FLAG_ROBUST_ACCESS);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, robust));
+            GLboolean flag = GL_FALSE; GLint value = 0;
+            glGetBooleanv(GL_CONTEXT_ROBUST_ACCESS_EXT, &flag);
+            glGetIntegerv(GL_CONTEXT_ROBUST_ACCESS_KHR, &value);
+            assert(flag == GL_TRUE && value == GL_TRUE && glGetError() == GL_NO_ERROR);
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+            assert(eglDestroyContext(dpy, robust));
+        }
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, lose));
         assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
         assert(eglDestroyContext(dpy, peer) && eglDestroyContext(dpy, lose) && eglDestroyContext(dpy, none));
         assert(eglTerminate(dpy));
