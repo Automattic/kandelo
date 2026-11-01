@@ -40,10 +40,9 @@ pub fn try_set_master(pid: i32, ofd_id: OfdId) -> Result<bool, Errno> {
 
 pub fn drop_master(ofd_id: OfdId) -> Option<MasterHolder> {
     with_master(|master| match *master {
-        Some(holder) if holder.ofd_id == ofd_id => {
-            super::kms::clear_cursor_plane(holder.lease_id);
-            master.take()
-        }
+        // Plane state (the cursor included) is device state on Linux:
+        // dropping master leaves it for the next master.
+        Some(holder) if holder.ofd_id == ofd_id => master.take(),
         _ => None,
     })
 }
@@ -57,6 +56,8 @@ pub fn lock_for_test() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     with_master(|m| *m = None);
+    // Device plane state outlives a master; each test starts without one.
+    super::kms::clear_cursor_plane_for_test();
     g
 }
 

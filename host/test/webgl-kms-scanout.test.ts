@@ -212,9 +212,8 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
   const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
   const fbId = 25;
   expect(imports.env.host_kms_addfb(100,fbId,42,2,2,0x34325241,8)).toBe(0);
-  const record = (lease: bigint, x: number, framebuffer = fbId) => {
+  const record = (_reserved: bigint, x: number, framebuffer = fbId) => {
     const bytes = new Uint8Array(KMS_CURSOR_RECORD_BYTES), view = new DataView(bytes.buffer);
-    view.setBigUint64(0, lease, true);
     [42, 2, 2, x, 4, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     view.setUint32(KMS_CURSOR_FRAMEBUFFER_OFFSET,framebuffer,true);
     return bytes;
@@ -238,9 +237,11 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
   r.loseContext();
   expect(kernel.kms.cursorSnapshot().pixels).toBeNull();
   expect(reads()).toBe(3);
+  // Dropping master keeps the device cursor plane; the lost image stays
+  // unpresented and motion still applies without sampling dead storage.
   kernel.kms.dropMaster(1n, 1n);
-  const retired = kernel.kms.applyCursorRecord(record(1n, 22)) ?? kernel.kms.cursorSnapshot();
-  expect(retired.pixels).toBeNull();
+  const kept = kernel.kms.applyCursorRecord(record(0n, 22)) ?? kernel.kms.cursorSnapshot();
+  expect(kept).toMatchObject({ x: 22, pixels: null });
   expect(reads()).toBe(3);
   expect(r.state).toEqual(r.initial);
 });

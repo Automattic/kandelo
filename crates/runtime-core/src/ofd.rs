@@ -497,8 +497,6 @@ pub struct KmsFdState {
     /// joins that master; a file that becomes master by open or SET_MASTER
     /// owns its own. Magic tokens live in this object's map.
     pub master_object: Option<OfdId>,
-    /// A visible cursor owns a BO reference independently of GEM handles.
-    pub cursor_bo: Option<u32>,
     /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor
     /// planes, not only overlays.
     pub universal_planes: bool,
@@ -570,7 +568,6 @@ impl From<KmsFdState> for SharedKmsFile {
     fn from(state: KmsFdState) -> Self { Self(Rc::new(RefCell::new(state))) }
 }
 impl SharedKmsFile {
-    pub fn downgrade(&self) -> WeakKmsFile { WeakKmsFile(Rc::downgrade(&self.0)) }
     pub fn borrow(&self) -> core::cell::Ref<'_, KmsFdState> { self.0.borrow() }
     pub fn borrow_mut(&self) -> core::cell::RefMut<'_, KmsFdState> { self.0.borrow_mut() }
     pub fn into_last(self) -> Option<KmsFdState> {
@@ -578,18 +575,6 @@ impl SharedKmsFile {
     }
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct WeakKmsFile(Weak<RefCell<KmsFdState>>);
-
-impl WeakKmsFile {
-    /// The plane belongs to its actual master file, even when an owning
-    /// framebuffer is removed by a different DRM file.
-    pub fn take_cursor_bo(&self) -> Result<Option<u32>, Errno> {
-        let file = self.0.upgrade().ok_or(Errno::EBADF)?;
-        let bo = file.borrow_mut().cursor_bo.take();
-        Ok(bo)
-    }
-}
 
 /// DRI sidecar on [`OpenFileDesc::dri_state`]. A card0 OFD needs both
 /// a GEM-handle namespace (for `MODE_ADDFB2` lookups against

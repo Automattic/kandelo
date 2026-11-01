@@ -660,10 +660,7 @@ fn complete_dri_plan_is_frozen_and_unknown_controls_never_replay_begin() {
             file_id: 0x100000001,
             lease_id: 0x200000001,
         },
-        E::HideCursor {
-            lease_id: 0x200000001,
-            fb_id: 16,
-        },
+        E::HideCursor { fb_id: 16 },
         E::DestroyBo(9),
         E::RemoveFramebuffer(16),
     ];

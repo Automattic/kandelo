@@ -1,10 +1,11 @@
 //! Kernel-host coalesced cursor record. This is not a guest DRM ioctl layout.
-//! Protocol 3 assigns the former reserved final word to actual framebuffer
-//! identity; hosts must negotiate 3 before interpreting it that way.
-pub const PROTOCOL_VERSION: u32 = 3;
+//! Protocol 4 describes the cursor plane as device state: the first eight
+//! bytes, which protocol 3 used for the master grant, are reserved zero,
+//! because a master change neither hides nor replaces the plane.
+pub const PROTOCOL_VERSION: u32 = 4;
 pub const RECORD_BYTES: usize = 40;
 pub const RECORD_WORDS: usize = RECORD_BYTES / 4;
-pub const LEASE_OFFSET: usize = 0;
+pub const RESERVED_OFFSET: usize = 0;
 pub const BO_OFFSET: usize = 8;
 pub const WIDTH_OFFSET: usize = 12;
 pub const HEIGHT_OFFSET: usize = 16;

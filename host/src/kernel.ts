@@ -2751,6 +2751,7 @@ export class WasmPosixKernel {
           // both tiers. GPU allocations have no CPU registry entry, so a
           // CPU mirror's destroy event cannot drive native retirement.
           this.bos.destroy(pid, bo_id);
+          this.kms.retireCursorBo(bo_id);
           for (const b of this.gl.list()) if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.retireForeignBo(bo_id);
         },

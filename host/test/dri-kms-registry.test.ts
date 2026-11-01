@@ -196,7 +196,10 @@ it("snapshots premultiplied cursor pixels and moves independently of scanout", (
   expect(shown.pixels![0]).toBe(128); // Detached snapshots stay immutable.
   expect(kms.cursorSnapshot()).toBe(updated);
   expect(kms.flipCount()).toBe(0);
+  // Device plane state survives the master; only the BO's retirement ends it.
   kms.dropMaster(1n, 1n);
+  expect(kms.cursorSnapshot()).toBe(updated);
+  expect(kms.retireCursorBo(1)).toBe(true);
   expect(kms.cursorSnapshot().pixels).toBeNull();
   expect(kms.cursorSnapshot().version).toBeGreaterThan(shown.version);
 });
@@ -277,34 +280,41 @@ it("refreshes the live cursor producer without flushing beyond the packed image"
 });
 
 
-it("consumes complete grant-scoped cursor records without resurrecting retired storage", () => {
+it("keeps the device cursor plane across master changes and never reads retired storage", () => {
   const bos = new GbmBoRegistry();
   bos.create({ pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8 });
   bos.pixelView(1)!.set([0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  const record = (lease: bigint, words: number[]) => {
+  const record = (words: number[], reserved = 0n) => {
     const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
-    view.setBigUint64(0, lease, true);
+    view.setBigUint64(0, reserved, true);
     [...words, words[0] ? 25 : 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     return bytes;
   };
   kms.setMaster(7, 1n, 1n);
-  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, -3, 1]));
+  kms.applyCursorRecord(record([1, 2, 2, 30, 40, -3, 1]));
   const pixels = kms.cursorSnapshot().pixels;
   expect(pixels).not.toBeNull();
-  kms.applyCursorRecord(record(1n, [1, 2, 2, -5, 70, -3, 1]));
+  kms.applyCursorRecord(record([1, 2, 2, -5, 70, -3, 1]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: -5, y: 70, hotX: -3 });
   expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  // Linux plane state: dropping master and a new master's grant leave the
+  // cursor shown, and the new master's motion keeps the inherited image.
   kms.dropMaster(1n, 1n);
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.setMaster(8, 2n, 2n);
+  expect(kms.cursorSnapshot().pixels).toBe(pixels);
+  kms.applyCursorRecord(record([1, 2, 2, 11, 12, -3, 1]));
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 11, y: 12, pixels });
+  // A record with nonzero reserved bytes is a protocol violation.
+  expect(() => kms.applyCursorRecord(record([1, 2, 2, 11, 12, -3, 1], 2n))).toThrow("Invalid KMS cursor record");
+  // The kernel destroys the image only after replacing it; the host stops
+  // presenting a retired BO instead of reading it.
+  expect(kms.retireCursorBo(2)).toBe(false);
   bos.destroy(7, 1);
-  // Rejected before reading the dead BO's pixels.
-  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, 0, 0]));
-  expect(kms.cursorSnapshot().pixels).toBeNull();
-  kms.setMaster(8, 1n, 2n);
-  kms.applyCursorRecord(record(2n, [0, 0, 0, 1, 2, 0, 0]));
-  expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
-  kms.applyCursorRecord(record(0n, [0, 0, 0, 0, 0, 0, 0]));
-  kms.applyCursorRecord(record(1n, [1, 2, 2, 30, 40, 0, 0]));
+  expect(kms.retireCursorBo(1)).toBe(true);
+  expect(kms.cursorSnapshot()).toMatchObject({ x: 11, y: 12, pixels: null });
+  kms.applyCursorRecord(record([0, 0, 0, 1, 2, 0, 0]));
   expect(kms.cursorSnapshot()).toMatchObject({ x: 1, y: 2, pixels: null });
   expect(kms.dropMaster(1n, 1n)).toBe(false);
   expect(kms.setMaster(7, 1n, 1n)).toBe(false);
@@ -349,52 +359,46 @@ describe("DRM scanout pixel layouts", () => {
 });
 
 
-it("distinguishes renewed framebuffer identity with identical lease, BO and image geometry", () => {
+it("distinguishes renewed framebuffer identity with identical BO and image geometry", () => {
   const bos = new GbmBoRegistry();
   bos.create({pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
   bos.pixelView(1)!.set([0, 0, 255, 255]);
   const kms = new KmsRegistry(bos);
-  const record = (lease: bigint, fb: number) => {
+  const record = (fb: number) => {
     const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
-    view.setBigUint64(0, lease, true);
     [1, 2, 2, 30, 40, 0, 0, fb].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
     return bytes;
   };
-  kms.setMaster(7, 1n, 1n);
-  kms.applyCursorRecord(record(1n, 25));
+  kms.applyCursorRecord(record(25));
   const first = kms.cursorSnapshot();
-  kms.applyCursorRecord(record(1n, 26));
+  kms.applyCursorRecord(record(26));
   const renewed = kms.cursorSnapshot();
   expect(renewed.pixels).toEqual(first.pixels);
   expect(renewed.pixels).not.toBe(first.pixels);
-  expect(kms.retireCursorFramebuffer(1n, 25)).toBe(false);
+  expect(kms.retireCursorBo(2)).toBe(false);
   expect(kms.cursorSnapshot()).toBe(renewed);
-  expect(kms.retireCursorFramebuffer(0n, 26)).toBe(false);
-  expect(kms.cursorSnapshot()).toBe(renewed);
-  expect(kms.retireCursorFramebuffer(1n, 26)).toBe(true);
+  expect(kms.retireCursorBo(1)).toBe(true);
   expect(kms.cursorSnapshot().pixels).toBeNull();
-  kms.setMaster(7, 1n, 2n);
-  kms.applyCursorRecord(record(2n, 27));
-  const nextLease = kms.cursorSnapshot();
-  expect(kms.retireCursorFramebuffer(1n, 27)).toBe(false);
-  expect(kms.cursorSnapshot()).toBe(nextLease);
 });
 
 
-it("requires a nonzero current master for a framebuffer-bearing cursor image", () => {
+it("applies the device cursor plane with no master, and needs framebuffer identity for an image", () => {
   const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
+  bos.create({pid: 7, bo_id: 1, size: 16, w: 2, h: 2, stride: 8});
+  bos.pixelView(1)!.set([0, 0, 255, 255]);
   const snapshot = kms.cursorSnapshot();
   const read = vi.spyOn(bos, "syncToSab");
   const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
-  // A disabled registry and forged record both have lease0. Numeric equality
-  // must not grant a masterless image access to BO storage.
-  [999, 2, 2, 0, 0, 0, 0, 25].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
+  [1, 2, 2, 0, 0, 0, 0, 0].forEach((word, i) => view.setUint32(8 + i * 4, word, true));
   expect(() => kms.applyCursorRecord(bytes)).toThrow("image identity");
   expect(kms.cursorSnapshot()).toBe(snapshot);
   expect(read).not.toHaveBeenCalled();
+  // A plane installed before a master change keeps updating without one.
+  view.setUint32(36, 25, true);
+  expect(kms.applyCursorRecord(bytes)!.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
 });
 
-it("refuses protocol3 image/FB inconsistencies before reading or replacing current storage", () => {
+it("refuses protocol 4 image/FB inconsistencies before reading or replacing current storage", () => {
   const bos = new GbmBoRegistry(), kms = new KmsRegistry(bos);
   kms.setMaster(7, 1n, 1n);
   const snapshot = kms.cursorSnapshot();
@@ -402,7 +406,6 @@ it("refuses protocol3 image/FB inconsistencies before reading or replacing curre
   for (const words of [[999,2,2,0,0,0,0,0], [0,0,0,0,0,0,0,25], [0,2,2,0,0,0,0,0],
     [0,0,0,0,0,1,0,0], [999,65,2,0,0,0,0,25]]) {
     const bytes = new Uint8Array(40), view = new DataView(bytes.buffer);
-    view.setBigUint64(0,1n,true);
     words.forEach((word,i) => view.setUint32(8+i*4,word,true));
     expect(() => kms.applyCursorRecord(bytes)).toThrow(/Invalid KMS cursor image/);
     expect(kms.cursorSnapshot()).toBe(snapshot);

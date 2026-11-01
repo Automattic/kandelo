@@ -247,23 +247,23 @@ describe("optional KMS cursor transport negotiation", () => {
     await expect(kernel(engine.engine).init(memoryImportModule(4))).resolves.toBeUndefined();
   });
 
-  it("negotiates protocol 3 without a visible display", async () => {
-    const configure = vi.fn(() => 3);
+  it("negotiates protocol 4 without a visible display", async () => {
+    const configure = vi.fn(() => 4);
     const engine = installSuccessfulEngine(4, {
       kernel_kms_cursor_configure: configure,
       kernel_kms_cursor_read: vi.fn(() => 0),
     }, () => 4096);
     await kernel(engine.engine).init(memoryImportModule(4));
-    expect(configure).toHaveBeenCalledExactlyOnceWith(3);
+    expect(configure).toHaveBeenCalledExactlyOnceWith(4);
   });
 
-  it("rejects a previous protocol2 acknowledgement instead of using its reserved word", async () => {
+  it("rejects a previous protocol3 acknowledgement instead of reading its master-grant word", async () => {
     const engine = installSuccessfulEngine(4, {
-      kernel_kms_cursor_configure: vi.fn(() => 2),
+      kernel_kms_cursor_configure: vi.fn(() => 3),
       kernel_kms_cursor_read: vi.fn(() => 0),
     }, () => 4096);
     await expect(kernel(engine.engine).init(memoryImportModule(4)))
-      .rejects.toThrow("rejected KMS cursor protocol 3");
+      .rejects.toThrow("rejected KMS cursor protocol 4");
   });
 
   it("rejects an incomplete cursor interface", async () => {
@@ -280,6 +280,6 @@ describe("optional KMS cursor transport negotiation", () => {
       kernel_kms_cursor_read: vi.fn(() => 0),
     }, () => 4096);
     await expect(kernel(engine.engine).init(memoryImportModule(4)))
-      .rejects.toThrow("rejected KMS cursor protocol 3");
+      .rejects.toThrow("rejected KMS cursor protocol 4");
   });
 });

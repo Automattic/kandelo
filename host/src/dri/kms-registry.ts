@@ -169,17 +169,19 @@ export class KmsRegistry {
     return this.cursorSnapshot();
   }
 
-  /** A queued observer record cannot cross a drop/reacquire boundary. */
+  /** Apply the kernel's coalesced cursor-plane record (protocol 4). The
+   *  cursor plane is device state, as on Linux: records carry no master
+   *  grant, and a master change neither hides nor replaces the cursor. */
   applyCursorRecord(bytes: Uint8Array): KmsCursor | undefined {
     if (bytes.byteLength !== KMS_CURSOR_RECORD_BYTES) throw new Error("Invalid KMS cursor record");
     const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    if (view.getBigUint64(0, true) !== this.masterLeaseId) return;
+    if (view.getBigUint64(0, true) !== 0n) throw new Error("Invalid KMS cursor record");
     const fbId = view.getUint32(KMS_CURSOR_FRAMEBUFFER_OFFSET, true);
     const bo = view.getUint32(8, true);
     const width = view.getUint32(12, true), height = view.getUint32(16, true);
     const x = view.getInt32(20, true), y = view.getInt32(24, true);
     const hotX = view.getInt32(28, true), hotY = view.getInt32(32, true);
-    if ((bo !== 0 && (this.masterLeaseId === 0n || fbId === 0))
+    if ((bo !== 0 && fbId === 0)
         || (bo === 0 && (fbId !== 0 || width !== 0 || height !== 0 || hotX !== 0 || hotY !== 0))) {
       throw new Error("Invalid KMS cursor image identity");
     }
@@ -226,14 +228,16 @@ export class KmsRegistry {
     const view = this.crtcViewports.get(crtc_id)
       ?? { x: 0, y: 0, width: fb.width, height: fb.height };
     if (view.x + view.width > fb.width || view.y + view.height > fb.height) return undefined;
-    const { bytesPerPixel } = scanoutFormat(fb.pixel_format);
+    // Only a horizontal pan needs the format's pixel size; a format the
+    // presenters reject is still reported unpanned for them to refuse.
+    const xBytes = view.x === 0 ? 0 : view.x * scanoutFormat(fb.pixel_format).bytesPerPixel;
     return {
       ...fb,
       width: view.width,
       height: view.height,
       x: view.x,
       y: view.y,
-      offset: (fb.offset ?? 0) + view.y * fb.pitch + view.x * bytesPerPixel,
+      offset: (fb.offset ?? 0) + view.y * fb.pitch + xBytes,
     };
   }
 
@@ -246,30 +250,24 @@ export class KmsRegistry {
     if (leaseId < this.lastMasterLeaseId
         || (leaseId === this.lastMasterLeaseId
           && (this.masterFileId !== fileId || this.masterLeaseId !== leaseId))) return false;
-    if (leaseId > this.lastMasterLeaseId) {
-      this.clearCursor();
-      this.lastMasterLeaseId = leaseId;
-    }
+    // The cursor plane is device state: a new master inherits it.
+    if (leaseId > this.lastMasterLeaseId) this.lastMasterLeaseId = leaseId;
     this.masterPid = pid;
     this.masterFileId = fileId;
     this.masterLeaseId = leaseId;
     return true;
   }
 
-  private clearCursor(): void {
+  /** The kernel destroyed a BO. The cursor plane holds a reference on its
+   *  image, so this is only the image an already-queued record replaces;
+   *  stop presenting it rather than read retired storage. Position stays. */
+  retireCursorBo(boId: number): boolean {
+    if (!this.cursorBo || this.cursorBo !== boId) return false;
     this.cursorBo = 0;
     this.cursorFbId = 0;
     this.cursorBytes = null;
-    this.cursor = { version: this.cursor.version + 1, x: 0, y: 0,
+    this.cursor = { ...this.cursor, version: this.cursor.version + 1,
       hotX: 0, hotY: 0, width: 0, height: 0, pixels: null };
-  }
-
-  /** Conditional local metadata action, not physical BO/native retirement
-   * proof. Same-BO renewals have distinct actual framebuffer identities. */
-  retireCursorFramebuffer(leaseId: bigint, fbId: number): boolean {
-    if (!Number.isInteger(fbId) || fbId <= 0 || fbId > 0xffff_ffff
-        || this.masterLeaseId !== leaseId || this.cursorFbId !== fbId) return false;
-    this.clearCursor();
     return true;
   }
 
@@ -279,7 +277,6 @@ export class KmsRegistry {
     this.masterPid = null;
     this.masterFileId = null;
     this.masterLeaseId = 0n;
-    this.clearCursor();
     return true;
   }
 

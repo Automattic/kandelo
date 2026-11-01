@@ -324,19 +324,24 @@ pub fn crtc_mode() -> Option<WpkDrmModeModeinfo> {
     unsafe { *CRTC_MODE.0.get() }
 }
 
-/// Authoritative cursor framebuffer and position for the current master grant.
-/// The DRM file's cursor_bo owns its BO reference. An internally allocated
-/// legacy cursor framebuffer has a real identity but no user file-table entry.
+/// The cursor plane's state: its framebuffer, position and hotspot.
+///
+/// Like Linux's plane state this is device state, not master state: a
+/// master change neither hides nor clears it, and the next master sees and
+/// inherits it until it changes it. The plane owns one reference on the
+/// scanned BO (`bo`), so the image stays alive while it is the cursor even
+/// after the file that installed it closes. An internally allocated legacy
+/// cursor framebuffer has a real identity but no user file-table entry.
 #[derive(Clone, Debug, Default)]
 pub struct CursorPlaneState {
-    pub lease_id: u64,
     pub fb_id: u32,
     pub fb: Option<crate::ofd::KmsFb>,
+    /// The BO reference the plane holds while `fb` is its image.
+    pub bo: Option<crate::dri::BoId>,
     pub x: i32,
     pub y: i32,
     pub hot_x: i32,
     pub hot_y: i32,
-    pub owner: crate::ofd::WeakKmsFile,
 }
 
 struct GlobalCursor(UnsafeCell<Option<CursorPlaneState>>);
@@ -344,21 +349,16 @@ unsafe impl Sync for GlobalCursor {}
 static CURSOR: GlobalCursor = GlobalCursor(UnsafeCell::new(None));
 
 pub fn cursor_plane() -> Option<CursorPlaneState> {
-    let grant = super::master::current()?;
-    unsafe { &*CURSOR.0.get() }.as_ref()
-        .filter(|state| state.lease_id == grant.lease_id).cloned()
+    unsafe { &*CURSOR.0.get() }.clone()
 }
 
 pub fn set_cursor_plane(state: CursorPlaneState) {
-    assert_eq!(super::master::current().map(|g| g.lease_id), Some(state.lease_id));
     unsafe { *CURSOR.0.get() = Some(state) };
 }
 
-pub fn clear_cursor_plane(lease_id: u64) {
-    let state = unsafe { &mut *CURSOR.0.get() };
-    if state.as_ref().is_some_and(|state| state.lease_id == lease_id) {
-        *state = None;
-    }
+#[cfg(test)]
+pub fn clear_cursor_plane_for_test() {
+    unsafe { *CURSOR.0.get() = None };
 }
 
 /// Largest property blob a file may create. Linux bounds a blob only by

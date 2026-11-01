@@ -745,7 +745,9 @@ fn write_kms_fd_state(
     } else {
         0
     })?;
-    w.write_u32(if preserve_master { kms.cursor_bo.unwrap_or(0) } else { 0 })?;
+    // Retired cursor slot: the cursor plane, and its BO reference, are
+    // device state, so no DRM file carries one across fork or exec.
+    w.write_u32(0)?;
     w.write_u8(kms.universal_planes as u8)?;
     w.write_u32(kms.magic)?;
     w.write_u32(kms.pending_flips.len() as u32)?;
@@ -849,11 +851,9 @@ fn read_dri_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::DriFdState, Errno
 fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno> {
     use alloc::collections::VecDeque;
     let holds_master = r.read_u8()? != 0;
-    let cursor = r.read_u32()?;
-    let cursor_bo = if cursor == 0 { None } else {
-        crate::dri::with_registry(|reg| reg.incref(cursor));
-        Some(cursor)
-    };
+    if r.read_u32()? != 0 {
+        return Err(Errno::EINVAL);
+    }
     let universal_planes = r.read_u8()? != 0;
     let magic = r.read_u32()?;
     let pending_count = r.read_u32()? as usize;
@@ -874,7 +874,6 @@ fn read_kms_fd_state(r: &mut Reader<'_>) -> Result<crate::ofd::KmsFdState, Errno
     Ok(crate::ofd::KmsFdState {
         master_identity: None,
         holds_master,
-        cursor_bo,
         universal_planes,
         magic,
         fbs: crate::ofd::SharedKmsFbs::default(),
@@ -3610,7 +3609,7 @@ mod tests {
     }
 
     #[test]
-    fn cursor_ownership_survives_exec_but_not_fork() {
+    fn no_file_carries_a_cursor_reference_across_fork_or_exec() {
         use crate::ofd::{DriFdState, DriOfdState, KmsFdState};
         let _lock = crate::dri::bo::TEST_REGISTRY_LOCK
             .lock()
@@ -3627,42 +3626,19 @@ mod tests {
         proc.ofd_table.get_mut(ofd).unwrap().dri_state =
             Some(alloc::boxed::Box::new(DriOfdState::Card {
                 dri: DriFdState::default(),
-                kms: KmsFdState {
-                    holds_master: true,
-                    cursor_bo: Some(bo),
-                    ..Default::default()
-                }.into(),
+                kms: KmsFdState { holds_master: true, ..Default::default() }.into(),
             }));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd), 0)
             .unwrap();
+        // The cursor plane's BO reference is device state: neither wire
+        // takes or carries one.
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
-        let child = deserialize_fork_state(&buf[..written], 99).unwrap();
-        assert_eq!(
-            child.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo,
-            None
-        );
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
-            1
-        );
+        deserialize_fork_state(&buf[..written], 99).unwrap();
         let written = serialize_exec_state(&proc, &mut buf).unwrap();
-        let replacement = deserialize_exec_state(&buf[..written], 1).unwrap();
-        assert_eq!(
-            replacement
-                .ofd_table
-                .get(ofd)
-                .unwrap()
-                .kms()
-                .unwrap()
-                .cursor_bo,
-            Some(bo)
-        );
-        assert_eq!(
-            crate::dri::with_registry(|r| r.get(bo).unwrap().refcount),
-            2
-        );
+        deserialize_exec_state(&buf[..written], 1).unwrap();
+        assert_eq!(crate::dri::with_registry(|r| r.get(bo).unwrap().refcount), 1);
     }
 
     #[test]

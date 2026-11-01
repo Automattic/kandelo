@@ -9,7 +9,7 @@ export const GL_QUERY_REPLY_MAGIC = 1196510259 as const;
 export const GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES = 12 as const;
 export const GL_IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES = 16 as const;
 export const GL_IMAGE_DELETION_CONTAINERS_REPLY_BYTES = 20 as const;
-export const KMS_CURSOR_PROTOCOL_VERSION = 3 as const;
+export const KMS_CURSOR_PROTOCOL_VERSION = 4 as const;
 export const KMS_CURSOR_RECORD_BYTES = 40 as const;
 export const KMS_CURSOR_FRAMEBUFFER_OFFSET = 36 as const;
 

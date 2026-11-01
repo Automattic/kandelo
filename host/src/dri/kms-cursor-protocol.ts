@@ -1,4 +1,4 @@
-/** Kernel-owned master grant and framebuffer identity, generated from Rust. */
+/** Kernel cursor-plane record (device state, framebuffer identity), generated from Rust. */
 export {
   KMS_CURSOR_PROTOCOL_VERSION,
   KMS_CURSOR_RECORD_BYTES,

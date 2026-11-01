@@ -4535,17 +4535,17 @@ fn kms_cursor_transport() -> Value {
         "record_bytes": wire::RECORD_BYTES,
         "byte_order": "little-endian",
         "offsets": {
-            "lease_u64": wire::LEASE_OFFSET, "bo_u32": wire::BO_OFFSET,
+            "reserved_u64": wire::RESERVED_OFFSET, "bo_u32": wire::BO_OFFSET,
             "width_u32": wire::WIDTH_OFFSET, "height_u32": wire::HEIGHT_OFFSET,
             "x_i32": wire::X_OFFSET, "y_i32": wire::Y_OFFSET,
             "hot_x_i32": wire::HOT_X_OFFSET, "hot_y_i32": wire::HOT_Y_OFFSET,
             "framebuffer_u32": wire::FRAMEBUFFER_OFFSET,
         },
-        "image_identity": "exact-master-lease-and-kernel-framebuffer-id",
+        "image_identity": "kernel-framebuffer-id-of-the-device-cursor-plane",
+        "plane_lifetime": "device-state-independent-of-master-grant",
         "disabled_image": "zero-bo-framebuffer-dimensions-and-hotspot",
         "read_reconciliation": "same-entry-authoritative-plane-no-nonzero-image-synthesis",
-        "retired_framebuffer": "conditional-exact-lease-and-fb-local-metadata-not-native-ack",
-        "unsupported_versions": [1, 2],
+        "unsupported_versions": [1, 2, 3],
     })
 }
 

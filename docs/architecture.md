@@ -3838,12 +3838,17 @@ The cursor plane accepts Linux's 28-byte `drm_mode_cursor` and 36-byte
 unknown flags, oversized images, and undersized buffers
 fail before changing state. Images are tightly packed CPU-shared premultiplied ARGB8888
 buffers, up to 64×64, independent of the allocation's original pitch,
-matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). Showing a cursor retains its buffer independently
-of the application's GEM handle. Hiding it, dropping master, or closing
-the owning card descriptor releases that reference. Exec retains it;
-fork children do not inherit the parent's cursor ownership. The internal
-fork-state encoding is version 19, produced and consumed by one kernel
-build. The new ioctl descriptions are additive under ABI 50.
+matching [Linux's legacy cursor layout](https://github.com/torvalds/linux/blob/v6.6/drivers/gpu/drm/drm_plane.c#L959). The cursor plane is device state,
+as Linux plane state is: its framebuffer, position, hotspot and one
+reference on the image's buffer belong to the plane, not to the master
+grant or the installing file. Dropping master neither hides nor clears it,
+a new master sees it through `GETPLANE` and inherits it until it changes
+it, and closing the installing descriptor leaves a legacy cursor image
+alive and visible (an image that is one of the file's own framebuffers is
+removed with that framebuffer, as Linux's `drm_fb_release` does).
+Replacing or hiding the image releases the plane's reference. No DRM file
+carries a cursor reference across fork or exec; the fork-state cursor slot
+is always zero.
 
 DRM cursor positions locate the image origin. Signed hotspot values are
 virtualization hints and do not offset the image, following the
@@ -3853,8 +3858,8 @@ motion, warp, and shape changes. This keeps nonzero-hotspot cursors aligned
 without changing DRM semantics for other clients.
 
 Cursor transport adds no required Wasm import. The
-`kernel_kms_cursor_configure(version)` export accepts protocol 3 and returns
-3, or negative `ENOTSUP` for other versions. Until negotiation, cursor
+`kernel_kms_cursor_configure(version)` export accepts protocol 4 and returns
+4, or negative `ENOTSUP` for other versions. Until negotiation, cursor
 capabilities report zero and valid master cursor requests that reach the
 kernel fail `ENOTSUP` before retaining a buffer. Both Node and browser hosts
 negotiate support; a visible display is not required. The two cursor exports
@@ -3863,23 +3868,25 @@ lifecycle table. Current hosts refuse a mismatched protocol acknowledgment.
 
 `kernel_kms_cursor_read(out, capacity)` returns 0 when unchanged, 40 after
 copying one complete state, or negative `EINVAL` for a null/short output.
-The 40-byte protocol-3 record contains a little-endian 64-bit master lease,
-then eight 32-bit words: buffer ID, width, height, signed x/y, signed hotspot
+The 40-byte protocol-4 record contains eight reserved zero bytes (protocol 3
+carried the master grant there), then eight 32-bit words: buffer ID, width, height, signed x/y, signed hotspot
 x/y and actual framebuffer ID. Offset 36 is framebuffer identity, not a
 reserved word. A displayed image has nonzero buffer and framebuffer IDs;
 a disabled image has zero buffer, framebuffer, dimensions and hotspot.
 Shared Rust constants generate the host values and the kernel-host snapshot.
 
 Image and motion requests coalesce without losing framebuffer identity.
-Before draining, the kernel reads the actual master and cursor plane under
-its global lock. An authoritative disabled plane replaces a stale pending
+Before draining, the kernel reads the actual cursor plane under its global
+lock; a master change does not alter the record. An authoritative disabled plane replaces a stale pending
 or cached image once. A nonzero framebuffer mismatch returns `EIO` without
 writing output or consuming pending state; no missing image is fabricated.
 The host drains inside the vblank kernel entry before reading pixels, using
-a scratch lease and owned copies. Records with a retired master lease are
-discarded. Same-buffer, same-geometry images with different framebuffer IDs
-are distinct replacements. Delayed local metadata cleanup matches both the
-old lease and framebuffer; it does not acknowledge native resource retirement.
+a scratch lease and owned copies, and rejects a record with nonzero reserved
+bytes. Same-buffer, same-geometry images with different framebuffer IDs
+are distinct replacements. The plane's reference keeps the presented image
+alive; when the kernel destroys a buffer the host is still presenting (the
+replacement record is already pending), the host stops presenting it rather
+than read retired storage.
 
 `KmsRegistry` refreshes the packed cursor image from its producer mapping
 at vblank, using the shared GBM coherence boundary. It retains an owned

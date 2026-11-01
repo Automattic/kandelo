@@ -1219,7 +1219,6 @@ impl HostIO for WasmHostIO {
     }
 
     fn kms_drop_master(&mut self, pid: i32, file_id: u64, lease_id: u64) {
-        CURSOR_TRANSPORT.lock().clear(lease_id);
         unsafe { host_kms_drop_master(pid, file_id, lease_id) }
     }
 
@@ -1274,10 +1273,7 @@ impl HostIO for WasmHostIO {
         &mut self, _pid: i32, _crtc_id: u32, flags: u32, bo_id: u32,
         width: u32, height: u32, x: i32, y: i32, hot_x: i32, hot_y: i32, fb_id: u32,
     ) {
-        let grant = crate::dri::master::current().expect("authorized KMS cursor grant");
-        CURSOR_TRANSPORT.lock().update(
-            grant.lease_id, flags, bo_id, width, height, x, y, hot_x, hot_y, fb_id,
-        );
+        CURSOR_TRANSPORT.lock().update(flags, bo_id, width, height, x, y, hot_x, hot_y, fb_id);
     }
 }
 
@@ -17404,14 +17400,15 @@ pub extern "C" fn kernel_set_input_canvas_dims(width: u32, height: u32) {
 static CURSOR_TRANSPORT: spin::Mutex<crate::dri::cursor::CursorTransport> =
     spin::Mutex::new(crate::dri::cursor::CursorTransport::new());
 
-/// Negotiate cursor protocol 3 with exact master-grant and framebuffer identity.
+/// Negotiate cursor protocol 4: device cursor-plane state with framebuffer
+/// identity, independent of the master grant.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_configure(version: u32) -> i32 {
     CURSOR_TRANSPORT.lock().configure(version)
 }
 
 /// Read the latest complete cursor state, coalescing image and motion updates.
-/// Protocol 3: ten LE words (lease low/high, BO, width, height, x, y,
+/// Protocol 4: ten LE words (two reserved zero, BO, width, height, x, y,
 /// hot_x, hot_y, actual framebuffer). Returns 40, 0 unchanged, or negative errno.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 {
@@ -17420,12 +17417,11 @@ pub extern "C" fn kernel_kms_cursor_read(out_ptr: *mut u8, out_len: u32) -> i32 
     // Host entry serialization owns the kernel. Acquire before the transport
     // mutex: applying pending exits may itself clear this transport.
     let _gkl = GklGuard::acquire();
-    let lease = crate::dri::master::current().map_or(0, |grant| grant.lease_id);
     let plane = crate::dri::kms::cursor_plane();
     let (fb, x, y) = plane.map_or((0, 0, 0), |state| (state.fb_id, state.x, state.y));
     let mut transport = CURSOR_TRANSPORT.lock();
     let out = unsafe { slice::from_raw_parts_mut(out_ptr, wire::RECORD_BYTES) };
-    match transport.read_into(lease, fb, x, y, out) {
+    match transport.read_into(fb, x, y, out) {
         Ok(count) => count as i32,
         Err(error) => -(error as i32),
     }
