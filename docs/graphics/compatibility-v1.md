@@ -64,24 +64,23 @@ normal Node guest cases and 9/10 upstream targets; a twenty-argument mixed libff
 signature remains an ordinary gap. Neither those lower-level controls nor the
 newly available preview establish a working menu or ScummVM client rendering.
 
-The combined source checkpoint `ce161367f9` has now been normally built and
-exercised in all three headless browser engines. All 31 upstream negative-state
-cases and their strict fixture gates pass in each engine. The complete 246-case
-negative API group reports 237 Pass, zero Fail and nine NotSupported in each
-engine; its strict fixture remains failed, and WebKit additionally emits 39
-native negative-API diagnostics. These outcomes are not full conformance or
-rendered-pixel acceptance. The new exact admission/exit/retirement observation
-passes with real guests on Node and all three browsers before destroy.
+The latest normally built checkpoint is `c8d376bc456f`. All 19 original upstream
+color-clear rendering cases and strict fixture gates pass in headless Chromium,
+Firefox and WebKit, replacing the earlier first-case readback OUT_OF_MEMORY
+failure. This is bounded rendered-pixel evidence, not full conformance or desktop
+acceptance. The repeated 246-case negative API group reports 237 Pass, zero Fail
+and nine NotSupported in each engine; its strict fixture remains failed. WebKit
+also emits 38 native diagnostics, preserved without suppression or an unsupported
+claim that they are expected.
 
-At that checkpoint the canonical source graphics gate passes 1,527 cases across
-50 files; the combined Rust workspace suite passes 3,518 cases with no failures,
-ignored or filtered cases. The repaired C cohort passes 319 native UBSan cases.
-The private mapping capability and cleanup codec retain their separately scoped
-52 and 37 controls. Public retained-query scheduling, physical graphics cleanup,
-partial mapping retirement, remaining API/transport gaps, full CTS, full host,
-browser-memory and required POSIX acceptance remain open. A normal three-engine
-negative group does not close those obligations. Later sections retain exact
-source cuts, artifacts, historical failures and the limits of each check.
+The canonical graphics source gate passes 1,565 cases across 51 files. The current
+Rust workspace suite passes 3,518 cases, with no failures, ignored or filtered
+cases; xtask separately passes 835 unit and eight integration cases. The combined
+native C/UBSan cohort passes 337 cases. Public retained-query scheduling and
+physical graphics cleanup are being implemented separately; partial mapping
+retirement, remaining API/transport gaps, full CTS, full host, browser-memory and
+required POSIX acceptance remain open. Later sections retain exact source cuts,
+artifacts, historical failures and the limits of each check.
 
 Main cut `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated through
 `bc182981fb`. Later dated sections retain exact original source cuts, artifact
@@ -19478,3 +19477,57 @@ Combined source logs are `.context/readback-capture-r1/combined-source-r1.log`
 and `combined-native-r1.log`. The normal combined SDK/kernel/CTS rebuild and
 three-engine rendered-pixel rerun are the next required evidence; none is
 claimed by these source results. Broader inventory and final gates remain open.
+
+
+### Normal captured-readback and compressed-upload runtime checkpoint, 2026-11-01
+
+Frozen source `c8d376bc456f4ba215061558f50aaf51ec74ad1a` completes normal
+SDK32, SDK64, release xtask, seven-node kernel/CTS closure, host and actual ABI
+stages, then all three headless rendered-pixel fixtures. The build job is
+`graphics-cts-readback-upload-build-r1-1031-235338-25a5` (exit 0, 8m06s).
+Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6 each report all 19 original
+upstream color-clear cases Pass, no missing/duplicate/unexpected cases, guest
+exit 0 and strict fixture Pass. Exact cooperative image retirement is observed
+before destroy; page, console, cleanup and memory-boundary diagnostics are empty.
+This group includes scissored, masked and repeated clear pixel comparisons.
+
+The previous normal color-clear attempt at `2fe11e6938` failed its first case
+with glReadPixels OUT_OF_MEMORY and left 18 cases missing in each engine. The
+new complete reads use captured byte storage rather than repeating native reads.
+This before/after result establishes the repaired bounded rendering path; it is
+not evidence of complete EGL/GLES conformance or desktop responsiveness.
+
+Normal artifact SHA256 identities:
+
+| Artifact | SHA256 |
+| --- | --- |
+| Kernel | `321f754945717c22111f142617c925067cdc47a70d342c3f07edef1d95839b4b` |
+| GLES2 CTS | `23c869dbbf76e166d28abc2c67e23e99f6b92680244b6b617785b8954e73dffa` |
+| CTS data | `fdfc40b91b6a304a2a4f0977336c5ffea4e49f18135fd9e7e7583a822ba2980c` |
+| Composed image | `f1de55be916c1dea8c624bcb90f91bd0429f1d7c780dd5f9f7f331324494741b` |
+
+The negative API rerun uses those exact products without another build. Job
+`graphics-cts-negative-api-transfers-r4-1101-000550-817a` exits 1 after 1m03s:
+237 Pass, zero Fail and nine NotSupported in each engine. All guests exit 0,
+retirement checks pass, and case accounting is complete. The strict fixtures
+remain red for unsupported compressed-format cases. WebKit retains 38 native
+console errors; Chromium/Firefox retain none. No new compressed format is
+advertised, and these checks do not prove an actual supported-format upload.
+
+Both jobs retain all 22 unchanged artifact receipts and a clean 5,395-file
+source guard. Actual browser exit receipts show all three native processes
+exit 0, and the test servers refuse subsequent connections. Owned Firefox
+scratch cleanup retains permission-denied residuals, separately from successful
+guest cleanup. No headed browser or new desktop preview is produced.
+
+Raw QPA, browser evidence, cleanup and checksummed release receipts are in
+`.context/graphics-cts-readback-upload-r1/` (release SHA256
+`0f301ac136f7c34a15430b082bd3727884b2f1d20d6f27622f329f8a06598ff6`)
+and `.context/cts-negative-api-transfers-r4/` (release SHA256
+`29644219d852c3c22678f66bd90698a8d2f3edde782d2ec0b32c215c69593c65`).
+Fresh complete Rust evidence is job
+`graphics-transfer-rust-r1-1031-235759-7cfb`: 3,518 Pass, no failed, ignored or
+filtered cases. Separate `graphics-transfer-xtask-r1-1031-235313-7b7f` reports
+835 unit and eight integration Pass; its two earlier focused controls are
+recorded separately and not added to that inventory. Broader acceptance remains
+open as recorded above.
