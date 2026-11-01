@@ -4,11 +4,15 @@
 //! one id space, and clients such as wlroots read a property with
 //! `DRM_MODE_OBJECT_ANY`, so no two objects here share an id. The card
 //! offers the legacy (non-atomic) interface: properties Linux marks
-//! atomic-only are not listed. Mutable device state is confined to the
-//! kernel syscall executor, just like the master and BO registries.
+//! atomic-only are not listed.
+//!
+//! All mutable display state lives in one [`KmsDevice`], the counterpart of
+//! Linux's `drm_device` mode-config state: the CRTC, its planes and
+//! connector, the property blobs, the framebuffer index and the magic map.
+//! It is confined to the kernel syscall executor, just like the master and
+//! BO registries.
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
 
 use wasm_posix_shared::dri::*;
@@ -174,12 +178,83 @@ pub fn object_properties(obj_id: u32, obj_type: u32) -> Result<&'static [u32], E
     }
 }
 
-static DPMS: AtomicU64 = AtomicU64::new(DRM_MODE_DPMS_ON);
+/// The one display's mutable state. Every field was a separate static
+/// before; one struct keeps a modeset's parts (mode, framebuffer, offset,
+/// DPMS, planes, blobs) in one place so a commit can stage and replace them
+/// together.
+pub struct KmsDevice {
+    dpms: u64,
+    /// The legacy gamma ramp (`crtc->gamma_store`): red, green and blue,
+    /// GAMMA_SIZE entries each, or `None` for the identity ramp `i << 8`
+    /// (`drm_mode_crtc_set_gamma_size`). It changes only through SETGAMMA,
+    /// as on Linux; GETGAMMA reports it.
+    gamma_store: Option<[[u16; GAMMA_SIZE as usize]; 3]>,
+    /// The `GAMMA_LUT` property: the blob the CRTC output passes through,
+    /// or 0 when the LUT is absent (colors pass through unchanged).
+    gamma_lut_blob: u32,
+    next_magic: u32,
+    magics: BTreeMap<u32, MagicEntry>,
+    /// Framebuffers, blobs and kernel-owned objects share the one mode-object
+    /// id space, so their ids start after the fixed objects and are unique
+    /// across open files.
+    next_object_id: u32,
+    crtc_fb: u32,
+    /// The CRTC's panning offset (`drm_mode_crtc.x`/`y`).
+    crtc_offset: (u32, u32),
+    /// A page flip latched on the CRTC that its next vblank has not
+    /// completed. Linux tracks this per CRTC (the pending commit), not per
+    /// file: a second flip before that vblank fails with EBUSY whichever
+    /// file queued the first.
+    flip_pending: bool,
+    crtc_mode: Option<WpkDrmModeModeinfo>,
+    /// Counts `drm_crtc_vblank_off` transitions. Linux sends every queued
+    /// vblank event prematurely and wakes every waiter (which then
+    /// succeeds) when the CRTC turns off; waits and events record the
+    /// generation they started in, so a later generation means "the CRTC
+    /// turned off since".
+    vblank_off_generation: u32,
+    cursor: Option<CursorPlaneState>,
+    blobs: BTreeMap<u32, BlobEntry>,
+    closed_scanout: Option<ClosedScanout>,
+    framebuffers: BTreeMap<u32, crate::ofd::WeakKmsFbs>,
+}
+
+impl KmsDevice {
+    const fn new() -> Self {
+        Self {
+            dpms: DRM_MODE_DPMS_ON,
+            gamma_store: None,
+            gamma_lut_blob: 0,
+            next_magic: 1,
+            magics: BTreeMap::new(),
+            next_object_id: PROP_GAMMA_LUT_SIZE + 1,
+            crtc_fb: 0,
+            crtc_offset: (0, 0),
+            flip_pending: false,
+            crtc_mode: None,
+            vblank_off_generation: 0,
+            cursor: None,
+            blobs: BTreeMap::new(),
+            closed_scanout: None,
+            framebuffers: BTreeMap::new(),
+        }
+    }
+}
+
+struct GlobalDevice(UnsafeCell<KmsDevice>);
+unsafe impl Sync for GlobalDevice {}
+static DEVICE: GlobalDevice = GlobalDevice(UnsafeCell::new(KmsDevice::new()));
+
+/// The device state. The kernel executor is single-threaded and no caller
+/// keeps the reference across another call into this module.
+fn dev() -> &'static mut KmsDevice {
+    unsafe { &mut *DEVICE.0.get() }
+}
 
 pub fn property_value(prop_id: u32) -> u64 {
     match prop_id {
         PROP_PLANE_TYPE => DRM_PLANE_TYPE_PRIMARY,
-        PROP_DPMS => DPMS.load(Ordering::Relaxed),
+        PROP_DPMS => dev().dpms,
         PROP_LINK_STATUS => DRM_MODE_LINK_STATUS_GOOD,
         PROP_GAMMA_LUT => u64::from(gamma_lut_blob()),
         PROP_GAMMA_LUT_SIZE => u64::from(GAMMA_SIZE),
@@ -230,21 +305,10 @@ pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Res
         return Err(Errno::EINVAL);
     }
     let was_active = crtc_active();
-    DPMS.store(value, Ordering::Relaxed);
+    dev().dpms = value;
     note_vblank_transition(was_active);
     Ok(PropertyEffect::None)
 }
-
-/// The legacy gamma ramp (`crtc->gamma_store`): red, green and blue,
-/// GAMMA_SIZE entries each. It starts as the identity ramp `i << 8`
-/// (`drm_mode_crtc_set_gamma_size`) and changes only through SETGAMMA, as
-/// on Linux; GETGAMMA reports it.
-struct GlobalGammaStore(UnsafeCell<Option<[[u16; GAMMA_SIZE as usize]; 3]>>);
-unsafe impl Sync for GlobalGammaStore {}
-static GAMMA_STORE: GlobalGammaStore = GlobalGammaStore(UnsafeCell::new(None));
-/// The `GAMMA_LUT` property: the blob the CRTC output passes through, or 0
-/// when the LUT is absent (colors pass through unchanged).
-static GAMMA_LUT_BLOB: AtomicU32 = AtomicU32::new(0);
 
 fn identity_ramp() -> [[u16; GAMMA_SIZE as usize]; 3] {
     let ramp: [u16; GAMMA_SIZE as usize] = core::array::from_fn(|i| (i as u16) << 8);
@@ -252,21 +316,22 @@ fn identity_ramp() -> [[u16; GAMMA_SIZE as usize]; 3] {
 }
 
 pub fn gamma_store() -> [[u16; GAMMA_SIZE as usize]; 3] {
-    unsafe { *GAMMA_STORE.0.get() }.unwrap_or_else(identity_ramp)
+    dev().gamma_store.unwrap_or_else(identity_ramp)
 }
 
 pub fn gamma_lut_blob() -> u32 {
-    GAMMA_LUT_BLOB.load(Ordering::Relaxed)
+    dev().gamma_lut_blob
 }
 
 /// Point `GAMMA_LUT` at `id`, holding that blob for the CRTC and releasing
 /// the previous one (an unowned device blob is freed with its last use).
 fn set_gamma_lut_blob(id: u32) {
-    let blobs = unsafe { &mut *BLOBS.0.get() };
+    let device = dev();
+    let blobs = &mut device.blobs;
     if let Some(entry) = blobs.get_mut(&id) {
         entry.held = true;
     }
-    let previous = GAMMA_LUT_BLOB.swap(id, Ordering::Relaxed);
+    let previous = core::mem::replace(&mut device.gamma_lut_blob, id);
     if previous != 0 && previous != id {
         if let Some(entry) = blobs.get_mut(&previous) {
             entry.held = false;
@@ -283,7 +348,7 @@ fn set_gamma_lut_blob(id: u32) {
 pub fn store_gamma_channel(channel: usize, values: [u16; GAMMA_SIZE as usize]) {
     let mut store = gamma_store();
     store[channel] = values;
-    unsafe { *GAMMA_STORE.0.get() = Some(store) };
+    dev().gamma_store = Some(store);
 }
 
 /// `drm_atomic_helper_legacy_gamma_set`: make `GAMMA_LUT` a new
@@ -297,7 +362,7 @@ pub fn commit_legacy_gamma() -> Result<(), Errno> {
         }
     }
     let id = allocate_fb_id()?;
-    unsafe { &mut *BLOBS.0.get() }.insert(id, BlobEntry { owner: None, data: data.into(), held: false });
+    dev().blobs.insert(id, BlobEntry { owner: None, data: data.into(), held: false });
     set_gamma_lut_blob(id);
     Ok(())
 }
@@ -314,8 +379,6 @@ pub fn effective_gamma_lut() -> Option<alloc::vec::Vec<u16>> {
     Some((0..3).flat_map(|c| (0..n).map(move |i| entry(i, c))).collect())
 }
 
-static NEXT_MAGIC: AtomicU32 = AtomicU32::new(1);
-
 /// One `drm_master.magic_map` entry: the master object the token was issued
 /// under, and the file it authenticates until `AUTH_MAGIC` consumes it.
 struct MagicEntry {
@@ -323,18 +386,14 @@ struct MagicEntry {
     pending: bool,
 }
 
-struct GlobalMagics(UnsafeCell<BTreeMap<u32, MagicEntry>>);
-unsafe impl Sync for GlobalMagics {}
-static MAGICS: GlobalMagics = GlobalMagics(UnsafeCell::new(BTreeMap::new()));
-
 /// `drm_getmagic` for a file that has no token yet: a fresh nonzero token in
 /// the magic map of the master object the file belongs to. Magic 0 is never
 /// issued, which is how libdrm's `drmIsMaster` probes for master.
 pub fn issue_magic(master_object: crate::lock::OfdId) -> Result<u32, Errno> {
-    let magic = NEXT_MAGIC
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
-        .map_err(|_| Errno::ENOSPC)?;
-    unsafe { &mut *MAGICS.0.get() }.insert(magic, MagicEntry { master_object, pending: true });
+    let device = dev();
+    let magic = device.next_magic;
+    device.next_magic = magic.checked_add(1).ok_or(Errno::ENOSPC)?;
+    device.magics.insert(magic, MagicEntry { master_object, pending: true });
     Ok(magic)
 }
 
@@ -343,7 +402,7 @@ pub fn issue_magic(master_object: crate::lock::OfdId) -> Result<u32, Errno> {
 /// token from a closed file, or one issued under another master object is
 /// EINVAL).
 pub fn authenticate_magic(master_object: crate::lock::OfdId, magic: u32) -> Result<(), Errno> {
-    match unsafe { &mut *MAGICS.0.get() }.get_mut(&magic) {
+    match dev().magics.get_mut(&magic) {
         Some(entry) if entry.master_object == master_object && entry.pending => {
             entry.pending = false;
             Ok(())
@@ -355,99 +414,75 @@ pub fn authenticate_magic(master_object: crate::lock::OfdId, magic: u32) -> Resu
 /// The file's last close removes its token from the map.
 pub fn release_magic(magic: u32) {
     if magic != 0 {
-        unsafe { &mut *MAGICS.0.get() }.remove(&magic);
+        dev().magics.remove(&magic);
     }
 }
 
-/// Framebuffers share the one mode-object id space, so their ids start
-/// after the fixed objects and are unique across open files.
-static NEXT_FB_ID: AtomicU32 = AtomicU32::new(PROP_GAMMA_LUT_SIZE + 1);
-
+/// A fresh id in the one mode-object id space (framebuffers, blobs).
 pub fn allocate_fb_id() -> Result<u32, Errno> {
-    NEXT_FB_ID
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-        .map_err(|_| Errno::ENOMEM)
+    let device = dev();
+    let id = device.next_object_id;
+    device.next_object_id = id.checked_add(1).ok_or(Errno::ENOMEM)?;
+    Ok(id)
 }
-
-static CRTC_FB: AtomicU32 = AtomicU32::new(0);
-/// The CRTC's panning offset (`drm_mode_crtc.x`/`y`), packed `x << 16 | y`.
-static CRTC_OFFSET: AtomicU32 = AtomicU32::new(0);
 
 /// Both coordinates fit in 16 bits: SETCRTC rejects larger ones (ERANGE).
 pub fn set_crtc_offset((x, y): (u32, u32)) {
     debug_assert!(x <= 0xffff && y <= 0xffff);
-    CRTC_OFFSET.store((x << 16) | (y & 0xffff), Ordering::Relaxed);
+    dev().crtc_offset = (x, y);
 }
 
 pub fn crtc_offset() -> (u32, u32) {
-    let packed = CRTC_OFFSET.load(Ordering::Relaxed);
-    (packed >> 16, packed & 0xffff)
+    dev().crtc_offset
 }
 
-/// A page flip latched on the CRTC that its next vblank has not completed.
-/// Linux tracks this per CRTC (the pending commit), not per file: a second
-/// flip before that vblank fails with EBUSY whichever file queued the first.
-static FLIP_PENDING: AtomicBool = AtomicBool::new(false);
-
 pub fn flip_pending() -> bool {
-    FLIP_PENDING.load(Ordering::Relaxed)
+    dev().flip_pending
 }
 
 pub fn set_flip_pending() {
-    FLIP_PENDING.store(true, Ordering::Relaxed);
+    dev().flip_pending = true;
 }
 
 /// The vblank that follows a flip completes it.
 pub fn complete_pending_flip() {
-    FLIP_PENDING.store(false, Ordering::Relaxed);
+    dev().flip_pending = false;
 }
-
-struct GlobalMode(UnsafeCell<Option<WpkDrmModeModeinfo>>);
-
-unsafe impl Sync for GlobalMode {}
-
-static CRTC_MODE: GlobalMode = GlobalMode(UnsafeCell::new(None));
 
 /// Record what `SETCRTC` or `PAGE_FLIP` put on the CRTC, so `GETCRTC`
 /// and `GETPLANE` report the scanout state.
 pub fn set_crtc_fb(fb_id: u32) {
-    CRTC_FB.store(fb_id, Ordering::Relaxed);
+    dev().crtc_fb = fb_id;
 }
 
 pub fn set_crtc_mode(mode: Option<WpkDrmModeModeinfo>) {
     let was_active = crtc_active();
-    unsafe { *CRTC_MODE.0.get() = mode };
+    dev().crtc_mode = mode;
     note_vblank_transition(was_active);
 }
 
 /// Whether the CRTC is lit: it has a mode and its connector's DPMS is On.
 /// Linux's vblank counter (and `DRM_IOCTL_WAIT_VBLANK`) runs only then.
 pub fn crtc_active() -> bool {
-    crtc_mode().is_some() && DPMS.load(Ordering::Relaxed) == DRM_MODE_DPMS_ON
+    crtc_mode().is_some() && dev().dpms == DRM_MODE_DPMS_ON
 }
 
-/// Counts `drm_crtc_vblank_off` transitions. Linux sends every queued
-/// vblank event prematurely and wakes every waiter (which then succeeds)
-/// when the CRTC turns off; waits and events record the generation they
-/// started in, so a later generation means "the CRTC turned off since".
-static VBLANK_OFF_GENERATION: AtomicU32 = AtomicU32::new(0);
-
 pub fn vblank_off_generation() -> u32 {
-    VBLANK_OFF_GENERATION.load(Ordering::Relaxed)
+    dev().vblank_off_generation
 }
 
 fn note_vblank_transition(was_active: bool) {
     if was_active && !crtc_active() {
-        VBLANK_OFF_GENERATION.fetch_add(1, Ordering::Relaxed);
+        dev().vblank_off_generation = dev().vblank_off_generation.wrapping_add(1);
     }
 }
 
 pub fn crtc_fb() -> u32 {
-    CRTC_FB.load(Ordering::Relaxed)
+    dev().crtc_fb
 }
 
 pub fn crtc_mode() -> Option<WpkDrmModeModeinfo> {
-    unsafe { *CRTC_MODE.0.get() }
+    dev().crtc_mode
 }
 
 /// The cursor plane's state: its framebuffer, position and hotspot.
@@ -470,21 +505,17 @@ pub struct CursorPlaneState {
     pub hot_y: i32,
 }
 
-struct GlobalCursor(UnsafeCell<Option<CursorPlaneState>>);
-unsafe impl Sync for GlobalCursor {}
-static CURSOR: GlobalCursor = GlobalCursor(UnsafeCell::new(None));
-
 pub fn cursor_plane() -> Option<CursorPlaneState> {
-    unsafe { &*CURSOR.0.get() }.clone()
+    dev().cursor.clone()
 }
 
 pub fn set_cursor_plane(state: CursorPlaneState) {
-    unsafe { *CURSOR.0.get() = Some(state) };
+    dev().cursor = Some(state);
 }
 
 #[cfg(test)]
 pub fn clear_cursor_plane_for_test() {
-    unsafe { *CURSOR.0.get() = None };
+    dev().cursor = None;
 }
 
 /// Largest property blob a file may create. Linux bounds a blob only by
@@ -504,19 +535,15 @@ struct BlobEntry {
     held: bool,
 }
 
-struct GlobalBlobs(UnsafeCell<BTreeMap<u32, BlobEntry>>);
-unsafe impl Sync for GlobalBlobs {}
-static BLOBS: GlobalBlobs = GlobalBlobs(UnsafeCell::new(BTreeMap::new()));
-
 /// Blob ids come from the one mode-object id space.
 pub fn create_blob(owner: crate::lock::OfdId, data: alloc::vec::Vec<u8>) -> Result<u32, Errno> {
     let id = allocate_fb_id()?;
-    unsafe { &mut *BLOBS.0.get() }.insert(id, BlobEntry { owner: Some(owner), data: data.into(), held: false });
+    dev().blobs.insert(id, BlobEntry { owner: Some(owner), data: data.into(), held: false });
     Ok(id)
 }
 
 pub fn blob(id: u32) -> Option<alloc::rc::Rc<[u8]>> {
-    unsafe { &*BLOBS.0.get() }.get(&id).map(|entry| entry.data.clone())
+    dev().blobs.get(&id).map(|entry| entry.data.clone())
 }
 
 /// Drop the creator's hold; a blob the CRTC still uses stays readable.
@@ -532,7 +559,7 @@ fn disown_blob(blobs: &mut BTreeMap<u32, BlobEntry>, id: u32) {
 }
 
 pub fn destroy_blob(id: u32, owner: crate::lock::OfdId) -> Result<(), Errno> {
-    let blobs = unsafe { &mut *BLOBS.0.get() };
+    let blobs = &mut dev().blobs;
     match blobs.get(&id) {
         None => Err(Errno::EINVAL),
         Some(entry) if entry.owner != Some(owner) => Err(Errno::EPERM),
@@ -545,7 +572,7 @@ pub fn destroy_blob(id: u32, owner: crate::lock::OfdId) -> Result<(), Errno> {
 
 /// The DRM file's last close frees the blobs it created.
 pub fn release_blobs(owner: crate::lock::OfdId) {
-    let blobs = unsafe { &mut *BLOBS.0.get() };
+    let blobs = &mut dev().blobs;
     let owned: alloc::vec::Vec<u32> = blobs.iter()
         .filter(|(_, entry)| entry.owner == Some(owner)).map(|(&id, _)| id).collect();
     for id in owned {
@@ -561,56 +588,38 @@ pub struct ClosedScanout {
     pub fb: crate::ofd::KmsFb,
 }
 
-struct GlobalClosedScanout(UnsafeCell<Option<ClosedScanout>>);
-
-unsafe impl Sync for GlobalClosedScanout {}
-
-static CLOSED_SCANOUT: GlobalClosedScanout = GlobalClosedScanout(UnsafeCell::new(None));
-
 pub fn replace_closed_scanout(closed: Option<ClosedScanout>) -> Option<ClosedScanout> {
-    unsafe { core::mem::replace(&mut *CLOSED_SCANOUT.0.get(), closed) }
+    core::mem::replace(&mut dev().closed_scanout, closed)
 }
 
-struct GlobalFramebufferIndex(UnsafeCell<BTreeMap<u32, crate::ofd::WeakKmsFbs>>);
-unsafe impl Sync for GlobalFramebufferIndex {}
-static FRAMEBUFFERS: GlobalFramebufferIndex = GlobalFramebufferIndex(UnsafeCell::new(BTreeMap::new()));
-
 pub fn register_framebuffer(id: u32, owner: crate::ofd::WeakKmsFbs) {
-    assert!(unsafe { &mut *FRAMEBUFFERS.0.get() }.insert(id, owner).is_none());
+    assert!(dev().framebuffers.insert(id, owner).is_none());
 }
 
 pub fn unregister_framebuffer(id: u32) {
-    unsafe { &mut *FRAMEBUFFERS.0.get() }.remove(&id);
+    dev().framebuffers.remove(&id);
 }
 
 /// GETFB uses device-wide identity, while RMFB/CLOSEFB still require a
 /// reference in the caller's file table (drm_framebuffer.c:drm_mode_closefb).
 pub fn framebuffer(id: u32) -> Option<crate::ofd::KmsFb> {
-    if let Some(fb) = unsafe { &*FRAMEBUFFERS.0.get() }.get(&id).and_then(|owner| owner.lookup(id)) {
+    if let Some(fb) = dev().framebuffers.get(&id).and_then(|owner| owner.lookup(id)) {
         return Some(fb);
     }
     if let Some(state) = cursor_plane().filter(|state| state.fb_id == id) {
         return state.fb;
     }
-    unsafe { &*CLOSED_SCANOUT.0.get() }.as_ref()
+    dev().closed_scanout.as_ref()
         .filter(|closed| closed.fb_id == id).map(|closed| closed.fb)
 }
 
 #[cfg(test)]
 pub fn reset_for_test() {
-    DPMS.store(DRM_MODE_DPMS_ON, Ordering::Relaxed);
-    NEXT_FB_ID.store(PROP_GAMMA_LUT_SIZE + 1, Ordering::Relaxed);
-    GAMMA_LUT_BLOB.store(0, Ordering::Relaxed);
-    unsafe { *GAMMA_STORE.0.get() = None };
-    unsafe { *CURSOR.0.get() = None };
-    unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
-    unsafe { &mut *BLOBS.0.get() }.clear();
-    unsafe { &mut *MAGICS.0.get() }.clear();
-    set_crtc_fb(0);
-    set_crtc_mode(None);
-    set_crtc_offset((0, 0));
-    complete_pending_flip();
-    replace_closed_scanout(None);
+    // The off generation only grows: a wait recorded before the reset must
+    // still see later CRTC-off transitions as later.
+    let generation = dev().vblank_off_generation;
+    *dev() = KmsDevice::new();
+    dev().vblank_off_generation = generation;
 }
 
 #[cfg(test)]
