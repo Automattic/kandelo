@@ -953,3 +953,47 @@ fn kms_connector_reports_a_kandelo_edid() {
     assert_eq!(igt.commit(0, &[(kms::CONNECTOR_ID, &[(prop, 0)])]), Err(Errno::EINVAL));
     igt.close();
 }
+
+/// drm_gem_plane_helper_prepare_fb: a plane update without an explicit
+/// in-fence waits for the implicit writers of its framebuffer's buffer
+/// (here a fence a producer imported with DMA_BUF_IOCTL_IMPORT_SYNC_FILE);
+/// an explicit IN_FENCE_FD overrides them.
+#[test]
+fn kms_atomic_plane_update_waits_for_implicit_write_fences() {
+    let _locks = locks();
+    let mut igt = Igt::open();
+    igt.setup();
+    let next = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
+    let bo = kms::framebuffer(next).unwrap().bo_id;
+    let mut producer = sw_timeline();
+    let render_done = producer.create_fence(1, 0);
+    crate::dri::with_registry(|r| r.get_mut(bo).unwrap().reservation
+        .add(&render_done, crate::dri::fence::Usage::Write));
+    let (fb_id, in_fence) = (igt.plane("FB_ID"), igt.plane("IN_FENCE_FD"));
+    let latched = igt.host.kms_set_fb_calls.len();
+    assert_eq!(igt.commit(ATOMIC_NONBLOCK, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(next))])]), Ok(()));
+    igt.vblank();
+    assert!(kms::flip_pending());
+    assert_eq!(igt.host.kms_set_fb_calls.len(), latched);
+    producer.inc(1, 0);
+    igt.vblank();
+    assert!(!kms::flip_pending());
+    assert_eq!(igt.host.kms_set_fb_calls.len(), latched + 1);
+    // A blocking legacy-style wait: the commit parks before taking effect.
+    let other = igt.fb(640, 480, DRM_FORMAT_XRGB8888);
+    let other_bo = kms::framebuffer(other).unwrap().bo_id;
+    let busy = producer.create_fence(2, 0);
+    crate::dri::with_registry(|r| r.get_mut(other_bo).unwrap().reservation
+        .add(&busy, crate::dri::fence::Usage::Write));
+    let before = igt.primary_state();
+    assert_eq!(igt.commit(0, &[(kms::PRIMARY_PLANE_ID, &[(fb_id, u64::from(other))])]), Err(Errno::EAGAIN));
+    assert_eq!(igt.primary_state(), before);
+    // An explicit, signaled in-fence overrides the implicit writer.
+    let mut explicit = sw_timeline();
+    explicit.inc(1, 0);
+    let ready = igt.sw_fence(&mut explicit, 1);
+    assert_eq!(igt.commit_blocking(0, &[(kms::PRIMARY_PLANE_ID,
+        &[(fb_id, u64::from(other)), (in_fence, ready as u64)])]), Ok(()));
+    assert_eq!(igt.value(kms::PRIMARY_PLANE_ID, DRM_MODE_OBJECT_PLANE, "FB_ID"), u64::from(other));
+    igt.close();
+}

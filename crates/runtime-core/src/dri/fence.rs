@@ -163,12 +163,15 @@ struct Globals {
     host_poll: Vec<(u32, Weak<FenceInner>)>,
     /// Export ids whose last kernel reference dropped while pending.
     host_release: Vec<u32>,
+    /// Buffer reservations holding any implicit fence. While zero, a plane
+    /// update looks up no buffer's fences (one integer test per commit).
+    reservations_in_use: usize,
 }
 
 impl Globals {
     const fn new() -> Self {
         Self { next_id: 1, next_context: 1, last_export: 0, wake: false,
-            host_poll: Vec::new(), host_release: Vec::new() }
+            host_poll: Vec::new(), host_release: Vec::new(), reservations_in_use: 0 }
     }
 }
 
@@ -782,16 +785,59 @@ pub enum Usage {
 }
 
 /// One buffer's implicit fences (`struct dma_resv`), held by its BO.
-#[derive(Clone, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct Reservation {
     fences: Vec<(Fence, Usage)>,
 }
 
+/// Whether any buffer holds an implicit fence. A KMS plane update consults
+/// its framebuffer's reservation only then.
+pub fn implicit_fences_exist() -> bool {
+    with_globals(|g| g.reservations_in_use != 0)
+}
+
+impl Clone for Reservation {
+    fn clone(&self) -> Self {
+        if !self.fences.is_empty() {
+            with_globals(|g| g.reservations_in_use += 1);
+        }
+        Self { fences: self.fences.clone() }
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.fences.is_empty() {
+            with_globals_on_drop(|g| g.reservations_in_use = g.reservations_in_use.saturating_sub(1));
+        }
+    }
+}
+
 impl Reservation {
+    /// `drm_gem_plane_helper_prepare_fb` without an explicit fence: the
+    /// unsignaled writers a scanout of this buffer must wait for, as one
+    /// fence, or `None`.
+    pub fn pending_write_fence(&mut self) -> Option<Fence> {
+        let mut writers = self.wait_set(false);
+        match writers.len() {
+            0 => None,
+            1 => writers.pop(),
+            _ => Some(Fence::array(writers)),
+        }
+    }
+
     /// `dma_resv_add_fence`: replace a signaled slot, or an older fence of the
     /// same context whose usage is no stricter; otherwise append. Containers
     /// are added leaf by leaf.
     pub fn add(&mut self, fence: &Fence, usage: Usage) {
+        let was_empty = self.fences.is_empty();
+        self.add_leaves(fence, usage);
+        if was_empty && !self.fences.is_empty() {
+            with_globals(|g| g.reservations_in_use += 1);
+        }
+    }
+
+    fn add_leaves(&mut self, fence: &Fence, usage: Usage) {
         let mut leaves = Vec::new();
         fence.unwrap_into(&mut leaves);
         'leaves: for leaf in leaves {
@@ -811,7 +857,11 @@ impl Reservation {
     /// The unsignaled fences an access must wait for: a read waits for
     /// writers, a write for everyone (`dma_resv_usage_rw`).
     pub fn wait_set(&mut self, write_access: bool) -> Vec<Fence> {
+        let was_in_use = !self.fences.is_empty();
         self.fences.retain(|(fence, _)| !fence.is_signaled());
+        if was_in_use && self.fences.is_empty() {
+            with_globals(|g| g.reservations_in_use -= 1);
+        }
         let limit = if write_access { Usage::Read } else { Usage::Write };
         self.fences.iter().filter(|(_, usage)| *usage <= limit).map(|(f, _)| f.clone()).collect()
     }

@@ -344,6 +344,27 @@ impl Commit {
         }
     }
 
+    /// `drm_gem_plane_helper_prepare_fb`: a plane updated with a framebuffer
+    /// and no explicit `IN_FENCE_FD` waits for the writers of its buffer's
+    /// implicit fences (`DMA_BUF_IOCTL_IMPORT_SYNC_FILE`). An explicit fence
+    /// overrides implicit ones, as on Linux. While no buffer holds a fence
+    /// this is one integer test.
+    pub fn add_implicit_fences(&mut self) {
+        if !crate::dri::fence::implicit_fences_exist() {
+            return;
+        }
+        for (slot, in_commit) in [(0usize, self.primary_in), (1, self.cursor_in)] {
+            let plane = if slot == 0 { &self.primary } else { &self.cursor };
+            let Some(fb) = plane.fb.filter(|_| in_commit && plane.crtc) else { continue };
+            if self.in_fences[slot].is_some() {
+                continue;
+            }
+            self.in_fences[slot] = crate::dri::with_registry(|r| {
+                r.get_mut(fb.bo_id).and_then(|bo| bo.reservation.pending_write_fence())
+            });
+        }
+    }
+
     /// Whether a staged in-fence has not signaled yet. Asking is waiting:
     /// the fences are enabled so their sources report completion.
     pub fn in_fences_pending(&self) -> bool {
@@ -1105,8 +1126,10 @@ pub fn atomic_ioctl(
         return Ok(());
     }
     // drm_atomic_helper_commit: a blocking commit waits for its planes'
-    // in-fences before its state is swapped in, interruptibly. Parking it
-    // without a record keeps it interruptible; the retry runs it again.
+    // in-fences (explicit, or its buffers' implicit writers) before its
+    // state is swapped in, interruptibly. Parking it without a record keeps
+    // it interruptible; the retry runs it again.
+    commit.add_implicit_fences();
     if blocking && commit.in_fences_pending() {
         return Err(Errno::EAGAIN);
     }

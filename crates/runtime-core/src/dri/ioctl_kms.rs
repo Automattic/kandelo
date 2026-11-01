@@ -91,8 +91,15 @@ pub(crate) fn disable_crtc_scanning(fb_id: u32) {
 
 /// Check `commit` and, when it passes, apply it as a legacy update: it takes
 /// effect now and leaves no commit pending.
-fn legacy_commit(host: &mut dyn HostIO, pid: i32, commit: Commit) -> Result<(), Errno> {
+fn legacy_commit(host: &mut dyn HostIO, pid: i32, mut commit: Commit) -> Result<(), Errno> {
     commit.check(host, false)?;
+    // A legacy update is a blocking commit: it waits for its planes'
+    // implicit fences before taking effect, interruptibly (the host's retry
+    // runs the call again).
+    commit.add_implicit_fences();
+    if commit.in_fences_pending() {
+        return Err(Errno::EAGAIN);
+    }
     commit.apply(&mut CommitContext { host, pid }, CommitKind::Legacy, None);
     Ok(())
 }
@@ -758,6 +765,9 @@ pub(crate) fn handle_dri_card_ioctl(
             if commit.busy() {
                 return Err(Errno::EBUSY);
             }
+            // A nonblocking commit: a buffer with pending implicit writers
+            // latches at the first vblank after they signal.
+            commit.add_implicit_fences();
             // The new scanout fb is latched now (the client paints it before
             // the ioctl and reuses the old one only after the flip event),
             // and the flip completes at the next host vblank
@@ -1271,12 +1281,8 @@ fn set_property_legacy(
     let mut commit = Commit::current();
     let mut ctx = CommitContext { host, pid };
     commit.set_property(&mut ctx, proc, obj_id, prop, value)?;
-    commit.check(ctx.host, false)?;
     // drm_atomic_commit waits for a plane's in-fence before the state is
-    // swapped in, interruptibly; the host's retry runs the call again.
-    if commit.in_fences_pending() {
-        return Err(Errno::EAGAIN);
-    }
+    // swapped in, interruptibly; legacy_commit parks for the host's retry.
     legacy_commit(ctx.host, pid, commit)
 }
 
