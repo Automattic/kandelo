@@ -703,13 +703,22 @@ static void detach_binding(struct egl_thread_binding *binding) {
         binding->read->current_references--;
     *binding = (struct egl_thread_binding){0};
 }
-static EGLBoolean release_current_locked(void) {
+/* eglMakeCurrent(EGL_NO_CONTEXT) keeps the binding when the kernel rejects
+ * the release. eglReleaseThread has no failure in EGL 1.5 section 3.11, so
+ * it detaches this thread's EGL state regardless. A rejected release can
+ * leave the kernel binding in place; the kernel drops it at this thread's
+ * next accepted bind (which releases its other bindings) or at thread
+ * exit. Until then another thread's bind of that context is refused by
+ * the kernel (EGL_BAD_ACCESS), and a destroyed context stays queued
+ * because its kernel destroy reports EBUSY on every retirement pass. */
+static EGLBoolean release_current_locked(int unconditional) {
     struct egl_thread_binding *binding = &g_thread_binding;
     struct egl_generation *generation = binding->generation;
     if (binding->object && binding->object->owner == binding) {
         _wpk_gl_flush();
         const struct gl_make_current release = {0, 0, 0};
-        if (ioctl(binding->object->session->fd, GLIO_MAKE_CURRENT, &release) != 0) {
+        if (ioctl(binding->object->session->fd, GLIO_MAKE_CURRENT, &release) != 0 &&
+            !unconditional) {
             g_last_error = current_binding_error();
             return EGL_FALSE;
         }
@@ -1113,7 +1122,7 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLC
         else if (draw != EGL_NO_SURFACE || read != EGL_NO_SURFACE)
             g_last_error = EGL_BAD_MATCH;
         else
-            result = release_current_locked();
+            result = release_current_locked(0);
         goto done;
     }
     if (!display_record(dpy)) {
@@ -2287,10 +2296,7 @@ EGLBoolean eglReleaseThread(void) {
     egl_call_begin();
     lock_context();
     struct egl_thread_binding *binding = &g_thread_binding;
-    if (!release_current_locked()) {
-        unlock_context();
-        return EGL_FALSE;
-    }
+    (void)release_current_locked(1);
     if (g_binding_key_status == 0) {
         pthread_setspecific(g_binding_key, NULL);
         if (binding != &g_empty_binding) free(binding);

@@ -7109,10 +7109,20 @@ int main(int argc, char **argv) {
         assert(!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
         assert(eglGetError() == EGL_BAD_ACCESS && eglGetCurrentContext() == ctx);
         assert(destroyed_contexts == 0);
-        assert(!eglReleaseThread());
-        assert(eglGetError() == EGL_BAD_ACCESS && eglGetCurrentContext() == ctx);
+        /* EGL 1.5 section 3.11 gives eglReleaseThread no failure: the
+         * thread's EGL state is released even when the kernel did not
+         * acknowledge the release. The kernel still holds its binding, so
+         * the destroyed context stays deferred rather than retiring. */
+        assert(eglReleaseThread());
+        assert(eglGetError() == EGL_SUCCESS && eglGetCurrentContext() == EGL_NO_CONTEXT);
+        assert(eglGetCurrentSurface(EGL_DRAW) == EGL_NO_SURFACE);
         fail_make_current = 0;
-        assert(eglReleaseThread() && destroyed_contexts == 1 && eglTerminate(dpy));
+        assert(eglReleaseThread() && destroyed_contexts == 0);
+        /* The kernel drops a thread's binding at its next accepted bind or
+         * at thread exit; model that drop, then retirement completes. */
+        for (unsigned i = 0; i < sizeof device_slots / sizeof device_slots[0]; i++)
+            device_slots[i].has_current = 0;
+        assert(eglTerminate(dpy) && destroyed_contexts == 1);
         puts("PASS release-rollback");
         return 0;
     }
