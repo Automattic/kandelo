@@ -19074,3 +19074,81 @@ an upstream after-run. A separate frozen normal-artifact producer at
 246-case upstream rerun. It includes the same GLES repairs with the previous
 cursor protocol 2 kernel cohort; source/artifact identities and actual outcomes
 must be recorded before claiming the upstream failures are closed.
+
+
+### Rebuilt complete negative API rerun: all 20 reported failures repaired
+
+The frozen mutable source at
+`d75cb3febc4f7428e981063d950c56409d91c869` completed normal SDK32/64,
+selected kernel/CTS dependency closure, host build and actual-kernel ABI checks.
+Job `graphics-cts-negative-api-repair-build-r-1031-225353-7198` exits 0 after
+5m16s, with all 5,384 guarded source/helper identities unchanged. Six selected
+nodes were published and libdrm was cached. The image writer is materialized
+normally. The program ABI remains 56; this separate kernel/host pair still uses
+cursor protocol 2 and is not the later integration lifecycle cohort.
+
+The same complete 246-case upstream selection then executes through the normal
+public consumer in headless Chromium 153.0.8010.12:
+
+| Frozen source cohort | Pass | Fail | NotSupported | Guest exit |
+| --- | ---: | ---: | ---: | ---: |
+| `03fb861452`, prior normal artifacts | 217 | 20 | 9 | 1 |
+| `d75cb3febc`, rebuilt normal artifacts | 237 | 0 | 9 | 0 |
+
+Job `graphics-cts-negative-api-repair-r2-1031-225946-172e` remains exit 1 after
+23s because the strict fixture rejects the nine NotSupported outcomes. No
+assertion or result was waived. Every expected case appears exactly once;
+missing, extra, duplicate and incomplete lists are empty. All 20 earlier actual
+failures now report Pass. Page, console, guest, cleanup and memory-boundary
+diagnostics are empty. Both observed workers close and destroy returns. The
+actual native browser exit and owned server termination are retained; a single
+post-run port 5699 probe refuses. A first cleanup receipt attempt used the wrong
+exit-record delimiter and refused; the corrected receipt reads the original
+native exit line without rerunning the workload.
+
+GLES2 executable SHA256:
+`242a6aa4c654fb6698d63f36a24dcdd88ff2d59593b3f07d9774ea4cfe7cc6f8`.
+Kernel SHA256:
+`95a34d8da7ab93e7f6384903bdab2e745c0d3abe0f1fb7bbb03dda676482dc05`.
+Data ZIP SHA256 remains
+`fdfc40b91b6a304a2a4f0977336c5ffea4e49f18135fd9e7e7583a822ba2980c`.
+Actual QPA SHA256:
+`3f8bba96d176d37fd18afea27fe7f382a9b6f7778a81973ffacef3b95bc95caa`.
+Evidence attachment SHA256:
+`b97f4c91b32219ee3fbf2c763f35947af8a582f7971b52206eeaf2aed80b48a9`.
+All 20 artifact receipt files rehash unchanged after execution. Full raw
+evidence and source/artifact guard records are retained in the mutable worktree
+under `.context/cts-negative-api-r2/results/`; build receipts are under
+`.context/cts-texture-admission-r1/build-results/`. This closes those 20 observed
+failures, not the complete GLES2/EGL/GBM/KMS inventory, other engines or the
+browser-memory/POSIX gates.
+
+
+### Compressed-format applicability and vacuous upstream coverage
+
+GLES 2.0 section 3.7.3 requires no specific compressed format. The current native
+format vector is empty and no compression extension is advertised. The nine
+NotSupported cases are upstream applicability exits before any compressed upload;
+their helper selects only six DXT1/PVRTC tokens, not an arbitrary compressed
+format. An empty vector is legal capability selection, not a hard browser
+boundary. The strict probe remains red and no outcome is converted to Pass.
+
+The original QPA also shows an important coverage limit: of 29 compressed-image
+or subimage cases labeled Pass, 27 executed no compressed upload because their
+empty-format conditionals never entered the bodies. Only the two invalid-format
+cases execute calls: one 2D call and six cube faces. These counts cannot prove
+positive storage/rendering or complete compressed API error behavior.
+
+Ordinary API gaps remain in C: CompressedTexImage2D drops negative size,
+positive-size null data and oversized records before host validation, while
+CompressedTexSubImage2D also drops zero-size calls. Metadata errors must remain
+observable despite null/empty/large payloads. Correct shared transport must retain
+original signed metadata separately from byte length, agree with advertised
+formats and preserve image ownership through validation/commit. The uncompressed
+endpoint-zero admission must not be generalized to compression: base compressed
+subimages require full dimensions/zero offsets, format-specific sizes and
+extension-specific rules. The read-only primary-worktree audit is
+`.context/compressed-api-applicability-review-r1/HANDOFF.md`; accounting SHA256
+`549d6c03d74789bf9af2dcc4f748dfa38f3f184c37c26e3487eb5040761adc3b`.
+It preserves the exact pinned upstream source and original result hashes; it
+adds no implementation, allowance or acceptance claim.
