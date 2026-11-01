@@ -14,9 +14,13 @@
  * first with a same-rectangle BlitFramebuffer, which WebGL 2 requires for a
  * multisampled source. Single-sampled surfaces do none of this work.
  *
- * Only EGL_MULTISAMPLE_RESOLVE_DEFAULT is offered. WebGL 2 exposes no
- * per-sample access, so the box filter that EGL_MULTISAMPLE_RESOLVE_BOX
- * requires cannot be guaranteed; configs do not advertise its bit.
+ * Only EGL_MULTISAMPLE_RESOLVE_DEFAULT is offered. EGL 1.5 makes the box
+ * filter optional: a config advertises EGL_MULTISAMPLE_RESOLVE_BOX_BIT only
+ * if its surfaces support it (section 3.4, table 3.1), and eglSurfaceAttrib
+ * reports EGL_BAD_MATCH otherwise (section 3.5.6). WebGL 2 cannot read
+ * individual samples (no multisampled textures, and BlitFramebuffer's resolve
+ * filter is the implementation's choice), so an exact box filter cannot be
+ * guaranteed and no config advertises the bit.
  */
 import type { GlBinding } from "./registry.js";
 import type { GlSurfaceResources } from "./surface-resources.js";

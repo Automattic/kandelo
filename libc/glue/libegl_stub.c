@@ -563,9 +563,11 @@ struct config_attribute {
  * window and pbuffer storage, single-sampled or multisampled with a sample
  * count the renderer allocates exactly. Native rendering and API
  * conformance are not inferred from WebGL2. A multisampled surface resolves
- * with the renderer's ordinary resolve; WebGL2 offers no per-sample access
- * that would guarantee a box filter, so no config advertises
- * EGL_MULTISAMPLE_RESOLVE_BOX_BIT. */
+ * with the renderer's ordinary resolve. EGL 1.5 makes the box filter
+ * optional (EGL_MULTISAMPLE_RESOLVE_BOX_BIT, section 3.4), and WebGL2 cannot
+ * read individual samples, so it cannot guarantee one: no config advertises
+ * EGL_MULTISAMPLE_RESOLVE_BOX_BIT, and requesting the box resolve is
+ * EGL_BAD_MATCH (section 3.5.6). */
 static const struct config_attribute config_attributes[] = {
     { EGL_BUFFER_SIZE, 32, 0, CFG_MINIMUM },
     { EGL_RED_SIZE, 8, 0, CFG_MINIMUM },
