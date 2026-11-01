@@ -88,7 +88,14 @@ class CountingGl {
   }
   bindRenderbuffer(_target: number, renderbuffer: object | null) { this.renderbuffer = renderbuffer; }
   activeTexture(unit: number) { this.active = unit - 0x84c0; }
-  bindTexture(_target: number, texture: object | null) { this.units[this.active] = texture; }
+  /** WebGL fixes a texture's target at its first bind. */
+  targets = new Map<object, number>();
+  bindTexture(target: number, texture: object | null) {
+    const fixed = texture && this.targets.get(texture);
+    if (fixed && fixed !== target) { this.error ||= 0x502; return; }
+    if (texture) this.targets.set(texture, target);
+    this.units[this.active] = texture;
+  }
   getTexParameter() { return 0x2601; }
   texImage2D(_target: number, _level: number, format: number, width: number, height: number) {
     this.storage.set(this.texture!, { format, alpha: 0, width, height, content: ++this.contents });
@@ -629,6 +636,35 @@ describe("EGLImage siblings sample current storage without per-draw copies", () 
     h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
     h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
     expect(h.gl.sampled.at(-1)).toBe(h.gl.storage.get(gpu.tex)!.content);
+    expect(h.error()).toBe(0);
+  });
+});
+
+
+describe("BindTexture", () => {
+  // [C6]
+  it("rebinding a texture to its own target issues only the bind", () => {
+    const h = setup();
+    h.send(O.OP_BIND_TEXTURE, [TEX, 30]);
+    h.counting();
+    for (let i = 0; i < 16; i++) h.send(O.OP_BIND_TEXTURE, [TEX, 30 + (i % 2)]);
+    expect(Object.fromEntries(h.gl.calls)).toEqual({ bindTexture: 16 });
+    expect(h.b.shadow.textureUnits[0]).toBe(h.b.textures.get(31));
+    expect(h.error()).toBe(0);
+  });
+
+  // [C6]
+  it("a bind to another target than the texture's still fails without changing the binding", () => {
+    const h = setup();
+    h.send(O.OP_BIND_TEXTURE, [0x8513, 40]);
+    h.send(O.OP_BIND_TEXTURE, [TEX, 30]);
+    h.send(O.OP_BIND_TEXTURE, [0x8513, 30]);
+    expect(h.error()).toBe(0x502);
+    expect(h.b.shadow.cubeTextureUnits[0]).toBe(h.b.textures.get(40));
+    h.send(O.OP_BIND_TEXTURE, [0x8513, 30]);
+    expect(h.error()).toBe(0x502);
+    h.send(O.OP_BIND_TEXTURE, [0x8513, 0]);
+    expect(h.b.shadow.cubeTextureUnits[0]).toBe(null);
     expect(h.error()).toBe(0);
   });
 });
