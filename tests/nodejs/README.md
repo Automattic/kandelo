@@ -814,6 +814,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Real TCP connection limits and drop events | [#1620](https://github.com/Automattic/kandelo/pull/1620) |
 | Timer references, cancellation, refresh and promises | [#1621](https://github.com/Automattic/kandelo/pull/1621) |
 | Real synchronous child-process execution | [#1622](https://github.com/Automattic/kandelo/pull/1622) |
+| Socket inactivity deadlines and write progress | [#1623](https://github.com/Automattic/kandelo/pull/1623) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
