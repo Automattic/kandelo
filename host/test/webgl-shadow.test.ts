@@ -187,7 +187,7 @@ describe("cmdbuf decoder — shadow writes", () => {
     [O.OP_BLEND_FUNC,[1,0x0308],0x500], // saturate is a source-only factor
     [O.OP_BLEND_FUNC_SEPARATE,[1,0,0,0xffffffff],0x500],
     [O.OP_PIXEL_STOREI,[GL_PACK_ALIGNMENT,3],0x501],
-    [O.OP_PIXEL_STOREI,[0x0cf3,-1],0x501],
+    [O.OP_PIXEL_STOREI,[0x0d02,4],0x500], // pack row length is WebGL2-only
     [O.OP_ENABLE,[0x8c89],0x500], // GLES3 rasterizer-discard is not GLES2
   ])("invalid state command %i preserves the complete owner shadow", (op, words, error) => {
     const b=setupBinding(), before=structuredClone(b.shadow);
@@ -497,25 +497,30 @@ it("restores dither and pixel-store state across a shared context switch", () =>
   const commands = new Tlv(a.cmdbufView!.buffer as ArrayBuffer);
   let record = commands.op(O.OP_DISABLE, 4);
   commands.view.setUint32(record.p, 0x0bd0, true);
-  for (const [key, value] of [[0x0cf2, 7], [0x0cf3, 2], [0x0cf4, 1], [0x0d02, 9]]) {
+  // GLES 2 admits only the alignments; the WebGL2-only names stay at the
+  // host's private defaults even when a guest names them.
+  for (const [key, value] of [[0x0cf5, 2], [0x0d05, 8], [0x0cf2, 7], [0x0d02, 9]]) {
     record = commands.op(O.OP_PIXEL_STOREI, 8);
     commands.view.setUint32(record.p, key, true);
     commands.view.setInt32(record.p + 4, value, true);
   }
   expect(decodeAndDispatch(a, 0, commands.p)).toBe(0);
+  expect(a.errors).toEqual([0x500]);
   const gl = a.gl!;
   const pixelStore = vi.spyOn(gl, "pixelStorei");
   const enable = vi.spyOn(gl, "enable"), disable = vi.spyOn(gl, "disable");
   const muxer = new GlMuxer(gl);
   muxer.switchTo(a);
   expect(disable).toHaveBeenCalledWith(0x0bd0);
-  expect(pixelStore).toHaveBeenCalledWith(0x0cf2, 7);
-  expect(pixelStore).toHaveBeenCalledWith(0x0cf3, 2);
-  expect(pixelStore).toHaveBeenCalledWith(0x0cf4, 1);
-  expect(pixelStore).toHaveBeenCalledWith(0x0d02, 9);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf5, 2);
+  expect(pixelStore).toHaveBeenCalledWith(0x0d05, 8);
+  for (const key of [0x0cf2, 0x0cf3, 0x0cf4, 0x0d02])
+    expect(pixelStore).toHaveBeenCalledWith(key, 0);
   pixelStore.mockClear();
   muxer.switchTo(b);
   expect(enable).toHaveBeenCalledWith(0x0bd0);
+  expect(pixelStore).toHaveBeenCalledWith(0x0cf5, 4);
+  expect(pixelStore).toHaveBeenCalledWith(0x0d05, 4);
   for (const key of [0x0cf2, 0x0cf3, 0x0cf4, 0x0d02])
     expect(pixelStore).toHaveBeenCalledWith(key, 0);
 });

@@ -403,6 +403,7 @@ static unsigned image_failure, image_queries, fail_image_storage, image_pixel_up
 static uint8_t *texel_capture;
 static uint32_t texel_capture_width, texel_capture_height, texel_capture_bpp, texel_capture_records;
 static uint32_t double_unpack_alignment = 4;
+static unsigned pixel_store_commands;
 static unsigned bind_failure, bind_queries;
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned image_mutation_failure, image_mutation_queries;
@@ -1035,6 +1036,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 image_pixel_updates++;
             if (op == OP_COPY_TEX_IMAGE_2D)
                 copy_tex_image_commands++;
+            if (op == OP_PIXEL_STOREI) pixel_store_commands++;
             if (op == OP_PIXEL_STOREI && words[0] == GL_UNPACK_ALIGNMENT)
                 double_unpack_alignment = words[1];
             if (op == OP_TEX_SUB_IMAGE_2D && texel_capture) {
@@ -5502,6 +5504,29 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         printf("PASS %s\n",argv[1]); return 0;
+    }
+    if (!strcmp(argv[1], "encoder-pixel-store-enums")) {
+        /* Sections 3.6.1/4.3.1: only PACK_ALIGNMENT and UNPACK_ALIGNMENT,
+         * plus the advertised EXT_unpack_subimage names this encoder keeps,
+         * are GLES 2 pixel-store parameters. WebGL 2's other names stay
+         * private host state and must never be forwarded. */
+        glFlush();
+        const unsigned before = pixel_store_commands;
+        const GLenum rejected[] = {0x0d02, 0x0d03, 0x0d04, 0x806e, 0x806d, 0x9240, 0x9241, 0x9243, 0};
+        for (size_t i = 0; i < sizeof rejected / sizeof rejected[0]; i++) {
+            glPixelStorei(rejected[i], 1);
+            assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        }
+        glFlush(); assert(pixel_store_commands == before);
+        glPixelStorei(GL_UNPACK_ROW_LENGTH_EXT, 9);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 2); glPixelStorei(GL_PACK_ALIGNMENT, 8);
+        glPixelStorei(GL_PACK_ALIGNMENT, 3); assert(glGetError() == GL_INVALID_VALUE);
+        glFlush();
+        GLint value = 0; glGetIntegerv(GL_UNPACK_ROW_LENGTH_EXT, &value);
+        assert(value == 9 && glGetError() == GL_NO_ERROR && pixel_store_commands == before + 2);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        puts("PASS encoder-pixel-store-enums"); return 0;
     }
     if (!strncmp(argv[1], "encoder-wide-rows-", 18)) {
         /* GLES 2.0.25 sections 3.7.1/3.7.2 load the whole specified image.

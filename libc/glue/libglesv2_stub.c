@@ -2314,6 +2314,11 @@ void glTexParameteri(GLenum target, GLenum pname, GLint param) {
     EMIT_END()
 }
 
+/* Sections 3.6.1 and 4.3.1: GLES 2 has only the two alignment parameters.
+ * EXT_unpack_subimage adds three unpack names, which this encoder applies
+ * itself while packing rows. WebGL 2's other pixel-store names (pack row
+ * length and skips, image height, WEBGL flip/premultiply) are host-private
+ * state and are INVALID_ENUM for the guest. */
 void glPixelStorei(GLenum pname, GLint param) {
     if (!_wpk_gl_current_encoder()) return;
     if (pname == GL_UNPACK_ALIGNMENT || pname == GL_PACK_ALIGNMENT) {
@@ -2321,6 +2326,10 @@ void glPixelStorei(GLenum pname, GLint param) {
             raise_client_error(GL_INVALID_VALUE);
             return;
         }
+    } else if (pname != GL_UNPACK_ROW_LENGTH_EXT && pname != GL_UNPACK_SKIP_ROWS_EXT
+               && pname != GL_UNPACK_SKIP_PIXELS_EXT) {
+        raise_client_error(GL_INVALID_ENUM);
+        return;
     }
     if (pname == GL_UNPACK_ROW_LENGTH_EXT || pname == GL_UNPACK_SKIP_ROWS_EXT
         || pname == GL_UNPACK_SKIP_PIXELS_EXT) {

@@ -744,9 +744,9 @@ function dispatch(
       const pname = v.getUint32(p, true);
       const param = v.getInt32(p + 4, true);
       gl.pixelStorei(pname, param);
+      // stateArgumentError admitted only the two alignments.
       if (pname === GL_UNPACK_ALIGNMENT) b.shadow.unpackAlignment = param;
-      else if (pname === GL_PACK_ALIGNMENT) b.shadow.packAlignment = param;
-      else if (b.shadow.pixelStore.has(pname) && param >= 0) b.shadow.pixelStore.set(pname, param);
+      else b.shadow.packAlignment = param;
       return;
     }
 

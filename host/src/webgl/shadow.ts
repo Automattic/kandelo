@@ -171,8 +171,9 @@ export function setCap(s: GlShadowState, cap: number, enabled: boolean): void {
   }
 }
 
-// WebGL2 unpack/pack state can be changed through the bridge and by device
-// uploads even when the guest encoder gathers GLES rows itself.
+// WebGL2-only pack/unpack state. GLES 2 guests cannot set it (glPixelStorei
+// admits only the alignments); host device uploads change it temporarily, and
+// owner switches restore these private defaults.
 export const EXTRA_PIXEL_STORE_DEFAULTS: readonly (readonly [number, number])[] = [
   [0x0cf2, 0], [0x0cf3, 0], [0x0cf4, 0], // unpack row length, skip rows/pixels
   [0x806e, 0], [0x806d, 0], // unpack image height, skip images

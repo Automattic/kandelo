@@ -1232,9 +1232,13 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     configure(bindings[0], [255,0,0,255], [0,255,0,255]);
     configure(bindings[1], [0,0,255,255], [255,0,0,255]);
     send(bindings[0], ops.OP_DISABLE, [gl.DITHER]);
+    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_ALIGNMENT,2]);
+    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.PACK_ALIGNMENT,8]);
+    // GLES 2 admits only the alignments. WebGL2-only names stay private host
+    // defaults on every owner switch.
+    const enumBefore = bindings[0].errors.includes(0x500);
     send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_ROW_LENGTH,7]);
-    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_ROWS,2]);
-    send(bindings[0], ops.OP_PIXEL_STOREI, [gl.UNPACK_SKIP_PIXELS,1]);
+    const rejectedPixelStore = !enumBefore && bindings[0].errors.includes(0x500);
     const observations = [];
     const nameQueries: number[][] = [];
     const objectQuery = (b: typeof bindings[0], pname: number, float = false) => {
@@ -1256,6 +1260,8 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       nameQueries.push([texture2d, objectQuery(b, gl.TEXTURE_BINDING_CUBE_MAP, true),
         objectQuery(b, gl.CURRENT_PROGRAM, true), objectQuery(b, gl.ARRAY_BUFFER_BINDING)]);
       observations.push({ index, rgba: [...pixels], dither: gl.isEnabled(gl.DITHER),
+        unpackAlignment: gl.getParameter(gl.UNPACK_ALIGNMENT),
+        packAlignment: gl.getParameter(gl.PACK_ALIGNMENT),
         rowLength: gl.getParameter(gl.UNPACK_ROW_LENGTH),
         skipRows: gl.getParameter(gl.UNPACK_SKIP_ROWS),
         skipPixels: gl.getParameter(gl.UNPACK_SKIP_PIXELS), error: gl.getError() });
@@ -1289,8 +1295,9 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     // These objects belong to this short-lived test realm.
     gl.deleteBuffer(vertices); gl.deleteProgram(program);
     gl.deleteShader(vertex); gl.deleteShader(fragment);
-    return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError };
+    return { observations, nameQueries, physicalStatePreserved, importedPixels: [...importedPixels], importError, rejectedPixelStore };
   }, root);
+  expect(result.rejectedPixelStore).toBe(true);
   expect(result.physicalStatePreserved).toBe(true);
   expect(result.importedPixels).toEqual([17,29,41,255]);
   expect(result.importError).toBe(0);
@@ -1299,8 +1306,8 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
     const first = observation.index === 0;
     expect(observation).toEqual({ index: observation.index,
       rgba: first ? [255,255,0,255] : [255,0,255,255], dither: !first,
-      rowLength: first ? 7 : 0, skipRows: first ? 2 : 0,
-      skipPixels: first ? 1 : 0, error: 0 });
+      unpackAlignment: first ? 2 : 4, packAlignment: first ? 8 : 4,
+      rowLength: 0, skipRows: 0, skipPixels: 0, error: 0 });
   }
 });
 

@@ -485,6 +485,7 @@ host/test/webgl-context-execution.test.ts	source-only
 host/test/webgl-cpu-image-storage.test.ts	source-only
 host/test/webgl-error-query.test.ts	source-only
 host/test/webgl-error-sequence.test.ts	source-only
+host/test/webgl-es2-enums.test.ts	source-only
 host/test/webgl-es2-formats.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
