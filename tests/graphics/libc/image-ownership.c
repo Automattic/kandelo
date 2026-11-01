@@ -2412,6 +2412,21 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         assert(eglQuerySurface(dpy, surface, EGL_WIDTH, &width) && width == 64);
         assert(eglQuerySurface(dpy, surface, EGL_HEIGHT, &height) && height == 32);
         assert(eglDestroySurface(dpy, surface) && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-dmabuf-query-init")) {
+        /* Display queries need an initialized display (EGL 1.5 section 3.1). */
+        EGLint count = -1; EGLuint64KHR modifier = 7;
+        for (unsigned pass = 0; pass < 2; pass++) {
+            assert(!eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && eglGetError() == EGL_NOT_INITIALIZED);
+            assert(!eglQueryDmaBufModifiersEXT(dpy, 0x34324241, 1, &modifier, NULL, &count));
+            assert(eglGetError() == EGL_NOT_INITIALIZED && count == -1 && modifier == 7);
+            if (pass) break;
+            assert(eglInitialize(dpy, NULL, NULL));
+            assert(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count == 4);
+            assert(eglQueryDmaBufModifiersEXT(dpy, 0x34324241, 1, &modifier, NULL, &count));
+            assert(count == 1 && modifier == 0);
+            assert(eglTerminate(dpy)); count = -1; modifier = 7;
+        }
+        assert(!eglQueryDmaBufFormatsEXT((EGLDisplay)-1, 0, NULL, &count) && eglGetError() == EGL_BAD_DISPLAY);
     } else return 0;
     printf("PASS %s\n", name);
     return 1;

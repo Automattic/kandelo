@@ -3086,10 +3086,8 @@ uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
 EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
                                     EGLint *formats, EGLint *num_formats) {
     egl_call_begin();
-    if (!display_record(dpy)) {
-        g_last_error = EGL_BAD_DISPLAY;
-        return EGL_FALSE;
-    }
+    /* Display queries answer only for an initialized display. */
+    if (!config_display_ready(dpy)) return EGL_FALSE;
     if (max_formats < 0 || !num_formats || (max_formats > 0 && !formats)) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_FALSE;
@@ -3113,10 +3111,7 @@ EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
                                       EGLBoolean *external_only,
                                       EGLint *num_modifiers) {
     egl_call_begin();
-    if (!display_record(dpy)) {
-        g_last_error = EGL_BAD_DISPLAY;
-        return EGL_FALSE;
-    }
+    if (!config_display_ready(dpy)) return EGL_FALSE;
     if (!dmabuf_format_supported(format) || max_modifiers < 0
         || !num_modifiers || (max_modifiers > 0 && !modifiers)) {
         g_last_error = EGL_BAD_PARAMETER;
