@@ -12,7 +12,8 @@ import {
 } from "../generated/abi.js";
 import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
-import { querySurfaceCapabilities } from "./surface-capabilities.js";
+import { querySurfaceCapabilities, validSurfaceCapabilitiesLength } from "./surface-capabilities.js";
+import { withMultisampleRead } from "./multisample.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -262,7 +263,7 @@ export function runGlQuery(
   if (op !== O.QOP_COMPRESSED_UPLOAD && interruptCompressedUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
   if (op === O.QOP_SURFACE_CAPABILITIES) {
-    if (input.byteLength !== 0 || out.byteLength !== 16) return -22;
+    if (input.byteLength !== 0 || !validSurfaceCapabilitiesLength(out.byteLength)) return -22;
     if (!b.gl) return -1;
     captureNativeGlErrors(b.gl,b);
     return querySurfaceCapabilities(b.gl,input,out);
@@ -845,7 +846,8 @@ function readNativePixels(b: GlBinding, input: Uint8Array, out: Uint8Array): num
       const type = normalizeHalfFloatType(inDv.getUint32(20, true));
       // WebGL2 readPixels requires the destination view to match `type`.
       const view = readPixelsViewForType(type, out);
-      if (!checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); })) return -22;
+      // A multisampled default framebuffer is read as resolved values.
+      if (!withMultisampleRead(b, () => checkedGlCall(b, () => { gl.readPixels(x, y, w, h, format, type, view); }))) return -22;
       copyReadPixelsResult(view, out);
       // Both routes own independent staging. The capture route validates its
       // complete geometry separately from each bounded transport reply.

@@ -8,7 +8,7 @@ import { captureNativeGlErrors } from "./webgl/errors.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
-import { querySurfaceCapabilities, surfaceCapabilityRenderer } from "./webgl/surface-capabilities.js";
+import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
 import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
@@ -81,7 +81,8 @@ import { DriCleanupFault } from "./dri/cleanup-fault.js";
 import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
-import { hasNativeRepair, repairNativeState } from "./webgl/native-recovery";
+import { hasNativeRepair, repairNativeState, retireNativeRetirement } from "./webgl/native-recovery";
+import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture } from "./webgl/foreign-texture";
 import {
   blitGpuScanout,
@@ -3147,9 +3148,26 @@ export class WasmPosixKernel {
             const width = view.getUint32(4, true), height = view.getUint32(8, true);
             if ((width !== 0 && width !== target.w) || (height !== 0 && height !== target.h)) return -22;
             if (b.surface.gl && b.surface.gl !== target.gl) return -5;
-            const commit = prepareBorrowedSurfaceTarget(b,target,targetId);
-            this.gl_muxers.get(target.gl)?.invalidateCurrent();
-            commit();
+            // A multisampled window keeps its multisampled storage while the
+            // BO it resolves into keeps its size; a resized BO needs storage
+            // of the new size, allocated before anything is published.
+            const previous = b.surface.multisample;
+            let multisample = previous;
+            if (b.surface.samples && (!previous || previous.w !== target.w || previous.h !== target.h)) {
+              this.glMuxerFor(target.gl).captureCurrentErrors();
+              const owner = {gl:target.gl,errors:[] as number[]};
+              multisample = allocateMultisampleTarget(owner,b.surface.samples,target.w,target.h);
+              if (!multisample) return !hasNativeRepair(target.gl) && owner.errors.includes(0x505) ? -12 : -5;
+            }
+            let published = false;
+            try {
+              const commit = prepareBorrowedSurfaceTarget(b,target,targetId,multisample);
+              this.gl_muxers.get(target.gl)?.invalidateCurrent();
+              commit(); published = true;
+            } finally {
+              if (!published && multisample && multisample !== previous) retireNativeRetirement(multisample.retirement);
+            }
+            if (previous && previous !== multisample) retireNativeRetirement(previous.retirement);
             return 0;
           } catch { return -5; }
         },
@@ -3281,6 +3299,13 @@ export class WasmPosixKernel {
             this.glMuxerFor(b.gl!).switchTo(b);
             const selected = b.drawSurface ?? b.surface;
             if (selected.kind === 2) { b.gl!.flush(); return 0; }
+            // EGL 1.5 section 3.10.1.2 posts the resolved color buffer. A
+            // multisampled window resolves into its present target or
+            // borrowed BO before a display or compositor can consume either.
+            if (selected.multisample) {
+              this.glMuxerFor(b.gl!).captureCurrentErrors();
+              if (!resolveSurfaceMultisample(selected)) return -5;
+            }
             if (selected.presentTarget && (selected !== b.surface || b.claimedKmsCrtc == null)) {
               try { this.#presentWindowFrame(b, selected); b.gl?.flush(); return 0; } catch { return -5; }
             }
@@ -3360,7 +3385,7 @@ export class WasmPosixKernel {
           } catch {
             return -14; // EFAULT
           }
-          if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || outputLength !== 16)) return -22;
+          if (op === QOP_SURFACE_CAPABILITIES && (inputLength !== 0 || !validSurfaceCapabilitiesLength(outputLength))) return -22;
           if ((op === QOP_FINISH || op === QOP_FLUSH) && (inputLength !== 0 || outputLength !== 0)) return -22;
           let inBuf: Uint8Array;
           try {

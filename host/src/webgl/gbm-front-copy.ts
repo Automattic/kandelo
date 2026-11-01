@@ -1,15 +1,22 @@
 import { applyNativeChanges, nativeInverse, repairNativeState, type NativeCall } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
 import type { GlSurfaceResources } from "./surface-resources.js";
+import { multisampleResolveStorage, resolveSurfaceMultisample } from "./multisample.js";
 
 const READ = 0x8ca8, DRAW = 0x8ca9, READ_BINDING = 0x8caa, DRAW_BINDING = 0x8ca6;
 const READ_BUFFER = 0x0c02, COLOR0 = 0x8ce0, SCISSOR = 0x0c11;
 type GpuFront = { gl: WebGL2RenderingContext; fbo: WebGLFramebuffer; w: number; h: number };
 
+/** The single-sampled render back holding the posted image: a multisampled
+ * surface's resolve storage, otherwise its default framebuffer. */
+function renderBack(surface: GlSurfaceResources): WebGLFramebuffer | null {
+  return surface.multisample ? multisampleResolveStorage(surface)?.fbo ?? null : surface.renderTargetFbo;
+}
+
 /** Pure preflights shared with the state-borrowing caller. Invalid requests
  * retain their original errno before any private error capture or repair. */
 export function validGbmFrontCopy(surface: GlSurfaceResources, target: GpuFront): boolean {
-  const gl = surface.gl, size = surface.surfaceSize, source = surface.renderTargetFbo;
+  const gl = surface.gl, size = surface.surfaceSize, source = renderBack(surface);
   return !!gl && !!source && !!size && gl === target.gl && source !== target.fbo &&
     Number.isInteger(size.width) && Number.isInteger(size.height) &&
     size.width > 0 && size.height > 0 && size.width === target.w && size.height === target.h;
@@ -17,7 +24,7 @@ export function validGbmFrontCopy(surface: GlSurfaceResources, target: GpuFront)
 
 export function validGbmFrontRead(surface: GlSurfaceResources): boolean {
   const size = surface.surfaceSize;
-  return !!surface.gl && !!surface.renderTargetFbo && !!size &&
+  return !!surface.gl && !!renderBack(surface) && !!size &&
     Number.isSafeInteger(size.width) && Number.isSafeInteger(size.height) &&
     size.width > 0 && size.height > 0 && Number.isSafeInteger(size.width * size.height * 4);
 }
@@ -29,13 +36,15 @@ export function validGbmFrontRead(surface: GlSurfaceResources): boolean {
 export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
   capturePriorErrors: () => void): number {
   if (!validGbmFrontCopy(surface, target)) return -22;
-  const gl = surface.gl!, size = surface.surfaceSize!, source = surface.renderTargetFbo!;
+  const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
   // Error ownership is captured before entering private driver operations.
   // Repair records retain only native handles/scalars and this private queue.
   const owner = { gl, errors: [] as number[], shadow: {} };
   try {
     capturePriorErrors();
     if (gl.isContextLost() || !repairNativeState(gl)) return -5;
+    // The front is the posted, resolved color buffer (EGL 1.5 3.10.1.2).
+    if (!resolveSurfaceMultisample(surface)) return -5;
     let oldRead: WebGLFramebuffer | null = null, oldDraw: WebGLFramebuffer | null = null;
     let scissor = false;
     if (!checkedGlCall(owner, () => {
@@ -88,7 +97,7 @@ export function copyGbmFront(surface: GlSurfaceResources, target: GpuFront,
 export function readGbmFront(surface: GlSurfaceResources,
   capturePriorErrors: () => void): {rc: number; pixels?: Uint8Array<ArrayBuffer>} {
   if (!validGbmFrontRead(surface)) return {rc: -22};
-  const gl = surface.gl!, size = surface.surfaceSize!, source = surface.renderTargetFbo!;
+  const gl = surface.gl!, size = surface.surfaceSize!, source = renderBack(surface)!;
   let pixels: Uint8Array<ArrayBuffer>;
   try { pixels = new Uint8Array(size.width * size.height * 4); }
   catch { return {rc: -12}; }
@@ -97,6 +106,7 @@ export function readGbmFront(surface: GlSurfaceResources,
   try {
     capturePriorErrors();
     if (gl.isContextLost() || !repairNativeState(gl)) return {rc: -5};
+    if (!resolveSurfaceMultisample(surface)) return {rc: -5};
     let oldRead: WebGLFramebuffer | null = null, oldPack: WebGLBuffer | null = null;
     const fields = [0x0d05, 0x0d02, 0x0d04, 0x0d03];
     let values: number[] = [];

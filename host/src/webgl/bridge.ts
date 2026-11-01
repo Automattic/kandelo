@@ -53,6 +53,7 @@ import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finaliz
 import { stateArgumentError } from "./state-validation.js";
 import { combinedTextureUnits, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
+import { withMultisampleRead } from "./multisample.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
 import { activeVertexArray, collectRetiredBuffers, defaultVertexArray, deleteBufferNames, vertexAttribute } from "./buffer-references.js";
 import {
@@ -1057,14 +1058,15 @@ function dispatch(
       const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
       const internalFormat = v.getUint32(p + 8, true);
       const width = v.getInt32(p + 20, true), height = v.getInt32(p + 24, true);
-      // ES 2.0 copies take an unsized internal format from the framebuffer.
-      if (imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
+      // ES 2.0 copies take an unsized internal format from the framebuffer;
+      // a multisampled default framebuffer supplies its resolved values.
+      if (withMultisampleRead(b,()=>imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
         target, level, internalFormat,
         v.getInt32(p + 12, true),
         v.getInt32(p + 16, true),
         width, height,
         v.getInt32(p + 28, true),
-      ),level!==0,level)) {
+      ),level!==0,level))) {
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false,
             gles:{internalFormat,format:internalFormat,type:0x1401,expanded:false,
@@ -1079,7 +1081,7 @@ function dispatch(
       if (textureLevel(boundTextureObject(b,v.getUint32(p,true))!,v.getUint32(p,true),v.getInt32(p+4,true))?.gles?.depth) {
         recordGlError(b,0x502); return;
       }
-      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
+      withMultisampleRead(b,()=>imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getInt32(p + 8, true),
@@ -1088,7 +1090,7 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      ));
+      )));
       return;
 
     // ----- shaders / programs --------------------------------------------

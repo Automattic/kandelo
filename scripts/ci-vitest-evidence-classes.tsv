@@ -513,6 +513,7 @@ host/test/webgl-kms-gamma.test.ts	source-only
 host/test/webgl-kms-scanout.test.ts	source-only
 host/test/webgl-luminance-float.test.ts	source-only
 host/test/webgl-muxer.test.ts	source-only
+host/test/webgl-multisample-surface.test.ts	source-only
 host/test/webgl-object-capture.test.ts	source-only
 host/test/webgl-op-contract.test.ts	source-only
 host/test/webgl-opaque-alpha.test.ts	source-only

@@ -16,6 +16,8 @@ export type GlExecutionDrawable = Readonly<{
   drawHeight: number;
   readWidth: number;
   readHeight: number;
+  /** Resolve destination when `readFramebuffer` is multisampled. */
+  readResolve: WebGLFramebuffer | null;
 }>;
 
 export class GlSubmitExecution {
@@ -71,7 +73,8 @@ export class GlSubmitExecution {
         drawWidth: work.drawLease?.width ?? drawable?.width ?? draw.surfaceSize?.width ?? binding.canvas?.width ?? 0,
         drawHeight: work.drawLease?.height ?? drawable?.height ?? draw.surfaceSize?.height ?? binding.canvas?.height ?? 0,
         readWidth: work.readLease?.width ?? drawable?.width ?? read.surfaceSize?.width ?? binding.canvas?.width ?? 0,
-        readHeight: work.readLease?.height ?? drawable?.height ?? read.surfaceSize?.height ?? binding.canvas?.height ?? 0 });
+        readHeight: work.readLease?.height ?? drawable?.height ?? read.surfaceSize?.height ?? binding.canvas?.height ?? 0,
+        readResolve: work.readLease?.resolveFramebuffer ?? null });
       if ((!drawFramebuffer || !readFramebuffer) && binding.canvas) {
         // WebGL exposes no lease for an old default drawing buffer. Do not
         // silently execute against replacement canvas storage after resize.
