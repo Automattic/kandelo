@@ -97,12 +97,39 @@ about one native draw per triangle when the faces differ; this is unmeasured.
 `OES_standard_derivatives` relies on WebGL 2 accepting `#extension` in GLSL ES
 1.00. The dEQP-EGL window cases run only with `--deqp-visibility=hidden`.
 
-**Still open in the implementation pass:** `OES_depth_texture` luminance
-sampling and API rules; ADDFB2 offsets and SETCRTC panning at scanout;
-restartable interrupted vblank waits; remaining KMS authority details; and
-the maintainer's decision on the test-only forwarding path. (A
-`GbmBoRegistry.unbind` flush failure now always detaches the unmapped range
-and records a per-BO lost publication with a host diagnostic.)
+**Closed later on 2026-11-01** (same evidence standard): `OES_depth_texture`
+API rules (2D only, no copies, no mipmap generation, depth/stencil
+renderability) and luminance `(d,d,d,1)` sampling through per-draw program
+variants; ADDFB2 offsets and SETCRTC panning at scanout on both hosts;
+restartable `WAIT_VBLANK` after `EINTR`; `AUTH_MAGIC` lifetime, PRIME flags,
+a DRM ioctl permission table, primary-plane `SETPLANE`; the cursor plane as
+device state across master changes (cursor protocol version 4 inside host 3);
+GBM RGB565 as CPU-tier storage; unconditional detachment of kernel-unmapped
+GBM mappings with lost writebacks recorded and reported; `eglInitialize`
+fails with `EGL_NOT_INITIALIZED` on any host without a GLES renderer (Node
+without an embedder WebGL 2 backend, or a browser without WebGL 2), documented
+in `docs/browser-support.md`.
+
+**Real-compiler evidence for the GLSL rewrites.** A headless harness
+(`tests/graphics/shader-rewrite-check/`) compiles, links, draws and reads back
+the reversed-depth, attribute-alias and depth-sampling rewrites, alone and
+combined, in Chromium 151 (ANGLE/SwiftShader), Firefox 153 and WebKit 26.5.
+All 17 dEQP `bind_aliasing` templates fail natively and link after rewriting.
+Deliberately broken rewrites fail the harness. This is focused mechanism
+evidence, not dEQP or desktop acceptance.
+
+**Runtime workaround.** Firefox reads the wrong vertex-stage `gl_DepthRange`
+when both stages read it and the program has another active uniform. A
+standalone self-judging reproduction confirms it on Firefox 155 only; it is
+registered as `FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM` with a Firefox-scoped,
+tagged substitution of a private uniform.
+
+**Further boundaries recorded:** dumb-buffer ioctls stay allowed on the render
+node as Kandelo's CPU allocator; primary-plane scaling and positioning are
+refused like Linux's legacy primary helper.
+
+**Still open:** the maintainer's decision on the test-only forwarding path
+(row H02); every validation phase item.
 
 ## Landing scope
 
