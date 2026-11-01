@@ -47,12 +47,25 @@ The latest normal Sway Start-menu reproduction reaches painted categories,
 then SFWBar traps with a function-signature mismatch and exits 132 during
 Home/Right navigation, before ScummVM activation. The exact normal binary,
 process events, screenshots and stack are preserved in
-`.context/scummvm-start-repro-r1/`. A shared GLib class-handler dispatch candidate is implemented with focused
-controls; normal rebuilt acceptance remains pending. This does not yet
-explain ScummVM's separately
-reported blank client or prove a working Start-menu launch. Normal rebuilt
-application acceptance, browser-memory, full CTS and the remaining inventory
-remain open.
+`.context/scummvm-start-repro-r1/`. The shared class-handler repair and
+child-watch/callback adapters now pass 77 focused normal Node guest cases.
+A separate upstream selection passes nine of ten targets; its signals
+target still fails on an unsupported twenty-argument mixed libffi
+signature. Normal Start-menu and ScummVM rendering acceptance remains
+pending. These lower-level results do not explain the separately reported
+blank client or establish a working menu launch. Browser-memory, full CTS
+and the remaining inventory remain open.
+
+Broader combined progress is pushed to draft
+[PR #1594](https://github.com/Automattic/kandelo/pull/1594), including
+ports/main integration and repaired C submit/query/error interactions.
+It passes all 298 native C controls and 154 focused host model cases.
+The actual combined kernel, own SDK32/64, canonical ABI/layout and
+standalone resolver checks pass without changing numeric versions or
+the program contract digest. These are separate from the still-running
+primary540b desktop producer and do not establish combined guest,
+application, browser or full conformance acceptance. Exact source cuts,
+commands, failures and identities appear in the dated entries below.
 
 Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated by
 merge `bc182981fb`. The combined resolver bundle regenerates and passes its
