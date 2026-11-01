@@ -2931,6 +2931,62 @@ fn kms_master_check_perm(proc: &Process, ofd_idx: usize) -> Result<(), Errno> {
     }
 }
 
+/// `drm_ioctl_desc.flags` that `drm_ioctl_permit` checks.
+const DRM_IOCTL_RENDER_ALLOW: u8 = 1 << 0;
+const DRM_IOCTL_MASTER: u8 = 1 << 1;
+
+/// The DRM ioctl table: every `'d'` request this driver implements, with
+/// Linux's permission flags. `None` is an ioctl the device does not have.
+fn drm_ioctl_flags(request: u32) -> Option<u8> {
+    use wasm_posix_shared::dri::*;
+    const R: u8 = DRM_IOCTL_RENDER_ALLOW;
+    const M: u8 = DRM_IOCTL_MASTER;
+    Some(match request {
+        DRM_IOCTL_VERSION | DRM_IOCTL_VERSION_WASM64 | DRM_IOCTL_GET_CAP
+        | DRM_IOCTL_GEM_CLOSE | DRM_IOCTL_PRIME_HANDLE_TO_FD | DRM_IOCTL_PRIME_FD_TO_HANDLE => R,
+        // Kandelo boundary: the render node's CPU-shared allocator is the
+        // dumb-buffer API (Kandelo has no driver-private allocation ioctl),
+        // so these stay render-allowed, unlike Linux.
+        DRM_IOCTL_MODE_CREATE_DUMB | DRM_IOCTL_MODE_MAP_DUMB | DRM_IOCTL_MODE_DESTROY_DUMB => R,
+        // Kandelo's private 0xE0+ requests (GPU BOs, image import/export)
+        // serve the render node by design; their handlers own validation.
+        _ if request & 0xff >= 0xe0 => R,
+        DRM_IOCTL_MODE_SETCRTC | DRM_IOCTL_MODE_SETPLANE | DRM_IOCTL_MODE_CURSOR
+        | DRM_IOCTL_MODE_CURSOR2 | DRM_IOCTL_MODE_SETGAMMA | DRM_IOCTL_MODE_SETPROPERTY
+        | DRM_IOCTL_MODE_OBJ_SETPROPERTY | DRM_IOCTL_MODE_PAGE_FLIP | DRM_IOCTL_MODE_DIRTYFB
+        | DRM_IOCTL_AUTH_MAGIC | DRM_IOCTL_MODE_CREATE_LEASE => M,
+        DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER | DRM_IOCTL_GET_MAGIC
+        | DRM_IOCTL_GET_UNIQUE | DRM_IOCTL_GET_UNIQUE_WASM64 | DRM_IOCTL_SET_CLIENT_CAP
+        | DRM_IOCTL_WAIT_VBLANK | DRM_IOCTL_WAIT_VBLANK_WASM64
+        | DRM_IOCTL_MODE_GETRESOURCES | DRM_IOCTL_MODE_GETCRTC | DRM_IOCTL_MODE_GETENCODER
+        | DRM_IOCTL_MODE_GETCONNECTOR | DRM_IOCTL_MODE_GETPLANERESOURCES | DRM_IOCTL_MODE_GETPLANE
+        | DRM_IOCTL_MODE_GETPROPERTY | DRM_IOCTL_MODE_OBJ_GETPROPERTIES | DRM_IOCTL_MODE_GETPROPBLOB
+        | DRM_IOCTL_MODE_CREATEPROPBLOB | DRM_IOCTL_MODE_DESTROYPROPBLOB | DRM_IOCTL_MODE_GETGAMMA
+        | DRM_IOCTL_MODE_ADDFB | DRM_IOCTL_MODE_ADDFB2 | DRM_IOCTL_MODE_GETFB | DRM_IOCTL_MODE_GETFB2
+        | DRM_IOCTL_MODE_RMFB | DRM_IOCTL_MODE_CLOSEFB => 0,
+        _ => return None,
+    })
+}
+
+/// `drm_ioctl` + `drm_ioctl_permit` for `'d'` requests, before any handler
+/// runs: an ioctl the device lacks is EINVAL; a DRM_MASTER one needs the
+/// current master (EACCES); and a render node accepts only RENDER_ALLOW
+/// requests (EACCES). Other request types keep their own dispatch (the
+/// Kandelo GL session requests are not `'d'` requests).
+fn drm_ioctl_permit(proc: &Process, ofd_idx: usize, request: u32, render: bool) -> Result<(), Errno> {
+    if (request >> 8) & 0xff != u32::from(b'd') {
+        return Ok(());
+    }
+    let flags = drm_ioctl_flags(request).ok_or(Errno::EINVAL)?;
+    if flags & DRM_IOCTL_MASTER != 0 && (render || !kms_file_is_current_master(proc, ofd_idx)?) {
+        return Err(Errno::EACCES);
+    }
+    if render && flags & DRM_IOCTL_RENDER_ALLOW == 0 {
+        return Err(Errno::EACCES);
+    }
+    Ok(())
+}
+
 /// Card0-specific KMS ioctls (SET/DROP_MASTER, MODE_GET*, ADDFB2/RMFB,
 /// SETCRTC, PAGE_FLIP, WAIT_VBLANK). Unknown requests fall through to
 /// `handle_dri_ioctl` so the per-fd GEM/PRIME path stays in one place.
@@ -20512,9 +20568,11 @@ pub(crate) fn sys_ioctl_local(
         if ofd.file_type == FileType::CharDevice {
             let dev = VirtualDevice::from_host_handle(ofd.host_handle);
             if dev == Some(VirtualDevice::DriRenderD128) {
+                drm_ioctl_permit(proc, ofd_idx, request, true)?;
                 return handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf);
             }
             if dev == Some(VirtualDevice::DriCard0) {
+                drm_ioctl_permit(proc, ofd_idx, request, false)?;
                 return handle_dri_card_ioctl(proc, host, fd, ofd_idx, request, buf);
             }
         }
@@ -52603,13 +52661,48 @@ impl HostIO for RelSymlinkMock {
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
-        // An unallocated ioctl number must fall through both
-        // handle_dri_card_ioctl and handle_dri_ioctl, ending in
-        // ENOSYS — libdrm reads that as "feature unsupported"
-        // rather than silently succeeding with a bogus result.
+        // A request outside the DRM ('d') ioctl space must fall through
+        // both handle_dri_card_ioctl and handle_dri_ioctl, ending in
+        // ENOSYS rather than silently succeeding with a bogus result.
         let mut buf = [0u8; 64];
         let err = sys_ioctl(&mut proc, &mut host, fd, 0xdead_beef, &mut buf).unwrap_err();
         assert_eq!(err, Errno::ENOSYS);
+    }
+
+    #[test]
+    fn dri_ioctl_permit_rejects_unknown_drm_requests_and_applies_node_rules() {
+        use wasm_posix_shared::dri::*;
+        let _g_master = crate::dri::master::lock_for_test();
+        crate::dri::kms::reset_for_test();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let card = kms_master_card0(&mut proc, &mut host);
+        let plain = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let render = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut buf = [0u8; 128];
+        // drm_ioctl: a DRM ioctl the device lacks is EINVAL on either node
+        // (SET_VERSION, GET_CLIENT, a driver-range request).
+        for request in [0xc010_6407u32, 0xc028_6405, 0xc010_6440] {
+            assert_eq!(sys_ioctl(&mut proc, &mut host, card, request, &mut buf), Err(Errno::EINVAL));
+            assert_eq!(sys_ioctl(&mut proc, &mut host, render, request, &mut buf), Err(Errno::EINVAL));
+        }
+        // drm_ioctl_permit: DRM_MASTER is checked before the handler, so a
+        // non-master sees EACCES even for a request it would also get wrong.
+        let mut cursor = [0u8; 28]; // flags 0 and crtc 0 would be EINVAL/ENOENT
+        assert_eq!(sys_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_CURSOR, &mut cursor), Err(Errno::EACCES));
+        let mut plane = [0u8; 48]; // plane 0 would be ENOENT
+        assert_eq!(sys_ioctl(&mut proc, &mut host, plain, DRM_IOCTL_MODE_SETPLANE, &mut plane), Err(Errno::EACCES));
+        // A render node takes only RENDER_ALLOW requests.
+        for request in [DRM_IOCTL_MODE_GETRESOURCES, DRM_IOCTL_SET_MASTER, DRM_IOCTL_WAIT_VBLANK,
+            DRM_IOCTL_MODE_ADDFB2, DRM_IOCTL_MODE_PAGE_FLIP, DRM_IOCTL_GET_MAGIC] {
+            assert_eq!(sys_ioctl(&mut proc, &mut host, render, request, &mut buf), Err(Errno::EACCES), "{request:#x}");
+        }
+        let mut cap = [0u8; 16];
+        cap[0] = DRM_CAP_DUMB_BUFFER as u8;
+        sys_ioctl(&mut proc, &mut host, render, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
+        kms_ioctl(&mut proc, &mut host, render, DRM_IOCTL_MODE_CREATE_DUMB,
+            WpkDrmModeCreateDumb { width: 4, height: 4, bpp: 32, ..Default::default() }).unwrap();
+        crate::dri::kms::reset_for_test();
     }
 
     fn assert_kms_output_fault<T: Copy>(
