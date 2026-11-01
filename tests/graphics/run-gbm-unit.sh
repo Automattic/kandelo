@@ -5,9 +5,17 @@ output_dir="$(mktemp -d "$repo_root/.context/graphics-gbm.XXXXXX")"
 trap 'rm -rf "$output_dir"' EXIT
 # Use public DRM headers from the current resolver-owned package, not sysroot
 # libc headers or a legacy dependency install that a fresh checkout lacks.
-host_target="$(rustc -vV | awk '/^host/ {print $2}')"
-libdrm_prefix="$(cd "$repo_root" && cargo run -p xtask --target "$host_target" \
-    --quiet -- build-deps resolve libdrm --arch wasm32 --source-only)"
+# KANDELO_GBM_LIBDRM_PREFIX names an already-resolved libdrm package prefix
+# (for example one under ~/.cache/kandelo/libs) when this worktree has no
+# sysroot for the resolver to key against; only its public uAPI headers are
+# read, never its library.
+if [ -n "${KANDELO_GBM_LIBDRM_PREFIX:-}" ]; then
+    libdrm_prefix="$KANDELO_GBM_LIBDRM_PREFIX"
+else
+    host_target="$(rustc -vV | awk '/^host/ {print $2}')"
+    libdrm_prefix="$(cd "$repo_root" && cargo run -p xtask --target "$host_target" \
+        --quiet -- build-deps resolve libdrm --arch wasm32 --source-only)"
+fi
 mkdir -p "$output_dir/include/drm"
 cp "$libdrm_prefix/include/libdrm/xf86drm.h" "$output_dir/include/"
 cp "$libdrm_prefix/include/drm/"*.h "$output_dir/include/drm/"
@@ -49,3 +57,26 @@ except subprocess.TimeoutExpired:
     raise SystemExit("FAIL: native GBM process did not finish within 30s")
 sys.exit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
 PY
+# Mesa libgbm public semantics, one process per case so each failure is
+# reported independently. KANDELO_GBM_CASES selects a subset.
+clang "${native_flags[@]}" -include "$repo_root/tests/graphics/libc/gbm-map-double.h" \
+    -DKANDELO_GBM_TEST_PROCESS=1 -c "$repo_root/tests/graphics/libc/gbm-mesa-semantics.c" \
+    -o "$output_dir/mesa.o"
+clang "${native_flags[@]}" \
+    "$output_dir/gbm.o" "$output_dir/mesa.o" \
+    "$repo_root/tests/graphics/libc/gbm-file-double.c" \
+    -o "$output_dir/gbm-mesa"
+status=0
+for case_name in ${KANDELO_GBM_CASES:-user-data-replace}; do
+    python3 - "$output_dir/gbm-mesa" "$case_name" <<'PY' || status=1
+import subprocess, sys
+try:
+    result = subprocess.run(sys.argv[1:], timeout=30)
+except subprocess.TimeoutExpired:
+    raise SystemExit("FAIL: native GBM case timed out: " + sys.argv[2])
+if result.returncode != 0:
+    print("FAIL: native GBM case " + sys.argv[2], flush=True)
+sys.exit(result.returncode if result.returncode >= 0 else 128 - result.returncode)
+PY
+done
+exit "$status"

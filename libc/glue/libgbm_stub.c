@@ -733,12 +733,12 @@ int gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t count) {
     return result;
 }
 
+/* Mesa only stores the pair; the destructor runs solely from gbm_bo_destroy.
+ * Clients routinely free their data themselves and then clear the slot with
+ * (NULL, NULL), so invoking the previous destructor here would double-free. */
 void gbm_bo_set_user_data(struct gbm_bo *bo, void *data,
                           void (*destroy_user_data)(struct gbm_bo *, void *)) {
     if (!bo) return;
-    if (bo->user_data_destroy && bo->user_data) {
-        bo->user_data_destroy(bo, bo->user_data);
-    }
     bo->user_data = data;
     bo->user_data_destroy = destroy_user_data;
 }

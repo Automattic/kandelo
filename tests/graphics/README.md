@@ -765,6 +765,16 @@ from the current libdrm package; it never reads a stale sysroot dependency.
 This is source/API evidence, not SDK guest execution, rendered GBM
 front/back storage or complete GBM compatibility.
 
+The same runner then executes `gbm-mesa-semantics.c`, one process per
+case, against Mesa libgbm's public contract: user data is only stored by
+`gbm_bo_set_user_data` and destroyed once by `gbm_bo_destroy`. Its DRM
+double models a PRIME descriptor as a temporary file whose size is the
+dma-buf size (what Kandelo's PRIME `lseek(SEEK_END)` reports) and a
+GPU-tier BO as a handle whose `MAP_DUMB` fails with `EINVAL`.
+`KANDELO_GBM_CASES` selects cases. `KANDELO_GBM_LIBDRM_PREFIX` may name an
+already-resolved libdrm package prefix when the worktree has no sysroot
+for the resolver; only its public headers are read.
+
 The GBM native control also maps real temporary-file storage behind its
 DRM double. It checks CPU rectangle addresses, independently retained
 views, stale/foreign release tokens, failed final unmap retry and writes
