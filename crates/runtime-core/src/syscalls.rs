@@ -796,6 +796,13 @@ fn install_dri_state_on_open(
                 kms: crate::ofd::KmsFdState {
                     master_identity: Some(ofd_id), holds_master,
                     was_master: holds_master, opener_pid: proc.pid,
+                    // drm_master_open: join the current master, or own the
+                    // new master object this open created.
+                    master_object: if holds_master {
+                        Some(ofd_id)
+                    } else {
+                        crate::dri::master::current().map(|grant| grant.ofd_id)
+                    },
                     ..Default::default()
                 }.into(),
             })
@@ -2944,6 +2951,9 @@ fn handle_dri_card_ioctl(
             if let Ok(mut kms) = kms_state_mut(proc, ofd_idx) {
                 kms.holds_master = true;
                 kms.was_master = true;
+                // drm_new_set_master: a file that did not create its master
+                // object gets a fresh one, whose magic map is empty.
+                kms.master_object = Some(ofd_id);
             }
             if changed {
                 let grant = crate::dri::master::current().expect("admitted DRM master grant");
@@ -3693,7 +3703,8 @@ fn handle_dri_card_ioctl(
         DRM_IOCTL_GET_MAGIC => {
             let mut kms = kms_state_mut(proc, ofd_idx)?;
             if kms.magic == 0 {
-                kms.magic = kms::issue_magic();
+                let master_object = kms.master_object.or(kms.master_identity).ok_or(Errno::EBADF)?;
+                kms.magic = kms::issue_magic(master_object)?;
             }
             buf.get_mut(..4).ok_or(Errno::EINVAL)?.copy_from_slice(&kms.magic.to_le_bytes());
             Ok(())
@@ -3703,12 +3714,11 @@ fn handle_dri_card_ioctl(
             if !kms_file_is_current_master(proc, ofd_idx)? {
                 return Err(Errno::EACCES);
             }
-            // Kandelo does not gate primary-node ioctls on authentication,
-            // so a valid token has nothing further to unlock.
-            if !kms::magic_was_issued(magic) {
-                return Err(Errno::EINVAL);
-            }
-            Ok(())
+            // Kandelo gates no primary-node ioctl on authentication (no
+            // remaining DRM ioctl here carries DRM_AUTH), so consuming the
+            // token is the whole effect.
+            let master_object = kms_state(proc, ofd_idx)?.master_object.ok_or(Errno::EINVAL)?;
+            kms::authenticate_magic(master_object, magic)
         }
         DRM_IOCTL_MODE_CREATE_LEASE => Err(Errno::EOPNOTSUPP),
         _ => handle_dri_ioctl(proc, host, fd, ofd_idx, request, buf),
@@ -4337,6 +4347,7 @@ pub fn collect_dri_release_effects(
                 if let Some(owner) = kms.master_identity {
                     kms::release_blobs(owner);
                 }
+                kms::release_magic(kms.magic);
                 // Framebuffers retain one BO reference per shared table entry.
                 for (fb_id, fb) in kms.fbs.into_last().into_iter().flatten() {
                     effects.extend(collect_cursor_framebuffer_release(fb_id)
@@ -53450,6 +53461,7 @@ impl HostIO for RelSymlinkMock {
     fn kms_master_authenticates_a_reopened_node_and_rejects_magic_zero() {
         use wasm_posix_shared::dri::*;
         let _g_master = crate::dri::master::lock_for_test();
+        crate::dri::kms::reset_for_test();
         let mut proc = Process::new(1);
         let mut host = MockHostIO::new();
         let master = kms_master_card0(&mut proc, &mut host);
@@ -53466,6 +53478,32 @@ impl HostIO for RelSymlinkMock {
         sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_GET_MAGIC, &mut again).unwrap();
         assert_eq!(magic, again);
         assert_eq!(auth(&mut proc, &mut host, master, u32::from_le_bytes(magic)), Ok(()));
+        // core_auth basic-auth: a consumed token cannot authenticate again,
+        // and the file keeps reporting the same token.
+        assert_eq!(auth(&mut proc, &mut host, master, u32::from_le_bytes(magic)), Err(Errno::EINVAL));
+        sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_GET_MAGIC, &mut again).unwrap();
+        assert_eq!(magic, again);
+
+        // A closed file's token leaves the map.
+        let closing = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        let mut gone = [0u8; 4];
+        sys_ioctl(&mut proc, &mut host, closing, DRM_IOCTL_GET_MAGIC, &mut gone).unwrap();
+        assert_ne!(gone, magic, "core_auth many-magics: tokens are distinct");
+        sys_close(&mut proc, &mut host, closing).unwrap();
+        assert_eq!(auth(&mut proc, &mut host, master, u32::from_le_bytes(gone)), Err(Errno::EINVAL));
+        // A token issued under one master object is not in another's map:
+        // after the reopened file takes master with a new master object, the
+        // former master's pending token is unknown to it.
+        let mut stale = [0u8; 4];
+        let late = sys_open(&mut proc, &mut host, b"/dev/dri/card0", O_RDWR, 0).unwrap();
+        sys_ioctl(&mut proc, &mut host, late, DRM_IOCTL_GET_MAGIC, &mut stale).unwrap();
+        sys_ioctl(&mut proc, &mut host, master, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        assert_eq!(auth(&mut proc, &mut host, reopened, u32::from_le_bytes(stale)), Err(Errno::EINVAL));
+        // The original master re-taking its own master object finds it again.
+        sys_ioctl(&mut proc, &mut host, reopened, DRM_IOCTL_DROP_MASTER, &mut []).unwrap();
+        sys_ioctl(&mut proc, &mut host, master, DRM_IOCTL_SET_MASTER, &mut []).unwrap();
+        assert_eq!(auth(&mut proc, &mut host, master, u32::from_le_bytes(stale)), Ok(()));
 
         let mut lease = [0u8; 24];
         assert_eq!(

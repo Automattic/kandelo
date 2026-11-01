@@ -492,6 +492,11 @@ pub struct KmsFdState {
     pub was_master: bool,
     /// Thread-group id of the process that opened the file (`drm_file.pid`).
     pub opener_pid: u32,
+    /// `drm_file.master`: the master object this file belongs to, named by
+    /// the file that created it. A file opened while another file is master
+    /// joins that master; a file that becomes master by open or SET_MASTER
+    /// owns its own. Magic tokens live in this object's map.
+    pub master_object: Option<OfdId>,
     /// A visible cursor owns a BO reference independently of GEM handles.
     pub cursor_bo: Option<u32>,
     /// `DRM_CLIENT_CAP_UNIVERSAL_PLANES`: the fd sees primary and cursor

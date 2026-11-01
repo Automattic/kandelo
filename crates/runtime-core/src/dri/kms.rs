@@ -190,16 +190,47 @@ pub fn set_property(obj_id: u32, obj_type: u32, prop_id: u32, value: u64) -> Res
 
 static NEXT_MAGIC: AtomicU32 = AtomicU32::new(1);
 
-/// Issue a fresh authentication token, as `drm_getmagic` does for a file
-/// that has none yet. Tokens are never reused.
-pub fn issue_magic() -> u32 {
-    NEXT_MAGIC.fetch_add(1, Ordering::Relaxed)
+/// One `drm_master.magic_map` entry: the master object the token was issued
+/// under, and the file it authenticates until `AUTH_MAGIC` consumes it.
+struct MagicEntry {
+    master_object: crate::lock::OfdId,
+    pending: bool,
 }
 
-/// Whether `magic` names a token issued to an open file. Magic 0 is never
+struct GlobalMagics(UnsafeCell<BTreeMap<u32, MagicEntry>>);
+unsafe impl Sync for GlobalMagics {}
+static MAGICS: GlobalMagics = GlobalMagics(UnsafeCell::new(BTreeMap::new()));
+
+/// `drm_getmagic` for a file that has no token yet: a fresh nonzero token in
+/// the magic map of the master object the file belongs to. Magic 0 is never
 /// issued, which is how libdrm's `drmIsMaster` probes for master.
-pub fn magic_was_issued(magic: u32) -> bool {
-    magic != 0 && magic < NEXT_MAGIC.load(Ordering::Relaxed)
+pub fn issue_magic(master_object: crate::lock::OfdId) -> Result<u32, Errno> {
+    let magic = NEXT_MAGIC
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| next.checked_add(1))
+        .map_err(|_| Errno::ENOSPC)?;
+    unsafe { &mut *MAGICS.0.get() }.insert(magic, MagicEntry { master_object, pending: true });
+    Ok(magic)
+}
+
+/// `drm_authmagic`: the token must be in the caller's master object's map
+/// and not yet consumed; authenticating consumes it (a second attempt, a
+/// token from a closed file, or one issued under another master object is
+/// EINVAL).
+pub fn authenticate_magic(master_object: crate::lock::OfdId, magic: u32) -> Result<(), Errno> {
+    match unsafe { &mut *MAGICS.0.get() }.get_mut(&magic) {
+        Some(entry) if entry.master_object == master_object && entry.pending => {
+            entry.pending = false;
+            Ok(())
+        }
+        _ => Err(Errno::EINVAL),
+    }
+}
+
+/// The file's last close removes its token from the map.
+pub fn release_magic(magic: u32) {
+    if magic != 0 {
+        unsafe { &mut *MAGICS.0.get() }.remove(&magic);
+    }
 }
 
 /// Framebuffers share the one mode-object id space, so their ids start
@@ -419,6 +450,7 @@ pub fn reset_for_test() {
     unsafe { *CURSOR.0.get() = None };
     unsafe { &mut *FRAMEBUFFERS.0.get() }.clear();
     unsafe { &mut *BLOBS.0.get() }.clear();
+    unsafe { &mut *MAGICS.0.get() }.clear();
     set_crtc_fb(0);
     set_crtc_mode(None);
     set_crtc_offset((0, 0));
