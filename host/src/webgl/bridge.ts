@@ -24,17 +24,18 @@ import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
-import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw } from "./image-storage.js";
+import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
-import { repairNativeState } from "./native-recovery.js";
+import { applyNativeChanges, nativeInverse, repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
+import { alphaLock, clearStorageAlphaToOne, drawTargetLocksAlpha, setOpaqueAlphaStorage } from "./opaque-alpha.js";
 import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
-  renderbufferUnsupported,
+  renderbufferOpaqueAlpha,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
@@ -597,10 +598,19 @@ function dispatch(
   }
   switch (op) {
     // ----- state ----------------------------------------------------------
-    case O.OP_CLEAR:
+    case O.OP_CLEAR: {
       if (!requireGlesFramebufferComplete(b)) return;
-      gl.clear(v.getUint32(p, true));
+      const mask = v.getUint32(p, true);
+      // RGB color storage kept as RGBA: the native alpha is never written.
+      if ((mask & 0x4000) && drawTargetLocksAlpha(b)) {
+        const lock = alphaLock(b);
+        applyNativeChanges(b, [lock.change, { apply: () => checkedGlCall(b, () => gl.clear(mask)), restore: nativeInverse(b) }],
+          { finalizer: nativeInverse(b, lock.restore) });
+        return;
+      }
+      gl.clear(mask);
       return;
+    }
     case O.OP_CLEAR_COLOR: {
       // GL_EXT_color_buffer_half_float issues 5 and 8: the clear color is not
       // clamped when specified (fixed-point buffers clamp when cleared).
@@ -1443,14 +1453,21 @@ function dispatch(
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE: {
       const internal = v.getUint32(p + 4, true);
-      const accepted = imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
-        v.getUint32(p, true),
-        nativeRenderbufferFormat(internal),
-        v.getInt32(p + 8, true),
-        v.getInt32(p + 12, true),
-      ));
+      const accepted = imageRenderbufferStorage(b,()=>{
+        gl.renderbufferStorage(v.getUint32(p, true), nativeRenderbufferFormat(internal),
+          v.getInt32(p + 8, true), v.getInt32(p + 12, true));
+        // RGB16F is stored as RGBA16F with alpha 1.0 that is never written
+        // (opaque-alpha.ts). The bound storage is the one just specified.
+        if (renderbufferOpaqueAlpha(internal)) {
+          const native = gl.getParameter(0x8ca7) as WebGLRenderbuffer | null;
+          clearStorageAlphaToOne(gl, target => gl.framebufferRenderbuffer(target, 0x8ce0, 0x8d41, native));
+        }
+      });
+      // New storage replaces earlier contents, opaque or not.
+      if (accepted && b.shadow.renderbuffer)
+        setOpaqueAlphaStorage(renderbufferNative(b, b.shadow.renderbuffer), renderbufferOpaqueAlpha(internal));
       if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true),
-        internal,{colorRenderable:renderbufferColorRenderable(internal),unsupported:renderbufferUnsupported(internal),
+        internal,{colorRenderable:renderbufferColorRenderable(internal),
           depthRenderable:renderbufferDepthRenderable(internal),stencilRenderable:renderbufferStencilRenderable(internal)});
       return accepted;
     }

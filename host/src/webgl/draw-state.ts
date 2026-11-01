@@ -29,6 +29,7 @@ import { allocateNativeBuffer } from "./buffer-storage.js";
 import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
 import type { GlStencilFaceState } from "./shadow.js";
+import { alphaLock, drawTargetLocksAlpha } from "./opaque-alpha.js";
 
 const FRONT = 0x0404, BACK = 0x0405, FRONT_AND_BACK = 0x0408;
 const CULL_FACE = 0x0b44, RASTERIZER_DISCARD = 0x8c89, ELEMENT = 0x8893, UNSIGNED_INT = 0x1405;
@@ -134,9 +135,12 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   // Reversed depth ranges and depth-texture lookups run a private variant.
   const twin = draw.empty ? undefined : drawVariantExecutable(b);
   if (twin === null) return false;
-  if (twin === undefined && stencil.kind === "none") return checkedGlCall(b, draw.issue);
+  // RGB color storage kept as RGBA: the native alpha is never written.
+  const lock = drawTargetLocksAlpha(b) ? alphaLock(b) : null;
+  if (twin === undefined && stencil.kind === "none" && !lock) return checkedGlCall(b, draw.issue);
 
   const changes: NativeChange[] = [], finalizer: NativeCall[][] = [];
+  if (lock) { changes.push(lock.change); finalizer.push(lock.restore); }
   if (twin) {
     // The guest executable stays installed in every logical record; only
     // this draw runs its private variant (reversed depth, depth sampling).

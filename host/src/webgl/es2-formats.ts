@@ -184,11 +184,9 @@ export function renderbufferColorRenderable(internal: number): boolean {
     RGBA16F, RGB16F, 0x822f, 0x822d].includes(internal);
 }
 
-/** Color-renderable formats the WebGL 2 renderer cannot render to. RGB16F
- * is not color-renderable under WebGL 2's EXT_color_buffer_(half_)float, so a
- * framebuffer using it is FRAMEBUFFER_UNSUPPORTED (EXT_color_buffer_half_float
- * issue 2: applications must check completeness for each format). */
-export function renderbufferUnsupported(internal: number): boolean {
+/** RGB formats stored natively with alpha (opaque-alpha.ts): WebGL 2 has no
+ * renderable RGB16F, so RGB16F_EXT renderbuffers use RGBA16F storage. */
+export function renderbufferOpaqueAlpha(internal: number): boolean {
   return internal === RGB16F;
 }
 
@@ -199,8 +197,8 @@ export function renderbufferFloat(internal: number): boolean {
 
 /** Native storage for a renderbuffer format: BGRA has no WebGL 2 format and
  * is stored as RGBA8 (the encoder swizzles BGRA texels the same way). RGB16F
- * has no WebGL 2 renderbuffer format and is stored as RGBA16F; it reports
- * zero alpha bits and its framebuffers are UNSUPPORTED. */
+ * has no renderable WebGL 2 format and is stored as RGBA16F with an
+ * unwritten alpha of 1.0; it reports zero alpha bits. */
 export function nativeRenderbufferFormat(internal: number): number {
   return internal === BGRA || internal === BGRA8 ? 0x8058 : internal === RGB16F ? RGBA16F : internal;
 }

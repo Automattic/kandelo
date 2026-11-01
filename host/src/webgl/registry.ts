@@ -5,6 +5,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { CpuImageStorage, type CpuImageRetirement } from "./cpu-image-storage.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
 import { allocateGpuStorage, type GlGpuAllocation } from "./gpu-allocation.js";
+import { clearStorageAlphaToOne, setOpaqueAlphaStorage } from "./opaque-alpha.js";
 import { revokeForeignBo } from "./foreign-retirement.js";
 import { GlOperationStream } from "./operation-stream.js";
 import { GlFenceOwner } from "./fences.js";
@@ -775,6 +776,7 @@ export class GlContextRegistry {
     gl: WebGL2RenderingContext,
     w: number,
     h: number,
+    format = 0,
   ): number | null {
     if (!Number.isInteger(bo_id) || bo_id <= 0 || bo_id > 0xffff_ffff ||
         !Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0 ||
@@ -787,10 +789,21 @@ export class GlContextRegistry {
       ? existing.texId : null;
     if (this.nextGpuBoTexId > 0x7fff_ffff) return null;
     const texId = this.nextGpuBoTexId;
-    return allocateGpuStorage(gl,w,h,texId,allocation=>{
+    if (!allocateGpuStorage(gl,w,h,texId,allocation=>{
       this.gpuBos.set(bo_id,allocation);
       this.nextGpuBoTexId++;
-    }) ? texId : null;
+    })) return null;
+    // XRGB8888/XBGR8888 have no alpha but live in RGBA8 storage: alpha starts
+    // at 1.0 and is never written (opaque-alpha.ts).
+    if (format === 0x34325258 || format === 0x34324258) {
+      const allocation = this.gpuBos.get(bo_id)!;
+      if (!checkedGlCall({gl,errors:[]},()=>clearStorageAlphaToOne(gl,
+          target=>gl.framebufferTexture2D(target,0x8ce0,0x0de1,allocation.tex,0)))) {
+        this.destroyGpuBo(bo_id); return null;
+      }
+      setOpaqueAlphaStorage(allocation.tex,true);
+    }
+    return texId;
   }
 
   /** The GPU-tier bo for `bo_id`, or undefined if it is CPU-tier /

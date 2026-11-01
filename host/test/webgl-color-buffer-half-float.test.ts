@@ -11,8 +11,8 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
  *   EXT_color_buffer_half_float makes 16-bit float color buffers renderable;
  * - RenderbufferStorage accepts RGBA16F, RGB16F, RG16F and R16F;
  * - RGBA/RGBA/HALF_FLOAT_OES textures are renderable; other half-float
- *   images report what the renderer can do (issue 2), never a false COMPLETE:
- *   WebGL 2 cannot render RGB16F, so an RGB16F renderbuffer is UNSUPPORTED;
+ *   images report what the renderer can do (issue 2), never a false COMPLETE;
+ *   an RGB16F renderbuffer is emulated on RGBA16F (webgl-opaque-alpha.test.ts);
  * - GetFramebufferAttachmentParameteriv answers
  *   FRAMEBUFFER_ATTACHMENT_COMPONENT_TYPE_EXT with FLOAT or
  *   UNSIGNED_NORMALIZED_EXT;
@@ -21,10 +21,10 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 
 const TEX = 0x0de1, FBO = 0x8d40, RBO = 0x8d41, COLOR0 = 0x8ce0;
 const RGBA = 0x1908, RGB = 0x1907, UB = 0x1401, FLOAT = 0x1406, HALF_OES = 0x8d61;
-const RGBA16F = 0x881a, RGB16F = 0x881b, RG16F = 0x822f, R16F = 0x822d, RGBA4 = 0x8056;
-const COMPLETE = 0x8cd5, INCOMPLETE_ATTACHMENT = 0x8cd6, UNSUPPORTED = 0x8cdd;
+const RGBA16F = 0x881a, RG16F = 0x822f, R16F = 0x822d, RGBA4 = 0x8056;
+const COMPLETE = 0x8cd5, INCOMPLETE_ATTACHMENT = 0x8cd6;
 const COMPONENT_TYPE = 0x8211, UNSIGNED_NORMALIZED = 0x8c17;
-const INVALID_ENUM = 0x500, INVALID_FRAMEBUFFER_OPERATION = 0x506;
+const INVALID_ENUM = 0x500;
 
 type Call = [string, unknown[]];
 
@@ -98,7 +98,8 @@ describe("advertisement", () => {
 });
 
 describe("half-float renderbuffers", () => {
-  it.each([["RGBA16F", RGBA16F, RGBA16F], ["RG16F", RG16F, RG16F], ["R16F", R16F, R16F], ["RGB16F", RGB16F, RGBA16F]])(
+  // RGB16F (stored as RGBA16F with an unwritten alpha): webgl-opaque-alpha.test.ts.
+  it.each([["RGBA16F", RGBA16F, RGBA16F], ["RG16F", RG16F, RG16F], ["R16F", R16F, R16F]])(
     "accepts %s", (_name, internal, native) => {
       const { b, log, attachRenderbuffer } = binding();
       expect(attachRenderbuffer(internal)).toBe(true);
@@ -110,18 +111,6 @@ describe("half-float renderbuffers", () => {
     const { b, attachRenderbuffer } = binding([]);
     expect(attachRenderbuffer(RGBA16F)).toBe(false);
     expect(b.errors).toContain(INVALID_ENUM);
-  });
-
-  it("reports RGB16F as UNSUPPORTED because WebGL 2 cannot render it (issue 2)", () => {
-    const { b, log, send, checkStatus, attachRenderbuffer, query } = binding();
-    attachRenderbuffer(RGB16F);
-    expect(checkStatus()).toBe(UNSUPPORTED);
-    send(O.OP_CLEAR, [0x4000]);
-    expect(b.errors).toEqual([INVALID_FRAMEBUFFER_OPERATION]);
-    expect(log.filter(([name]) => name === "clear")).toEqual([]);
-    expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER, [RBO, 0x8d44], 4).words).toEqual([RGB16F]);
-    expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER, [RBO, 0x8d53], 4).words).toEqual([0]); // ALPHA_SIZE
-    expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER, [RBO, 0x8d50], 4).words).toEqual([16]); // RED_SIZE
   });
 
   it("keeps RGBA16F complete", () => {

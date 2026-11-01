@@ -2731,7 +2731,7 @@ export class WasmPosixKernel {
             if (!ctx) return -38; // No configured rendering backend.
             this.gl_muxers.get(ctx)?.captureCurrentErrors();
           } catch { return -5; }
-          const texId = this.gl.createGpuBo(bo_id, ctx, width, height);
+          const texId = this.gl.createGpuBo(bo_id, ctx, width, height, _format);
           if (texId == null) return -12; // -ENOMEM
           return 0;
         },

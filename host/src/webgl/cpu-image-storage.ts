@@ -1,3 +1,4 @@
+import { setOpaqueAlphaStorage } from "./opaque-alpha.js";
 import type { GbmBoRegistry, GbmAllocationRetirement } from "../dri/registry.js";
 import type { GlOperationPrefix } from "./operation-stream.js";
 import type { GlBinding } from "./registry.js";
@@ -110,6 +111,9 @@ export class CpuImageStorage {
     let result: GlGpuAllocation | null = null;
     if (!allocateGpuStorage(gl, width, height, 0, allocation => {
       views!.set(key, {allocation, layout: {...layout}, snapshot: null, dirty: false, pending: null});
+      // XRGB/XBGR uploads set alpha 1.0; rendering never writes it
+      // (opaque-alpha.ts), so every reader keeps seeing 1.0.
+      setOpaqueAlphaStorage(allocation.tex, format === 0x34325258 || format === 0x34324258);
       result = allocation;
     })) {
       if (!views.size) contexts.delete(gl);
