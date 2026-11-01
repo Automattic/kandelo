@@ -3,6 +3,7 @@ import { applyNativeChanges, nativeInverse, repairNativeState, type NativeChange
 import { imageAttachmentCall, textureNative } from "./image-storage.js";
 import { collectRetiredImages } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 
 /** BO ownership expires every raw view generation, including deleted names
  * retained by a peer. A replacement using the number has another identity. */
@@ -88,6 +89,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
     const attachments = owner.framebufferAttachments.get(framebuffer)!; attachments.delete(point);
     if (!attachments.size) owner.framebufferAttachments.delete(framebuffer);
   }
+  framebufferInputsChanged();
   for (const [name,object] of b.textures) if (objects.has(object)) b.textures.delete(name);
   if (cached && objects.has(cached.tex)) b.foreignTextures.delete(bo);
   for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);

@@ -3,6 +3,7 @@ import { renderbufferNative, textureNative } from "./image-storage.js";
 import type { NativeCall, NativeChange } from "./native-recovery.js";
 import { nativeInverse } from "./native-recovery.js";
 import { checkedGlCall } from "./program-objects.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 
 /**
  * Color formats without alpha that WebGL 2 can only store with alpha: an
@@ -23,6 +24,7 @@ const opaqueStorage = new WeakSet<object>();
 export function setOpaqueAlphaStorage(native: object | null, opaque: boolean): void {
   if (!native) return;
   if (opaque) opaqueStorage.add(native); else opaqueStorage.delete(native);
+  framebufferInputsChanged();
 }
 
 export function isOpaqueAlphaStorage(native: object | null | undefined): boolean {

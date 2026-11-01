@@ -493,6 +493,7 @@ host/test/webgl-depth-sampling-draw.test.ts	source-only
 host/test/webgl-depth-sampling-source.test.ts	source-only
 host/test/webgl-depth-range.test.ts	source-only
 host/test/webgl-depth-texture.test.ts	source-only
+host/test/webgl-draw-hot-path.test.ts	source-only
 host/test/webgl-error-sequence.test.ts	source-only
 host/test/webgl-es2-color-renderable.test.ts	source-only
 host/test/webgl-es2-enums.test.ts	source-only

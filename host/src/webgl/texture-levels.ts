@@ -6,6 +6,7 @@
  * after the renderer accepted the call that specified it, so this is the
  * object's actual state rather than what a client asked for. */
 import type { GlBinding } from "./registry.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 
 export type GlTextureLevel = {
   width: number;
@@ -77,6 +78,7 @@ export function recordTextureLevel(object: WebGLTexture | null | undefined, face
   if (!face_levels) faces.set(face, face_levels = new Map());
   if (spec.width === 0 || spec.height === 0) face_levels.delete(level);
   else face_levels.set(level, spec);
+  framebufferInputsChanged();
 }
 
 /** Install the complete image set an object has after its storage changed
@@ -85,6 +87,7 @@ export function replaceTextureLevels(object: WebGLTexture, face: number, base: G
   const faces: Faces = new Map();
   if (base) faces.set(face, new Map([[0, base]]));
   levels.set(object, faces);
+  framebufferInputsChanged();
 }
 
 /** glGenerateMipmap derives every level below the base from the base image. */

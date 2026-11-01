@@ -4,6 +4,7 @@ import type { GpuScanoutStorage } from "./kms-scanout.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { recordRenderbufferSize, renderbufferLogicalFormat } from "./image-sizes.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { effectiveInternalFormat } from "./es2-formats.js";
 import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
 /** Private source handles never enter the public GLuint texture namespace. */
@@ -276,7 +277,12 @@ function replaceTextureView(b: GlBinding, object: WebGLTexture, next: GlTextureV
     committed = true;
     retireNativeRetirement(retired);
     return true;
-  } finally { if (!committed) transferNativeRetirement(retired); }
+  } finally {
+    // The object's native storage (and so what its attachments are) may have
+    // changed, or been restored after a partial change.
+    framebufferInputsChanged();
+    if (!committed) transferNativeRetirement(retired);
+  }
 }
 function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: GlRenderbufferView): boolean {
   const old = b.renderbufferViews.get(object) ?? { native: object, source: null };
@@ -337,7 +343,12 @@ function replaceRenderbufferView(b: GlBinding, object: WebGLRenderbuffer, next: 
     unlinkSource(object, next.native);
     committed = true; retireNativeRetirement(retired);
     return true;
-  } finally { if (!committed) transferNativeRetirement(retired); }
+  } finally {
+    // The object's native storage (and so what its attachments are) may have
+    // changed, or been restored after a partial change.
+    framebufferInputsChanged();
+    if (!committed) transferNativeRetirement(retired);
+  }
 }
 export function importImageStorage(b: GlBinding, kind: number, name: number, token: number): boolean {
   if (kind !== 1 && kind !== 2) {
@@ -519,6 +530,7 @@ export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean 
   b.textureViews.delete(object);
   b.imageRevisions.delete(object);
   b.foreignTextureBos.delete(object);
+  framebufferInputsChanged();
   return true;
 }
 export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer): boolean {
@@ -528,6 +540,7 @@ export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer)
   b.renderbufferViewOwners.delete(native);
   b.renderbufferViews.delete(object);
   b.imageRevisions.delete(object);
+  framebufferInputsChanged();
   return true;
 }
 

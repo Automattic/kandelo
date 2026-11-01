@@ -44,6 +44,7 @@ import type { GlDrawableBinding } from "./current.js";
 import { GlSubmitExecution, type GlExecutionDrawable } from "./submit-execution.js";
 import type { GlMuxer } from "./muxer.js";
 import { replaceDefaultFramebuffer } from "./framebuffer.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { createGlObjectGroup, exposeGlSharedObjects, type GlObjectGroup, type GlSharedObjects } from "./object-group.js";
 import { finalizeProgram, releaseRetainedExecutable } from "./program-objects.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
@@ -940,6 +941,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   for (const object of b.fbos.values()) if (gl && !cleanup) { retireNativeObject(gl,object); gl.deleteFramebuffer(object); }
   b.vaos.clear(); b.fbos.clear();
   b.framebufferAttachments.clear();
+  framebufferInputsChanged();
   b.vertexArrays.clear();
   collectRetiredImages(b);
   collectRetiredBuffers(b);

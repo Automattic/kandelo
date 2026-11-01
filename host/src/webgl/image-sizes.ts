@@ -23,6 +23,7 @@ import type { GlImageAttachment } from "./image-references.js";
 import { isDefaultFramebuffer } from "./framebuffer.js";
 import { recordGlError } from "./errors.js";
 import { textureLevel } from "./texture-levels.js";
+import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
 
 type Size = readonly [number, number];
 /** Renderability under ES 2.0 plus the advertised extensions; undefined
@@ -34,7 +35,9 @@ const renderbufferImages = new WeakMap<WebGLRenderbuffer, Image & { internal?: n
  * when native storage differs); omitted for imported storage. */
 export function recordRenderbufferSize(renderbuffer: WebGLRenderbuffer | null, width: number, height: number,
                                        internal?: number, renderable?: Omit<Image, "size">): void {
-  if (renderbuffer) renderbufferImages.set(renderbuffer, { size: [width, height], internal, ...renderable });
+  if (!renderbuffer) return;
+  renderbufferImages.set(renderbuffer, { size: [width, height], internal, ...renderable });
+  framebufferInputsChanged();
 }
 
 /** The internal format the guest specified, when native storage differs. */
@@ -79,13 +82,31 @@ export function framebufferDimensionsDiffer(b: GlBinding, framebuffer: WebGLFram
   return false;
 }
 
+/** The ES 2.0 clauses WebGL 2 does not apply, in the order section 4.4.5
+ * lists them: FRAMEBUFFER_INCOMPLETE_ATTACHMENT for an unrenderable
+ * attachment, then FRAMEBUFFER_INCOMPLETE_DIMENSIONS; 0 when neither holds.
+ * Draws, clears, reads and copies all ask, so the verdict is kept per
+ * framebuffer and re-derived only after an attachment, an attached image or
+ * a storage view changed (framebuffer-revision.ts). */
+type Verdict = { revision: number; status: number };
+const verdicts = new WeakMap<WebGLFramebuffer, Verdict>();
+
+function glesIncompleteness(b: GlBinding, framebuffer: WebGLFramebuffer | null): number {
+  if (!framebuffer) return 0;
+  const revision = framebufferInputsRevision(), cached = verdicts.get(framebuffer);
+  if (cached !== undefined && cached.revision === revision) return cached.status;
+  const status = framebufferAttachmentUnrenderable(b, framebuffer) ? 0x8cd6
+    : framebufferDimensionsDiffer(b, framebuffer) ? 0x8cd9 : 0;
+  verdicts.set(framebuffer, { revision, status });
+  return status;
+}
+
 /** Draw/clear (read = false) and ReadPixels/CopyTex* (read = true) preflight
  * for the ES 2.0 completeness rules WebGL 2 does not apply: attachment
  * color-renderability and equal dimensions. Records
  * INVALID_FRAMEBUFFER_OPERATION before any native side effect. */
 export function requireGlesFramebufferComplete(b: GlBinding, read = false): boolean {
-  const framebuffer = read ? b.shadow.readFbo : b.shadow.fbo;
-  if (!framebufferAttachmentUnrenderable(b, framebuffer) && !framebufferDimensionsDiffer(b, framebuffer)) return true;
+  if (glesIncompleteness(b, read ? b.shadow.readFbo : b.shadow.fbo) === 0) return true;
   recordGlError(b, 0x506);
   return false;
 }
@@ -94,7 +115,6 @@ export function requireGlesFramebufferComplete(b: GlBinding, read = false): bool
  * attachments come before dimensions, which come before UNSUPPORTED. */
 export function glesFramebufferStatus(b: GlBinding, framebuffer: WebGLFramebuffer | null, nativeStatus: number): number {
   const passes = nativeStatus === 0x8cd5 || nativeStatus === 0x8cdd;
-  if (passes && framebufferAttachmentUnrenderable(b, framebuffer)) return 0x8cd6;
-  if (passes && framebufferDimensionsDiffer(b, framebuffer)) return 0x8cd9;
-  return nativeStatus;
+  const status = passes ? glesIncompleteness(b, framebuffer) : 0;
+  return status || nativeStatus;
 }

@@ -3,6 +3,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { applyNativeChanges, nativeOwner, nativeInverse, type NativeChange } from "./native-recovery.js";
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
+import { framebufferInputsChanged } from "./framebuffer-revision.js";
 export type GlImageAttachment = {
   kind: "texture";
   object: WebGLTexture;
@@ -66,6 +67,7 @@ export function attachImageObject(b: GlBinding, kind: number, target: number, po
   }))
     return false;
   b.framebufferAttachments = containers;
+  framebufferInputsChanged();
   return true;
 }
 /** Realize a framebuffer only after staging namespace capacity. Logical zero
@@ -167,6 +169,7 @@ function commitAttachmentDeletion(b: GlBinding, points: Array<{
     if (!attachments.size)
       b.framebufferAttachments.delete(framebuffer);
   }
+  framebufferInputsChanged();
 }
 /** Delete a public name while retaining the object for other context and
  * container references. Only the calling context's bindings are reset.
@@ -284,6 +287,7 @@ export function deleteFramebufferName(b: GlBinding, name: number): boolean {
     b.shadow.readFbo = read;
   b.fbos.delete(name);
   b.framebufferAttachments.delete(object);
+  framebufferInputsChanged();
   return true;
 }
 export function deleteImageObject(b: GlBinding, kind: number, name: number): boolean {
