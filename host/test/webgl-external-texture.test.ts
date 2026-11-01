@@ -244,6 +244,16 @@ describe("samplerExternalOES shader sources", () => {
   });
 });
 
+it("keeps an external sampler resolvable when a depth texture shares the program", async () => {
+  const { depthSamplingShaderSource } = await import("../src/webgl/depth-sampling.js");
+  const { text } = await externalShaderSource(externalFragment.replace("uOverlay", "uDepth").replace("uOverlay", "uDepth"));
+  const variant = depthSamplingShaderSource(text, new Set(["uDepth"]));
+  expect(variant).not.toBeNull();
+  // Only the depth sampler's lookup is wrapped.
+  expect(variant).toContain("kandelo_depth_texel(true, texture2D(uDepth");
+  expect(variant).not.toContain("kandelo_depth_texel(true, texture2D(uVideo");
+});
+
 describe("TEXTURE_EXTERNAL_OES", () => {
   it("binds per unit without a native binding and reports the binding", () => {
     const h = setup();

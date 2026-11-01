@@ -34,7 +34,9 @@ import type { GlShadowState } from "./shadow.js";
 import { noteSourcedUnit, type GlTextureView } from "./image-storage.js";
 
 const LOOKUPS = new Set(["texture2D", "texture2DProj", "texture2DLod", "texture2DProjLod", "textureCube", "textureCubeLod"]);
-const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube"]);
+// samplerExternalOES compiles under a private macro name (external-texture.ts);
+// an external texture is never a depth texture.
+const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube", "kandelo_samplerExternalOES"]);
 const TEXEL = "kandelo_depth_texel", ARG = "kandelo_depth_arg", ARRAY = "kandelo_depth_";
 
 type FunctionDeclaration = { name: number; open: number; close: number; body: [number, number] | null;
