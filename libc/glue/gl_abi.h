@@ -393,7 +393,7 @@ _Static_assert(sizeof(struct wpk_drm_export_image) == 48, "export image layout")
  * on an EGL object session's fd, publish that session's fence `token` as a
  * new sync_file descriptor (eglDupNativeFenceFDANDROID). `flags` accepts
  * only O_CLOEXEC. */
-#define WPK_DRM_IOCTL_EXPORT_FENCE 0xc01064e4u
+#define WPK_DRM_IOCTL_EXPORT_FENCE 0xc01064e6u
 struct wpk_drm_export_fence {
     uint32_t token, flags;
     int32_t fd;

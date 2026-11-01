@@ -1451,7 +1451,7 @@
       "record_bytes": 8,
       "release": 2
     },
-    "ioctl": 3222299876,
+    "ioctl": 3222299878,
     "ioctl_bytes": 16,
     "ioctl_fields": [
       "token",
@@ -2712,7 +2712,7 @@
       "wasm32Size": 16,
       "wasm64Size": 16
     },
-    "3222299876": {
+    "3222299878": {
       "argKind": "pointer",
       "direction": "inout",
       "wasm32Size": 16,

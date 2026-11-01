@@ -235,7 +235,7 @@ pub struct DmaBufSyncFile {
 
 // --- Kandelo: GL fence export ----------------------------------------------
 
-/// `_IOWR('d', 0xe4, WpkDrmExportFence)` on an EGL object session's render
+/// `_IOWR('d', 0xe6, WpkDrmExportFence)` on an EGL object session's render
 /// fd: publish the session's GL fence `token` as a new `sync_file` fd.
 ///
 /// A fence on the virtual GPU's shared native context is complete in
@@ -243,7 +243,7 @@ pub struct DmaBufSyncFile {
 /// its `sync_file` is signaled when it is created. A fence on a separate
 /// native context stays pending until the host observes its native status,
 /// which it polls only while a kernel waiter exists.
-pub const DRM_IOCTL_WPK_EXPORT_FENCE: u32 = 0xc010_64e4;
+pub const DRM_IOCTL_WPK_EXPORT_FENCE: u32 = 0xc010_64e6;
 
 /// `DRM_IOCTL_WPK_EXPORT_FENCE` argument (16 bytes). `flags` accepts only
 /// `O_CLOEXEC`; `fd` is the returned descriptor.
@@ -310,6 +310,6 @@ mod tests {
         assert_eq!(SYNC_IOC_SET_DEADLINE, ioc(W, b'>', 5, 16));
         assert_eq!(DMA_BUF_IOCTL_EXPORT_SYNC_FILE, ioc(RW, b'b', 2, 8));
         assert_eq!(DMA_BUF_IOCTL_IMPORT_SYNC_FILE, ioc(W, b'b', 3, 8));
-        assert_eq!(DRM_IOCTL_WPK_EXPORT_FENCE, ioc(RW, d, 0xe4, 16));
+        assert_eq!(DRM_IOCTL_WPK_EXPORT_FENCE, ioc(RW, d, 0xe6, 16));
     }
 }

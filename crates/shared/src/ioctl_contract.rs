@@ -539,6 +539,45 @@ pub fn family_request_contract(request: u32) -> Option<IoctlRequestContract> {
 mod tests {
     use super::*;
 
+    /// Linux dispatches DRM ioctls by `_IOC_NR` (`drm_ioctls[]`), and so do
+    /// the DRM permission table and handlers here: two different DRM
+    /// requests may never share a number. Only one request's own encodings
+    /// (a wasm64 layout, or the shorter struct of older headers) do.
+    #[test]
+    fn every_drm_ioctl_has_its_own_number() {
+        use crate::dri::*;
+        use crate::dri_sync::*;
+        let variants: &[(u32, u32)] = &[
+            (DRM_IOCTL_VERSION, DRM_IOCTL_VERSION_WASM64),
+            (DRM_IOCTL_GET_UNIQUE, DRM_IOCTL_GET_UNIQUE_WASM64),
+            (DRM_IOCTL_WAIT_VBLANK, DRM_IOCTL_WAIT_VBLANK_WASM64),
+            (DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD, DRM_IOCTL_SYNCOBJ_HANDLE_TO_FD_V1),
+            (DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE, DRM_IOCTL_SYNCOBJ_FD_TO_HANDLE_V1),
+            (DRM_IOCTL_SYNCOBJ_WAIT, DRM_IOCTL_SYNCOBJ_WAIT_V1),
+            (DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT_V1),
+        ];
+        let same_ioctl = |a: u32, b: u32| variants.iter()
+            .any(|&(x, y)| (a, b) == (x, y) || (a, b) == (y, x));
+        let is_drm = |r: u32| (r >> 8) & 0xff == u32::from(b'd');
+        let drm = || IOCTL_REQUEST_CONTRACTS.iter().map(|c| c.request).filter(|&r| is_drm(r));
+        for (i, a) in drm().enumerate() {
+            for b in drm().skip(i + 1) {
+                assert!(a & 0xff != b & 0xff || same_ioctl(a, b),
+                    "DRM ioctls {a:#x} and {b:#x} share nr {:#x}", a & 0xff);
+            }
+        }
+        // Kandelo's private requests, contract or not.
+        let wpk = [DRM_IOCTL_WPK_CREATE_GPU_BO, DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE,
+            DRM_IOCTL_WPK_IMPORT_IMAGE, DRM_IOCTL_WPK_EXPORT_IMAGE, DRM_IOCTL_WPK_CHECK_BO_FORMAT,
+            DRM_IOCTL_WPK_EXPORT_FENCE];
+        for (i, &a) in wpk.iter().enumerate() {
+            assert!(drm().any(|r| r == a), "{a:#x} has no marshalling contract");
+            for &b in &wpk[i + 1..] {
+                assert_ne!(a & 0xff, b & 0xff, "WPK ioctls {a:#x} and {b:#x} share a number");
+            }
+        }
+    }
+
     #[test]
     fn contracts_are_strictly_sorted_and_unique() {
         assert!(IOCTL_REQUEST_CONTRACTS
