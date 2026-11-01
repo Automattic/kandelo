@@ -767,7 +767,12 @@ front/back storage or complete GBM compatibility.
 
 The same runner then executes `gbm-mesa-semantics.c`, one process per
 case, against Mesa libgbm's public contract: user data is only stored by
-`gbm_bo_set_user_data` and destroyed once by `gbm_bo_destroy`. Its DRM
+`gbm_bo_set_user_data` and destroyed once by `gbm_bo_destroy`; FD and
+single-plane linear FD_MODIFIER imports are bounded by the real dma-buf
+size, honor the plane offset, mark GPU-tier objects and release a
+rejected GEM name only without a live peer; legacy `GBM_BO_FORMAT_*`
+values become fourccs everywhere; unsupported usages fail; and absent
+planes return Mesa's sentinels with `EINVAL`. Its DRM
 double models a PRIME descriptor as a temporary file whose size is the
 dma-buf size (what Kandelo's PRIME `lseek(SEEK_END)` reports) and a
 GPU-tier BO as a handle whose `MAP_DUMB` fails with `EINVAL`.

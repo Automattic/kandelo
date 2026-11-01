@@ -830,9 +830,11 @@ union gbm_bo_handle gbm_bo_get_handle(struct gbm_bo *bo) {
     return h;
 }
 
-/* Every BO the kernel's CREATE_DUMB path produces is a single linear
- * plane, so the per-plane accessors collapse onto the whole-BO ones.
- * SDL2's KMSDRM backend walks planes to build its drmModeAddFB2 call. */
+/* Every BO here is a single linear plane, so the per-plane accessors
+ * collapse onto the whole-BO ones. SDL2's KMSDRM backend walks planes to
+ * build its drmModeAddFB2 call. An absent plane follows Mesa: errno EINVAL
+ * with handle .s32 == -1 (handle 0 would name "no buffer"), stride 0 and
+ * offset 0, so a caller cannot mistake it for a real plane. */
 
 int gbm_bo_get_plane_count(struct gbm_bo *bo) {
     (void) bo;
@@ -841,16 +843,25 @@ int gbm_bo_get_plane_count(struct gbm_bo *bo) {
 
 union gbm_bo_handle gbm_bo_get_handle_for_plane(struct gbm_bo *bo, int plane) {
     union gbm_bo_handle h;
-    h.u32 = plane == 0 ? bo->handle : 0;
+    if (plane != 0) {
+        errno = EINVAL;
+        h.s64 = 0;
+        h.s32 = -1;
+        return h;
+    }
+    h.u64 = 0;
+    h.u32 = bo->handle;
     return h;
 }
 
 uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane) {
-    return plane == 0 ? bo->stride : 0;
+    if (plane != 0) { errno = EINVAL; return 0; }
+    return bo->stride;
 }
 
 uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
-    return plane == 0 ? bo->offset : 0;
+    if (plane != 0) { errno = EINVAL; return 0; }
+    return bo->offset;
 }
 
 /* Report what an allocation with these usages can actually scan out. Like
