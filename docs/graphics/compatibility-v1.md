@@ -71,7 +71,10 @@ controls; its separate cleanup codec passes 37, both with narrow strict types.
 The full upstream harness builds normally; actual Node EGL enumeration lists
 4,117 cases. Renderer-backed headless Chromium now enumerates all 19,825 GLES2
 cases successfully. Actual CTS execution remains pending; enumeration is not
-conformance. These are separate source cohorts, not combined acceptance.
+conformance. On that earlier ports runtime, the first 31 upstream negative-
+state cases run with 25 Pass and six Fail. Broader source already fixes hint
+and string enums; shader/program query errors remain under repair. These are
+separate source cohorts, not combined acceptance.
 
 Earlier combined Rust checkpoint `b87e6eb971` passes 3,501 native workspace cases
 without failures/ignores/filters, plus normal host bundles/declarations. The
@@ -18681,3 +18684,46 @@ Release summary SHA256:
 `9a963847047f1af83c85fa8dcbe1223d8348cae850130dcd42303bf4f11fec0d`.
 Full conformance execution, visible-window adapter support, exact directed
 reference arithmetic and the remaining three-engine/baseline gates stay open.
+
+
+### First actual full-harness GLES2 negative-state execution
+
+Job `graphics-cts-renderer-state-r1-1031-220129-0783` executes every one of
+the 31 predeclared cases in `dEQP-GLES2.functional.negative_api.state.*`:
+25 Pass, six Fail, zero NotSupported and zero InternalError. Guest and job
+both exit 1. Complete original QPA contains exactly one result per selected
+case, with no missing, extra, duplicate or incomplete records. No assertions
+are changed and no failure is waived. This is bounded actual execution,
+not full conformance.
+
+The source cut is `7b9abb8c40`, with normal R8 artifacts, dedicated workers,
+`KandeloImageFs` and the real WebGL2 KMS renderer in canonical full headless
+Chromium 153.0.8010.12. All 13 sealed inputs and selected artifact identities
+match before/after. Diagnostics, page/console/cleanup errors and memory-
+boundary violations are empty; destroy returns and both workers close.
+The owned Vite server is stopped and waited. Runtime cleanup success does
+not turn the six upstream failures into passes.
+
+Failed case suffixes are `get_program_info_log`, `get_programiv`,
+`get_shader_info_log`, `get_shaderiv`, `get_string` and `hint`. Their 14
+failed subchecks observe `GL_NO_ERROR` instead of required `GL_INVALID_VALUE`,
+`GL_INVALID_OPERATION` or `GL_INVALID_ENUM`. Source inspection traces them to
+missing/wrong-kind name handling, negative information-log buffer lengths,
+and invalid string/hint enums. Comparison against broader `b746c31c64`
+confirms the latter two enum paths are already repaired there; they must not
+be reimplemented from the older ports source. Remaining query/length repairs
+and a coherent normal broader artifact rerun are pending.
+
+Raw report SHA256:
+`950b81388ac7b8b4abfdb0e2e533190a696ed2d5418dbb3d2912db1827b46f2b`.
+Complete QPA SHA256:
+`70b5577ed7a343a3735e626e4c3c1c2f78db3a84def534926bbc16dc1aed5636`.
+The mutable worktree retains
+`.context/vk-gl-cts-browser-state-r1/results/HANDOFF.md`, the exact case list,
+raw stdout/stderr, original QPA and per-subcheck failure records. Its checkout
+subsequently advances to the broader source for repairs; this sealed evidence
+continues to describe the original `7b9abb8c40` run only.
+
+A fresh fetch still resolves `origin/main` to
+`1a3ea3b9a73f6975d31f755be37e532aec6f8ad3`, already integrated. No newer
+main behavior needs reconciliation at this checkpoint.
