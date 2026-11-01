@@ -18,6 +18,7 @@ import { nodeGlobalScopeCommand } from "./fixtures/node-global-scope";
 import { nodeModuleEntryCommand } from "./fixtures/node-module-entrypoints";
 import { nodeCallSiteCommand } from "./fixtures/node-call-sites";
 import { nodeFatalExitCommand, nodeFatalExitExpected } from "./fixtures/node-fatal-exit";
+import {nodeSocketTimeoutCommand,nodeSocketTimeoutExpected} from './fixtures/node-socket-timeouts';
 import { nodeSyncProcessCommand, nodeSyncProcessExpected } from './fixtures/node-sync-processes';
 import { nodeTimerCommand, nodeTimerExpected } from './fixtures/node-timers';
 import { nodeExitListenerCommand, nodeExitListenerExpected } from './fixtures/node-exit-listeners';
@@ -51,6 +52,7 @@ async function runShell(command: string) {
 }
 
 const cases: Array<[string, string, readonly string[]]> = [
+  ["socket inactivity, refresh, cancellation and unref",nodeSocketTimeoutCommand,nodeSocketTimeoutExpected],
   ["synchronous child processes, binary pipes and process results", nodeSyncProcessCommand, nodeSyncProcessExpected],
   ["timer references, cancellation, refresh and promises", nodeTimerCommand, nodeTimerExpected],
   ["throwing exit listeners and fatal status preservation", nodeExitListenerCommand, nodeExitListenerExpected],

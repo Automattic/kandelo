@@ -1,0 +1,34 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1411,6 +1411,23 @@
+   return true;
+ }
+ 
++// Report pending bytes from the actual write operations, including partial
++// native writes. Socket inactivity timers must distinguish progress from a
++// stalled write rather than suppressing timeouts whenever a write is pending.
++static bool KandeloNativeSocketWriteQueueSize(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  int32_t fd;
++  if (args.length() < 1 || !JS::ToInt32(cx, args[0], &fd)) return false;
++  double bytes = 0;
++  for (auto* watch = gKandeloSocketWatches; watch; watch = watch->next) {
++    if (watch->fd == fd && watch->kind == KandeloSocketWatchKind::Write) {
++      bytes += double(watch->buffer.size() - watch->offset);
++    }
++  }
++  args.rval().setDouble(bytes);
++  return true;
++}
++
+ static bool KandeloNativeSocketWrite(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+   int32_t fd;
+@@ -3125,6 +3142,7 @@
+       JS_FN("socketAddress", KandeloNativeSocketAddress, 2, 0),
+       JS_FN("socketRead", KandeloNativeSocketRead, 2, 0),
+       JS_FN("socketWrite", KandeloNativeSocketWrite, 2, 0),
++      JS_FN("socketWriteQueueSize", KandeloNativeSocketWriteQueueSize, 1, 0),
+       JS_FN("socketClose", KandeloNativeSocketClose, 1, 0),
+       JS_FN("tlsConnect", KandeloNativeTlsConnect, 3, 0),
+       JS_FN("tlsRead", KandeloNativeTlsRead, 2, 0),

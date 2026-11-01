@@ -813,6 +813,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Exit-listener status and fatal diagnostics | [#1619](https://github.com/Automattic/kandelo/pull/1619) |
 | Real TCP connection limits and drop events | [#1620](https://github.com/Automattic/kandelo/pull/1620) |
 | Timer references, cancellation, refresh and promises | [#1621](https://github.com/Automattic/kandelo/pull/1621) |
+| Real synchronous child-process execution | [#1622](https://github.com/Automattic/kandelo/pull/1622) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish
@@ -896,3 +897,58 @@ host/node_modules/.bin/tsx scripts/run-nodejs-sync-process-tests.ts HOST FRESH_O
 `HOST` is `node`, `chromium`, `firefox` or `webkit`. The runner uses the
 normal package image and SDK-built, ABI-stamped C peer. It refuses to
 overwrite a finished report.
+
+### Socket inactivity checkpoint (Node 26.13.0)
+
+The revision-43 targeted engine/Node/shell build implements real socket
+inactivity deadlines. Reads, successful lookup/connection events and writes
+refresh them;
+actual remaining native write bytes distinguish progress from a stalled
+write. A timeout notifies the application without closing the connection.
+The timers are unreferenced, can be cancelled, and are cleared on destroy.
+Connection factories honor timeout options. Socket/Server constructors
+support bare calls and modern subclasses. Socket metadata belongs to an
+actual owned descriptor and is retired when that descriptor closes.
+
+| Check | Result |
+|---|---|
+| Source and pinned-native controls | 171 passed, 0 skipped/unhandled errors |
+| Independent C write-progress control on native Node | Passed, same assertions with native executable path |
+| Socket controls on each guest host | 8 passed, no other outcomes |
+| TCP regression controls on each guest host | 8 passed, no timeouts or harness errors |
+| Prepared Node core controls | 19 passed; strengthened socket control rerun separately |
+| Browser UI controls across three engines | 3 passed, 0 skipped/retried/flaky |
+| ABI snapshot | 55, unchanged and in sync |
+| Test evidence registry | 619 files, inventory matched |
+
+The shared read-activity control keeps sending heartbeats beyond the
+original deadline, so it fails if reads do not refresh inactivity. An
+independent compiled C TCP peer verifies the complete 2 MiB transfer while
+partial writes make progress over multiple timeout intervals. A separate
+controlled-clock source test verifies that a stalled write can time out.
+
+Unchanged source selection: `selections/socket-timeouts.json`.
+
+| Runner | Pass | Fail | Skip | Unsupported | Timeout | Harness error | Pending |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Native Node 26.13.0 | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Node host | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Chromium | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Firefox | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+| WebKit | 6 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+The audit verifies matching guest inputs, per-case statuses and exit
+codes. These six selected files include the previously persistent timer
+mutation timeout. This does not refresh the full timer, networking or
+5,147-file baseline. The initial revision-42 handle-metadata assertion
+failure remains retained separately from the corrected revision-43 run.
+
+`coverage/net.json` reviews seven selected API headings, all partial.
+Duplicate-listener removal, legacy constructor.call inheritance,
+reconnect state, full fd/options/signal/error matrices, TLS integration,
+DNS/Resolver, accurate IPv6/interface metadata, socket controls,
+backpressure, paused reads and broader stream behavior remain incomplete.
+Descriptor metadata does not promise the private V8/libuv handle API.
+The broader WebKit core/PATH spawn ENOMEM observation is still unresolved.
+Full product, broad POSIX, application-switching memory and performance
+validation remain deferred. The full core compatibility goal stays open.

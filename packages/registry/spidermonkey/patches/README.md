@@ -88,3 +88,8 @@ fixes should be considered for upstreaming.
   mistaken for an entry file or used to suppress eval execution. Credential
   getters read real libc identities; detached children use the existing
   POSIX spawn setsid attribute.
+
+- `0037-kandelo-socket-write-progress.patch`: exposes remaining bytes from
+  actual native write operations. Socket inactivity deadlines distinguish
+  write progress from a stalled write without inventing activity or
+  suppressing timeouts merely because a write remains pending.

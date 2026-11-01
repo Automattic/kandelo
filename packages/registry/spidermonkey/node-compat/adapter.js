@@ -556,6 +556,7 @@
         socketRead(fd, length) { return native.socketRead(fd, length); },
         socketWrite(fd, bytes) { return native.socketWrite(fd, bytes); },
         socketClose(fd) { return native.socketClose(fd); },
+        socketWriteQueueSize(fd) { return native.socketWriteQueueSize(fd); },
         __kandeloPipe(parentReads, minimumFd) { return native.__kandeloPipe(parentReads, minimumFd); },
         __kandeloRunChildSync: typeof native.__kandeloRunChildSync === 'function'
             ? function (pid, fds, input, deadline, maxBuffer, signal) { return native.__kandeloRunChildSync(pid, fds, input, deadline, maxBuffer, signal); }
