@@ -548,8 +548,11 @@ session down, which hands the canvas back to the pump presenter
 (`markKmsCanvasGlReleased`) so the desktop keeps painting. A browser
 GPU-process crash is detected on the same chain: when the canvas
 context is lost, `host_gl_present` fails the guest's `eglSwapBuffers`
-with `EIO`, the compositor degrades to CPU compositing, and EGL
-teardown returns the canvas to the pump. The kernel worker installs
+with `ENODEV` (`EGL_CONTEXT_LOST`), the compositor degrades to CPU
+compositing, and EGL teardown returns the canvas to the pump. The same
+loss is a GLES graphics reset: contexts created with
+`EGL_LOSE_CONTEXT_ON_RESET` see it through `glGetGraphicsResetStatus`
+(`GL_EXT_robustness`/`GL_KHR_robustness`), as wlroots polls it. The kernel worker installs
 `webglcontextlost`/`webglcontextrestored` listeners when the canvas is
 attached (`hookKmsContextLoss`) — not lazily at presenter build — so
 the loss event is cancelled and the browser restores the context even

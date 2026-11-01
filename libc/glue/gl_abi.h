@@ -301,6 +301,15 @@ _Static_assert(__builtin_offsetof(struct gl_submit_query_info, result) == (sizeo
 int      _wpk_gl_fd(void);
 uint8_t *_wpk_gl_cmdbuf_base(void);
 void     _wpk_gl_flush(void);
+/* Graphics reset state, owned by libEGL (EXT/KHR_robustness section 2.6).
+ * The host replies ENODEV once the current context's renderer was lost. */
+struct wpk_gles_context;
+struct wpk_gles_context *_wpk_gl_command_encoder(void);
+void     _wpk_gl_note_reset(void);
+int      _wpk_gl_context_reset(void);
+int      _wpk_gl_reset_error(unsigned int *error);
+unsigned int _wpk_gl_graphics_reset_status(void);
+int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);
 
 /* Opaque client encoder state belongs to an EGL context, not its current
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */

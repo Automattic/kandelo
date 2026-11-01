@@ -75,8 +75,6 @@ previous code):
 **Proposed hard boundaries** (WebGL 2 or host capability limits; each keeps a
 truthful error):
 
-- Robust-access and lose-context-on-reset contexts (no WebGL robustness API):
-  `EGL_BAD_MATCH`.
 - `EGL_SYNC_CL_EVENT` (no OpenCL runtime): `EGL_BAD_ATTRIBUTE`.
 - No format modifiers; no async or target page flips.
 - `GL_EXT_color_buffer_half_float` is advertised only when WebGL 2's
@@ -122,6 +120,22 @@ factor (clamped for fixed-point color buffers, unclamped for floating-point
 ones). Destination factors, alpha factors and the blend color stay native
 (`host/src/webgl/blend-constant.ts`).
 
+Graphics reset notification: `EGL_EXT_create_context_robustness` and the
+EGL 1.5 reset-strategy attribute create `EGL_NO_RESET_NOTIFICATION` and
+`EGL_LOSE_CONTEXT_ON_RESET` ES contexts (a share group needs one strategy:
+`EGL_BAD_MATCH`), and `GL_EXT_robustness`/`GL_KHR_robustness` are advertised.
+A lost WebGL renderer is the reset. The host records it per binding, sticky
+across a restoration of the same context object, and answers submit, query,
+present and make-current with `ENODEV` without executing anything. libEGL
+marks the share group lost from those replies, so
+`glGetGraphicsResetStatus` returns `UNKNOWN_CONTEXT_RESET` once (then
+`NO_ERROR`) with no host request; later GL commands have no effect and, in
+lose-on-reset contexts, raise `GL_CONTEXT_LOST`; `eglMakeCurrent` and
+`eglSwapBuffers` fail with `EGL_CONTEXT_LOST`; sharing with a reset context
+fails. `glReadnPixels` and `glGetnUniform{f,i}v` refuse short buffers with
+`INVALID_OPERATION`. Contexts learn the reset at their next host reply;
+contexts sharing objects learn it together.
+
 **Real-compiler evidence for the GLSL rewrites.** A headless harness
 (`tests/graphics/shader-rewrite-check/`) compiles, links, draws and reads back
 the reversed-depth, attribute-alias and depth-sampling rewrites, alone and
@@ -140,7 +154,12 @@ tagged substitution of a private uniform.
 node as Kandelo's CPU allocator; primary-plane scaling and positioning are
 refused like Linux's legacy primary helper.
 
-**Still open:** every validation phase item. The maintainer removed the
+**Still open:** robust buffer access contexts (`EGL_CONTEXT_OPENGL_ROBUST_ACCESS`
+`EGL_TRUE` is still refused: `EGL_BAD_MATCH`, or `EGL_BAD_CONFIG` for the EXT
+attribute; `CONTEXT_ROBUST_ACCESS` reads `GL_FALSE`). WebGL 1.0 §6.6, kept by
+WebGL 2.0, lets an out-of-range vertex fetch raise `INVALID_OPERATION` and draw
+nothing, where `EXT_robustness` §2.8 requires undefined attribute values and
+no error; this awaits a maintainer decision. Every validation phase item. The maintainer removed the
 test-only main-thread GL forwarding path; GL always executes in the kernel
 worker on both hosts (row H02).
 

@@ -750,6 +750,10 @@ static unsigned log_queries;
 static int log_query_failure;
 static unsigned read_capture_token, read_capture_total, read_capture_chunks, read_capture_fail_chunk, read_capture_lost_release, read_capture_lost_begin, read_capture_bad_magic, read_capture_bad_count;
 static unsigned read_pixels_queries;
+/* A lost host renderer: the host answers ENODEV on submit, query, present,
+ * binding and sharing (host/src/webgl/renderer-loss.ts). */
+static int renderer_lost;
+static unsigned device_calls, renderer_lost_replies;
 static uint32_t read_pixels_capacity;
 static int read_pixels_failure;
 /* The format/type pair the host was asked to read, and an optional
@@ -819,6 +823,14 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     assert(fd >= 10 && fd < 18);
     struct device_slot *slot = &device_slots[fd-10];
     commands = slot->commands;
+    device_calls++;
+    if (renderer_lost && (request == GLIO_SUBMIT || request == GLIO_QUERY || request == GLIO_PRESENT ||
+        (request == GLIO_MAKE_CURRENT && ((const struct gl_make_current *)arg)->context_id) ||
+        (request == GLIO_CREATE_CONTEXT && ((const struct gl_context_attrs *)arg)->share_context_id))) {
+        renderer_lost_replies++;
+        errno = ENODEV;
+        return -1;
+    }
     if (request == 0xc00c642du) {
         if (fail_prime_export) {
             errno = ENOMEM;
@@ -2438,8 +2450,12 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
                  EGL_CONTEXT_OPENGL_DEBUG, EGL_FALSE, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_FALSE,
                  EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY, EGL_NO_RESET_NOTIFICATION, EGL_NONE},
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_DEBUG, EGL_TRUE, EGL_NONE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY,
+                 EGL_LOSE_CONTEXT_ON_RESET, EGL_NONE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_FALSE,
+                 EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_LOSE_CONTEXT_ON_RESET_EXT, EGL_NONE},
             };
-            for (unsigned i = 0; i < 2; i++) {
+            for (unsigned i = 0; i < 4; i++) {
                 EGLContext context = eglCreateContext(dpy, configs[c], EGL_NO_CONTEXT, accepted[i]);
                 assert(context != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
                 EGLint version = 0;
@@ -2454,14 +2470,14 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
                 /* OpenGL-only attributes and unadvertised extension tokens. */
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_PROFILE_MASK, 1, EGL_BAD_ATTRIBUTE},
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE, EGL_FALSE, EGL_BAD_ATTRIBUTE},
-                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_FALSE, EGL_BAD_ATTRIBUTE},
-                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT,
-                 EGL_NO_RESET_NOTIFICATION, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, 5, EGL_BAD_ATTRIBUTE},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, 0,
+                 EGL_BAD_ATTRIBUTE},
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_FLAGS_KHR, 0, EGL_BAD_ATTRIBUTE},
-                /* Valid requests this implementation cannot provide. */
+                /* Robust buffer access is not provided (EGL 1.5 section
+                 * 3.7.1.5; EGL_EXT_create_context_robustness errors). */
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS, EGL_TRUE, EGL_BAD_MATCH},
-                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY,
-                 EGL_LOSE_CONTEXT_ON_RESET, EGL_BAD_MATCH},
+                {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_TRUE, EGL_BAD_CONFIG},
                 /* ES versions that do not exist. */
                 {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_MINOR_VERSION, 1, EGL_BAD_MATCH},
                 {EGL_CONTEXT_CLIENT_VERSION, 0, EGL_NONE, 0, EGL_BAD_MATCH},
@@ -2723,6 +2739,182 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         /* Release on a valid display needs no initialization. */
         assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
         assert(eglReleaseThread());
+    } else if (!strcmp(name, "egl-spec-robustness-context")) {
+        /* EGL_EXT_create_context_robustness, EGL 1.5 sections 3.7.1.5-6,
+         * EXT_robustness/KHR_robustness state queries. Loaded as wlroots
+         * loads them: through eglGetProcAddress. */
+        PFNGLGETGRAPHICSRESETSTATUSKHRPROC status_khr =
+            (PFNGLGETGRAPHICSRESETSTATUSKHRPROC)eglGetProcAddress("glGetGraphicsResetStatusKHR");
+        PFNGLGETGRAPHICSRESETSTATUSEXTPROC status_ext =
+            (PFNGLGETGRAPHICSRESETSTATUSEXTPROC)eglGetProcAddress("glGetGraphicsResetStatusEXT");
+        assert(status_khr && status_ext);
+        const char *const procs[] = {"glReadnPixelsEXT", "glReadnPixelsKHR", "glGetnUniformfvEXT",
+            "glGetnUniformfvKHR", "glGetnUniformivEXT", "glGetnUniformivKHR"};
+        for (unsigned i = 0; i < 6; i++) assert(eglGetProcAddress(procs[i]));
+        assert(eglInitialize(dpy, NULL, NULL));
+        assert(strstr(eglQueryString(dpy, EGL_EXTENSIONS), "EGL_EXT_create_context_robustness"));
+        const EGLint lose_ext[] = {EGL_CONTEXT_CLIENT_VERSION, 2, EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT, EGL_FALSE,
+            EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_LOSE_CONTEXT_ON_RESET_EXT, EGL_NONE};
+        const EGLint lose_core[] = {EGL_CONTEXT_MAJOR_VERSION, 2,
+            EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY, EGL_LOSE_CONTEXT_ON_RESET, EGL_NONE};
+        const EGLint none_ext[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
+            EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_NO_RESET_NOTIFICATION_EXT, EGL_NONE};
+        EGLContext lose = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, lose_ext);
+        assert(lose != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
+        EGLContext none = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, none_ext);
+        assert(none != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
+        /* A share group has one reset notification behavior. */
+        assert(eglCreateContext(dpy, (EGLConfig)1, lose, es2) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_BAD_MATCH);
+        assert(eglCreateContext(dpy, (EGLConfig)1, none, lose_core) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_BAD_MATCH);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, lose, lose_core);
+        assert(peer != EGL_NO_CONTEXT && eglGetError() == EGL_SUCCESS);
+        const EGLContext contexts[] = {lose, peer, none};
+        for (unsigned i = 0; i < 3; i++) {
+            assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, contexts[i]));
+            const GLint strategy = i < 2 ? GL_LOSE_CONTEXT_ON_RESET_KHR : GL_NO_RESET_NOTIFICATION_KHR;
+            const unsigned calls = device_calls;
+            GLint value = -1; GLboolean flag = 7; GLfloat number = -1;
+            glGetIntegerv(GL_RESET_NOTIFICATION_STRATEGY_EXT, &value);
+            assert(value == strategy);
+            glGetFloatv(GL_RESET_NOTIFICATION_STRATEGY_KHR, &number);
+            assert(number == (GLfloat)strategy);
+            glGetBooleanv(GL_CONTEXT_ROBUST_ACCESS_EXT, &flag);
+            assert(flag == GL_FALSE);
+            glGetIntegerv(GL_CONTEXT_ROBUST_ACCESS_KHR, &value);
+            assert(value == GL_FALSE);
+            assert(status_khr() == GL_NO_ERROR && status_ext() == GL_NO_ERROR);
+            /* Context state, answered without the host. */
+            assert(device_calls == calls);
+            assert(glGetError() == GL_NO_ERROR);
+        }
+        const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
+        assert(extensions && strstr(extensions, "GL_EXT_robustness") && strstr(extensions, "GL_KHR_robustness"));
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglDestroyContext(dpy, peer) && eglDestroyContext(dpy, lose) && eglDestroyContext(dpy, none));
+        assert(eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-robustness-reset")) {
+        /* EXT/KHR_robustness section 2.6 and 2.3.1rob, EGL 1.5 section 2.7,
+         * after the host reports the renderer lost. */
+        PFNGLGETGRAPHICSRESETSTATUSKHRPROC status =
+            (PFNGLGETGRAPHICSRESETSTATUSKHRPROC)eglGetProcAddress("glGetGraphicsResetStatusKHR");
+        PFNGLGETGRAPHICSRESETSTATUSEXTPROC status_ext =
+            (PFNGLGETGRAPHICSRESETSTATUSEXTPROC)eglGetProcAddress("glGetGraphicsResetStatusEXT");
+        assert(status && status_ext);
+        assert(eglInitialize(dpy, NULL, NULL));
+        const EGLint lose_ext[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
+            EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT, EGL_LOSE_CONTEXT_ON_RESET_EXT, EGL_NONE};
+        EGLContext lose = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, lose_ext);
+        EGLContext peer = eglCreateContext(dpy, (EGLConfig)1, lose, lose_ext);
+        EGLContext other = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, lose_ext);
+        assert(lose && peer && other);
+        const EGLint size[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+        EGLSurface surface = eglCreatePbufferSurface(dpy, (EGLConfig)1, size);
+        assert(surface != EGL_NO_SURFACE && eglMakeCurrent(dpy, surface, surface, lose));
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(glGetError() == GL_NO_ERROR && status() == GL_NO_ERROR);
+        renderer_lost = 1;
+        glClear(GL_COLOR_BUFFER_BIT);
+        glFlush();
+        assert(renderer_lost_replies == 1);
+        unsigned calls = device_calls;
+        /* Reported once, then the reset is complete; no host request. */
+        assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR);
+        assert(status() == GL_NO_ERROR && status_ext() == GL_NO_ERROR);
+        /* The command that observed the reset, then each later command. */
+        assert(glGetError() == GL_CONTEXT_LOST_KHR && glGetError() == GL_NO_ERROR);
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(glGetError() == GL_CONTEXT_LOST_KHR && glGetError() == GL_NO_ERROR);
+        /* No side effects: outputs are not written. */
+        GLint viewport[4] = {7, 7, 7, 7}, strategy = 0;
+        glGetIntegerv(GL_VIEWPORT, viewport);
+        glGetIntegerv(GL_RESET_NOTIFICATION_STRATEGY_KHR, &strategy);
+        GLuint texture = 9;
+        glGenTextures(1, &texture);
+        assert(viewport[0] == 7 && viewport[3] == 7 && strategy == 0 && texture == 9);
+        assert(glIsTexture(1) == GL_FALSE && glCheckFramebufferStatus(GL_FRAMEBUFFER) == 0);
+        assert(glGetError() == GL_CONTEXT_LOST_KHR);
+        assert(device_calls == calls);
+        /* EGL 1.5 sections 3.7.3 and 3.10.1: EGL_CONTEXT_LOST. */
+        assert(!eglSwapBuffers(dpy, surface) && eglGetError() == EGL_CONTEXT_LOST);
+        assert(!eglMakeCurrent(dpy, surface, surface, peer) && eglGetError() == EGL_CONTEXT_LOST);
+        assert(eglCreateContext(dpy, (EGLConfig)1, lose, lose_ext) == EGL_NO_CONTEXT);
+        assert(eglGetError() == EGL_CONTEXT_LOST);
+        /* The share group learned of the reset with its member: bind the
+         * peer through a device that still accepts it and ask, offline. */
+        renderer_lost = 0;
+        assert(eglMakeCurrent(dpy, surface, surface, peer));
+        calls = device_calls;
+        assert(status() == GL_UNKNOWN_CONTEXT_RESET_KHR && device_calls == calls);
+        /* An unrelated share group learns only from its own replies. */
+        assert(eglMakeCurrent(dpy, surface, surface, other));
+        assert(status() == GL_NO_ERROR);
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(glGetError() == GL_NO_ERROR && status() == GL_NO_ERROR);
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglDestroyContext(dpy, peer) && eglDestroyContext(dpy, lose) && eglDestroyContext(dpy, other));
+        assert(eglDestroySurface(dpy, surface) && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-robustness-no-notification")) {
+        /* NO_RESET_NOTIFICATION never reports the reset to GL (section
+         * 2.6); EGL still reports EGL_CONTEXT_LOST and GL calls have no
+         * effect (EGL 1.5 section 2.7). */
+        PFNGLGETGRAPHICSRESETSTATUSKHRPROC status =
+            (PFNGLGETGRAPHICSRESETSTATUSKHRPROC)eglGetProcAddress("glGetGraphicsResetStatusKHR");
+        assert(status && eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        const EGLint size[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+        EGLSurface surface = eglCreatePbufferSurface(dpy, (EGLConfig)1, size);
+        assert(context && surface && eglMakeCurrent(dpy, surface, surface, context));
+        renderer_lost = 1;
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(renderer_lost_replies == 1);
+        assert(status() == GL_NO_ERROR && glGetError() == GL_NO_ERROR);
+        glClear(GL_COLOR_BUFFER_BIT); glFlush();
+        assert(renderer_lost_replies == 1 && glGetError() == GL_NO_ERROR);
+        assert(!eglSwapBuffers(dpy, surface) && eglGetError() == EGL_CONTEXT_LOST);
+        renderer_lost = 0;
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglDestroyContext(dpy, context) && eglDestroySurface(dpy, surface) && eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-robustness-bounded")) {
+        /* EXT/KHR_robustness: a destination smaller than the data is
+         * INVALID_OPERATION and is not written. */
+        PFNGLREADNPIXELSKHRPROC read = (PFNGLREADNPIXELSKHRPROC)eglGetProcAddress("glReadnPixelsKHR");
+        PFNGLREADNPIXELSEXTPROC read_ext = (PFNGLREADNPIXELSEXTPROC)eglGetProcAddress("glReadnPixelsEXT");
+        PFNGLGETNUNIFORMFVKHRPROC floats = (PFNGLGETNUNIFORMFVKHRPROC)eglGetProcAddress("glGetnUniformfvKHR");
+        PFNGLGETNUNIFORMIVEXTPROC ints = (PFNGLGETNUNIFORMIVEXTPROC)eglGetProcAddress("glGetnUniformivEXT");
+        assert(read && read_ext && floats && ints && eglInitialize(dpy, NULL, NULL));
+        EGLContext context = eglCreateContext(dpy, (EGLConfig)1, EGL_NO_CONTEXT, es2);
+        assert(context && eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+        uint8_t pixels[32];
+        memset(pixels, 0x11, sizeof pixels);
+        unsigned queries = read_pixels_queries;
+        read(0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, 15, pixels);
+        assert(glGetError() == GL_INVALID_OPERATION && read_pixels_queries == queries && pixels[0] == 0x11);
+        read(0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE, 16, pixels);
+        assert(glGetError() == GL_NO_ERROR && read_pixels_queries == queries + 1);
+        assert(pixels[0] == 0x3c && pixels[15] == 0x3c && pixels[16] == 0x11);
+        /* Pack rows are aligned; the last row is not padded. */
+        glPixelStorei(GL_PACK_ALIGNMENT, 8);
+        memset(pixels, 0x11, sizeof pixels);
+        read_ext(0, 0, 3, 2, GL_RGBA, GL_UNSIGNED_BYTE, 27, pixels);
+        assert(glGetError() == GL_INVALID_OPERATION && pixels[0] == 0x11);
+        read_ext(0, 0, 3, 2, GL_RGBA, GL_UNSIGNED_BYTE, 28, pixels);
+        assert(glGetError() == GL_NO_ERROR && pixels[27] == 0x3c && pixels[28] == 0x11);
+        GLfloat values[5] = {99, 99, 99, 99, 99};
+        floats(9, 7, 15, values);
+        assert(glGetError() == GL_INVALID_OPERATION && values[0] == 99);
+        floats(9, 7, 16, values);
+        assert(glGetError() == GL_NO_ERROR && values[0] == 0.25f && values[3] == 1.0f && values[4] == 99);
+        uniform_integer = 1;
+        GLint integers[5] = {99, 99, 99, 99, 99};
+        ints(9, 7, 12, integers);
+        assert(glGetError() == GL_INVALID_OPERATION && integers[0] == 99);
+        ints(9, 7, 16, integers);
+        assert(glGetError() == GL_NO_ERROR && integers[0] == -2 && integers[3] == 1 && integers[4] == 99);
+        uniform_integer = 0;
+        assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
+        assert(eglDestroyContext(dpy, context) && eglTerminate(dpy));
     } else if (!strcmp(name, "egl-spec-config-bounds")) {
         /* dEQP query_config.get_configs.get_configs_bounds: a negative size
          * with a buffer returns no configs and raises no error. */

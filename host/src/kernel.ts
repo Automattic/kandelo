@@ -5,6 +5,7 @@ import { cpuImageKey } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, drawKmsOutput, readDefaultFramebuffer, readGpuScanout, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { kmsCrtcOutput } from "./dri/kms-gamma.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
+import { observeRendererLoss, rendererLost, RENDERER_LOST } from "./webgl/renderer-loss.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
@@ -3005,6 +3006,8 @@ export class WasmPosixKernel {
           } catch { return -22; }
           const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
           if (shareContextId && (!source || source === b)) return -22;
+          // A reset share group's objects are gone (EXT_robustness issue 6).
+          if (source && rendererLost(source)) return RENDERER_LOST;
           const previousCanvas = b.canvas;
           let failure = -19;
           try {
@@ -3018,6 +3021,8 @@ export class WasmPosixKernel {
             b.contextId = ctxId;
             this.tryAttachKmsGlCanvas(b);
             if (b.gl && !b.gl.isContextLost() && (!b.surface.gl || b.surface.gl === b.gl)) {
+              // Losses of this renderer before now belong to earlier owners.
+              observeRendererLoss(b);
               if (!this.gl.retryExecutionRetirements(b.gl)) failure = -5;
               else if (!source) return 0;
               else if (b.gl === source.gl) {
@@ -3207,7 +3212,8 @@ export class WasmPosixKernel {
           if ((drawId === 0) !== (readId === 0)) return -22;
           const surfaces = drawId === 0 ? null : resolveDrawableSurfaces(this.gl,b,drawId,readId);
           if (drawId !== 0 && !surfaces) return -22;
-          if (b.gl?.isContextLost()) return -5;
+          // EGL 1.5 section 3.7.3: EGL_CONTEXT_LOST after a renderer loss.
+          if (rendererLost(b)) return RENDERER_LOST;
           const size = surfaces?.draw.surfaceSize;
           const target = this.gl.gpuBo(surfaces?.draw.pendingRenderTargetBoId ?? 0);
           const drawable = {
@@ -3235,6 +3241,9 @@ export class WasmPosixKernel {
           const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
           if (!b.gl) return 0;
+          // A reset context executes nothing; ENODEV lets the guest report
+          // the reset (KHR_robustness 2.3.1rob) without a query of its own.
+          if (rendererLost(b)) return RENDERER_LOST;
           let submission: { offset: number; length: number; end: number };
           try {
             submission = this.#checkedKernelSpan(
@@ -3281,8 +3290,9 @@ export class WasmPosixKernel {
         host_gl_present: (pid: number, sessionId?: number): number => {
           // A lost WebGL context silently no-ops every GL call, so a
           // present into it would report success while the canvas stays
-          // frozen. EIO here fails the guest's `eglSwapBuffers`, which is
-          // its cue to degrade to CPU compositing and hand the canvas
+          // frozen. ENODEV here fails the guest's `eglSwapBuffers` with
+          // EGL_CONTEXT_LOST (EGL 1.5 section 3.10.1), its cue to recreate
+          // its contexts or degrade to CPU compositing and hand the canvas
           // back to the vblank pump (`eglTerminate` →
           // `markKmsCanvasGlReleased`).
           const b = this.gl.get(pid, sessionId);
@@ -3293,8 +3303,8 @@ export class WasmPosixKernel {
           try {
           if (interruptUniformUpload(b)) return -5;
           if (!b.gl) return -5;
+          if (rendererLost(b)) return RENDERER_LOST;
           if (!this.prepareForeignRetirements(b)) return -5;
-          if (b.gl.isContextLost()) return -5; // EIO
           try {
             this.glMuxerFor(b.gl!).switchTo(b);
             const selected = b.drawSurface ?? b.surface;
@@ -3427,6 +3437,8 @@ export class WasmPosixKernel {
               if (gl) this.gl_muxers.get(gl)?.captureCurrentErrors();
               written = querySurfaceCapabilities(gl,inBuf,outBuf);
             } else {
+              // A reset context answers nothing; see host_gl_submit.
+              if (rendererLost(b)) return RENDERER_LOST;
               // Empty command buffers still need to select their owner.
               this.glMuxerFor(b.gl!).switchTo(b);
               const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();

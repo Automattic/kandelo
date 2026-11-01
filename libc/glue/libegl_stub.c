@@ -18,6 +18,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 #include <gbm.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -50,6 +51,29 @@ void glDrawBuffers(GLsizei n, const GLenum *bufs);
 void glReadBuffer(GLenum src);
 void glEGLImageTargetTexture2DOES(GLenum target, void *image);
 void glEGLImageTargetRenderbufferStorageOES(GLenum target, void *image);
+GLenum glGetGraphicsResetStatusEXT(void);
+GLenum glGetGraphicsResetStatusKHR(void);
+void glReadnPixelsEXT(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
+                      GLsizei bufSize, void *data);
+void glReadnPixelsKHR(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type,
+                      GLsizei bufSize, void *data);
+void glGetnUniformfvEXT(GLuint program, GLint location, GLsizei bufSize, GLfloat *params);
+void glGetnUniformfvKHR(GLuint program, GLint location, GLsizei bufSize, GLfloat *params);
+void glGetnUniformivEXT(GLuint program, GLint location, GLsizei bufSize, GLint *params);
+void glGetnUniformivKHR(GLuint program, GLint location, GLsizei bufSize, GLint *params);
+
+/* Graphics reset state (EXT_robustness/KHR_robustness section 2.6, EGL 1.5
+ * section 2.7). The host reports a lost WebGL renderer as ENODEV on the
+ * submit, query, present and make-current replies the library already
+ * waits for; the first such reply marks the context's share group lost.
+ * Every later GL call then has no effect, as if no context were bound (EGL
+ * 1.5 section 2.7), and glGetGraphicsResetStatus/glGetError answer from
+ * this state with no host round trip. A reset in one context is a reset in
+ * every context that shares objects with it (EXT_robustness issue 6). */
+struct egl_reset_group {
+    atomic_int lost;
+    unsigned references;
+};
 
 struct egl_generation;
 enum egl_native_kind {NATIVE_DEFAULT,NATIVE_GBM,NATIVE_WAYLAND};
@@ -112,6 +136,14 @@ struct egl_context_record {
     int delete_pending;
     struct egl_thread_binding *owner;
     struct egl_context_record *next;
+    /* Reset notification strategy (EGL_NO_RESET_NOTIFICATION or
+     * EGL_LOSE_CONTEXT_ON_RESET), fixed at creation. */
+    EGLint reset_strategy;
+    struct egl_reset_group *reset_group;
+    /* Owned by the thread the context is current on: the reset was already
+     * returned by glGetGraphicsResetStatus; a command ran after the reset
+     * and GL_CONTEXT_LOST awaits glGetError. */
+    int reset_reported, reset_error;
 };
 struct egl_surface_record {
     EGLSurface handle;
@@ -264,6 +296,88 @@ uint8_t *_wpk_gl_cmdbuf_base(void) {
 }
 struct wpk_gles_context *_wpk_gl_current_encoder(void) {
     return g_thread_binding.encoder;
+}
+/* The entry gate of a GL command: the current encoder, or NULL when no
+ * context is current or the current one was reset. One flag test on the
+ * ordinary path. After a reset every command has no effect, as if no context
+ * were bound (EGL 1.5 section 2.7), and KHR_robustness section 2.3.1rob
+ * gives each one in a LOSE_CONTEXT_ON_RESET context a CONTEXT_LOST error.
+ * Code inside a command keeps using _wpk_gl_current_encoder, which stays
+ * valid while a reset is observed part-way through the command. */
+struct wpk_gles_context *_wpk_gl_command_encoder(void) {
+    struct egl_thread_binding *binding = &g_thread_binding;
+    struct egl_context_record *context = binding->object;
+    if (context && atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed)) {
+        if (context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET)
+            context->reset_error = 1;
+        return NULL;
+    }
+    return binding->encoder;
+}
+static void mark_context_reset(struct egl_context_record *context) {
+    if (context)
+        atomic_store_explicit(&context->reset_group->lost, 1, memory_order_relaxed);
+}
+/* A GL transport reply reported the renderer lost while this context was
+ * current. The command that observed it generates CONTEXT_LOST too. */
+void _wpk_gl_note_reset(void) {
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context)
+        return;
+    mark_context_reset(context);
+    if (context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET)
+        context->reset_error = 1;
+}
+int _wpk_gl_context_reset(void) {
+    struct egl_context_record *context = g_thread_binding.object;
+    return context && atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed);
+}
+/* glGetError for a reset context: GL_CONTEXT_LOST once per command batch
+ * since the last call (LOSE_CONTEXT_ON_RESET only), otherwise GL_NO_ERROR.
+ * Errors recorded before the reset belonged to the lost context state.
+ * Returns 0 when the current context has not been reset. */
+int _wpk_gl_reset_error(GLenum *error) {
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context || !atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed))
+        return 0;
+    *error = context->reset_error ? GL_CONTEXT_LOST_KHR : GL_NO_ERROR;
+    context->reset_error = 0;
+    return 1;
+}
+/* EXT_robustness/KHR_robustness section 2.6: the reset is reported once,
+ * then NO_ERROR (the reset completed; the context stays lost). WebGL names
+ * no culprit, so the status is UNKNOWN_CONTEXT_RESET. A context created with
+ * NO_RESET_NOTIFICATION never reports a reset. */
+GLenum _wpk_gl_graphics_reset_status(void) {
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context || context->reset_strategy != EGL_LOSE_CONTEXT_ON_RESET ||
+        context->reset_reported ||
+        !atomic_load_explicit(&context->reset_group->lost, memory_order_relaxed))
+        return GL_NO_ERROR;
+    context->reset_reported = 1;
+    return GL_UNKNOWN_CONTEXT_RESET_KHR;
+}
+/* CONTEXT_ROBUST_ACCESS and RESET_NOTIFICATION_STRATEGY (the EXT and KHR
+ * tokens share values). Robust buffer access contexts are not created. */
+int _wpk_gl_robustness_state(GLenum pname, GLint *value) {
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context)
+        return 0;
+    if (pname == GL_CONTEXT_ROBUST_ACCESS_KHR) {
+        *value = GL_FALSE;
+        return 1;
+    }
+    if (pname == GL_RESET_NOTIFICATION_STRATEGY_KHR) {
+        *value = context->reset_strategy == EGL_LOSE_CONTEXT_ON_RESET ? GL_LOSE_CONTEXT_ON_RESET_KHR
+                                                                     : GL_NO_RESET_NOTIFICATION_KHR;
+        return 1;
+    }
+    return 0;
+}
+static void release_reset_group(struct egl_context_record *context) {
+    if (context->reset_group && --context->reset_group->references == 0)
+        free(context->reset_group);
+    context->reset_group = NULL;
 }
 
 static struct egl_display_record *display_record(EGLDisplay handle) {
@@ -756,6 +870,7 @@ static EGLint current_binding_error(void) {
     switch (errno) {
     case ENOMEM:
         return EGL_BAD_ALLOC;
+    /* ENODEV is the host's renderer-lost (reset) reply. */
     case EIO:
     case ENODEV:
     case EBADF:
@@ -821,12 +936,14 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_CONTEXT;
         return EGL_NO_CONTEXT;
     }
-    /* EGL 1.5 section 3.7.1 attributes for an OpenGL ES context. The
-     * profile mask and forward-compatible flag are OpenGL-only, and the
-     * KHR_create_context / EXT_create_context_robustness spellings belong
-     * to extensions this library does not advertise: all are
-     * EGL_BAD_ATTRIBUTE, as is any value outside an attribute's enum. */
-    EGLint version = 1, minor = 0, robust = EGL_FALSE, reset = EGL_NO_RESET_NOTIFICATION;
+    /* EGL 1.5 section 3.7.1 attributes for an OpenGL ES context, plus the
+     * EGL_EXT_create_context_robustness ones. The profile mask and
+     * forward-compatible flag are OpenGL-only, and the KHR_create_context
+     * spellings belong to an extension this library does not advertise:
+     * all are EGL_BAD_ATTRIBUTE, as is any value outside an attribute's
+     * enum. */
+    EGLint version = 1, minor = 0, robust = EGL_FALSE, robust_ext = EGL_FALSE;
+    EGLint reset = EGL_NO_RESET_NOTIFICATION;
     for (const EGLint *a = list; a && a[0] != EGL_NONE; a += 2) {
         switch (a[0]) {
         case EGL_CONTEXT_MAJOR_VERSION: version = a[1]; break;
@@ -842,7 +959,14 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
             if (a[1] != EGL_TRUE && a[1] != EGL_FALSE) goto bad_attribute;
             robust = a[1];
             break;
+        /* EGL_EXT_create_context_robustness spells both attributes for ES
+         * contexts; its strategy values equal the EGL 1.5 ones. */
+        case EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT:
+            if (a[1] != EGL_TRUE && a[1] != EGL_FALSE) goto bad_attribute;
+            robust_ext = a[1];
+            break;
         case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY:
+        case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT:
             if (a[1] != EGL_NO_RESET_NOTIFICATION && a[1] != EGL_LOSE_CONTEXT_ON_RESET)
                 goto bad_attribute;
             reset = a[1];
@@ -868,12 +992,29 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_MATCH;
         return EGL_NO_CONTEXT;
     }
-    /* WebGL 2 exposes no robust buffer access guarantee or reset
-     * notification API (no GL_EXT_robustness), so neither can be
-     * provided; EGL reports an unsupported context flag or reset
-     * strategy as EGL_BAD_MATCH. */
-    if (robust == EGL_TRUE || reset == EGL_LOSE_CONTEXT_ON_RESET) {
+    /* Robust buffer access is not provided: WebGL 1.0 section 6.6 (kept by
+     * WebGL 2.0) lets an out-of-range vertex fetch generate
+     * INVALID_OPERATION and draw nothing, where EXT_robustness section 2.8
+     * requires undefined attribute values and no error. EGL 1.5 section
+     * 3.7.1.5 fails the creation; EGL_EXT_create_context_robustness names
+     * EGL_BAD_CONFIG for its own attribute. */
+    if (robust == EGL_TRUE) {
         g_last_error = EGL_BAD_MATCH;
+        return EGL_NO_CONTEXT;
+    }
+    if (robust_ext == EGL_TRUE) {
+        g_last_error = EGL_BAD_CONFIG;
+        return EGL_NO_CONTEXT;
+    }
+    /* EGL_EXT_create_context_robustness and EXT_robustness issue 8: shared
+     * objects require one reset notification behavior. */
+    if (shared && shared->reset_strategy != reset) {
+        g_last_error = EGL_BAD_MATCH;
+        return EGL_NO_CONTEXT;
+    }
+    /* EGL 1.5 section 2.7: a reset share group's objects are gone. */
+    if (shared && atomic_load_explicit(&shared->reset_group->lost, memory_order_relaxed)) {
+        g_last_error = EGL_CONTEXT_LOST;
         return EGL_NO_CONTEXT;
     }
     if (!g_next_object_handle) {
@@ -885,9 +1026,18 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
     }
+    context->reset_strategy = reset;
+    context->reset_group = shared ? shared->reset_group : calloc(1, sizeof *context->reset_group);
+    if (!context->reset_group) {
+        free(context);
+        g_last_error = EGL_BAD_ALLOC;
+        return EGL_NO_CONTEXT;
+    }
+    context->reset_group->references++;
     context->encoder =
         shared ? _wpk_gl_create_shared_encoder(shared->encoder) : _wpk_gl_create_encoder();
     if (!context->encoder) {
+        release_reset_group(context);
         free(context);
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_CONTEXT;
@@ -897,8 +1047,19 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
         goto fail;
     struct gl_context_attrs attrs = {.client_version = (uint32_t)version,
                                      .share_context_id = shared ? shared->backend_id : 0};
-    if (ioctl(session->fd, GLIO_CREATE_CONTEXT, &attrs) != 0 || !attrs.context_id)
+    if (ioctl(session->fd, GLIO_CREATE_CONTEXT, &attrs) != 0 || !attrs.context_id) {
+        /* The host found the share group's renderer lost. */
+        if (shared && errno == ENODEV) {
+            mark_context_reset(shared);
+            _wpk_gl_destroy_encoder(context->encoder);
+            release_reset_group(context);
+            free(context);
+            retire_empty_sessions(generation);
+            g_last_error = EGL_CONTEXT_LOST;
+            return EGL_NO_CONTEXT;
+        }
         goto fail;
+    }
     context->handle = (EGLContext)g_next_object_handle++;
     context->session = session;
     context->backend_id = attrs.context_id;
@@ -910,6 +1071,7 @@ static EGLContext create_context_locked(EGLDisplay dpy, EGLConfig config, EGLCon
     return context->handle;
 fail:
     _wpk_gl_destroy_encoder(context->encoder);
+    release_reset_group(context);
     free(context);
     retire_empty_sessions(generation);
     g_last_error = EGL_BAD_ALLOC;
@@ -1240,6 +1402,8 @@ EGLBoolean eglMakeCurrent(EGLDisplay dpy, EGLSurface draw, EGLSurface read, EGLC
     struct gl_make_current binding = {context->backend_id, d ? d->backend_id : 0,
                                       r ? r->backend_id : 0};
     if (ioctl(context->session->fd, GLIO_MAKE_CURRENT, &binding) != 0) {
+        if (errno == ENODEV)
+            mark_context_reset(context);
         g_last_error = current_binding_error();
         goto done;
     }
@@ -1571,8 +1735,11 @@ EGLBoolean eglSwapBuffers(EGLDisplay dpy, EGLSurface handle) {
                 result = swap_gbm_window_locked(g, p) ? EGL_TRUE : EGL_FALSE;
             /* The host distinguishes offscreen no-post flushes from window
              * posting. Keep its failure channel for pbuffers as well. */
-            else if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0)
+            else if (ioctl(context->session->fd, GLIO_PRESENT, NULL) != 0) {
+                if (errno == ENODEV)
+                    mark_context_reset(context);
                 g_last_error = current_binding_error();
+            }
             else {
                 if (!p->wayland_lease && p->native_window && !p->gbm_window && _wpk_wlegl_present)
                     _wpk_wlegl_present(p->native_window);
@@ -1648,6 +1815,7 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
         *context = p->next;
         _wpk_gl_destroy_encoder(p->encoder);
         p->session->context_used = 0;
+        release_reset_group(p);
         free(p);
     }
     struct egl_surface_record **surface = &g->surfaces;
@@ -1946,7 +2114,9 @@ static EGLint wait_sync(struct egl_sync_record *sync, EGLint flags, EGLTime time
         uint32_t status, signaled;
         if (sync_query(sync, QOP_FENCE_STATUS, &status, &signaled) != 0 || status != 0) goto fail;
         if (signaled) return EGL_CONDITION_SATISFIED;
-        if (first && (flags & EGL_SYNC_FLUSH_COMMANDS_BIT) && _wpk_gl_current_encoder()) {
+        /* A reset context has nothing to flush. */
+        if (first && (flags & EGL_SYNC_FLUSH_COMMANDS_BIT) && _wpk_gl_current_encoder() &&
+            !_wpk_gl_context_reset()) {
             if (_wpk_gl_server_flush_checked() != 0) goto fail;
         }
         first = 0;
@@ -2121,6 +2291,7 @@ const char *eglQueryString(EGLDisplay dpy, EGLint name) {
                    "EGL_KHR_image_base EGL_KHR_gl_texture_2D_image "
                    "EGL_KHR_gl_texture_cubemap_image EGL_KHR_gl_renderbuffer_image "
                    "EGL_KHR_no_config_context "
+                   "EGL_EXT_create_context_robustness "
                    "EGL_KHR_surfaceless_context EGL_KHR_fence_sync "
                    "EGL_KHR_wait_sync";
         default:
@@ -2224,6 +2395,14 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *procname)
     WPK_MAP_GL(glDrawBuffers);
     WPK_MAP_GL(glEGLImageTargetRenderbufferStorageOES);
     WPK_MAP_GL(glEGLImageTargetTexture2DOES);
+    WPK_MAP_GL(glGetGraphicsResetStatusEXT);
+    WPK_MAP_GL(glGetGraphicsResetStatusKHR);
+    WPK_MAP_GL(glReadnPixelsEXT);
+    WPK_MAP_GL(glReadnPixelsKHR);
+    WPK_MAP_GL(glGetnUniformfvEXT);
+    WPK_MAP_GL(glGetnUniformfvKHR);
+    WPK_MAP_GL(glGetnUniformivEXT);
+    WPK_MAP_GL(glGetnUniformivKHR);
     WPK_MAP_GL(glEnable);
     WPK_MAP_GL(glEnableVertexAttribArray);
     WPK_MAP_GL(glFinish);
