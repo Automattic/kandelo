@@ -10,10 +10,19 @@ import { GLES2_NEGATIVE_STATE_CASES, parseCtsQpa } from "../../../tests/graphics
 import { installBrowserMemoryBoundaryProbe, memoryBoundaryFailures } from "./support/browser-memory-boundary";
 
 test.use({ headless: true, serviceWorkers: "block" });
+const group = process.env.KANDELO_CTS_GLES2_GROUP ?? "negative-state";
+if (group !== "negative-state" && group !== "negative-api") {
+  throw new Error("KANDELO_CTS_GLES2_GROUP must be negative-state or negative-api");
+}
+const negativeApi = JSON.parse(readFileSync(new URL("../../../tests/graphics/cts-gles2-negative-api.json", import.meta.url), "utf8"));
+const upstream = JSON.parse(readFileSync(new URL("../../../packages/registry/graphics-cts/upstream.json", import.meta.url), "utf8"));
+if (negativeApi.upstreamRevision !== upstream.revision) throw new Error("CTS case inventory pin is stale");
+const expectedCases: readonly string[] = group === "negative-state" ? GLES2_NEGATIVE_STATE_CASES : negativeApi.cases;
+const caseFilter = group === "negative-state" ? "dEQP-GLES2.functional.negative_api.state.*" : negativeApi.caseFilter;
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
-// This is one complete upstream group, not a full conformance claim.
-test("upstream GLES2 negative state group through the normal renderer", async ({ page, browser, browserName, baseURL }, testInfo) => {
+// Each selected group is complete; neither establishes the full baseline.
+test(`upstream GLES2 ${group} group through the normal renderer`, async ({ page, browser, browserName, baseURL }, testInfo) => {
   test.setTimeout(180_000);
   const program = readFileSync(resolveBinary("programs/wasm32/graphics-cts/deqp-gles2.wasm"));
   const data = readFileSync(resolveBinary("programs/wasm32/graphics-cts/data.zip"));
@@ -45,13 +54,13 @@ test("upstream GLES2 negative state group through the normal renderer", async ({
   const imageUrl = new URL("/__gles2_cts_image", baseURL).href;
   await page.route(kernelUrl, route => route.fulfill({ body: kernelBytes }));
   await page.route(imageUrl, route => route.fulfill({ body: Buffer.from(imageBytes) }));
-  const args = ["deqp-gles2", "--deqp-case=dEQP-GLES2.functional.negative_api.state.*",
+  const args = ["deqp-gles2", `--deqp-case=${caseFilter}`,
     "--deqp-visibility=hidden", "--deqp-archive-dir=/cts", "--deqp-log-filename=/tmp/result.qpa"];
   const report: Record<string, any> = {
-    scope: "Complete 31-case negative-state group; not full conformance",
+    scope: `Complete ${expectedCases.length}-case ${group} group; not full conformance`,
     engine: browserName, version: browser.version(), args,
     artifacts: { program: sha(program), data: sha(data), kernel: sha(kernelBytes), image: sha(imageBytes) },
-    expectedCases: GLES2_NEGATIVE_STATE_CASES, pageErrors: [], consoleErrors: [], cleanupErrors: [], workers: [],
+    expectedCases, pageErrors: [], consoleErrors: [], cleanupErrors: [], workers: [],
   };
   page.on("pageerror", error => report.pageErrors.push(error.message));
   page.on("console", message => {
@@ -145,7 +154,7 @@ test("upstream GLES2 negative state group through the normal renderer", async ({
     try { report.memoryBoundaryFailures = await memoryBoundaryFailures(page); }
     catch (error) { report.cleanupErrors.push(`memory boundary: ${error}`); }
     if (typeof report.qpa === "string") {
-      report.results = parseCtsQpa(report.qpa, GLES2_NEGATIVE_STATE_CASES);
+      report.results = parseCtsQpa(report.qpa, expectedCases);
       try { await testInfo.attach("upstream.qpa", { body: report.qpa, contentType: "text/plain" }); }
       catch (error) { report.cleanupErrors.push(`QPA attachment: ${error}`); }
     }
@@ -157,7 +166,7 @@ test("upstream GLES2 negative state group through the normal renderer", async ({
   expect(report.guest?.error).toBeNull();
   expect(report.guest?.overflow).toBe(false);
   for (const key of ["missing", "unexpected", "duplicates", "incomplete"]) expect(report.results?.[key]).toEqual([]);
-  expect(report.results?.rows).toHaveLength(GLES2_NEGATIVE_STATE_CASES.length);
+  expect(report.results?.rows).toHaveLength(expectedCases.length);
   expect(report.results?.rows.filter((row: any) => row.status !== "Pass")).toEqual([]);
   expect(report.guest.diagnostics).toEqual([]);
   expect(report.pageErrors).toEqual([]);

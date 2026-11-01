@@ -34,6 +34,19 @@ failed or unsupported cases fail the gate. Worker closure and memory-boundary
 checks are required. Passing this group does not establish the complete
 graphics baseline or the broader browser-memory regression gate.
 
+The same consumer can probe the complete pinned 246-case negative API group:
+
+```sh
+scripts/dev-shell.sh bash -c 'KANDELO_CTS_GLES2_GROUP=negative-api bash scripts/test-graphics-cts.sh --project chromium'
+```
+
+Its checked-in case manifest comes from the actual upstream inventory and
+must match the package's upstream revision. The default remains the smaller
+negative-state group. The broader probe currently fails; its recorded failures
+are implementation work, not accepted expectations. Unsupported compressed-format
+cases remain explicit results pending a separate applicability audit. The
+consumer never changes upstream assertions or converts non-Pass results to Pass.
+
 Inventory enumeration is separate from test execution. Keep complete upstream
 case lists, raw QPA and source/artifact identities for broader runs. Record
 results and ordinary gaps in [the compatibility ledger](compatibility-v1.md).

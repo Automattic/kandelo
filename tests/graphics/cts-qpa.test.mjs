@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parseCtsQpa } from "./cts-qpa.mjs";
 
@@ -38,4 +39,15 @@ for (const [name, text] of [
 test("refuses an empty or duplicate expected selection", () => {
   assert.throws(() => parseCtsQpa("", []));
   assert.throws(() => parseCtsQpa(record("a"), ["a", "a"]));
+});
+
+test("negative API inventory matches the pinned upstream revision and group", () => {
+  const inventory = JSON.parse(readFileSync(new URL("./cts-gles2-negative-api.json", import.meta.url), "utf8"));
+  const upstream = JSON.parse(readFileSync(new URL("../../packages/registry/graphics-cts/upstream.json", import.meta.url), "utf8"));
+  assert.equal(inventory.upstreamRevision, upstream.revision);
+  assert.match(inventory.inventorySha256, /^[a-f0-9]{64}$/);
+  assert.equal(inventory.caseFilter, "dEQP-GLES2.functional.negative_api.*");
+  assert.equal(inventory.cases.length, 246);
+  assert.equal(new Set(inventory.cases).size, inventory.cases.length);
+  assert.ok(inventory.cases.every(name => typeof name === "string" && name.startsWith("dEQP-GLES2.functional.negative_api.")));
 });

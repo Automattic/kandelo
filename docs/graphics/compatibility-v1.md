@@ -18884,3 +18884,81 @@ normal Vite plugins and canonical Playwright projects. It owns a strict server
 and narrows dependency scanning to the actual plain fixture HTML, avoiding
 unrelated gallery image provisioning. Its collection finds exactly one consumer
 in each of Chromium, Firefox and WebKit; actual combined runtime checks follow.
+
+
+### Combined normal artifacts and three-engine negative-state results
+
+The normal combined source at `21cef60ec2b1373922c515faae339b3a88db522f`
+completed its SDK32/64 freshness checks, selected kernel/CTS build, host build
+and actual-kernel ABI check. All five library dependencies and CTS were cache
+hits; the kernel was published through the normal build. The default tracked
+consumer then ran all 31 upstream negative-state cases on each canonical
+headless project. This includes the generation getter, cursor protocol 3 and
+shader/query repairs together, still under program ABI 56 / host 3 / GL 17 /
+fork 21.
+
+| Engine | Upstream Pass | Guest exit | Fixture result |
+| --- | ---: | ---: | --- |
+| Chromium 153.0.8010.12 | 31 | 0 | Pass |
+| Firefox 155.0 | 31 | 0 | Pass |
+| WebKit 26.6 | 31 | 0 | Fail |
+
+Job `graphics-cts-integration-three-engine-r1-1031-223119-7910` is collected
+with exit 1 after 2m35s. WebKit emitted four native INVALID_ENUM console
+diagnostics during deliberate invalid getter probes. The fixture rejects those
+messages; no diagnostic was suppressed and the gate remains failed. Its worker
+observer also records only the kernel worker, while Chromium/Firefox record both
+kernel and process workers closed. The WebKit process-worker closure remains
+unobserved; guest exit and destroy returning do not establish that missing
+observation. Its later two-worker assertion was not reached. The next work is
+shared getter validation and authoritative worker-retirement observation, not
+an allowance for these results.
+
+All 1,033 source files and 22 artifact receipt files rehash unchanged. All three
+native browser exits and the owned Vite shutdown are recorded; a subsequent
+port 5697 probe refuses. One exclusively owned Firefox Downloads scratch path
+could not be removed due to PermissionError 13 and is retained in cleanup.json.
+This filesystem residual is distinct from the guest cleanup diagnostics, which
+are empty on all three engines. The combined kernel SHA256 is
+`a0683152ccc21cfba3be22baf68de0f4642b5ea7c51e4b0e9fc66bbf3cdba054`;
+GLES2 executable SHA256 remains
+`da67034a15c09a200b849171c7996a947bd4c8f5df69458174a902dadb8eedda`.
+Full evidence is `.context/graphics-cts-three-engine-r1/HANDOFF.md`, SHA256
+`f43fd0c80b370534365386f02a89d19d5a65600741a54794c5a1fbfbad32a4cc`;
+release manifest SHA256
+`7c5eef0852e5da76c1e5c12922f6e55766050f22d78019893f65b3c48b93b1f6`.
+These are negative API results, not pixel, cursor, full CTS or browser-memory
+acceptance.
+
+
+### Complete negative API probe without another package rebuild
+
+The separate mutable source at
+`03fb8614528fd6e13cd30495fd5d6e965bcc6679` reused the preceding validated normal
+artifacts to execute all 246 upstream negative API cases in canonical headless
+Chromium. Job `graphics-cts-negative-api-r1-1031-223148-c9e6` exits 1 after 25s:
+217 Pass, 20 Fail, nine NotSupported, with no missing, extra, duplicate or
+incomplete case records. Guest exit is 1. The original assertions are unchanged.
+The pinned inventory revision is
+`a119e62de3bb38dae67f05abee8acd011e0c729c`; complete GLES2 inventory SHA256 is
+`d39ae3e3c1ab3595f747edc071d227ae2797498d99fbf77a25576314a46f876a`.
+
+The 20 failures comprise six shader name/kind/error cases, eleven TexSubImage2D
+validation cases, one ReadPixels case and two draws with no installed program
+and an incomplete framebuffer. These are ordinary platform gaps. The nine
+compressed-format results report no suitable compressed formats; whether each
+is applicable to advertised capabilities still requires an audit. They are
+neither silently accepted nor classified as demonstrated platform boundaries.
+
+Both observed workers close and destroy returns; page/console/cleanup and memory
+boundary diagnostics are empty. The artifact guard passes unchanged. This
+cohort uses the prior cursor protocol 2 kernel, not the later combined protocol
+3 cohort above. Kernel SHA256 is
+`446257c9174111f4e8388d4efd22396f4ba5efc7ae90989d667125e7d3478556`;
+program SHA256 is the same `da67034a15` executable recorded above. The mutable
+worktree retains exact evidence under `.context/cts-negative-api-r1/results/`:
+QPA SHA256 `f27c8ed1a20fc2aa1cc1a5857e54bec1748a8e5cdda2b46bdee9fe38637d0d20`,
+evidence attachment SHA256
+`3a9512a737ac1548ed306cc2c9a0e759d2d88792f5d827e473b8e9effbad44b4`.
+The optional public group selector preserves all 246 outcomes and remains
+strictly failing while these gaps are open.
