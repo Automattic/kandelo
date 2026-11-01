@@ -1,3 +1,5 @@
+import { deliverProcessGenerationEvent, type ProcessGenerationEvent } from "./process-generation-observation";
+export type { ProcessGenerationEvent } from "./process-generation-observation";
 import { DEFAULT_KERNEL_MAX_PAGES } from "./constants";
 import { ExchangeController, exchangeByteLimit } from "./exchange-controller";
 import type { RemoteSegmentInit, RemoteSegmentPeer } from "./networking/remote-segment-port";
@@ -146,6 +148,9 @@ export interface NodeKernelHostOptions {
    *  polling. Kernel-internal fork and posix_spawn events carry `ppid`;
    *  the synthetic root spawn does not. */
   onProcessEvent?: (event: { kind: "spawn" | "exec" | "exit"; pid: number; ppid?: number; exitStatus?: number }) => void;
+  /** Selected at normal init; install before boot/spawn. Scalar retirement
+   * observation only, not native Worker closure or GC. */
+  onProcessGenerationEvent?: (event: ProcessGenerationEvent) => void;
   /**
    * Opt in to mount-based VFS for this kernel boot.
    *
@@ -249,6 +254,8 @@ export interface SpawnOptions {
 export class NodeKernelHost {
   private worker!: NodeThreadWorker;
   private workerStarted = false;
+  /** Monotonic within this host instance; distinct from per-realm image IDs. */
+  private processGenerationRealm = 0;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
   private exitResolvers = new Map<number, {
@@ -338,13 +345,20 @@ export class NodeKernelHost {
       throw new Error("sessionSeedTrees requires rootfsImage");
     }
 
+    if (this.processGenerationRealm === Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("process observation realm space exhausted");
+    }
+    const observationRealm = ++this.processGenerationRealm;
     this.worker = spawnKernelWorkerThread();
+    const observationWorker = this.worker;
     this.workerStarted = true;
     this.kernelWorkerExitExpected = false;
     this.workerTermination = null;
 
     this.worker.on("message", (msg: KernelToMainMessage) => {
-      this.handleWorkerMessage(msg);
+      if (msg.type === "process_generation_event"
+          && (this.worker !== observationWorker || !this.workerStarted)) return;
+      this.handleWorkerMessage(msg, observationRealm);
     });
     this.worker.on("error", (err) => {
       const error = err instanceof Error ? err : new Error(String(err));
@@ -448,6 +462,7 @@ export class NodeKernelHost {
           ?? maxWorkers * maxPages * WASM_PAGE_SIZE;
         const initMsg: MainToKernelMessage = {
           type: "init",
+          observeProcessGenerations: typeof this.options.onProcessGenerationEvent === "function",
           remoteNetwork: this.options.remoteNetwork,
           kernelWasmBytes: wasmBytes,
           config: {
@@ -1356,7 +1371,7 @@ export class NodeKernelHost {
     return this.workerTermination;
   }
 
-  private handleWorkerMessage(msg: KernelToMainMessage): void {
+  private handleWorkerMessage(msg: KernelToMainMessage, observationRealm = this.processGenerationRealm): void {
     // WHY: under `node --watch`, the worker inherits WATCH_REPORT_DEPENDENCIES
     // and posts `{ "watch:import" | "watch:require": [...] }` for each module
     // it loads. Node's Worker already forwards them to the watch parent.
@@ -1394,6 +1409,11 @@ export class NodeKernelHost {
             pending.resolve(msg.result);
           }
         }
+        break;
+      }
+      case "process_generation_event": {
+        if (observationRealm <= 0) break;
+        deliverProcessGenerationEvent({ ...msg.event, realmId: observationRealm }, this.options.onProcessGenerationEvent);
         break;
       }
       case "exit": {

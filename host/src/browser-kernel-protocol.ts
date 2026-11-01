@@ -1,3 +1,4 @@
+import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
   ExchangeRangeMessage,
@@ -156,6 +157,8 @@ export function initializeBrowserCorsProxyForWorker<TLazyFetcher, TTlsBackend>(
 
 export interface InitMessage {
   type: "init";
+  /** Optional process-image scalar observation, selected before any spawn. */
+  observeProcessGenerations?: boolean;
   /** Native port ownership passes to this kernel worker during init. */
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
@@ -605,6 +608,7 @@ export interface VfsChangeMessage {
 }
 
 export type KernelToMainMessage =
+  | ProcessGenerationEventMessage
   | ReadyMessage
   | ExchangeRangeRequestMessage
   | ExchangeNotificationsMessage

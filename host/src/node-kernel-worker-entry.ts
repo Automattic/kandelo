@@ -1,3 +1,5 @@
+import { ProcessGenerationObservations } from "./process-generation-observation";
+import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 /**
  * Node.js kernel worker entry point — general-purpose, message-based.
@@ -264,6 +266,21 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   vforkWorkspace?: VforkWorkspaceOwnership;
 }
 const processes = new Map<number, ProcessInfo>();
+let observeProcessGenerations = false;
+const generationObservations = new ProcessGenerationObservations(event =>
+  post({ type: "process_generation_event", event }));
+
+function registerObservedProcess(pid: number, info: ProcessInfo): void {
+  processes.set(pid, info);
+  if (!observeProcessGenerations) return;
+  // Correlation is never lifecycle authority. An unauthenticated/uncertain
+  // observation stays absent; it must not change the existing admission.
+  try {
+    const executionId = externrefProcessOwner.generationId(info.externrefGeneration);
+    generationObservations.admit(pid, info, executionId);
+  } catch { /* no authenticated observation */ }
+}
+
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
 const forkHostImportOwnerRuntime =
@@ -372,6 +389,7 @@ function installProcessWorkerListeners(
       if (vforkLifetimes.phaseForChild(process) !== undefined) {
         traceVforkMechanism("memory_quiescent", `child=${pid}`);
       }
+      generationObservations.mainQuiescent(process);
       process.workerQuiescence.settle();
       return;
     }
@@ -473,13 +491,14 @@ const processGenerationDetaches =
       threadModuleCache.delete(pid);
       ptyByPid.delete(pid);
     },
+    (generation, result) => generationObservations.retired(generation, result),
   );
 
 async function detachExactProcessGeneration(options: {
   pid: number;
   generation: ProcessGenerationOwnership;
   operation: "deactivate" | "unregister" | "none";
-  retire: (commit: () => void) => void | Promise<void>;
+  retire: (commit: (disposition?: ProcessGenerationLeaseDisposition) => void) => void | Promise<void>;
 }): Promise<ExactProcessGenerationDetachResult> {
   const { pid, generation, operation, retire } = options;
   const result = await processGenerationDetaches.detach({
@@ -918,6 +937,8 @@ function cleanupSessionDir(): void {
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
 
 async function handleInit(msg: InitMessage) {
+  observeProcessGenerations = msg.observeProcessGenerations === true;
+  if (observeProcessGenerations) generationObservations.enable();
   initReady = false;
   injectedExecWorkerConstructionFailure = false;
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
@@ -1392,7 +1413,7 @@ async function handleSpawn(msg: SpawnMessage) {
       threadAllocator,
       externrefGeneration,
     };
-    processes.set(pid, createdGeneration);
+    registerObservedProcess(pid, createdGeneration);
 
     installProcessWorkerListeners(worker, pid);
     createdMemoryLease = undefined;
@@ -1424,7 +1445,7 @@ async function handleSpawn(msg: SpawnMessage) {
             } else {
               lease.release();
             }
-            commit();
+            commit(workerCreationAttempted ? "forced" : "quiescent");
           },
         });
         if (detachResult.status !== "released") {
@@ -1796,7 +1817,7 @@ async function handleVfork(
       childGeneration,
     );
     lifetimeStarted = true;
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
     // The exact generation is now sweepable by terminal host destroy. Keep the
     // onFork promise pending to park only the calling guest thread.
     releaseCreatorAdmission?.();
@@ -1946,7 +1967,7 @@ async function handleVfork(
         retire: (commit) => {
           childMemoryLease.release();
           childMemoryLeaseConsumed = true;
-          commit();
+          commit("quiescent");
         },
       });
       if (detachResult.status !== "released") {
@@ -2141,7 +2162,7 @@ async function handleOrdinaryFork(
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     observeForkReplayWorker(
       forkReplay,
@@ -2227,7 +2248,7 @@ async function handleOrdinaryFork(
         } else {
           childMemoryLease.release();
         }
-        commit();
+        commit(workerStartAttempted ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -2490,7 +2511,7 @@ async function handleExec(
       // Clear thread module cache — new program binary is different
       threadModuleCache.delete(pid);
 
-      processes.set(pid, {
+      registerObservedProcess(pid, {
         memory: newMemory,
         memoryLease: newMemoryLease,
         workerQuiescence: createWorkerQuiescence(),
@@ -2642,7 +2663,7 @@ async function handleExec(
           // replacement still has exact single-realm ownership.
           retire: (commit) => {
             prepared.memoryLease.release();
-            commit();
+            commit("quiescent");
           },
         });
         if (detachResult.status === "released") {
@@ -2814,7 +2835,7 @@ async function handlePosixSpawn(
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     installProcessWorkerListeners(
       worker,
@@ -2871,7 +2892,7 @@ async function handlePosixSpawn(
         } else {
           memoryLease.release();
         }
-        commit();
+        commit(workerStartAttempted ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -3022,6 +3043,7 @@ async function handleClone(
     execRetirement: createWorkerQuiescence(),
   };
   threadWorkers.get(pid)!.push(threadEntry);
+  generationObservations.threadAdmitted(processInfo, threadEntry);
 
   const belongsToCurrentProcessImage = () =>
     isCurrentProcessGeneration(
@@ -3094,6 +3116,7 @@ async function handleClone(
       // memory_quiescent follows after worker-main returns; terminating here
       // would discard the exact ownership fence.
     } else if (m.type === "memory_quiescent" && m.tid === tid) {
+      if (m.pid === pid) generationObservations.threadQuiescent(processInfo, threadEntry);
       threadEntry.workerQuiescence.settle();
       void terminateThreadEntry();
     } else if (m.type === "error") {
@@ -3175,6 +3198,7 @@ async function finishProcessExit(
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
+  generationObservations.exited(info, exitStatus);
   vmInterruptTimers.clear(pid, info);
 
   const existingTeardown = processTeardowns.get(expectedWorker);
@@ -3219,7 +3243,7 @@ async function finishProcessExit(
         } else {
           info.memoryLease.releaseAfterForcedTermination();
         }
-        commit();
+        commit(exactMemoryTeardown ? "quiescent" : "forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -3333,7 +3357,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
       // the backing as reusable even if Worker.terminate() has resolved.
       retire: (commit) => {
         info.memoryLease.releaseAfterForcedTermination();
-        commit();
+        commit("forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -3443,7 +3467,7 @@ async function performDestroy() {
           } else {
             info.memoryLease.releaseAfterForcedTermination();
           }
-          commit();
+          commit(workerQuiescent && threadsQuiescent ? "quiescent" : "forced");
         },
       });
       if (detachResult.status !== "released") {

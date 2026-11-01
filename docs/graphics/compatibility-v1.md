@@ -19152,3 +19152,41 @@ extension-specific rules. The read-only primary-worktree audit is
 `549d6c03d74789bf9af2dcc4f748dfa38f3f184c37c26e3487eb5040761adc3b`.
 It preserves the exact pinned upstream source and original result hashes; it
 adds no implementation, allowance or acceptance claim.
+
+
+### Shared exact process-image retirement observation, source stage
+
+Both host peers now expose optional `onProcessGenerationEvent` observation
+selected before initialization. Initialization enables the shared observer only
+when subscribed; the default path adds no records or lifecycle messages.
+Admission authenticates the existing externref broker image ID at each real
+ProcessInfo registration. Public events add an exact kernel-worker realm ID
+within the host instance. They do not confuse image ID with PID, Rust exec
+generation or backing allocation, and stale worker messages cannot acquire a
+replacement realm's identity.
+
+Actual main/thread ACK listeners record guest-memory return independently of
+semantic exit and synthetic settle. The shared detach ledger emits retirement
+once after its durable completion tombstone, with the real lease disposition,
+registration disposition, acknowledged/missing fences and post-commit failure.
+Forced, unobserved and failed-after-commit states are explicit. Callback throws
+and rejected promises are contained and never affect release decisions. The
+observer owns no additional guest memory or ProcessInfo/Worker reference.
+
+Root reran all 139 source controls in ten files, with zero skips. These exercise
+actual detach/retry/exec lease models, broker replacement and same-Memory alias
+identities, real worker-entry terminal-message ordering, both proxy dispatchers,
+and extracted actual Node/browser listener bodies. The Vitest evidence-class
+check passes for all 659 registered files. Type comparison retains the same 200
+file/code/message diagnostics before and after; it is not a green full-type
+gate. Source review also verified all five admission and eight explicit terminal
+commit sites per host. Full evidence is
+`.context/process-generation-observation-r1/HANDOFF.md`, SHA256
+`8dee3cfde2d6f299a40869fedae44ac030160bd249f65efbef8b2b268775819d`.
+
+This API observes committed guest-memory retirement; it proves neither native
+worker closure, thread join nor garbage collection. Missing events and failures
+before an authenticated ProcessInfo exists do not receive fabricated success.
+Normal runtime/browser-memory tests and the public CTS consumer's use of these
+receipts remain pending. This does not activate physical graphics retirement or
+public retained-query scheduling, and changes no numeric ABI selector.

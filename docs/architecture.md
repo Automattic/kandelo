@@ -526,6 +526,31 @@ the same exact-generation ledger used by exit, termination, and destroy.
 Overlapping cleanup paths therefore consume the lease once without removing
 or reaping the replacement's persistent process ID.
 
+NodeKernelHost and BrowserKernel expose an optional
+`onProcessGenerationEvent` observer selected before initialization. Without an
+observer, initialization leaves generation observation disabled and emits no
+extra lifecycle messages. Subscribed observations contain copied, frozen scalar
+data only. `realmId` distinguishes actual kernel-worker creations within one
+host instance; `executionId` is the authenticated externref broker's process-
+image ID within that realm. Neither is Rust's exec counter or memory allocator
+identity, and neither authorizes cleanup. Old worker messages cannot acquire a
+replacement realm's identity.
+
+Admission, semantic exit and committed retirement are separate events. A
+retirement event records the real lease disposition, registration disposition,
+actual main/thread acknowledgments and any failure after the lease commit.
+Cooperative guest-memory retirement requires `leaseDisposition: "quiescent"`,
+acknowledged main/thread fences, `postCommitFailed: false`, and the exact admitted
+identity. Forced or unobserved disposition and missing acknowledgments remain
+distinct. The shared detach ledger publishes its completed tombstone before the
+one-shot observation; callback failures cannot replay release. Observer throws
+or rejected promises do not participate in lifecycle decisions.
+
+These observations prove neither native worker closure nor garbage collection.
+They cannot reconstruct an unpublished failed start or an observation lost on a
+closed channel. Consumers must subscribe before launch, retain missing evidence
+as missing, and independently check normal diagnostics and cleanup.
+
 Each host process registration also captures Rust's full unsigned 64-bit exec
 generation through `kernel_get_process_exec_generation`, using exactly eight
 bytes of leased kernel scratch under the canonical entry. The host publishes

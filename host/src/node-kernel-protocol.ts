@@ -1,3 +1,4 @@
+import type { ProcessGenerationEventMessage } from "./kernel-protocol-shared";
 import type {
   ExchangeNotificationsMessage,
   ExchangeRangeMessage,
@@ -127,6 +128,8 @@ export type { HostDiagnostic } from "./host-diagnostic";
 
 export interface InitMessage {
   type: "init";
+  /** Optional process-image scalar observation, selected before any spawn. */
+  observeProcessGenerations?: boolean;
   /** Native port ownership passes to this kernel worker during init. */
   remoteNetwork?: RemoteSegmentInit;
   kernelWasmBytes: ArrayBuffer;
@@ -405,6 +408,7 @@ export interface DestroyProgressMessage {
 }
 
 export type KernelToMainMessage =
+  | ProcessGenerationEventMessage
   | ReadyMessage
   | ExchangeRangeRequestMessage
   | ExchangeNotificationsMessage

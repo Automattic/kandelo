@@ -1,3 +1,5 @@
+import { ProcessGenerationObservations } from "./process-generation-observation";
+import type { ProcessGenerationLeaseDisposition } from "./process-generation-detach";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
 import { BrowserFramebufferMirrors } from "./framebuffer/browser-mirror";
 import { AudioActivityLatch } from "./audio/audio-activity-latch";
@@ -231,6 +233,21 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   vforkWorkspace?: VforkWorkspaceOwnership;
 }
 const processes = new Map<number, ProcessInfo>();
+let observeProcessGenerations = false;
+const generationObservations = new ProcessGenerationObservations(event =>
+  post({ type: "process_generation_event", event }));
+
+function registerObservedProcess(pid: number, info: ProcessInfo): void {
+  processes.set(pid, info);
+  if (!observeProcessGenerations) return;
+  // Correlation is never lifecycle authority. An unauthenticated/uncertain
+  // observation stays absent; it must not change the existing admission.
+  try {
+    const executionId = externrefProcessOwner.generationId(info.externrefGeneration);
+    generationObservations.admit(pid, info, executionId);
+  } catch { /* no authenticated observation */ }
+}
+
 const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
 const forkHostImportOwnerRuntime =
@@ -506,13 +523,14 @@ const processGenerationDetaches =
       threadedProcessPids.delete(pid);
       ptyByPid.delete(pid);
     },
+    (generation, result) => generationObservations.retired(generation, result),
   );
 
 async function detachExactProcessGeneration(options: {
   pid: number;
   generation: ProcessGenerationOwnership;
   operation: "deactivate" | "unregister" | "none";
-  retire: (commit: () => void) => void | Promise<void>;
+  retire: (commit: (disposition?: ProcessGenerationLeaseDisposition) => void) => void | Promise<void>;
 }): Promise<ExactProcessGenerationDetachResult> {
   const { pid, generation, operation, retire } = options;
   const result = await processGenerationDetaches.detach({
@@ -863,6 +881,8 @@ async function createFreshProcessMemory(
 const remoteSegmentRuntime = new RemoteSegmentRuntime();
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
+  observeProcessGenerations = msg.observeProcessGenerations === true;
+  if (observeProcessGenerations) generationObservations.enable();
   initReady = false;
   initFailure = null;
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
@@ -1500,7 +1520,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       threadAllocator,
       externrefGeneration,
     };
-    processes.set(pid, createdGeneration);
+    registerObservedProcess(pid, createdGeneration);
 
     installProcessWorkerListeners(worker, pid);
     createdMemoryLease = undefined;
@@ -1540,7 +1560,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
             } else {
               lease.release();
             }
-            commit();
+            commit(workerCreationAttempted || !framebufferReleased ? "forced" : "quiescent");
           },
         });
         if (detachResult.status !== "released") {
@@ -1683,6 +1703,7 @@ function installProcessWorkerListeners(
       if (vforkLifetimes.phaseForChild(process) !== undefined) {
         traceVforkMechanism("memory_quiescent", `child=${pid}`);
       }
+      if (m.pid === pid) generationObservations.mainQuiescent(process);
       process.workerQuiescence.settle();
     }
     if (m.type === "exec_retired" && m.tid === undefined) {
@@ -2047,7 +2068,7 @@ async function handleVfork(
       childGeneration,
     );
     lifetimeStarted = true;
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
     // Host destroy can now sweep every alias even though onFork deliberately
     // remains pending to park the calling guest thread until exec/_exit.
     releaseCreatorAdmission?.();
@@ -2197,7 +2218,7 @@ async function handleVfork(
         retire: (commit) => {
           childMemoryLease.release();
           childMemoryLeaseConsumed = true;
-          commit();
+          commit("quiescent");
         },
       });
       if (detachResult.status !== "released") {
@@ -2402,7 +2423,7 @@ async function handleOrdinaryFork(
       forkReplayContext,
       externrefGeneration: externrefGrant.generation,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     observeForkReplayWorker(
       forkReplay,
@@ -2492,7 +2513,7 @@ async function handleOrdinaryFork(
         } else {
           childMemoryLease.release();
         }
-        commit();
+        commit(workerStartAttempted || !framebufferReleased ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -2793,7 +2814,7 @@ async function handleExec(
       // Clear cached thread module — the new program binary is different
       threadModuleCache.delete(pid);
 
-      processes.set(pid, {
+      registerObservedProcess(pid, {
         generation: allocateProcessGeneration(),
         memory: newMemory,
         memoryLease: newMemoryLease,
@@ -2951,7 +2972,7 @@ async function handleExec(
             } else {
               prepared.memoryLease.release();
             }
-            commit();
+            commit(replacementStartAttempted ? "forced" : "quiescent");
           },
         });
         if (detachResult.status === "released") {
@@ -3141,7 +3162,7 @@ async function handlePosixSpawn(
       threadAllocator,
       externrefGeneration: processExternrefGeneration,
     };
-    processes.set(childPid, childGeneration);
+    registerObservedProcess(childPid, childGeneration);
 
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = await retryKernelEntryResult(() =>
@@ -3198,7 +3219,7 @@ async function handlePosixSpawn(
         } else {
           memoryLease.release();
         }
-        commit();
+        commit(workerStartAttempted || !framebufferReleased ? "forced" : "quiescent");
       },
     });
     if (detachResult.status !== "released") {
@@ -3354,6 +3375,7 @@ async function handleClone(
     execRetirement: createWorkerQuiescence(),
   };
   threadWorkers.get(pid)!.push(threadEntry);
+  generationObservations.threadAdmitted(processInfo, threadEntry);
 
   const belongsToCurrentProcessImage = () =>
     isCurrentProcessGeneration(
@@ -3433,6 +3455,7 @@ async function handleClone(
       // The browser wrapper publishes memory_quiescent after worker-main
       // returns. Do not turn this earlier semantic exit into a retirement fence.
     } else if (m.type === "memory_quiescent" && m.tid === tid) {
+      if (m.pid === pid) generationObservations.threadQuiescent(processInfo, threadEntry);
       threadEntry.quiescent = true;
       threadEntry.workerQuiescence.settle();
       if (exitedThreadWorkersOutliveThreads && isCurrentThreadGeneration()) {
@@ -3524,6 +3547,7 @@ async function finishProcessExit(
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
+  generationObservations.exited(info, exitStatus);
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid, info);
 
@@ -3591,7 +3615,7 @@ async function finishProcessExit(
           // retirement; the backing is never handed to another process.
           info.memoryLease.releaseAfterForcedTermination();
         }
-        commit();
+        commit(exactMemoryTeardown ? "quiescent" : "forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -3971,7 +3995,7 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
         // terminate_process has no terminal worker message, so its backing
         // uses forced retirement and is never reused.
         info.memoryLease.releaseAfterForcedTermination();
-        commit();
+        commit("forced");
       },
     });
     if (detachResult.status !== "released") {
@@ -4181,7 +4205,7 @@ async function performDestroy() {
         retire: async (commit) => {
           await releaseMainFramebufferGeneration(pid, info);
           info.memoryLease.releaseAfterForcedTermination();
-          commit();
+          commit("forced");
         },
       });
       if (detachResult.status !== "released") {

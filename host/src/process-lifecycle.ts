@@ -165,7 +165,7 @@ export async function retireSupersededExecGeneration<T extends ProcessGeneration
     retire: commit => {
       if (quiescent) generation.memoryLease.release();
       else generation.memoryLease.releaseAfterForcedTermination();
-      commit();
+      commit(quiescent ? "quiescent" : "forced");
     },
   });
   if (result.status !== "released") throw result.error;

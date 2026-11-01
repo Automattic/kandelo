@@ -186,6 +186,32 @@ describe("BrowserKernel", () => {
     vi.unstubAllGlobals();
   });
 
+  it("forwards exact generation observations without manufacturing a Worker", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const callback = vi.fn((_event: import("../src/process-generation-observation").ProcessGenerationEvent) => { throw Error("observer"); });
+    const kernel = new BrowserKernel({ kernelOwnedFs: true, onProcessGenerationEvent: callback });
+    const event = { kind: "admitted" as const, pid: 41, executionId: 9 };
+    const testable = kernel as unknown as { handleWorkerMessage(message: unknown, observationRealm?: number): void };
+    expect(() => testable.handleWorkerMessage({ type: "process_generation_event", event }, 7)).not.toThrow();
+    expect(callback).toHaveBeenCalledWith({ ...event, realmId: 7 });
+    expect(Object.isFrozen(callback.mock.calls[0][0])).toBe(true);
+    expect(callback.mock.calls[0][0]).not.toBe(event);
+    expect(MockWorker.instances).toHaveLength(0);
+  });
+
+  it.each([false, true])("selects process generation observation at normal init (%s)", async enabled => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true,
+      onProcessGenerationEvent: enabled ? () => {} : undefined });
+    const init = kernel.initFromImage({ kernelWasm: new Uint8Array([1, 2, 3]).buffer,
+      vfsImage: new Uint8Array([4, 5, 6]) });
+    await vi.waitFor(() => expect(MockWorker.instances[0]?.lastMessage("init")).toBeDefined());
+    const worker = MockWorker.instances[0]!;
+    expect(worker.lastMessage("init").observeProcessGenerations).toBe(enabled);
+    worker.simulateMessage({ type: "ready" });
+    await init;
+  });
+
   it("constructs without spawning a worker (kernel-owned VFS)", async () => {
     const BrowserKernel = await loadBrowserKernel();
     // The constructor allocates only the small shm SAB — no VFS SAB and no

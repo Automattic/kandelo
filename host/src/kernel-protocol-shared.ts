@@ -331,3 +331,9 @@ export interface RemoteNetworkLeaveMessage {
   type: "remote_network_leave";
   requestId: number;
 }
+
+/** Copied lifecycle correlation; never carries process memory or authority. */
+export interface ProcessGenerationEventMessage {
+  type: "process_generation_event";
+  event: import("./process-generation-observation").ProcessGenerationEventData;
+}

@@ -48,3 +48,5 @@ export type {
 export { VirtualPlatformIO } from "./vfs/vfs";
 
 export type { VfsChangeEvent, VfsChangeKind, VfsChangeListener } from "./vfs/types";
+
+export type { ProcessGenerationEvent } from "./process-generation-observation";
