@@ -8,6 +8,7 @@ use wasm_posix_shared::Errno;
 
 pub(crate) mod effects;
 pub(crate) mod registry;
+mod removal;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Request {
@@ -318,6 +319,14 @@ mod tests {
         writes: Vec<(i32, u64, Vec<u8>)>,
         write_result: i32,
         trap_write: bool,
+        dri_phase: crate::dri_release::DriReleasePhase,
+        dri_error: bool,
+        dri_wrong_token: bool,
+        dri_trap: bool,
+        dri_calls: Vec<(u64, crate::dri_release::DriReleaseControl)>,
+        dri_plans: Vec<alloc::string::String>,
+        cleanup_order: Vec<alloc::string::String>,
+        trap_close: bool,
     }
     impl Host {
         fn new() -> Self {
@@ -330,6 +339,14 @@ mod tests {
                 writes: Vec::new(),
                 write_result: 0,
                 trap_write: false,
+                dri_phase: crate::dri_release::DriReleasePhase::Pending,
+                dri_error: false,
+                dri_wrong_token: false,
+                dri_trap: false,
+                dri_calls: Vec::new(),
+                dri_plans: Vec::new(),
+                cleanup_order: Vec::new(),
+                trap_close: false,
             }
         }
         fn reply(&mut self, token: i64, control: Control, mode: Option<Mode>, reply: Reply) {
@@ -392,6 +409,18 @@ mod tests {
         }
     }
     impl HostIO for Host {
+        fn dri_release_control(&mut self, request: crate::dri_release::DriReleaseRequest<'_>)
+            -> Result<crate::dri_release::DriReleaseReply, Errno> {
+            self.dri_calls.push((request.token, request.control));
+            self.dri_plans.push(alloc::format!("{:?}/{:?}", request.owner, request.effects));
+            self.cleanup_order.push(alloc::format!("dri:{:?}", request.control));
+            assert!(!self.dri_trap, "injected cleanup trap");
+            if self.dri_error { return Err(Errno::EIO); }
+            Ok(crate::dri_release::DriReleaseReply {
+                token: request.token + u64::from(self.dri_wrong_token), phase: self.dri_phase,
+            })
+        }
+
         fn proc_write_bytes(&mut self, pid: i32, addr: u64, bytes: &[u8]) -> i32 {
             self.writes.push((pid, addr, bytes.to_vec()));
             assert!(!self.trap_write, "injected peer-write trap");
@@ -400,6 +429,8 @@ mod tests {
 
         fn host_close(&mut self, h: i64) -> Result<(), Errno> {
             self.closed.push(h);
+            self.cleanup_order.push(alloc::format!("close:{h}"));
+            assert!(!self.trap_close || h <= 2, "injected close trap");
             if let Some(error) = self.close_error.take() {
                 return Err(error);
             }
@@ -471,7 +502,8 @@ mod tests {
         fn host_net_recv(&mut self, _: i32, _: u32, _: u32, _: &mut [u8]) -> Result<usize, Errno> {
             Err(Errno::ENOSYS)
         }
-        fn host_net_close(&mut self, _: i32) -> Result<(), Errno> {
+        fn host_net_close(&mut self, handle: i32) -> Result<(), Errno> {
+            self.cleanup_order.push(alloc::format!("net:{handle}"));
             Ok(())
         }
         fn host_net_listen(&mut self, _: i32, _: u16, _: &[u8; 4]) -> Result<(), Errno> {
@@ -482,7 +514,9 @@ mod tests {
         }
         fn bind_framebuffer(&mut self, _: i32, _: usize, _: usize, _: u32, _: u32, _: u32, _: u32) {
         }
-        fn unbind_framebuffer(&mut self, _: i32) {}
+        fn unbind_framebuffer(&mut self, pid: i32) {
+            self.cleanup_order.push(alloc::format!("framebuffer:{pid}"));
+        }
         fn fb_write(&mut self, _: i32, _: usize, _: &[u8]) {}
         fn gl_query(&mut self, _: i32, op: u32, input: &[u8], out: &mut [u8], _: u32) -> i32 {
             assert_eq!(op, wasm_posix_shared::gl::KERNEL_GL_QUERY_CONTROL);

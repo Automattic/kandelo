@@ -14,6 +14,8 @@ pub(crate) enum Delivered {
     ThreadExit(usize),
     RetryReleased,
     Signaled,
+    Removed,
+    InitReaped { pid: u32, status: i32, signal: u32 },
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Delivery {
@@ -28,6 +30,7 @@ pub(crate) struct EffectsReceiver {
     actual: Option<Result<Completion, Errno>>,
     status: Delivery,
     attempting: bool,
+    removal: Option<super::removal::RemovalReceiver>,
 }
 impl EffectsReceiver {
     pub(crate) fn new(actual: TakenEffects) -> Self {
@@ -37,6 +40,7 @@ impl EffectsReceiver {
             actual: Some(actual),
             status: Delivery::Ready,
             attempting: false,
+            removal: None,
         }
     }
     pub(crate) fn status(&self) -> Delivery {
@@ -47,11 +51,14 @@ impl EffectsReceiver {
     }
     #[cfg(test)]
     pub(crate) fn held_completion(&self) -> Option<&Completion> {
+        if let Some(removal) = &self.removal {
+            return removal.held_completion();
+        }
         self.actual.as_ref().and_then(|result| result.as_ref().ok())
     }
     fn done(&mut self, result: Result<Delivered, Errno>) -> Delivery {
-        // Only scalar completions reach here. Physical removal ownership is
-        // kept intact until an actual acknowledged receiver exists.
+        // Scalar completions or a fully delivered removal reach here. Pending
+        // physical effects and incomplete removal tails keep their real owner.
         self.actual = None;
         self.status = Delivery::Delivered(result);
         self.status
@@ -67,6 +74,9 @@ impl EffectsReceiver {
         if self.attempting {
             return self.fault();
         }
+        if self.removal.is_some() {
+            return self.step_removal(table, host);
+        }
         let Some(actual) = self.actual.as_ref() else {
             return self.fault();
         };
@@ -78,8 +88,27 @@ impl EffectsReceiver {
             completion,
             Completion::Removed(_) | Completion::InitReaped(_)
         ) {
-            self.status = Delivery::PendingPhysicalReceiver;
-            return self.status;
+            let Ok(completion) = self.actual.take().unwrap() else {
+                unreachable!()
+            };
+            match super::removal::RemovalReceiver::new(
+                completion,
+                crate::dri_release::DriReleaseOwner {
+                    pid: self.owner.pid,
+                    generation: self.owner.generation,
+                },
+            ) {
+                Ok(removal) => self.removal = Some(removal),
+                Err((error, completion)) => {
+                    self.actual = Some(Ok(completion));
+                    if error == Errno::ENOMEM {
+                        self.status = Delivery::PendingPhysicalReceiver;
+                        return self.status;
+                    }
+                    return self.fault();
+                }
+            }
+            return self.step_removal(table, host);
         }
         let Some(proc) = table.get(self.owner.pid) else {
             return self.fault();
@@ -185,6 +214,28 @@ impl EffectsReceiver {
             _ => unreachable!(),
         };
         self.done(Ok(result))
+    }
+    fn step_removal(&mut self, table: &mut ProcessTable, host: &mut dyn HostIO) -> Delivery {
+        self.status = Delivery::PendingPhysicalReceiver;
+        match self.removal.as_mut().unwrap().step(table, host) {
+            super::removal::RemovalProgress::Pending => self.status,
+            super::removal::RemovalProgress::Fault => self.fault(),
+            super::removal::RemovalProgress::Complete(done) => {
+                self.removal = None;
+                self.done(Ok(match done {
+                    super::removal::RemovalDone::Removed => Delivered::Removed,
+                    super::removal::RemovalDone::InitReaped {
+                        pid,
+                        status,
+                        signal,
+                    } => Delivered::InitReaped {
+                        pid,
+                        status,
+                        signal,
+                    },
+                }))
+            }
+        }
     }
 }
 

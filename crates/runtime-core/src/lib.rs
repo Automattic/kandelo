@@ -21,6 +21,7 @@ pub mod descriptor_backing;
 pub mod exchange;
 pub mod devfs;
 pub mod dri;
+pub mod dri_release;
 pub mod epoll;
 pub mod exec_target;
 pub mod fd;
