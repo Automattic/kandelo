@@ -1,12 +1,10 @@
 import { expect, it, vi } from "vitest";
-import { GlContextRegistry, type GlBindingInput } from "../src/webgl/registry.js";
+import { GlContextRegistry } from "../src/webgl/registry.js";
 import { GlFenceOwner } from "../src/webgl/fences.js";
 import { hasNativeRepair, repairNativeState } from "../src/webgl/native-recovery.js";
 import { GlMuxer } from "../src/webgl/muxer.js";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
 
 function driver() {
   let serial = 0;
@@ -228,44 +226,6 @@ it.each(["fd-close", "process-exit"] as const)("captures a peer's flags before r
   expect(native.deleted).toHaveLength(1);
   expect(kernel.gl.get(7, 11)).toBeUndefined();
   kernel.releaseProcessViews(8);
-});
-
-it("preserves a forwarded peer's flags when unbinding a creatorless fence", () => {
-  const native = driver();
-  const gl = new Proxy(native.gl, { get(target, name) {
-    return Reflect.get(target, name) ?? (() => null);
-  } });
-  let registry!: GlContextRegistry;
-  const original = GlContextRegistry.prototype.bind;
-  const observe = vi.spyOn(GlContextRegistry.prototype, "bind").mockImplementation(function (this: GlContextRegistry, input: GlBindingInput) {
-    original.call(this, input); registry = this;
-  });
-  let listener: ((event: MessageEvent) => void) | null = null;
-  const worker = {
-    addEventListener(_type: "message", value: (event: MessageEvent) => void) { listener = value; },
-    removeEventListener() { listener = null; },
-  };
-  const fire = (data: GlForwardMessage) => listener!({ data } as MessageEvent);
-  const dispose = setupMainForward(worker, { width: 1, height: 1, getContext: () => gl } as unknown as HTMLCanvasElement, 7);
-  try {
-    for (const sessionId of [11, 12]) {
-      const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox, 0);
-      fire({ type: "gl_forward_create_context", pid: 7, sessionId, mailbox });
-      expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    }
-    const creator = registry.get(7, 11)!, peer = registry.get(7, 12)!;
-    const candidate = creator.fences.prepare(creator)!; candidate.publish();
-    fire({ type: "gl_forward_destroy_context", pid: 7, sessionId: 11 });
-    expect(creator.gl).toBeNull();
-    const bytes = new Uint8Array(8), words = new DataView(bytes.buffer);
-    words.setUint16(0, 1, true); words.setUint16(2, 4, true); words.setUint32(4, 0x4000, true);
-    fire({ type: "gl_forward_submit", pid: 7, sessionId: 12, bytes });
-    expect(peer.errors).toEqual([]);
-    native.errors.push(0x500);
-    fire({ type: "gl_forward_unbind", pid: 7, sessionId: 11 });
-    expect(peer.errors).toEqual([0x500]);
-    expect(native.deleted).toHaveLength(1);
-  } finally { dispose(); observe.mockRestore(); }
 });
 
 it("releases an empty cleanup reservation when native fence allocation returns null", () => {

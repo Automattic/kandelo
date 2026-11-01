@@ -87,19 +87,6 @@ describe("GlContextRegistry", () => {
     expect(reg.list()).toEqual([]);
   });
 
-  it("retires every session even when a forwarding retirement notification fails", () => {
-    const reg = new GlContextRegistry();
-    reg.attachMainForward(7, {
-      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
-      onUnbind() { throw new Error("port closed"); },
-    });
-    for (const sessionId of [11, 12]) {
-      reg.bind({ pid: 7, sessionId, cmdbufAddr: 0, cmdbufLen: 4 });
-    }
-    expect(() => reg.unbind(7)).toThrow("port closed");
-    expect(reg.list()).toEqual([]);
-  });
-
   it("invalidates every session's cached view after process memory growth", () => {
     const reg = new GlContextRegistry();
     for (const sessionId of [11, 12]) {

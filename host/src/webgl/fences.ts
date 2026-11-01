@@ -104,7 +104,7 @@ export class GlFenceLease {
  * separately. Reusing a context in that session never reuses a fence token.
  * Before cancellation/destruction/release/close can retire a native handle,
  * its caller must capture the selected physical context's errors through its
- * muxer. Kernel and main-forward unbind do this even after context retirement.
+ * muxer. Kernel unbind does this even after context retirement.
  * No muxer or error-capture callback is retained by these ownership records. */
 export class GlFenceOwner {
   private fences = new Map<number, Fence>();

@@ -1,5 +1,5 @@
 /** Internal callable native receipt adapter. No production import dispatch,
- * channel retry, forwarding or public EGL wait is activated by this module. */
+ * channel retry or public EGL wait is activated by this module. */
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { ERRNO as E } from "../generated/abi.js";
 import type { GbmBoRegistry } from "../dri/registry.js";
@@ -20,7 +20,7 @@ import { captureNativeGlErrors } from "./errors.js";
 import { repairNativeState } from "./native-recovery.js";
 import * as O from "./ops.js";
 
-export type GlQueryPreentry = {state:"immediate"} | {state:"owned-required";reason:"busy"|"forward-only"}
+export type GlQueryPreentry = {state:"immediate"} | {state:"owned-required";reason:"busy"}
   | {state:"terminal";error:number};
 type Reply = {bytes:Uint8Array} | {error:number};
 type Custody = GlNativeResultCustody | GlFenceResultCustody;
@@ -124,7 +124,6 @@ export class GlNativeQueryAdapter {
       || b.draw!==binding.currentDrawable.drawSurfaceId || b.read!==binding.currentDrawable.readSurfaceId)) return {state:"terminal",error:E.EACCES};
     // Existing fences use the exact source lease, independently of an old
     // informational context id or current/display retirement.
-    if (binding.forward) return {state:"owned-required",reason:"forward-only"};
     const gl=sourceFence(b.op)
       ? binding.fences.contextFor(new DataView(b.input.buffer,b.input.byteOffset,4).getUint32(0,true)) : binding.gl;
     if (sourceFence(b.op) && (!gl || !this.muxers.has(gl))) return {state:"terminal",error:E.EINVAL};
@@ -149,7 +148,6 @@ export class GlNativeQueryAdapter {
       } else {
         const preentry=this.preentry(owner,b);
         if (preentry.state==="terminal") return this.rejected(request,preentry.error);
-        if (preentry.state==="owned-required" && preentry.reason==="forward-only") return this.rejected(request,E.ENOSYS);
         if (request.token<=authority.highWater || this.count>=this.limits.maxRequests) return this.rejected(request,E.ENOMEM);
         // Reserve the bounded rollback receiver before the first native lease.
         // Even failed Begin cleanup owns actual custody, not a numeric promise.

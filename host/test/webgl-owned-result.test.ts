@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { GlOwnedResultStore, GlResultOwner, GlNativeResultCustody, GlRemoteResultCustody, GlResultPeer } from "../src/webgl/owned-result.js";
+import { GlOwnedResultStore, GlResultOwner, GlNativeResultCustody } from "../src/webgl/owned-result.js";
 import * as resultTypes from "../src/webgl/owned-result.js";
 import { QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
@@ -20,7 +20,7 @@ function open(s: GlOwnedResultStore,pid: number,sessionId: number,operations?: G
 }
 
 function begin(s: GlOwnedResultStore, owner: GlResultOwner, token: bigint, op: number,
-  input: Uint8Array, capacity: number, custody: GlNativeResultCustody | resultTypes.GlFenceResultCustody | GlRemoteResultCustody | null = null) {
+  input: Uint8Array, capacity: number, custody: GlNativeResultCustody | resultTypes.GlFenceResultCustody | null = null) {
   return s.begin(owner,token,op,input,capacity,custody);
 }
 
@@ -100,19 +100,6 @@ it.each([5,NaN,-0x8000_0001])("reports invalid native completion %s as failure w
   expect(s.commit(owner,1n)).toBe(false); expect(s.cancel(owner,1n)).toBe(true);
 });
 
-it("requires the exact remote peer retirement ACK before releasing client bytes", () => {
-  const s = store(), owner = open(s,7,11)!, peer = new GlResultPeer(1), wrong = new GlResultPeer(1);
-  const custody = new GlRemoteResultCustody(peer,owner,1n);
-  begin(s,owner,1n,1,new Uint8Array([1]),4,custody); const execution = s.take(owner,1n)!;
-  execution.complete(0);
-  s.commit(owner,1n); expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"});
-  expect(custody.acknowledge(wrong,owner,1n,"commit",true)).toBe(false);
-  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"}); expect(s.retainedBytes).toBe(9);
-  expect(custody.acknowledge(peer,owner,1n,"commit",true)).toBe(true);
-  expect(custody.acknowledge(peer,owner,1n,"cancel",true)).toBe(false);
-  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"commit",accepted:true});
-});
-
 function native() {
   let serial=0, reject=false;
   const live = new Set<object>(), flags: number[]=[];
@@ -171,25 +158,6 @@ it("owner retirement before commit completion cannot publish a new fence into re
 });
 
 
-it("remote completion checks exact peer/owner/token and cannot revive cancellation or repeat native execution", () => {
-  const s=store(), owner=open(s,7,11)!, other=open(s,7,12)!, peer=new GlResultPeer(1), wrong=new GlResultPeer(1);
-  const custody=new GlRemoteResultCustody(peer,owner,1n);
-  begin(s,owner,1n,1,new Uint8Array(),4,custody); const execution=s.take(owner,1n)!;
-  expect(custody.acknowledge(peer,owner,1n,"cancel",true)).toBe(false);
-  for (const [sender,target,token] of [[wrong,owner,1n],[peer,other,1n],[peer,owner,2n]] as const)
-    expect(s.completeRemote(sender,target,token,4,new Uint8Array([1,2,3,4]))).toBe(false);
-  expect(s.poll(owner,1n)).toEqual({state:"pending"});
-  s.cancel(owner,1n);
-  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"});
-  expect(s.completeRemote(peer,owner,1n,4,new Uint8Array([1,2,3,4]))).toBe(false);
-  expect(s.poll(owner,1n)).toEqual({state:"retiring",mode:"cancel"});
-  expect(custody.acknowledge(peer,owner,1n,"cancel",false)).toBe(false);
-  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"pending"});
-  expect(custody.acknowledge(peer,owner,1n,"cancel",true)).toBe(true);
-  expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
-  expect(s.completeRemote(peer,owner,1n,4,new Uint8Array([1,2,3,4]))).toBe(false);
-});
-
 it("native cancellation preserves the selected peer's flags before retiring the source candidate", () => {
   const f=native(), s=store(), owner=open(s,7,11,f.binding.operations)!;
   f.registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0}); const peer=f.registry.get(7,12)!;
@@ -229,39 +197,6 @@ it("a detached native workspace becomes a failed completion without leaving a st
   expect(s.acknowledgeRetired(owner,1n)).toEqual({state:"retired",mode:"cancel",accepted:true});
 });
 
-
-it("native and remote receipts retain both sides until real server retirement follows client copyout", () => {
-  const f=native(), server=store(), client=store();
-  const serverOwner=open(server,7,11,f.binding.operations)!, clientOwner=open(client,7,11)!, peer=new GlResultPeer(1);
-  const remote=new GlRemoteResultCustody(peer,clientOwner,1n), publication=vi.spyOn(f.candidate,"publish");
-  const input=new Uint8Array([3,4]);
-  begin(server,serverOwner,1n,1,structuredClone(input),4,new GlNativeResultCustody(f.execution,f.candidate,f.muxer));
-  begin(client,clientOwner,1n,1,input,4,remote);
-  const nativeExecution=server.take(serverOwner,1n)!, forwardedExecution=client.take(clientOwner,1n)!;
-  nativeExecution.output.set([8,7,6,5]); nativeExecution.complete(4);
-  const reply=server.poll(serverOwner,1n); expect(reply.state).toBe("ready");
-  if (reply.state !== "ready") throw new Error("missing server reply");
-  expect(client.completeRemote(peer,clientOwner,1n,reply.rc,structuredClone(reply.bytes))).toBe(true);
-  const clientReply=client.poll(clientOwner,1n); if (clientReply.state !== "ready") throw new Error("missing client reply");
-  const copiedOut=new Uint8Array(clientReply.bytes); expect([...copiedOut]).toEqual([8,7,6,5]);
-  expect(publication).not.toHaveBeenCalled();
-  client.commit(clientOwner,1n); server.commit(serverOwner,1n);
-  f.registry.destroyContext(7,11); f.block(true);
-  expect(server.acknowledgeRetired(serverOwner,1n)).toEqual({state:"pending"});
-  expect(client.acknowledgeRetired(clientOwner,1n)).toEqual({state:"pending"});
-  expect(server.retainedBytes).toBe(10); expect(client.retainedBytes).toBe(10);
-  f.block(false); const acknowledgement=server.acknowledgeRetired(serverOwner,1n);
-  expect(acknowledgement).toEqual({state:"retired",mode:"commit",accepted:true});
-  expect(publication).toHaveBeenCalledTimes(1);
-  if (acknowledgement.state !== "retired") throw new Error("missing server retirement");
-  remote.acknowledge(peer,clientOwner,1n,acknowledgement.mode,acknowledgement.accepted);
-  expect(client.acknowledgeRetired(clientOwner,1n)).toEqual(acknowledgement);
-  expect(client.retainedBytes).toBe(0); expect(server.retainedBytes).toBe(0);
-  expect(server.acknowledgeRetired(serverOwner,1n)).toEqual(acknowledgement);
-  expect(client.acknowledgeRetired(clientOwner,1n)).toEqual(acknowledgement);
-  expect(server.forget(serverOwner,1n)).toBe(true); expect(client.forget(clientOwner,1n)).toBe(true);
-  f.registry.unbind(7);
-});
 
 
 it("adopts actual cleanup custody acquired by an operation racing cancellation before quiescence", () => {

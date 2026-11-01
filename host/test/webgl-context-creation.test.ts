@@ -7,7 +7,6 @@ import { querySurfaceCapabilities } from "../src/webgl/surface-capabilities.js";
 import { foreignTextureGl } from "./support/foreign-texture-gl";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { createMainForwardChannel, setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
 
 function harness(callbacks = {}, pointerWidth: 4 | 8 = 4) {
   const memory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
@@ -28,37 +27,6 @@ function harness(callbacks = {}, pointerWidth: 4 | 8 = 4) {
       imports.env.host_gl_create_context(pid, id, pointerWidth === 8 ? 0n : 0, pointerWidth === 8 ? 0n : 0, sessionId),
   };
 }
-
-it.each([[4, 21], [8, 21], [4, 0x8000_0005], [8, 0xffff_ffff]] as const)("preserves kernel context identity %s/%s through the real forwarding protocol", (pointerWidth, contextId) => {
-  const {kernel, create} = harness({}, pointerWidth);
-  const gl = sharingRenderer();
-  let listener: ((event: MessageEvent) => void) | undefined;
-  const worker = {
-    addEventListener(_type: "message", value: (event: MessageEvent) => void) { listener = value; },
-    removeEventListener(_type: "message", value: (event: MessageEvent) => void) {
-      if (listener === value) listener = undefined;
-    },
-  };
-  let remote: ReturnType<GlContextRegistry["get"]>;
-  const get = GlContextRegistry.prototype.get;
-  const capture = vi.spyOn(GlContextRegistry.prototype, "get").mockImplementation(function(this: GlContextRegistry, pid, session) {
-    const binding = get.call(this, pid, session);
-    if (this !== kernel.gl && pid === 7 && session === 11 && binding) remote = binding;
-    return binding;
-  });
-  const dispose = setupMainForward(worker, {width: 2, height: 2, getContext: () => gl} as unknown as HTMLCanvasElement, 7);
-  const messages: GlForwardMessage[] = [];
-  kernel.gl.attachMainForward(7, createMainForwardChannel({postMessage(message) {
-    messages.push(message); listener!({data: message} as MessageEvent);
-  }}, 7));
-  kernel.gl.bind({pid: 7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0});
-  try {
-    expect(create(7, contextId | 0, 11)).toBe(0);
-    expect(kernel.gl.get(7, 11)!.contextId).toBe(contextId);
-    expect(remote!.contextId).toBe(contextId);
-    expect(messages[0]).toMatchObject({type: "gl_forward_create_context", pid: 7, sessionId: 11, contextId});
-  } finally { dispose(); capture.mockRestore(); }
-});
 
 it("allocates device storage from an attached renderer before EGL context creation", () => {
   const { kernel, imports, create } = harness();
@@ -330,27 +298,6 @@ describe("context creation acknowledgement", () => {
     expect(b.shadow.scissor.rect).toEqual([0, 1, 4, 5]);
   });
 
-  it("keeps client binding state unchanged after a rejected forwarded make-current", () => {
-    const { kernel, create, imports } = harness();
-    kernel.gl.bind({ displayFileId: 1n, pid:7, sessionId: 11, cmdbufAddr: 0, cmdbufLen: 0 });
-    let result: number | Error = -12;
-    kernel.gl.attachMainForward(7, {
-      onCreateContext: () => 0, onDestroyContext() {}, onSubmit() {},
-      onMakeCurrent() { if (result instanceof Error) throw result; return result; },
-    });
-    expect(create(7, 21, 11)).toBe(0);
-    const b = kernel.gl.get(7, 11)!;
-    for (const value of [-12, 1, new Error("port closed")]) {
-      result = value;
-      expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(value === -12 ? -12 : -5);
-      expect(b.currentDrawable).toBeNull();
-      expect(b.hasBeenCurrent).toBe(false);
-    }
-    result = 0;
-    expect(imports.host_gl_make_current(7, 21, 0, 0, 11)).toBe(0);
-    expect(b.hasBeenCurrent).toBe(true);
-  });
-
   it("routes command buffers and context retirement independently within one process", () => {
     const { kernel, imports, create, memory } = harness();
     let color: number[] = [];
@@ -443,20 +390,6 @@ describe("context creation acknowledgement", () => {
     expect(b.claimedKmsCrtc).toBeNull();
   });
 
-  it("publishes a forwarded context only after a successful acknowledgement", () => {
-    const { kernel, create } = harness();
-    kernel.gl.bind({ displayFileId: 1n, pid:7, cmdbufAddr: 0, cmdbufLen: 0 });
-    let rc = -12;
-    kernel.gl.attachMainForward(7, {
-      onCreateContext: () => rc, onDestroyContext() {}, onSubmit() {},
-    });
-    const b = kernel.gl.get(7)!;
-    expect(create(7)).toBe(-12);
-    expect(b.contextId).toBeNull();
-    rc = 0;
-    expect(create(7)).toBe(0);
-    expect(b.contextId).toBe(1);
-  });
 });
 
 
@@ -599,21 +532,6 @@ describe("share group construction",()=>{
     expect(target.contextId).toBeNull();
   });
 });
-it("translates a shared kernel context identity to a reviewed forward session before acknowledgement",()=>{
-  const {kernel,imports,memory,create}=harness();
-  const calls:Array<[number|undefined,number|undefined]>=[];let rc=0;
-  kernel.gl.attachMainForward(7,{onCreateContext:(session,source)=>{calls.push([session,source]);return rc;},onDestroyContext(){},onSubmit(){}});
-  kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:0});
-  kernel.gl.bind({displayFileId: 1n, pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
-  expect(create(7,21,11)).toBe(0);
-  const target=kernel.gl.get(7,12)!,source=kernel.gl.get(7,11)!;
-  new Uint32Array(memory.buffer,64,4).set([2,21,0,0]);rc=-12;
-  expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(-12);
-  expect(target.contextId).toBeNull();expect(source.contextId).toBe(21);
-  rc=0;expect(imports.host_gl_create_context(7,22,64,16,12)).toBe(0);
-  expect(target.contextId).toBe(22);expect(calls).toEqual([[11,undefined],[12,11],[12,11]]);
-});
-
 it.each([[0,0],[0,3],[4,0],[4,3]])("keeps pbuffer dimensions %s by %s independent of the canvas and never presents them", (width,height) => {
   const {kernel,imports,memory} = harness(); let serial = 0, blits = 0;
   const storage:number[][] = [];

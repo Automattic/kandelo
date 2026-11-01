@@ -173,14 +173,6 @@ it("rejects malformed masks, unsupported mutations and physical reentry before a
   expect(nativeErrors).not.toHaveBeenCalled();f.registry.unbind(7);
 });
 
-it("keeps only preentry forward refusal and sends no synchronous forward query",async()=>{
-  const f=await fixture(), onQuery=vi.fn();f.binding.forward={onQuery} as unknown as NonNullable<typeof f.binding.forward>;
-  expect(f.adapter.preentry(f.owner,{op:O.QOP_GET_ERROR,input:new Uint8Array(),capacity:4,hasCurrent:true,context:1,draw:31,read:31}))
-    .toEqual({state:"owned-required",reason:"forward-only"});
-  expect(f.begin(1n,O.QOP_GET_ERROR,new Uint8Array(),4)).toHaveProperty("bytes");
-  expect(onQuery).not.toHaveBeenCalled();expect(f.adapter.pendingRequests).toBe(0);f.binding.forward=null;f.registry.unbind(7);
-});
-
 
 it("rejects malformed read-only query spans before a busy prefix can admit owned work",async()=>{
   const f=await fixture(), prefix=f.binding.operations.reserve("commands")!;

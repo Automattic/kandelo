@@ -18,8 +18,7 @@ const arrayLength = Object.getOwnPropertyDescriptor(arrayPrototype,"byteLength")
 const setBytes = Uint8Array.prototype.set;
 const MAX_TOKEN = 0x7fff_ffff_ffff_ffffn;
 // Notifications identify a registration without carrying its object. Never
-// recycle that scalar across native stores or replacement forward clients in
-// one kernel realm; exact object/ledger checks still grant actual authority.
+// recycle that scalar across native stores in one kernel realm; exact object/ledger checks still grant actual authority.
 let ownerRegistrationSerial = 0;
 export type GlResultLimits = Readonly<{ maxOwners: number; maxRequests: number; maxRetainedBytes: number }>;
 export type GlResultMode = "commit" | "cancel";
@@ -192,50 +191,6 @@ export class GlFenceResultCustody {
   }
 }
 
-/** The transport adapter owns the realm/port outside this record. Only its
- * exact capability may acknowledge remote native retirement; ids are not enough. */
-export class GlResultPeer {
-  constructor(readonly registration: number) {
-    if (!Number.isSafeInteger(registration) || registration < 1) throw new RangeError("invalid GL result peer");
-    Object.freeze(this);
-  }
-}
-export class GlRemoteResultCustody {
-  private acknowledged: {mode:GlResultMode;accepted:boolean} | null = null;
-  private requested: GlResultMode | null = null;
-  private claimed = false;
-  private attempted = true;
-  private revokedUnsent = false;
-  constructor(private authority: GlResultPeer, private owner: GlResultOwner, private token: bigint) {}
-  /** Copied transport intent has no native authority before its first post.
-   * Mark before postMessage, including a call which might throw after enqueue. */
-  static unposted(authority: GlResultPeer, owner: GlResultOwner, token: bigint): GlRemoteResultCustody {
-    const custody = new GlRemoteResultCustody(authority,owner,token);
-    custody.attempted = false; return custody;
-  }
-  markSendAttempt(authority: GlResultPeer, owner: GlResultOwner, token: bigint): boolean {
-    if (!this.accepts(authority,owner,token) || this.revokedUnsent || this.requested) return false;
-    this.attempted = true; return true;
-  }
-  claim(): boolean { if (this.claimed) return false; this.claimed = true; return true; }
-  matches(owner: GlResultOwner, token: bigint): boolean { return owner === this.owner && token === this.token; }
-  accepts(authority: GlResultPeer, owner: GlResultOwner, token: bigint): boolean {
-    return authority === this.authority && this.matches(owner,token);
-  }
-  request(mode: GlResultMode): void {
-    this.requested ??= mode;
-    if (this.requested === "cancel" && !this.attempted) this.revokedUnsent = true;
-  }
-  acknowledge(authority: GlResultPeer, owner: GlResultOwner, token: bigint, mode: GlResultMode, accepted: boolean): boolean {
-    if (!this.accepts(authority,owner,token) || this.requested !== mode || typeof accepted !== "boolean"
-      || (mode === "cancel" && !accepted) || (this.acknowledged &&
-      (this.acknowledged.mode !== mode || this.acknowledged.accepted !== accepted))) return false;
-    this.acknowledged = {mode,accepted}; return true;
-  }
-  complete(mode: GlResultMode): boolean { return (mode === "cancel" && this.revokedUnsent) || this.acknowledged?.mode === mode; }
-  get accepted(): boolean { return this.revokedUnsent || (this.acknowledged?.accepted ?? false); }
-}
-
 type RecordState = "queued" | "running" | "ready" | "retiring" | "retired";
 type ResultRecord = {
   owner: GlResultOwner; token: bigint; op: number; capacity: number; charge: number;
@@ -244,7 +199,7 @@ type ResultRecord = {
   accepted: boolean;
   state: RecordState; mode: GlResultMode | null; rc: number;
   execution: GlResultExecution | null; executing: boolean;
-  custody: GlNativeResultCustody | GlFenceResultCustody | GlRemoteResultCustody | null;
+  custody: GlNativeResultCustody | GlFenceResultCustody | null;
 };
 type OwnerRecord = { owner: GlResultOwner; closed: boolean; highWater: bigint; requests: Map<bigint,ResultRecord> };
 
@@ -260,8 +215,8 @@ export class GlResultExecution {
   releaseRecord(record: ResultRecord): void { if (this.record === record) { this.record = null; this.store = null; } }
 }
 
-/** Internal shared native/forwarded receipt foundation. No pending production
- * branch uses it yet. Limits count active owner registrations, request records
+/** Native retained-query receipt store used by the kernel worker's query
+ * controls (kernel-query-controls.ts, native-query-adapter.ts). Limits count active owner registrations, request records
  * (including scalar terminal ACK tombstones until Forget), and retained copied
  * bytes (input + output workspace + saved result capacity).
  * No Wasm/SharedArrayBuffer memory ceiling or callback is retained here. */
@@ -312,9 +267,9 @@ export class GlOwnedResultStore {
   }
   /** Custody is captured before admission, so queued work cannot select a
    * later context/drawable. Explicit null is for copied-byte-only operations;
-   * rejection leaves any supplied native/remote custody with the caller. */
+   * rejection leaves any supplied native custody with the caller. */
   begin(owner: GlResultOwner, token: bigint, op: number, input: Uint8Array, capacity: number,
-    custody: GlNativeResultCustody | GlFenceResultCustody | GlRemoteResultCustody | null): "admitted" | "existing" | "rejected" {
+    custody: GlNativeResultCustody | GlFenceResultCustody | null): "admitted" | "existing" | "rejected" {
     const entry = this.owner(owner);
     if (!entry || entry.closed || typeof token !== "bigint" || token < 1n || token > MAX_TOKEN) return "rejected";
     // Retry can observe an existing receipt, but can never replace its input,
@@ -322,8 +277,7 @@ export class GlOwnedResultStore {
     const existing = entry.requests.get(token);
     if (existing) return this.matchesRequest(owner,token,op,input,capacity)
       && (custody === null || custody === existing.custody) ? "existing" : "rejected";
-    if (custody === undefined || (custody instanceof GlRemoteResultCustody ? !custody.matches(owner,token)
-      : custody !== null && !custody.matches(owner))) return "rejected";
+    if (custody === undefined || (custody !== null && !custody.matches(owner))) return "rejected";
     if (token <= entry.highWater || !Number.isInteger(op) || op < 0 || op > 0xffff_ffff
       || !Number.isSafeInteger(capacity) || capacity < 0 || capacity > MAX_BYTES) return "rejected";
     let inputLength: number;
@@ -384,22 +338,6 @@ export class GlOwnedResultStore {
     record.state = "ready";
     return true;
   }
-  completeRemote(authority: GlResultPeer, owner: GlResultOwner, token: bigint, rc: number, bytes: Uint8Array): boolean {
-    const record = this.record(owner,token);
-    if (!record || !record.execution || !(record.custody instanceof GlRemoteResultCustody)
-      || !record.custody.accepts(authority,owner,token) || !record.executing) return false;
-    if (record.state === "retiring") return record.execution.complete(rc);
-    let size = -1;
-    try { size = apply(arrayLength,bytes,[]) as number; } catch { /* failed transport result */ }
-    if (!Number.isSafeInteger(rc) || rc < -0x8000_0000 || rc > record.capacity
-      || size < Math.max(0,rc) || size > record.capacity) return record.execution.complete(-5);
-    if (rc > 0) {
-      const source = new Uint8Array(apply(arrayBuffer,bytes,[]) as ArrayBufferLike,
-        apply(arrayOffset,bytes,[]) as number,rc);
-      apply(setBytes,record.workspace,[source]);
-    }
-    return record.execution.complete(rc);
-  }
   poll(owner: GlResultOwner, token: bigint): GlResultPoll {
     const record = this.record(owner,token);
     if (!record) return {state:"unknown"};
@@ -414,7 +352,6 @@ export class GlOwnedResultStore {
     if (record.state === "retiring" || record.state === "retired") return record.mode === mode;
     if (mode === "commit" && (record.state !== "ready" || record.rc < 0)) return false;
     record.mode = mode; record.state = "retiring";
-    if (record.custody instanceof GlRemoteResultCustody) record.custody.request(mode);
     return true;
   }
   commit(owner: GlResultOwner, token: bigint): boolean { return this.retire(owner,token,"commit"); }
@@ -433,10 +370,7 @@ export class GlOwnedResultStore {
     if (record.state === "retired") return {state:"retired",mode:record.mode!,accepted:record.accepted};
     if (record.state !== "retiring" || record.executing) return {state:"pending"};
     let accepted = true;
-    if (record.custody instanceof GlRemoteResultCustody) {
-      if (!record.custody.complete(record.mode!)) return {state:"pending"};
-      accepted = record.custody.accepted;
-    } else if (record.custody) {
+    if (record.custody) {
       const retirement = record.custody instanceof GlNativeResultCustody
         ? record.custody.retire(record.mode!,!entry.closed) : record.custody.retire(record.mode!);
       if (!retirement.complete) return {state:"pending"};

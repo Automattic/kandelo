@@ -366,8 +366,7 @@ for (const cube of [false,true]) {
   });
 }
 
-for (const forwarded of [false,true]) {
-test(`actual C shader source upload crosses query chunks and renders after commit${forwarded ? " through main forwarding" : ""}`, async ({ page }) => {
+test(`actual C shader source upload crosses query chunks and renders after commit`, async ({ page }) => {
   const root = fileURLToPath(new URL("../../../",import.meta.url)), temporary = mkdtempSync(join(root,".context/graphics-shader-trace-"));
   let frames: number[];
   try {
@@ -379,84 +378,8 @@ test(`actual C shader source upload crosses query chunks and renders after commi
   } finally { rmSync(temporary,{recursive:true,force:true}); }
   await installBrowserMemoryBoundaryProbe(page);
   await page.goto("/trap-signal-test.html");
-  const result = await page.evaluate(async ({sourceRoot,frames,forwarded}) => {
+  const result = await page.evaluate(async ({sourceRoot,frames}) => {
     const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
-    if (forwarded) {
-      const { setupMainForward } = await import(base+"main-forward.ts");
-      const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
-      const expected = "precision mediump float; /*"+"X".repeat(140000)+"*/ void main(){gl_FragColor=vec4(0.,1.,1.,1.);}";
-      const source = `
-        import { createMainForwardChannel } from ${JSON.stringify(base+"main-forward.ts")};
-        import * as O from ${JSON.stringify(base+"ops.ts")};
-        let channel;
-        onmessage = event => {
-          try {
-            if (event.data.retire) { channel.onDestroyContext(); channel.onUnbind(1); postMessage({type:"upload_retired"}); return; }
-            channel = createMainForwardChannel({postMessage: message => postMessage(message)},94,1);
-            if (channel.onCreateContext() || channel.onCreateSurface({surfaceId:1,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc
-                || channel.onMakeCurrent({drawSurfaceId:1,readSurfaceId:1,width:1,height:1})) throw new Error("forwarded creation failed");
-            const memory = new WebAssembly.Memory({initial:2,maximum:2,shared:true}), scratch = new Uint8Array(memory.buffer);
-            const data = new Uint8Array(event.data.frames), view = new DataView(data.buffer);
-            let queries = 0, maximum = 0;
-            for (let offset=0; offset<data.length;) {
-              const kind = view.getUint32(offset,true), op = view.getUint32(offset+4,true), size = view.getUint32(offset+8,true), cap = view.getUint32(offset+12,true);
-              offset += 16; scratch.set(data.subarray(offset,offset+size)); offset += size;
-              if (kind === 1) channel.onSubmit(scratch.subarray(0,size));
-              else {
-                maximum = Math.max(maximum,size); queries++;
-                const answer = channel.onQuery(op,scratch.subarray(0,size),cap), reply = new DataView(answer.bytes.buffer);
-                if (answer.rc !== 12 || reply.getUint32(0,true) || reply.getUint32(4,true) !== new DataView(memory.buffer).getUint32(8,true) || reply.getUint32(8,true) !== 0x47514c33) throw new Error("forwarded upload failed");
-              }
-              scratch.fill(0);
-            }
-            const expected = ${JSON.stringify(expected)}, bytes = new Uint8Array(expected.length);
-            for (let offset=0; offset<bytes.length; offset+=64000) {
-              const count = Math.min(64000,bytes.length-offset); new Uint32Array(memory.buffer,0,3).set([2,offset,count]);
-              const answer = channel.onQuery(O.QOP_GET_SHADER_SOURCE,scratch.subarray(0,12),count+12);
-              if (answer.rc !== count+12 || new DataView(answer.bytes.buffer).getUint32(0,true)) throw new Error("forwarded source read failed");
-              bytes.set(answer.bytes.subarray(8,8+count),offset);
-            }
-            new Uint32Array(memory.buffer,0,2).set([2,0x8b81]);
-            const compiled = channel.onQuery(O.QOP_GET_SHADERIV,scratch.subarray(0,8),4);
-            new Uint32Array(memory.buffer,0,6).set([0,0,1,1,0x1908,0x1401]);
-            const pixels = channel.onQuery(O.QOP_READ_PIXELS,scratch.subarray(0,24),4), error = channel.onQuery(O.QOP_GET_ERROR,scratch.subarray(0,0),4);
-            if (compiled.rc !== 4 || pixels.rc !== 4 || error.rc !== 4) throw new Error("forwarded final query failed");
-            postMessage({type:"upload_done",result:{queries,maximum,sourceMatches:new TextDecoder().decode(bytes)===expected,compiled:!!new DataView(compiled.bytes.buffer).getUint32(0,true),pending:null,pixels:[...pixels.bytes],error:new DataView(error.bytes.buffer).getUint32(0,true)}});
-          } catch (error) { postMessage({type:"upload_failed",error:String(error)}); }
-        };
-      `;
-      const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"})), worker = new Worker(url,{type:"module"});
-      let mailboxes = 0, independent = true;
-      worker.addEventListener("message",event => {
-        const message = event.data;
-        if (message?.mailbox) {
-          const bytes = new Uint8Array(message.mailbox); if (bytes[bytes.length-1] !== 123) { mailboxes++; bytes[bytes.length-1] = 123; }
-          independent &&= bytes.length === 65556;
-        }
-        if (message?.input) independent &&= !(message.input.buffer instanceof SharedArrayBuffer);
-        if (message?.bytes) independent &&= !(message.bytes.buffer instanceof SharedArrayBuffer);
-      });
-      const dispose = setupMainForward(worker,canvas,94);
-      const wait = (type: string) => new Promise<any>((resolve,reject) => {
-        const cleanup = () => { clearTimeout(timeout); worker.removeEventListener("message",listener); worker.removeEventListener("error",failed); };
-        const timeout = setTimeout(() => { cleanup(); reject(new Error("forwarded upload timeout; mailboxes="+mailboxes)); },45000);
-        const failed = (event: ErrorEvent) => { cleanup(); reject(new Error(event.message)); };
-        const listener = (event: MessageEvent) => {
-          if (event.data?.type === type || event.data?.type === "upload_failed") {
-            cleanup();
-            if (event.data.type === "upload_failed") reject(new Error(event.data.error)); else resolve(event.data.result);
-          }
-        }; worker.addEventListener("message",listener); worker.addEventListener("error",failed);
-      });
-      try {
-        const done = wait("upload_done"); worker.postMessage({frames}); const result = await done;
-        const gl = canvas.getContext("webgl2")!, program = gl.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram;
-        const fragment = gl.getAttachedShaders(program)!.find(shader => gl.getShaderParameter(shader,gl.SHADER_TYPE) === gl.FRAGMENT_SHADER)!;
-        result.nativeMatches = gl.getShaderSource(fragment) === expected;
-        const retired = wait("upload_retired"); worker.postMessage({retire:true}); await retired;
-        result.retired = !gl.isShader(fragment); result.mailboxes = mailboxes; result.independent = independent; return result;
-      } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
-    }
     const { GlContextRegistry } = await import(base+"registry.ts"), { GlMuxer } = await import(base+"muxer.ts");
     const { decodeAndDispatch } = await import(base+"bridge.ts"), { runGlQuery } = await import(base+"query.ts"), O = await import(base+"ops.ts");
     const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
@@ -490,11 +413,10 @@ test(`actual C shader source upload crosses query chunks and renders after commi
     const result = {queries,maximum,sourceMatches:new TextDecoder().decode(bytes) === expected,nativeMatches:gl.getShaderSource(fragment) === expected,
       retired:false,mailboxes:0,independent:true,compiled:gl.getShaderParameter(fragment,gl.COMPILE_STATUS),pending:b.shaderUpload !== null,pixels:[...pixels],error:new DataView(error.buffer).getUint32(0,true)};
     mux.invalidateCurrent(); reg.destroyContext(94,1); result.retired = !gl.isShader(fragment); return result;
-  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames,forwarded});
-  expect(result).toEqual({queries:5,maximum:65536,sourceMatches:true,nativeMatches:true,retired:true,mailboxes:forwarded ? 1 : 0,independent:true,compiled:true,pending:forwarded ? null : false,pixels:[0,255,255,255],error:0});
+  },{sourceRoot:process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root,frames});
+  expect(result).toEqual({queries:5,maximum:65536,sourceMatches:true,nativeMatches:true,retired:true,mailboxes:0,independent:true,compiled:true,pending:false,pixels:[0,255,255,255],error:0});
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
-}
 
 for (const width of [1,2]) {
   test(`maximum ${width*8}-bit VBO indices preserve strip topology and shared storage`, async ({ page }) => {
@@ -969,186 +891,6 @@ test("internal object groups share textures and programs while context state and
     retainedDeletedBinding:true,deletedBoundName:1,retiredDeletedTexture:true});
 });
 
-test("surfaceless framebuffer zero rejects rendering while user framebuffers remain usable", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
-    document.body.replaceChildren(canvas);
-    const gl = canvas.getContext("webgl2", { preserveDrawingBuffer: true })!;
-    if (!gl) throw new Error("WebGL2 is required");
-    gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const c = createMainForwardChannel({ postMessage: m => postMessage(m) }, 81, 101);
-          if (c.onCreateContext() !== 0 || c.onMakeCurrent({drawSurfaceId:0,readSurfaceId:0,width:0,height:0}) !== 0)
-            throw new Error("surfaceless bind failed");
-          const send = (op, words, tail = new Uint8Array(), float = false) => {
-            const bytes = new Uint8Array(4+words.length*4+tail.length), v = new DataView(bytes.buffer);
-            v.setUint16(0,op,true); v.setUint16(2,bytes.length-4,true);
-            words.forEach((word,i) => float ? v.setFloat32(4+i*4,word,true) : v.setUint32(4+i*4,word,true));
-            bytes.set(tail,4+words.length*4); c.onSubmit(bytes);
-          };
-          const query = (op, words = [], size = 4) => {
-            const bytes = new Uint8Array(words.length*4), v = new DataView(bytes.buffer);
-            words.forEach((word,i) => v.setUint32(i*4,word,true));
-            return c.onQuery(op,bytes,size);
-          };
-          const number = (op,words = []) => {
-            const reply = query(op,words); if (reply.rc !== 4) throw new Error("query failed: "+reply.rc);
-            return new DataView(reply.bytes.buffer).getUint32(0,true);
-          };
-          const error = () => number(O.QOP_GET_ERROR);
-          const status = () => number(O.QOP_CHECK_FB_STATUS,[0x8d40]);
-          const initialStatus = status();
-          const viewportReply = query(O.QOP_GET_INTEGERV,[0x0ba2],16);
-          const viewport = [...new Int32Array(viewportReply.bytes.buffer)];
-          for (const [name,type,text] of [
-            [11,0x8b31,"void main(){gl_Position=vec4(0.,0.,0.,1.);gl_PointSize=1.;}"],
-            [12,0x8b30,"precision mediump float;void main(){gl_FragColor=vec4(0.,1.,0.,1.);}"]]) {
-            send(O.OP_CREATE_SHADER,[type,name]);
-            const bytes = new TextEncoder().encode(text); send(O.OP_SHADER_SOURCE,[name,bytes.length],bytes);
-            send(O.OP_COMPILE_SHADER,[name]);
-            if (number(O.QOP_GET_SHADERIV,[name,0x8b81]) !== 1) throw new Error("shader failed");
-          }
-          send(O.OP_CREATE_PROGRAM,[13]); send(O.OP_ATTACH_SHADER,[13,11]); send(O.OP_ATTACH_SHADER,[13,12]);
-          send(O.OP_LINK_PROGRAM,[13]); if(number(O.QOP_GET_PROGRAMIV,[13,0x8b82]) !== 1) throw new Error("link failed");
-          send(O.OP_USE_PROGRAM,[13]); send(O.OP_VIEWPORT,[0,0,1,1]);
-          send(O.OP_GEN_TEXTURES,[2,7,8]); send(O.OP_BIND_TEXTURE,[0x0de1,7]);
-          send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,4],new Uint8Array([255,0,0,255]));
-          send(O.OP_GEN_BUFFERS,[1,5]); send(O.OP_BIND_BUFFER,[0x8893,5]);
-          send(O.OP_BUFFER_DATA,[0x8893,2,0x88e4]);
-          const setupError = error(), errors = [];
-          for (const [op,words] of [
-            [O.OP_CLEAR,[0x4000]], [O.OP_DRAW_ARRAYS,[0,0,1]], [O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]],
-            [O.OP_COPY_TEX_IMAGE_2D,[0x0de1,0,0x1908,0,0,1,1,0]],
-            [O.OP_COPY_TEX_SUB_IMAGE_2D,[0x0de1,0,0,0,0,0,1,1]]]) {
-            send(op,words); errors.push(error());
-          }
-          const read = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          errors.push(error());
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
-          const attachmentError = error(), statusAfterAttachment = status();
-          send(O.OP_GEN_FRAMEBUFFERS,[1,4]); send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,7,0]);
-          const copiedTexture = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]);
-          send(O.OP_BIND_TEXTURE,[0x0de1,8]); send(O.OP_TEX_IMAGE_2D,[0x0de1,0,0x1908,1,1,0,0x1908,0x1401,0]);
-          send(O.OP_FRAMEBUFFER_TEXTURE_2D,[0x8d40,0x8ce0,0x0de1,8,0]);
-          const userStatus = status();
-          send(O.OP_CLEAR_COLOR,[0,1,0,1],new Uint8Array(),true); send(O.OP_CLEAR,[0x4000]);
-          send(O.OP_DRAW_ARRAYS,[0,0,1]); send(O.OP_DRAW_ELEMENTS,[0,1,0x1403,0]);
-          const userPixels = query(O.QOP_READ_PIXELS,[0,0,1,1,0x1908,0x1401]), userError = error();
-          // GLES 2 has one framebuffer target: WebGL 2's split selectors are
-          // INVALID_ENUM and leave the bound user framebuffer in place.
-          send(O.OP_BIND_FRAMEBUFFER,[0x8ca9,0]);
-          const split = {bindError:error(),draw:status(),read:number(O.QOP_CHECK_FB_STATUS,[0x8ca8]),
-            readError:error(),drawName:number(O.QOP_GET_INTEGERV,[0x8ca6]),
-            readNameRc:query(O.QOP_GET_INTEGERV,[0x8caa]).rc,readNameError:error()};
-          send(O.OP_CLEAR,[0x4000]); split.clearError = error();
-          send(O.OP_BIND_FRAMEBUFFER,[0x8d40,4]);
-          send(O.OP_DELETE_FRAMEBUFFERS,[1,4]); const deletedStatus = status();
-          send(O.OP_CLEAR,[0x4000]); const deletedError = error();
-          c.onDestroyContext();
-          postMessage({type:"surface_done",results:{initialStatus,viewport,setupError,errors,
-            readRc:read.rc,readBytes:[...read.bytes],attachmentError,statusAfterAttachment,
-            copiedTextureRc:copiedTexture.rc,copiedTexture:[...copiedTexture.bytes],
-            userStatus,userPixels:[...userPixels.bytes],userError,split,deletedStatus,deletedError}});
-        } catch(error) { postMessage({type:"surface_failed",error:String(error)}); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" }); const dispose = setupMainForward(worker,canvas,81);
-    try {
-      const results = await new Promise<Record<string, unknown>>((resolve,reject) => {
-        const timeout = setTimeout(() => reject(new Error("surfaceless test timed out")),45_000);
-        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
-        worker.addEventListener("message",({data}) => {
-          if(data.type === "surface_done") { clearTimeout(timeout); resolve(data.results); }
-          if(data.type === "surface_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        }); worker.postMessage({type:"start"});
-      });
-      gl.bindFramebuffer(gl.FRAMEBUFFER,null);
-      const canvasPixels = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,canvasPixels);
-      return {...results,canvasPixels:[...canvasPixels]};
-    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
-  },root);
-  expect(result).toEqual({initialStatus:0x8219,viewport:[0,0,0,0],setupError:0,
-    errors:Array(6).fill(0x506),readRc:-22,readBytes:[],attachmentError:0x502,statusAfterAttachment:0x8219,
-    copiedTextureRc:4,copiedTexture:[255,0,0,255],userStatus:0x8cd5,userPixels:[0,255,0,255],userError:0,
-    split:{bindError:0x500,draw:0x8cd5,read:0,readError:0x500,drawName:4,readNameRc:-22,readNameError:0x500,clearError:0},
-    deletedStatus:0x8219,deletedError:0x506,canvasPixels:[0,0,255,255]});
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-test("forwarded native errors stay with their owner across switches and invalidation", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const results = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channels = [101,102].map(session => createMainForwardChannel(
-            { postMessage: message => postMessage(message) }, 71, session));
-          const drawables = [101,102].map(id => ({drawSurfaceId:id,readSurfaceId:id,width:1,height:1}));
-          for (const [index,channel] of channels.entries()) {
-            if (channel.onCreateContext() !== 0
-                || channel.onCreateSurface({surfaceId:101+index,kind:1,width:1,height:1,configId:1,targetBoId:0}).rc !== 0
-                || channel.onMakeCurrent(drawables[index]) !== 0)
-              throw new Error("failed to bind renderer");
-          }
-          const invalid = new Uint8Array(16), v = new DataView(invalid.buffer);
-          v.setUint16(0, O.OP_TEX_PARAMETERI, true); v.setUint16(2, 12, true);
-          v.setUint32(4, 0xdead, true); // invalid native texture target
-          v.setUint32(8, 0x2801, true); v.setUint32(12, 0x2600, true);
-          const error = channel => {
-            const reply = channel.onQuery(O.QOP_GET_ERROR, new Uint8Array(), 4);
-            if (reply.rc !== 4) throw new Error("error query failed: " + reply.rc);
-            return new DataView(reply.bytes.buffer).getUint32(0, true);
-          };
-          const results = [];
-          for (const invalidate of [false,true]) {
-            channels[0].onSubmit(invalid);
-            if (invalidate && channels[1].onMakeCurrent(drawables[1]) !== 0)
-              throw new Error("replacement bind failed");
-            results.push([error(channels[1]), error(channels[0]), error(channels[0])]);
-          }
-          channels.forEach(channel => channel.onDestroyContext());
-          postMessage({ type: "errors_done", results });
-        } catch (error) { postMessage({ type: "errors_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 71);
-    try {
-      return await new Promise<number[][]>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("error isolation timed out")), 45_000);
-        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "errors_done") { clearTimeout(timeout); resolve(data.results); }
-          if (data.type === "errors_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        });
-        worker.postMessage({ type: "start" });
-      });
-    } finally { dispose(); worker.terminate(); URL.revokeObjectURL(url); }
-  }, root);
-  expect(results).toEqual([[0,0x500,0],[0,0x500,0]]);
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
 test("GLES texture targets and pixel-store state survive alternating contexts", async ({ page }) => {
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
     ?? fileURLToPath(new URL("../../../", import.meta.url));
@@ -1310,230 +1052,6 @@ test("GLES texture targets and pixel-store state survive alternating contexts", 
       unpackAlignment: first ? 2 : 4, packAlignment: first ? 8 : 4,
       rowLength: 0, skipRows: 0, skipPixels: 0, error: 0 });
   }
-});
-
-for (const sameProcess of [false, true]) {
-test(`forwarded synchronous queries isolate ${sameProcess ? "sessions in one process" : "processes"} with one mailbox per channel`, async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async ({ sourceRoot, sameProcess }) => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channels = [73,74].map((pid,index) => createMainForwardChannel(
-            { postMessage: message => postMessage(message) },
-            ${sameProcess ? 73 : "pid"}, ${sameProcess ? "index + 201" : 0}));
-          const memory = new WebAssembly.Memory({ initial: 1, maximum: 1, shared: true });
-          const bytes = new Uint8Array(memory.buffer);
-          const view = new DataView(memory.buffer);
-          const results = [];
-          for (let round = 0; round < 3; round++) {
-            channels.forEach((channel,index) => {
-              if (channel.onCreateContext() !== 0) throw new Error("renderer did not acknowledge context creation");
-              if (round === 0 && channel.onCreateSurface({surfaceId:index+1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
-                throw new Error("surface creation failed");
-              if (channel.onMakeCurrent({ drawSurfaceId: index+1, readSurfaceId: index+1, width: 8, height: 8 }) !== 0)
-                throw new Error("renderer did not acknowledge current drawable");
-              view.setUint16(0, O.OP_CLEAR_COLOR, true); view.setUint16(2, 16, true);
-              [index, 1-index, 0, 1].forEach((v,j) => view.setFloat32(4+4*j,v,true));
-              channel.onSubmit(bytes.subarray(0,20));
-            });
-            for (const channel of channels) {
-              // No color command here: the selected owner's prior state must
-              // be restored for both drawing and synchronous queries.
-              view.setUint16(0, O.OP_CLEAR, true); view.setUint16(2, 4, true);
-              view.setUint32(4, 0x4000, true);
-              channel.onSubmit(bytes.subarray(0,8));
-              view.setUint32(0, 0x0c22, true);
-              const state = channel.onQuery(O.QOP_GET_FLOATV, bytes.subarray(0,4), 16);
-              [0,0,1,1,0x1908,0x1401].forEach((v,j) => view.setUint32(j*4,v,true));
-              const pixels = channel.onQuery(O.QOP_READ_PIXELS, bytes.subarray(0,24), 4);
-              const error = channel.onQuery(O.QOP_GET_ERROR, bytes.subarray(0,0), 4);
-              results.push({ stateRc: state.rc, state: [...new Float32Array(state.bytes.buffer)],
-                pixelsRc: pixels.rc, pixels: [...pixels.bytes],
-                errorRc: error.rc, error: [...error.bytes] });
-            }
-            channels.forEach(channel => channel.onDestroyContext());
-          }
-          postMessage({ type: "contract_done", results });
-        } catch (error) { postMessage({ type: "contract_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = (sameProcess ? [73] : [73,74]).map(pid => setupMainForward(worker, canvas, pid));
-    // Structured clone produces distinct SAB wrappers over the same storage.
-    // Use an unused payload byte to observe backing reuse across messages.
-    let mailboxCount = 0;
-    const mailboxSizes: number[] = [];
-    let independent = true;
-    try {
-      const results = await new Promise<unknown[]>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("forwarded query did not complete")), 45_000);
-        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "gl_forward_query") {
-            const bytes = new Uint8Array(data.mailbox);
-            if (bytes[bytes.length - 1] !== 0x5a) {
-              mailboxCount++;
-              mailboxSizes.push(bytes.length);
-              bytes[bytes.length - 1] = 0x5a;
-            }
-            independent &&= data.input.buffer instanceof ArrayBuffer;
-          } else if (data.type === "gl_forward_submit") {
-            independent &&= data.bytes.buffer instanceof ArrayBuffer;
-          } else if (data.type === "contract_done") {
-            clearTimeout(timeout); resolve(data.results);
-          } else if (data.type === "contract_failed") {
-            clearTimeout(timeout); reject(new Error(data.error));
-          }
-        });
-        worker.postMessage({ start: true });
-      });
-      return { results, independent, mailboxes: mailboxCount, mailboxSizes };
-    } finally {
-      worker.terminate(); dispose.forEach(close => close()); URL.revokeObjectURL(url);
-    }
-  }, { sourceRoot: root, sameProcess });
-  expect(result.independent).toBe(true);
-  expect(result.mailboxes).toBe(2);
-  expect(result.mailboxSizes[0]).toBeLessThan(66_000);
-  expect(result.results).toHaveLength(6);
-  result.results.forEach((value, index) => {
-    expect(value).toEqual({ stateRc: 16, state: [index % 2, 1 - index % 2, 0, 1],
-      pixelsRc: 4, pixels: index % 2 ? [255,0,0,255] : [0,255,0,255],
-      errorRc: 4, error: [0,0,0,0] });
-  });
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-}
-
-test("forwarded first-current initializes viewport and scissor once", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`, location.href).href;
-    const { setupMainForward } = await import(base + "main-forward.ts");
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(base + "main-forward.ts")};
-      import * as O from ${JSON.stringify(base + "ops.ts")};
-      onmessage = () => {
-        try {
-          const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 77, 321);
-          if (channel.onCreateContext() !== 0) throw new Error("creation failed");
-          const current = (surface) => channel.onMakeCurrent({ drawSurfaceId: surface, readSurfaceId: surface, width: 8, height: 8 });
-          const state = (pname) => {
-            const input = new Uint8Array(4); new DataView(input.buffer).setUint32(0, pname, true);
-            const reply = channel.onQuery(O.QOP_GET_INTEGERV, input, 16);
-            if (reply.rc !== 16) throw new Error("state query failed: " + reply.rc);
-            return [...new Int32Array(reply.bytes.buffer)];
-          };
-          if (current(0) !== 0) throw new Error("surfaceless bind failed");
-          const first = [state(0x0ba2), state(0x0c10)];
-          for (const [op, values] of [[O.OP_VIEWPORT, [1,2,5,6]], [O.OP_SCISSOR, [0,1,4,5]]]) {
-            const bytes = new Uint8Array(20), view = new DataView(bytes.buffer);
-            view.setUint16(0, op, true); view.setUint16(2, 16, true);
-            values.forEach((value, index) => view.setInt32(4 + index * 4, value, true));
-            channel.onSubmit(bytes);
-          }
-          if (channel.onCreateSurface({surfaceId:1,kind:1,width:8,height:8,configId:1,targetBoId:0}).rc !== 0)
-            throw new Error("window creation failed");
-          if (current(1) !== 0) throw new Error("window bind failed");
-          const rebound = [state(0x0ba2), state(0x0c10)];
-          postMessage({ type: "first_current_result", first, rebound });
-        } catch (error) { postMessage({ type: "first_current_failed", error: String(error) }); }
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 77);
-    try {
-      return await new Promise<{ first: number[][]; rebound: number[][] }>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("first-current contract timed out")), 35_000);
-        worker.addEventListener("message", ({ data }) => {
-          if (data.type === "first_current_result") { clearTimeout(timeout); resolve(data); }
-          if (data.type === "first_current_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
-        });
-        worker.postMessage({ start: true });
-      });
-    } finally { worker.terminate(); dispose(); URL.revokeObjectURL(url); }
-  }, root);
-  expect(result.first).toEqual([[0, 0, 0, 0], [0, 0, 0, 0]]);
-  expect(result.rebound).toEqual([[1, 2, 5, 6], [0, 1, 4, 5]]);
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-test("forwarded creation acknowledges real context loss and restoration", async ({ page }) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const results = await page.evaluate(async sourceRoot => {
-    const moduleUrl = new URL(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`, location.href).href;
-    const { setupMainForward } = await import(moduleUrl);
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const gl = canvas.getContext("webgl2");
-    if (!gl) throw new Error("WebGL2 is required");
-    const loss = gl.getExtension("WEBGL_lose_context");
-    if (!loss) throw new Error("WEBGL_lose_context is required for the loss regression");
-    const source = `
-      import { createMainForwardChannel } from ${JSON.stringify(moduleUrl)};
-      const channel = createMainForwardChannel({ postMessage: m => postMessage(m) }, 75);
-      onmessage = ({ data }) => {
-        if (data.retry) channel.onDestroyContext();
-        postMessage({ type: "creation_result", rc: channel.onCreateContext() });
-      };
-    `;
-    const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
-    const worker = new Worker(url, { type: "module" });
-    const dispose = setupMainForward(worker, canvas, 75);
-    const create = (retry: boolean) => new Promise<number>((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error("creation acknowledgement timed out")), 35_000);
-      const receive = ({ data }: MessageEvent) => {
-        if (data.type !== "creation_result") return;
-        clearTimeout(timeout); worker.removeEventListener("message", receive);
-        resolve(data.rc);
-      };
-      worker.addEventListener("message", receive);
-      worker.postMessage({ retry });
-    });
-    function contextEvent(name: "webglcontextlost" | "webglcontextrestored") {
-      return new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error(`${name} did not arrive`)), 10_000);
-        canvas.addEventListener(name, event => {
-          event.preventDefault(); clearTimeout(timeout); resolve();
-        }, { once: true });
-      });
-    }
-    try {
-      const accepted = await create(false);
-      const lost = contextEvent("webglcontextlost");
-      loss.loseContext(); await lost;
-      const rejected = await create(true);
-      const restored = contextEvent("webglcontextrestored");
-      loss.restoreContext(); await restored;
-      const retried = await create(false);
-      return [accepted, rejected, retried];
-    } finally {
-      worker.terminate(); dispose(); URL.revokeObjectURL(url);
-    }
-  }, root);
-  expect(results).toEqual([0, -19, 0]);
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
 test("deleted current programs survive owner switches and retire after their last reference", async ({ page }) => {
@@ -1757,97 +1275,14 @@ test("surface draw/read selectors retain storage across owner retirement and ind
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
-test("forwarded surface creation acknowledges dimensions and preserves selected pixels through retirement", async ({page}) => {
-  await installBrowserMemoryBoundaryProbe(page);
-  await page.goto("/trap-signal-test.html");
-  const root = fileURLToPath(new URL("../../../",import.meta.url));
-  const result = await page.evaluate(async sourceRoot => {
-    const base = new URL(`/@fs/${sourceRoot}host/src/webgl/`,location.href).href;
-    const {setupMainForward} = await import(base+"main-forward.ts");
-    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 8;
-    document.body.replaceChildren(canvas);
-    const source = `
-      import {createMainForwardChannel} from ${JSON.stringify(base+"main-forward.ts")};
-      import * as O from ${JSON.stringify(base+"ops.ts")};
-      onmessage = () => { try {
-        const c = createMainForwardChannel({postMessage:m => postMessage(m)},77,321);
-        const surface = (id,width,height) => c.onCreateSurface({surfaceId:id,kind:1,width,height,configId:1,targetBoId:0});
-        const first = surface(71,3,2);
-        if (first.rc !== 0 || c.onCreateContext() !== 0) throw new Error("creation failed");
-        const bind = (id,width,height) => c.onMakeCurrent({drawSurfaceId:id,readSurfaceId:id,width,height});
-        const clear = (color) => {
-          const bytes = new Uint8Array(28), v = new DataView(bytes.buffer);
-          v.setUint16(0,O.OP_CLEAR_COLOR,true); v.setUint16(2,16,true);
-          color.forEach((n,i) => v.setFloat32(4+i*4,n,true));
-          v.setUint16(20,O.OP_CLEAR,true); v.setUint16(22,4,true); v.setUint32(24,0x4000,true);
-          c.onSubmit(bytes);
-        };
-        const pixels = () => {
-          const input = new Uint8Array(24), v = new DataView(input.buffer);
-          [0,0,1,1,0x1908,0x1401].forEach((n,i) => v.setUint32(i*4,n,true));
-          const reply = c.onQuery(O.QOP_READ_PIXELS,input,4);
-          if (reply.rc !== 4) throw new Error("pixel query failed: "+reply.rc);
-          return [...reply.bytes];
-        };
-        if (bind(71,3,2) !== 0) throw new Error("first bind failed");
-        clear([1,0,0,1]); const red = pixels();
-        c.onDestroySurface(71); const retained = pixels();
-        const second = surface(72,4,1);
-        if (second.rc !== 0 || bind(72,4,1) !== 0) throw new Error("replacement failed");
-        clear([0,1,0,1]); const green = pixels();
-        const rejected = surface(73,5,5).rc;
-        c.onDestroySurface(71); const afterStale = pixels();
-        if (c.onPresent() !== 0) throw new Error("present failed");
-        postMessage({type:"surface_result",first,second,red,retained,green,rejected,afterStale});
-      } catch(error) {postMessage({type:"surface_failed",error:String(error)});} };
-    `;
-    const url = URL.createObjectURL(new Blob([source],{type:"text/javascript"}));
-    const worker = new Worker(url,{type:"module"}), dispose = setupMainForward(worker,canvas,77);
-    try {
-      const result = await new Promise<any>((resolve,reject) => {
-        const timer = setTimeout(() => reject(new Error("surface acknowledgement timed out")),35000);
-        worker.addEventListener("message",({data}) => {
-          if (data.type === "surface_result") {clearTimeout(timer);resolve(data);}
-          if (data.type === "surface_failed") {clearTimeout(timer);reject(new Error(data.error));}
-        });
-        worker.postMessage({start:true});
-      });
-      const gl = canvas.getContext("webgl2")!;
-      const previous = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
-      const visible = new Uint8Array(4); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);
-      gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
-      return {...result,visible:[...visible]};
-    } finally {worker.terminate();dispose();URL.revokeObjectURL(url);}
-  },root);
-  expect(result).toEqual({type:"surface_result",first:{rc:0,width:3,height:2},second:{rc:0,width:4,height:1},
-    red:[255,0,0,255],retained:[255,0,0,255],green:[0,255,0,255],rejected:-16,afterStale:[0,255,0,255],visible:[0,255,0,255]});
-  expect(await memoryBoundaryFailures(page)).toEqual([]);
-});
-
-for (const mode of ["native","forwarded","retarget"] as const) {
+for (const mode of ["native","retarget"] as const) {
   test(`${mode} cross-session surfaces preserve separate pixels and retire after their final selector`, async ({page}) => {
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto("/trap-signal-test.html");
     const root = fileURLToPath(new URL("../../../",import.meta.url));
     const result = await page.evaluate(async ({root,mode}) => {
       const canvas = document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const gl = mode === "forwarded" ? canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})! : null;
-      const created: object[] = [], deleted: object[] = [], live: Array<() => boolean> = [];
-      if (gl) {
-        for (const [createName,deleteName,isName] of [
-          ["createFramebuffer","deleteFramebuffer","isFramebuffer"],
-          ["createTexture","deleteTexture","isTexture"],
-          ["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
-        ]) {
-          const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-          api[createName]=() => {const value=create();if(value){created.push(value);live.push(() => isLive(value));}return value;};
-          api[deleteName]=(value:object|null) => {if(value)deleted.push(value);destroy(value);};
-        }
-      }
       const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surface-routing-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward} = await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose = mode === "forwarded" ? setupMainForward(worker,canvas,7) : () => {};
       try {
         const result = await new Promise<any>((resolve,reject) => {
           const timeout=setTimeout(() => reject(new Error("surface routing worker timed out")),35000);
@@ -1856,17 +1291,10 @@ for (const mode of ["native","forwarded","retarget"] as const) {
             if (data.type === "surface_routing_result") {clearTimeout(timeout);resolve(data);}
             if (data.type === "surface_routing_failed") {clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if (mode === "forwarded") worker.postMessage({mode});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
         });
-        if (gl) {
-          const previous=gl.getParameter(gl.READ_FRAMEBUFFER_BINDING);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);
-          const visible=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,visible);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,previous);
-          result.visible=[...visible];result.clean=created.length===deleted.length && created.every(value => deleted.includes(value)) && live.every(isLive => !isLive());
-          result.error=gl.getError();
-        }
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"surface_routing_result",red:[255,0,0,255],green:[0,255,0,255],independent:[0,255,0,255],
       blue:mode === "retarget" ? [0,0,255,255] : null,retained:[0,255,0,255],rejected:-22,afterRejected:[0,255,0,255],
@@ -1875,9 +1303,7 @@ for (const mode of ["native","forwarded","retarget"] as const) {
   });
 }
 for(const scenario of ["sync-khr-render","sync-render","core-image-render","shared-records-render","records-basic","names-render","image-target-render","image-bind-render","encoder-array-render","encoder-array-index-render","encoder-array-legacy-render","encoder-array-index-legacy-render","raw-discard-render","surface-limits-render","platform-window-render","completion-render","pbuffer-basic","pbuffer-zero"] as const) {
-for (const mode of ["native", "forwarded"] as const) {
-  // Forwarded BO-source registration remains an ordinary inventory gap.
-  if((scenario === "raw-discard-render" || scenario === "core-image-render") && mode === "forwarded")continue;
+for (const mode of ["native"] as const) {
   test(`actual C ${scenario.startsWith("pbuffer-") ? `${scenario === "pbuffer-zero" ? "zero-sized" : "rendered"} pbuffers preserve the visible canvas` : scenario === "sync-khr-render" ? "KHR fence aliases retain completion and public identity" : scenario === "sync-render" ? "EGL client fences retain completed pixels after creator retirement" : scenario === "core-image-render" ? "core EGL images retain sibling pixels through destruction and respecification" : scenario === "completion-render" ? "completion waits finish before pixels are read" : scenario === "platform-window-render" ? "GBM platform windows preserve pixels around surface operations" : scenario === "surface-limits-render" ? "surface limits preserve current rendering across display generations" : scenario === "raw-discard-render" ? "unpublished raw candidate cleanup permits fresh cube pixels" : scenario === "shared-records-render" ? "public shared contexts retain texture storage after source retirement" : scenario === "records-basic" ? "independent EGL records preserve draw/read pixels" : scenario === "names-render" ? "implicit and generated texture names retain independent storage" : scenario === "image-bind-render" ? "native binding allocation failure preserves binding and dimensionality" : scenario === "image-target-render" ? "a rejected texture target preserves binding and storage" : `client draws retain the original buffer across renderer peer deletion${scenario.includes("legacy") ? " using large legacy staging" : " using an owned private draw"}${scenario.includes("index") ? " with separate index/vertex views" : ""}`} through ${mode} dispatch`, async ({page}) => {
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const temporary=mkdtempSync(join(root,".context/graphics-egl-record-trace-"));
@@ -1894,70 +1320,23 @@ for (const mode of ["native", "forwarded"] as const) {
     await page.goto("/trap-signal-test.html");
     const result=await page.evaluate(async ({root,mode,trace,scenario})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=8;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      let finishes=0;
-      if(gl && scenario==="completion-render") {const finish=gl.finish.bind(gl);gl.finish=()=>{finishes++;finish();};}
-
-      if(gl)for(const [createName,deleteName,isName] of [
-        ["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createTexture","deleteTexture","isTexture"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],
-        ["fenceSync","deleteSync","isSync"],
-        ...(scenario.startsWith("encoder-array-")?[["createBuffer","deleteBuffer","isBuffer"],["createVertexArray","deleteVertexArray","isVertexArray"]]:[]),
-      ]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
-      if(gl && scenario.startsWith("pbuffer-")) { gl.clearColor(0,0,1,1); gl.clear(gl.COLOR_BUFFER_BIT); }
       const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/egl-record-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
-      let capabilityState:unknown[]|null=null,capabilityChecks=0;
-      const physicalState=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
-        gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("EGL record replay timed out")),35000);
           worker.addEventListener("error",event=>{clearTimeout(timeout);reject(new Error(event.message));});
           worker.addEventListener("message",({data})=>{
-            if(data.type==="egl_record_capabilities_before")capabilityState=physicalState();
-            if(data.type==="egl_record_capabilities_after") {
-              if(!capabilityState || capabilityState.some((value,index)=>value!==physicalState()[index])) {
-                clearTimeout(timeout);reject(new Error("forwarded surface limits changed native state"));return;
-              }
-              capabilityChecks++;
-            }
-            if(data.type==="egl_record_fail_texture_create") {
-              if(!gl)throw new Error("missing forwarding renderer");
-              const api=gl as any,create=api.createTexture;
-              api.createTexture=()=>{api.createTexture=create;return null;};
-            }
             if(data.type==="egl_record_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="egl_record_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,trace,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render"||scenario==="raw-discard-render",rawCandidate:scenario==="raw-discard-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,trace,canvas:offscreen,peerDelete:scenario.startsWith("encoder-array-"),captureUpload:scenario.startsWith("image-")||scenario==="core-image-render",bindFailure:scenario==="image-bind-render"||scenario==="raw-discard-render",rawCandidate:scenario==="raw-discard-render",pbuffer:scenario.startsWith("pbuffer-"),zeroSurface:scenario==="pbuffer-zero",capabilities:scenario==="surface-limits-render",completion:scenario==="completion-render"},[offscreen]);}
         });
         if(scenario==="surface-limits-render") {
           if(result.limits.length!==2)throw new Error("missing generation limit query");
-          if(gl) {
-            const dimension=Math.min(gl.getParameter(gl.MAX_TEXTURE_SIZE),gl.getParameter(gl.MAX_RENDERBUFFER_SIZE));
-            if(capabilityChecks!==2 || result.limits.some((values:number[])=>values[0]!==dimension))throw new Error("forwarded native surface limits mismatch");
-          }
           delete result.limits;
         }
-        if(gl) {
-          if(scenario.startsWith("pbuffer-")) {
-            const prior=gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),pixel=new Uint8Array(4);
-            gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
-            result.canvasPixel=[...pixel];result.viewport=[...gl.getParameter(gl.VIEWPORT)];
-          }
-          if(scenario==="completion-render")result.finishes=finishes;
-          result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
-          result.error=gl.getError();
-        }
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode,trace,scenario});
     expect(result).toEqual(scenario === "sync-khr-render" ? {type:"egl_record_result",observed:[[255,0,0,255]],retiredContexts:[31,32],retiredSurfaces:[131],clean:true,error:0}
     :scenario === "sync-render" ? {type:"egl_record_result",observed:[[255,0,0,255]],retiredContexts:[31],retiredSurfaces:[131],clean:true,error:0}
@@ -1980,22 +1359,13 @@ for (const mode of ["native", "forwarded"] as const) {
 }
 }
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`ABI 58 shared context construction preserves object identity through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=()=>{const value=create();if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
       const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("shared context worker timed out")),35000);
@@ -2004,12 +1374,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="share_context_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"share_context_result",red:[255,0,0,255],sharedRed:[255,0,0,255],sharedGreen:[0,255,0,255],independent:[0,0,255,255],
       survivor:[0,255,0,255],chained:[0,255,0,255],unnamed:[0,255,0,255],publicName:[0,0,0,0],afterReuse:[0,255,0,255],afterPeerDestroy:[0,255,0,255],clean:true,error:0});
@@ -2018,22 +1386,13 @@ for(const mode of ["native","forwarded"] as const) {
 }
 
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`checked shared uniform values survive source retirement and reject relinked locations through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],["createProgram","deleteProgram","isProgram"],["createShader","deleteShader","isShader"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
       const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("uniform values worker timed out")),35000);
@@ -2042,12 +1401,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="uniform_values_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,uniforms:true});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,uniforms:true,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,uniforms:true,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     const ok=(values:number[])=>({status:0,count:values.length,values});
     const reflected:Array<[string,number,number]>=[["colorValue",1,0x8b52],["normal",1,0x8b5b],["transform",1,0x8b5c],["items[0]",2,0x8b51],["flags",1,0x8b59],["scalar",1,0x1406],["u"+"n".repeat(248),1,0x1406]];
@@ -2059,22 +1416,13 @@ for(const mode of ["native","forwarded"] as const) {
 }
 
 
-for(const mode of ["native","forwarded"] as const) {
+for(const mode of ["native"] as const) {
   test(`delayed shared reservations preserve realized storage through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
     const result=await page.evaluate(async({root,mode})=>{
       const canvas=document.createElement("canvas");canvas.width=canvas.height=1;document.body.replaceChildren(canvas);
-      const gl=mode==="forwarded"?canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true})!:null;
-      const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[],counts:Record<string,number>={};
-      if(gl)for(const [createName,deleteName,isName] of [["createTexture","deleteTexture","isTexture"],["createFramebuffer","deleteFramebuffer","isFramebuffer"],["createRenderbuffer","deleteRenderbuffer","isRenderbuffer"],["createBuffer","deleteBuffer","isBuffer"]]) {
-        const api=gl as any,create=api[createName].bind(gl),destroy=api[deleteName].bind(gl),isLive=api[isName].bind(gl);
-        api[createName]=(...args:unknown[])=>{const value=create(...args);if(value){created.push(value);live.push(()=>isLive(value));counts[createName]=(counts[createName]??0)+1;}return value;};
-        api[deleteName]=(value:object|null)=>{if(value)deleted.push(value);destroy(value);};
-      }
       const worker=new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/share-context-worker.ts`,location.href),{type:"module"});
-      const {setupMainForward}=await import(new URL(`/@fs/${root}host/src/webgl/main-forward.ts`,location.href).href);
-      const dispose=mode==="forwarded"?setupMainForward(worker,canvas,7):()=>{};
       try {
         const result=await new Promise<any>((resolve,reject)=>{
           const timeout=setTimeout(()=>reject(new Error("reservation worker timed out")),35000);
@@ -2083,12 +1431,10 @@ for(const mode of ["native","forwarded"] as const) {
             if(data.type==="reservation_result"){clearTimeout(timeout);resolve(data);}
             if(data.type==="share_context_failed"){clearTimeout(timeout);reject(new Error(data.error));}
           });
-          if(mode==="forwarded")worker.postMessage({mode,reservations:true});
-          else {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,reservations:true,canvas:offscreen},[offscreen]);}
+          {const offscreen=canvas.transferControlToOffscreen();worker.postMessage({mode,reservations:true,canvas:offscreen},[offscreen]);}
         });
-        if(gl){result.clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());result.error=gl.getError();result.allocations=[counts.createBuffer??0,counts.createTexture??0,counts.createRenderbuffer??0];}
         return result;
-      } finally {worker.terminate();dispose();}
+      } finally {worker.terminate();}
     },{root,mode});
     expect(result).toEqual({type:"reservation_result",reserved:[false,false,false],realized:[true,true,true],retired:[false,false,false],texturePixels:[255,0,0,255],renderbufferPixels:[0,255,0,255],bufferMaximum:3,bufferBits:15,errors:[[0,0,0,0],[0,0,0,0]],allocations:[2,1,1],clean:true,error:0});
     expect(await memoryBoundaryFailures(page)).toEqual([]);
@@ -2263,26 +1609,15 @@ test("native fence waiters retain completion and pixels after creator-context de
   expect(await memoryBoundaryFailures(page)).toEqual([]);
 });
 
-for (const mode of ["native", "forwarded"] as const) {
+for (const mode of ["native"] as const) {
   test(`retained fence wire queries preserve completion and pixels through ${mode} host imports`, async ({ page }) => {
     const root = fileURLToPath(new URL("../../../", import.meta.url));
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto("/trap-signal-test.html");
     const result = await page.evaluate(async ({ sourceRoot, mode }) => {
-      const { setupMainForward } = await import(`/@fs/${sourceRoot}host/src/webgl/main-forward.ts`);
       const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
       document.body.replaceChildren(canvas);
       const worker = new Worker("/test/support/fence-query-worker.ts", { type: "module" });
-      let dispose: (() => void) | undefined;
-      let gl: WebGL2RenderingContext | null = null, created = 0, deleted = 0;
-      if (mode === "forwarded") {
-        gl = canvas.getContext("webgl2", { antialias: false, preserveDrawingBuffer: true });
-        if (!gl) throw new Error("Main WebGL2 required");
-        const allocate = gl.fenceSync.bind(gl), destroy = gl.deleteSync.bind(gl);
-        gl.fenceSync = (condition, flags) => { const value = allocate(condition, flags); if (value) created++; return value; };
-        gl.deleteSync = sync => { if (sync) deleted++; destroy(sync); };
-        dispose = setupMainForward(worker, canvas, 91);
-      }
       try {
         const reply = await new Promise<any>((resolve, reject) => {
           const deadline = setTimeout(() => reject(new Error("Fence worker timed out")), 15000);
@@ -2290,19 +1625,12 @@ for (const mode of ["native", "forwarded"] as const) {
           worker.addEventListener("message", ({ data }) => {
             if (data.type === "fence_query_result") { clearTimeout(deadline); resolve(data); }
           });
-          if (mode === "native") {
-            const offscreen = canvas.transferControlToOffscreen();
-            worker.postMessage({ type: "start_fence_query", mode, canvas: offscreen }, [offscreen]);
-          } else worker.postMessage({ type: "start_fence_query", mode });
+          const offscreen = canvas.transferControlToOffscreen();
+          worker.postMessage({ type: "start_fence_query", mode, canvas: offscreen }, [offscreen]);
         });
         if (reply.error) throw new Error(reply.error);
-        if (gl) {
-          const pixels = new Uint8Array(4); gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-          if (gl.getError() !== 0) throw new Error("Forwarded GL error");
-          reply.pixels = [...pixels]; reply.created = created; reply.deleted = deleted;
-        }
         return reply;
-      } finally { dispose?.(); worker.terminate(); }
+      } finally { worker.terminate(); }
     }, { sourceRoot: process.env.KANDELO_GRAPHICS_SOURCE_ROOT ?? root, mode });
     expect(result).toEqual({ type: "fence_query_result", signaled: true, retired: 2,
       created: 1, deleted: 1, pixels: [255, 0, 0, 255] });
@@ -2310,7 +1638,7 @@ for (const mode of ["native", "forwarded"] as const) {
   });
 }
 
-for (const mode of ["native","forwarded"] as const) {
+for (const mode of ["native"] as const) {
   test(`owned submission snapshots preserve queued pixels through ${mode} dispatch`,async({page})=>{
     await installBrowserMemoryBoundaryProbe(page);await page.goto("/trap-signal-test.html");
     const root=fileURLToPath(new URL("../../../",import.meta.url));
@@ -2334,7 +1662,7 @@ for (const mode of ["native","forwarded"] as const) {
       gl.clearColor=(r,g,b,a)=>{if(r===1 && a===1){rewritten++;[0,1,0,1].forEach((value,index)=>view.setFloat32(24+index*4,value,true));}clearColor(r,g,b,a);};
       let cleanup=()=>{};
       try {
-        if(mode==="native") {
+        {
           const reg=new GlContextRegistry();reg.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:48});
           const binding=reg.get(7,11)!;binding.gl=gl;binding.canvas=canvas;binding.contextId=1;binding.cmdbufView=bytes;
           cleanup=()=>reg.unbind(7,11);
@@ -2342,16 +1670,6 @@ for (const mode of ["native","forwarded"] as const) {
           if(frame.validate((await import(base+"bridge.ts")).validateCommandBuffer)!==0)throw new Error("preflight");
           queue.enqueue(binding,frame);
           if(drainSubmitQueue(queue,()=>mux,decodeAndDispatch)!==0 || binding.cmdbufView!==bytes)throw new Error("drain/view restoration");
-        } else {
-          const {setupMainForward}=await import(base+"main-forward.ts");
-          const M=await import(base+"main-forward-query.ts");
-          let listener:((event:MessageEvent)=>void)|null=null;
-          const worker={addEventListener(_type:"message",next:(event:MessageEvent)=>void){listener=next;},removeEventListener(){listener=null;}};
-          cleanup=setupMainForward(worker,canvas,7);
-          const mailbox=M.createGlForwardQueryMailbox();M.prepareGlForwardQuery(mailbox,0);
-          listener!({data:{type:"gl_forward_create_context",pid:7,sessionId:11,mailbox}} as MessageEvent);
-          if(M.waitForGlForwardQuery(mailbox).rc!==0)throw new Error("context");
-          listener!({data:{type:"gl_forward_submit",pid:7,sessionId:11,bytes}} as MessageEvent);
         }
         const pixel=new Uint8Array(4);gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
         return {pixel:[...pixel],rewritten,error:gl.getError()};

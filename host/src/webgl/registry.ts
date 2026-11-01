@@ -15,8 +15,6 @@ import { captureNativeGlErrors } from "./errors.js";
 import { destroyTextureView, destroyRenderbufferView, retireExportedImage, type GlExportedImage } from "./image-storage.js";
 import type { GlUniformUpload } from "./uniform-upload.js";
 import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js";
-import type { GlSurfaceCreation } from "./surface-create.js";
-import type { GlOwnedForwardClient } from "./owned-forward.js";
 /**
  * Tracks live `/dev/dri/renderD128` GLES sessions reported by the kernel.
  *
@@ -74,22 +72,6 @@ export type GlBindingInput = {
   /** Cmdbuf length in bytes (always `shared::gl::CMDBUF_LEN` = 1 MiB
    *  in v1). */
   cmdbufLen: number;
-};
-
-/** Bytes handed to `onSubmit` are non-shared — the caller copies them
- *  out of the SAB-backed cmdbuf so the channel may transfer the buffer. */
-export type GlForwardChannel = {
-  readonly ownedQueries?: GlOwnedForwardClient;
-  /** Zero acknowledges a live renderer; negative errno leaves no context. */
-  onCreateContext(sessionId?: number, shareSessionId?: number, contextId?: number): number;
-  onDestroyContext(sessionId?: number, contextId?: number): void;
-  onCreateSurface?(surface: GlSurfaceCreation, sessionId?: number): {rc: number; width: number; height: number};
-  onDestroySurface?(surfaceId: number, sessionId?: number): void;
-  onUnbind?(sessionId: number): void;
-  onMakeCurrent?(drawable: GlDrawableBinding, sessionId?: number): number;
-  onPresent?(sessionId?: number): number;
-  onSubmit(bytes: Uint8Array, sessionId?: number): void;
-  onQuery?(op: number, input: Uint8Array, outLen: number, sessionId?: number): { rc: number; bytes: Uint8Array };
 };
 
 export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlClientArrayFields & {
@@ -163,8 +145,6 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
 
 
   shadow: GlShadowState;
-
-  forward: GlForwardChannel | null;
 };
 
 export type GlChangeEvent = "bind" | "unbind";
@@ -351,30 +331,23 @@ export class GlContextRegistry {
    *  foreign textures (`0x4000_0000`) so a stray id never resolves to
    *  the wrong table when debugging. */
   private nextGpuBoTexId = 0x6000_0000;
-  /** Channels installed before `bind()` fires; drained when it does, so
-   *  the embedder can wire forwarding without racing `host_gl_bind`. */
-  private pendingForwards = new Map<number, GlForwardChannel>();
-  /** Canvases attached before `bind()` fires; drained on bind, mirroring
-   *  pendingForwards. Without this, an embedder that calls
+  /** Canvases attached before `bind()` fires; drained on bind. Without this, an embedder that calls
    *  `attachCanvas(pid, …)` synchronously after `spawn()` would race
    *  the program's own `eglInitialize → host_gl_bind` and silently
    *  drop the canvas, leaving every subsequent submit a no-op. */
   private pendingCanvases = new Map<number, HTMLCanvasElement | OffscreenCanvas>();
 
   bind(b: GlBindingInput): void {
-    const forward = this.pendingForwards.get(b.pid)
-      ?? this.list().find(value => value.pid === b.pid && value.forward)?.forward ?? null;
-    this.pendingForwards.delete(b.pid);
     const canvas = this.getCanvas(b.pid);
     this.pendingCanvases.delete(b.pid);
     const sessionId = (b.sessionId ?? 0) >>> 0;
     if (this.get(b.pid, sessionId)) throw new Error("GL session is already bound");
-    const binding = this.newBinding(b,canvas,forward);
+    const binding = this.newBinding(b,canvas);
     this.bindings.set(`${binding.pid}:${sessionId}`, binding);
     for (const l of this.listeners) l(b.pid, "bind");
   }
 
-  private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"], forward: GlForwardChannel | null): GlBinding {
+  private newBinding(b: GlBindingInput, canvas: GlBinding["canvas"]): GlBinding {
     const sessionId = (b.sessionId ?? 0) >>> 0;
     const operations = new GlOperationStream();
     const binding: GlBinding = exposeSurfaceResources(exposeGlSharedObjects({
@@ -415,7 +388,6 @@ export class GlContextRegistry {
       objectCaptureSerial: 0,
       readbackCapture: null,
       readbackCaptureSerial: 0,
-      forward,
     }));
     binding.objects.members.add(binding);
     return binding;
@@ -425,12 +397,12 @@ export class GlContextRegistry {
    * caller acknowledges work that can outlive this public context. */
   retainContextExecution(pid: number, sessionId: number, muxer: GlExecutionRetirementGuard): GlContextExecutionLease | null {
     const b = this.get(pid,sessionId);
-    if (!b?.gl || b.contextId === null || b.forward || muxer.context !== b.gl) return null;
+    if (!b?.gl || b.contextId === null || muxer.context !== b.gl) return null;
     let record = this.executions.get(b);
     try {
       if (!record) {
         const replacement = this.newBinding({pid:b.pid,sessionId:b.sessionId,cmdbufAddr:b.cmdbufAddr,
-          cmdbufLen:b.cmdbufLen},b.canvas,b.forward);
+          cmdbufLen:b.cmdbufLen},b.canvas);
         record = {completion:{context:b.gl,complete:false,listeners:new Set()},binding:b,replacement,key:`${b.pid}:${b.sessionId}`,gl:b.gl,canvas:b.canvas,muxer:new WeakRef(muxer),
           references:0,retired:false,cleaned:false,cleanup:null,records:this.executionRecords,
           contexts:this.executions,gpuBos:this.gpuBos};
@@ -489,11 +461,9 @@ export class GlContextRegistry {
       if (b.pid !== pid || (sessionId !== undefined && b.sessionId !== sessionId)) continue;
       b.cmdbufView = null;
       b.operations.close();
-      const forward = b.forward;
       try {
         this.retireContextBinding(b,false);
         retireSurface(b.surface);
-        forward?.onUnbind?.(b.sessionId);
       } catch (error) {
         failure ??= error;
       } finally {
@@ -503,7 +473,6 @@ export class GlContextRegistry {
       for (const l of this.listeners) l(pid, "unbind");
     }
     if (sessionId === undefined || !this.list().some(b => b.pid === pid)) {
-      this.pendingForwards.delete(pid);
       this.pendingCanvases.delete(pid);
     }
     if (failure) throw failure;
@@ -526,7 +495,6 @@ export class GlContextRegistry {
     if (record && record.references > 0) {
       const next = record.replacement;
       next.canvas = b.canvas;
-      next.forward = b.forward;
       if (b.surfaceId !== null) next.surface = b.surface;
       next.fences = b.fences;
       next.operations = b.operations;
@@ -539,8 +507,8 @@ export class GlContextRegistry {
       // accepted execution retains its native repair/retirement leases.
       b.compressedUpload = null;
       // The retired execution owns native/scalar state, never the session's
-      // borrowed guest cache or its forwarding transport.
-      b.cmdbufView = null; b.forward = null; b.canvas = record.canvas;
+      // borrowed guest cache.
+      b.cmdbufView = null; b.canvas = record.canvas;
       record.retired = true;
       return;
     }
@@ -637,17 +605,6 @@ export class GlContextRegistry {
     const b = this.list().find(b => b.pid === pid && b.canvas);
     if (b?.canvas) return b.canvas;
     return this.pendingCanvases.get(pid) ?? null;
-  }
-
-  attachMainForward(pid: number, channel: GlForwardChannel): void {
-    const bindings = this.list().filter(b => b.pid === pid);
-    if (bindings.length === 0) this.pendingForwards.set(pid, channel);
-    for (const b of bindings) b.forward = channel;
-  }
-
-  detachMainForward(pid: number): void {
-    this.pendingForwards.delete(pid);
-    for (const b of this.list()) if (b.pid === pid) b.forward = null;
   }
 
   /** Delete every binding's foreign texture for a destroyed bo (the bo

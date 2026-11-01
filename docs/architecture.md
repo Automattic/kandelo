@@ -4421,6 +4421,13 @@ TLV commands, the kernel validates the submitted range, and the host decodes
 the commands against a browser `WebGL2RenderingContext` or a test double in
 Node.js. The kernel does not contain GL rendering code.
 
+GL always executes in the kernel worker, on both hosts. Command submission,
+queries, context and surface lifecycle, and retained query receipts run against
+the WebGL 2 context the kernel worker owns (an `OffscreenCanvas`, a transferred
+KMS canvas, or an embedder-supplied canvas). There is no main-thread GL
+forwarding path: an earlier exported fallback that replayed commands and
+queries on the page's main thread had no production caller and was removed.
+
 For `GLIO_QUERY`, the kernel rejects nonzero reserved fields, bounds both
 buffer lengths and validates every nonempty guest range before renderer
 dispatch. It probes the full output capacity even if the renderer might
@@ -4498,8 +4505,7 @@ width, height, maximum pixel count and the completion marker. The renderer
 uses the smaller texture/renderbuffer dimension and caps the pixel count
 only at the representable EGLint maximum. C caches the accepted limits per
 display generation; a malformed reply leaves caller output unchanged.
-Native and main-forwarded paths preserve outgoing GLES errors before
-querying, without selecting a logical context, changing drawable bindings,
+The kernel worker preserves outgoing GLES errors before querying, without selecting a logical context, changing drawable bindings,
 resizing a canvas or claiming KMS presentation. A host without an available
 renderer reports failure.
 
@@ -4514,8 +4520,8 @@ pump coexistence remain in the lifecycle audit. Texture binding
 capabilities remain false, so texture-bound requests fail
 with BAD_MATCH. Logical zero dimensions use minimal private native storage;
 viewport/scissor initialization honors those logical dimensions. Pbuffer swaps
-still validate the current draw surface and flush, without posting. Native and
-forwarded raw presentation also recognize the surface kind and avoid blitting
+still validate the current draw surface and flush, without posting. Raw
+presentation also recognizes the surface kind and avoid blitting
 its private target to the visible canvas.
 
 Core and EXT platform-window constructors validate live GBM dimensions,
@@ -4557,15 +4563,15 @@ before creating texture/renderbuffer/framebuffer objects. Checked storage and
 read/draw/texture/renderbuffer inverses keep failed setup or finalization owned
 after creator retirement. Dependent operations stop until restoration and
 cleanup finish. Accepted replacement storage stays committed if retiring an old
-target fails. Surface destruction and abandoned forwarded requests retire the
+target fails. Surface destruction retires the
 same receipts, preserving the distinction between owned native targets and
 borrowed BO framebuffers. Broader resource factories, context loss and unknown
 transport completion remain in the compatibility inventory.
 
 EGL client/GL waits flush pending commands and require successful native
 finish through the existing empty QOP_FINISH query. The host preserves earlier
-GL errors and rejects failed completion or renderer loss; native and forwarded
-paths acknowledge only after acceptance. The C wait keeps current ownership
+GL errors and rejects failed completion or renderer loss, and acknowledges only
+after acceptance. The C wait keeps current ownership
 and reports failure without holding the EGL metadata mutex during completion.
 GLES glFinish also exposes failed completion instead of discarding it. Swap
 interval validates display/context/draw ownership; every request clamps to the
@@ -4667,13 +4673,10 @@ unchanged, with ordered candidate cleanup. The C library stores the
 returned ID and uses it for make-current; it no longer assumes ID 1.
 
 The host stages private surface storage before publishing it. Explicit
-storage retains its accepted size independently of a shared canvas. The
-main-thread fallback receives only reviewed scalar metadata and reuses the
-existing bounded mailbox for an eight-byte dimension reply. A retired
+storage retains its accepted size independently of a shared canvas. A retired
 request frees its unpublished candidate. Identity-checked destruction
 cannot remove a later surface. Ordinary canvas swap blits private storage
-to the visible default target; forwarded swap selects, blits and flushes
-before acknowledging through that same mailbox. Source tests exercise
+to the visible default target. Source tests exercise
 accepted dimensions, retained pixels and stale cleanup across all three browser engines; full
 guest marshalling and the public C cross-context facade remain unvalidated.
 
@@ -4758,8 +4761,7 @@ its former selectors before their final BO destruction. Backend rejection
 preserves the prior current references.
 
 Host surface lookup grants new selection only through a live owner on the
-same process and renderer. Both direct and main-forward paths select the
-actual records; framebuffer zero and swap use the selected draw/read
+same process and renderer. The kernel worker selects the actual records; framebuffer zero and swap use the selected draw/read
 resources. GPU retargeting prepares all affected default references and
 drawable metadata before publication, then changes the canonical record
 without native calls or allocation during commit. User FBOs, independent
@@ -4819,7 +4821,7 @@ not retire these references. Final session removal revokes public authority;
 the final waiter release permits checked deletion. Failed deletion remains
 in the existing native-retirement queue and blocks dependent admission.
 Records retain native handles and private error flags, with no guest memory
-or binding callback. Kernel and forwarded teardown capture errors from all
+or binding callback. Kernel teardown captures errors from all
 retained native contexts, including fences whose creator is already gone.
 Operation table 17 connects this owner to create/status/release queries.
 Each request carries one nonzero, monotonically allocated client token;
@@ -4830,7 +4832,7 @@ returns the retained identity without inserting another native fence.
 Creation requires current-thread and live-display authority. Status and
 release require a mapped, native-live object session owned by the caller,
 including after its creator/display root retires; this grants no ordinary
-GL query authority. Direct and forwarded replies publish creation only
+GL query authority. Replies publish creation only
 after output acceptance. Empty-payload flush has a separate acknowledgement
 and does not imply completion. Public C glFlush submits the encoder before
 requesting this native flush, and preserves GL error reporting on failure.
@@ -4911,7 +4913,7 @@ raw BO-view retirement even after public context replacement.
 Context execution leases separately retain a native execution owner after
 public context destruction or session removal. Acquisition reserves a fresh
 public slot before work can be accepted. Destruction revokes lookup and
-clears the old guest command view and forwarding transport; the session may
+clears the old guest command view; the session may
 create a replacement context with fresh local state while existing leases
 continue to use the old native identities. Public fence ownership remains
 session-scoped. Existing execution references may clone after revocation;
@@ -4928,8 +4930,8 @@ peers continue owning their shared objects. These are source ownership
 models; normal submits still drain synchronously.
 
 GL submission now captures only the requested command span into an owned
-SubmitFrame before validation. Native worker dispatch and main forwarding
-validate and decode that same snapshot, so guest rewrites or renderer
+SubmitFrame before validation. Kernel-worker dispatch validates and decodes
+that same snapshot, so guest rewrites or renderer
 callbacks cannot change later accepted records. Captured typed-array
 accessors avoid overridable source properties. A frame is admitted once,
 consumed before dispatch, and cleared on session/process purge. A failed
@@ -4942,8 +4944,7 @@ binding's references in that same turn rather than wait for another drain.
 
 During synchronous dispatch the binding temporarily exposes the owned bytes
 to the existing decoder. Finally restores its cached guest view only if a
-memory rebind or teardown has not replaced it. Main forwarding does not
-retain the last delivered command message as a cached binding view. Drain
+memory rebind or teardown has not replaced it. Drain
 remains synchronous: deferred server waits still need per-work drawable
 selection, dependency ownership, query/presentation barriers and asynchronous
 retirement. Command snapshots
@@ -4965,17 +4966,9 @@ records and 8 MiB of retained copied query bytes. These are independent heap
 budgets, not shared-memory reservation ceilings. Cleanup preparation preserves
 failed native retirement and terminal acknowledgements. Only an independently
 completed Rust lifecycle transition permits forgetting that metadata. Worker
-lifecycle intent scheduling, owned forwarding, remaining mutating-query
+lifecycle intent scheduling, remaining mutating-query
 candidates and ordinary signal-driven exit integration remain required before
 production asynchronous query activation.
-
-Ordinary paired query Forget has its own authenticated metadata-disposal
-acknowledgment. A successful post cannot release local receipt ownership. Lost
-acknowledgments are recoverable from the same original grant after server
-metadata is gone and late Begin is irrevocably refused. This scalar replay
-proof never stands in for native retirement; that must already be acknowledged
-separately. Terminal metadata remains bounded without retaining a tombstone for
-every completed query.
 
 The retained server-wait source model separates command custody from result
 custody. A queue owns the exact source `GlFenceLease`, destination execution and
@@ -5000,23 +4993,10 @@ custody. The 64 MiB copied-storage budget is independent of the 64 KiB transport
 limit and fails with OUT_OF_MEMORY rather than silently truncating a query.
 This source implementation still requires rebuilt runtime validation.
 
-The main-thread fallback supports synchronous queries through one reusable
-65,556-byte device mailbox per channel, matching the kernel's 64 KiB query
-limit. Input and command bytes are copied out of guest memory. A timed-out
-mailbox is retired permanently; a late reply cannot satisfy a later query.
-Forwarded owners sharing a native context also use the multiplexer. The
-persistent browser realm receives no guest memory or guest-backed view.
-Context creation uses this mailbox for a synchronous acknowledgement too.
-Its forwarded request carries the kernel's context identity separately from
-the open-description session identity. The receiver validates and retains
-that context name; it must not substitute the session name when later work
-proves context authority. Unscoped embedder channels may omit the explicit
-kernel identity and retain their session-based local naming convention.
 The host import returns success only after a live renderer accepts creation;
 the kernel publishes its context identity afterwards. Missing, lost or
 throwing renderers leave creation retryable and do not claim the KMS canvas.
-Timed-out creation requests retire their mailbox and cannot allocate a
-context on late delivery. EGL exposes backend allocation failure as
+EGL exposes backend allocation failure as
 `EGL_NO_CONTEXT` and `EGL_BAD_ALLOC`. A Node host without a rendering
 backend follows the same failure path as a browser without a usable context.
 Each GL open description has a distinct kernel-issued session identity.
@@ -5069,7 +5049,7 @@ lookup acquires a temporary reference before a GL sibling is installed,
 and termination revokes public image handles under the same reference lock.
 Public image tokens are monotonic, independent of heap addresses, so a
 recycled allocation cannot revive a deleted or prior-generation handle.
-Command buffers, native object maps, shadow state, queries, forwarding and
+Command buffers, native object maps, shadow state, queries and
 retirement are selected by process plus session. Process-only registry
 lookups refuse ambiguity. Closing or unmapping one session leaves sibling
 sessions intact, while process memory growth invalidates every cached view.
@@ -5081,8 +5061,7 @@ command mapping; final cleanup retains the renderer's original process.
 ABI 58 context creation can name a live source context in the same process
 and display generation. The kernel validates authority before backend
 entry; the host joins the new context to its source's object maps before
-acknowledgement. Native compatibility and forwarded source-session lookup
-preserve local bindings, errors, default textures and FBO/VAO containers.
+acknowledgement. Source-session lookup preserves local bindings, errors, default textures and FBO/VAO containers.
 Cancelled creation removes only its unpublished member. Source destruction
 leaves surviving members and their shared storage usable. The C facade
 still rejects sharing until its own client object/reference layer can join
@@ -5095,14 +5074,10 @@ Another thread cannot acquire a live binding. A replacement is acknowledged
 before displacing the caller's prior binding, and thread exit revokes it.
 The first accepted bind initializes viewport/scissor from the drawable,
 including zero dimensions for surfaceless; later binds preserve client state.
-The forwarded renderer prepares native default storage without publishing
-current state, then commits only after its reply mailbox accepts the bind.
-A cancelled or expired acknowledgement retires the candidate allocation.
 Native Wayland window resizing updates an existing GPU target atomically
 without destroying its current EGL surface. Failed updates preserve the old
 target and attached size. This path currently requires an existing GPU
-window target on the same native renderer; forwarded GPU and mixed canvas
-targets still need the full surface model. Native Wayland buffers own
+window target on the same native renderer. Native Wayland buffers own
 independent render descriptors rather than borrowing a current context's
 fd. EGL transfers BO names into context/surface sessions through PRIME,
 closes export capabilities and temporary imported names after the operation,
@@ -5236,7 +5211,7 @@ success installs the replacement and retires old uniform handles. Shader
 attachments and explicit attribute bindings seed replacement targets. Native
 shader deletion is deferred while these logical attachments retain it.
 Context teardown releases both the latest link target and any older installed
-executable. This shared model also applies to main-thread forwarding.
+executable.
 Foreign BO uploads save the physical context's alignment and unpack skips,
 neutralize them for the upload, and restore them even on failure. A failed
 new upload does not publish a texture name. Node

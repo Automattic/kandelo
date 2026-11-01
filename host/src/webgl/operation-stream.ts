@@ -2,7 +2,7 @@ import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE } from "./ops.js"
 
 /** The ordering owner is one kernel-authorized GL session, independent of a
  * reusable public context slot. Tickets retain scalars and this ledger only;
- * no guest memory, callback, query destination or forwarding port is stored. */
+ * no guest memory, callback or query destination is stored. */
 export type GlOperationKind = "commands" | "query" | "fence-create" | "fence-status"
   | "fence-release" | "present" | "make-current" | "server-wait";
 type State = "queued" | "running" | "complete" | "cancelled";

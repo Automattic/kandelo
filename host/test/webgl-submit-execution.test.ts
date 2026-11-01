@@ -7,8 +7,6 @@ import { SubmitFrame, SubmitQueue } from "../src/webgl/submit-queue.js";
 import { drainSubmitQueue } from "../src/webgl/submit-drain.js";
 import { defaultFramebuffer } from "../src/webgl/framebuffer.js";
 import { resizeSurfaceTarget } from "../src/webgl/present-target.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
 import { OP_CLEAR, QOP_GET_ERROR } from "../src/webgl/ops.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
 
@@ -283,54 +281,6 @@ it("reentrant drain leaves later frames queued until the current frame tail comp
 });
 
 
-it.each([false, true])("forwarded submit preserves resize ownership or rejects partial capture (reject=%s)", reject => {
-  const f = fixture();
-  let listener: ((e: MessageEvent) => void) | null = null;
-  const worker = { addEventListener: (_type: "message", callback: (e: MessageEvent) => void) => { listener = callback; },
-    removeEventListener: () => { listener = null; } };
-  const fire = (message: GlForwardMessage) => listener!({ data:message } as MessageEvent);
-  const canvas = { width:4, height:3, getContext: () => f.gl } as unknown as HTMLCanvasElement;
-  const dispose = setupMainForward(worker,canvas,8);
-  let captured: GlBinding | null = null;
-  const original = GlContextRegistry.prototype.retainSubmitExecution;
-  const capture = vi.spyOn(GlContextRegistry.prototype,"retainSubmitExecution").mockImplementation(function(this: GlContextRegistry, b, muxer) {
-    captured = b; b.surfaceId = 71;
-    expect(resizeSurfaceTarget(b,4,3)).toBe(true);
-    expect(applyCurrentDrawable(b,{drawSurfaceId:71,readSurfaceId:71,width:4,height:3})).toBe(true);
-    if (reject) b.readSurface = {...b.surface,renderTargetFbo:{} as WebGLFramebuffer,presentTarget:null};
-    return original.call(this,b,muxer);
-  });
-  const clears: WebGLFramebuffer[] = [];
-  let accepted: WebGLFramebuffer | null = null;
-  f.gl.clear = () => {
-    const b = captured!;
-    accepted ??= defaultFramebuffer(b);
-    clears.push(defaultFramebuffer(b)!);
-    expect(resizeSurfaceTarget(b,8,6)).toBe(true);
-    expect(b.shadow.fbo).toBe(accepted);
-  };
-  try {
-    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
-    fire({type:"gl_forward_create_context",pid:8,sessionId:0,mailbox});
-    expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    const bytes = new Uint8Array(16), view = new DataView(bytes.buffer);
-    for (const offset of [0,8]) { view.setUint16(offset,OP_CLEAR,true); view.setUint16(offset+2,4,true); view.setUint32(offset+4,0x4000,true); }
-    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
-    expect(clears).toEqual(reject ? [] : [accepted,accepted]);
-    const query = createGlForwardQueryMailbox(); prepareGlForwardQuery(query,4);
-    fire({type:"gl_forward_query",pid:8,sessionId:0,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox:query});
-    const result = waitForGlForwardQuery(query);
-    expect(result.rc).toBe(4);
-    expect(new DataView(result.bytes.buffer,result.bytes.byteOffset,4).getUint32(0,true)).toBe(reject ? 0x502 : 0);
-    if (reject) {
-      const b = captured!, old = b.presentTarget!;
-      b.readSurface = b.surface;
-      expect(resizeSurfaceTarget(b,8,6)).toBe(true);
-      expect(f.live.has(old.fbo)).toBe(false);
-    } else expect(f.live.has(accepted!)).toBe(false);
-  } finally { capture.mockRestore(); dispose(); f.registry.unbind(7); }
-});
-
 
 it("a throwing consumed receipt does not block peer dispatch or cleanup", () => {
   const f = fixture();
@@ -380,32 +330,6 @@ it("accepted command tickets hold session order across public context replacemen
   f.registry.unbind(7);
 });
 
-it("forwarded result queries cannot overtake the unfinished tail of a command frame", () => {
-  const f = fixture();
-  let listener: ((e: MessageEvent) => void) | null = null;
-  const fire = (message: GlForwardMessage) => listener!({data:message} as MessageEvent);
-  const worker = {addEventListener: (_type:"message", callback:(e:MessageEvent)=>void) => {listener=callback;}, removeEventListener:()=>{listener=null;}};
-  const canvas = {width:4,height:3,getContext:()=>f.gl} as unknown as HTMLCanvasElement;
-  const dispose = setupMainForward(worker,canvas,8);
-  const result = () => {
-    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,4);
-    fire({type:"gl_forward_query",pid:8,sessionId:0,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox});
-    return waitForGlForwardQuery(mailbox).rc;
-  };
-  const nested: number[] = [];
-  f.gl.clear = () => { nested.push(result()); };
-  try {
-    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
-    fire({type:"gl_forward_create_context",pid:8,sessionId:0,mailbox});
-    expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    const bytes = new Uint8Array(8), view = new DataView(bytes.buffer);
-    view.setUint16(0,OP_CLEAR,true); view.setUint16(2,4,true); view.setUint32(4,0x4000,true);
-    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
-    expect(nested).toEqual([-5]);
-    expect(result()).toBe(4);
-  } finally { dispose(); f.registry.unbind(7); }
-});
-
 it("a busy logical stream leaves runnable peers drainable and resumes its exact frame", () => {
   const f = fixture();
   f.registry.bind({pid:7,sessionId:12,cmdbufAddr:0,cmdbufLen:0});
@@ -421,38 +345,6 @@ it("a busy logical stream leaves runnable peers drainable and resumes its exact 
   expect(drainSubmitQueue(f.queue,() => f.muxer,b => {seen.push(b.sessionId);})).toBe(0);
   expect(seen).toEqual([12,11]); expect(f.queue.isEmpty()).toBe(true);
   f.registry.unbind(7);
-});
-
-it("a forwarded peer query cannot switch physical selectors inside another session's frame", () => {
-  const f = fixture();
-  let listener: ((e: MessageEvent) => void) | null = null;
-  const fire = (message: GlForwardMessage) => listener!({data:message} as MessageEvent);
-  const worker = {addEventListener: (_type:"message", callback:(e:MessageEvent)=>void) => {listener=callback;}, removeEventListener:()=>{listener=null;}};
-  const canvas = {width:4,height:3,getContext:()=>f.gl} as unknown as HTMLCanvasElement;
-  const dispose = setupMainForward(worker,canvas,8);
-  const query = () => {
-    const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,4);
-    fire({type:"gl_forward_query",pid:8,sessionId:1,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox});
-    return waitForGlForwardQuery(mailbox).rc;
-  };
-  const nested: number[] = [];
-  let tail = false;
-  f.gl.clear = () => {
-    nested.push(query());
-    fire({type:"gl_forward_query",pid:8,sessionId:1,op:QOP_GET_ERROR,input:new Uint8Array(),mailbox:new SharedArrayBuffer(4)});
-    tail = true;
-  };
-  try {
-    for (const sessionId of [0,1]) {
-      const mailbox = createGlForwardQueryMailbox(); prepareGlForwardQuery(mailbox,0);
-      fire({type:"gl_forward_create_context",pid:8,sessionId,mailbox});
-      expect(waitForGlForwardQuery(mailbox).rc).toBe(0);
-    }
-    const bytes = new Uint8Array(8), view = new DataView(bytes.buffer);
-    view.setUint16(0,OP_CLEAR,true); view.setUint16(2,4,true); view.setUint32(4,0x4000,true);
-    fire({type:"gl_forward_submit",pid:8,sessionId:0,bytes});
-    expect(nested).toEqual([-5]); expect(tail).toBe(true); expect(query()).toBe(4);
-  } finally { dispose(); f.registry.unbind(7); }
 });
 
 

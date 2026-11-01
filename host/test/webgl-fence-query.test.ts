@@ -1,8 +1,6 @@
 import { expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
-import { setupMainForward, type GlForwardMessage } from "../src/webgl/main-forward.js";
-import { createGlForwardQueryMailbox, prepareGlForwardQuery, retireGlForwardQuery, waitForGlForwardQuery } from "../src/webgl/main-forward-query.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE, QOP_FLUSH } from "../src/webgl/ops.js";
 
 function renderer() {
@@ -99,57 +97,6 @@ it("a known cancellation token prevents late direct creation from reviving it", 
   value.kernel.releaseProcessViews(7);
 });
 
-function forwarded() {
-  const native = renderer();
-  let listener: ((event: MessageEvent) => void) | null = null;
-  const worker = { addEventListener(_type: "message", next: (event: MessageEvent) => void) { listener = next; }, removeEventListener() { listener = null; } };
-  const fire = (data: GlForwardMessage) => listener!({ data } as MessageEvent);
-  const dispose = setupMainForward(worker, { width: 1, height: 1, getContext: () => native.gl } as unknown as HTMLCanvasElement, 7);
-  const create = createGlForwardQueryMailbox(); prepareGlForwardQuery(create, 0);
-  fire({ type: "gl_forward_create_context", pid: 7, sessionId: 11, mailbox: create });
-  expect(waitForGlForwardQuery(create).rc).toBe(0);
-  function query(op: number, token: number, mailbox = createGlForwardQueryMailbox(), outputLength = 16, input = bytes(token)) {
-    prepareGlForwardQuery(mailbox, outputLength);
-    fire({ type: "gl_forward_query", pid: 7, sessionId: 11, op, input, mailbox });
-    return waitForGlForwardQuery(mailbox);
-  }
-  return { native, query, fire, dispose };
-}
-it("forwarded fences retain completion after creator destruction and reconcile duplicate creation", () => {
-  const value = forwarded();
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([0, 9, 0, 0x47514c33]);
-  value.query(QOP_CREATE_FENCE, 9); expect(value.native.created()).toBe(1);
-  value.fire({ type: "gl_forward_destroy_context", pid: 7, sessionId: 11 });
-  value.native.signal();
-  expect(words(value.query(QOP_FENCE_STATUS, 9).bytes)).toEqual([0, 9, 1, 0x47514c33]);
-  value.query(QOP_RELEASE_FENCE, 9); value.query(QOP_RELEASE_FENCE, 9);
-  expect(value.native.deleted).toHaveLength(1); value.dispose();
-});
-it("cancels a forwarded candidate when the worker retires its reply during allocation", () => {
-  const value = forwarded(), mailbox = createGlForwardQueryMailbox();
-  value.native.hooks.create = () => retireGlForwardQuery(mailbox);
-  expect(value.query(QOP_CREATE_FENCE, 9, mailbox).rc).toBe(-5);
-  expect(value.native.created()).toBe(1); expect(value.native.deleted).toHaveLength(1);
-  expect(words(value.query(QOP_FENCE_STATUS, 9).bytes)).toEqual([2, 9, 0, 0x47514c33]);
-  value.native.hooks.create = () => {};
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([1, 9, 0, 0x47514c33]);
-  expect(value.native.created()).toBe(1); value.dispose();
-});
-it("does not allocate a native fence for a request delivered after mailbox retirement", () => {
-  const value = forwarded(), mailbox = createGlForwardQueryMailbox();
-  prepareGlForwardQuery(mailbox, 16); retireGlForwardQuery(mailbox);
-  value.fire({ type: "gl_forward_query", pid: 7, sessionId: 11, op: QOP_CREATE_FENCE, input: bytes(9), mailbox });
-  expect(value.native.created()).toBe(0); value.dispose();
-});
-it("known-token cancellation is idempotent on the forwarded receiver", () => {
-  const value = forwarded();
-  value.query(QOP_RELEASE_FENCE, 9); value.query(QOP_RELEASE_FENCE, 9);
-  expect(words(value.query(QOP_CREATE_FENCE, 9).bytes)).toEqual([1, 9, 0, 0x47514c33]);
-  expect(value.native.created()).toBe(0);
-  expect(words(value.query(QOP_CREATE_FENCE, 10).bytes)).toEqual([0, 10, 0, 0x47514c33]);
-  value.dispose(); expect(value.native.deleted).toHaveLength(1);
-});
-
 it.each([4, 8] as const)("server flush is acknowledged and preflights empty payloads at wasm%d widths", width => {
   const value = direct(width);
   expect(value.query(QOP_FLUSH, 0, 0, 0).rc).toBe(0);
@@ -162,15 +109,6 @@ it.each([4, 8] as const)("server flush is acknowledged and preflights empty payl
   expect(value.native.flushes()).toBe(1);
   value.kernel.releaseProcessViews(7);
 });
-it("the forwarded receiver acknowledges flush without inventing a completion wait", () => {
-  const value = forwarded();
-  expect(value.query(QOP_FLUSH, 0, createGlForwardQueryMailbox(), 0, new Uint8Array()).rc).toBe(0);
-  expect(value.native.flushes()).toBe(1);
-  expect(value.query(QOP_FLUSH, 0).rc).toBe(-22);
-  expect(value.native.flushes()).toBe(1);
-  value.dispose();
-});
-
 it("rejects malformed fence requests before replaying pending cleanup, then preserves selected flags on valid admission", () => {
   const value = direct(4); value.query(QOP_CREATE_FENCE, 7);
   const destroy = value.native.gl.deleteSync;

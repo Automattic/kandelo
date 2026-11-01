@@ -21,8 +21,7 @@ export function validSurfaceCreation(v: GlSurfaceCreation): boolean {
     && (v.kind === 1 || v.targetBoId === 0);
 }
 
-/** Allocate privately. Commit/cancel in this synchronous renderer turn;
- * forwarded callers commit only when the reply mailbox accepts completion. */
+/** Allocate privately. Commit/cancel in this synchronous renderer turn. */
 export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
   target?: GlSurfaceTarget, canvas = b.canvas, captureErrors?: (gl: WebGL2RenderingContext) => void): { rc: number; prepared?: {
     width: number; height: number; commit(): void; cancel(): void;

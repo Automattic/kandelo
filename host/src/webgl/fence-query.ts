@@ -15,7 +15,7 @@ export function validFenceQuery(input: Uint8Array, outLength: number): boolean {
 }
 export type PreparedFenceQuery = { rc: number; candidate: GlFenceCandidate | null };
 
-/** Kernel and main-forward callers publish a creation only after accepting
+/** The kernel publishes a creation only after accepting
  * its bounded output. No callback or borrowed input survives this turn. */
 export function prepareFenceQuery(b: GlBinding, op: number, input: Uint8Array, out: Uint8Array,
   captureErrors: (gl: WebGL2RenderingContext) => void,

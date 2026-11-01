@@ -1,4 +1,3 @@
-import {createMainForwardChannel} from "../../../../host/src/webgl/main-forward";
 import {createWasmPosixKernelTestHarness} from "../../../../host/src/kernel";
 import {createKernelScratchTestInstance} from "../../../../host/test/support/kernel-scratch-instance";
 import * as O from "../../../../host/src/webgl/ops";
@@ -9,8 +8,6 @@ const commandCapacity=1<<20;
 // dispatch/identity role; real Rust guest marshalling remains a separate gate.
 self.onmessage = async ({data}) => {
   try {
-    const forwarded=data.mode==="forwarded";
-    const channels=new Map<number,ReturnType<typeof createMainForwardChannel>>();
     const sizes=new Map<number,{width:number;height:number}>();
     let currentSession:number|null=null;
     let gl:WebGL2RenderingContext|null=null;
@@ -19,7 +16,7 @@ self.onmessage = async ({data}) => {
     let imports:Record<string,(...args:any[])=>any>|null=null;
     const created:object[]=[],deleted:object[]=[],live:Array<()=>boolean>=[];
     let nativeFinishes=0;
-    if(!forwarded) {
+    {
       const canvas=data.canvas as OffscreenCanvas;
       gl=canvas.getContext("webgl2",{antialias:false,premultipliedAlpha:false,depth:true,stencil:true,preserveDrawingBuffer:true});
       if(!gl)throw new Error("native worker WebGL2 unavailable");
@@ -49,23 +46,16 @@ self.onmessage = async ({data}) => {
       native.gl.attachCanvas(7,canvas);
     }
     const requireZero=(rc:number,label:string)=>{if(rc!==0)throw new Error(`${label}: ${rc}`);};
-    const channel=(fd:number)=>{const value=channels.get(fd);if(!value)throw new Error(`unknown session ${fd}`);return value;};
     const pixels=(fd:number)=>{
       const input=new Uint8Array(24),view=new DataView(input.buffer);
       [0,0,1,1,0x1908,0x1401].forEach((word,i)=>view.setUint32(i*4,word,true));
-      if(forwarded) {
-        const reply=channel(fd).onQuery!(O.QOP_READ_PIXELS,input,4);
-        if(reply.rc!==4)throw new Error(`forwarded pixel read: ${reply.rc}`);
-        return [...reply.bytes];
-      }
       new Uint8Array(memory!.buffer,64,24).set(input);
       const rc=imports!.host_gl_query(7,O.QOP_READ_PIXELS,64,24,128,4,fd);
       if(rc!==4)throw new Error(`native pixel read: ${rc}`);
       return [...new Uint8Array(memory!.buffer,128,4)];
     };
     const submit=(fd:number,bytes:Uint8Array)=>{
-      if(forwarded)channel(fd).onSubmit(bytes);
-      else {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,fd),"submit");}
+      {new Uint8Array(memory!.buffer,4096,bytes.length).set(bytes);requireZero(imports!.host_gl_submit(7,0,bytes.length,fd),"submit");}
     };
     const send=(fd:number,op:number,words:number[],tail=new Uint8Array())=>{
       const bytes=new Uint8Array(4+words.length*4+tail.length),v=new DataView(bytes.buffer);
@@ -77,8 +67,7 @@ self.onmessage = async ({data}) => {
     const peer=90;
     const make=(fd:number,id:number,draw:number,read:number)=>{
       const size=sizes.get(draw)??{width:0,height:0};
-      requireZero(forwarded?channel(fd).onMakeCurrent!({drawSurfaceId:draw,readSurfaceId:read,...size})
-        :imports!.host_gl_make_current(7,id,draw,read,fd),"driver current");
+      requireZero(imports!.host_gl_make_current(7,id,draw,read,fd),"driver current");
     };
     const prepareProgram=(fd:number)=>{
       for(const [name,type,text] of [[901,0x8b31,"attribute vec4 color; attribute vec2 position; varying vec4 c; void main(){c=color;gl_Position=vec4(position,0.,1.);gl_PointSize=1.;}"],
@@ -97,7 +86,7 @@ self.onmessage = async ({data}) => {
               const blue=new Uint8Array(new Float32Array([0,0,1,1]).buffer);
               send(peer,O.OP_BUFFER_DATA,[0x8892,16,0x88e4]);send(peer,O.OP_BUFFER_SUB_DATA,[0x8892,0,16],blue);
               make(fd,sourceContext,sourceDraw,sourceRead);
-              if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
+              requireZero(imports!.host_gl_make_current(7,0,0,0,peer),"release peer");
               injected=true;
     };
     const frames=new Uint8Array(data.trace),view=new DataView(frames.buffer),observed:number[][]=[];
@@ -112,25 +101,22 @@ self.onmessage = async ({data}) => {
       offset+=12;if(offset+length>frames.length)throw new Error("truncated trace payload");
       const bytes=frames.slice(offset,offset+length),words=new DataView(bytes.buffer);offset+=length;
       if(kind===1) {
-        if(forwarded)channels.set(fd,createMainForwardChannel({postMessage:message=>postMessage(message)},7,fd));
         // This source replay models one native DRM file. Session identities
         // differ; its synthetic stable file identity is shared by all of them.
-        else imports!.host_gl_bind(7,4096,commandCapacity,fd,1n);
+        imports!.host_gl_bind(7,4096,commandCapacity,fd,1n);
       } else if(kind===2) {
         const id=words.getUint32(12,true);
         const sharedId=words.getUint32(4,true);
         const sourceSession=sharedId?contextSessions.get(sharedId):undefined;
         if(sharedId && sourceSession===undefined)throw new Error("unknown C share context");
-        if(forwarded)requireZero(channel(fd).onCreateContext(fd,sourceSession),"create context");
-        else {
+        {
           words.setUint32(12,0,true);new Uint8Array(memory!.buffer,64,16).set(bytes);
           requireZero(imports!.host_gl_create_context(7,id,64,16,fd),"create context");
         }
         contextSessions.set(id,fd);
         if(data.peerDelete) {
           sourceContext=id;
-          if(forwarded){channels.set(peer,createMainForwardChannel({postMessage:message=>postMessage(message)},7,peer));requireZero(channel(peer).onCreateContext(peer,fd),"create peer");}
-          else {
+          {
             imports!.host_gl_bind(7,4096,commandCapacity,peer,1n);new Uint32Array(memory!.buffer,64,4).set([2,id,0,0]);
             requireZero(imports!.host_gl_create_context(7,900,64,16,peer),"create peer");
           }
@@ -140,7 +126,6 @@ self.onmessage = async ({data}) => {
         // The native C double records accepted storage and per-file names.
         // Provision independent native pixels and replay the kernel's name
         // translation; never infer a valid allocation from a surface request.
-        if(forwarded)throw new Error("native BO-source forwarding remains unimplemented");
         const name=words.getUint32(0,true),bo=words.getUint32(4,true);
         const width=words.getUint32(8,true),height=words.getUint32(12,true);
         if(native!.gl.createGpuBo(bo,gl!,width,height)===null)throw new Error("window canonical storage");
@@ -148,9 +133,7 @@ self.onmessage = async ({data}) => {
       } else if(kind===3) {
         const surfaceId=words.getUint32(32,true),width=words.getUint32(4,true),height=words.getUint32(8,true);
         sizes.set(surfaceId,{width,height});
-        if(forwarded)requireZero(channel(fd).onCreateSurface!({surfaceId,kind:words.getUint32(0,true),width,height,
-          configId:words.getUint32(12,true),targetBoId:words.getUint32(16,true)}).rc,"create surface");
-        else {
+        {
           const name=words.getUint32(16,true);
           if(name) {
             const bo=gemBos.get(`${fd}:${name}`);
@@ -166,14 +149,13 @@ self.onmessage = async ({data}) => {
         const context=words.getUint32(0,true),draw=words.getUint32(4,true),read=words.getUint32(8,true);
         if(data.peerDelete && context){sourceDraw=draw;sourceRead=read;}
         if(!context) {
-          if(!forwarded)requireZero(imports!.host_gl_make_current(7,0,0,0,fd),"release");
+          requireZero(imports!.host_gl_make_current(7,0,0,0,fd),"release");
           currentSession=null;
         } else {
           const size=sizes.get(draw)??{width:0,height:0};
-          requireZero(forwarded?channel(fd).onMakeCurrent!({drawSurfaceId:draw,readSurfaceId:read,...size})
-            :imports!.host_gl_make_current(7,context,draw,read,fd),"make current");
+          requireZero(imports!.host_gl_make_current(7,context,draw,read,fd),"make current");
           // As in the kernel, displace the old binding only after acceptance.
-          if(!forwarded && currentSession!==null && currentSession!==fd)
+          if(currentSession!==null && currentSession!==fd)
             requireZero(imports!.host_gl_make_current(7,0,0,0,currentSession),"release previous");
           currentSession=fd;
         }
@@ -205,23 +187,21 @@ self.onmessage = async ({data}) => {
           }
           // Exercise the raw presentation route too: a pbuffer must not post
           // even when a consumer calls GLIO_PRESENT rather than C's swap.
-          if(data.pbuffer) requireZero(forwarded ? channel(fd).onPresent!(fd) : imports!.host_gl_present(7,fd),"pbuffer present");
+          if(data.pbuffer) requireZero(imports!.host_gl_present(7,fd),"pbuffer present");
           if(clear && !data.zeroSurface) {
             if(data.completion)completionRead=true;
             else observed.push(pixels(fd));
           }
         }
       } else if(kind===18) {
-        requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FLUSH,new Uint8Array(),0).rc
-          : imports!.host_gl_query(7,O.QOP_FLUSH,0,0,0,0,fd),"native flush");
+        requireZero(imports!.host_gl_query(7,O.QOP_FLUSH,0,0,0,0,fd),"native flush");
       } else if(kind===19) {
         const op=words.getUint32(0,true),token=words.getUint32(4,true),requireSignaled=words.getUint32(8,true)!==0;
         const input=new Uint8Array(4);new DataView(input.buffer).setUint32(0,token,true);
         const deadline=performance.now()+5000;
         for(;;) {
           let rc:number,reply:Uint8Array;
-          if(forwarded){const result=channel(fd).onQuery!(op,input,16);rc=result.rc;reply=result.bytes;}
-          else {
+          {
             new Uint8Array(memory!.buffer,64,4).set(input);
             rc=imports!.host_gl_query(7,op,64,4,128,16,fd);
             reply=new Uint8Array(memory!.buffer,128,16).slice();
@@ -238,18 +218,13 @@ self.onmessage = async ({data}) => {
           await new Promise(resolve=>setTimeout(resolve,1));
         }
       } else if(kind===15) {
-        requireZero(forwarded ? channel(fd).onQuery!(O.QOP_FINISH,new Uint8Array(),0).rc
-          : imports!.host_gl_query(7,O.QOP_FINISH,0,0,0,0,fd),"completion");
+        requireZero(imports!.host_gl_query(7,O.QOP_FINISH,0,0,0,0,fd),"completion");
         if(completionRead) {observed.push(pixels(fd));completionRead=false;}
       } else if(kind===14) {
         const state=()=>gl ? [gl.getParameter(gl.DRAW_FRAMEBUFFER_BINDING),gl.getParameter(gl.READ_FRAMEBUFFER_BINDING),
           gl.getParameter(gl.ACTIVE_TEXTURE),gl.getParameter(gl.TEXTURE_BINDING_2D),gl.getParameter(gl.RENDERBUFFER_BINDING)] : [];
         const before=state(); let reply:Uint8Array,rc:number;
-        if(forwarded) {
-          postMessage({type:"egl_record_capabilities_before"});
-          const result=channel(fd).onQuery!(O.QOP_SURFACE_CAPABILITIES,new Uint8Array(),16);reply=result.bytes;rc=result.rc;
-          postMessage({type:"egl_record_capabilities_after"});
-        } else {
+        {
           rc=imports!.host_gl_query(7,O.QOP_SURFACE_CAPABILITIES,64,0,128,16,fd);
           reply=new Uint8Array(memory!.buffer,128,16).slice();
         }
@@ -260,7 +235,6 @@ self.onmessage = async ({data}) => {
           before.some((value,index)=>value!==state()[index])))throw new Error("surface limits changed native owner state");
         limits.push(values);
       } else if(kind===16) {
-        if(forwarded)throw new Error("image BO-source forwarding remains unimplemented");
         const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
         if(!rawBos.has(bo)) {
           if(native!.gl.createGpuBo(bo,gl!,64,64)===null)throw new Error("image canonical storage");
@@ -270,8 +244,7 @@ self.onmessage = async ({data}) => {
       } else if(kind===17) {
         const op=words.getUint32(0,true),input=bytes.slice(16);
         let reply:Uint8Array,rc:number;
-        if(forwarded){const result=channel(fd).onQuery!(op,input,12);reply=result.bytes;rc=result.rc;}
-        else {
+        {
           new Uint8Array(memory!.buffer,64,input.length).set(input);
           rc=imports!.host_gl_query(7,op,64,input.length,128,12,fd);
           reply=new Uint8Array(memory!.buffer,128,12).slice();
@@ -280,7 +253,7 @@ self.onmessage = async ({data}) => {
         if(rc!==12||[0,1,2].some(i=>output.getUint32(i*4,true)!==words.getUint32(4+i*4,true)))
           throw new Error("C image source query mismatch");
       } else if(kind===13) {
-        if(forwarded || !data.rawCandidate)throw new Error("raw BO replay requires native source registration");
+        if(!data.rawCandidate)throw new Error("raw BO replay requires native source registration");
         const bo=words.getUint32(0,true),target=words.getUint32(4,true),context=words.getUint32(8,true),expected=words.getUint32(12,true);
         if(!rawBos.has(bo)) {
           if(native!.gl.createGpuBo(bo,gl!,1,1)===null)throw new Error("raw candidate canonical storage");
@@ -290,8 +263,7 @@ self.onmessage = async ({data}) => {
       } else if(kind===12) {
         const op=words.getUint32(0,true),expected=[words.getUint32(4,true),words.getUint32(8,true),words.getUint32(12,true),0x47514c33],input=bytes.slice(16);
         let reply:Uint8Array,rc:number;
-        if(forwarded){const result=channel(fd).onQuery!(op,input,16);reply=result.bytes;rc=result.rc;}
-        else{
+        {
           new Uint8Array(memory!.buffer,64,input.length).set(input);
           rc=imports!.host_gl_query(7,op,64,input.length,128,16,fd);
           reply=new Uint8Array(memory!.buffer,128,16).slice();
@@ -308,8 +280,7 @@ self.onmessage = async ({data}) => {
         }
         let reply:Uint8Array,rc:number;
         try {
-          if(forwarded){const result=channel(fd).onQuery!(op,input,size);reply=result.bytes;rc=result.rc;}
-          else{
+          {
             new Uint8Array(memory!.buffer,64,input.length).set(input);
             rc=imports!.host_gl_query(7,op,64,input.length,128,size,fd);
             reply=new Uint8Array(memory!.buffer,128,size).slice();
@@ -328,14 +299,13 @@ self.onmessage = async ({data}) => {
         const expected=words.getUint32(12,true), input=bytes.slice(0,12);
         let restore:(()=>void)|null=null;
         if(expected && data.bindFailure) {
-          const target=forwarded?null:gl as any;
+          const target=gl as any;
           if(target) {const create=target.createTexture;target.createTexture=()=>null;restore=()=>{target.createTexture=create;};}
           else postMessage({type:"egl_record_fail_texture_create"});
         }
         try {
           let reply:Uint8Array, rc:number;
-          if(forwarded) {const result=channel(fd).onQuery!(O.QOP_BIND_IMAGE_OBJECT,input,12);reply=result.bytes;rc=result.rc;}
-          else {
+          {
             new Uint8Array(memory!.buffer,64,12).set(input);
             rc=imports!.host_gl_query(7,O.QOP_BIND_IMAGE_OBJECT,64,12,128,12,fd);
             reply=new Uint8Array(memory!.buffer,128,12).slice();
@@ -345,37 +315,32 @@ self.onmessage = async ({data}) => {
               || output.getUint32(8,true)!==0x47514c33)throw new Error("C bind acceptance mismatch");
           if(expected) {
             let error:number;
-            if(forwarded) {const result=channel(fd).onQuery!(O.QOP_GET_ERROR,new Uint8Array(),4);if(result.rc!==4)throw new Error("error query failed");error=new DataView(result.bytes.buffer,result.bytes.byteOffset,4).getUint32(0,true);}
-            else {if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4)throw new Error("error query failed");error=new DataView(memory!.buffer).getUint32(128,true);}
+            {if(imports!.host_gl_query(7,O.QOP_GET_ERROR,64,0,128,4,fd)!==4)throw new Error("error query failed");error=new DataView(memory!.buffer).getUint32(128,true);}
             if(error!==0x505)throw new Error(`missing injected allocation error: ${error}`);
           }
         } finally {restore?.();}
       } else if(kind===6) {
         const id=words.getUint32(0,true);retiredContexts.push(id);
-        if(forwarded)channel(fd).onDestroyContext!();else imports!.host_gl_destroy_context(7,id);
+        imports!.host_gl_destroy_context(7,id);
       } else if(kind===7) {
         const id=words.getUint32(0,true);retiredSurfaces.push(id);
-        if(forwarded)channel(fd).onDestroySurface!(id);else imports!.host_gl_destroy_surface(7,id,fd);
-      } else if(kind===8)requireZero(forwarded?channel(fd).onPresent!():imports!.host_gl_present(7,fd),"present");
+        imports!.host_gl_destroy_surface(7,id,fd);
+      } else if(kind===8)requireZero(imports!.host_gl_present(7,fd),"present");
       else if(kind===9) {
-        if(forwarded) {
-          channel(fd).onUnbind!(fd);
-          if(channel(fd).onPresent!()!==-5)throw new Error("retired session revived");
-        } else imports!.host_gl_unbind(7,fd);
+        imports!.host_gl_unbind(7,fd);
       } else throw new Error(`unknown trace operation ${kind}`);
     }
     if(data.peerDelete) {
-      if(forwarded){channel(peer).onUnbind!(peer);if(channel(peer).onPresent!()!==-5)throw new Error("peer revived");}
-      else imports!.host_gl_unbind(7,peer);
+      imports!.host_gl_unbind(7,peer);
     }
     for(const bo of rawBos) {native!.gl.retireForeignBo(bo);if(native!.gl.hasForeignRetirements())throw new Error("raw candidate BO cleanup pending");}
-    const clean=forwarded?null:created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
+    const clean=created.length===deleted.length && created.every(value=>deleted.includes(value)) && live.every(isLive=>!isLive());
     let pbufferState = {};
     if(data.pbuffer && gl) {
       const prior = gl.getParameter(gl.READ_FRAMEBUFFER_BINDING), pixel = new Uint8Array(4);
       gl.bindFramebuffer(gl.READ_FRAMEBUFFER,null); gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel); gl.bindFramebuffer(gl.READ_FRAMEBUFFER,prior);
       pbufferState = {canvasPixel:[...pixel],viewport:[...gl.getParameter(gl.VIEWPORT)]};
     }
-    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),...(data.completion?{finishes:forwarded?null:nativeFinishes}:{}),error:forwarded?0:gl!.getError()});
+    postMessage({type:"egl_record_result",...pbufferState,observed,retiredContexts,retiredSurfaces,clean,...(data.peerDelete?{injected}:{}),...(data.capabilities?{limits}:{}),...(data.completion?{finishes:nativeFinishes}:{}),error:gl!.getError()});
   } catch(error) {postMessage({type:"egl_record_failed",error:String(error)});}
 };

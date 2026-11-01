@@ -1554,56 +1554,16 @@ it("GL queries select the caller's state even without a command submission", () 
   }
 });
 
-it.each([4,8] as const)("completion queries preflight before native or forwarded work at wasm%d widths", (width) => {
+it.each([4,8] as const)("completion queries preflight before native work at wasm%d widths", (width) => {
   const {kernel,memory} = fullKernelHarness({}, {}, width);
-  const native = vi.fn(), forwarded = vi.fn(() => ({rc:0,bytes:new Uint8Array()}));
-  for(const pid of [7,8]) kernel.gl.bind({pid,cmdbufAddr:4096,cmdbufLen:4096});
+  const native = vi.fn();
+  kernel.gl.bind({pid:7,cmdbufAddr:4096,cmdbufLen:4096});
   kernel.gl.get(7)!.gl = new Proxy({}, {get() { return native; }}) as WebGL2RenderingContext;
-  kernel.gl.attachMainForward(8,{onCreateContext() {return 0;},onDestroyContext() {},onSubmit() {},onQuery:forwarded});
   const imports = kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
   const ptr = (value:number) => width === 8 ? BigInt(value) : value;
   const output = new Uint8Array(memory.buffer,8192,4); output.fill(0xa5);
-  for(const pid of [7,8]) {
-    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
-    expect(imports.env.host_gl_query(pid,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
-  }
+  expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(4096),ptr(4),ptr(0),ptr(0))).toBe(-22);
+  expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(8192),ptr(4))).toBe(-22);
   expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
-  expect(native).not.toHaveBeenCalled(); expect(forwarded).not.toHaveBeenCalled();
-  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(0);
-  forwarded.mockReturnValue({rc:-5,bytes:new Uint8Array()});
-  expect(imports.env.host_gl_query(8,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0))).toBe(-5);
-});
-
-it.each([4, 8] as const)("forwarded GL queries preflight and copy replies at wasm%d boundaries", (width) => {
-  const { kernel, memory } = fullKernelHarness({}, {}, width);
-  kernel.gl.bind({ pid: 7, cmdbufAddr: 4096, cmdbufLen: 4096 });
-  const output = new Uint8Array(memory.buffer, memory.buffer.byteLength - 4, 4);
-  const reply = vi.fn(() => ({ rc: 4, bytes: new Uint8Array([1,2,3,4]) }));
-  kernel.gl.attachMainForward(7, {
-    onCreateContext() { return 0; }, onDestroyContext() {}, onSubmit() {}, onQuery: reply,
-  });
-  const imports = kernel.testAuthority.buildImportObject(memory) as {
-    env: Record<string, (...args: any[]) => any>;
-  };
-  const ptr = (value: number) => width === 8 ? BigInt(value) : value;
-  const query = (address: number) => imports.env.host_gl_query(
-    7, QOP_GET_ERROR, ptr(0), ptr(0), ptr(address), ptr(4),
-  );
-  expect(query(memory.buffer.byteLength - 2)).toBe(-14);
-  expect(reply).not.toHaveBeenCalled();
-  expect(query(memory.buffer.byteLength - 4)).toBe(4);
-  expect([...output]).toEqual([1,2,3,4]);
-  for (const invalid of [
-    { rc: 5, bytes: new Uint8Array(5) },
-    { rc: 4, bytes: new Uint8Array(3) },
-    { rc: 0.5, bytes: new Uint8Array(4) },
-  ]) {
-    output.fill(0xa5);
-    reply.mockReturnValue(invalid);
-    expect(query(memory.buffer.byteLength - 4)).toBe(-5);
-    expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
-  }
-  reply.mockImplementation(() => { throw new Error("forwarder stopped"); });
-  expect(query(memory.buffer.byteLength - 4)).toBe(-5);
-  expect([...output]).toEqual([0xa5,0xa5,0xa5,0xa5]);
+  expect(native).not.toHaveBeenCalled();
 });

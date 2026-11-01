@@ -2849,7 +2849,12 @@ this behavior; it does not establish the cause or a performance benefit.
 
 ### Hosts without a GLES renderer
 
-Kandelo's EGL/GLES 2 renderer is the host's WebGL 2. A host that has none,
+Kandelo's EGL/GLES 2 renderer is the host's WebGL 2, and GL always executes in
+the kernel worker, on Node and in the browser: the kernel worker owns the WebGL
+2 context (an `OffscreenCanvas`, a transferred KMS canvas, or an
+embedder-supplied canvas) and runs command submission and queries against it.
+The page's main thread never executes guest GL; there is no main-thread
+forwarding path. A host that has none,
 which includes Node without an embedder-supplied WebGL 2 or
 `OffscreenCanvas` and a browser where WebGL 2 context creation fails, has no
 EGL display to initialize. `eglInitialize` then fails with

@@ -32,7 +32,7 @@ import { QUERY_RECEIPT_REQUEST_HEADER, QUERY_RECEIPT_REPLY_HEADER } from "./webg
  * IMPORTANT: Wasm i64 values appear as BigInt in JavaScript.
  */
 
-import { createSurfaceResources, retireSurface, releaseSurfaceResources, prepareBorrowedSurfaceTarget } from "./webgl/surface-resources.js";
+import { releaseSurfaceResources, prepareBorrowedSurfaceTarget } from "./webgl/surface-resources.js";
 import type {
   AppendOutcome,
   HostFileOffset,
@@ -798,7 +798,6 @@ export interface KernelCallbacks {
   /** Durable owned-query state changed. Schedule a later worker turn; never
    * reenter Rust from this callback or retain a guest-memory view. */
   onGlQueryWake?: (pid:number,session:number,registration:number,token:bigint)=>void;
-  onGlQueryOwnerWake?: (pid:number,session:number,registration:number)=>void;
   /** Accepted private work or authenticated backend progress. This is a hint
    * for a bounded later host turn, never permission to retry a guest channel. */
   onGlQueryWork?: (pid:number,session:number,registration:number)=>void;
@@ -1036,7 +1035,6 @@ export class WasmPosixKernel {
   private gl_query_controls=new GlKernelQueryControls(this.gl,this.bos,this.gl_muxers,
     {maxOwners:256,maxRequests:1024,maxRetainedBytes:8*1024*1024},
     (pid,session,registration,token)=>this.callbacks.onGlQueryWake?.(pid,session,registration,token),
-    (pid,session,registration)=>this.callbacks.onGlQueryOwnerWake?.(pid,session,registration),
     (pid,session,registration)=>this.callbacks.onGlQueryWork?.(pid,session,registration));
 
   /** Private worker receipt routing, frozen before first native admission. */
@@ -1224,7 +1222,7 @@ export class WasmPosixKernel {
    * `host_gl_create_context` and `host_kms_set_fb`.
    */
   #isMasterGlBinding(binding: GlBinding): boolean {
-    return !binding.forward && this.kms.isMasterFile(binding.displayFileId);
+    return this.kms.isMasterFile(binding.displayFileId);
   }
 
   #kernelIdentity(value: bigint, label: string): bigint {
@@ -1239,7 +1237,7 @@ export class WasmPosixKernel {
 
   private tryAttachKmsGlCanvas(b: GlBinding): void {
     const pid = b.pid;
-    if (!b || b.forward) return;
+    if (!b) return;
     if (b.contextId == null) return; // GL context not created yet
     // A render-node context may already use the device's physical renderer.
     // Only an exact master file can additionally select the scanout canvas.
@@ -1305,7 +1303,7 @@ export class WasmPosixKernel {
       return;
     }
     if (ctx) {
-      // Mirror main-forward.ts: enable the WebGL2 float extensions so
+      // Enable the WebGL2 float extensions (as #sharedGlContext does) so
       // RGBA16F framebuffers are renderable and float textures accept
       // LINEAR filtering. Without these, ping-pong sims (Pavel-style
       // fluid, GPU-side image processing) hit
@@ -1765,7 +1763,7 @@ export class WasmPosixKernel {
    * file authority and the framebuffer selected by authorized KMS operations. */
   #sharedGlContext(): WebGL2RenderingContext | null {
     if (this.#deviceGl && !this.#deviceGl.isContextLost()) return this.#deviceGl;
-    const existing = this.gl.list().find(binding => !binding.forward && binding.gl && !binding.gl.isContextLost())?.gl;
+    const existing = this.gl.list().find(binding => binding.gl && !binding.gl.isContextLost())?.gl;
     if (existing) return this.#deviceGl = existing;
     const accept = (gl: WebGL2RenderingContext) => {
       gl.getExtension("EXT_color_buffer_float"); gl.getExtension("OES_texture_float_linear");
@@ -1783,7 +1781,7 @@ export class WasmPosixKernel {
     // exists. Native-window BO allocation must be able to use that renderer,
     // including on hosts without a global OffscreenCanvas constructor.
     for (const binding of this.gl.list()) {
-      if (binding.forward || !binding.canvas) continue;
+      if (!binding.canvas) continue;
       const gl = binding.canvas.getContext("webgl2", options) as WebGL2RenderingContext | null;
       if (gl && !gl.isContextLost()) return accept(gl);
     }
@@ -2847,16 +2845,9 @@ export class WasmPosixKernel {
           } catch { return -22; }
           const source = shareContextId ? this.gl.getContext(pid, shareContextId) : undefined;
           if (shareContextId && (!source || source === b)) return -22;
-          if (source && (!!source.forward !== !!b.forward)) return -19;
           const previousCanvas = b.canvas;
           let failure = -19;
           try {
-            if (b.forward) {
-              const rc = b.forward.onCreateContext(b.sessionId, source?.sessionId, ctxId);
-              if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
-              b.contextId = ctxId;
-              return 0;
-            }
             if (!b.canvas) {
               const shared = source?.gl ?? this.#sharedGlContext();
               if (shared && !shared.isContextLost()) {
@@ -2890,7 +2881,6 @@ export class WasmPosixKernel {
           // revoked public slot; process/session unbind still cancels them.
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroyContext(pid, b.sessionId);
-          b.forward?.onDestroyContext(b.sessionId,ctxId);
         },
         host_gl_create_surface: (
           pid: number, surfaceId: number,
@@ -2908,22 +2898,6 @@ export class WasmPosixKernel {
               height:view.getUint32(8,true), configId:view.getUint32(12,true), targetBoId:view.getUint32(16,true)};
             if (!validSurfaceCreation(creation)) return -22;
             if (b.surfaceId !== null || this.gl.getSurface(pid,surfaceId)) return -16;
-            if (b.forward) {
-              if (!b.forward.onCreateSurface) return -38;
-              const result = b.forward.onCreateSurface(creation, b.sessionId);
-              if (result.rc !== 0) return Number.isInteger(result.rc) && result.rc < 0 ? result.rc : -5;
-              if (!Number.isInteger(result.width) || !Number.isInteger(result.height)
-                  || result.width < 0 || result.height < 0 || result.width > 0x7fff_ffff || result.height > 0x7fff_ffff) {
-                b.forward.onDestroySurface?.(surfaceId, b.sessionId); return -5;
-              }
-              const candidate = createSurfaceResources(pid);
-              candidate.surfaceId = surfaceId; candidate.fixedSize = true; candidate.kind = creation.kind; candidate.surfaceSize = {width:result.width,height:result.height};
-              view.setUint32(4,result.width,true); view.setUint32(8,result.height,true);
-              try { this.#writeKernelBytes(destination, bytes); }
-              catch { b.forward.onDestroySurface?.(surfaceId,b.sessionId); return -5; }
-              const old = b.surface; b.surface = candidate; retireSurface(old);
-              return 0;
-            }
             let canvas = b.canvas;
             if (!canvas && this.#isMasterGlBinding(b)) {
               const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
@@ -2958,7 +2932,7 @@ export class WasmPosixKernel {
             const copyId = view.getUint32(20, true);
             const format = view.getUint32(24,true), pitch = view.getUint32(28,true);
             if (copyId) {
-              if (targetId || b.forward || !b.pendingRenderTargetBoId || b.presentTarget) return -22;
+              if (targetId || !b.pendingRenderTargetBoId || b.presentTarget) return -22;
               const copy = this.gl.gpuBo(copyId), size = b.surfaceSize, gl = b.surface.gl;
               if (!size || !gl || copyId === b.pendingRenderTargetBoId ||
                   view.getUint32(4,true) !== size.width || view.getUint32(8,true) !== size.height ||
@@ -3008,7 +2982,7 @@ export class WasmPosixKernel {
             }
             if (format || pitch) return -22;
             const target = this.gl.gpuBo(targetId);
-            if (!target || !b.pendingRenderTargetBoId || b.presentTarget || b.forward
+            if (!target || !b.pendingRenderTargetBoId || b.presentTarget
                 || (b.contextId !== null && !b.gl) || target.gl.isContextLost()
                 || (b.gl && b.gl !== target.gl)) return -5;
             const width = view.getUint32(4, true), height = view.getUint32(8, true);
@@ -3023,7 +2997,6 @@ export class WasmPosixKernel {
         host_gl_destroy_surface: (pid: number, surfaceId: number, sessionId?: number): void => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return;
-          b.forward?.onDestroySurface?.(surfaceId, b.sessionId);
           if (b.surfaceId !== (surfaceId >>> 0)) return;
           if (b.gl) this.gl_muxers.get(b.gl)?.invalidateCurrent();
           this.gl.destroySurface(pid, b.sessionId);
@@ -3041,8 +3014,7 @@ export class WasmPosixKernel {
           if (ctxId === 0) {
             if (drawId !== 0 || readId !== 0) return -22;
             // Revoking a kernel binding does not alter the cached native
-            // context or wait on a renderer. Queued forwarded commands still
-            // observe their old drawable; a new bind is acknowledged in order.
+            // context or wait on a renderer.
             try {
               if (b) {
                 const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
@@ -3054,7 +3026,7 @@ export class WasmPosixKernel {
               return 0;
             } catch { if (b?.gl) this.glMuxerFor(b.gl).invalidateCurrent(); return -5; }
           }
-          if (!b || b.contextId !== ctxId || (!b.gl && !b.forward)) return -5;
+          if (!b || b.contextId !== ctxId || !b.gl) return -5;
           if ((drawId === 0) !== (readId === 0)) return -22;
           const surfaces = drawId === 0 ? null : resolveDrawableSurfaces(this.gl,b,drawId,readId);
           if (drawId !== 0 && !surfaces) return -22;
@@ -3067,13 +3039,6 @@ export class WasmPosixKernel {
             height: drawId === 0 ? 0 : size?.height ?? target?.h ?? b.canvas?.height ?? 0,
           };
           if (!validCurrentDrawable(drawable)) return -22;
-          if (b.forward) {
-            if (!b.forward.onMakeCurrent) return -38;
-            try {
-              const rc = b.forward.onMakeCurrent(drawable, b.sessionId);
-              if (rc !== 0) return Number.isInteger(rc) && rc < 0 ? rc : -5;
-            } catch { return -5; }
-          }
           try {
             const muxer = b.gl ? this.glMuxerFor(b.gl) : null;
             const oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
@@ -3092,10 +3057,7 @@ export class WasmPosixKernel {
         ): number => {
           const b = this.gl.get(pid, sessionId);
           if (!b) return -5; // EIO: kernel/host GL state diverged.
-          // This private-only increment refuses before command admission;
-          // accepted outbound command queueing needs its own typed model.
-          if(b.forward?.ownedQueries?.hasBarrier(b.sessionId))return -16;
-          if (!b.forward && !b.gl) return 0;
+          if (!b.gl) return 0;
           let submission: { offset: number; length: number; end: number };
           try {
             submission = this.#checkedKernelSpan(
@@ -3135,12 +3097,6 @@ export class WasmPosixKernel {
           const validation = frame.validate(validateCommandBuffer);
           if (validation < 0) { frame.discard(); return validation; }
           if (!this.prepareForeignRetirements(b)) { frame.discard(); return -5; }
-          if (b.forward) {
-            try {
-              frame.run(b, () => b.forward!.onSubmit(b.cmdbufView!,b.sessionId));
-              return 0;
-            } catch { frame.discard(); return -5; }
-          }
           try { this.gl_submit_queue.enqueue(b,frame); }
           catch { frame.discard(); return -12; }
           return this.drainGlSubmits();
@@ -3159,16 +3115,9 @@ export class WasmPosixKernel {
           if (!operation) return -5;
           try {
           if (interruptUniformUpload(b)) return -5;
-          if (!b.gl && !b.forward) return -5;
+          if (!b.gl) return -5;
           if (!this.prepareForeignRetirements(b)) return -5;
-          if (b?.gl?.isContextLost()) return -5; // EIO
-          if (b.forward) {
-            if (!b.forward.onPresent) return -38;
-            try {
-              const rc = b.forward.onPresent(b.sessionId);
-              return Number.isInteger(rc) && rc <= 0 ? rc : -5;
-            } catch { return -5; }
-          }
+          if (b.gl.isContextLost()) return -5; // EIO
           try {
             this.glMuxerFor(b.gl!).switchTo(b);
             const selected = b.drawSurface ?? b.surface;
@@ -3239,7 +3188,7 @@ export class WasmPosixKernel {
             return reply.bytes.byteLength;
           }
           const b = this.gl.get(pid, sessionId);
-          if (!b || (!b.gl && !b.forward && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
+          if (!b || (!b.gl && op !== QOP_SURFACE_CAPABILITIES && !isFenceQuery(op))) return -1;
           if (b.gl && glSubmitExecuting(this.gl_muxers.get(b.gl))) return -5;
           const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
           if (!operation) return -5;
@@ -3285,49 +3234,42 @@ export class WasmPosixKernel {
           let preparedFence: PreparedFenceQuery | undefined;
           try {
             if (!this.prepareForeignRetirements(b)) return -5;
-            if (b.forward) {
-              if (!b.forward.onQuery) return -38; // ENOSYS: legacy channel
-              const result = b.forward.onQuery(op, inBuf, outputLength, b.sessionId);
-              written = result.rc;
-              outBuf = result.bytes;
-            } else {
-              outBuf = new IntrinsicUint8Array(outputLength);
-              if (isFenceQuery(op)) {
-                preparedFence = prepareFenceQuery(b,op,inBuf,outBuf,
-                  gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
-                  () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
-                written = preparedFence.rc;
-              } else if (op === QOP_SERVER_WAIT) {
-                const source = inBuf.byteLength === 8
-                  ? this.gl.get(pid, new DataView(inBuf.buffer, inBuf.byteOffset, 8).getUint32(0, true))
-                  : undefined;
-                written = runServerWait(b, source, inBuf, outBuf,
-                  gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
-                  () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
-              } else if (op === QOP_SURFACE_CAPABILITIES) {
-                let canvas = b.canvas;
-                if (!canvas && this.#isMasterGlBinding(b)) {
-                  const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
-                  if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
-                }
-                const shared = !b.canvas ? this.#sharedGlContext() : null;
-                const gl = b.gl ?? shared ?? surfaceCapabilityRenderer(b,canvas);
-                // Capture the outgoing owner's flags without replaying or
-                // publishing this not-yet-current configuration session.
-                if (gl) this.gl_muxers.get(gl)?.captureCurrentErrors();
-                written = querySurfaceCapabilities(gl,inBuf,outBuf);
-              } else {
-                // Empty command buffers still need to select their owner.
-                this.glMuxerFor(b.gl!).switchTo(b);
-                const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
-                if (!this.gl.cpuImages.prepare(b, this.bos, capture)) return -5;
-                this.gl.cpuImages.begin(b);
-                try { written = runGlQuery(b, op, inBuf, outBuf); }
-                finally { if (!this.gl.cpuImages.publish(b, this.bos, capture)) return -5; }
+            outBuf = new IntrinsicUint8Array(outputLength);
+            if (isFenceQuery(op)) {
+              preparedFence = prepareFenceQuery(b,op,inBuf,outBuf,
+                gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
+                () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
+              written = preparedFence.rc;
+            } else if (op === QOP_SERVER_WAIT) {
+              const source = inBuf.byteLength === 8
+                ? this.gl.get(pid, new DataView(inBuf.buffer, inBuf.byteOffset, 8).getUint32(0, true))
+                : undefined;
+              written = runServerWait(b, source, inBuf, outBuf,
+                gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
+                () => { if (b.gl) this.glMuxerFor(b.gl).switchTo(b); });
+            } else if (op === QOP_SURFACE_CAPABILITIES) {
+              let canvas = b.canvas;
+              if (!canvas && this.#isMasterGlBinding(b)) {
+                const crtc = this.kms.masterCrtcForFile(b.displayFileId) ?? this.callbacks.getKmsCrtcIds?.()[0];
+                if (crtc !== undefined && crtc !== null) canvas = this.callbacks.getKmsCanvas?.(crtc) ?? null;
               }
+              const shared = !b.canvas ? this.#sharedGlContext() : null;
+              const gl = b.gl ?? shared ?? surfaceCapabilityRenderer(b,canvas);
+              // Capture the outgoing owner's flags without replaying or
+              // publishing this not-yet-current configuration session.
+              if (gl) this.gl_muxers.get(gl)?.captureCurrentErrors();
+              written = querySurfaceCapabilities(gl,inBuf,outBuf);
+            } else {
+              // Empty command buffers still need to select their owner.
+              this.glMuxerFor(b.gl!).switchTo(b);
+              const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
+              if (!this.gl.cpuImages.prepare(b, this.bos, capture)) return -5;
+              this.gl.cpuImages.begin(b);
+              try { written = runGlQuery(b, op, inBuf, outBuf); }
+              finally { if (!this.gl.cpuImages.publish(b, this.bos, capture)) return -5; }
             }
           } catch {
-            return -5; // EIO: renderer/transport failed without a reply
+            return -5; // EIO: the renderer failed without a reply
           }
           try {
             if (!Number.isSafeInteger(written)) return -5;

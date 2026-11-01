@@ -48,7 +48,6 @@ export function prepareDrawableTransition(b: GlBinding, muxer: GlMuxer,
       !b.clientArrayEndRequested && !muxer.context.isContextLost?.()) {
     // No native work/callout occurs in the reviewed logical commit. Mark
     // afterward only if its FBO refs changed; never clear an older dirty bit.
-    // Forwarded callers still require acknowledgement before committing.
     return true;
   }
   muxer.invalidateCurrent();
@@ -58,8 +57,7 @@ export function prepareDrawableTransition(b: GlBinding, muxer: GlMuxer,
   return false;
 }
 
-/** Prepare native storage without changing current ownership. Forwarded
- * callers commit only after the reply mailbox accepts acknowledgement.
+/** Prepare native storage without changing current ownership.
  * Complete or cancel within the same synchronous renderer turn. */
 export function prepareCurrentDrawable(b: GlBinding, drawable: GlDrawableBinding,
   surfaces?: GlDrawableSurfaces): { commit(): void; cancel(): void } | null {
