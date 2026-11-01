@@ -3,6 +3,7 @@ import { createCentralizedKernelWorkerTestDouble } from "../src/kernel-worker";
 import { NodePlatformIO } from "../src/platform/node";
 import type { KmsCursor } from "../src/dri/cursor-plane";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { pixelGl } from "./support/kms-color-gl";
 
 /** The vblank pump presents each CRTC's output: with a color stage (legacy
  * gamma), the cursor plane is blended into the primary and the result
@@ -94,42 +95,68 @@ it("blends the cursor and applies the LUT in the 2D presenter, standing the over
   expect(overlay.painted.at(-1)).toEqual([1, 0, 255, 255, 255, 255]);
 });
 
-it("uploads the CRTC output to the WebGL2 scanout presenter and re-presents a moved cursor", () => {
+/** A WebGL2 scanout canvas over the pixel-modelling fake GL. */
+function canvasGl(width: number, height: number) {
+  const r = pixelGl(width, height);
+  const canvas = {
+    width: 0, height: 0, addEventListener() {},
+    getContext: (kind: string) => kind === "webgl2" ? r.gl : null,
+  } as unknown as OffscreenCanvas;
+  return { ...r, canvas };
+}
+
+const lutUploads = (r: ReturnType<typeof pixelGl>) => r.uploads.filter(u => u.byteLength === 1024).length;
+
+it("applies the LUT in the WebGL2 scanout presenter's shader, uploading only the raw scanout", () => {
   const kernel = makeKernel();
   let current = cursor(0, 1);
   stubScanout(kernel, () => current);
-  const uploads: Array<{ format: number; pixels: number[] }> = [];
-  const gl = new Proxy({
-    isContextLost: () => false,
-    getError: () => 0,
-    getParameter: () => null,
-    createShader: () => ({}), getShaderParameter: () => true,
-    createProgram: () => ({}), getProgramParameter: () => true,
-    createVertexArray: () => ({}), createTexture: () => ({}),
-    getUniformLocation: () => ({}),
-    RGBA: 0x1908, RGBA8: 0x8058, RGB: 0x1907, RGB565: 0x8d62, UNSIGNED_BYTE: 0x1401,
-    UNSIGNED_SHORT_5_6_5: 0x8363, TEXTURE_2D: 0x0de1,
-    texImage2D: (_t: number, _l: number, _if: number, _w: number, _h: number, _b: number,
-      format: number, _type: number, pixels: Uint8Array) => uploads.push({ format, pixels: [...pixels] }),
-    texSubImage2D: (_t: number, _l: number, _x: number, _y: number, _w: number, _h: number,
-      format: number, _type: number, pixels: Uint8Array) => uploads.push({ format, pixels: [...pixels] }),
-  } as Record<string, unknown>, {
-    get: (target, key) => key in target ? target[key as string] : () => {},
-  });
-  const display = {
-    width: 0, height: 0, addEventListener() {},
-    getContext: (kind: string) => kind === "webgl2" ? gl : null,
-  } as unknown as OffscreenCanvas;
-  kernel.attachKmsCanvas(1, display, undefined, { mode: "webgl2-scanout" });
+  const r = canvasGl(2, 1);
+  kernel.attachKmsCanvas(1, r.canvas, undefined, { mode: "webgl2-scanout" });
+  vi.advanceTimersByTime(17);
+  // No stage: the XRGB bytes swizzled in the shader, cursor on its overlay.
+  expect([...r.screen.data]).toEqual([10, 20, 30, 255, 40, 50, 60, 255]);
+  const plainDraws = r.counts.draws;
+  expect(plainDraws, "no LUT: one presenter draw").toBe(1);
+
   kernel.kms.setGamma(1, testLut());
   vi.advanceTimersByTime(17);
-  // RGBA rows: the white cursor at pixel 0, then the LUT.
-  expect(uploads.at(-1)).toEqual({ format: 0x1908, pixels: [0, 255, 128, 255, 215, 50, 128, 255] });
-  const count = uploads.length;
+  // The white cursor at pixel 0, then red inverted, green kept, blue 0x80.
+  expect([...r.screen.data]).toEqual([0, 255, 128, 255, 215, 50, 128, 255]);
+  // Every upload is the raw scanout or the LUT: no CPU-corrected frame.
+  const raw = [30, 20, 10, 0, 60, 50, 40, 0];
+  expect(r.uploads.filter(u => u.byteLength !== 1024 && u.byteLength !== 4).map(u => [...u]))
+    .toEqual(r.uploads.filter(u => u.byteLength !== 1024 && u.byteLength !== 4).map(() => raw));
+  expect(lutUploads(r)).toBe(1);
+  expect(r.counts.readPixels).toBe(0);
+  const draws = r.counts.draws;
   vi.advanceTimersByTime(17);
-  expect(uploads.length, "an unchanged output is not uploaded again").toBe(count);
+  expect(r.counts.draws, "an unchanged output is not presented again").toBe(draws);
   // Neither fb nor commit count moved; the cursor did.
   current = cursor(1, 2);
   vi.advanceTimersByTime(17);
-  expect(uploads.at(-1)).toEqual({ format: 0x1908, pixels: [245, 20, 128, 255, 0, 255, 128, 255] });
+  expect([...r.screen.data]).toEqual([245, 20, 128, 255, 0, 255, 128, 255]);
+  expect(lutUploads(r), "a moved cursor does not upload the LUT again").toBe(1);
+
+  kernel.kms.setGamma(1, null);
+  vi.advanceTimersByTime(17);
+  expect([...r.screen.data]).toEqual([10, 20, 30, 255, 40, 50, 60, 255]);
+});
+
+it("expands RGB565 scanout by bit replication before the LUT, as the CPU stage does", () => {
+  const kernel = makeKernel();
+  // One RGB565 pixel: r=3, g=5, b=1. scanoutRgba gives (24, 20, 8); a
+  // normalized-float round would give (25, 20, 8).
+  const fb = { fb_id: 10, bo_id: 100, width: 1, height: 1, pixel_format: 0x36314752, pitch: 2, x: 0, y: 0, offset: 0 };
+  const word = (3 << 11) | (5 << 5) | 1;
+  const kms = kernel.kms as unknown as Record<string, unknown>;
+  kms.currentFb = () => fb;
+  kms.scanoutBytes = () => new Uint8Array([word & 255, word >> 8]);
+  kms.cursorSnapshot = () => cursor(5, 1);
+  const r = canvasGl(1, 1);
+  kernel.attachKmsCanvas(1, r.canvas, undefined, { mode: "webgl2-scanout" });
+  kernel.kms.setGamma(1, testLut());
+  vi.advanceTimersByTime(17);
+  expect([...r.screen.data]).toEqual([255 - 24, 20, 128, 255]);
+  expect(r.counts.readPixels).toBe(0);
 });

@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { applyKmsGamma, compositeKmsCursor, kmsGammaTable } from "../src/dri/kms-gamma";
+import { applyKmsGamma, compositeKmsCursor, kmsCrtcOutput, kmsGammaTable } from "../src/dri/kms-gamma";
 import { KmsRegistry } from "../src/dri/kms-registry";
 import type { KmsCursor } from "../src/dri/cursor-plane";
 import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess, WasmPosixKernel } from "../src/kernel";
-import { drawKmsOutput, readDefaultFramebuffer } from "../src/webgl/kms-scanout";
 import { hasNativeRepair } from "../src/webgl/native-recovery";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { pixelGl } from "./support/kms-color-gl";
 
 /** The CRTC color stage: legacy gamma (kms_color legacy-gamma) applies to
  * the CRTC output, after the cursor plane is blended over the primary. */
@@ -93,151 +93,6 @@ describe("CRTC color stage", () => {
   });
 });
 
-/** A WebGL2 fake that models pixels: textures, framebuffer color
- * attachments, the default framebuffer (the canvas) and blits. */
-function pixelGl(width: number, height: number) {
-  type Image = { w: number; h: number; data: Uint8Array };
-  const textures = new Map<object, Image>();
-  const framebuffers = new Map<object, { color: object | null }>();
-  const screen: Image = { w: width, h: height, data: new Uint8Array(width * height * 4) };
-  const guestRead = {}, guestDraw = {}, guestTexture = {}, guestUnpack = {}, guestPack = {};
-  const state = new Map<number, unknown>([
-    [0x84e0, 0x84c0], [0x8caa, guestRead], [0x8ca6, guestDraw], [0x8069, guestTexture],
-    [0x88ef, guestUnpack], [0x88ed, guestPack], [0x0c11, true],
-    [0x0cf5, 1], [0x0cf2, 7], [0x0cf4, 2], [0x0cf3, 3], [0x9240, true], [0x9241, true],
-    [0x0d05, 8], [0x0d02, 5], [0x0d04, 1], [0x0d03, 1],
-    [0x0c23, [true, true, true, true]], [0x0c22, [0, 0, 0, 0]],
-  ]);
-  let defaultReadBuffer = 0x0405;
-  const uploads: Uint8Array[] = [];
-  let lost = false;
-  for (const target of [guestRead, guestDraw]) framebuffers.set(target, { color: null });
-  const image = (fbo: unknown): Image => {
-    if (fbo === null) return screen;
-    const color = framebuffers.get(fbo as object)?.color;
-    const found = color && textures.get(color);
-    if (!found) throw new Error("framebuffer without color storage");
-    return found;
-  };
-  const core = {
-    isContextLost: () => lost,
-    getError: () => 0,
-    getExtension: () => null,
-    getParameter: (p: number) => p === 0x0c02
-      ? (state.get(0x8caa) === null ? defaultReadBuffer : 0x8ce0)
-      : state.get(p) ?? null,
-    createTexture: () => { const t = {}; textures.set(t, { w: 0, h: 0, data: new Uint8Array() }); return t; },
-    createFramebuffer: () => { const f = {}; framebuffers.set(f, { color: null }); return f; },
-    createRenderbuffer: () => ({}),
-    deleteTexture: (t: object) => { textures.delete(t); },
-    deleteFramebuffer: (f: object) => { framebuffers.delete(f); },
-    bindTexture: (_target: number, value: unknown) => state.set(0x8069, value),
-    bindRenderbuffer: (_target: number, value: unknown) => state.set(0x8ca7, value),
-    bindFramebuffer: (target: number, value: unknown) => {
-      if (target === 0x8d40 || target === 0x8ca8) state.set(0x8caa, value);
-      if (target === 0x8d40 || target === 0x8ca9) state.set(0x8ca6, value);
-    },
-    bindBuffer: (target: number, value: unknown) => {
-      state.set(target === 0x88eb ? 0x88ed : target === 0x88ec ? 0x88ef : target, value);
-    },
-    // WebGL reports the FLIP_Y/PREMULTIPLY_ALPHA flags as booleans.
-    pixelStorei: (name: number, value: unknown) =>
-      state.set(name, name === 0x9240 || name === 0x9241 ? Boolean(value) : value),
-    enable: (name: number) => state.set(name, true),
-    disable: (name: number) => state.set(name, false),
-    colorMask: (...value: boolean[]) => state.set(0x0c23, value),
-    clearColor: (...value: number[]) => state.set(0x0c22, value),
-    readBuffer: (value: number) => {
-      if (state.get(0x8caa) !== null) throw new Error("test reads only the default read buffer");
-      defaultReadBuffer = value;
-    },
-    clear: () => {
-      const mask = state.get(0x0c23) as boolean[], clear = state.get(0x0c22) as number[];
-      const target = image(state.get(0x8ca6));
-      for (let i = 0; i < target.data.length; i++) if (mask[i & 3]) target.data[i] = clear[i & 3] * 255;
-    },
-    texImage2D: (_t: number, _l: number, _if: number, w: number, h: number, _b: number,
-      _f: number, _ty: number, pixels: Uint8Array | null) => {
-      if (pixels) {
-        // The upload must not be reshaped by caller unpack state.
-        expect(state.get(0x88ef)).toBeNull();
-        expect([0x0cf2, 0x0cf4, 0x0cf3, 0x9240, 0x9241].map(p => Number(state.get(p)))).toEqual([0, 0, 0, 0, 0]);
-        uploads.push(Uint8Array.from(pixels));
-      }
-      textures.set(state.get(0x8069) as object, { w, h, data: pixels ? Uint8Array.from(pixels) : new Uint8Array(w * h * 4) });
-    },
-    framebufferTexture2D: (target: number, _attachment: number, _textarget: number, tex: object) => {
-      const fbo = state.get(target === 0x8ca9 || target === 0x8d40 ? 0x8ca6 : 0x8caa) as object;
-      framebuffers.get(fbo)!.color = tex;
-    },
-    checkFramebufferStatus: () => 0x8cd5,
-    readPixels: (x: number, y: number, w: number, h: number, _f: number, _t: number, out: Uint8Array) => {
-      expect(state.get(0x88ed)).toBeNull();
-      expect([0x0d02, 0x0d04, 0x0d03].map(p => state.get(p))).toEqual([0, 0, 0]);
-      const read = state.get(0x8caa);
-      if (read === null && defaultReadBuffer !== 0x0405) throw new Error("no read buffer");
-      const source = image(read);
-      for (let row = 0; row < h; row++) {
-        const at = ((y + row) * source.w + x) * 4;
-        out.set(source.data.subarray(at, at + w * 4), row * w * 4);
-      }
-    },
-    blitFramebuffer: (sx0: number, sy0: number, sx1: number, sy1: number,
-      dx0: number, dy0: number, dx1: number, dy1: number) => {
-      expect(state.get(0x0c11)).toBe(false);
-      const source = image(state.get(0x8caa)), target = image(state.get(0x8ca6));
-      const w = Math.abs(dx1 - dx0), h = Math.abs(dy1 - dy0);
-      const step = (from: number, to: number, i: number) => from < to ? from + i : from - 1 - i;
-      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
-        const s = (step(sy0, sy1, j) * source.w + step(sx0, sx1, i)) * 4;
-        const d = (step(dy0, dy1, j) * target.w + step(dx0, dx1, i)) * 4;
-        target.data.set(source.data.subarray(s, s + 4), d);
-      }
-    },
-  };
-  const gl = new Proxy(core, {
-    get: (target, key) => key in target ? target[key as keyof typeof target] : () => {},
-  }) as unknown as WebGL2RenderingContext;
-  /** A texture-backed framebuffer holding `rows` (GL order: bottom first). */
-  const framebuffer = (w: number, h: number, data: number[]) => {
-    const tex = {}, fbo = {};
-    textures.set(tex, { w, h, data: Uint8Array.from(data) });
-    framebuffers.set(fbo, { color: tex });
-    return fbo as WebGLFramebuffer;
-  };
-  return {
-    gl, state, screen, uploads, textures, framebuffers, framebuffer,
-    snapshot: () => new Map(state),
-    defaultReadBuffer: () => defaultReadBuffer,
-    selectDefaultReadBuffer: (value: number) => { defaultReadBuffer = value; },
-    setScreen: (data: number[]) => screen.data.set(data),
-    loseContext: () => { lost = true; },
-  };
-}
-
-describe("CRTC output on a GL canvas", () => {
-  it("uploads the finished output to a transient texture and restores every changed selector", () => {
-    const r = pixelGl(2, 1);
-    const before = r.snapshot(), objects = [r.textures.size, r.framebuffers.size];
-    expect(drawKmsOutput(r.gl, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 2, 1)).toBe(true);
-    expect([...r.screen.data]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(r.snapshot()).toEqual(before);
-    expect([r.textures.size, r.framebuffers.size], "transient objects are deleted").toEqual(objects);
-    expect(hasNativeRepair(r.gl)).toBe(false);
-    expect(drawKmsOutput(r.gl, new Uint8Array(4), 2, 1)).toBe(false);
-  });
-
-  it("reads the default framebuffer through BACK and restores a session's read buffer", () => {
-    const r = pixelGl(1, 2);
-    r.setScreen([1, 2, 3, 4, 5, 6, 7, 8]);
-    r.selectDefaultReadBuffer(0);
-    const before = r.snapshot();
-    expect([...readDefaultFramebuffer(r.gl, 1, 2)!]).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(r.defaultReadBuffer()).toBe(0);
-    expect(r.snapshot()).toEqual(before);
-  });
-});
-
 const PID = 101;
 const lutPointer = 0x2000;
 
@@ -266,6 +121,8 @@ function kernelHarness(gl: WebGL2RenderingContext, canvas: { width: number; heig
   return { kernel, imports, memory, canvas: presentCanvas, setGamma };
 }
 
+const lutUploads = (r: ReturnType<typeof pixelGl>) => r.uploads.filter(u => u.byteLength === 1024).length;
+
 describe("CRTC color stage in the host presentation paths", () => {
   it("takes the kernel's LUT from kernel memory, and none clears it", () => {
     const r = pixelGl(1, 1);
@@ -276,7 +133,7 @@ describe("CRTC color stage in the host presentation paths", () => {
     expect(kernel.kms.gamma(1)).toBeNull();
   });
 
-  it("presents a direct GPU scanout through the LUT with the cursor blended, alpha opaque", () => {
+  it("presents a direct GPU scanout through the LUT on the GPU, cursor blended, alpha opaque", () => {
     // 2x2 BO, top row first: rows (A B) over (C D), alpha 7.
     const bo = [10, 20, 30, 7, 40, 50, 60, 7, 70, 80, 90, 7, 100, 110, 120, 7];
     const plain = pixelGl(2, 2), corrected2 = pixelGl(2, 2);
@@ -286,22 +143,25 @@ describe("CRTC color stage in the host presentation paths", () => {
       vi.spyOn(kernel.gl, "gpuBo").mockReturnValue({ gl: r.gl, fbo: r.framebuffer(2, 2, bo), w: 2, h: 2 } as any);
       if (gamma) setGamma(testLut());
       vi.spyOn(kernel.kms, "currentCursor").mockReturnValue(cursorAt(1, 0, [255, 255, 255, 255]));
-      const before = r.snapshot();
-      expect(getKernelGraphicsAccess(kernel).gpuScanout(
-        { bo_id: 42, width: 2, height: 2, x: 0, y: 0 } as any, { width: 2, height: 2, getContext: () => r.gl } as any, true, 1,
-      )).toEqual({ direct: true });
-      expect(r.snapshot()).toEqual(before);
+      for (let tick = 0; tick < 3; tick++) {
+        expect(getKernelGraphicsAccess(kernel).gpuScanout(
+          { bo_id: 42, width: 2, height: 2, x: 0, y: 0 } as any, { width: 2, height: 2, getContext: () => r.gl } as any, true, 1,
+        )).toEqual({ direct: true });
+      }
+      expect(r.counts.readPixels, "no frame is read back to the CPU").toBe(0);
       shown.push([...r.screen.data]);
     }
     // Without a color stage: the BO flipped onto the canvas, opaque, and the
-    // cursor is the overlay's (not blended into the primary).
+    // cursor is the overlay's (not blended into the primary). No stage draw.
     expect(shown[0]).toEqual([70, 80, 90, 255, 100, 110, 120, 255, 10, 20, 30, 255, 40, 50, 60, 255]);
+    expect(plain.counts.draws, "no LUT, no added work").toBe(0);
     // With one: the same frame with the cursor blended at CRTC (1, 0) — the
     // top right, GL row 1 — then every color through the LUT.
     expect(shown[1]).toEqual([
       ...corrected(70, 80, 90), 255, ...corrected(100, 110, 120), 255,
       ...corrected(10, 20, 30), 255, ...corrected(255, 255, 255), 255,
     ]);
+    expect(lutUploads(corrected2), "the LUT is uploaded once per change, not per present").toBe(1);
   });
 
   /** A KMS-master GL session presenting its EGL window on CRTC 1's canvas. */
@@ -328,7 +188,7 @@ describe("CRTC color stage in the host presentation paths", () => {
     return { ...r, ...h, binding, target, cursor };
   }
 
-  it("passes a presented EGL window frame through the CRTC color stage", () => {
+  it("passes a presented EGL window frame through the CRTC color stage without a readback", () => {
     const s = windowSession();
     // GL order: bottom row (C D), top row (A B); the window keeps its alpha.
     s.target().data.set([70, 80, 90, 9, 100, 110, 120, 9, 10, 20, 30, 9, 40, 50, 60, 9]);
@@ -341,27 +201,53 @@ describe("CRTC color stage in the host presentation paths", () => {
       ...corrected(70, 80, 90), 9, ...corrected(100, 110, 120), 9,
       ...corrected(255, 0, 0), 9, ...corrected(40, 50, 60), 9,
     ]);
+    expect(s.imports.env.host_gl_present(PID)).toBe(0);
+    expect(s.counts.readPixels, "no frame is read back to the CPU").toBe(0);
+    expect(lutUploads(s)).toBe(1);
+    expect([...s.unitSamplers.values()].every(sampler => sampler === null), "no sampler object is left bound").toBe(true);
     expect(hasNativeRepair(s.gl)).toBe(false);
   });
 
-  it("re-presents a static window frame when the LUT or the cursor changes, and ends the stage", () => {
+  it("matches the CPU color stage bit for bit: partial cursor alpha, every channel, arbitrary LUT", () => {
+    const s = windowSession(4, 3);
+    let seed = 7;
+    const next = () => (seed = (seed * 1103515245 + 12345) >>> 0) >>> 16 & 255;
+    const frame = Array.from({ length: 4 * 3 * 4 }, (_, i) => (i & 3) === 3 ? 255 : next());
+    const lut = new Uint16Array(768).map(() => next() << 8 | next());
+    // A 2x2 premultiplied cursor straddling the right edge, with alphas
+    // 0 (but colored), 1, 128 and 254.
+    const premultiplied = new Uint8ClampedArray([9, 0, 3, 0, 1, 0, 1, 1, 100, 50, 7, 128, 200, 254, 13, 254]);
+    const cursor: KmsCursor = { version: 3, x: 3, y: 1, hotX: 0, hotY: 0, width: 2, height: 2,
+      pixels: premultiplied.slice(), premultiplied };
+    s.target().data.set(frame);
+    s.setGamma(lut);
+    s.cursor.mockReturnValue(cursor);
+    expect(s.imports.env.host_gl_present(PID)).toBe(0);
+    const expected = Uint8Array.from(frame);
+    kmsCrtcOutput(expected, 4, 3, s.kernel.kms.gamma(1), cursor, true);
+    expect([...s.screen.data]).toEqual([...expected]);
+    expect(s.counts.readPixels).toBe(0);
+  });
+
+  it("re-presents a static window frame when the LUT or the cursor changes, and restores it when the stage ends", () => {
     const s = windowSession();
     const frame = [70, 80, 90, 255, 100, 110, 120, 255, 10, 20, 30, 255, 40, 50, 60, 255];
     s.target().data.set(frame);
     expect(s.imports.env.host_gl_present(PID)).toBe(0);
     const access = getKernelGraphicsAccess(s.kernel);
     // No stage, nothing to do.
+    const idle = { ...s.counts };
     access.presentCrtcOutput(1);
-    expect(s.uploads).toEqual([]);
+    expect(s.counts).toEqual(idle);
     // The guest presents nothing more, but SETGAMMA must still show.
     s.setGamma(testLut());
     access.presentCrtcOutput(1);
     expect([...s.screen.data]).toEqual(frame.map((v, i) => (i & 3) === 3 ? v : corrected(
       frame[i - (i & 3)], frame[i - (i & 3) + 1], frame[i - (i & 3) + 2])[i & 3]));
-    const uploads = s.uploads.length;
+    const draws = s.counts.draws;
     access.presentCrtcOutput(1);
-    expect(s.uploads.length, "an unchanged stage is not re-presented").toBe(uploads);
-    // A moved cursor is blended into the same (cached, uncorrected) frame.
+    expect(s.counts.draws, "an unchanged stage is not re-presented").toBe(draws);
+    // A moved cursor is blended into the same (retained, uncorrected) frame.
     s.cursor.mockReturnValue(cursorAt(1, 1, [255, 255, 255, 255], 5));
     access.presentCrtcOutput(1);
     expect([...s.screen.data.subarray(4, 8)]).toEqual([...corrected(255, 255, 255), 255]);
@@ -370,9 +256,10 @@ describe("CRTC color stage in the host presentation paths", () => {
     s.setGamma(null);
     access.presentCrtcOutput(1);
     expect([...s.screen.data]).toEqual(frame);
-    const settled = s.uploads.length;
+    const settled = { ...s.counts };
     access.presentCrtcOutput(1);
-    expect(s.uploads.length).toBe(settled);
+    expect(s.counts).toEqual(settled);
+    expect(s.counts.readPixels, "no frame is read back to the CPU").toBe(0);
   });
 
   it("corrects a frame drawn straight to the canvas before its present target existed", () => {
@@ -383,8 +270,11 @@ describe("CRTC color stage in the host presentation paths", () => {
     s.binding.surface.presentTarget = null;
     s.binding.surface.renderTargetFbo = null;
     s.setScreen([10, 20, 30, 255]);
+    s.selectDefaultReadBuffer(0);
     expect(s.imports.env.host_gl_present(PID)).toBe(0);
     expect([...s.screen.data]).toEqual([...corrected(10, 20, 30), 255]);
+    expect(s.counts.readPixels, "no frame is read back to the CPU").toBe(0);
+    expect(s.defaultReadBuffer(), "the session's read buffer selection is restored").toBe(0);
   });
 
   it("corrects a GPU framebuffer flipped onto the session's own canvas at SETCRTC", () => {
@@ -398,5 +288,6 @@ describe("CRTC color stage in the host presentation paths", () => {
       ...corrected(9, 10, 11), 255, ...corrected(13, 14, 15), 255,
       ...corrected(1, 2, 3), 255, ...corrected(5, 6, 7), 255,
     ]);
+    expect(s.counts.readPixels, "no frame is read back to the CPU").toBe(0);
   });
 });

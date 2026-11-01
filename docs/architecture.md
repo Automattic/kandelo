@@ -3873,17 +3873,27 @@ or application-owned scanout, while the CRTC has no color stage.
 The CRTC color stage is the legacy gamma LUT, which Linux applies to the
 CRTC output after the planes are blended. The host reduces each 16-bit
 entry to 8 bits as `drm_color_lut_extract` does; a table that maps every
-value to itself is no stage at all. With a stage, every presenter shows
-the blended, corrected frame (`host/src/dri/kms-gamma.ts`): the 2D blit
-and the WebGL2 scanout presenter correct their owned RGBA copy, and a
-CRTC whose canvas a GL session owns (a direct GPU scanout, a SETCRTC flip
-onto the session's canvas, or an EGL window present) reads the frame
-back, blends the cursor and applies the LUT on the CPU, and uploads the
-result to a transient texture that it blits to the canvas. The cursor
-overlay then shows nothing. Such a session's last frame is kept before
-correction, so a new LUT or a moved cursor is shown at the next vblank
-even when the guest presents nothing more. Node and browser run the same
-code. It never reads live guest memory during
+value to itself is no stage at all, and the presenters then do exactly
+what they do without a LUT. With a stage, every presenter shows the
+blended, corrected frame. The 2D blit already converts each pixel on the
+CPU, so it blends the cursor and looks each channel up in the 8-bit
+table there (`host/src/dri/kms-gamma.ts`). Every WebGL presenter applies
+the stage on the GPU instead (`host/src/webgl/kms-color-stage.ts`): the
+table is a 256x1 texture uploaded once per LUT change, the cursor image
+a texture uploaded once per image, and a fragment shader blends the
+cursor and indexes the table per pixel with the same integer arithmetic
+as the CPU stage, so both produce identical bytes and no frame is read
+back to the CPU. The WebGL2 scanout presenter draws its raw scanout
+texture through the stage at framebuffer size and then scales that
+output as usual. A CRTC whose canvas a GL session owns (a direct GPU
+scanout, a SETCRTC flip onto the session's canvas, an EGL window
+present, or a frame drawn straight to the canvas) copies the frame into
+a texture with a GPU blit and draws it to the canvas through the stage.
+That texture keeps the frame before correction, so a new LUT or a moved
+cursor is shown at the next vblank even when the guest presents nothing
+more, and the frame is restored as presented when the LUT is cleared.
+The cursor overlay shows nothing while the stage is active. Node and
+browser run the same code. It never reads live guest memory during
 that detached presentation phase and never exposes a partially drawn
 application frame. Node retains the same state without a canvas.
 

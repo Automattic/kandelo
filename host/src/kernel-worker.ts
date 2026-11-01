@@ -4,7 +4,8 @@ import { GLIO_QUERY } from "./webgl/ops.js";
 import { mergeChangedByteRuns } from "./shared-byte-runs";
 import { KmsCursorPlane, type KmsCursor } from "./dri/cursor-plane";
 import { scanoutFormat, snapshotScanout, scanoutRgba } from "./dri/scanout-format";
-import { kmsCrtcOutput } from "./dri/kms-gamma";
+import { kmsCrtcOutput, type KmsGamma } from "./dri/kms-gamma";
+import { KmsColorStage, resetKmsGlState } from "./webgl/kms-color-stage";
 import type { HostScanout } from "./dri/kms-registry";
 import { assertVfsWatchPrefix, MAX_VFS_WATCH_PREFIXES } from "./vfs/vfs";
 import type { VfsChangeEvent } from "./vfs/types";
@@ -2602,6 +2603,10 @@ interface KmsGlPresenter {
   /** The CRTC color stage (gamma table and cursor versions) the last
    *  present applied; "" when the CRTC had none. */
   lastOutput: string;
+  /** The CRTC color stage's GPU objects while the CRTC has a LUT: the raw
+   *  scanout texture is drawn through it, at framebuffer size, into a
+   *  texture that the scaled draw then samples. Null without a LUT. */
+  stage: KmsColorStage | null;
   /** Tick phase for the low-rate exact content comparison.
    *  Every 4th otherwise-skipped tick the presenter samples the
    *  scanout bytes against the last owned upload. This catches
@@ -2666,44 +2671,8 @@ function releaseKmsGlPresenter(presenter: KmsGlPresenter | null | undefined): vo
   gl.deleteTexture(presenter.tex);   // also unbinds it from unit 0
   gl.deleteVertexArray(presenter.vao);
   gl.deleteProgram(presenter.prog);
-}
-
-function resetKmsGlState(gl: WebGL2RenderingContext): void {
-  // CPU scanout shares the physical renderer with live GLES contexts.
-  // Re-establish every upload/draw dependency on each accepted frame; the
-  // graphics capability invalidates the muxer so the next GLES command
-  // restores its logical context rather than inheriting presenter state.
-  //
-  // Draw target and pipeline.
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
-  gl.disable(gl.SCISSOR_TEST);
-  gl.disable(gl.BLEND);
-  gl.disable(gl.CULL_FACE);
-  gl.disable(gl.DEPTH_TEST);
-  gl.disable(gl.STENCIL_TEST);
-  gl.disable(gl.POLYGON_OFFSET_FILL);
-  gl.disable(gl.SAMPLE_ALPHA_TO_COVERAGE);
-  gl.disable(gl.SAMPLE_COVERAGE);
-  gl.disable(gl.RASTERIZER_DISCARD);
-  gl.colorMask(true, true, true, true);
-  // Texture unit 0: a bound sampler object would override the scanout
-  // texture's own filtering and wrap parameters.
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindSampler(0, null);
-  // Upload: texImage2D/texSubImage2D read `scratch` as tightly packed RGBA
-  // rows from its start. A bound PIXEL_UNPACK_BUFFER makes them read a
-  // buffer object instead (and reject an ArrayBufferView source), and any
-  // non-default unpack parameter reshapes or offsets the rows.
-  gl.bindBuffer(gl.PIXEL_UNPACK_BUFFER, null);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-  gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0);
-  gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
-  gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-  gl.pixelStorei(gl.UNPACK_SKIP_IMAGES, 0);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  presenter.stage?.release();
+  presenter.stage = null;
 }
 
 function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null {
@@ -2764,7 +2733,7 @@ function buildKmsGlPresenter(gl: WebGL2RenderingContext): KmsGlPresenter | null 
   return {
     gl, tex, prog, vao, texW: 0, texH: 0, texFormat: 0,
     bgrUniform: gl.getUniformLocation(prog, "u_bgr"),
-    lastFbId: -1, lastOffset: -1, lastCommits: -1, lastOutput: "",
+    lastFbId: -1, lastOffset: -1, lastCommits: -1, lastOutput: "", stage: null,
     presentCount: 0, degraded: false,
     probePhase: 0,
   };
@@ -31262,6 +31231,7 @@ export class CentralizedKernelWorker {
           pixels: Uint8Array<ArrayBuffer>;
           commits: number;
           output: string;
+          gamma: KmsGamma | null;
         }> = [];
         // The CRTC color stage: legacy gamma applies to the CRTC output,
         // after the cursor plane is blended over the primary. With one, the
@@ -31299,16 +31269,10 @@ export class CentralizedKernelWorker {
           if (!pixels) continue;
           // The detached GL phase gets a bounded owned snapshot, never a
           // later lookup that reads guest memory after entry authority ends.
-          const snapshot = snapshotScanout(fb, pixels);
-          const gamma = crtcGamma(crtcId);
-          if (gamma) {
-            const rgba = scanoutRgba(fb.pixel_format, snapshot);
-            kmsCrtcOutput(rgba, fb.width, fb.height, gamma, cursorSnapshot);
-            glPresents.push({ crtcId, canvas, commits, output, pixels: rgba,
-              fb: { ...fb, pixel_format: 0x34324241, pitch: fb.width * 4 } });
-          } else {
-            glPresents.push({ crtcId, canvas, fb: { ...fb }, commits, output, pixels: snapshot });
-          }
+          // The color stage, if any, runs in the presenter's shader: the
+          // raw scanout is uploaded as it is, never corrected on the CPU.
+          glPresents.push({ crtcId, canvas, fb: { ...fb }, commits, output,
+            pixels: snapshotScanout(fb, pixels), gamma: crtcGamma(crtcId) });
         }
 
         // WHY: process/BO memory may change on the next ingress. Copy every
@@ -31442,6 +31406,8 @@ export class CentralizedKernelWorker {
               present.commits,
               present.pixels,
               present.output,
+              present.gamma,
+              cursorSnapshot,
             );
             if (!painted) continue;
             const presentUs =
@@ -31501,6 +31467,8 @@ export class CentralizedKernelWorker {
     commits: number,
     pixels: Uint8Array<ArrayBuffer>,
     output = "",
+    gamma: KmsGamma | null = null,
+    cursor: KmsCursor | null = null,
   ): boolean {
     const presenter = this.ensureKmsGlPresenter(crtc_id, canvas);
     if (!presenter) return false;
@@ -31558,7 +31526,6 @@ export class CentralizedKernelWorker {
       const rgb565 = format.bytesPerPixel === 2;
       const data = rgb565 ? new Uint16Array(scratch.buffer, scratch.byteOffset, scratch.byteLength / 2) : scratch;
       gl.bindTexture(gl.TEXTURE_2D, tex);
-      if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, format.bgr ? 1 : 0);
       const external = rgb565 ? gl.RGB : gl.RGBA;
       const type = rgb565 ? gl.UNSIGNED_SHORT_5_6_5 : gl.UNSIGNED_BYTE;
       if (presenter.texW !== fb.width || presenter.texH !== fb.height || presenter.texFormat !== fb.pixel_format) {
@@ -31569,6 +31536,33 @@ export class CentralizedKernelWorker {
         presenter.texFormat = fb.pixel_format;
       } else {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, fb.width, fb.height, external, type, data);
+      }
+      // The CRTC color stage: the cursor blended over the scanout, then the
+      // LUT, computed per scanout pixel at framebuffer size (the CRTC's
+      // output) before the scaled draw filters it for the display.
+      if (gamma) {
+        if (presenter.stage && !presenter.stage.usable(gl)) presenter.stage = null;
+        presenter.stage ??= KmsColorStage.create(gl);
+        const output = presenter.stage.render({ texture: tex, topFirst: true, bgr: format.bgr, rgb565, opaque: true },
+          fb.width, fb.height, gamma, cursor);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.useProgram(presenter.prog);
+        gl.bindVertexArray(presenter.vao);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, output);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, presenter.degraded ? gl.LINEAR : gl.LINEAR_MIPMAP_LINEAR);
+        if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, 0);
+      } else {
+        if (presenter.stage) {
+          // The stage ended; its textures are a frame's worth of memory.
+          presenter.stage.release();
+          presenter.stage = null;
+          gl.useProgram(presenter.prog);
+          gl.bindVertexArray(presenter.vao);
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, tex);
+        }
+        if (presenter.bgrUniform !== null) gl.uniform1i(presenter.bgrUniform, format.bgr ? 1 : 0);
       }
       if (!presenter.degraded) gl.generateMipmap(gl.TEXTURE_2D);
       // Contain-fit letterbox, same math as the Modeset pane's
@@ -31598,6 +31592,9 @@ export class CentralizedKernelWorker {
       if (!presenter.degraded && presenter.presentCount > 0 &&
           performance.now() - presentStart > 16) {
         presenter.degraded = true;
+        // The scanout texture itself, whichever texture this present drew:
+        // without mipmaps a mipmapped filter would leave it incomplete.
+        gl.bindTexture(gl.TEXTURE_2D, tex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       }
       presenter.presentCount++;
