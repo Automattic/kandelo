@@ -309,6 +309,7 @@ function signatures(
       result: i32,
     },
     kernel_shared_mapping_flush: { parameters: [i32, i64, i64], result: i32 },
+    kernel_report_host_mapping_writeback_error: { parameters: [i32, i64, i64, i64, i32], result: i32 },
     kernel_shared_mapping_unmap: { parameters: [i32, i64, i64], result: i32 },
     kernel_shared_mapping_remap: {
       parameters: [i32, i64, i64, i64],

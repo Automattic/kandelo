@@ -227,13 +227,44 @@ pub static GLOBAL_PENDING_WRITEBACK_ERRORS: GlobalPendingWritebackErrors =
 /// report `EIO` once, from its next `fsync`, `fdatasync` or `close`. A
 /// description opened later never sees this error, as with Linux errseq.
 pub fn note_file_writeback_error(table: &crate::process_table::ProcessTable, file_key: &str) {
+    mark_open_descriptions(table, None, |ofd| {
+        crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+            .and_then(crate::kernel_file_mapping::identity_key)
+            .as_deref()
+            == Some(file_key)
+    });
+}
+
+/// A writeback of a host-mounted file (identified as its descriptions are,
+/// by `host_fstat` device and inode) failed in the host's shared-mapping
+/// layer. Every open description of it that exists now reports `EIO` once,
+/// except `told` -- the `(pid, fd)` whose current syscall is already failing
+/// with `EIO` because of this failure, so it is not told twice.
+pub fn note_host_file_writeback_error(
+    table: &crate::process_table::ProcessTable,
+    dev: u64,
+    ino: u64,
+    told: Option<(u32, i32)>,
+) {
+    let told = told.and_then(|(pid, fd)| {
+        let proc = table.get(pid)?;
+        let entry = proc.fd_table.get(fd).ok()?;
+        Some(proc.ofd_table.get(entry.ofd_ref.0)?.ofd_id.0)
+    });
+    let file = crate::lock::FileId::Host { dev, ino };
+    mark_open_descriptions(table, told, |ofd| ofd.file_id == Some(file));
+}
+
+fn mark_open_descriptions(
+    table: &crate::process_table::ProcessTable,
+    skip: Option<u64>,
+    matches: impl Fn(&crate::ofd::OpenFileDesc) -> bool,
+) {
     let pending = unsafe { &mut *GLOBAL_PENDING_WRITEBACK_ERRORS.0.get() };
     for pid in table.all_pids() {
         let Some(proc) = table.get(pid) else { continue };
         for (_, ofd) in proc.ofd_table.iter() {
-            let key = crate::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
-                .and_then(crate::kernel_file_mapping::identity_key);
-            if key.as_deref() == Some(file_key) {
+            if Some(ofd.ofd_id.0) != skip && matches(ofd) {
                 pending.insert(ofd.ofd_id.0);
             }
         }

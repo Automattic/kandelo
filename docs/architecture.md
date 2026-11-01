@@ -2201,9 +2201,14 @@ without its memory length, can only come from Kandelo's own bookkeeping,
 never from a file or a program, so they are fatal kernel faults
 (`writeback_loss::shared_mapping_fault`): continuing would free a file under
 a live mapping, leak it, or silently skip a process's `MAP_SHARED`
-coherence. Host-mounted files' mappings are kept by the host
-(`host/src/kernel-worker.ts`) and do not yet report their writeback errors
-this way.
+coherence. Mappings of host-mounted files are kept by the host
+(`host/src/kernel-worker.ts`) and report a failed writeback the same way, on
+Node and in the browser: the host marks every mapping of the file (its next
+`msync` answers `EIO` once) and calls `kernel_report_host_mapping_writeback_error`,
+which records the loss and marks the file's open descriptions, identified by
+`host_fstat` device and inode as for locks
+(`writeback_loss::note_host_file_writeback_error`). A descriptor whose own
+syscall already fails with `EIO` because of that writeback is not told twice.
 
 A failed kernel-owned synchronization is not successful boundary completion.
 Entry failure prevents syscall dispatch and follows the existing recoverable

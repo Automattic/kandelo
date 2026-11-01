@@ -73,7 +73,8 @@ export type SysvMirrorEntryName =
   | "kernel_shared_mapping_unmap"
   | "kernel_shared_mapping_remap"
   | "kernel_shared_mapping_prepare_write"
-  | "kernel_shared_mapping_protect";
+  | "kernel_shared_mapping_protect"
+  | "kernel_report_host_mapping_writeback_error";
 
 /** Every entry point the host may resolve; harnesses must expose all of them. */
 export const SYSV_MIRROR_EXPORT_NAMES: readonly SysvMirrorEntryName[] = [
@@ -91,6 +92,7 @@ export const SYSV_MIRROR_EXPORT_NAMES: readonly SysvMirrorEntryName[] = [
   "kernel_shared_mapping_remap",
   "kernel_shared_mapping_prepare_write",
   "kernel_shared_mapping_protect",
+  "kernel_report_host_mapping_writeback_error",
 ];
 
 export interface SysvMirrorStub {
@@ -154,6 +156,16 @@ export function createKernelSharedMappingStub(
       return calls.filter((call) => call.name === name);
     },
     exports: {
+      // The kernel records the loss and marks the file's open descriptions;
+      // host tests assert the report itself.
+      kernel_report_host_mapping_writeback_error: (
+        pid: number,
+        mapAddr: bigint,
+        dev: bigint,
+        ino: bigint,
+        toldFd: number,
+      ): number =>
+        record("kernel_report_host_mapping_writeback_error", [pid, mapAddr, dev, ino, toldFd]) ?? 0,
       kernel_shared_mapping_sysv_track: (
         pid: number,
         addr: number | bigint,

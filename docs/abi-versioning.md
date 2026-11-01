@@ -2433,6 +2433,13 @@ and the generated `DRI_CLEANUP_COMPLETE` TypeScript constant carry the
 contract. Earlier host3 kernels and hosts are not interchangeable with this
 contract; rebuild them together.
 
+The same unpublished host3 contract adds the kernel export
+`kernel_report_host_mapping_writeback_error(pid, map_addr, dev, ino,
+told_fd)`. The host calls it when it cannot write a mapping's dirty bytes
+back to a host-mounted file, so the kernel records the loss and reports it
+as `EIO` once to every open description of the file (identified by its
+`host_fstat` device and inode), as it does for kernel-owned files.
+
 The same contract drops the four optional kernel exports
 `kernel_gl_query_capture`, `kernel_gl_query_session`,
 `kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved

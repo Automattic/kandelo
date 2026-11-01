@@ -3818,6 +3818,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_report_host_mapping_writeback_error",
+      "signature": "(i32,i64,i64,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_reserve_host_region",
       "signature": "(i32,i32) -> (i32)"
     },

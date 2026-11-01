@@ -1704,6 +1704,18 @@ interface SharedMmapMapping {
   backingKey?: string;
   snapshot?: Uint8Array;
   seenVersion?: number;
+  /** A writeback of this mapping's file failed since this mapping last
+   * reported one; its next msync fails with EIO (Linux errseq). */
+  writebackError?: boolean;
+}
+
+/** Who a failed host-file writeback is reported for (see
+ * `flushSharedMmapBackingRange`). */
+interface SharedMmapWritebackReport {
+  pid?: number;
+  mapAddr?: number;
+  /** Descriptor whose current syscall already fails with EIO for it. */
+  toldFd?: number;
 }
 
 interface SharedMmapFdStat {
@@ -1718,6 +1730,10 @@ interface SharedMmapFdStat {
 interface SharedMmapBacking {
   key: string;
   handle: number;
+  /** The file's `fstat` device and inode, as the kernel identifies the
+   * file's open descriptions (to report a writeback error to them). */
+  dev?: bigint;
+  ino?: bigint;
   writable: boolean;
   /** Authoritative size from the stable handle's fstat. */
   size: number;
@@ -9661,6 +9677,7 @@ export class CentralizedKernelWorker {
               mapping.fileOffset,
               mapping.len,
               entry,
+              { pid, mapAddr: addr },
             )) return -EIO;
             continue;
           }
@@ -13671,7 +13688,7 @@ export class CentralizedKernelWorker {
 
       // --- msync: flush MAP_SHARED regions back to file ---
       if (syscallNr === SYS_MSYNC && retVal === 0) {
-        if (!this.flushSharedMappings(channel, origArgs, entry)) {
+        if (!this.flushSharedMappings(channel, origArgs, entry, true)) {
           retVal = -1;
           publicationRetVal = -1;
           errVal = EIO;
@@ -24664,6 +24681,8 @@ export class CentralizedKernelWorker {
     const backing: SharedMmapBacking = {
       key,
       handle: sourceHandle,
+      dev: source.dev,
+      ino: source.ino,
       writable: sourceWritable,
       size: source.size,
       sizeValid: true,
@@ -25021,7 +25040,68 @@ export class CentralizedKernelWorker {
     return changed;
   }
 
+  /**
+   * Write dirty pages overlapping `[offset, offset + len)` back to the file.
+   * A failure keeps the pages dirty for a later attempt and is reported as
+   * Linux reports a writeback error (see `reportHostWritebackError`);
+   * `report` names the process/mapping it happened for and the descriptor
+   * whose current syscall already fails with EIO because of it.
+   */
   private flushSharedMmapBackingRange(
+    backing: SharedMmapBacking,
+    offset: number,
+    len: number,
+    entry?: KernelWorkerEntryContext,
+    report: SharedMmapWritebackReport = {},
+  ): boolean {
+    const flushed = this.writeSharedMmapBackingRange(backing, offset, len, entry);
+    if (!flushed) this.reportHostWritebackError(backing, report, entry);
+    return flushed;
+  }
+
+  /**
+   * A write of a host-mounted file's mapped bytes failed: the data never
+   * reached the file. Report it once to every current mapping of the file
+   * (its next msync) and, through the kernel, once to every open description
+   * of the file (its next fsync, fdatasync or close) and to
+   * /proc/kandelo/writeback_losses -- exactly as for a kernel-owned file.
+   * Same code on Node and in the browser.
+   */
+  private reportHostWritebackError(
+    backing: SharedMmapBacking,
+    report: SharedMmapWritebackReport,
+    entry?: KernelWorkerEntryContext,
+  ): void {
+    for (const mappings of this.sharedMappings?.values() ?? []) {
+      for (const mapping of mappings.values()) {
+        if (mapping.backingKind === "file" && mapping.backingKey === backing.key) {
+          mapping.writebackError = true;
+        }
+      }
+    }
+    const reportError = this.#kernelInstanceForEntry(entry).exports
+      .kernel_report_host_mapping_writeback_error as
+      | ((pid: number, mapAddr: bigint, dev: bigint, ino: bigint, toldFd: number) => number)
+      | undefined;
+    if (!reportError) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    reportError(report.pid ?? 0, BigInt(report.mapAddr ?? 0), backing.dev ?? 0n,
+      backing.ino ?? 0n, report.toldFd ?? -1);
+  }
+
+  /** Consume the writeback errors pending on `pid`'s host file mappings
+   * overlapping `[addr, addr + len)`. True means msync must answer EIO. */
+  private takeHostMappingWritebackError(pid: number, addr: number, len: number): boolean {
+    let pending = false;
+    for (const [mapAddr, mapping] of this.sharedMappings?.get(pid) ?? []) {
+      if (mapAddr < addr + len && addr < mapAddr + mapping.len && mapping.writebackError) {
+        mapping.writebackError = false;
+        pending = true;
+      }
+    }
+    return pending;
+  }
+
+  private writeSharedMmapBackingRange(
     backing: SharedMmapBacking,
     offset: number,
     len: number,
@@ -25126,7 +25206,7 @@ export class CentralizedKernelWorker {
           entry,
         );
         return path.kind === "error"
-          || this.flushSharedBackingForPath(path.value, entry);
+          || this.flushSharedBackingForPath(path.value, entry, channel.pid);
       }
       if (syscallNr === SYS_OPEN || syscallNr === SYS_OPENAT) {
         const flags = syscallNr === SYS_OPEN ? origArgs[1] : origArgs[2];
@@ -25138,7 +25218,7 @@ export class CentralizedKernelWorker {
             entry,
           );
           return path.kind === "error"
-            || this.flushSharedBackingForPath(path.value, entry);
+            || this.flushSharedBackingForPath(path.value, entry, channel.pid);
         }
       }
       if (
@@ -25214,11 +25294,14 @@ export class CentralizedKernelWorker {
     const backing = this.findSharedMmapBackingForFd(channel, fd, entry);
     if (!backing) return true;
     this.publishSharedMmapBackingObservers(backing, entry);
+    // The syscall on `fd` fails with EIO if this flush fails, which tells
+    // that description; every other one is told on its next fsync/close.
     const flushed = this.flushSharedMmapBackingRange(
       backing,
       0,
       Number.MAX_SAFE_INTEGER,
       entry,
+      { pid: channel.pid, toldFd: fd },
     );
     if (flushed && backing.refCount === 0) {
       this.discardUnreferencedSharedMmapBacking(backing);
@@ -25324,6 +25407,7 @@ export class CentralizedKernelWorker {
   private flushSharedBackingForPath(
     path: string,
     entry?: KernelWorkerEntryContext,
+    pid = 0,
   ): boolean {
     const backing = this.findSharedMmapBackingForPath(path, entry);
     if (!backing) return true;
@@ -25333,6 +25417,7 @@ export class CentralizedKernelWorker {
       0,
       Number.MAX_SAFE_INTEGER,
       entry,
+      { pid },
     );
     if (flushed && backing.refCount === 0) {
       this.discardUnreferencedSharedMmapBacking(backing);
@@ -26182,6 +26267,9 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo,
     origArgs: number[],
     entry?: KernelWorkerEntryContext,
+    /** msync: also answer EIO once for a host-file writeback that failed
+     * since these mappings last reported one (Linux errseq). */
+    reportPendingWritebackErrors = false,
   ): boolean {
     // msync/munmap/MAP_FIXED are explicit publication points for anonymous
     // mappings too, including the single-observer-before-fork case.
@@ -26240,6 +26328,7 @@ export class CentralizedKernelWorker {
           fileOffsetBase,
           flushLen,
           entry,
+          { pid: channel.pid, mapAddr },
         )) success = false;
         continue;
       }
@@ -26256,6 +26345,8 @@ export class CentralizedKernelWorker {
         entry,
       )) success = false;
     }
+    if (reportPendingWritebackErrors
+      && this.takeHostMappingWritebackError(channel.pid, syncAddr, syncLen)) success = false;
     return success;
   }
 
@@ -26815,6 +26906,7 @@ export class CentralizedKernelWorker {
                   mapping.fileOffset,
                   mapping.len,
                   entry,
+                  { pid, mapAddr: addr },
                 );
                 continue;
               }

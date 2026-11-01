@@ -8566,6 +8566,31 @@ pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> 
     }
 }
 
+/// The host's shared-mapping layer could not write a mapping's dirty bytes
+/// back to a host-mounted file (identified by its `host_fstat` device and
+/// inode, as the kernel identifies the file's open descriptions). Record the
+/// loss in `/proc/kandelo/writeback_losses` and report it the way a kernel
+/// file's writeback error is reported: every open description of the file
+/// answers `EIO` once from its next `fsync`, `fdatasync` or `close`. `told_fd`
+/// is the descriptor of `pid` whose current syscall already fails with `EIO`
+/// for this failure (or -1); its description is not told twice. The host
+/// reports the failure to the file's mappings (their next `msync`) itself.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_report_host_mapping_writeback_error(
+    pid: u32,
+    map_addr: u64,
+    dev: u64,
+    ino: u64,
+    told_fd: i32,
+) -> i32 {
+    let _gkl = GklGuard::acquire();
+    runtime_core::writeback_loss::record_writeback_loss(pid, map_addr, "write failed");
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let told = (told_fd >= 0).then_some((pid, told_fd));
+    runtime_core::writeback_loss::note_host_file_writeback_error(table, dev, ino, told);
+    0
+}
+
 /// Stop tracking (or trim) every kernel-file mapping overlapping an unmapped
 /// interval: `munmap`, a `MAP_FIXED` replacement, or a failed `mmap` rolled
 /// back. A file whose last mapping goes is persisted and unpinned.

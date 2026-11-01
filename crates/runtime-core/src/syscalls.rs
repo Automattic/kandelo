@@ -27420,6 +27420,33 @@ mod tests {
         assert_eq!(sys_fsync(proc, &mut host, fd), Err(Errno::EBADF), "and still closes");
     }
 
+    /// A host-mounted file's mapping writeback failed in the host: the open
+    /// descriptions of that file (identified by host device and inode, as
+    /// for locks) report EIO once from fsync/close, except the descriptor
+    /// whose own syscall already reported it.
+    #[test]
+    fn a_host_file_writeback_error_is_reported_once_per_description_except_the_told_one() {
+        use crate::fd::OpenFileDescRef;
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let (told, other) = {
+            let proc = table.get_mut(pid).unwrap();
+            let mut open = |handle: i64| {
+                let idx = proc.ofd_table.create(FileType::Regular, O_RDWR, handle, b"/mnt/data".to_vec());
+                proc.ofd_table.get_mut(idx).unwrap().file_id =
+                    Some(crate::lock::FileId::Host { dev: 7, ino: 99 });
+                proc.fd_table.alloc(OpenFileDescRef(idx), 0).unwrap()
+            };
+            (open(40), open(41))
+        };
+        crate::writeback_loss::note_host_file_writeback_error(&table, 7, 99, Some((pid, told)));
+        let mut host = MockHostIO::new();
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(sys_fsync(proc, &mut host, told), Ok(()), "already told by its own syscall");
+        assert_eq!(sys_fsync(proc, &mut host, other), Err(Errno::EIO));
+        assert_eq!(sys_fsync(proc, &mut host, other), Ok(()));
+    }
+
     mod dri_cleanup_status {
         use super::*;
         use wasm_posix_shared::dri_cleanup_status::COMPLETE;
