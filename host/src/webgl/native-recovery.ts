@@ -77,7 +77,11 @@ function physicalRetirementDeleted(actual:NativeRetirement,ancestors=new Set<Nat
 function retirementChanged(actual: NativeRetirement): void {
   for (const receipt of retirementObservers.get(actual) ?? []) receipt.changed();
 }
-export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][] };
+export type NativeInverse = { owner: CheckedGlOwner; groups: NativeCall[][];
+  /** Each group is checked once after its last call instead of after every
+   * call: for calls that cannot fail on valid arguments, where one check
+   * still detects a failed restoration (and keeps the repair pending). */
+  batched?: boolean };
 export type NativeChange = { apply(): boolean; restore: NativeInverse };
 export type NativeCompletion = {submitted: boolean; complete: boolean};
 type Repair = {
@@ -105,6 +109,7 @@ export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): 
  * is the next call's clean entry; failure revokes it before the next group.
  * No clean-entry evidence survives this invocation. */
 function restoreInverse(inverse: NativeInverse): boolean {
+  if (inverse.batched) return restoreBatched(inverse);
   let accepted = true;
   // Evidence belongs only to this synchronous inverse and error owner.
   let cleanEntry = false;
@@ -378,4 +383,35 @@ export function nativeOwner(b: CheckedGlOwner): CheckedGlOwner {
 }
 export function nativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {
   return {owner:nativeOwner(owner),groups};
+}
+/** An inverse whose groups are each checked once (NativeInverse.batched). */
+export function batchedNativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {
+  return {owner:nativeOwner(owner),groups,batched:true};
+}
+function restoreBatched(inverse: NativeInverse): boolean {
+  let accepted = true;
+  for (const group of inverse.groups) {
+    const gl = inverse.owner.gl;
+    let restored = false;
+    try {
+      if (gl) {
+        let cleared = false;
+        for (let i = 0; i < 32; i++) {
+          const error = gl.getError();
+          if (error === 0) { cleared = true; break; }
+          recordGlError(inverse.owner, error);
+        }
+        if (cleared) {
+          for (const call of group) invokeNativeCall(gl, call);
+          const error = gl.getError();
+          recordGlError(inverse.owner, error);
+          restored = error === 0;
+        }
+      }
+    } catch {
+      recordGlError(inverse.owner, 0x502);
+    }
+    accepted = restored && accepted;
+  }
+  return accepted;
 }

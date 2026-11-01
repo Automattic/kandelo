@@ -127,7 +127,9 @@ function fixture(type = FLOAT, size = 2, stride = 0, offset = 0) {
     expect([...b.buffers]).toEqual([[17,array],[18,element]]);
     expect(b.bufferStores.size).toBe(0); expect(b.bufferViewOwners.size).toBe(0);
     expect(b.retiredBuffers.size).toBe(0); expect(b.bufferRetirements.size).toBe(0);
-    expect(gl.alive).toEqual(new Set([array,element])); expect(hasNativeRepair(b.gl!)).toBe(false);
+    // The context's private stream buffer, if created, lives with the context.
+    expect(gl.alive).toEqual(new Set([array,element,...(b.clientArrayStream ? [b.clientArrayStream] : [])]));
+    expect(hasNativeRepair(b.gl!)).toBe(false);
   };
   return {b,gl,vao,array,element,restored};
 }
@@ -139,22 +141,45 @@ it("draws packed client vertices without public buffer names and restores exact 
   expect(gl.draws).toHaveLength(1); const draw = gl.draws[0], pointer = draw.attributes.get(0)!;
   expect(pointer).toMatchObject({size:2,type:FLOAT,stride:0,offset:0});
   expect(pointer.buffer).not.toBeNull(); expect(draw.bytes.get(pointer.buffer!)).toEqual(new Uint8Array(48).fill(0x42));
-  expect(gl.counts.get("createBuffer")).toBe(1); expect(gl.counts.get("deleteBuffer")).toBe(1);
+  expect(pointer.buffer).toBe(b.clientArrayStream);
+  expect(gl.counts.get("createBuffer")).toBe(1); expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0);
   expect(b.errors).toEqual([]); restored();
+  // Later draws reuse the stream buffer: no creation, deletion or retirement.
+  expect(drawPrivateClientArrays(b,input)).toEqual({attempted:true,accepted:true,restored:true});
+  expect(gl.counts.get("createBuffer")).toBe(1); expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0);
+  expect(gl.draws[1].bytes.get(b.clientArrayStream!)).toEqual(new Uint8Array(48).fill(0x42)); restored();
+});
+it("deletes the stream buffer with the context",() => {
+  const registry = new GlContextRegistry(); registry.bind({pid:1,cmdbufAddr:0,cmdbufLen:1024});
+  const b = registry.get(1)!, gl = new Gl();
+  // Context teardown also releases programs and other state this model omits.
+  b.gl = new Proxy(gl,{get:(target,key) => Reflect.get(target,key) ?? (() => null)}) as unknown as WebGL2RenderingContext;
+  b.shadow.currentProgram = b.currentProgram = {} as WebGLProgram;
+  b.vertexArrays.get(0)!.attributes.set(0,{buffer:null,enabled:true,size:2,type:FLOAT,normalized:false,stride:0,offset:0});
+  expect(drawPrivateClientArrays(b,payload()).accepted).toBe(true);
+  const stream = b.clientArrayStream!;
+  expect(gl.alive.has(stream)).toBe(true);
+  registry.destroyContext(1);
+  expect(gl.alive.has(stream)).toBe(false); expect(b.clientArrayStream).toBeNull();
 });
 for (const first of [0,3]) {
   for (const pending of [false,true]) {
-    it(`checks every private upload step with one clean entry (first=${first}, pending=${pending})`,() => {
+    it(`checks each private step once with one clean entry (first=${first}, pending=${pending})`,() => {
       const {b,gl,restored} = fixture();
       if (pending) gl.errors.push(0x500,0x505);
       expect(drawPrivateClientArrays(b,payload({first}))).toEqual({attempted:true,accepted:true,restored:true});
-      // Creation, draw, inverse and retirement keep their own checked scopes.
-      // Only bind/upload/pointer share their successful predecessor's post-check.
-      expect(gl.errorReads).toBe((first === 0 ? 14 : 15)+(pending ? 2 : 0));
+      // Stream creation (first draw only) is a checked call; then the stream
+      // bind, the upload and pointer group, the draw and the restoration
+      // group are each checked once: entry drain, post-bind, post-group,
+      // post-draw, restoration drain and post-check.
+      expect(gl.errorReads).toBe(2+6+(pending ? 2 : 0));
       expect(gl.counts.get("bufferData")).toBe(1);
       expect(gl.counts.get("bufferSubData") ?? 0).toBe(first === 0 ? 0 : 1);
       expect(gl.draws).toHaveLength(1);
       expect(b.errors).toEqual(pending ? [0x500,0x505] : []); restored();
+      gl.errorReads = 0;
+      expect(drawPrivateClientArrays(b,payload({first}))).toEqual({attempted:true,accepted:true,restored:true});
+      expect(gl.errorReads).toBe(6); expect(gl.draws).toHaveLength(2); restored();
     });
   }
 }
@@ -176,9 +201,13 @@ it("converts packed FIXED directly and restores its native null FLOAT representa
 it("supports unaligned packed byte descriptors and multiple client attributes",() => {
   const {b,gl,vao,restored} = fixture(0x1401,1);
   vao.attributes.set(3,{...vao.attributes.get(0)!}); gl.attributes.set(3,{...gl.attributes.get(0)!});
-  expect(drawPrivateClientArrays(b,payload({type:0x1401,size:1,count:3,indices:[0,3]})).accepted).toBe(true);
-  expect(gl.draws[0].attributes.get(0)!.buffer).not.toBe(gl.draws[0].attributes.get(3)!.buffer);
-  expect(gl.counts.get("deleteBuffer")).toBe(2); restored();
+  const bytes = new Uint8Array([1,2,3]);
+  expect(drawPrivateClientArrays(b,payload({type:0x1401,size:1,count:3,indices:[0,3],bytes})).accepted).toBe(true);
+  // Both attributes live in the stream buffer, in separate aligned regions.
+  const [first,second] = [gl.draws[0].attributes.get(0)!,gl.draws[0].attributes.get(3)!];
+  expect(first.buffer).toBe(second.buffer); expect([first.offset,second.offset]).toEqual([0,4]);
+  expect([...gl.draws[0].bytes.get(first.buffer!)!]).toEqual([1,2,3,0,1,2,3,0]);
+  expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0); restored();
 });
 
 for (const [field,value] of [[0,7],[4,0xffffffff],[8,0],[8,0xffffffff],[12,0],[12,17],[16,16],[20,0],[24,0xdead],[28,2],[32,1]] as const) {
@@ -224,12 +253,11 @@ for (const method of ["createBuffer","bindBuffer","bufferData","bufferSubData","
       expect(result.accepted).toBe(false); expect(result.attempted).toBe(method === "drawArrays");
       expect(gl.draws.length).toBe(method === "drawArrays" && after ? 1 : 0);
       if (method === "createBuffer" || method === "bindBuffer") expect(gl.counts.get("bufferData") ?? 0).toBe(0);
-      if (method === "createBuffer" || method === "bindBuffer" || method === "bufferData") {
-        expect(gl.counts.get("bufferSubData") ?? 0).toBe(0);
-      }
+      if (method === "createBuffer" || method === "bindBuffer") expect(gl.counts.get("bufferSubData") ?? 0).toBe(0);
       // Inverse pointer restoration uses ARRAY=null. No private pointer may be
-      // attempted after a failed prerequisite, including an accepted-then-error.
-      if (!["vertexAttribPointer","drawArrays"].includes(method)) {
+      // attempted without the stream bound (a failed stream creation or bind);
+      // pointers set beside a failed upload in its checked group are undone.
+      if (method === "createBuffer" || method === "bindBuffer") {
         expect(gl.pointerSources.filter(source => source !== null)).toHaveLength(0);
       }
       expect(repairNativeState(b.gl!)).toBe(true);
@@ -247,11 +275,12 @@ it("keeps private backing until a failed inverse recovers and never replays the 
   gl.blockRestore = false; expect(repairNativeState(b.gl!)).toBe(true);
   expect(gl.draws).toHaveLength(1); restored();
 });
-it("retries failed cleanup without resubmitting a draw or losing its buffer",() => {
+it("deletes nothing per draw, so no buffer cleanup can be left pending",() => {
   const {b,gl,restored} = fixture(); gl.fault = {method:"deleteBuffer",nth:1};
-  expect(drawPrivateClientArrays(b,payload())).toEqual({attempted:true,accepted:true,restored:true});
-  expect(gl.alive.size).toBe(3); expect(hasNativeRepair(b.gl!)).toBe(true);
-  expect(repairNativeState(b.gl!)).toBe(true); expect(gl.draws).toHaveLength(1); restored();
+  for (let i = 0; i < 3; i++)
+    expect(drawPrivateClientArrays(b,payload())).toEqual({attempted:true,accepted:true,restored:true});
+  expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0); expect(gl.counts.get("createBuffer")).toBe(1);
+  expect(hasNativeRepair(b.gl!)).toBe(false); expect(gl.draws).toHaveLength(3); restored();
 });
 it("prepares mixed VBO attributes without changing their bytes or native definitions",() => {
   const {b,gl,vao,array,restored} = fixture();
@@ -265,12 +294,13 @@ it("prepares mixed VBO attributes without changing their bytes or native definit
   expect(gl.buffers.get(array)).toBe(bytes); expect(gl.draws[0].bytes.get(array)).toEqual(bytes);
   b.bufferStores.clear(); b.bufferViewOwners.clear(); restored();
 });
-it("undoes a prior private pointer when the second attribute upload fails",() => {
+it("undoes a prior private pointer when the second attribute's pointer fails",() => {
   const {b,gl,vao,restored} = fixture();
   vao.attributes.set(3,{...vao.attributes.get(0)!}); gl.attributes.set(3,{...gl.attributes.get(0)!});
-  gl.fault = {method:"bufferData",nth:2,after:true};
+  gl.fault = {method:"vertexAttribPointer",nth:2,after:true};
   expect(drawPrivateClientArrays(b,payload({indices:[0,3]})).attempted).toBe(false);
-  expect(gl.attributes.get(3)!.buffer).toBeNull(); expect(gl.counts.get("deleteBuffer")).toBe(2); restored();
+  expect(gl.attributes.get(0)!.buffer).toBeNull(); expect(gl.attributes.get(3)!.buffer).toBeNull();
+  expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0); expect(b.errors).toEqual([0x502]); restored();
 });
 it("accepts the exact u16 payload bound and all sixteen client attribute slots",() => {
   {
@@ -281,7 +311,8 @@ it("accepts the exact u16 payload bound and all sixteen client attribute slots",
   const {b,gl,vao,restored} = fixture(), indices = Array.from({length:16},(_,i) => i);
   for (let i = 1; i < 16; i++) { vao.attributes.set(i,{...vao.attributes.get(0)!}); gl.attributes.set(i,{...gl.attributes.get(0)!}); }
   expect(drawPrivateClientArrays(b,payload({count:1,indices})).accepted).toBe(true);
-  expect(gl.counts.get("createBuffer")).toBe(16); expect(gl.counts.get("deleteBuffer")).toBe(16); restored();
+  expect(gl.counts.get("createBuffer")).toBe(1); expect(gl.counts.get("deleteBuffer") ?? 0).toBe(0);
+  expect(new Set(indices.map(i => gl.draws[0].attributes.get(i)!.offset)).size).toBe(16); restored();
 });
 it("dispatches one validated private record through the ordinary storage boundary",() => {
   const {b,gl,restored} = fixture(), data = payload(), bytes = new Uint8Array(data.byteLength+4), view = new DataView(bytes.buffer);

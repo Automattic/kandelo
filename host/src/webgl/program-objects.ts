@@ -154,6 +154,52 @@ function reserveExecutableRelease(b: GlBinding, first: WebGLProgram | null,
  * Drain pending flags once, then check EVERY operation before its dependent
  * successor. A successful post-check is already the next step's clean entry.
  * The sequence and its callbacks never enter a cache or a repair record. */
+/** Calls that form one step, checked once: one clean entry, every call,
+ * one getError. A failed call has no effect in GL, so later calls act on the
+ * state before it and the step as a whole is refused; the caller's inverse
+ * restores whatever the accepted calls changed. A throw stops the step.
+ * Calls must not depend on an earlier call's acceptance (a selector whose
+ * failure would redirect a later write belongs in its own check).
+ * `cleanEntry`: the caller's previous check of this owner was clean. */
+export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[], cleanEntry = false): boolean {
+  const gl = b.gl;
+  if (!gl) return false;
+  try {
+    let cleared = cleanEntry;
+    if (!cleared) for (let i = 0; i < 32; i++) {
+      const error = gl.getError();
+      if (error === 0) { cleared = true; break; }
+      recordGlError(b, error);
+    }
+    if (!cleared) return false;
+    for (const call of calls) call();
+    const error = gl.getError();
+    recordGlError(b, error);
+    return error === 0;
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x502); // INVALID_OPERATION
+    return false;
+  }
+}
+
+/** One call issued right after a clean check of the same owner: no entry
+ * drain is needed, only its own post-check. */
+export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): boolean {
+  const gl = b.gl;
+  if (!gl) return false;
+  try {
+    call();
+    const error = gl.getError();
+    recordGlError(b, error);
+    return error === 0;
+  } catch (error) {
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x502);
+    return false;
+  }
+}
+
 export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void)[]): boolean {
   const gl = b.gl;
   if (!gl) return false;

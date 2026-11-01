@@ -1,17 +1,17 @@
 import type { GlBinding } from "./registry.js";
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 import { activeVertexArray } from "./buffer-references.js";
-import { allocateNativeBuffer, prepareBufferDraw } from "./buffer-storage.js";
+import { prepareBufferDraw } from "./buffer-storage.js";
 import { prepareImageDraw } from "./image-storage.js";
 import { packedVertexLayout } from "./vertex-data.js";
-import { checkedGlSequence, recordGlError } from "./program-objects.js";
+import { checkedGlCall, checkedGlGroup, recordGlError } from "./program-objects.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { requireGlesFramebufferComplete } from "./image-sizes.js";
 import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_BYTES, INLINE_DRAW_MAX_ATTRIBUTES } from "./ops.js";
 import {
-  applyNativeChanges, nativeInverse, repairNativeState,
-  reserveNativeRetirement, retireNativeRetirement,
-  type NativeCall, type NativeChange, type NativeRetirement,
+  applyNativeChanges, batchedNativeInverse, nativeInverse, repairNativeState,
+  reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
+  type NativeCall, type NativeChange,
 } from "./native-recovery.js";
 
 const ARRAY = 0x8892, FLOAT = 0x1406, FIXED = 0x140c;
@@ -69,7 +69,6 @@ export function validPrivateClientDraw(v: DataView): boolean {
  * Logical VAO definitions and all public buffer maps remain unchanged. */
 export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClientDrawResult {
   const result = {attempted:false,accepted:false,restored:false};
-  let retirements: (NativeRetirement | null)[] = [];
   try {
     const draw = parseDraw(v), gl = b.gl;
     if (!draw || !gl || b.vertexArrayId !== 0 || b.savedClientArrayBuffer !== undefined) {
@@ -89,68 +88,84 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
     if (!requireGlesFramebufferComplete(b) || !validateDrawFramebufferWithoutProgram(b)) return result;
     if (!repairNativeState(gl) || !prepareBufferDraw(b,false) || !prepareImageDraw(b)) return result;
 
+    // One persistent stream buffer per context holds every client
+    // attribute of a draw, each in its own 4-byte-aligned region, so a draw
+    // needs no buffer creation or deletion. Its contents are replaced (and
+    // the old storage orphaned) by each draw's upload.
+    const stream = clientArrayStream(b);
+    if (!stream) return result;
+    const regions: number[] = [];
+    let total = 0;
+    for (const a of draw.attributes) { regions.push(total); total += Math.ceil((draw.first+draw.count)*a.elementBytes/4)*4; }
     // Copy only the referenced packed elements. These bounded private bytes are
     // never retained by a repair, native retirement, persistent realm or cache.
-    const uploads = draw.attributes.map(a => {
-      const bytes = new Uint8Array(v.buffer,v.byteOffset+a.dataOffset,a.byteLength).slice();
+    const packed = (a: Attribute, into: Uint8Array, at: number) => {
+      into.set(new Uint8Array(v.buffer,v.byteOffset+a.dataOffset,a.byteLength),at);
       if (a.type === FIXED) {
-        const input = new DataView(bytes.buffer), output = new DataView(bytes.buffer);
-        for (let i = 0; i < bytes.length; i += 4) output.setFloat32(i,input.getInt32(i,true)/65536,true);
+        const view = new DataView(into.buffer,into.byteOffset+at,a.byteLength);
+        for (let i = 0; i < a.byteLength; i += 4) view.setFloat32(i,view.getInt32(i,true)/65536,true);
       }
-      return bytes;
-    });
-    // Reserve the dense owner slots before acquiring retirement tickets, so a
-    // later array growth cannot strand an already registered empty ticket.
-    retirements = new Array<NativeRetirement | null>(draw.attributes.length).fill(null);
-    for (let i = 0; i < draw.attributes.length; i++) {
-      const retirement = reserveNativeRetirement(b,[["deleteBuffer",null]]);
-      if (!retirement) return result;
-      retirements[i] = retirement;
+    };
+    const upload: (() => void)[] = [];
+    if (draw.first === 0) {
+      const bytes = new Uint8Array(total);
+      draw.attributes.forEach((a,i) => packed(a,bytes,regions[i]));
+      upload.push(() => gl.bufferData(ARRAY,bytes,STREAM_DRAW));
+    } else {
+      // A nonzero first leaves each region's prefix unread: size the store
+      // without staging it, then write only the referenced elements.
+      upload.push(() => gl.bufferData(ARRAY,total,STREAM_DRAW));
+      draw.attributes.forEach((a,i) => {
+        const bytes = new Uint8Array(a.byteLength);
+        packed(a,bytes,0);
+        upload.push(() => gl.bufferSubData(ARRAY,regions[i]+draw.first*a.elementBytes,bytes));
+      });
     }
-    const pointers: NativeCall[][] = draw.attributes.map(a => {
-      const old = vao.attributes.get(a.index)!;
-      return [["bindBuffer",ARRAY,null],
-        ["vertexAttribPointer",a.index,old.size,old.type === FIXED ? FLOAT : old.type,
-          old.type === FIXED ? false : old.normalized,
-          packedVertexLayout(old) ? 0 : old.stride,0]];
-    });
-    const restoreArray: NativeCall[] = [["bindBuffer",ARRAY,b.shadow.arrayBuffer]];
+    draw.attributes.forEach((a,i) => upload.push(() => gl.vertexAttribPointer(a.index,a.size,a.type === FIXED ? FLOAT : a.type,
+      a.type === FIXED ? false : a.normalized,0,regions[i])));
+    // The logical client-array pointers (no buffer) and ARRAY binding.
+    const restore: NativeCall[] = [["bindBuffer",ARRAY,null],
+      ...draw.attributes.map(a => {
+        const old = vao.attributes.get(a.index)!;
+        return ["vertexAttribPointer",a.index,old.size,old.type === FIXED ? FLOAT : old.type,
+          old.type === FIXED ? false : old.normalized,packedVertexLayout(old) ? 0 : old.stride,0] as NativeCall;
+      }),
+      ["bindBuffer",ARRAY,b.shadow.arrayBuffer]];
     const completion = {submitted:false,complete:false};
-    const changes: NativeChange[] = draw.attributes.map((a,i) => {
-      let temporary: WebGLBuffer | null = null;
-      // Allocate callbacks before native effects. This synchronous scope has
-      // one physical context/error owner and only single native operations:
-      // each successful post-check is the next dependent step's clean entry.
-      const upload = draw.first === 0
-        ? [() => gl.bufferData(ARRAY,uploads[i],STREAM_DRAW)]
-        : [() => gl.bufferData(ARRAY,(draw.first+draw.count)*a.elementBytes,STREAM_DRAW),
-          () => gl.bufferSubData(ARRAY,draw.first*a.elementBytes,uploads[i])];
-      const calls = [() => gl.bindBuffer(ARRAY,temporary),...upload,
-        () => gl.vertexAttribPointer(a.index,a.size,a.type === FIXED ? FLOAT : a.type,
-          a.type === FIXED ? false : a.normalized,0,0)];
-      return {
-        apply: () => {
-          temporary = allocateNativeBuffer(b,retirements[i]!);
-          return temporary !== null && checkedGlSequence(b,calls);
-        },
-        restore:nativeInverse(b,pointers[i]),
-      };
-    });
-    changes.push({apply:() => {
-      result.accepted = issueGlesDraw(b,{mode:draw.mode,issue:() => {
-        result.attempted = true;
-        gl.drawArrays(draw.mode,draw.first,draw.count);
-      },vertices:() => sequentialVertices(draw.first,draw.count)});
-      return result.accepted;
-    },restore:nativeInverse(b)});
-    // Success must undo the private overrides too. On failure the same exact
-    // inverses remain journalled; cleanup cannot delete their backing early.
-    applyNativeChanges(b,changes,{completion,
-      finalizer:nativeInverse(b,...pointers.slice().reverse(),restoreArray)});
+    // The stream bind is checked on its own: uploads after a failed bind
+    // would write the guest's ARRAY_BUFFER. Uploads and pointer calls then
+    // form one checked group; the draw has its own check, so its error
+    // reaches the guest as the draw's; the restoration is one checked group.
+    // A failed step or restoration stays journalled and fences the context
+    // until repaired.
+    const changes: NativeChange[] = [
+      {apply:() => checkedGlCall(b,() => gl.bindBuffer(ARRAY,stream)) && checkedGlGroup(b,upload,true),
+        restore:batchedNativeInverse(b,restore)},
+      {apply:() => {
+        result.accepted = issueGlesDraw(b,{mode:draw.mode,cleanEntry:true,issue:() => {
+          result.attempted = true;
+          gl.drawArrays(draw.mode,draw.first,draw.count);
+        },vertices:() => sequentialVertices(draw.first,draw.count)});
+        return result.accepted;
+      },restore:nativeInverse(b)},
+    ];
+    applyNativeChanges(b,changes,{completion,finalizer:batchedNativeInverse(b,restore)});
     result.restored = completion.complete;
     return result;
   } catch { recordGlError(b,0x505); return result; }
-  finally {
-    for (const retirement of retirements) if (retirement) retireNativeRetirement(retirement);
-  }
+}
+
+/** The context's client-array stream buffer, created on first use and
+ * deleted with the context (registry.ts). */
+function clientArrayStream(b: GlBinding): WebGLBuffer | null {
+  if (b.clientArrayStream) return b.clientArrayStream;
+  // A handle returned by a rejected creation is still deleted (and retried).
+  const candidate = reserveNativeRetirement(b,[["deleteBuffer",null]]);
+  if (!candidate) return null;
+  let stream: WebGLBuffer | null = null;
+  const created = checkedGlCall(b, () => { stream = b.gl!.createBuffer(); candidate.calls[0][1] = stream; });
+  if (created && !stream) recordGlError(b,0x505);
+  if (!created || !stream) { retireNativeRetirement(candidate); return null; }
+  transferNativeRetirement(candidate);
+  return b.clientArrayStream = stream;
 }

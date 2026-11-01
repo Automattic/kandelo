@@ -27,7 +27,7 @@
 import type { GlBinding } from "./registry.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, type NativeCall, type NativeChange } from "./native-recovery.js";
 import { allocateNativeBuffer } from "./buffer-storage.js";
-import { checkedGlCall, checkedGlSequence, recordGlError } from "./program-objects.js";
+import { checkedGlCall, checkedGlCallAfterClean, checkedGlSequence, recordGlError } from "./program-objects.js";
 import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-depth.js";
 import type { GlStencilFaceState } from "./shadow.js";
 import { prepareDrawTarget } from "./opaque-alpha.js";
@@ -49,6 +49,9 @@ export type GlesDraw = {
    * Clear: a native error stays pending in the context's error state for
    * the next drain instead of costing two getError calls per draw. */
   observed?: boolean;
+  /** The caller just checked the native error state clean (its own setup
+   * step), so the draw's check needs no entry drain. */
+  cleanEntry?: boolean;
 };
 
 type StencilPlan = { kind: "none" } | { kind: "mirror"; face: number } | { kind: "split" };
@@ -147,6 +150,7 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
   // sampled siblings of the storage see the write.
   prepareDrawTarget(b);
   if (twin === undefined && stencil.kind === "none") {
+    if (draw.cleanEntry) return checkedGlCallAfterClean(b, draw.issue);
     if (draw.observed !== false) return checkedGlCall(b, draw.issue);
     draw.issue();
     return true;

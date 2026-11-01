@@ -105,6 +105,10 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   /** No attachments: native framebuffer operations enforce surfaceless
    * incompleteness. This object never has a guest-visible name. */
   undefinedDefaultFbo: WebGLFramebuffer | null;
+  /** Private ARRAY_BUFFER that client-array draws upload into
+   * (private-client-draw.ts); created on first use, deleted with the
+   * context. Never a guest name. */
+  clientArrayStream: WebGLBuffer | null;
   /** Lazy view of `[cmdbufAddr, cmdbufAddr+cmdbufLen)` of the process's
    *  wasm Memory SAB. Built on the first submit and dropped to `null`
    *  by `rebindMemory` after a `Memory.grow()`. */
@@ -251,6 +255,7 @@ function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | nu
   add(["deleteVertexArray",b.shadow.defaultVao]);
   for (const object of b.fbos.values()) add(["deleteFramebuffer",object]);
   add(["deleteFramebuffer",b.undefinedDefaultFbo]);
+  add(["deleteBuffer",b.clientArrayStream]);
   for (const object of b.shadow.defaultTextures.values()) add(["deleteTexture",object]);
   return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
 }
@@ -367,6 +372,7 @@ export class GlContextRegistry {
       uniformLookup: null,
       uniformLookupSerial: 0,
       undefinedDefaultFbo: null,
+      clientArrayStream: null,
       cmdbufView: null,
       gl: null,
       fences: new GlFenceOwner({pid:b.pid,sessionId,operations}),
@@ -955,6 +961,8 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.errors = [];
   if (gl && b.undefinedDefaultFbo && !cleanup) { retireNativeObject(gl,b.undefinedDefaultFbo); gl.deleteFramebuffer(b.undefinedDefaultFbo); }
   b.undefinedDefaultFbo = null;
+  if (gl && b.clientArrayStream && !cleanup) { retireNativeObject(gl,b.clientArrayStream); gl.deleteBuffer(b.clientArrayStream); }
+  b.clientArrayStream = null;
   if (b.shadow.defaultVao) {
     if (!cleanup) b.gl?.deleteVertexArray(b.shadow.defaultVao);
     b.shadow.defaultVao = null;

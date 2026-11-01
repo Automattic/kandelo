@@ -669,3 +669,18 @@ describe("BindTexture", () => {
   });
 });
 
+
+describe("client-array draws", () => {
+  // [C7]
+  it("reuse one stream buffer and check each step once", () => {
+    const h = setup();
+    h.renderbuffer(7, RGBA8);
+    h.framebuffer(9, 7);
+    h.clientQuad();
+    const { calls } = perDraw(h, 16, "client", false);
+    // Stream bind (checked), upload + pointer group, draw, restoration group.
+    expect(calls).toEqual({ getError: 6, bindBuffer: 3, bufferData: 1, vertexAttribPointer: 2, drawArrays: 1 });
+    expect(h.error()).toBe(0);
+  });
+});
+
