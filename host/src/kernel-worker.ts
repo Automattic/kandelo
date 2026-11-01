@@ -246,6 +246,7 @@ import {
 } from "./clipboard";
 import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import {
+  checkedPackageMaintenanceResponse,
   copyPackageMaintenanceRequest,
   packageMaintenanceOpcode,
   type PackageMaintenanceRequest,
@@ -5215,12 +5216,20 @@ export class CentralizedKernelWorker {
       this.#persistentOverlayImportSlot = 0;
       this.#persistentOverlayIndexSlot = index === undefined ? null : 1;
       this.#persistentOverlayActiveStorage = storage;
+      this.assessPersistentRootfsRuntime();
     } catch (error) {
       this.#rethrowKernelEntryFatal(error);
       this.#kernel.setPersistentOverlayStorage(null);
       this.#kernel.setPersistentOverlayTargetStorage(null);
       throw error;
     }
+  }
+
+  assessPersistentRootfsRuntime(baseOnly = false): void {
+    const admission = checkedPackageMaintenanceResponse(this.packageMaintenance({
+      action: "assessBoot", index: baseOnly ? PACKAGE_MAINTENANCE_WIRE.BOOT_BASE_ONLY : 0,
+    })).status;
+    if (admission !== 0 && admission !== 1) throw new Error("Kernel returned invalid persistent runtime admission");
   }
 
   #persistentOverlayImportSlot: 0 | 1 | 2 = 0;
@@ -5944,7 +5953,7 @@ export class CentralizedKernelWorker {
     const offsetLo = offset >>> 0;
     const offsetHi = Math.floor(offset / 0x1_0000_0000);
     let input = command.data ?? new Uint8Array(0);
-    if (command.action === "enter") {
+    if (command.action === "enter" || command.action === "assessBoot") {
       const digest = this.kernelAbiContractDigest;
       if (!digest || digest.byteLength !== 32) throw new Error("Current kernel has no program-contract digest");
       input = new Uint8Array(PACKAGE_MAINTENANCE_WIRE.ENTER_BYTES);

@@ -237,6 +237,9 @@ pub(super) fn computer() -> (Vec<u8>, SharedJournalStorage, Vec<u8>) {
     stage_leaf_bytes(b"/user-post", b"retain database and uploads", &mut source);
     sync_persistence().unwrap();
     drop(source);
+    crate::rootfs::package_maintenance::assess_boot_runtime(
+        &ProcessTable::new(), 55, [7; 32], false, &mut image_host(&image),
+    ).unwrap();
     (image, journal, before)
 }
 
@@ -1037,6 +1040,54 @@ impl OverlayStorage for Interruptible {
     fn truncate(&mut self, length: u64) -> Result<(), Errno> {
         self.inner.truncate(length)
     }
+}
+
+#[test]
+fn unusable_committed_authority_keeps_guests_closed_without_touching_storage() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _before) = computer();
+    let after = manifest(b"2", &[file(b"/hello.txt", b"updated software")]);
+    let mut source = image_host(&image);
+    let mut table = ProcessTable::new();
+    let token = table.enter_maintenance().unwrap();
+    let mut upgrade = Upgrade::begin(&after, &table, &token, 55, [7; 32], &mut source).unwrap();
+    verify_live(&mut upgrade, &table, &token, &mut source);
+    upgrade.prepare(&table, &token, &mut source).unwrap();
+    upgrade.stage(0, 0, b"updated software", &table, &token, &mut source).unwrap();
+    verify_staged(&mut upgrade, &table, &token, &mut source);
+    upgrade.commit(&table, &token).unwrap();
+    drop(upgrade);
+    sync_persistence().unwrap();
+
+    let assess = |digest: [u8; 32], source: &mut dyn FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>| {
+        let observed = journal.0.lock().clone();
+        let blocked = crate::rootfs::package_maintenance::assess_boot_runtime(
+            &ProcessTable::new(), 55, digest, false, source,
+        ).unwrap();
+        assert_eq!(*journal.0.lock(), observed);
+        blocked
+    };
+    assert!(!assess([7; 32], &mut source));
+    assert!(assess([8; 32], &mut source));
+    assert_eq!(ProcessTable::new().create_process(), Err(Errno::EBUSY));
+
+    let installed = contents(package_upgrade::INSTALLED, &mut source);
+    let other = manifest(b"3", &[file(b"/hello.txt", b"updated software")]);
+    unlink(package_upgrade::INSTALLED).unwrap();
+    stage_leaf_bytes(package_upgrade::INSTALLED, &other, &mut source);
+    assert!(assess([7; 32], &mut source));
+    unlink(package_upgrade::INSTALLED).unwrap();
+    stage_leaf_bytes(package_upgrade::INSTALLED, b"not an inventory", &mut source);
+    assert!(assess([7; 32], &mut source));
+    unlink(package_upgrade::INSTALLED).unwrap();
+    assert!(assess([7; 32], &mut source));
+    stage_leaf_bytes(package_upgrade::INSTALLED, &installed, &mut source);
+    assert!(!assess([7; 32], &mut source));
+    let status = contents(package_upgrade::STATUS, &mut source);
+    unlink(package_upgrade::STATUS).unwrap();
+    assert!(assess([7; 32], &mut source));
+    stage_leaf_bytes(package_upgrade::STATUS, &status, &mut source);
+    assert!(!assess([7; 32], &mut source));
 }
 
 #[test]

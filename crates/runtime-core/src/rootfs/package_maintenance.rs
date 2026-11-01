@@ -11,8 +11,47 @@ pub(crate) fn guest_admission_blocked() -> bool {
     BOOT_REQUIRES_MAINTENANCE.load(Ordering::SeqCst)
 }
 
-pub(super) fn reset_boot_admission() {
+pub(super) fn release_boot_admission() {
     BOOT_REQUIRES_MAINTENANCE.store(false, Ordering::SeqCst);
+}
+
+pub(super) fn block_boot_admission() {
+    BOOT_REQUIRES_MAINTENANCE.store(true, Ordering::SeqCst);
+}
+
+pub fn assess_boot_runtime(
+    table: &ProcessTable,
+    program_abi: u32,
+    program_digest: [u8; 32],
+    base_only: bool,
+    source: &mut Source<'_>,
+) -> Result<bool, Error> {
+    table.require_boot_configuration()?;
+    if !base_only && !super::fixed_persistence_enabled() {
+        return Err(Errno::EOPNOTSUPP.into());
+    }
+    if base_only && (super::fixed_persistence_enabled() || super::image_length().is_none()) {
+        return Err(Errno::EINVAL.into());
+    }
+    if program_abi != wasm_posix_shared::ABI_VERSION || program_digest == [0; 32] {
+        return Err(Errno::EINVAL.into());
+    }
+    block_boot_admission();
+    let base_compatible = super::ROOTFS.with(|state| {
+        crate::image_policy::check_declared_abi(
+            state.image_metadata.as_ref().map(|bytes| bytes.as_slice()), program_abi,
+        ).is_ok()
+    });
+    if base_only && !base_compatible {
+        return Ok(true);
+    }
+    let blocked = match package_upgrade::runtime_boot_admission(program_abi, program_digest, base_compatible, source) {
+        Ok(compatible) => !compatible,
+        Err(error @ Error::Storage(Errno::ENOMEM | Errno::ENOSPC)) => return Err(error),
+        Err(_) => true,
+    };
+    BOOT_REQUIRES_MAINTENANCE.store(blocked, Ordering::SeqCst);
+    Ok(blocked)
 }
 
 pub(super) fn inspect_boot_admission(source: &mut Source<'_>) {
@@ -256,7 +295,7 @@ impl Maintenance {
         package_upgrade::check_installed_runtime(self.program_abi, self.program_digest, source)?;
         sync_persistence()?;
         table.leave_maintenance(self.token.as_ref().ok_or(Errno::EPERM)?)?;
-        reset_boot_admission();
+        release_boot_admission();
         self.token = None;
         Ok(())
     }

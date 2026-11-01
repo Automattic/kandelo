@@ -6,6 +6,7 @@ import { PackageUpgradeClient, PackageUpgradeFinalizationError, type PackageUpgr
 export interface OwnedPackageSource {
   source: PackageUpgradeSource;
   close(): Promise<void>;
+  prepare?(): Promise<void>;
   committed?(): Promise<void>;
 }
 
@@ -76,6 +77,8 @@ export class PackageMaintenanceSession {
       let failure: { error: unknown } | undefined;
       try {
         if (operation !== "rollback") source = await openSource!(signal);
+        signal.throwIfAborted();
+        await source?.prepare?.();
         signal.throwIfAborted();
         const client = new PackageUpgradeClient(request => this.call(request));
         await client.run(operation, source?.source, {

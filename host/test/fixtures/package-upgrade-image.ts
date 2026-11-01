@@ -8,7 +8,7 @@ import { ABI_CONTRACT_SECTION, readWasmCustomSectionPayload } from "../../src/co
 const encoder = new TextEncoder();
 
 export async function softwareImage(version: 1 | 2, lazyOrigin = "https://packages.invalid/",
-  options: { imageOwnedReference?: boolean; pinDirectory?: string } = {}) {
+  options: { imageOwnedReference?: boolean; pinDirectory?: string; bootConfiguration?: boolean } = {}) {
   const filesystem = KandeloImageFs.create();
   filesystem.setImageCapacity(32 * 1024 * 1024);
   for (const path of ["/software", "/user", "/var", "/var/lib", "/var/lib/kandelo", "/var/lib/kandelo/packages"]) {
@@ -24,6 +24,19 @@ export async function softwareImage(version: 1 | 2, lazyOrigin = "https://packag
     filesystem.mkdir("/software/new/sub", 0o755);
     bodies.set("/software/new/sub/pkg", encoder.encode("new nested package file"));
   }
+  const bootPaths: string[] = [];
+  if (options.bootConfiguration) {
+    for (const path of ["/etc", "/etc/kandelo", "/etc/dinit.d"]) { filesystem.mkdir(path, 0o755); bootPaths.push(path); }
+    bodies.set("/etc/kandelo/demo.json", encoder.encode(JSON.stringify({ version: 1, image: { title: `Release ${version}` }, defaultProfile: "site", profiles: {
+      site: { init: { target: version === 1 ? "boot" : "web" } } } })));
+    bodies.set("/etc/kandelo/experimental-terminal-session.json", encoder.encode(JSON.stringify({
+      kind: "kandelo-experimental-terminal-session", version: 1, initial: { path: "/bin/true", argv: ["true"], uid: 0, gid: 0 } })));
+    bodies.set("/etc/dinit.d/boot", encoder.encode("type = process\ncommand = /bin/true\n"));
+    if (version === 2) {
+      bodies.set("/etc/dinit.d/web", encoder.encode("type = process\ncommand = /bin/true\ndepends-on = db\n"));
+      bodies.set("/etc/dinit.d/db", encoder.encode("type = process\ncommand = /bin/true\n"));
+    }
+  }
   for (const [path, bytes] of bodies) filesystem.writeFile(path, bytes, 0o644);
   filesystem.writeFile("/user/notes", encoder.encode("user data"), 0o644);
   const lazy = encoder.encode(`lazy package ${version}`);
@@ -37,7 +50,7 @@ export async function softwareImage(version: 1 | 2, lazyOrigin = "https://packag
   const sourceInventory = filesystem.buildPackageInventory({
     name: "fixture-software-set", version: String(version), programAbi: ABI_VERSION,
     programDigest: Buffer.from(digest).toString("hex"),
-    paths: ["/software", ...bodies.keys(), "/software/lazy", ...(version === 2 ? ["/software/new", "/software/new/sub"] : [])],
+    paths: ["/software", ...bodies.keys(), "/software/lazy", ...bootPaths, ...(version === 2 ? ["/software/new", "/software/new/sub"] : [])],
   });
   filesystem.writeFile("/var/lib/kandelo/packages/installed", sourceInventory, 0o600);
   const inventory = options.pinDirectory === undefined ? sourceInventory : filesystem.pinPackageInventorySources(sourceInventory, options.pinDirectory);

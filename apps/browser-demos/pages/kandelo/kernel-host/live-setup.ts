@@ -8,8 +8,13 @@ import { demoAssetFetchUrl } from "./configured-assets";
 import { ensurePersistentProfileAssets } from "./persistent-profile-assets";
 import { runImageActivityCommand } from "./image-activity-command";
 import { createServiceControls } from "./service-controls";
-import { PackageMaintenanceSession } from "./package-maintenance-session";
+import { PackageMaintenanceSession, type OwnedPackageSource } from "./package-maintenance-session";
 import { openSavedPackageSource, stageCurrentPackageSource } from "./package-source-cache";
+import {
+  bootCompositionMatchesInstalled, installedBootConfigurationSha256, promoteBootConfiguration,
+  readBootConfigurations, recordBootConfiguration, selectBootComposition,
+} from "./package-boot-configuration";
+import type { StoredComposition } from "./stored-composition";
 import { checkedPackageMaintenanceResponse } from "../../../../../host/src/package-maintenance";
 import type { ComputerSoftwareSnapshot } from "../../../../../web-libs/kandelo-session/src/computer-software";
 import { imageActivity, imageActivityPresentation } from "../../../../../web-libs/kandelo-session/src/image-activities";
@@ -327,6 +332,12 @@ function dinitContainerArgv(target: string): string[] {
 class BootSuperseded extends Error {
   constructor() {
     super("boot superseded");
+  }
+}
+
+class RetryInstalledBootConfiguration extends Error {
+  constructor(readonly composition: StoredComposition) {
+    super("retrying with the boot configuration of the installed software");
   }
 }
 
@@ -658,6 +669,7 @@ async function createLiveHostWithLease(
   let currentProfile: LiveProfile | null = null;
   let currentRequestedDescriptor: BootDescriptor | null = null;
   let currentMaintenance: PackageMaintenanceSession | null = null;
+  let currentBaseComposition: StoredComposition | null = null;
   let offMaintenance: (() => void) | undefined;
   let softwareSupported = false;
   let softwareEntering = false;
@@ -815,13 +827,13 @@ async function createLiveHostWithLease(
         await session.run("install", async signal => {
           const product = computer.softwareProductId ?? (await bindVfsProduct(profile)).productId;
           if (!product || galleryProductSource(product) === undefined) throw new Error("This image has no trusted release software bundle");
-          return stageCurrentPackageSource(computer.id, product, loader, signal);
+          return recordingBootConfiguration(computer.id, () => stageCurrentPackageSource(computer.id, product, loader, signal));
         });
       },
       resume: async () => {
         const computer = currentComputer;
         if (computer === null) throw new Error("No computer is selected");
-        await requireMaintenance().run("resume", signal => openSavedPackageSource(computer.id, signal));
+        await requireMaintenance().run("resume", signal => recordingBootConfiguration(computer.id, () => openSavedPackageSource(computer.id, signal)));
       },
       rollback: () => requireMaintenance().run("rollback"),
       discard: () => requireMaintenance().discard(),
@@ -1139,7 +1151,7 @@ async function createLiveHostWithLease(
         }
         const requireExistingFilesystem = computer !== null && await computerStore!.filesystemInitialized(computer.id);
         const managedComputerId = computer?.id;
-        const boot = (preferred?: FixedPersistenceImageHandle) => bootProfile(
+        const boot = (preferred?: FixedPersistenceImageHandle, composition?: StoredComposition) => bootProfile(
           h, profile, descriptor, bootStartedAt, () => seq === bootSeq,
           requireServiceWorker, legacyScriptIgnored,
           persistenceName, persistenceMode, persistenceLease ?? undefined, preferred, opts.experimentalPersistenceIntegrity, deferActivityLaunch,
@@ -1155,13 +1167,22 @@ async function createLiveHostWithLease(
             if (seq !== bootSeq) throw new BootSuperseded();
             return PackageMaintenanceSession.open(kernel, () => { if (seq !== bootSeq) throw new BootSuperseded(); });
           },
+          managedComputerId,
+          composition,
         );
         let booted: Awaited<ReturnType<typeof boot>>;
-        try {
-          booted = await boot();
-        } catch (error) {
-          if (!(error instanceof RetryPreviousPersistenceGeneration) || seq !== bootSeq) throw error;
-          booted = await boot(error.previous);
+        let preferredImage: FixedPersistenceImageHandle | undefined;
+        let preferredComposition: StoredComposition | undefined;
+        for (;;) {
+          try {
+            booted = await boot(preferredImage, preferredComposition);
+            break;
+          } catch (error) {
+            if (seq !== bootSeq) throw error;
+            if (error instanceof RetryPreviousPersistenceGeneration && preferredImage === undefined) preferredImage = error.previous;
+            else if (error instanceof RetryInstalledBootConfiguration && preferredComposition === undefined) preferredComposition = error.composition;
+            else throw error;
+          }
         }
         if (seq !== bootSeq) {
           let maintenanceCloseError: unknown;
@@ -1184,6 +1205,7 @@ async function createLiveHostWithLease(
         }
         currentKernel = booted.kernel;
         currentMaintenance = booted.maintenance ?? null;
+        currentBaseComposition = booted.baseComposition ?? null;
         if (currentMaintenance !== null) offMaintenance = currentMaintenance.subscribe(publishSoftware);
         publishSoftware();
         currentPersistenceLease = persistenceLease;
@@ -1232,6 +1254,14 @@ async function createLiveHostWithLease(
       try { await preparedLease?.(); }
       finally { completeBoot(); }
     }
+  }
+
+  async function recordingBootConfiguration(computerId: string, open: () => Promise<OwnedPackageSource>): Promise<OwnedPackageSource> {
+    const kernel = currentKernel;
+    const base = currentBaseComposition;
+    if (kernel === null || base === null) throw new Error("Computer boot configuration is unavailable for this update");
+    const owned = await open();
+    return { ...owned, prepare: () => recordBootConfiguration(computerId, kernel, base, owned.source) };
   }
 
 }
@@ -1653,12 +1683,15 @@ async function bootProfile(
   markFilesystemInitialized?: () => Promise<void>,
   storageProfileId?: string | null,
   openMaintenance?: (kernel: BrowserKernel) => Promise<PackageMaintenanceSession | undefined>,
+  softwareComputerId?: string,
+  preferredComposition?: StoredComposition,
 ): Promise<{
   kernel: BrowserKernel;
   persistenceIdentity: string | null;
   persistenceJournalName: string | null;
   softwareProductId: GalleryProductId | null;
   maintenance?: PackageMaintenanceSession;
+  baseComposition?: StoredComposition;
 }> {
   const assertCurrent = () => {
     if (!isCurrent()) throw new BootSuperseded();
@@ -1782,6 +1815,11 @@ async function bootProfile(
     ? null
     : preferredPersistenceImage ?? await loadFixedPersistenceImageHandle(persistence.name, persistence.identity);
   if (requireExistingFilesystem && restoredHandle === null) throw new Error("This computer's saved filesystem is missing; refusing to reset it");
+  // The machine is configured before replay can show which software is
+  // installed, so assume the newest record and confirm it after replay.
+  const bootConfigurations = restoredHandle !== null && softwareComputerId !== undefined ? await readBootConfigurations(softwareComputerId) : [];
+  const assumedComposition = restoredHandle === null ? undefined
+    : preferredComposition ?? bootConfigurations.at(-1)?.composition ?? restoredHandle.composition;
   assertCurrent();
 
   tick("service worker active and cross-origin isolated");
@@ -1889,7 +1927,7 @@ async function bootProfile(
         isCurrent,
         supersededError: () => new BootSuperseded(),
       },
-    ) : { ...restoredHandle.composition, imageBytes: new Uint8Array() };
+    ) : { ...assumedComposition!, imageBytes: new Uint8Array() };
   } catch (error) {
     if ((error as { retainSource?: unknown } | null)?.retainSource === true) loadedVfs.positionedSource?.retain();
     else await loadedVfs.positionedSource?.remove().catch(() => {});
@@ -2076,10 +2114,16 @@ async function bootProfile(
           host.setMachineProgress(null);
           tick("computer paused for package maintenance; guest programs have not started");
           host.setStatus("halted");
-          return { kernel, persistenceIdentity: persistence.identity, persistenceJournalName: opfsImage.journalName, softwareProductId: profile.productId, maintenance };
+          return { kernel, persistenceIdentity: persistence.identity, persistenceJournalName: opfsImage.journalName, softwareProductId: profile.productId, maintenance, baseComposition: opfsImage.composition };
         }
-        await assertPersistentImageBootMetadata(kernel, opfsImage.composition);
-        if (profileId !== opfsImage.composition.profileId) {
+        const installedComposition = await selectBootComposition(kernel, bootConfigurations, opfsImage.composition);
+        if (!bootCompositionMatchesInstalled(assumedComposition ?? opfsImage.composition, installedComposition)) {
+          const installed = await installedBootConfigurationSha256(kernel);
+          if (installed !== null) await promoteBootConfiguration(softwareComputerId!, installed);
+          throw new RetryInstalledBootConfiguration(installedComposition);
+        }
+        await assertPersistentImageBootMetadata(kernel, installedComposition);
+        if (profileId !== installedComposition.profileId) {
           requiredServices.clear();
           for (const service of await persistentImageServices(kernel, imageConfig, profileId)) requiredServices.add(service);
           await ensurePersistentProfileAssets(kernel, resolveDemoAssets(imageConfig, profileId), tick, assertCurrent, demoAssetFetchUrl);

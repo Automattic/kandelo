@@ -2189,6 +2189,9 @@ pub extern "C" fn kernel_rootfs_io_limit_bytes() -> u32 {
 /// `rootfs::load_image`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_rootfs_load_image(image_len_lo: u32, image_len_hi: u32) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     match crate::rootfs::load_image(image_len, |req, b| match req {
@@ -2225,6 +2228,9 @@ pub extern "C" fn kernel_rootfs_load_persistent_image(
     data_pages: u32,
     index_pages: u32,
 ) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let mut expected = [0; 32];
     for (index, word) in [digest0, digest1, digest2, digest3, digest4, digest5, digest6, digest7].into_iter().enumerate() {
         expected[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
@@ -2427,6 +2433,9 @@ fn enable_rootfs_persistence(
     checkpoint_end: Option<u64>,
     resizable: bool,
 ) -> i32 {
+    if let Err(error) = unsafe { &*PROCESS_TABLE.0.get() }.require_boot_configuration() {
+        return -(error as i32);
+    }
     let image_len = (u64::from(image_len_hi) << 32) | u64::from(image_len_lo);
     let mut host = WasmHostIO;
     let base_digest = if let Some(binding) = crate::rootfs::persistent_image_binding() {

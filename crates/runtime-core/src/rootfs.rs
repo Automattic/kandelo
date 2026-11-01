@@ -1681,6 +1681,7 @@ fn enable_persistence_internal(
     if persistent_image_binding().is_some_and(|binding| binding.digest != base_digest) {
         return Err(Errno::EIO);
     }
+    package_maintenance::block_boot_admission();
     PERSISTENCE_RECOVERY_PRISTINE.store(true, Ordering::SeqCst);
     let mut journal = match checkpoint {
         Some((index, checkpoint_end)) if resizable => {
@@ -1929,7 +1930,7 @@ fn enable_persistence_internal(
         base_dirents,
     });
     drop(active);
-    package_maintenance::inspect_boot_admission(&mut byte_source);
+    package_maintenance::block_boot_admission();
     Ok(())
 }
 
@@ -2610,7 +2611,9 @@ fn iter_to_dir_handle(idx: u32) -> i64 {
 /// repopulating from a fresh image or manifest and by tests for isolation.
 pub fn reset() {
     package_plan::invalidate_filesystem();
-    package_maintenance::reset_boot_admission();
+    if image_length().is_some() || fixed_persistence_enabled() {
+        package_maintenance::block_boot_admission();
+    }
     PERSISTENCE_RECOVERY_PRISTINE.store(false, Ordering::SeqCst);
     #[cfg(test)]
     FAIL_PERSISTENCE_FIFO_RESTORE.store(false, Ordering::SeqCst);
@@ -3851,8 +3854,9 @@ pub fn load_image_for_composition<F>(image_len: u64, mut byte_source: F) -> Resu
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    package_maintenance::block_boot_admission();
     reset();
-    let result = load_image_inner(image_len, &mut byte_source).and_then(|count| {
+    let result = load_image_inner(image_len, ImageProgramAdmission::Current, &mut byte_source).and_then(|count| {
         restore_fifo_registry()?;
         package_maintenance::inspect_boot_admission(&mut byte_source);
         Ok(count)
@@ -3873,13 +3877,13 @@ pub fn load_persistent_image<F>(
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
+    package_maintenance::block_boot_admission();
     reset();
     let result = crate::rootfs_image::install(physical_length, expected, cache, read)
-        .and_then(|identity| load_image_inner(identity.payload_length, &mut byte_source))
+        .and_then(|identity| load_image_inner(identity.payload_length, ImageProgramAdmission::PersistentData, &mut byte_source))
         .and_then(|count| {
             restore_fifo_registry()?;
             ensure_kernel_mount_points()?;
-            package_maintenance::inspect_boot_admission(&mut byte_source);
             Ok(count)
         });
     if result.is_err() { reset(); }
@@ -3902,7 +3906,12 @@ struct DeferredEntry {
     source_path: Vec<u8>,
 }
 
-fn load_image_inner<F>(image_len: u64, byte_source: F) -> Result<usize, Errno>
+enum ImageProgramAdmission {
+    Current,
+    PersistentData,
+}
+
+fn load_image_inner<F>(image_len: u64, admission: ImageProgramAdmission, byte_source: F) -> Result<usize, Errno>
 where
     F: FnMut(ByteReq, &mut [u8]) -> Result<usize, Errno>,
 {
@@ -4002,7 +4011,7 @@ where
     // errno carries the kind. Where the numbers ARE usable -- the publication
     // gate, which formats its own prose -- `check_declared_abi` hands them
     // over intact.
-    if crate::image_policy::check_declared_abi(
+    if matches!(admission, ImageProgramAdmission::Current) && crate::image_policy::check_declared_abi(
         declared_metadata.as_ref().map(|bytes| bytes.as_slice()),
         wasm_posix_shared::ABI_VERSION,
     )
@@ -9333,6 +9342,7 @@ mod tests {
                 spin_loop();
             }
             reset();
+            crate::rootfs::package_maintenance::release_boot_admission();
             set_metadata_budget_bytes(crate::metadata_budget::DEFAULT_ROOTFS_METADATA_BYTES).unwrap();
             set_now(1_000, 0);
             TestGuard
@@ -9341,6 +9351,7 @@ mod tests {
     impl Drop for TestGuard {
         fn drop(&mut self) {
             reset();
+            crate::rootfs::package_maintenance::release_boot_admission();
             set_metadata_budget_bytes(crate::metadata_budget::DEFAULT_ROOTFS_METADATA_BYTES).unwrap();
             set_enabled(false);
             TEST_LOCK.store(false, Ordering::Release);

@@ -108,6 +108,7 @@ impl Controller {
                     | wire::OP_STAGING_FILE
                     | wire::OP_RESTART_STAGING_FILE
                     | wire::OP_COMPACTION_NEEDED
+                    | wire::OP_ASSESS_BOOT
             )
         {
             return Err(Errno::EINVAL.into());
@@ -116,6 +117,7 @@ impl Controller {
             && !matches!(
                 opcode,
                 wire::OP_ENTER
+                    | wire::OP_ASSESS_BOOT
                     | wire::OP_UPLOAD_INVENTORY
                     | wire::OP_STAGE
                     | wire::OP_PROGRESS
@@ -128,12 +130,12 @@ impl Controller {
             return Ok(error_kind(self.last_error) as usize);
         }
         if opcode == wire::OP_BOOT_BLOCKED {
-            if !super::super::resizable_persistence_enabled() {
+            if super::super::image_length().is_none() {
                 return Err(Errno::EOPNOTSUPP.into());
             }
             return Ok(usize::from(super::guest_admission_blocked()));
         }
-        if opcode == wire::OP_ENTER {
+        if matches!(opcode, wire::OP_ENTER | wire::OP_ASSESS_BOOT) {
             if self.session.is_some() {
                 return Err(Errno::EBUSY.into());
             }
@@ -146,6 +148,11 @@ impl Controller {
             let digest = bytes[wire::ENTER_DIGEST_OFFSET as usize..]
                 .try_into()
                 .map_err(|_| Errno::EINVAL)?;
+            if opcode == wire::OP_ASSESS_BOOT {
+                if index > wire::BOOT_BASE_ONLY { return Err(Errno::EINVAL.into()); }
+                return super::assess_boot_runtime(table, wasm_posix_shared::ABI_VERSION, digest, index == wire::BOOT_BASE_ONLY, source)
+                    .map(usize::from);
+            }
             self.session = Some(Maintenance::enter(
                 table,
                 wasm_posix_shared::ABI_VERSION,

@@ -25,6 +25,7 @@ const operations = {
   compactionNeeded: wire.OP_COMPACTION_NEEDED,
   bootBlocked: wire.OP_BOOT_BLOCKED,
   resumeFromSource: wire.OP_RESUME_FROM_SOURCE,
+  assessBoot: wire.OP_ASSESS_BOOT,
 } as const;
 
 export interface PackageMaintenanceRequest {
@@ -58,7 +59,7 @@ export function copyPackageMaintenanceRequest(request: PackageMaintenanceRequest
   }
   const length = data === undefined ? 0 : apply(byteLengthGetter, data, []) as number;
   if (length > wire.MAX_BUFFER_BYTES) throw new RangeError("Package maintenance accepts at most 64 KiB per message");
-  if (action === "enter" && length !== 0) {
+  if ((action === "enter" || action === "assessBoot") && length !== 0) {
     throw new TypeError("The kernel worker supplies the current runtime contract");
   }
   const snapshot = data === undefined ? undefined : new ByteArray(length);

@@ -1919,6 +1919,14 @@ impl ProcessTable {
         self.next_task_id != FIRST_TASK_ID
     }
 
+    pub fn require_boot_configuration(&self) -> Result<(), Errno> {
+        if self.has_allocated_user_tasks() || self.is_in_maintenance() {
+            Err(Errno::EBUSY)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Collect every retained PID, including internal limbo identities.
     #[cfg(test)]
     pub fn all_pids(&self) -> Vec<u32> {

@@ -1385,6 +1385,9 @@ async function handleInit(msg: InitMessage) {
 
   refreshRootfsTransport?.();
   processMemoryCreators.assertOpen("kernel readiness");
+  if (msg.rootfsPersistentImageBinding !== undefined && persistencePath === undefined) {
+    kernelWorker.assessPersistentRootfsRuntime(true);
+  }
   initReady = true;
   liveOverlayCompactor?.start();
   post({ type: "ready" });

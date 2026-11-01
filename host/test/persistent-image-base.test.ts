@@ -7,6 +7,7 @@ import { persistentBaseFixture, preparePersistentBaseFixtures } from "./fixtures
 import { NodeKernelHost } from "../src/node-kernel-host";
 import type { PersistentImageReadBinding } from "../src/vfs/image-integrity";
 import { resolveBinary } from "../src/binary-resolver";
+import { ABI_VERSION } from "../src/generated/abi";
 
 const kernelPath = resolveBinary("kernel.wasm");
 
@@ -29,6 +30,31 @@ async function boot(path: string, binding: PersistentImageReadBinding, journal: 
 }
 
 describe("Rust-verified persistent base through a real Node kernel worker", () => {
+  it("mounts a base declaring an older program contract for data only, across reopen", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "kandelo-old-contract-base-"));
+    const program = readFileSync(join(import.meta.dirname, "../../abi/program-fixtures/v55/echo.wasm"));
+    try {
+      const { path, binding } = await persistentBaseFixture(directory, "crc32c", undefined, undefined, undefined,
+        { version: 1, kernelAbi: ABI_VERSION - 1 });
+      const journal = join(directory, "computer.journal");
+      const committed = join(directory, "committed.journal");
+      const first = await boot(path, binding, journal);
+      try {
+        expect((await first.packageMaintenance({ action: "bootBlocked" })).status).toBe(1);
+        expect(new TextDecoder().decode((await first.readFileFromVfs("/state"))!)).toBe("original");
+        await first.writeFileToVfs("/home/maker/post", new TextEncoder().encode("retained"), 0o600);
+        await expect(first.spawn(program.buffer.slice(program.byteOffset, program.byteOffset + program.byteLength) as ArrayBuffer, ["echo"]))
+          .rejects.toThrow();
+        copyFileSync(journal, committed);
+      } finally { await first.destroy(); }
+      const reopened = await boot(path, binding, committed, true);
+      try {
+        expect((await reopened.packageMaintenance({ action: "bootBlocked" })).status).toBe(1);
+        expect(new TextDecoder().decode((await reopened.readFileFromVfs("/home/maker/post"))!)).toBe("retained");
+      } finally { await reopened.destroy(); }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  }, 90000);
+
   it("reopens home and service files from the journal with their image-owned directories", async () => {
     const directory = mkdtempSync(join(tmpdir(), "kandelo-persistent-homes-"));
     const paths = ["/home/maker/state", "/root/state", "/srv/state"];

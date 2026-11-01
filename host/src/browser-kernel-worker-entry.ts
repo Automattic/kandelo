@@ -96,7 +96,7 @@ import {
   waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
-import { performPackageMaintenanceWithCompaction } from "./package-maintenance";
+import { checkedPackageMaintenanceResponse, performPackageMaintenanceWithCompaction } from "./package-maintenance";
 import {
   ForkReplayGateCoordinator,
   observeForkReplayWorker,
@@ -1263,7 +1263,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       }
     }
   };
-  if (msg.experimentalResizablePersistenceName === undefined) installBrowserCa();
+  if (msg.experimentalResizablePersistenceName === undefined && msg.rootfsPersistentImageBinding === undefined) installBrowserCa();
 
   // Forward bounded pixels, never an entire process address space.
   kernelWorker.framebuffers.onChange((pid, ev) => {
@@ -1399,7 +1399,13 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
 
   refreshRootfsTransport?.();
-  if (msg.experimentalResizablePersistenceName !== undefined) installBrowserCa();
+  if (msg.rootfsPersistentImageBinding !== undefined && persistenceName === undefined) {
+    kernelWorker.assessPersistentRootfsRuntime(true);
+  }
+  if (msg.experimentalResizablePersistenceName !== undefined || msg.rootfsPersistentImageBinding !== undefined) {
+    const blocked = checkedPackageMaintenanceResponse(kernelWorker.packageMaintenance({ action: "bootBlocked" })).status;
+    if (blocked === 0) installBrowserCa();
+  }
 
   processMemoryCreators.assertOpen("kernel readiness");
   initReady = true;

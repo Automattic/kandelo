@@ -318,6 +318,7 @@ host/test/overlay-storage.test.ts	source-only
 host/test/owned-job-lifetime.test.ts	source-only
 host/test/owned-job-reap.test.ts	source-only
 host/test/owned-jobs.test.ts	source-only
+host/test/package-boot-configuration.test.ts	source-only
 host/test/package-image-source.test.ts	prepared-product
 host/test/package-maintenance-compaction.test.ts	source-only
 host/test/package-maintenance-runtime.test.ts	prepared-product

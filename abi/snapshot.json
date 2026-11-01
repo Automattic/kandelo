@@ -6272,6 +6272,7 @@
     }
   },
   "package_maintenance_wire": {
+    "BOOT_BASE_ONLY": 1,
     "CURRENT_INSTALLED": 1,
     "CURRENT_NONE": 0,
     "CURRENT_STAGED": 2,
@@ -6292,6 +6293,7 @@
     "ERROR_UNSUPPORTED_PATH": 9,
     "MAX_BUFFER_BYTES": 65536,
     "MAX_CHANGED_FILES": 131072,
+    "OP_ASSESS_BOOT": 21,
     "OP_BEGIN": 5,
     "OP_BOOT_BLOCKED": 19,
     "OP_CANCEL": 12,

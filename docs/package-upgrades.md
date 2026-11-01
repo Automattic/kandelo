@@ -15,13 +15,18 @@ Both deployments use the same current trusted runtime and program ABI 55.
 This does not establish upgrades across program-contract changes. Keep the
 first-release compatibility warning until that broader path is proven.
 
+Native and Node tests now cover a base declaring an older contract: its data
+mounts with guests closed, and native tests upgrade it on the unchanged base,
+reopen, roll back and reapply. No running application has crossed a real
+program-contract change yet, so this is not evidence for that path.
+
 A native positioned-file probe now verifies, stages, atomically publishes,
 reopens and rolls back a complete 14,487-path pristine WordPress software-set
 comparison without increasing memory budgets. Reopen checks the complete
 inventory and unmanaged user data. This is filesystem/package evidence, not
 an executing WordPress upgrade demo. The later running app result above is
 separate evidence. Deferred-source availability after old assets disappear,
-cross-contract boot admission and final release gates remain open. Actual
+a running cross-contract upgrade and final release gates remain open. Actual
 results and limitations are in the [persistence plan](persistence-plan.md).
 
 Rust owns package inventories, conflict checks, staging, activation,
@@ -211,13 +216,34 @@ verification state, not a durable pending transaction. Leaving maintenance
 refuses incomplete or pending transactions, incompatible installed program
 contracts and failed persistence synchronization. Even a successful package
 commit leaves guest admission closed until explicit validated release.
-Dropping the owner does not implicitly resume guest execution. Image load
-and journal reopen inspect only the small transaction-authority record to
-keep incomplete, pending or unreadable upgrade authority in maintenance.
-Ordinary process admission stays blocked after reload until an explicit,
-compatible maintenance release. User files remain readable for inspection
-or export. Full inventory verification occurs during maintenance recovery,
-not on every ordinary boot or progress request.
+Dropping the owner does not implicitly resume guest execution. Full
+inventory verification occurs during maintenance recovery, not on every
+ordinary boot or progress request.
+
+Reading a saved filesystem and running its programs are separate decisions.
+A checked persistent image mounts for data whatever program contract its
+header declares: that header describes the programs the image was built
+with, not the software a later upgrade installed, and it is never rewritten.
+Guest admission closes before the image is read and stays closed through
+image load, journal replay and every failure, including a failed attach and
+filesystem reset. Refusals consume no task ID. After replay the kernel worker
+asks Rust to assess the composed filesystem against the contract of the kernel
+it actually loaded, never against an uploaded inventory or saved metadata.
+Guests are admitted when there is no transaction record and either an
+installed inventory matches the runtime or, without an inventory, the base
+declares a compatible contract. An Active or RolledBack record must also agree
+with the installed inventory. A missing, malformed, mismatched or incompatible
+inventory, a pending or incomplete transaction, and an unknown record version
+all leave guests closed without writing to storage. Unsupported old images are
+still refused by ordinary loading, composition and publication; only the
+explicit persistent mount tolerates them. Replacing a filesystem while tasks
+exist or during maintenance returns `EBUSY` before the old one is touched.
+
+Only the set being activated must be runnable. Rollback restores files without
+running them, so it succeeds when the old set uses an older contract; leaving
+maintenance then refuses with `ENOEXEC` and guests stay closed until a current
+set is applied. This keeps the rollback promise from depending on a retained
+old runtime, of which there is exactly one: the current trusted runtime.
 
 Changed or removed owned leaves are verified against the installed
 inventory. New paths require absence; unowned collisions are never
@@ -292,6 +318,34 @@ remain failures for the maintenance caller; shutdown still joins their cleanup
 before retiring storage. Recovery inspection and cancellation do not depend on
 successful compaction. No mutation is retried based on a guessed cause of
 `ENOSPC` or `ENOMEM`, or after an uncertain publication.
+
+## Boot configuration of an updated computer
+
+An update may legitimately change `/etc/kandelo/demo.json`, the terminal
+session or the `dinit` service closure. The saved composition describes the
+immutable base, so comparing an updated computer against it would refuse a
+correct boot. Comparing against the live files instead would accept anything,
+because a guest is root in its own computer and could edit both the
+configuration and the installed inventory.
+
+The configuration of an update therefore comes from the verified target image.
+Before the native commit, the app records it in
+`software/boot-configurations.json` in the computer's directory, which guests
+cannot reach, keyed by the SHA-256 of the inventory bytes that activate it. It
+also keeps the record of the set being replaced, so rollback has its own
+authority. At most two records are retained, and the file is size-bounded,
+versioned and refused rather than ignored when malformed.
+
+Publishing first is safe because a record is inert until replay shows its
+exact inventory installed, so a crash on either side of the commit selects
+correctly. A rewritten inventory matches no record and falls back to the base
+composition. Selected configuration is still compared with the live files
+before guests start, so guest edits stay refused. The machine is configured
+before replay can run, so a boot assumes the newest record, confirms it after
+replay, and on a mismatch retires that kernel and boots once more with the
+correct configuration. Checkpoints use the same selection, so a replacement
+base stores the configuration of the software it actually contains. A target
+that no longer declares the computer's profile is refused before native work.
 
 ## Staging, activation and recovery
 

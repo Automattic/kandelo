@@ -8,7 +8,7 @@ pub const INSTALLED: &[u8] = b"/var/lib/kandelo/packages/installed";
 const TRANSACTION: &[u8] = b"/var/lib/kandelo/packages/transaction";
 const BEFORE: &[u8] = b"/var/lib/kandelo/packages/transaction/before";
 const AFTER: &[u8] = b"/var/lib/kandelo/packages/transaction/after";
-const STATUS: &[u8] = b"/var/lib/kandelo/packages/transaction/status";
+pub(super) const STATUS: &[u8] = b"/var/lib/kandelo/packages/transaction/status";
 const PENDING: &[u8] = b"/var/lib/kandelo/packages/transaction/pending";
 const ACTIVE: &[u8] = b"/var/lib/kandelo/packages/transaction/active";
 const ROLLED_BACK: &[u8] = b"/var/lib/kandelo/packages/transaction/rolled-back";
@@ -405,6 +405,45 @@ pub(super) fn check_installed_runtime(
     Ok(())
 }
 
+pub(super) fn runtime_boot_admission(
+    current_abi: u32,
+    current_digest: [u8; 32],
+    base_compatible: bool,
+    source: &mut Source<'_>,
+) -> Result<bool, Error> {
+    let expected = match lstat(TRANSACTION) {
+        Err(Errno::ENOENT) => None,
+        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            private_directory(TRANSACTION)?;
+            private_directory(STATE_ROOT)?;
+            let record = match read_bounded(STATUS, RECORD_BYTES, source) {
+                Err(Errno::ENOENT) => return Ok(false),
+                result => result?,
+            };
+            let (phase, before, after) = decode_record(&record)?;
+            match phase {
+                Phase::Pending => return Ok(false),
+                Phase::Active => Some(after),
+                Phase::RolledBack => Some(before),
+            }
+        }
+    };
+    match lstat(INSTALLED) {
+        Err(Errno::ENOENT) if expected.is_none() => return Ok(base_compatible),
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    private_directory(STATE_ROOT)?;
+    let bytes = read_bounded(INSTALLED, MAX_BYTES, source)?;
+    let inventory = Inventory::decode(&bytes)?;
+    inventory.check_runtime(current_abi, current_digest)?;
+    if expected.is_some_and(|digest| inventory.digest() != digest) {
+        return Err(Error::InvalidState);
+    }
+    Ok(true)
+}
+
 pub fn discard_transaction(
     table: &ProcessTable,
     token: &MaintenanceToken,
@@ -635,9 +674,10 @@ impl Upgrade {
     ) -> Result<Self, Error> {
         let old = Inventory::decode(&before)?;
         let next = Inventory::decode(&after)?;
-        if phase == Phase::Active {
-            old.check_runtime(current_abi, current_digest)?;
-        } else {
+        // Rollback restores files without running them, so an older contract
+        // cannot strand a computer here. Leaving maintenance decides whether
+        // the restored set may execute.
+        if phase == Phase::Pending {
             next.check_runtime(current_abi, current_digest)?;
         }
         if old.digest() == next.digest() {
