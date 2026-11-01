@@ -1,9 +1,7 @@
 import type { GlBinding } from "./registry.js";
-import { renderbufferNative, textureNative } from "./image-storage.js";
-import type { NativeCall, NativeChange } from "./native-recovery.js";
-import { nativeInverse } from "./native-recovery.js";
-import { checkedGlCall } from "./program-objects.js";
-import { framebufferInputsChanged } from "./framebuffer-revision.js";
+import type { GlShadowState } from "./shadow.js";
+import { attachedNativeStorage } from "./image-storage.js";
+import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
 
 /**
  * Color formats without alpha that WebGL 2 can only store with alpha: an
@@ -11,13 +9,21 @@ import { framebufferInputsChanged } from "./framebuffer-revision.js";
  * renderable RGB16F) is stored as RGBA16F, and XRGB8888/XBGR8888 GPU buffers
  * as RGBA8. As ANGLE does for RGB formats on RGBA storage, the stored alpha is
  * initialized to 1.0 and never written: while such storage is the draw
- * framebuffer's color attachment, draws and clears run with the native alpha
- * write mask off (the guest's logical COLOR_WRITEMASK is unchanged). Every
- * read of the storage (ReadPixels, CopyTex*, DST_ALPHA blending, sampling)
- * then observes alpha = 1, exactly the semantics of a format without alpha.
+ * framebuffer's color attachment, the native alpha write mask is held off
+ * (the guest's logical COLOR_WRITEMASK, which queries report, is unchanged).
+ * Every read of the storage (ReadPixels, CopyTex*, DST_ALPHA blending,
+ * sampling) then observes alpha = 1, exactly the semantics of a format
+ * without alpha.
  *
- * Keyed by native storage, so EGLImage siblings that share the storage and
- * private views of it are covered too.
+ * Keyed by the native storage an attachment actually references, so
+ * EGLImage siblings that share the storage (a GBM XRGB8888 buffer imported
+ * as a renderbuffer or texture) and private views of it are covered too.
+ *
+ * The lock is native state derived from the draw framebuffer, not a per-draw
+ * override: a compositor issues many draws per framebuffer binding, so the
+ * lock is re-derived only when the framebuffer, its attachments or their
+ * storage changed (framebuffer-revision.ts), and the native mask is written
+ * only when the lock or the guest mask changes.
  */
 const opaqueStorage = new WeakSet<object>();
 
@@ -58,22 +64,30 @@ export function clearStorageAlphaToOne(gl: WebGL2RenderingContext, attach: (targ
   }
 }
 
-/** True when draws and clears must not write native alpha: the guest writes
- * alpha (logical mask) into a draw framebuffer whose color storage has none. */
-export function drawTargetLocksAlpha(b: GlBinding): boolean {
-  const s = b.shadow;
-  if (!s.colorMask[3] || !s.fbo) return false;
-  const image = b.framebufferAttachments.get(s.fbo)?.get(0x8ce0);
-  if (!image) return false;
-  const native = image.kind === "texture" ? textureNative(b, image.object) : renderbufferNative(b, image.object);
-  return isOpaqueAlphaStorage(native);
+/** The draw framebuffer's color attachment is storage without alpha. */
+function drawColorStorageOpaque(b: GlBinding): boolean {
+  const framebuffer = b.shadow.fbo;
+  const image = framebuffer ? b.framebufferAttachments.get(framebuffer)?.get(0x8ce0) : undefined;
+  return !!image && isOpaqueAlphaStorage(attachedNativeStorage(b, image));
 }
 
-/** The native alpha lock as a journalled change plus its finalizer group,
- * restoring the guest's logical mask on success and on failure. */
-export function alphaLock(b: GlBinding): { change: NativeChange; restore: NativeCall[] } {
-  const gl = b.gl!, [r, g, bl, a] = b.shadow.colorMask;
-  const restore: NativeCall[] = [["colorMask", r, g, bl, a]];
-  return { restore, change: { apply: () => checkedGlCall(b, () => gl.colorMask(r, g, bl, false)),
-    restore: nativeInverse(b, restore) } };
+/** The native COLOR_WRITEMASK for the guest mask: alpha off while locked.
+ * Every writer of the native mask from guest state uses this. */
+export function nativeColorMask(s: GlShadowState): [boolean, boolean, boolean, boolean] {
+  const [r, g, b, a] = s.colorMask;
+  return [r, g, b, a && !s.alphaWriteLock.locked];
+}
+
+/** Before a draw or clear: re-derive the lock only if the draw framebuffer,
+ * its attachments or their storage changed since it was derived, and write
+ * the native mask only if the lock changed while the guest writes alpha.
+ * Otherwise this is two comparisons. */
+export function syncAlphaWriteLock(b: GlBinding): void {
+  const s = b.shadow, lock = s.alphaWriteLock, revision = framebufferInputsRevision();
+  if (lock.fbo === s.fbo && lock.revision === revision) return;
+  const locked = drawColorStorageOpaque(b);
+  lock.fbo = s.fbo; lock.revision = revision;
+  if (lock.locked === locked) return;
+  lock.locked = locked;
+  if (s.colorMask[3]) b.gl!.colorMask(...nativeColorMask(s));
 }

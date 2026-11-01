@@ -232,6 +232,28 @@ function perDraw(h: ReturnType<typeof setup>, n: number, draw: "buffer" | "clien
 }
 
 describe("draws that use no exactness feature do no extra work", () => {
+  // [C2]
+  it("an XRGB-like target locks native alpha once, not around every draw and clear", () => {
+    const h = setup();
+    h.renderbuffer(7, RGB16F);
+    h.framebuffer(9, 7);
+    h.send(O.OP_CLEAR, [0x4000]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    const N = 16;
+    const { calls, attachmentGets } = perDraw(h, N, "buffer");
+    h.send(O.OP_CLEAR, [0x4000]);
+    expect(h.gl.calls.get("colorMask") ?? 0).toBe(0);
+    expect(calls.colorMask ?? 0).toBe(0);
+    expect(attachmentGets).toBe(0);
+    // The storage still never received a written alpha.
+    expect(h.gl.storage.get(h.b.rbos.get(7)!)!.alpha).toBe(1);
+    expect(h.gl.mask).toEqual([true, true, true, false]);
+    // The guest's logical mask is what queries report.
+    const mask = h.query(O.QOP_GET_INTEGERV, [0x0c23], 16);
+    expect([0, 1, 2, 3].map(i => mask.getInt32(i * 4, true))).toEqual([1, 1, 1, 1]);
+    expect(h.error()).toBe(0);
+  });
+
   // [C1]
   it("completeness is derived once per framebuffer revision, not per draw", () => {
     const h = setup();
@@ -251,6 +273,82 @@ describe("draws that use no exactness feature do no extra work", () => {
 });
 
 describe("derived draw state follows every change it depends on", () => {
+  // [C2]
+  it("the alpha lock follows framebuffer binding, color mask and storage respecification", () => {
+    const h = setup();
+    h.renderbuffer(7, RGB16F);
+    h.renderbuffer(8, RGBA8);
+    h.framebuffer(9, 7);
+    h.framebuffer(10, 8);
+    const opaque = h.gl.storage.get(h.b.rbos.get(7)!)!, plain = h.gl.storage.get(h.b.rbos.get(8)!)!;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(plain.alpha).toBe(0.25);
+    h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(opaque.alpha).toBe(1);
+    // A guest color mask written while locked keeps alpha off natively.
+    h.send(O.OP_COLOR_MASK, [1, 0, 1, 1]);
+    expect(h.gl.mask).toEqual([true, false, true, false]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(opaque.alpha).toBe(1);
+    const mask = h.query(O.QOP_GET_INTEGERV, [0x0c23], 16);
+    expect([0, 1, 2, 3].map(i => mask.getInt32(i * 4, true))).toEqual([1, 0, 1, 1]);
+    h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 10]);
+    plain.alpha = 0;
+    h.send(O.OP_CLEAR_COLOR, [0, 0, 0, 0x3f000000]);
+    h.send(O.OP_CLEAR, [0x4000]);
+    expect(plain.alpha).toBe(0.5);
+    expect(h.gl.mask).toEqual([true, false, true, true]);
+    // Respecifying the attached storage with alpha releases the lock.
+    h.send(O.OP_BIND_FRAMEBUFFER, [FBO, 9]);
+    h.renderbuffer(7, RGBA16F);
+    const respecified = h.gl.storage.get(h.b.rbos.get(7)!)!;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(respecified.alpha).toBe(0.25);
+    // ...and making it opaque again restores it.
+    h.renderbuffer(7, RGB16F);
+    const again = h.gl.storage.get(h.b.rbos.get(7)!)!;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(again.alpha).toBe(1);
+    // Detaching the opaque storage releases the lock as well.
+    h.send(O.OP_FRAMEBUFFER_RENDERBUFFER, [FBO, COLOR0, RBO, 8]);
+    plain.alpha = 0;
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(plain.alpha).toBe(0.25);
+    expect(h.error()).toBe(0);
+  });
+
+  // [C2]
+  it("locks alpha for an EGLImage renderbuffer whose shared storage has no alpha (GBM XRGB8888)", () => {
+    const h = setup();
+    // A GBM XRGB8888 buffer: RGBA8 storage whose alpha is 1.0 and never written.
+    const bo = h.gl.createTexture();
+    h.gl.storage.set(bo, { format: RGBA8, alpha: 1, width: 4, height: 4 });
+    setOpaqueAlphaStorage(bo, true);
+    const token = registerImageSource(h.b, 41, bo, 4, 4);
+    h.send(O.OP_BIND_RENDERBUFFER, [RBO, 7]);
+    expect(h.query(O.QOP_IMAGE_TARGET, [2, 7, token]).getUint32(0, true)).toBe(0);
+    h.framebuffer(9, 7);
+    expect(h.gl.attachments.get(h.gl.draw!)).toBe(bo);
+    h.send(O.OP_CLEAR, [0x4000]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.storage.get(bo)!.alpha).toBe(1);
+    expect(h.error()).toBe(0);
+  });
+
+  // [C2]
+  it("an owner switch replays the locked native mask", () => {
+    const h = setup();
+    h.renderbuffer(7, RGB16F);
+    h.framebuffer(9, 7);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    const muxer = new GlMuxer(h.b.gl!);
+    muxer.switchTo(h.b);
+    expect(h.gl.mask).toEqual([true, true, true, false]);
+    h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
+    expect(h.gl.storage.get(h.b.rbos.get(7)!)!.alpha).toBe(1);
+  });
+
   // [C1]
   it("cached completeness follows attachment and storage changes", () => {
     const h = setup();

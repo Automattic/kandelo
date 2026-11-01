@@ -26,14 +26,14 @@ import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
-import { applyNativeChanges, nativeInverse, repairNativeState } from "./native-recovery.js";
+import { repairNativeState } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
 import { capabilityEnabled } from "./state-query.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import { expandedFloatFormat, expandedNative, expandedSourceBytes, expandRows } from "./luminance-float.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
-import { alphaLock, clearStorageAlphaToOne, drawTargetLocksAlpha, setOpaqueAlphaStorage } from "./opaque-alpha.js";
+import { clearStorageAlphaToOne, nativeColorMask, setOpaqueAlphaStorage, syncAlphaWriteLock } from "./opaque-alpha.js";
 import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFormat, renderbufferColorRenderable,
   renderbufferOpaqueAlpha,
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
@@ -602,15 +602,9 @@ function dispatch(
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR: {
       if (!requireGlesFramebufferComplete(b)) return;
-      const mask = v.getUint32(p, true);
       // RGB color storage kept as RGBA: the native alpha is never written.
-      if ((mask & 0x4000) && drawTargetLocksAlpha(b)) {
-        const lock = alphaLock(b);
-        applyNativeChanges(b, [lock.change, { apply: () => checkedGlCall(b, () => gl.clear(mask)), restore: nativeInverse(b) }],
-          { finalizer: nativeInverse(b, lock.restore) });
-        return;
-      }
-      gl.clear(mask);
+      syncAlphaWriteLock(b);
+      gl.clear(v.getUint32(p, true));
       return;
     }
     case O.OP_CLEAR_COLOR: {
@@ -710,7 +704,7 @@ function dispatch(
         v.getUint32(p + 8, true) !== 0,
         v.getUint32(p + 12, true) !== 0,
       ];
-      gl.colorMask(...b.shadow.colorMask);
+      gl.colorMask(...nativeColorMask(b.shadow));
       return;
     case O.OP_DEPTH_MASK:
       b.shadow.depthMask = v.getUint32(p, true) !== 0;

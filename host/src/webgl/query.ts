@@ -755,6 +755,9 @@ function queryParameter(b: GlBinding, pname: number): unknown {
   if (pname === 0x80c8) return b.shadow.blendFunc.dstRGB;
   if (pname === 0x80cb) return b.shadow.blendFunc.srcA;
   if (pname === 0x80ca) return b.shadow.blendFunc.dstA;
+  // The native mask holds alpha off for RGB storage kept as RGBA
+  // (opaque-alpha.ts); ES 2.0 reports the guest's COLOR_WRITEMASK.
+  if (pname === 0x0c23) return [...b.shadow.colorMask];
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING

@@ -8,6 +8,7 @@ import { nativeTextureBinding } from "./texture-bindings.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { nativeDepthRange } from "./reversed-depth.js";
 import { nativeBlendFunc } from "./blend-constant.js";
+import { nativeColorMask } from "./opaque-alpha.js";
 import {
   GL_BLEND,
   GL_BACK,
@@ -108,7 +109,8 @@ export class GlMuxer {
       if (s.sampleAlphaToCoverageEnabled) gl.enable(0x809e); else gl.disable(0x809e);
       gl.bindBuffer(0x8892, s.arrayBuffer);
       gl.bindRenderbuffer(0x8d41, s.renderbuffer ? renderbufferNative(target,s.renderbuffer) : null);
-      gl.colorMask(...s.colorMask);
+      // With the draw framebuffer's alpha lock (opaque-alpha.ts).
+      gl.colorMask(...nativeColorMask(s));
 
       if (s.ditherEnabled) gl.enable(0x0bd0); else gl.disable(0x0bd0);
       if (s.depthTestEnabled) gl.enable(GL_DEPTH_TEST); else gl.disable(GL_DEPTH_TEST);

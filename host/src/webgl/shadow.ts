@@ -68,6 +68,13 @@ export interface GlShadowState {
 
   unpackAlignment: number;
   packAlignment: number;
+
+  /** Derived from guest state, never reported: whether the native alpha
+   * write is held off because the draw framebuffer's color storage has no
+   * alpha (opaque-alpha.ts), with the framebuffer and inputs revision it was
+   * derived for. The native COLOR_WRITEMASK is the guest mask with alpha
+   * cleared while `locked`. */
+  alphaWriteLock: { fbo: WebGLFramebuffer | null | undefined; revision: number; locked: boolean };
 }
 
 export interface GlStencilFaceState {
@@ -139,6 +146,7 @@ export function defaultShadow(): GlShadowState {
     pixelStore: new Map(EXTRA_PIXEL_STORE_DEFAULTS),
     unpackAlignment: 4,
     packAlignment: 4,
+    alphaWriteLock: { fbo: undefined, revision: -1, locked: false },
   };
 }
 

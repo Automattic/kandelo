@@ -9,8 +9,9 @@ import { isOpaqueAlphaStorage } from "../src/webgl/opaque-alpha.js";
  * RGB color formats on RGBA storage (opaque-alpha.ts). WebGL 2 has no
  * renderable RGB16F, so a GL_EXT_color_buffer_half_float RGB16F_EXT
  * renderbuffer is stored as RGBA16F whose alpha starts at 1.0 and is never
- * written: draws and clears into it run with the native alpha write mask off,
- * while the guest's logical COLOR_WRITEMASK is unchanged. Reads, copies and
+ * written: while it is the draw framebuffer's color storage the native alpha
+ * write mask is held off, while the guest's logical COLOR_WRITEMASK is
+ * unchanged. Reads, copies and
  * DST_ALPHA blending therefore observe alpha = 1, as for a format without
  * alpha, and the framebuffer is COMPLETE.
  *
@@ -159,13 +160,19 @@ describe("RGB16F_EXT renderbuffers on RGBA16F storage", () => {
     fake.calls = [];
     send(O.OP_CLEAR, [0x4000]);
     expect(storage.alpha).toBe(1);
-    expect(fake.calls).toEqual([["colorMask", true, true, true, false], ["clear", 0x4000], ["colorMask", true, true, true, true]]);
+    // The lock is native state of this framebuffer binding, written once.
+    expect(fake.calls).toEqual([["colorMask", true, true, true, false], ["clear", 0x4000]]);
     fake.calls = [];
     send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
     expect(storage.alpha).toBe(1);
-    expect(fake.calls).toEqual([["colorMask", true, true, true, false], ["drawArrays"], ["colorMask", true, true, true, true]]);
+    expect(fake.calls).toEqual([["drawArrays"]]);
     expect(b.shadow.colorMask).toEqual([true, true, true, true]);
-    expect(fake.mask).toEqual([true, true, true, true]);
+    expect(fake.mask).toEqual([true, true, true, false]);
+    // Leaving the framebuffer restores the guest's mask natively.
+    send(O.OP_BIND_FRAMEBUFFER, [FBO, 0]);
+    fake.calls = [];
+    send(O.OP_CLEAR, [0x4000]);
+    expect(fake.calls).toEqual([["colorMask", true, true, true, true], ["clear", 0x4000]]);
     expect(b.errors).toEqual([]);
   });
 

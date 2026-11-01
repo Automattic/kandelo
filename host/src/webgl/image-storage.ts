@@ -179,6 +179,14 @@ export function imageAttachmentCall(b: GlBinding, target: number, point: number,
   const native = (view?.native as WebGLRenderbuffer | undefined) ?? image.object;
   return ["framebufferRenderbuffer", target, point, RBO, native];
 }
+/** The native storage an attachment of `image` references: the canonical
+ * EGLImage storage for a sibling view (what imageAttachmentCall attaches),
+ * otherwise the object's own native storage. */
+export function attachedNativeStorage(b: GlBinding, image: GlImageAttachment): object | null {
+  const view = image.kind === "texture" ? b.textureViews.get(image.object) : b.renderbufferViews.get(image.object);
+  if (view?.source) return view.source.renderbuffer ?? view.source.texture;
+  return view?.native ?? image.object;
+}
 /** Retarget all containers before publishing storage. Other contexts' bindings
  * remain logical and resolve the current view on their next muxer selection. */
 function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRenderbuffer, old: GlTextureView | GlRenderbufferView, next: GlTextureView | GlRenderbufferView): boolean {
