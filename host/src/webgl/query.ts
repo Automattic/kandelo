@@ -1,6 +1,7 @@
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
+import { glesFramebufferStatus, requireFramebufferDimensions } from "./image-sizes.js";
 import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import {
@@ -643,8 +644,10 @@ export function runGlQuery(
       }
       const drawable = b.executionDrawable?.drawable ?? b.currentDrawable;
       const surface = target === 0x8ca8 ? drawable?.readSurfaceId : drawable?.drawSurfaceId;
-      const status = surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
+      let status = surface === 0 && isDefaultFramebuffer(b, boundFramebuffer(b, target))
         ? GL_FRAMEBUFFER_UNDEFINED : gl.checkFramebufferStatus(target);
+      // WebGL 2 applies ES 3.0 completeness, which has no dimensions rule.
+      if (validFramebufferTarget(target)) status = glesFramebufferStatus(b, boundFramebuffer(b, target), status);
       outDv.setUint32(0, status, true);
       return 4;
     }
@@ -823,6 +826,7 @@ function normalizeNumericValues(value: unknown, pname: number): number[] {
 
 function readNativePixels(b: GlBinding, input: Uint8Array, out: Uint8Array): number {
       if (input.byteLength < 24) return -22;
+      if (!requireFramebufferDimensions(b, true)) return -22;
       const inDv = new DataView(input.buffer,input.byteOffset,input.byteLength);
       const gl = b.gl!;
       const x = inDv.getInt32(0, true);

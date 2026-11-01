@@ -2,6 +2,7 @@ import { applyNativeChanges, invokeNativeCall, nativeInverse, reserveNativeRetir
 import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { recordRenderbufferSize, recordTextureReplacement } from "./image-sizes.js";
 /** Private source handles never enter the public GLuint texture namespace. */
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
 export type GlImageSource = {
@@ -328,11 +329,17 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
       return false;
     let installed = false;
     try {
-      if (replaceTextureView(b, object as WebGLTexture, view)) { transferCandidate(view); installed = true; return true; }
+      if (replaceTextureView(b, object as WebGLTexture, view)) {
+        transferCandidate(view); installed = true;
+        recordTextureReplacement(object as WebGLTexture, source.width, source.height);
+        return true;
+      }
       return false;
     } finally { if (!installed && view.candidate) retireNativeRetirement(view.candidate); }
   }
-  return replaceRenderbufferView(b, object as WebGLRenderbuffer, { native: renderbufferNative(b, object as WebGLRenderbuffer), source });
+  if (!replaceRenderbufferView(b, object as WebGLRenderbuffer, { native: renderbufferNative(b, object as WebGLRenderbuffer), source })) return false;
+  recordRenderbufferSize(object as WebGLRenderbuffer, source.width, source.height);
+  return true;
 }
 export function imageSourceToken(b: GlBinding, kind: number, name: number): number | null {
   if (kind === 1) {

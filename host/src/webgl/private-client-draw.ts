@@ -6,6 +6,7 @@ import { prepareImageDraw } from "./image-storage.js";
 import { packedVertexLayout } from "./vertex-data.js";
 import { checkedGlSequence, recordGlError } from "./program-objects.js";
 import { issueGlesDraw } from "./draw-state.js";
+import { requireFramebufferDimensions } from "./image-sizes.js";
 import { INLINE_DRAW_HEADER_BYTES, INLINE_DRAW_ATTRIBUTE_BYTES, INLINE_DRAW_MAX_BYTES, INLINE_DRAW_MAX_ATTRIBUTES } from "./ops.js";
 import {
   applyNativeChanges, nativeInverse, repairNativeState,
@@ -85,7 +86,7 @@ export function drawPrivateClientArrays(b: GlBinding, v: DataView): PrivateClien
         recordGlError(b,0x502); return result;
       }
     }
-    if (!validateDrawFramebufferWithoutProgram(b)) return result;
+    if (!requireFramebufferDimensions(b) || !validateDrawFramebufferWithoutProgram(b)) return result;
     if (!repairNativeState(gl) || !prepareBufferDraw(b,false) || !prepareImageDraw(b)) return result;
 
     // Copy only the referenced packed elements. These bounded private bytes are

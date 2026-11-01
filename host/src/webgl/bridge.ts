@@ -33,6 +33,7 @@ import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bi
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource } from "./shader-source.js";
 import { issueGlesDraw } from "./draw-state.js";
+import { recordGeneratedMipmaps, recordRenderbufferSize, recordTextureImage, requireFramebufferDimensions } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
@@ -549,6 +550,7 @@ function dispatch(
   switch (op) {
     // ----- state ----------------------------------------------------------
     case O.OP_CLEAR:
+      if (!requireFramebufferDimensions(b)) return;
       gl.clear(v.getUint32(p, true));
       return;
     case O.OP_CLEAR_COLOR:
@@ -834,10 +836,12 @@ function dispatch(
       const data = dataLen === 0
         ? null
         : copyPixels(v, p + 36, dataLen, type);
-      return imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
+      const accepted = imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.texImage2D(
         target, level, normalizeTextureInternalFormat(internalFormat, format, type), width, height, border,
         format, type, data,
       ),v.getInt32(p+4,true)!==0);
+      if (accepted) recordTextureImage(b,target,level,width,height);
+      return accepted;
     }
     // Payload: u32 target, i32 level, i32 xoff, i32 yoff, i32 width,
     //          i32 height, u32 format, u32 type,
@@ -904,12 +908,13 @@ function dispatch(
       return;
     }
     case O.OP_GENERATE_MIPMAP:
-      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.generateMipmap(v.getUint32(p,true)));
+      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.generateMipmap(v.getUint32(p,true))))
+        recordGeneratedMipmaps(b,v.getUint32(p,true));
       return;
     case O.OP_COMPRESSED_TEX_IMAGE_2D: {
       const dataLen = v.getUint32(p + 24, true);
       const data = copyBytes(v, p + 28, dataLen);
-      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.compressedTexImage2D(
+      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.compressedTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -917,7 +922,8 @@ function dispatch(
         v.getInt32(p + 16, true),
         v.getInt32(p + 20, true),
         data,
-      ),v.getInt32(p+4,true)!==0);
+      ),v.getInt32(p+4,true)!==0))
+        recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+12,true),v.getInt32(p+16,true));
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
@@ -936,7 +942,8 @@ function dispatch(
       return;
     }
     case O.OP_COPY_TEX_IMAGE_2D:
-      imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.copyTexImage2D(
+      if (!requireFramebufferDimensions(b,true)) return;
+      if (imageTextureOperation(b,v.getUint32(p,true),true,()=>gl.copyTexImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
         v.getUint32(p + 8, true),
@@ -945,9 +952,11 @@ function dispatch(
         v.getInt32(p + 20, true),
         v.getInt32(p + 24, true),
         v.getInt32(p + 28, true),
-      ),v.getInt32(p+4,true)!==0);
+      ),v.getInt32(p+4,true)!==0))
+        recordTextureImage(b,v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+20,true),v.getInt32(p+24,true));
       return;
     case O.OP_COPY_TEX_SUB_IMAGE_2D:
+      if (!requireFramebufferDimensions(b,true)) return;
       imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1229,7 +1238,7 @@ function dispatch(
       if (b.savedClientArrayBuffer !== undefined) { recordGlError(b,0x502); return; }
       if (v.getUint32(p,true) > 6) { recordGlError(b,0x500); return; }
       if (v.getInt32(p+4,true) < 0 || v.getInt32(p+8,true) < 0) { recordGlError(b,0x501); return; }
-      if (!validateDrawFramebufferWithoutProgram(b)) return;
+      if (!requireFramebufferDimensions(b) || !validateDrawFramebufferWithoutProgram(b)) return;
       if (!prepareBufferDraw(b,false)||!prepareImageDraw(b)) return;
       issueGlesDraw(b,{empty:v.getInt32(p+8,true) === 0,
         issue:() => gl.drawArrays(v.getUint32(p,true),v.getInt32(p+4,true),v.getInt32(p+8,true))});
@@ -1318,13 +1327,16 @@ function dispatch(
       return;
     }
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
-    case O.OP_RENDERBUFFER_STORAGE:
-      return imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
+    case O.OP_RENDERBUFFER_STORAGE: {
+      const accepted = imageRenderbufferStorage(b,()=>gl.renderbufferStorage(
         v.getUint32(p, true),
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
         v.getInt32(p + 12, true),
       ));
+      if (accepted) recordRenderbufferSize(b.shadow.renderbuffer,v.getInt32(p+8,true),v.getInt32(p+12,true));
+      return accepted;
+    }
     // Payload: u32 target, u32 attachment, u32 rbtarget, u32 rboName
     case O.OP_FRAMEBUFFER_RENDERBUFFER:
       attachImageObject(b,2,v.getUint32(p,true),v.getUint32(p+4,true),v.getUint32(p+8,true),v.getUint32(p+12,true),0);

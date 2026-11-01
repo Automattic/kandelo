@@ -18,6 +18,7 @@
  */
 import { importImageStorage, registerImageSource } from "./image-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
+import { recordTextureReplacement } from "./image-sizes.js";
 import { applyNativeChanges, nativeInverse, repairNativeState, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement } from "./native-recovery.js";
 import type { GlBinding } from "./registry.js";
 
@@ -160,6 +161,7 @@ export function bindForeignTexture(
     if (!accepted) return -5;
     if (candidate) transferNativeRetirement(candidate);
     published = true;
+    if (realloc) recordTextureReplacement(entry.tex, dims.w, dims.h);
     entry.w = dims.w; entry.h = dims.h; return entry.texId;
   } catch { recordGlError(b,0x505); return -5; }
   finally {
