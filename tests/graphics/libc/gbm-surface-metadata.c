@@ -21,6 +21,16 @@ int _wpk_gbm_device_metadata(const void *, int *, uint64_t *);
 static int device_fd;
 static unsigned created, closed, fail_allocation;
 static uint32_t imported_handle;
+static int imported_fd = -1;
+/* Import validates geometry against the dma-buf size, which PRIME
+ * lseek(SEEK_END) reports; model the descriptor as a file of that size. */
+static int prime_descriptor(off_t size) {
+    FILE *file = tmpfile(); assert(file);
+    int fd = dup(fileno(file)); assert(fd >= 0);
+    fclose(file);
+    assert(!ftruncate(fd, size));
+    return fd;
+}
 static int fail_unmap, gpu_enabled;
 static unsigned unmap_attempts;
 static void same_device_file(int fd) {
@@ -56,7 +66,7 @@ int drmIoctl(int fd, unsigned long request, void *data) {
     }
     if (request == DRM_IOCTL_PRIME_FD_TO_HANDLE && imported_handle) {
         struct drm_prime_handle *prime = data;
-        assert(prime->fd == 42);
+        assert(prime->fd == imported_fd);
         prime->handle = imported_handle;
         return 0;
     }
@@ -193,7 +203,8 @@ static void imported_handle_lifetime(struct gbm_device *device) {
     struct gbm_bo *source = gbm_bo_create(device, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
     assert(source);
     imported_handle = gbm_bo_get_handle(source).u32;
-    struct gbm_import_fd_data data = {.fd = 42, .width = 4, .height = 3,
+    imported_fd = prime_descriptor(48);
+    struct gbm_import_fd_data data = {.fd = imported_fd, .width = 4, .height = 3,
         .stride = gbm_bo_get_stride(source), .format = GBM_FORMAT_ABGR8888};
     struct gbm_bo *first = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, 0);
     struct gbm_bo *second = gbm_bo_import(device, GBM_BO_IMPORT_FD, &data, 0);
@@ -202,6 +213,7 @@ static void imported_handle_lifetime(struct gbm_device *device) {
     gbm_bo_destroy(source); assert(closed == before);
     gbm_bo_destroy(second); assert(closed == before + 1);
     imported_handle = 0;
+    assert(!close(imported_fd)); imported_fd = -1;
 }
 static void aliased_device_handle_lifetime(void) {
     graphics_gbm_fail_file_query = 1;
@@ -216,7 +228,8 @@ static void aliased_device_handle_lifetime(void) {
         struct gbm_bo *source = gbm_bo_create(a, 4, 3, GBM_FORMAT_ABGR8888, GBM_BO_USE_WRITE);
         assert(source);
         imported_handle = gbm_bo_get_handle(source).u32;
-        struct gbm_import_fd_data data = {.fd = 42, .width = 4, .height = 3,
+        imported_fd = prime_descriptor(48);
+        struct gbm_import_fd_data data = {.fd = imported_fd, .width = 4, .height = 3,
             .stride = gbm_bo_get_stride(source), .format = GBM_FORMAT_ABGR8888};
         struct gbm_bo *peer = gbm_bo_import(b, GBM_BO_IMPORT_FD, &data, 0); assert(peer);
         gbm_device_destroy(a); gbm_device_destroy(b); assert(!close(input));
@@ -227,6 +240,7 @@ static void aliased_device_handle_lifetime(void) {
         int prime = gbm_bo_get_fd(last); assert(prime >= 0); assert(!close(prime));
         gbm_bo_destroy(last); assert(closed == before + 1);
         imported_handle = 0;
+        assert(!close(imported_fd)); imported_fd = -1;
     }
 }
 static void public_format_queries(struct gbm_device *device) {

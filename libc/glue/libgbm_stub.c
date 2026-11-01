@@ -15,7 +15,9 @@
  *                          (LINEAR or implicit modifiers only)
  *   - gbm_bo_destroy
  *   - gbm_bo_get_fd        (PRIME export → handle-to-fd)
- *   - gbm_bo_import        (GBM_BO_IMPORT_FD: fd-to-handle)
+ *   - gbm_bo_import        (GBM_BO_IMPORT_FD, and GBM_BO_IMPORT_FD_MODIFIER
+ *                           for one linear plane: fd-to-handle, bounded by
+ *                           the dma-buf's real size)
  *   - gbm_bo_map / gbm_bo_unmap   (single-plane mmap)
  *   - gbm_bo_write         (map + memcpy)
  *   - gbm_bo_set/get_user_data (opaque pointer with destroy cb)
@@ -184,7 +186,8 @@ struct gbm_bo {
     uint32_t stride;          /* pitch in bytes */
     uint32_t format;          /* fourcc */
     uint32_t bpp;             /* bits per pixel */
-    uint64_t size;            /* total bytes (pitch * height) */
+    uint64_t size;            /* bytes of the plane view (pitch * height) */
+    uint32_t offset;          /* plane start within the dma-buf (imports only) */
     uint64_t modifier;        /* DRM_FORMAT_MOD_LINEAR for v1 */
     int is_gpu;               /* 1 = GPU-tier (unmappable WebGLTexture bo) */
     struct gbm_mapping *mappings;
@@ -272,6 +275,12 @@ static uint32_t format_bpp(uint32_t fourcc) {
         return 0;
     }
 }
+
+/* Usages Kandelo can provide. Protected content, front-buffer rendering and
+ * fixed-rate compression have no implementation here, so they fail with
+ * EINVAL like unknown bits instead of being granted in name only. */
+#define WPK_GBM_SUPPORTED_USAGE (GBM_BO_USE_SCANOUT | GBM_BO_USE_CURSOR | \
+    GBM_BO_USE_RENDERING | GBM_BO_USE_WRITE | GBM_BO_USE_LINEAR)
 
 static uint32_t canonical_format(uint32_t format) {
     if (format == GBM_BO_FORMAT_XRGB8888) return GBM_FORMAT_XRGB8888;
@@ -512,23 +521,26 @@ struct gbm_bo *gbm_bo_create_with_modifiers(struct gbm_device *gbm,
                                          GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
 }
 
-struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
-                             void *buffer, uint32_t flags) {
-    (void) flags;
-    if (!gbm || !buffer || type != GBM_BO_IMPORT_FD) {
-        /* GBM_BO_IMPORT_WL_BUFFER / EGL_IMAGE / FD_MODIFIER not
-         * supported in v1 — the kernel-side handler covers
-         * single-fd PRIME only (Phase A7). */
-        errno = EINVAL;
-        return NULL;
-    }
-    struct gbm_import_fd_data *d = (struct gbm_import_fd_data *) buffer;
-    if (d->fd < 0 || !d->width || !d->height) {
-        errno = EINVAL;
-        return NULL;
-    }
-    uint32_t bpp = format_bpp(d->format);
-    if (!bpp) {
+/* Caller holds handle_mutex. PRIME reimport returns a GEM name a live peer
+ * may already own on this DRM file; only close a name nobody else holds. */
+static void release_handle_locked(struct gbm_device *dev, uint32_t handle) {
+    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next)
+        if (peer->dev->file == dev->file && peer->handle == handle) return;
+    drmCloseBufferHandle(dev->fd, handle);
+}
+
+/* Import one linear plane of a dma-buf. Like a Mesa driver, the caller's
+ * geometry is checked against the real object: the stride must hold a row
+ * and offset + stride * height must fit in the dma-buf, whose size PRIME
+ * lseek(SEEK_END) reports (Linux dma_buf_llseek). The tier comes from the
+ * kernel too: MAP_DUMB fails with EINVAL only for an unmappable GPU-tier BO,
+ * which is then marked exactly as a native GPU allocation is. */
+static struct gbm_bo *import_plane(struct gbm_device *gbm, int fd,
+                                   uint32_t width, uint32_t height, uint32_t format,
+                                   uint32_t stride, uint32_t offset, uint32_t usage) {
+    uint32_t bpp = format_bpp(format);
+    if (!gbm || fd < 0 || !width || !height || !bpp || (usage & ~WPK_GBM_SUPPORTED_USAGE) ||
+        (uint64_t)width * (bpp / 8) > stride) {
         errno = EINVAL;
         return NULL;
     }
@@ -538,7 +550,7 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
      * a cached handle still owned by another public BO. */
     struct gbm_bo *bo = calloc(1, sizeof *bo);
     if (!bo) { release_device(gbm); errno = ENOMEM; return NULL; }
-    struct drm_prime_handle req = {.fd = d->fd};
+    struct drm_prime_handle req = {.fd = fd};
     pthread_mutex_lock(&handle_mutex);
     if (drmIoctl(gbm->fd, DRM_IOCTL_PRIME_FD_TO_HANDLE, &req) < 0) {
         int save = errno;
@@ -548,19 +560,73 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
         errno = save;
         return NULL;
     }
+    /* Only a proven dma-buf is seeked, so no ordinary file offset moves. */
+    int error = 0;
+    off_t real_size = lseek(fd, 0, SEEK_END);
+    if (real_size < 0 || (uint64_t)stride * height + offset > (uint64_t)real_size) {
+        error = EINVAL;
+    } else {
+        struct drm_mode_map_dumb probe = {.handle = req.handle};
+        if (drmIoctl(gbm->fd, DRM_IOCTL_MODE_MAP_DUMB, &probe) == 0) bo->is_gpu = 0;
+        else if (errno == EINVAL) bo->is_gpu = 1;
+        else error = errno;
+        /* gbm_bo_write needs CPU storage a GPU-tier BO does not have. */
+        if (!error && bo->is_gpu && (usage & GBM_BO_USE_WRITE)) error = EINVAL;
+    }
+    if (error) {
+        release_handle_locked(gbm, req.handle);
+        pthread_mutex_unlock(&handle_mutex);
+        free(bo);
+        release_device(gbm);
+        errno = error;
+        return NULL;
+    }
     bo->dev      = gbm;
     bo->handle   = req.handle;
-    bo->width    = d->width;
-    bo->height   = d->height;
-    bo->stride   = d->stride;
-    bo->size     = (uint64_t) d->stride * d->height;
-    bo->format   = d->format;
+    bo->width    = width;
+    bo->height   = height;
+    bo->stride   = stride;
+    bo->size     = (uint64_t) stride * height;
+    bo->offset   = offset;
+    bo->format   = format;
     bo->bpp      = bpp;
     bo->modifier = DRM_FORMAT_MOD_LINEAR;
     bo->handle_next = live_bos;
     live_bos = bo;
     pthread_mutex_unlock(&handle_mutex);
     return bo;
+}
+
+struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
+                             void *buffer, uint32_t flags) {
+    if (!gbm || !buffer) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (type == GBM_BO_IMPORT_FD) {
+        struct gbm_import_fd_data *d = (struct gbm_import_fd_data *) buffer;
+        return import_plane(gbm, d->fd, d->width, d->height, d->format,
+                            d->stride, 0, flags);
+    }
+    if (type == GBM_BO_IMPORT_FD_MODIFIER) {
+        struct gbm_import_fd_modifier_data *d =
+            (struct gbm_import_fd_modifier_data *) buffer;
+        /* Every Kandelo format has one plane and every BO is linear, so
+         * only one fd with an explicit LINEAR or an implicit (INVALID)
+         * layout can describe a real buffer. Multi-plane and tiled
+         * imports are refused rather than reinterpreted as linear. */
+        if (d->num_fds != 1 || d->strides[0] <= 0 || d->offsets[0] < 0 ||
+            (d->modifier != DRM_FORMAT_MOD_LINEAR && d->modifier != DRM_FORMAT_MOD_INVALID)) {
+            errno = EINVAL;
+            return NULL;
+        }
+        return import_plane(gbm, d->fds[0], d->width, d->height, d->format,
+                            (uint32_t)d->strides[0], (uint32_t)d->offsets[0], flags);
+    }
+    /* GBM_BO_IMPORT_WL_BUFFER / EGL_IMAGE need a Wayland or EGL image
+     * backend that this GBM does not have. */
+    errno = EINVAL;
+    return NULL;
 }
 
 int gbm_bo_get_fd(struct gbm_bo *bo) {
@@ -590,14 +656,17 @@ int gbm_bo_get_fd_for_plane(struct gbm_bo *bo, int plane) {
  * CPU views alias the same bytes until the final view is released. */
 static int map_bo_locked(struct gbm_bo *bo) {
     if (bo->map_addr) return 0;
-    if (bo->size > SIZE_MAX) { errno = EOVERFLOW; return -1; }
+    /* MAP_DUMB maps from the object's start; an imported plane begins at
+     * its offset, so the mapping covers the offset and the plane view. */
+    uint64_t length = bo->size + bo->offset;
+    if (length > SIZE_MAX) { errno = EOVERFLOW; return -1; }
     struct drm_mode_map_dumb req = {.handle = bo->handle};
     if (drmIoctl(bo->dev->fd, DRM_IOCTL_MODE_MAP_DUMB, &req) < 0) return -1;
-    void *addr = mmap(NULL, (size_t)bo->size, PROT_READ | PROT_WRITE,
+    void *addr = mmap(NULL, (size_t)length, PROT_READ | PROT_WRITE,
         MAP_SHARED, bo->dev->fd, (off_t)req.offset);
     if (addr == MAP_FAILED) return -1;
     bo->map_addr = addr;
-    bo->map_len = (size_t)bo->size;
+    bo->map_len = (size_t)length;
     return 0;
 }
 
@@ -642,7 +711,8 @@ void *gbm_bo_map(struct gbm_bo *bo,
             free(retired);
         } else pending = &(*pending)->next;
     }
-    void *address = (char *)bo->map_addr + (size_t)((uint64_t)y * bo->stride + x_bytes);
+    void *address = (char *)bo->map_addr +
+        (size_t)(bo->offset + (uint64_t)y * bo->stride + x_bytes);
     *stride = bo->stride;
     *map_data = (void *)mapping->token;
     pthread_mutex_unlock(&mapping_mutex);
@@ -691,14 +761,7 @@ void gbm_bo_destroy(struct gbm_bo *bo) {
     struct gbm_bo **link = &live_bos;
     while (*link && *link != bo) link = &(*link)->handle_next;
     if (*link) *link = bo->handle_next;
-    int retained = 0;
-    for (struct gbm_bo *peer = live_bos; peer; peer = peer->handle_next) {
-        if (peer->dev->file == bo->dev->file && peer->handle == bo->handle) {
-            retained = 1;
-            break;
-        }
-    }
-    if (!retained) drmCloseBufferHandle(bo->dev->fd, bo->handle);
+    release_handle_locked(bo->dev, bo->handle);
     pthread_mutex_unlock(&handle_mutex);
     release_device(bo->dev);
     free(bo);
@@ -784,8 +847,7 @@ uint32_t gbm_bo_get_stride_for_plane(struct gbm_bo *bo, int plane) {
 }
 
 uint32_t gbm_bo_get_offset(struct gbm_bo *bo, int plane) {
-    (void) bo; (void) plane;
-    return 0;
+    return plane == 0 ? bo->offset : 0;
 }
 
 int gbm_device_is_format_supported(struct gbm_device *gbm,
