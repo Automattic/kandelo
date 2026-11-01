@@ -466,22 +466,23 @@ function validPayload(op: number, v: DataView): boolean {
   }
 }
 
-/** Allocation-only checked requests prefix an unchanged command payload with
- * its opcode. Validate complete spans before replies or native side effects. */
+/** Checked storage requests prefix an unchanged command payload with its opcode.
+ * Subimages admit only destination metadata here; pixel rows follow separately.
+ * Validate complete spans before replies or native side effects. */
 export function validImageStorageRequest(input: Uint8Array): boolean {
   if (input.byteLength < 4) return false;
   const view = new DataView(input.buffer, input.byteOffset, input.byteLength), op = view.getUint32(0, true);
-  if (op === O.OP_TEX_IMAGE_2D) {
+  if (op === O.OP_TEX_IMAGE_2D || op === O.OP_TEX_SUB_IMAGE_2D) {
     if (input.byteLength !== 40 || view.getUint32(36, true) !== 0) return false;
   } else if (op === O.OP_RENDERBUFFER_STORAGE) {
     if (input.byteLength !== 20) return false;
   } else return false;
   return validPayload(op, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4));
 }
-/** Execute an allocation request after validImageStorageRequest succeeds. */
+/** Execute storage allocation or destination admission after span validation. */
 export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boolean {
   const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
-  return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true)) === true;
+  return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true), true) === true;
 }
 
 function dispatch(
@@ -490,6 +491,7 @@ function dispatch(
   v: DataView,
   p: number,
   op: number,
+  destinationOnly = false,
 ): boolean | void {
   if (uniformUploadOp(op)) {
     runUniformUpload(b,op,v,(original,payload)=>{dispatch(gl,b,payload,0,original);});
@@ -822,10 +824,32 @@ function dispatch(
       const type = normalizeTextureType(v.getUint32(p + 28, true));
       const dataLen = v.getUint32(p + 32, true);
       const data = copyPixels(v, p + 36, dataLen, type);
-      imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
+      if (destinationOnly) {
+        // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.
+        // A zero-area native update at the checked endpoint validates the same
+        // destination without writing texels or reading a caller pixel pointer.
+        // Source layout is validated when the actual packed rows are submitted.
+        const endX = xoff + width, endY = yoff + height;
+        if (xoff < 0 || yoff < 0 || width < 0 || height < 0 ||
+            endX > 0x7fff_ffff || endY > 0x7fff_ffff) {
+          recordGlError(b,0x501); return false;
+        }
+        if ((type === 0x8363 && format !== 0x1907) ||
+            ((type === 0x8033 || type === 0x8034) && format !== 0x1908)) {
+          recordGlError(b,0x502); return false;
+        }
+        let unpackBuffer: WebGLBuffer | null = null;
+        if (!checkedGlCall(b,()=>{ unpackBuffer=gl.getParameter(0x88ef); })) return false;
+        return imageTextureOperation(b,target,false,()=>{
+          // WebGL2 requires the offset overload exactly when a real unpack
+          // buffer is bound. Neither branch changes that binding or reads data.
+          if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,format,type,0);
+          else gl.texSubImage2D(target,level,endX,endY,0,0,format,type,data);
+        });
+      }
+      return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
         target, level, xoff, yoff, width, height, format, type, data,
       ));
-      return;
     }
     case O.OP_TEX_PARAMETERI:
       gl.texParameteri(

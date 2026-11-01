@@ -2040,6 +2040,12 @@ static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
     }
 }
 
+static int packed_pixel_format_mismatch(GLenum format, GLenum type) {
+    return (type == GL_UNSIGNED_SHORT_5_6_5 && format != GL_RGB) ||
+           ((type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_5_5_5_1) &&
+            format != GL_RGBA);
+}
+
 /* Row stride under the current GL_UNPACK_ALIGNMENT for rows of
  * `pixels` pixels. */
 static uint32_t unpack_row_stride(GLsizei pixels, uint32_t bpp) {
@@ -2154,6 +2160,16 @@ void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
                      GLsizei width, GLsizei height,
                      GLenum format, GLenum type, const void *data) {
     if (!_wpk_gl_current_encoder()) return;
+    /* Validate the original pair before BGRA normalization or pixel access. */
+    if (packed_pixel_format_mismatch(format, type)) {
+        raise_client_error(GL_INVALID_OPERATION);
+        return;
+    }
+    uint32_t words[10] = {OP_TEX_SUB_IMAGE_2D, target, (uint32_t)level,
+                          (uint32_t)xoff, (uint32_t)yoff, (uint32_t)width,
+                          (uint32_t)height, host_pixel_format(format), type, 0};
+    if (checked_mutation_query(QOP_IMAGE_STORAGE, words, 10) != 1)
+        return;
     emit_tex_sub_image_2d(target, level, xoff, yoff, width, height,
                           format, type, data);
 }
@@ -2540,9 +2556,7 @@ void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
     }
     /* GLES 2.0 sections 3.6.2/4.3.1 require INVALID_OPERATION for these
      * packed-component mismatches, independently of destination storage. */
-    if ((type == GL_UNSIGNED_SHORT_5_6_5 && format != GL_RGB) ||
-        ((type == GL_UNSIGNED_SHORT_4_4_4_4 || type == GL_UNSIGNED_SHORT_5_5_5_1) &&
-         format != GL_RGBA)) {
+    if (packed_pixel_format_mismatch(format, type)) {
         raise_client_error(GL_INVALID_OPERATION);
         return;
     }

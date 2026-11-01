@@ -1338,6 +1338,10 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                     redefined_texture = bound_texture;
                     if (input[1] == GL_TEXTURE_2D)
                         orphan_image_source(slot, 1, slot->texture_2d[slot->texture_active]);
+                } else if (input[0] == OP_TEX_SUB_IMAGE_2D) {
+                    assert(q->in_buf_len == 40 && input[9] == 0);
+                    /* Admission checks the existing destination without
+                     * orphaning image siblings or publishing pixel rows. */
                 } else {
                     assert(input[0] == OP_RENDERBUFFER_STORAGE && q->in_buf_len == 20);
                     orphan_image_source(slot, 2, slot->renderbuffer_binding);
@@ -4842,6 +4846,29 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy, ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
         puts("PASS encoder-generation-counts"); return 0;
+    }
+    if (!strncmp(argv[1], "encoder-subimage-", 17)) {
+        const unsigned queries = image_mutation_queries, updates = image_pixel_updates;
+        if (!strcmp(argv[1], "encoder-subimage-null")) {
+            glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,NULL);
+            assert(image_mutation_queries == queries + 1 && image_pixel_updates == updates);
+        } else if (!strcmp(argv[1], "encoder-subimage-zero")) {
+            glTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,1,GL_RGBA,GL_UNSIGNED_BYTE,(void *)(uintptr_t)1);
+            assert(image_mutation_queries == queries + 1 && image_pixel_updates == updates);
+        } else if (!strcmp(argv[1], "encoder-subimage-reject")) {
+            fail_image_storage = 1;
+            glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,GL_RGBA,GL_UNSIGNED_BYTE,(void *)(uintptr_t)1);
+            assert(image_mutation_queries == queries + 1 && image_pixel_updates == updates);
+            assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        } else {
+            assert(!strcmp(argv[1], "encoder-subimage-packed"));
+            glTexSubImage2D(GL_TEXTURE_2D,0,0,0,1,1,GL_BGRA_EXT,GL_UNSIGNED_SHORT_4_4_4_4,(void *)(uintptr_t)1);
+            assert(image_mutation_queries == queries && image_pixel_updates == updates);
+            assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        assert(allocation_count() == 0);
+        printf("PASS %s\n",argv[1]); return 0;
     }
     if (!strncmp(argv[1], "encoder-read-", 13)) {
         uint8_t pixels[32];
