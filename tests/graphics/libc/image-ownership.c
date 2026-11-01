@@ -2374,6 +2374,24 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
         EGLint type = 0;
         assert(eglGetConfigAttrib(dpy, (EGLConfig)1, EGL_NATIVE_VISUAL_TYPE, &type) && type == EGL_NONE);
         assert(eglTerminate(dpy));
+    } else if (!strcmp(name, "egl-spec-display-unknown")) {
+        /* EGL 1.5 section 3.2: no matching native display returns
+         * EGL_NO_DISPLAY without raising an error. */
+        leave_egl_error();
+        assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)1) == EGL_NO_DISPLAY);
+        assert(eglGetError() == EGL_SUCCESS);
+        leave_egl_error();
+        assert(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, (void *)(uintptr_t)1, NULL) == EGL_NO_DISPLAY);
+        assert(eglGetError() == EGL_SUCCESS);
+        assert(eglGetPlatformDisplayEXT(EGL_PLATFORM_GBM_KHR, (void *)(uintptr_t)1, NULL) == EGL_NO_DISPLAY);
+        assert(eglGetError() == EGL_SUCCESS);
+        /* Platform and attribute errors remain. */
+        assert(eglGetPlatformDisplay(0x1234, NULL, NULL) == EGL_NO_DISPLAY);
+        assert(eglGetError() == EGL_BAD_PARAMETER);
+        const EGLAttrib attributes[] = {EGL_WIDTH, 1, EGL_NONE};
+        assert(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, NULL, attributes) == EGL_NO_DISPLAY);
+        assert(eglGetError() == EGL_BAD_ATTRIBUTE);
+        assert(eglGetDisplay(EGL_DEFAULT_DISPLAY) == dpy && eglGetError() == EGL_SUCCESS);
     } else return 0;
     printf("PASS %s\n", name);
     return 1;
@@ -2417,10 +2435,10 @@ int main(int argc, char **argv) {
         assert(gbm!=EGL_NO_DISPLAY && gbm!=client && gbm!=dpy);
         assert(eglGetDisplay((EGLNativeDisplayType)0x576200u)==gbm);
         assert(eglGetDisplay((EGLNativeDisplayType)1)==EGL_NO_DISPLAY);
-        assert(eglGetError()==EGL_BAD_PARAMETER);
+        assert(eglGetError()==EGL_SUCCESS);
         assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)==client);
         assert(eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR,(void *)wayland_native_display,NULL)==EGL_NO_DISPLAY);
-        assert(eglGetError()==EGL_BAD_PARAMETER);
+        assert(eglGetError()==EGL_SUCCESS);
         // Native admission must unwind the exact connection hold on either
         // object-session failure or later metadata allocation failure.
         fail_display_join=1;
@@ -2434,7 +2452,7 @@ int main(int argc, char **argv) {
         assert(!eglInitialize(client,NULL,NULL) && eglGetError()==EGL_NOT_INITIALIZED);
         assert(eglTerminate(client) && wayland_holds==0);
         assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)==EGL_NO_DISPLAY);
-        assert(eglGetError()==EGL_BAD_PARAMETER);
+        assert(eglGetError()==EGL_SUCCESS);
         wayland_native_live=1;wayland_native_identity++;
         assert(eglGetDisplay((EGLNativeDisplayType)(uintptr_t)wayland_native_display)!=client);
         puts("PASS display-wayland");return 0;

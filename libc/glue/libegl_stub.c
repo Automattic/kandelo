@@ -285,7 +285,9 @@ static EGLDisplay native_display(const void *native,int gbm_only) {
     enum egl_native_kind kind;
     if(_wpk_gbm_device_metadata && _wpk_gbm_device_metadata(native,&fd,&identity))kind=NATIVE_GBM;
     else if(!gbm_only && _wpk_wl_display_metadata && _wpk_wl_display_metadata(native,&identity))kind=NATIVE_WAYLAND;
-    else {g_last_error=EGL_BAD_PARAMETER;goto done;}
+    /* EGL 1.5 section 3.2: an unmatched native display returns
+     * EGL_NO_DISPLAY and raises no error, for both entry points. */
+    else goto done;
     struct egl_display_record *head = atomic_load_explicit(&g_native_displays,
         memory_order_relaxed);
     for (struct egl_display_record *p = head; p; p = p->next) {
