@@ -132,6 +132,11 @@ function selectedContainerName(b: GlBinding, framebuffer: WebGLFramebuffer | nul
   return name;
 }
 
+/** QOP_INFO_LOG emits UTF-8 bytes. Empty logs have no terminator to count. */
+function infoLogByteCapacity(log: string | null): number {
+  return log ? new TextEncoder().encode(log).byteLength + 1 : 0;
+}
+
 export function runGlQuery(
   b: GlBinding,
   op: number,
@@ -349,27 +354,37 @@ export function runGlQuery(
     // in: u32 shaderName, u32 pname; out: i32 value
     case O.QOP_GET_SHADERIV: {
       if (input.byteLength < 8 || out.byteLength < 4) return -22;
-      const sh = b.shaders.get(inDv.getUint32(0, true));
+      const name = inDv.getUint32(0, true);
+      const sh = b.shaders.get(name);
       if (!sh) {
-        outDv.setInt32(0, 0, true);
-        return 4;
+        recordGlError(b, b.programs.has(name) ? 0x502 : 0x501);
+        return -22;
       }
       const pname = inDv.getUint32(4, true);
       const sourceLength = b.shaderSources.get(sh)?.length ?? 0;
-      const v = pname === 0x8b80 ? b.shaderDeletePending.has(inDv.getUint32(0, true))
-        : pname === 0x8b88 ? (sourceLength ? sourceLength+1 : 0)
-        : pname === GL_INFO_LOG_LENGTH
-        ? ((gl.getShaderInfoLog(sh) ?? "").length + 1)
-        : gl.getShaderParameter(sh, pname);
+      let v: unknown;
+      if (!checkedGlCall(b, () => {
+        v = pname === 0x8b80 ? b.shaderDeletePending.has(name)
+          : pname === 0x8b88 ? (sourceLength ? sourceLength+1 : 0)
+          : pname === GL_INFO_LOG_LENGTH
+          ? infoLogByteCapacity(gl.getShaderInfoLog(sh))
+          : gl.getShaderParameter(sh, pname);
+      })) return -5;
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
       return 4;
     }
 
     // in: u32 shaderName; out: u32 strLen, u8 str[strLen]
     case O.QOP_GET_SHADER_INFO_LOG: {
-      if (input.byteLength < 4) return -22;
-      const sh = b.shaders.get(inDv.getUint32(0, true));
-      const log = (sh && gl.getShaderInfoLog(sh)) ?? "";
+      if (input.byteLength < 4 || out.byteLength < 4) return -22;
+      const name = inDv.getUint32(0, true);
+      const sh = b.shaders.get(name);
+      if (!sh) {
+        recordGlError(b, b.programs.has(name) ? 0x502 : 0x501);
+        return -22;
+      }
+      let log = "";
+      if (!checkedGlCall(b, () => { log = gl.getShaderInfoLog(sh) ?? ""; })) return -5;
       const bytes = new TextEncoder().encode(log);
       const need = 4 + bytes.byteLength;
       if (out.byteLength < need) {
@@ -384,38 +399,47 @@ export function runGlQuery(
     // in: u32 programName, u32 pname; out: i32 value
     case O.QOP_GET_PROGRAMIV: {
       if (input.byteLength < 8 || out.byteLength < 4) return -22;
-      const prog = b.programs.get(inDv.getUint32(0, true));
+      const name = inDv.getUint32(0, true);
+      const prog = b.programs.get(name);
       if (!prog) {
-        outDv.setInt32(0, 0, true);
-        return 4;
+        recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501);
+        return -22;
       }
       const pname = inDv.getUint32(4, true);
       let v: unknown;
-      if (pname === 0x8b80) {
-        v = b.programDeletePending.has(inDv.getUint32(0, true));
-      } else if (pname === GL_INFO_LOG_LENGTH) {
-        v = (gl.getProgramInfoLog(prog) ?? "").length + 1;
-      } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH || pname === 0x8b8a) {
-        const attributes = pname === 0x8b8a;
-        const n = Number(gl.getProgramParameter(prog, attributes ? 0x8b89 : GL_ACTIVE_UNIFORMS) ?? 0);
-        let max = 0;
-        for (let i = 0; i < n; i++) {
-          const info = attributes ? gl.getActiveAttrib(prog, i) : gl.getActiveUniform(prog, i);
-          if (info) max = Math.max(max, info.name.length + 1);
+      if (!checkedGlCall(b, () => {
+        if (pname === 0x8b80) {
+          v = b.programDeletePending.has(inDv.getUint32(0, true));
+        } else if (pname === GL_INFO_LOG_LENGTH) {
+          v = infoLogByteCapacity(gl.getProgramInfoLog(prog));
+        } else if (pname === GL_ACTIVE_UNIFORM_MAX_LENGTH || pname === 0x8b8a) {
+          const attributes = pname === 0x8b8a;
+          const n = Number(gl.getProgramParameter(prog, attributes ? 0x8b89 : GL_ACTIVE_UNIFORMS) ?? 0);
+          let max = 0;
+          for (let i = 0; i < n; i++) {
+            const info = attributes ? gl.getActiveAttrib(prog, i) : gl.getActiveUniform(prog, i);
+            if (info) max = Math.max(max, info.name.length + 1);
+          }
+          v = max;
+        } else {
+          v = gl.getProgramParameter(prog, pname);
         }
-        v = max;
-      } else {
-        v = gl.getProgramParameter(prog, pname);
-      }
+      })) return -5;
       outDv.setInt32(0, typeof v === "boolean" ? (v ? 1 : 0) : Number(v ?? 0), true);
       return 4;
     }
 
     // in: u32 programName; out: u32 strLen, u8 str[strLen]
     case O.QOP_GET_PROGRAM_INFO_LOG: {
-      if (input.byteLength < 4) return -22;
-      const prog = b.programs.get(inDv.getUint32(0, true));
-      const log = (prog && gl.getProgramInfoLog(prog)) ?? "";
+      if (input.byteLength < 4 || out.byteLength < 4) return -22;
+      const name = inDv.getUint32(0, true);
+      const prog = b.programs.get(name);
+      if (!prog) {
+        recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501);
+        return -22;
+      }
+      let log = "";
+      if (!checkedGlCall(b, () => { log = gl.getProgramInfoLog(prog) ?? ""; })) return -5;
       const bytes = new TextEncoder().encode(log);
       const need = 4 + bytes.byteLength;
       if (out.byteLength < need) {
