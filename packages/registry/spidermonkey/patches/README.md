@@ -72,3 +72,10 @@ fixes should be considered for upstreaming.
   Node exit status after reporting an exit-listener exception, including
   explicitly assigned zero. The original exception stack is saved during
   the side-effect-free status query; standalone shell status is unchanged.
+
+- `0035-kandelo-node-timer-references.patch`: supplies the engine's actual
+  monotonic clock to the private timer scheduler and checks referenced
+  work before entering another Node event-loop turn. Timer deadlines can
+  wake live work without keeping an otherwise idle process alive. The
+  shared callback batches retain their ordering across microtask
+  checkpoints. Raw standalone shell behavior is unchanged.

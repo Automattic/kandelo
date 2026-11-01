@@ -20,6 +20,7 @@ export default {
       'test/node-fatal-exit.test.ts',
       'test/node-exit-listeners.test.ts',
       'test/node-tcp-server.test.ts',
+      'test/node-timers.test.ts',
       '../tests/package-system/nodejs-harness.test.ts',
     ],
     maxWorkers: 1,

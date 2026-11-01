@@ -692,6 +692,100 @@ rebuild, broad POSIX/memory gates and performance comparisons remain
 deferred. Callable constructors, listen overloads, socket controls,
 backpressure, real interface metadata and timer references remain gaps.
 
+## Timer lifetime and unchanged upstream follow-up
+
+At production `7f6e0f6b52d5bbfb7cc820ce66144d2c51371a85`, timer deadlines
+use the engine's monotonic clock and reference state is independent of
+wakeups. Unref callbacks remain scheduled during live work. Cancellation,
+interval self-cancellation, refresh, numeric handles, immediate batches,
+promise signal/ref options, interval iterators and scheduler receivers
+have permanent native/guest controls. Duration warnings and custom
+promisification use the general process/util APIs.
+
+All 142 source/reference checks passed under exact Node 26.13.0 without
+skips. All 17 Node-host core cases passed. The 14 new timer programs and
+prior fatal-exit programs passed on Chromium, Firefox and WebKit. All eight
+real TCP controls passed on each host, including independent C peers.
+
+The initial serial browser run had eight passes and one failure: the
+broader WebKit core fixture returned ENOMEM during spawn/PATH checks.
+The original failure remains in
+`.context/node26-timers-browser-reports/playwright.vuaudR/`, with a copied
+screenshot/error context under
+`.context/node26-timers-initial-browser-failure/`. A fresh diagnostic
+replay of the unchanged 14 core commands/assertions passed in 4.6 minutes.
+No runtime code or memory ceiling changed. Its logs are associated with
+job `node26-webkit-core-diagnostic-r3-1031-211721-e39f`. The cause remains
+unresolved; a passing replay does not establish a fix or engine defect.
+
+The next unchanged selection contains all 60 `test-timers-` filenames in
+the pinned initial inventory, both exposed server-unref networking files
+and two microtask controls. The exact 64 filenames are in
+`selections/timers.json`; this is a module selection, not sampling.
+All 64 pass on the native oracle. Guest results are:
+
+| Host | Pass | Fail | Upstream skip | Unsupported | Timeout | Harness error | Pending |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Node | 39 | 9 | 0 | 15 | 1 | 0 | 0 |
+| Chromium | 39 | 9 | 0 | 15 | 1 | 0 | 0 |
+| Firefox | 39 | 9 | 0 | 15 | 1 | 0 | 0 |
+| WebKit | 39 | 9 | 0 | 15 | 1 | 0 | 0 |
+
+The audit verifies identical per-case statuses/exit codes and matching
+source, selection, runtime, kernel and image inputs. The two networking
+unref cases now pass everywhere. The original complete 206-case and
+5,147-case reports are unchanged; these selected rows do not refresh
+unselected results or establish a new full compatibility score.
+
+Remaining failures involve AsyncLocalStorage propagation, legacy domain,
+custom exception hooks, beforeExit and synchronous child-process output.
+The timeout exposes missing socket inactivity timers. The 15 unsupported
+requirements retain their exact flag/reporter reasons; they are not
+passing compatibility. In particular, spawnSync ignores the caller's
+encoding. Its older popen path returns PID zero, mishandles status/options
+and suppresses stderr.
+Fix the general synchronous process controller rather than changing the
+warning tests that expose it. Timer argument/descriptor matrices,
+nextTick/I/O phases, async context, abort-listener resistance, warning
+CLI/diagnostics and primordial resilience still need conformance work.
+
+`coverage/timers.json` reviews all 24 documented timer class/operation
+headings against the pinned document and binds their named controls to
+source/product evidence. Every API row remains partial and full
+compatibility is false. Other core modules and inherited/alias/option
+coverage remain outside this first surface review.
+
+Reports: `.context/node26-timers-upstream-HOST/`,
+`.context/node26-timers-upstream-audit.json`,
+`.context/node26-timers-tcp-audit.json` and Node core report
+`.context/node-prepared-reports/vitest.OgcsO7/`. Frozen inputs are in
+`.context/node26-timers-runtime-inputs/manifest.json`; Node archive hash is
+`41856887ffcc9072a68ef91e82bb799d556099653f2321a3cb45f6005c468f8d`.
+The corrected revision-38 targeted build passed. The revision-37 build and
+its two later source-edge failures are retained as intermediate evidence.
+ABI snapshot and 617-file evidence registry checks passed at ABI 55.
+Full product rebuild, broad POSIX/memory gates and performance comparisons
+remain deferred. The broader WebKit resource failure also remains open.
+
+To reproduce with a fresh output directory, pass the names from
+`selections/timers.json` to the normal runner with `--timeout 30`, once per
+host, selecting SourceOnly and its prepared output root for local guest
+products. For example, inside the declared dev shell:
+
+```sh
+python3 - node <<'PYTHON'
+import json, subprocess, sys
+names = json.load(open('tests/nodejs/selections/timers.json'))['tests']
+raise SystemExit(subprocess.call([
+    'host/node_modules/.bin/tsx', 'scripts/run-nodejs-library-tests.ts',
+    '--host', sys.argv[1], '--timeout', '30',
+    '--out', '.context/timers-new-' + sys.argv[1], *names]))
+PYTHON
+```
+
+Use agent-job for long collections and retain each terminal result,
+including nonzero exits while failures/unsupported cases remain.
+
 ## Draft delivery stack
 
 The changes remain in focused draft PRs. None has been merged or deployed.
@@ -718,6 +812,7 @@ Claude/npm/Bun remainder is preserved outside this stack.
 | Real TCP listeners and half-close | [#1617](https://github.com/Automattic/kandelo/pull/1617) |
 | Exit-listener status and fatal diagnostics | [#1619](https://github.com/Automattic/kandelo/pull/1619) |
 | Real TCP connection limits and drop events | [#1620](https://github.com/Automattic/kandelo/pull/1620) |
+| Timer references, cancellation, refresh and promises | [#1621](https://github.com/Automattic/kandelo/pull/1621) |
 
 Earlier 3,925-case results in `docs/software-unit-tests.md` used an older
 harness and source version. They are historical and do not establish

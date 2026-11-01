@@ -949,6 +949,7 @@ const process = (() => {
 
     // Create process as an EventEmitter instance without calling the class constructor
     const proc = new events.EventEmitter();
+    const warningToString = Function.prototype.call.bind(Error.prototype.toString);
 
     Object.assign(proc, {
         title: 'node',
@@ -1044,6 +1045,34 @@ const process = (() => {
             return usage;
         },
 
+        emitWarning(warning, type, code, ctor) {
+            if (proc.noDeprecation && type === 'DeprecationWarning') return;
+            let detail;
+            const invalid = name => {
+                const error = new TypeError('The "' + name + '" argument has an invalid type');
+                error.code = 'ERR_INVALID_ARG_TYPE'; return error;
+            };
+            if (type !== null && typeof type === 'object' && !Array.isArray(type)) {
+                ctor = type.ctor; code = type.code;
+                if (typeof type.detail === 'string') detail = type.detail;
+                type = type.type || 'Warning';
+            } else if (typeof type === 'function') { ctor = type; code = undefined; type = 'Warning'; }
+            if (type !== undefined && typeof type !== 'string') throw invalid('type');
+            if (typeof code === 'function') { ctor = code; code = undefined; }
+            else if (code !== undefined && typeof code !== 'string') throw invalid('code');
+            if (typeof warning === 'string') {
+                warning = new Error(warning); warning.name = String(type || 'Warning');
+                if (code !== undefined) warning.code = code;
+                if (detail !== undefined) warning.detail = detail;
+                if (typeof Error.captureStackTrace === 'function') Error.captureStackTrace(warning, typeof ctor === 'function' ? ctor : proc.emitWarning);
+            } else if (!(warning instanceof Error)) throw invalid('warning');
+            if (warning.name === 'DeprecationWarning') {
+                if (proc.noDeprecation) return;
+                if (proc.throwDeprecation) { proc.nextTick(() => { throw warning; }); return; }
+            }
+            proc.nextTick(() => proc.emit('warning', warning));
+        },
+
         nextTick(fn, ...args) {
             // This compatibility layer does not have a real nextTick queue,
             // but queueMicrotask preserves the ordering expected here.
@@ -1102,6 +1131,14 @@ const process = (() => {
         stdout: { get() { return _createWriteStream(1); }, configurable: true },
         stderr: { get() { return _createWriteStream(2); }, configurable: true },
         stdin: { get() { return _createReadStream(0); }, configurable: true },
+    });
+
+    proc.on('warning', warning => {
+        if (proc.env.NODE_NO_WARNINGS === '1') return;
+        const prefix = '(' + proc.release.name + ':' + proc.pid + ') ';
+        const code = warning.code ? '[' + warning.code + '] ' : '';
+        std.err.puts(prefix + code + (proc.traceDeprecation && warning.name === 'DeprecationWarning' ? warning.stack : warningToString(warning)) + '\n');
+        if (warning.detail) std.err.puts(warning.detail + '\n');
     });
 
     return proc;
@@ -2521,16 +2558,27 @@ const util = (() => {
         };
     }
 
+    const promisifyApply = Reflect.apply;
     function promisify(fn) {
-        return function(...args) {
+        const custom = Symbol.for('nodejs.util.promisify.custom');
+        const invalid = name => { const error = new TypeError('The "' + name + '" argument must be of type function'); error.code = 'ERR_INVALID_ARG_TYPE'; return error; };
+        if (typeof fn !== 'function') throw invalid('original');
+        const selected = fn[custom];
+        if (selected !== undefined) {
+            if (typeof selected !== 'function') throw invalid('util.promisify.custom');
+            Object.defineProperty(selected, custom, { value: selected, configurable: true, writable: false, enumerable: false });
+            return selected;
+        }
+        function wrapped(...args) {
             return new Promise((resolve, reject) => {
-                fn(...args, (err, result) => {
-                    if (err) reject(err);
-                    else resolve(result);
-                });
+                promisifyApply(fn, this, [...args, (err, result) => err ? reject(err) : resolve(result)]);
             });
-        };
+        }
+        Object.setPrototypeOf(wrapped, Object.getPrototypeOf(fn));
+        Object.defineProperty(wrapped, custom, { value: wrapped, configurable: true, writable: false, enumerable: false });
+        return Object.defineProperties(wrapped, Object.getOwnPropertyDescriptors(fn));
     }
+    Object.defineProperty(promisify, 'custom', { value: Symbol.for('nodejs.util.promisify.custom'), enumerable: true });
 
     function callbackify(fn) {
         return function(...args) {
@@ -3281,44 +3329,185 @@ const string_decoder = (() => {
 // ============================================================
 
 const timers = (() => {
-    // js_std_add_helpers installs setTimeout/setInterval that return a raw
-    // int64 timer id. Node returns an object with .unref()/.refresh(); npm's
-    // Display calls both on its spinner timers, so wrap the id in an object.
-    // clearAny() unwraps _id when the wrapper is passed back to clear*().
-    const wrap = (id) => ({ _id: id, unref() { return this; }, refresh() { return this; } });
-    const clearAny = (t) => {
-        if (t == null) return;
-        os.clearTimeout(typeof t === 'object' ? t._id : t);
-    };
-    return {
-        setTimeout: (fn, ms, ...args) =>
-            wrap(os.setTimeout(() => fn(...args), ms || 0)),
-        clearTimeout: clearAny,
-        setInterval: (fn, ms, ...args) => {
-            // _id is rewritten on every tick so the latest live id is what
-            // clearInterval cancels.
-            const t = wrap(0);
-            const tick = () => { fn(...args); t._id = os.setTimeout(tick, ms || 0); };
-            t._id = os.setTimeout(tick, ms || 0);
-            return t;
-        },
-        clearInterval: clearAny,
-        setImmediate: (fn, ...args) =>
-            wrap(os.setTimeout(() => fn(...args), 0)),
-        clearImmediate: clearAny,
-    };
+    const apply = Reflect.apply;
+    const refed = Symbol('refed'), token = Symbol('timer'), id = Symbol('timerId');
+    const known = new Map();
+    let nextId = 1, warnedNegative = false, warnedNaN = false;
+    function invalid(name, expected) {
+        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
+        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
+    }
+    function validateCallback(callback) {
+        if (typeof callback !== 'function') throw invalid('callback', 'function');
+    }
+    function duration(after) {
+        if (after === undefined) return 1;
+        after *= 1;
+        if (!(after >= 1 && after <= 2147483647)) {
+            if (after > 2147483647) process.emitWarning(after + ' does not fit into a 32-bit signed integer.\nTimeout duration was set to 1.', 'TimeoutOverflowWarning');
+            else if (after < 0 && !warnedNegative) {
+                warnedNegative = true;
+                process.emitWarning(after + ' is a negative number.\nTimeout duration was set to 1.', 'TimeoutNegativeWarning');
+            } else if (Number.isNaN(after) && !warnedNaN) {
+                warnedNaN = true;
+                process.emitWarning(after + ' is not a number.\nTimeout duration was set to 1.', 'TimeoutNaNWarning');
+            }
+            return 1;
+        }
+        return after;
+    }
+    function activate(timer, start = os.timerNow()) {
+        if (timer._idleTimeout < 0 || !timer._onTimeout) return;
+        os.clearTimeout(timer[token]);
+        if (timer._destroyed) { known.delete(String(timer[id])); timer[id] = nextId++; }
+        timer._destroyed = false; timer._idleStart = start;
+        timer[token] = os.setTimeout(() => {
+            timer[token] = undefined;
+            const entered = os.timerNow();
+            try { if (timer._onTimeout) apply(timer._onTimeout, timer, timer._timerArgs || []); }
+            finally {
+                if (timer._repeat && timer._idleTimeout !== -1) {
+                    timer._idleTimeout = timer._repeat; activate(timer, entered);
+                } else if (timer[token] === undefined) {
+                    timer._destroyed = true; known.delete(String(timer[id]));
+                }
+            }
+        }, timer._idleTimeout, !!timer[refed], start);
+    }
+    class Timeout {
+        constructor(callback, after, args, repeat, isRefed) {
+            this._idleTimeout = duration(after);
+            this._onTimeout = callback; this._timerArgs = args;
+            this._repeat = repeat ? this._idleTimeout : null;
+            this._destroyed = false; this[refed] = isRefed; this[id] = nextId++;
+            activate(this);
+        }
+        refresh() { activate(this); return this; }
+        unref() { if (this[refed]) { this[refed] = false; os.timerRef(this[token], false); } return this; }
+        ref() { if (!this[refed]) { this[refed] = true; os.timerRef(this[token], true); } return this; }
+        hasRef() { return this[refed]; }
+        close() { clearTimeout(this); return this; }
+        [Symbol.toPrimitive]() {
+            if (!this._destroyed) known.set(String(this[id]), this);
+            return this[id];
+        }
+        [Symbol.dispose]() { clearTimeout(this); }
+    }
+    function setTimeout(callback, after, ...args) {
+        validateCallback(callback); return new Timeout(callback, after, args.length ? args : undefined, false, true);
+    }
+    function setInterval(callback, repeat, ...args) {
+        validateCallback(callback); return new Timeout(callback, repeat, args.length ? args : undefined, true, true);
+    }
+    function clearTimeout(timer) {
+        if (typeof timer === 'number' || typeof timer === 'string') timer = known.get(String(timer));
+        if (!timer?._onTimeout) return;
+        timer._onTimeout = null; timer._idleTimeout = -1; timer._destroyed = true;
+        os.clearTimeout(timer[token]); timer[token] = undefined; known.delete(String(timer[id]));
+    }
+    function clearInterval(timer) { clearTimeout(timer); }
+    class Immediate {
+        constructor(callback, args) {
+            this._onImmediate = callback; this._argv = args;
+            this._destroyed = false; this[refed] = true;
+            this[token] = os.setImmediate(() => {
+                const fn = this._onImmediate;
+                this._destroyed = true; this[refed] = null;
+                this._onImmediate = null; this[token] = undefined;
+                try { apply(fn, this, this._argv || []); } finally { this._argv = null; }
+            });
+        }
+        ref() { if (this[refed] === false) { this[refed] = true; os.timerRef(this[token], true); } return this; }
+        unref() { if (this[refed] === true) { this[refed] = false; os.timerRef(this[token], false); } return this; }
+        hasRef() { return !!this[refed]; }
+        [Symbol.dispose]() { clearImmediate(this); }
+    }
+    function setImmediate(callback, ...args) {
+        validateCallback(callback); return new Immediate(callback, args.length ? args : undefined);
+    }
+    function clearImmediate(immediate) {
+        if (!immediate?._onImmediate || immediate._destroyed) return;
+        os.clearTimeout(immediate[token]); immediate[token] = undefined;
+        immediate._destroyed = true; immediate[refed] = null;
+        immediate._onImmediate = null; immediate._argv = null;
+    }
+    for (const key of ['close', Symbol.toPrimitive, Symbol.dispose]) Object.defineProperty(Timeout.prototype, key, { enumerable: true });
+    Object.defineProperty(Immediate.prototype, Symbol.dispose, { enumerable: true });
+    const api = { setTimeout, clearTimeout, setImmediate, clearImmediate, setInterval, clearInterval };
+    Object.defineProperty(api, 'promises', { enumerable: true, configurable: true, get() { return timersPromises; } });
+    const custom = Symbol.for('nodejs.util.promisify.custom');
+    Object.defineProperty(setTimeout, custom, { enumerable: true, get() { return timersPromises.setTimeout; } });
+    Object.defineProperty(setImmediate, custom, { enumerable: true, get() { return timersPromises.setImmediate; } });
+    return api;
 })();
 
-// `timers/promises` — @npmcli/agent uses `setTimeout(ms)` as a connection-timeout
-// race against the connect promise. AbortSignal handling isn't needed for that.
-const timersPromises = {
-    setTimeout: (delay, value) => new Promise(r => os.setTimeout(() => r(value), delay || 0)),
-    // Options (signal/ref) are ignored, same as setTimeout above.
-    setImmediate: (value, _options) => new Promise(r => {
-        if (typeof setImmediate === 'function') setImmediate(() => r(value));
-        else queueMicrotask(() => r(value));
-    }),
-};
+const timersPromises = (() => {
+    function invalid(name, expected) {
+        const error = new TypeError('The "' + name + '" argument must be of type ' + expected);
+        error.code = 'ERR_INVALID_ARG_TYPE'; return error;
+    }
+    function validate(delay, options, checkDelay) {
+        if (checkDelay && delay !== undefined && typeof delay !== 'number') throw invalid('delay', 'number');
+        if (options === null || typeof options !== 'object' || Array.isArray(options)) throw invalid('options', 'Object');
+        const { signal, ref = true } = options;
+        if (signal !== undefined && (signal === null || typeof signal !== 'object' || !('aborted' in signal))) throw invalid('options.signal', 'AbortSignal');
+        if (typeof ref !== 'boolean') throw invalid('options.ref', 'boolean');
+        return { signal, ref };
+    }
+    function aborted(signal) {
+        const error = new Error('The operation was aborted', { cause: signal.reason });
+        error.name = 'AbortError'; error.code = 'ABORT_ERR'; return error;
+    }
+    function schedule(immediate, delay, value, options) {
+        return new Promise((resolve, reject) => {
+            const { signal, ref } = validate(delay, options, !immediate);
+            if (signal?.aborted) { reject(aborted(signal)); return; }
+            const cleanup = () => signal?.removeEventListener('abort', cancel);
+            const finish = () => { cleanup(); resolve(value); };
+            const handle = immediate ? timers.setImmediate(finish) : timers.setTimeout(finish, delay);
+            if (!ref) handle.unref();
+            function cancel() {
+                if (immediate) timers.clearImmediate(handle); else timers.clearTimeout(handle);
+                cleanup(); reject(aborted(signal));
+            }
+            if (signal) signal.addEventListener('abort', cancel, { once: true });
+        });
+    }
+    function setTimeout(delay, value, options = {}) { return schedule(false, delay, value, options); }
+    function setImmediate(value, options = {}) { return schedule(true, undefined, value, options); }
+    async function* setInterval(delay, value, options = {}) {
+        const { signal, ref } = validate(delay, options, true);
+        if (signal?.aborted) throw aborted(signal);
+        let count = 0, wake;
+        const handle = timers.setInterval(() => {
+            count++;
+            if (wake) { const resolve = wake; wake = undefined; resolve(); }
+        }, delay);
+        if (!ref) handle.unref();
+        const cancel = () => { timers.clearInterval(handle); if (wake) { const resolve = wake; wake = undefined; resolve(); } };
+        try {
+            signal?.addEventListener('abort', cancel, { once: true });
+            while (!signal?.aborted) {
+                if (count === 0) await new Promise(resolve => { wake = resolve; });
+                // Values already delivered by the interval remain queued while
+                // the consumer is paused, including when abort races delivery.
+                while (count > 0) { count--; yield value; }
+            }
+            throw aborted(signal);
+        } finally { timers.clearInterval(handle); signal?.removeEventListener('abort', cancel); }
+    }
+    const schedulerBrand = Symbol('kScheduler');
+    class Scheduler {
+        constructor() { const error = new TypeError('Illegal constructor'); error.code = 'ERR_ILLEGAL_CONSTRUCTOR'; throw error; }
+        yield() { checkScheduler(this); return setImmediate(); }
+        wait(delay, options) { checkScheduler(this); return setTimeout(delay, undefined, options); }
+    }
+    function checkScheduler(value) {
+        if (!value[schedulerBrand]) { const error = new TypeError('Value of "this" must be of type Scheduler'); error.code = 'ERR_INVALID_THIS'; throw error; }
+    }
+    const scheduler = Object.create(Scheduler.prototype); scheduler[schedulerBrand] = true;
+    return { setTimeout, setImmediate, setInterval, scheduler };
+})();
 
 // ============================================================
 // child_process module
@@ -7327,7 +7516,7 @@ function _installNodeGlobalScope() {
         value: 'global', writable: false, enumerable: false, configurable: true,
     });
     // C++ module loading and the event loop still use these private bridges.
-    for (const name of ['__kandeloRunDueTimers', '__kandeloNextTimerDelay',
+    for (const name of ['__kandeloRunDueTimers', '__kandeloNextTimerDelay', '__kandeloHasReferencedTimers',
         '__kandeloCreateWorkerThreads', '__kandeloBareModules',
         '__kandeloBareSources', '__kandeloResolveBare', '__kandeloModuleMeta',
         '__nodeBootstrapReady']) {

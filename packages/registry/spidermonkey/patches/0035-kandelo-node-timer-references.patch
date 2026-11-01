@@ -1,0 +1,70 @@
+--- a/js/src/shell/js.cpp
++++ b/js/src/shell/js.cpp
+@@ -1830,6 +1830,15 @@
+   return true;
+ }
+ 
++// Scheduling uses the engine's monotonic clock, independently of wall time
++// and user replacements of Date.now(). The epoch is private to this process.
++static bool KandeloNativeMonotonicTime(JSContext* cx, unsigned argc, Value* vp) {
++  CallArgs args = CallArgsFromVp(argc, vp);
++  static const TimeStamp origin = TimeStamp::Now();
++  args.rval().setDouble((TimeStamp::Now() - origin).ToMilliseconds());
++  return true;
++}
++
+ // __kandeloKill(pid, sig) -> 0 on success; throws with .errno/.code on failure.
+ static bool KandeloNativeKill(JSContext* cx, unsigned argc, Value* vp) {
+   CallArgs args = CallArgsFromVp(argc, vp);
+@@ -2845,6 +2854,7 @@
+       JS_FN("__kandeloFdClose", KandeloNativeFdClose, 1, 0),
+       JS_FN("__kandeloWaitPid", KandeloNativeWaitPid, 1, 0),
+       JS_FN("__kandeloKill", KandeloNativeKill, 2, 0),
++      JS_FN("monotonicTime", KandeloNativeMonotonicTime, 0, 0),
+       JS_FS_END,
+   };
+   if (!JS_DefineFunctions(cx, native, funcs)) {
+@@ -4073,6 +4083,24 @@
+   return fired;
+ }
+ 
++static bool KandeloNodeTimersHaveReferences(JSContext* cx, bool* referenced) {
++  RootedObject global(cx, JS::CurrentGlobalOrNull(cx));
++  RootedValue fn(cx), result(cx);
++  if (!global ||
++      !JS_GetProperty(cx, global, "__kandeloHasReferencedTimers", &fn)) {
++    return false;
++  }
++  if (!fn.isObject() || !JS::IsCallable(&fn.toObject())) {
++    JS_ReportErrorASCII(cx, "Node timer scheduler is unavailable");
++    return false;
++  }
++  if (!JS_CallFunctionValue(cx, global, fn, HandleValueArray::empty(), &result)) {
++    return false;
++  }
++  *referenced = JS::ToBoolean(result);
++  return true;
++}
++
+ [[nodiscard]] static bool ReportUnhandledRejections(JSContext* cx);
+ 
+ static void RunShellJobs(JSContext* cx) {
+@@ -4093,6 +4121,18 @@
+       AutoReportException report(cx);
+       if (!ReportUnhandledRejections(cx)) sc->exitCode = EXIT_FAILURE;
+       if (sc->exitCode) return;
++    }
++
++    if (IsKandeloNodeMode()) {
++      bool timerReferences;
++      if (!KandeloNodeTimersHaveReferences(cx, &timerReferences)) {
++        AutoReportException report(cx);
++        sc->exitCode = EXIT_FAILURE;
++        return;
++      }
++      // Wakeup deadlines are not references. Leave unref timers scheduled,
++      // but do not enter another turn when no referenced owner remains.
++      if (!timerReferences && !KandeloSocketHasWatches()) return;
+     }
+ 
+     // Run tasks (only finalization registry clean tasks are possible).

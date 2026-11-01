@@ -43,8 +43,106 @@
     const callSiteAssign = Object.assign;
     const callSiteDefine = Object.defineProperty;
     const callSiteString = String;
-    let nextTimerId = 1;
-    const pendingTimers = new Map();
+    const native = globalThis.__kandeloNodeNative || {};
+    // The deadline heap owns pending callbacks; reference state is independent
+    // of wakeup deadlines. Unreferenced timers remain eligible during live work.
+    function createTimerScheduler(now) {
+        let nextId = 1, references = 0;
+        const pending = new Map(), immediates = new Map(), heap = [];
+        let batch = null, batchIndex = 0;
+        const earlier = (a, b) => a.due < b.due || a.due === b.due && a.id < b.id;
+        function swap(a, b) {
+            const item = heap[a]; heap[a] = heap[b]; heap[b] = item;
+            heap[a].index = a; heap[b].index = b;
+        }
+        function up(index) {
+            while (index > 0) {
+                const parent = (index - 1) >> 1;
+                if (!earlier(heap[index], heap[parent])) break;
+                swap(index, parent); index = parent;
+            }
+            return index;
+        }
+        function down(index) {
+            while (index * 2 + 1 < heap.length) {
+                let child = index * 2 + 1;
+                if (child + 1 < heap.length && earlier(heap[child + 1], heap[child])) child++;
+                if (!earlier(heap[child], heap[index])) break;
+                swap(index, child); index = child;
+            }
+        }
+        function removeHeap(timer) {
+            const index = timer.index;
+            if (index < 0) return;
+            const last = heap.pop(); timer.index = -1;
+            if (index < heap.length) {
+                heap[index] = last; last.index = index;
+                down(up(index));
+            }
+        }
+        function clear(id) {
+            const timer = pending.get(id);
+            if (!timer) return;
+            pending.delete(id); immediates.delete(id); removeHeap(timer);
+            if (timer.referenced) references--;
+            timer.fn = null;
+        }
+        function pruneBatch() {
+            while (batch && batchIndex < batch.length && !pending.has(batch[batchIndex].id)) batchIndex++;
+            if (batch && batchIndex === batch.length) { batch = null; batchIndex = 0; }
+        }
+        function schedule(fn, delay, referenced = true, immediate = false, start = now()) {
+            const timer = { id: nextId++, fn, due: start + Math.trunc(delay), referenced, index: -1 };
+            pending.set(timer.id, timer);
+            if (referenced) references++;
+            if (immediate) immediates.set(timer.id, timer);
+            else { timer.index = heap.length; heap.push(timer); up(timer.index); }
+            return timer.id;
+        }
+        function runOne() {
+            pruneBatch();
+            if (!batch) {
+                // Snapshot this turn. Callbacks queued by callbacks belong to a
+                // later turn; the native loop drains microtasks between calls.
+                batch = Array.from(immediates.values()); batchIndex = 0;
+                const cutoff = now();
+                while (heap.length && heap[0].due <= cutoff) {
+                    const timer = heap[0]; removeHeap(timer); batch.push(timer);
+                }
+                pruneBatch();
+            }
+            if (!batch) return 0;
+            const timer = batch[batchIndex++], fn = timer.fn;
+            clear(timer.id);
+            try { fn(); } finally { pruneBatch(); }
+            return 1;
+        }
+        return {
+            now, schedule, clear,
+            ref(id, value) {
+                const timer = pending.get(id);
+                if (timer && timer.referenced !== value) {
+                    references += value ? 1 : -1; timer.referenced = value;
+                }
+            },
+            hasReferences() {
+                pruneBatch();
+                // Finish callbacks already eligible in an entered turn even
+                // when its last referenced callback has just completed.
+                return references > 0 || batch !== null;
+            },
+            runOne,
+            nextDelay() {
+                pruneBatch();
+                if (batch || immediates.size) return 0;
+                return heap.length ? Math.max(0, heap[0].due - now()) : null;
+            },
+        };
+    }
+    const timerScheduler = createTimerScheduler(() => {
+        if (typeof native.monotonicTime !== 'function') throw new Error('Native monotonic timer clock is unavailable');
+        return native.monotonicTime();
+    });
 
     function encodeUtf8(value) {
         value = String(value);
@@ -246,53 +344,16 @@
         ttyGetWinSize(fd) { return typeof shellOs.ttyGetWinSize === 'function' ? shellOs.ttyGetWinSize(fd) : null; },
         signal() {},
         setReadHandler() {},
-        setTimeout(fn, delay) {
-            const id = nextTimerId++;
-            const ms = Math.max(0, Number(delay) || 0);
-            pendingTimers.set(id, { fn, due: Date.now() + ms });
-            if (ms === 0) {
-                queueMicrotask(() => runTimer(id));
-            }
-            return id;
-        },
-        clearTimeout(id) { pendingTimers.delete(id); },
+        setTimeout(fn, delay, referenced = true, start) { return timerScheduler.schedule(fn, delay, referenced, false, start); },
+        clearTimeout(id) { timerScheduler.clear(id); },
+        setImmediate(fn, referenced = true) { return timerScheduler.schedule(fn, 0, referenced, true); },
+        timerRef(id, value) { timerScheduler.ref(id, value); },
+        timerNow() { return timerScheduler.now(); },
     };
 
-    function runTimer(id) {
-        const timer = pendingTimers.get(id);
-        if (!timer) return false;
-        pendingTimers.delete(id);
-        timer.fn();
-        return true;
-    }
-
-    function runDueTimers() {
-        let ran = 0;
-        while (true) {
-            const now = Date.now();
-            const dueIds = [];
-            for (const [id, timer] of pendingTimers) {
-                if (timer.due <= now) dueIds.push(id);
-            }
-            if (dueIds.length === 0) break;
-            for (const id of dueIds) {
-                if (runTimer(id)) ran++;
-            }
-        }
-        return ran;
-    }
-
-    function nextTimerDelay() {
-        let next = Infinity;
-        const now = Date.now();
-        for (const timer of pendingTimers.values()) {
-            if (timer.due < next) next = timer.due;
-        }
-        return next === Infinity ? null : Math.max(0, next - now);
-    }
-
-    globalThis.__kandeloRunDueTimers = runDueTimers;
-    globalThis.__kandeloNextTimerDelay = nextTimerDelay;
+    globalThis.__kandeloRunDueTimers = timerScheduler.runOne;
+    globalThis.__kandeloNextTimerDelay = timerScheduler.nextDelay;
+    globalThis.__kandeloHasReferencedTimers = timerScheduler.hasReferences;
 
     globalThis.__kandeloCreateWorkerThreads = function(EventEmitter) {
         class MessagePort extends EventEmitter {
@@ -391,7 +452,6 @@
         };
     };
 
-    const native = globalThis.__kandeloNodeNative || {};
     const _nodeNative = {
         captureCallSites(frameCount) {
             if (typeof captureSavedStack !== 'function') {

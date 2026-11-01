@@ -80,6 +80,21 @@ particular:
   beforeExit, custom uncaughtException/unhandledRejection policy and
   complete timer ordering remain gaps.
 
+- Timers use a private monotonic deadline scheduler with independent
+  reference counts, cancellable handles, interval self-cancellation and
+  refresh after firing. Unreferenced callbacks remain eligible during live
+  work. Immediate batches defer newly queued callbacks and permit
+  microtask checkpoints between callbacks. Promise timers implement
+  signal/ref options, interval iterators and scheduler wait/yield; custom
+  promisification selects these APIs. Duration normalization emits real
+  asynchronous process warnings. Fourteen named programs pass on all four
+  hosts; the unchanged 64-file follow-up is still partial (39 pass, nine
+  fail, 15 unsupported, one timeout on each host). The broader WebKit
+  spawn/PATH fixture had an ENOMEM failure; a fresh unchanged replay passed
+  but its cause remains open. Complete nextTick/phase ordering, async
+  hooks/context propagation, warning stack/CLI policy and abort-listener
+  resistance to stopImmediatePropagation still need conformance work.
+
 - CommonJS entries publish their module identity before children execute.
   Explicit ESM entries use the native parser/linker and module graph, with
   cycles and top-level await. Wrapped CommonJS scripts register their
