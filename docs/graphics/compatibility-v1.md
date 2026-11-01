@@ -67,10 +67,11 @@ primary540b desktop producer and do not establish combined guest,
 application, browser or full conformance acceptance. Exact source cuts,
 commands, failures and identities appear in the dated entries below.
 
-The combined native Rust workspace now passes 3,501 tests with no failed,
-ignored or filtered cases. Normal host bundles and declarations also
-build successfully. The separate xtask suite, full host inventory and
-the graphics/browser/POSIX acceptance gates remain pending.
+At `b87e6eb971`, the combined native Rust workspace passes 3,501 tests
+with no failed, ignored or filtered cases. Normal host bundles and
+declarations also build successfully. The separate xtask suite passes 833 unit cases and
+all eight integration cases. The full host inventory and graphics,
+browser and POSIX acceptance gates remain pending.
 
 Current main `1a3ea3b9a73f6975d31f755be37e532aec6f8ad3` is integrated by
 merge `bc182981fb`. The combined resolver bundle regenerates and passes its
@@ -18349,3 +18350,65 @@ remain unchanged. Its 86 output files and build stamp are captured in
 These are native Rust and normal host build results, not upstream CTS,
 browser rendering, normal combined application/image products,
 browser-memory or POSIX conformance acceptance.
+
+### Combined xtask regression suite
+
+At `d9149ec54e43a73e080cc1e6ceae0fa39e27c16a`, job
+`graphics-xtask-r1-1031-204025-82ba` finishes 0 in 239.5 seconds.
+Declared-shell `cargo test -p xtask --target aarch64-apple-darwin` passes
+833 unit cases plus all eight integration cases: two cache-root cases,
+four cache-GC cases and two source-checkout/index-generation cases.
+There are no failed, ignored or filtered top-level cases. The summary
+uses each Cargo-launched binary's final result, avoiding double-counting
+its deliberately repeated child-process controls. Exact guarded HEAD
+and Rust/Cargo inputs remain unchanged during the suite.
+
+Raw log, exit, source guard and per-binary summary are in primary
+`.context/graphics-main-integration-review-r1/xtask-r1/`. As with the
+earlier canonical producer, the outer job starts from the primary driver
+and its helper explicitly selects and guards this integration checkout.
+This clears the separate xtask gate for that source, not later source
+increments or the pending graphics/browser/POSIX acceptance gates.
+
+### Retained private DRI removal effects, first receiver increment
+
+Commit `fb60afecaa1a749d72c847fe472e832f3ab62ec1` replaces the private
+effects receiver's unconditional removal placeholder with an owned DRI
+release transaction and actual ordered removal tail. Begin records
+entry before HostIO; an unknown result can only be polled. Rejected is
+not retirement, and exact Retired plus Forgotten acknowledgments are
+required before dropping the plan. Empty graphics plans need no
+invented graphics acknowledgment. Pending or faulted work retains its
+real obligations and refuses completion/forget.
+
+The removal tail preserves directory/file/framebuffer/network/input/
+clipboard ordering, then iteratively reaps adopted children using the
+explicit process table before actual init activation notification.
+Child storage is reserved before consuming the child; allocation
+refusal retains progress. A 70-level genealogy control covers removal
+without an arbitrary depth limit. Unexpected completion payloads and
+uncertain close calls remain contained instead of dropped/replayed.
+
+Complete native kernel library checks pass 56/56. The unchanged
+runtime-core transaction source passes 95/95 cases selected by the
+`dri` name filter; that filter includes other matching cases and is not
+full graphics coverage. The original d914 placeholder fails the new
+empty-graphics real-tail assertion as expected; its separate wrapper
+verifies that exact failure. Earlier fixture/API-name corrections and
+raw failures remain recorded. Exact commands, seven-file hashes and
+logs are in integration `.context/physical-receiver-r1/`.
+
+This is a private Rust receiver with recording HostIO acknowledgments.
+The production Wasm adapter still rejects the new cleanup boundary as
+unsupported. Actual host mapping/Card/KMS/foreign-session/forwarded
+physical receivers, transport, final-query-pin integration and public
+scheduling remain ordinary implementation work. No actual native
+graphics cleanup, consumer, browser or combined full-suite pass is
+claimed by this increment.
+
+After fresh current SDKs are available, the five generated directories
+of the final retained old testing toolchain are also removed. Tracked
+source status stays unchanged. Supplementary evidence is primary
+`.context/build-retirement-r1/final-retained-toolchain-retirement.json`.
+The original 182.9 GiB cleanup measurement remains a separate captured
+window; ongoing builds prevent attributing a new net free-space delta.
