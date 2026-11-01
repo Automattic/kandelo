@@ -132,7 +132,8 @@ export class PackageUpgradeClient {
     let operationFailed = false;
     let operationError: unknown;
     try {
-      if (operation === "install") {
+      if (operation !== "rollback") {
+        if (operation === "resume") await this.call({ action: "cancel" }, hooks);
         const size = source!.inventoryBytes;
         if (!Number.isSafeInteger(size) || size < 1 || size > 8 * 1024 * 1024) throw new Error("Invalid package inventory length");
         for (let offset = 0; offset < size;) {
@@ -145,7 +146,7 @@ export class PackageUpgradeClient {
           offset = response.status;
           hooks.onTransfer?.({ path: null, accepted: offset, total: size });
         }
-        await this.call({ action: "begin" }, hooks);
+        await this.call({ action: operation === "install" ? "begin" : "resumeFromSource" }, hooks);
       } else {
         await this.call({ action: "cancel" }, hooks);
         await this.call({ action: "resume" }, hooks);
@@ -164,6 +165,9 @@ export class PackageUpgradeClient {
       await this.call({ action: "commit" }, finishing);
       commitAcknowledged = true;
       const committed = await this.progress(finishing);
+      if (committed.phase !== (operation === "rollback" ? wire.PHASE_ROLLED_BACK : wire.PHASE_ACTIVE)) {
+        throw new Error("Kernel acknowledged a package commit with an unexpected recovery phase");
+      }
       return committed;
     } catch (error) {
       operationFailed = true;

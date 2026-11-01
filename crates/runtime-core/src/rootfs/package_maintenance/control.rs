@@ -127,6 +127,12 @@ impl Controller {
         if opcode == wire::OP_LAST_ERROR {
             return Ok(error_kind(self.last_error) as usize);
         }
+        if opcode == wire::OP_BOOT_BLOCKED {
+            if !super::super::resizable_persistence_enabled() {
+                return Err(Errno::EOPNOTSUPP.into());
+            }
+            return Ok(usize::from(super::guest_admission_blocked()));
+        }
         if opcode == wire::OP_ENTER {
             if self.session.is_some() {
                 return Err(Errno::EBUSY.into());
@@ -181,6 +187,10 @@ impl Controller {
             }
             wire::OP_RESUME => {
                 session.resume_upgrade(table, source)?;
+                Ok(0)
+            }
+            wire::OP_RESUME_FROM_SOURCE => {
+                session.resume_from_source(table, source)?;
                 Ok(0)
             }
             wire::OP_VERIFY_INSTALLED | wire::OP_VERIFY_STAGED => {

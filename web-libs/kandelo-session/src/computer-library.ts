@@ -32,6 +32,7 @@ export interface StoredComputer {
   descriptor: BootDescriptor;
   profileId: string | null;
   filesystemProfileId?: string | null;
+  softwareProductId?: string;
   retention: ComputerRetention;
   createdAt: number;
   lastOpenedAt: number;

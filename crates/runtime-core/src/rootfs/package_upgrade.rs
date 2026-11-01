@@ -619,6 +619,10 @@ pub struct Upgrade {
 }
 
 impl Upgrade {
+    pub(super) fn matches_source_inventory(&self, digest: [u8; 32]) -> bool {
+        self.after_digest == digest
+    }
+
     fn plan(
         before: IoBuffer<u8>,
         after: IoBuffer<u8>,

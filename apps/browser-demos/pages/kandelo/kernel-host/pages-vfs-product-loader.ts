@@ -8,7 +8,7 @@ import {
   readExactSizedBody,
   type SizedDownloadProgress,
 } from "../../../../../web-libs/kandelo-session/src/sized-download";
-import type { StagedSourceImage } from "./opfs-source-image";
+import type { StagedSourceImage, VfsSourceIdentity } from "./opfs-source-image";
 import type { ImageDecompressionProgress } from "../../../../../web-libs/kandelo-session/src/kernel-host";
 
 export interface PagesVfsAssetGroupIdentity {
@@ -41,6 +41,14 @@ export interface ResolvedPagesVfsProduct {
 }
 export interface PositionedPagesVfsProduct extends ResolvedPagesVfsProduct {
   source: StagedSourceImage;
+  transportIdentity: Readonly<VfsSourceIdentity>;
+}
+export interface PagesSoftwareTarget {
+  id: string;
+  imageUrl: string;
+  directory: string;
+  bytes: number;
+  sha256: string;
 }
 export type PagesVfsProductFetcher = (
   url: string,
@@ -64,7 +72,8 @@ export interface PagesVfsProductProgress {
 }
 export interface PagesVfsProductLoader {
   activate(id: string): Promise<ActivatedPagesVfsProduct>;
-  activatePositioned(id: string, directory: FileSystemDirectoryHandle): Promise<PositionedPagesVfsProduct>;
+  activatePositioned(id: string, directory: FileSystemDirectoryHandle, signal?: AbortSignal): Promise<PositionedPagesVfsProduct>;
+  softwareTarget(id: string): Promise<PagesSoftwareTarget>;
   resolve(id: string): Promise<ResolvedPagesVfsProduct>;
   bytes(id: string): Promise<ArrayBuffer>;
   /** Latest image-load record for `id`, if one has been observed. */
@@ -253,13 +262,13 @@ export function createPagesVfsProductLoaderForBase(
     if (entry.load === "eager" && options.prefetchEager !== false) void activate(entry.id).catch(() => undefined);
   return {
     activate,
-    async activatePositioned(id, directory) {
+    async activatePositioned(id, directory, signal) {
       const entry = byId.get(id);
       if (entry === undefined) throw new Error(`unknown Pages VFS product ${JSON.stringify(id)}`);
       try {
         const { stageRawVfsSourceImage } = await import("./opfs-source-image");
         const resolved = await resolveProduct(id);
-        const response = await fetcher(resolved.fetchUrl, { cache: "no-store" });
+        const response = await fetcher(resolved.fetchUrl, { cache: "no-store", signal });
         if (!response.ok) throw new Error(`Pages VFS product ${id} returned HTTP ${response.status}`);
         const source = await stageRawVfsSourceImage(
           response,
@@ -274,9 +283,11 @@ export function createPagesVfsProductLoaderForBase(
             loadedBytes: progressById.get(id)?.loadedBytes ?? 0,
             totalBytes: entry.bytes, status: "loading", operation: "download", decompression,
           }),
+          { signal },
         );
         publishProgress({ ...progressById.get(id), id, loadedBytes: entry.bytes, totalBytes: entry.bytes, status: "complete", operation: "download" });
-        return { id, imageUrl: resolved.imageUrl, lazyAssets: resolved.lazyAssets, source };
+        return { id, imageUrl: resolved.imageUrl, lazyAssets: resolved.lazyAssets, source,
+          transportIdentity: Object.freeze({ bytes: entry.bytes, sha256: entry.sha256 }) };
       } catch (error) {
         publishProgress({
           id,
@@ -287,6 +298,15 @@ export function createPagesVfsProductLoaderForBase(
         });
         throw error;
       }
+    },
+    async softwareTarget(id) {
+      const entry = byId.get(id);
+      const resolved = await resolveProduct(id);
+      const directory = resolved.lazyAssets?.directoryUrl;
+      if (!entry?.asset_group || !directory || new URL(directory).pathname.split("/").at(-2) !== entry.asset_group.sha256) {
+        throw new Error("Software upgrades require a verified content-addressed asset group");
+      }
+      return Object.freeze({ id, imageUrl: resolved.imageUrl, directory, bytes: entry.bytes, sha256: entry.sha256 });
     },
     async resolve(id) {
       const { fetchUrl: _fetchUrl, ...resolved } = await resolveProduct(id);

@@ -125,6 +125,25 @@ impl Maintenance {
         Ok(())
     }
 
+    pub fn resume_from_source(
+        &mut self,
+        table: &ProcessTable,
+        source: &mut Source<'_>,
+    ) -> Result<(), Error> {
+        self.token(table)?;
+        if self.upgrade.is_some() {
+            return Err(Errno::EBUSY.into());
+        }
+        let digest = crate::package_inventory::Inventory::decode(&self.incoming)?.digest();
+        self.incoming = crate::package_inventory::metadata_buffer();
+        let upgrade = Upgrade::resume(table, self.token(table)?, self.program_abi, self.program_digest, source)?;
+        if !upgrade.matches_source_inventory(digest) {
+            return Err(Errno::EPROTO.into());
+        }
+        self.upgrade = Some(upgrade);
+        Ok(())
+    }
+
     pub fn recovery(
         &self,
         table: &ProcessTable,

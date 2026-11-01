@@ -8,6 +8,7 @@ import { flushSync } from "react-dom";
 import { useKernelHost, useLazyDownloads, useMachineProgress, useWebPreview } from "../kernel-host/react";
 import { useServiceControls } from "./use-service-controls";
 import { ServicesPanel } from "./ServicesPanel";
+import { SoftwarePanel, useComputerSoftware } from "./SoftwarePanel";
 import { previewServiceNotice, runningServiceShortcuts } from "../../../../../web-libs/kandelo-session/src/computer-services";
 import { useVfsTools } from "../webmcp/use-vfs-tools";
 import { Dock, DockPane, type DockLayoutState, type DockPaneId, type DockViewId } from "./Dock";
@@ -76,6 +77,8 @@ const PANE_META: Record<DockPaneId, { title: string; subtitle: string }> = {
 
 export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boolean; initialInvitation?: InitialSessionInvitation }> = ({ invitationOpen = true, invitationDismissed = false, initialInvitation }) => {
   const host = useKernelHost();
+  const software = useComputerSoftware(host.software);
+  const [softwareOpen, setSoftwareOpen] = React.useState(false);
   const library = useComputerLibrary(host.computers);
   const [computerError, setComputerError] = React.useState<string | null>(null);
   const [keepingComputer, setKeepingComputer] = React.useState(false);
@@ -661,6 +664,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
           onOpenAbout={() => setAboutOpen(true)}
           servicesAvailable={services.entries.length > 0 || services.starting || services.error !== null}
           onOpenServices={() => setServicesOpen(true)}
+          softwareAvailable={software.available}
+          onOpenSoftware={() => setSoftwareOpen(true)}
           onCloseGuide={() => setDemoGuideOpen(false)}
           onCloseInternals={() => setInternalsOpen(false)}
           onCloseTheme={() => setThemeOpen(false)}
@@ -673,6 +678,7 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
       {persistenceDialog && library.current && <PersistenceWarningDialog title={library.current.title} onKeep={persistenceDialog === "keep" ? () => void keepCurrentComputer() : undefined} onClose={() => setPersistenceDialog(null)} />}
       {openWebsite && <OpenWebsiteDialog session={networkSession.state.snapshot} initialTarget={websiteTarget} onClose={() => setOpenWebsite(false)} />}
       {aboutOpen && <AboutDialog onClose={() => setAboutOpen(false)} />}
+      {softwareOpen && host.software && <SoftwarePanel controller={host.software} state={software} onClose={() => setSoftwareOpen(false)} />}
       {servicesOpen && <ServicesPanel controls={services} onClose={() => setServicesOpen(false)} onStarted={service => {
         const preview = host.getWebPreview();
         const target = preview?.destination ?? (preview?.port === undefined ? undefined : { hostname: "localhost", port: preview.port });

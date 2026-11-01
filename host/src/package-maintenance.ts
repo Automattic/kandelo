@@ -23,6 +23,8 @@ const operations = {
   stagingFile: wire.OP_STAGING_FILE,
   restartStagingFile: wire.OP_RESTART_STAGING_FILE,
   compactionNeeded: wire.OP_COMPACTION_NEEDED,
+  bootBlocked: wire.OP_BOOT_BLOCKED,
+  resumeFromSource: wire.OP_RESUME_FROM_SOURCE,
 } as const;
 
 export interface PackageMaintenanceRequest {

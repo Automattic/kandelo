@@ -52,6 +52,8 @@ export class BrowserComputerStore {
       || (record.profileId !== null && (typeof record.profileId !== "string" || !record.profileId || record.profileId.length > 128))
       || (record.filesystemProfileId !== undefined && record.filesystemProfileId !== null
         && (typeof record.filesystemProfileId !== "string" || !record.filesystemProfileId || record.filesystemProfileId.length > 128))
+      || (record.softwareProductId !== undefined
+        && (typeof record.softwareProductId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(record.softwareProductId)))
       || !Number.isSafeInteger(record.createdAt) || record.createdAt < 0
       || !Number.isSafeInteger(record.lastOpenedAt) || record.lastOpenedAt < record.createdAt
       || (record.retention === "saved" ? record.expiresAt !== null
@@ -130,9 +132,13 @@ export class BrowserComputerStore {
     });
   }
 
-  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string }): Promise<StoredComputer> {
+  update(id: string, change: { title?: string; retention?: "saved"; opened?: boolean; profileId?: string; softwareProductId?: string }): Promise<StoredComputer> {
     return this.locked(async () => {
       const record = await this.readUnlocked(id);
+      if (change.softwareProductId !== undefined) {
+        if (typeof change.softwareProductId !== "string" || !/^[a-z0-9][a-z0-9._-]{0,127}$/.test(change.softwareProductId)) throw new Error("Invalid software product ID");
+        record.softwareProductId = change.softwareProductId;
+      }
       if (change.profileId !== undefined) {
         if (typeof change.profileId !== "string" || !change.profileId || change.profileId.length > 128) throw new Error("Invalid computer profile ID");
         if (record.filesystemProfileId === undefined) record.filesystemProfileId = record.profileId;

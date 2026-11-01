@@ -54,6 +54,17 @@ function fixture(initial = wire.PHASE_PENDING, size = 70000) {
 }
 
 describe("bounded application package upgrade client", () => {
+  it("preserves commit acknowledgement when the final recovery phase contradicts the operation", async () => {
+    const { transport, source } = fixture();
+    let committed = false;
+    const client = new PackageUpgradeClient(async request => {
+      const result = await transport(request);
+      if (request.action === "commit") committed = true;
+      return request.action === "progress" && committed ? reply(0, progress(wire.PHASE_PENDING)) : result;
+    });
+    await expect(client.run("install", source)).rejects.toMatchObject({ commitAcknowledged: true });
+  });
+
   it("streams inventory and files using native acknowledgements and leaves guest admission to its owner", async () => {
     const { requests, source, client } = fixture();
     const transfers: number[] = [];
@@ -74,10 +85,10 @@ describe("bounded application package upgrade client", () => {
   it("restarts private staging on pending recovery and handles empty raw files", async () => {
     const { client, source, requests } = fixture(wire.PHASE_PENDING, 0);
     await client.run("resume", source);
-    expect(requests.slice(0, 2).map(request => request.action)).toEqual(["cancel", "resume"]);
+    expect(requests.slice(0, 4).map(request => request.action)).toEqual(["cancel", "uploadInventory", "uploadInventory", "resumeFromSource"]);
     expect(requests.filter(request => request.action === "restartStagingFile").map(request => request.index)).toEqual([0, 1]);
     expect(requests.find(request => request.action === "stage" && request.index === 0)?.data).toHaveLength(0);
-    expect(requests.some(request => request.action === "prepare" || request.action === "uploadInventory")).toBe(false);
+    expect(requests.some(request => request.action === "prepare" || request.action === "resume")).toBe(false);
   });
 
   it("rolls back only native active authority without consulting a target or staging uploads", async () => {

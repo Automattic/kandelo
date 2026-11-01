@@ -21,6 +21,80 @@ fn word(bytes: &[u8], offset: u32) -> u32 {
 }
 
 #[test]
+fn package_boot_admission_query_needs_no_session_reads_no_payload_and_cannot_release_guests() {
+    let _guard = TestGuard::acquire();
+    let (_image, journal, _) = computer();
+    let mut table = ProcessTable::new();
+    let mut controller = crate::rootfs::package_maintenance::control::Controller::new();
+    let reads = core::cell::Cell::new(0);
+    let mut source = |_: ByteReq, _: &mut [u8]| { reads.set(reads.get() + 1); Err(Errno::EIO) };
+    for blocked in [false, true] {
+        if blocked {
+            mkdir(b"/var/lib/kandelo/packages/transaction", 0o700, 0, 0).unwrap();
+            super::super::package_maintenance::inspect_boot_admission(&mut source);
+        }
+        let before = journal.0.lock().clone();
+        assert_eq!(controller.call(&mut table, wire::OP_BOOT_BLOCKED, 0, 0, &mut [], &mut source), Ok(usize::from(blocked)));
+        assert_eq!(super::super::package_maintenance::guest_admission_blocked(), blocked);
+        assert_eq!(*journal.0.lock(), before);
+    }
+    for (index, offset, mut bytes) in [(1, 0, Vec::new()), (0, 1, Vec::new()), (0, 0, vec![1])] {
+        assert_eq!(controller.call(&mut table, wire::OP_BOOT_BLOCKED, index, offset, &mut bytes, &mut source), Err(Errno::EINVAL.into()));
+    }
+    assert_eq!(reads.get(), 0);
+    assert!(matches!(table.create_process(), Err(Errno::EBUSY)));
+    rmdir(b"/var/lib/kandelo/packages/transaction").unwrap();
+    super::super::package_maintenance::inspect_boot_admission(&mut source);
+    assert!(table.create_process().is_ok());
+}
+
+#[test]
+fn cancelled_inventory_upload_can_restart_at_zero_without_reopening_maintenance() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _) = computer();
+    let mut source = image_host(&image);
+    let after = manifest(b"2", &[file(b"/hello.txt", b"updated")]);
+    let mut table = ProcessTable::new();
+    let mut session = Maintenance::enter(&mut table, 55, [7; 32]).unwrap();
+    let before = journal.0.lock().clone();
+    session.upload_inventory(&table, 0, &after[..32]).unwrap();
+    session.cancel_operation(&table).unwrap();
+    assert_eq!(session.upload_inventory(&table, 0, &after), Ok(after.len()));
+    session.begin_upgrade(&table, &mut source).unwrap();
+    assert_eq!(*journal.0.lock(), before);
+    session.cancel_operation(&table).unwrap();
+    session.leave(&mut table, &mut source).unwrap();
+}
+
+#[test]
+fn resume_from_source_rejects_another_inventory_before_staging_or_mutation() {
+    let _guard = TestGuard::acquire();
+    let (image, journal, _) = computer();
+    let mut source = image_host(&image);
+    let after = manifest(b"2", &[file(b"/hello.txt", b"updated")]);
+    let other = manifest(b"3", &[file(b"/hello.txt", b"another release")]);
+    let mut table = ProcessTable::new();
+    let mut session = Maintenance::enter(&mut table, 55, [7; 32]).unwrap();
+    session.upload_inventory(&table, 0, &after).unwrap();
+    session.begin_upgrade(&table, &mut source).unwrap();
+    while !session.verify_next(&table, 65536, &mut source).unwrap() {}
+    session.prepare(&table, &mut source).unwrap();
+    session.cancel_operation(&table).unwrap();
+    let before = journal.0.lock().clone();
+    session.upload_inventory(&table, 0, &other).unwrap();
+    assert_eq!(session.resume_from_source(&table, &mut source), Err(Error::Storage(Errno::EPROTO)));
+    assert!(session.progress().is_none());
+    assert_eq!(*journal.0.lock(), before);
+    assert_eq!(session.recovery(&table, &mut source), Ok(Recovery::Transaction(Phase::Pending)));
+    session.upload_inventory(&table, 0, &after).unwrap();
+    session.resume_from_source(&table, &mut source).unwrap();
+    assert!(session.progress().is_some());
+    assert_eq!(*journal.0.lock(), before);
+    session.discard_transaction(&table, &mut source).unwrap();
+    session.leave(&mut table, &mut source).unwrap();
+}
+
+#[test]
 fn package_maintenance_compaction_advice_requires_maintenance_and_tracks_indexed_publication() {
     let _guard = TestGuard::acquire();
     let (image, journal, _) = computer();

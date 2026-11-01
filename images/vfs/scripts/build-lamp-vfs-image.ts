@@ -54,6 +54,7 @@ import {
   wordpressFirstBootSecretsService,
 } from "./wordpress-first-boot";
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
+import { WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP } from "../../../apps/browser-demos/lib/init/wordpress-mariadb-readiness";
 import {
   loadShellBaseFileSystem,
   loadShellBaseFileSystemFromImage,
@@ -78,7 +79,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // build-mariadb-vfs-image.ts does.
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
-const PHP_FPM_WORKERS = 6;
+const PHP_FPM_WORKERS = "${KANDELO_PREFORK_SERVICE_PROCESSES:-1}";
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
 const LAMP_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const MARIADB_ARIA_LOG_FILE_SIZE = 16 * 1024 * 1024;
@@ -223,6 +224,8 @@ request_slowlog_trace_depth = 0
   const phpIni = `curl.cainfo=/etc/ssl/certs/ca-certificates.crt
 openssl.cafile=/etc/ssl/certs/ca-certificates.crt
 mysqli.default_socket=${MARIADB_SOCKET_PATH}
+mysqli.allow_persistent=1
+mysqli.max_persistent=-1
 pdo_mysql.default_socket=${MARIADB_SOCKET_PATH}
 
 [opcache]
@@ -467,6 +470,7 @@ export async function buildLampVfsImage(
   ensureDirRecursive(fs, "/var/www/html");
   writeVfsFile(fs, "/var/www/html/wp-config.php", renderWordPressConfig("mariadb", "/app", "http"));
   writeVfsFile(fs, "/var/www/html/kandelo-mysql-bench.php", MYSQL_BENCHMARK_PHP);
+  writeVfsFile(fs, WORDPRESS_MARIADB_READY_FILE, WORDPRESS_MARIADB_READY_PHP);
 
   // WordPress-specific dirs + mu-plugin
   ensureDirRecursive(fs, "/var/www/html/wp-content/mu-plugins");

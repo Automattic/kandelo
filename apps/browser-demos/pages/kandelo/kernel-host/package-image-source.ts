@@ -20,6 +20,7 @@ export class BrowserPackageImageSource implements PackageUpgradeSource {
   private cleanupFailure: UnprovenPackageSourceCleanupError | undefined;
   private closePromise: Promise<void> | undefined;
   private size = 0;
+  private removeAbortListener: (() => void) | undefined;
 
   private constructor(private readonly worker: Worker) {
     worker.onmessage = ({ data }: MessageEvent<PackageImageSourceResponse>) => {
@@ -39,7 +40,8 @@ export class BrowserPackageImageSource implements PackageUpgradeSource {
   }
 
   static async open(moduleBytes: Uint8Array, file: FileSystemFileHandle,
-    identity: { length: number; sha256: string; directory: string }): Promise<BrowserPackageImageSource> {
+    identity: { length: number; sha256: string; directory: string }, signal?: AbortSignal): Promise<BrowserPackageImageSource> {
+    signal?.throwIfAborted();
     if (!(moduleBytes instanceof Uint8Array) || !(moduleBytes.buffer instanceof ArrayBuffer)
       || moduleBytes.length < 1 || moduleBytes.length > 16 * 1024 * 1024) {
       throw new Error("Package source module exceeds its independent byte bound");
@@ -52,9 +54,14 @@ export class BrowserPackageImageSource implements PackageUpgradeSource {
     }
     const moduleSnapshot = moduleBytes.slice();
     const reference = await referenceOpfsFile(file);
+    signal?.throwIfAborted();
     const source = new BrowserPackageImageSource(new PackageSourceWorker());
+    const abort = () => { void source.close().catch(() => {}); };
+    signal?.addEventListener("abort", abort, { once: true });
+    source.removeAbortListener = () => signal?.removeEventListener("abort", abort);
     try {
       const reply = await source.call({ type: "open", id: 0, moduleBytes: moduleSnapshot, file: reference, ...binding });
+      signal?.throwIfAborted();
       if (reply.type !== "ready" || !Number.isInteger(reply.inventoryBytes) || reply.inventoryBytes < 1
         || reply.inventoryBytes > 8 * 1024 * 1024) throw new Error("Package source returned an invalid inventory length");
       source.size = reply.inventoryBytes;
@@ -111,7 +118,7 @@ export class BrowserPackageImageSource implements PackageUpgradeSource {
   }
 
   close(): Promise<void> {
-    return this.closePromise ??= this.finish();
+    return this.closePromise ??= this.finish().finally(() => { this.removeAbortListener?.(); this.removeAbortListener = undefined; });
   }
 
   private async finish(): Promise<void> {

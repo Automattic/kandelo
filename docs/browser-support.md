@@ -1710,6 +1710,46 @@ reports.
 
 ### Kandelo session UI
 
+#### Software maintenance (experimental)
+
+Computers with a pristine installed-package inventory expose **More →
+Software updates**. Entering maintenance stops the current computer through
+the normal serialized teardown and reopens its saved filesystem without
+starting guest programs, devices or the HTTP bridge. Native recovery admission
+is checked before profile-specific writes. Pending or unreadable package
+authority keeps the computer paused. **Start computer** is an explicit action
+and must pass native compatibility admission; cancelling an operation does
+not implicitly restart programs.
+
+**Update from this release** requires a verified content-addressed product
+bundle. An ordinary development server without a private product map cannot
+install current-release software. A retained per-computer source can still
+resume its saved transaction. The `software/source.json` receipt and raw
+target images live under `kandelo/computers/<id>/`, separate from the live
+filesystem. The receipt only locates source bytes: Rust owns inventory,
+compatibility, conflict and content checks. Source reads and retirement are
+cancellable; unconfirmed source cleanup prevents computer-lease reuse.
+
+The verified download has a transport identity (the compressed image's
+length and SHA-256), distinct from the decoded OPFS source's length and
+SHA-256. The loader authenticates the former during streaming; the retained
+receipt records the latter for the positioned reader. They must not be
+compared as if they described the same bytes.
+
+After a trusted product boot, computer metadata retains a bounded
+`softwareProductId` selection hint. Updates select that product in the current
+verified release instead of requiring an old image URL to equal a new one.
+This hint is not package or execution authority: Rust still admits the target
+inventory and preserves conflict checks. Unknown product IDs do not invalidate
+the saved computer, but cannot select an unavailable release bundle.
+
+Rollback restores packaged files, not database contents. Database migrations
+remain separate, and user-built forking programs may require rebuilding when
+the explicitly unstable instrumentation contract changes. This experimental
+surface does not yet establish a supported cross-release upgrade guarantee;
+the first-release persistence warning remains. Current acceptance and gaps
+are tracked in [the persistence plan](persistence-plan.md).
+
 #### Computer library and retention
 
 The dock's **Web** button opens guest websites; **Graphics** shows graphical

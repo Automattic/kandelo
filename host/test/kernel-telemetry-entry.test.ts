@@ -11,6 +11,7 @@ import {
 } from "../src/kernel-entry-gate";
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 import { CH_TOTAL_SIZE } from "../src/generated/abi";
+import { retryKernelEntryResult } from "../src/kernel-entry-retry";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 const TELEMETRY_EXPORT_NAMES = [
@@ -89,6 +90,27 @@ function makeHarness(
 }
 
 describe("kernel telemetry entry authority", () => {
+  it("delays a fork secure-execution query until a competing export releases the entry gate", async () => {
+    const scheduled: Array<() => void> = [];
+    const query = vi.fn(() => 1);
+    let pending: Promise<boolean> | undefined;
+    let harness!: TelemetryHarness;
+    harness = makeHarness(4, { implementations: {
+      kernel_process_secure_exec: query,
+      kernel_vblank: () => {
+        pending = retryKernelEntryResult(() => harness.worker.processSecureExec(47), retry => scheduled.push(retry));
+        expect(query).not.toHaveBeenCalled();
+        return 0;
+      },
+    } });
+    (harness.gatedInstance.exports.kernel_vblank as () => number)();
+    expect(scheduled).toHaveLength(1);
+    expect(query).not.toHaveBeenCalled();
+    scheduled.shift()!();
+    await expect(pending).resolves.toBe(true);
+    expect(query).toHaveBeenCalledExactlyOnceWith(47);
+  });
+
   it.each([
     ["wasm32", 4],
     ["wasm64", 8],

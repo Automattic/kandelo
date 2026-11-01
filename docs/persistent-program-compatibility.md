@@ -60,8 +60,9 @@ descriptor requires staging a new binding and activating it transactionally;
 the image-builder descriptor setters cannot silently edit such a live inode.
 
 The native coordinator can stage and activate these bindings with package
-inventory and rollback references. It is not yet an exposed or accepted
-Node/browser upgrade workflow; see [package upgrades](package-upgrades.md).
+inventory and rollback references. Node/browser transports and the app
+exercise package updates and recovery within program ABI 55; cross-contract
+release admission remains open. See [package upgrades](package-upgrades.md).
 
 Privileged regular/base/provider metadata now uses inode-record version 3.
 It preserves the same bounded metadata fields and provider descriptions;

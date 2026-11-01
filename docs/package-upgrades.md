@@ -6,17 +6,23 @@ The isolated release-stability branch contains a Rust upgrade coordinator,
 native inventory-authoring primitive and bounded kernel/host transport.
 Producer-owned fixture sets upgrade and roll back through Node and all
 three browser engines, including reload recovery and new lazy-file reads.
-Application bundle selection, the maintenance/recovery workflow and a supported
-cross-release WordPress upgrade path remain pending. Keep the first-release
-compatibility warning until integrated acceptance proves that path.
+The app selects verified current bundles and owns maintenance/recovery through
+More → Software updates. A real earlier-to-current WordPress-family recipe
+upgrade passes in Chromium, Firefox and WebKit, including page interruption,
+resumed staging, rollback, unchanged posts and exact uploaded PNG bytes.
+Guest file hashes prove the actual software revision changed and rolled back.
+Both deployments use the same current trusted runtime and program ABI 55.
+This does not establish upgrades across program-contract changes. Keep the
+first-release compatibility warning until that broader path is proven.
 
 A native positioned-file probe now verifies, stages, atomically publishes,
 reopens and rolls back a complete 14,487-path pristine WordPress software-set
 comparison without increasing memory budgets. Reopen checks the complete
 inventory and unmanaged user data. This is filesystem/package evidence, not
-an executing WordPress upgrade demo; deferred-source availability and the app
-maintenance owner remain separate acceptance work. Current results are in the
-[persistence plan](persistence-plan.md#content-addressed-package-source-binding-2026-11-01).
+an executing WordPress upgrade demo. The later running app result above is
+separate evidence. Deferred-source availability after old assets disappear,
+cross-contract boot admission and final release gates remain open. Actual
+results and limitations are in the [persistence plan](persistence-plan.md).
 
 Rust owns package inventories, conflict checks, staging, activation,
 recovery selection and rollback. Hosts supply bounded byte transport; the
@@ -151,8 +157,9 @@ still needs its retained server, or separately retained local bytes. These
 bindings do not promise complete offline operation after a deployment deletes
 old assets. Missing sources remain explicit read failures; they must not fall
 through to another release. These resources are package bytes, not archives
-of privileged host/kernel runtimes. Verified application bundle selection
-and the maintenance/recovery workflow remain integration work.
+of privileged host/kernel runtimes. Application bundle selection is verified
+against the current deployment's content-addressed manifest; each computer's
+bounded software-product identifier selects a product, not execution authority.
 
 ## Positioned target-image reader
 
@@ -244,8 +251,8 @@ proxies exchange bounded copied data with that worker. No process worker
 opens OPFS or implements package policy. After journal recovery and before
 maintenance release, both hosts refresh transfer limits from Rust's live
 provider descriptions. A newly installed URI therefore becomes readable
-without trusting a second host-owned filesystem inventory. This is tested
-transport, not yet a validated application upgrade UI.
+without trusting a second host-owned filesystem inventory. The app also
+exercises that transport through actual upgrade and recovery controls.
 
 The application-side `PackageUpgradeClient` drives this interface using
 independent chunks of at most 64 KiB, native staging requests and native
@@ -257,7 +264,15 @@ Once commit is dispatched, late cancellation cannot hide its successful
 acknowledgement. Finalization errors retain whether commit was acknowledged;
 uncertain cleanup refuses another operation until the computer is reopened.
 The same driver passes real Node and three-engine browser fixture tests.
-It is not yet connected to the application's worker-retirement/recovery UI.
+`PackageMaintenanceSession` owns the app's asynchronous operation, source and
+cancellation lifetime. Unconfirmed source closure retains the computer lease,
+including when kernel retirement also fails; it cannot reopen another
+computer on the same uncertain owner. Browser tests inject both retirement
+states into the actual owner and verify the competing-tab lock. The app
+checks native pending/unknown authority before guest startup or profile writes.
+Per-computer OPFS source receipts enable source-bound resumed staging; receipt
+publication precedes transfer of the source's staging lease. They do not
+replace native inventory or executable admission checks.
 The changed-file progress bound is generated from Rust's shared transport
 definition, including unions larger than one inventory. This adds a
 kernel-host constant without changing packet layout or the program ABI.
@@ -419,12 +434,12 @@ old versus new state.
   This is planning evidence, not a completed application upgrade.
   Journal version 1 limits activation to 1 MiB; version 2 permits 16 MiB.
   Oversized activation is refused, not split into partially visible sets.
-  Memory admission can still refuse a valid inventory/publication; the
-  complete real WordPress set has not yet passed activation acceptance.
-  Its current native staging probe reaches the active-tail bound while
-  streaming a large executable. Maintenance-time compaction is still
-  required in the large-update acceptance workflow; do not disable that
-  bound to finish staging.
+  Memory admission can still refuse a valid inventory/publication. A later
+  complete WordPress probe activates 14,487 paths through four indexed
+  compactions and checks full inventories after reopen/rollback. The app's
+  actual recipe revision also passes in all three engines. Keep the active
+  tail and memory bounds; maintenance compaction handles them rather than
+  disabling their admission checks.
 - Pending recovery re-verifies old paths. Raw staging can continue at its
   durable size or explicitly restart that file. Completed activation must
   be reopened as a new operation before rollback. One transaction is
@@ -432,9 +447,12 @@ old versus new state.
 - Incoming sets must match the current supported program contract.
   Rollback refuses an old set unsupported by the current runtime. No
   privileged old runtime is retained or loaded.
-- Worker-retirement integration, bundle consumption, complete host
-  upgrade acceptance, UI, and real WordPress + MariaDB
-  upgrade demonstrations remain open. Database migrations stay explicit.
+- Incompatible immutable-base program declarations still need explicit
+  non-executing recovery admission. Legitimately upgraded boot metadata,
+  supported userspace compatibility, missing old lazy sources and final
+  complete conformance/memory gates remain release work. Guest network and
+  retirement-time memory/thread diagnostics remain under investigation.
+  Database migrations stay explicit.
 
 Native tests are development evidence, not proof that browser computers
 can upgrade. The [persistence plan](persistence-plan.md) records actual

@@ -33,6 +33,7 @@ inputs = [
   "images/vfs/scripts/wordpress-first-boot.ts",
   "images/vfs/scripts/wordpress-source-layout.ts",
   "apps/browser-demos/lib/init/mysql-benchmark.ts",
+  "apps/browser-demos/lib/init/wordpress-mariadb-readiness.ts",
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src",
   "web-libs/kandelo-session/src/demo-config.ts",
@@ -50,5 +51,5 @@ inputs = [
 ]
 repo_url    = "https://github.com/brandonpayton/kandelo.git"
 commit      = "UNPUBLISHED"
-revision = 28
+revision = 29
 publication_state = "pending"

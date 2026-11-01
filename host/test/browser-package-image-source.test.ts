@@ -34,8 +34,8 @@ const moduleBytes = Uint8Array.of(0, 97, 115, 109);
 const file = {} as FileSystemFileHandle;
 const identity = { length: 1000, sha256: "a".repeat(64), directory: `https://example.test/${"b".repeat(64)}/` };
 
-async function open() {
-  const pending = BrowserPackageImageSource.open(moduleBytes, file, identity);
+async function open(signal?: AbortSignal) {
+  const pending = BrowserPackageImageSource.open(moduleBytes, file, identity, signal);
   await vi.waitFor(() => expect(workers).toHaveLength(1));
   const worker = workers[0];
   const request = await worker.waitFor("open");
@@ -46,6 +46,34 @@ async function open() {
 afterEach(() => { workers.length = 0; vi.useRealTimers(); });
 
 describe("package source worker ownership", () => {
+  it("bounds cancellation while initial source verification has not acknowledged completion", async () => {
+    const controller = new AbortController();
+    const pending = BrowserPackageImageSource.open(moduleBytes, file, identity, controller.signal);
+    await vi.waitFor(() => expect(workers).toHaveLength(1));
+    await workers[0].waitFor("open");
+    vi.useFakeTimers();
+    const refused = expect(pending).rejects.toBeInstanceOf(UnprovenPackageSourceCleanupError);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(5000);
+    await refused;
+    expect(workers[0].terminate).toHaveBeenCalledOnce();
+  });
+
+  it("keeps abort attached through chunk reads and joins their storage-close acknowledgement", async () => {
+    const controller = new AbortController();
+    const { source, worker } = await open(controller.signal);
+    const pending = source.readInventory(0, 1);
+    const read = await worker.waitFor("read");
+    controller.abort();
+    expect(worker.sent.some(request => request.type === "close")).toBe(false);
+    worker.reply({ type: "bytes", id: read.id, bytes: Uint8Array.of(4) });
+    expect(await pending).toEqual(Uint8Array.of(4));
+    const close = await worker.waitFor("close");
+    worker.reply({ type: "closed", id: close.id });
+    await source.close();
+    expect(worker.terminate).toHaveBeenCalledOnce();
+  });
+
   it("refuses shared/oversized module ingress and missing source identity before creating a worker", async () => {
     for (const bytes of [new Uint8Array(new SharedArrayBuffer(4)), new Uint8Array(16 * 1024 * 1024 + 1), new Uint8Array()]) {
       await expect(BrowserPackageImageSource.open(bytes, file, identity)).rejects.toThrow("independent byte bound");

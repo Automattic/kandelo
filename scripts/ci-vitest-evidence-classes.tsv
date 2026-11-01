@@ -321,7 +321,9 @@ host/test/owned-jobs.test.ts	source-only
 host/test/package-image-source.test.ts	prepared-product
 host/test/package-maintenance-compaction.test.ts	source-only
 host/test/package-maintenance-runtime.test.ts	prepared-product
+host/test/package-maintenance-session.test.ts	source-only
 host/test/package-runtime-file.test.ts	prepared-product
+host/test/package-source-cache.test.ts	source-only
 host/test/package-source-inventory.test.ts	prepared-product
 host/test/pango-cairo-smoke.test.ts	prepared-product
 host/test/patch-wasm-for-thread-gc.test.ts	source-only
@@ -340,6 +342,7 @@ host/test/persistent-statfs.test.ts	prepared-product
 host/test/persistent-wordpress-workload.test.ts	prepared-product
 host/test/phase2-raw-syscall-guard.test.ts	source-only
 host/test/php-browser-kernel-owned-vfs.test.ts	source-only
+host/test/php-fpm-environment.test.ts	prepared-product
 host/test/php-phpt-harness.test.ts	prepared-product
 host/test/php-test-fixtures.test.ts	prepared-product
 host/test/php-test-lazy-assets.test.ts	prepared-product
@@ -443,6 +446,7 @@ host/test/sigpending.test.ts	prepared-product
 host/test/sjlj-noexcept-boundary.test.ts	prepared-product
 host/test/sleep-kernel-wait.test.ts	prepared-product
 host/test/socket-timeout-options.test.ts	prepared-product
+host/test/software-composition-inventory.test.ts	prepared-product
 host/test/spawn-credential-order.test.ts	source-only
 host/test/spawn-host-parity.test.ts	source-only
 host/test/spawn-pid-authority.test.ts	prepared-product
