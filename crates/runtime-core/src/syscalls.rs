@@ -1792,7 +1792,9 @@ fn handle_dri_ioctl(
                 | DRM_CAP_CRTC_IN_VBLANK_EVENT => 1,
                 DRM_CAP_PRIME => DRM_PRIME_CAP_IMPORT | DRM_PRIME_CAP_EXPORT,
                 DRM_CAP_DUMB_PREFERRED_DEPTH => 24,
-                DRM_CAP_CURSOR_WIDTH | DRM_CAP_CURSOR_HEIGHT => if host.kms_cursor_supported() { 64 } else { 0 },
+                // drm_getcap reports the cursor size or its 64 default, never
+                // 0; a missing cursor plane surfaces as ENXIO from CURSOR.
+                DRM_CAP_CURSOR_WIDTH | DRM_CAP_CURSOR_HEIGHT => 64,
                 DRM_CAP_DUMB_PREFER_SHADOW
                 | DRM_CAP_ASYNC_PAGE_FLIP
                 | DRM_CAP_ADDFB2_MODIFIERS
@@ -1813,7 +1815,12 @@ fn handle_dri_ioctl(
             }
             let mut req: WpkDrmModeCreateDumb =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
-            if req.flags != 0 || req.width == 0 || req.height == 0 || req.bpp != 32 {
+            // drm_mode_create_dumb: any nonzero bpp (pitch is the row's
+            // bytes, here rounded to 4), so RGB565 and 8/24-bpp buffers are
+            // allocatable; arithmetic overflow is EINVAL.
+            if req.flags != 0 || req.width == 0 || req.height == 0 || req.bpp == 0
+                || req.bpp > u32::MAX - 8
+            {
                 return Err(Errno::EINVAL);
             }
             // Allocate in registry first so we know the size/stride
@@ -1969,7 +1976,9 @@ fn handle_dri_ioctl(
             }
             let req: WpkDrmModeDestroyDumb =
                 unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // drm_mode_destroy_dumb -> drm_gem_handle_delete: EINVAL.
             release_dri_handle(proc, host, ofd_idx, req.handle)
+                .map_err(|e| if e == Errno::ENOENT { Errno::EINVAL } else { e })
         }
         DRM_IOCTL_GEM_CLOSE => {
             if buf.len() < core::mem::size_of::<WpkDrmGemClose>() {
@@ -3227,7 +3236,9 @@ fn handle_dri_card_ioctl(
             if flags == 0 || flags & !3 != 0 { return Err(Errno::EINVAL); }
             if crtc != kms::CRTC_ID { return Err(Errno::ENOENT); }
             if !kms_file_is_current_master(proc, ofd_idx)? { return Err(Errno::EACCES); }
-            if !host.kms_cursor_supported() { return Err(Errno::ENOTSUP); }
+            // No cursor plane and no legacy cursor hook: ENXIO, as
+            // drm_mode_cursor_common reports it.
+            if !host.kms_cursor_supported() { return Err(Errno::ENXIO); }
             let grant = crate::dri::master::current().expect("authorized cursor master");
             let mut next = kms::cursor_plane().unwrap_or_else(|| kms::CursorPlaneState {
                 lease_id: grant.lease_id, ..Default::default()
@@ -53466,14 +53477,25 @@ impl HostIO for RelSymlinkMock {
         let mut host = MockHostIO::new();
         let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
 
-        // bpp != 32 → EINVAL (v1 supports ARGB8888 only).
+        // drm_mode_create_dumb: bpp 0 and an overflowing bpp are EINVAL;
+        // other depths (RGB565, 24-bpp) are allocatable.
+        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+        for (bpp, pitch) in [(16, 128), (24, 192), (8, 64)] {
+            let created = kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                WpkDrmModeCreateDumb { width: 64, height: 32, bpp, ..Default::default() }).unwrap();
+            assert_eq!((created.pitch, created.size), (pitch, u64::from(pitch) * 32), "bpp {bpp}");
+        }
+        for bpp in [0, u32::MAX - 7, u32::MAX] {
+            assert_eq!(kms_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CREATE_DUMB,
+                WpkDrmModeCreateDumb { width: 64, height: 32, bpp, ..Default::default() }).map(|_| ()),
+                Err(Errno::EINVAL), "bpp {bpp}");
+        }
         let req = WpkDrmModeCreateDumb {
-            width: 64,
+            width: 0,
             height: 32,
-            bpp: 24,
+            bpp: 32,
             ..Default::default()
         };
-        let mut buf = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
         unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut WpkDrmModeCreateDumb, req) };
         assert_eq!(
             sys_ioctl(
@@ -53773,7 +53795,8 @@ impl HostIO for RelSymlinkMock {
             .gem.borrow().handles
             .contains_key(&created.handle));
 
-        // Second DESTROY_DUMB on the same handle → ENOENT.
+        // Second DESTROY_DUMB on the same handle: drm_gem_handle_delete's
+        // EINVAL, as GEM_CLOSE reports it.
         assert_eq!(
             sys_ioctl(
                 &mut proc,
@@ -53783,7 +53806,7 @@ impl HostIO for RelSymlinkMock {
                 &mut dbuf
             )
             .unwrap_err(),
-            Errno::ENOENT
+            Errno::EINVAL
         );
     }
 
@@ -54547,16 +54570,17 @@ impl HostIO for RelSymlinkMock {
             )
             .unwrap();
             let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
-            // An old host has no cursor transport: report no capability and
-            // reject before retaining the otherwise valid image buffer.
+            // A host without a cursor transport: GET_CAP keeps drm_getcap's
+            // 64 default, and the cursor ioctl reports the missing cursor
+            // with ENXIO before retaining the otherwise valid image buffer.
             host.cursor_supported = false;
             let mut cap = [0u8; 16];
             cap[..8].copy_from_slice(&8u64.to_le_bytes());
             sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_GET_CAP, &mut cap).unwrap();
-            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 0);
+            assert_eq!(u64::from_le_bytes(cap[8..].try_into().unwrap()), 64);
             fill(&mut request, [3, 1, 30, 40, 64, 64, handle, u32::MAX, 1]);
             assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_MODE_CURSOR2, &mut request),
-                Err(Errno::ENOTSUP));
+                Err(Errno::ENXIO));
             let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
             assert_eq!(proc.ofd_table.get(ofd).unwrap().kms().unwrap().cursor_bo, None);
             host.cursor_supported = true;
@@ -58454,12 +58478,8 @@ impl HostIO for RelSymlinkMock {
             for (bytes, value) in create.chunks_exact_mut(4).zip([32u32,64,bpp,0]) {
                 bytes.copy_from_slice(&value.to_le_bytes());
             }
-            if bpp == 16 {
-                // The current dumb-buffer API admits 32-bit allocations only.
-                // Do not manufacture a supported 16-bit guest allocation.
-                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_MODE_CREATE_DUMB,&mut create),Err(Errno::EINVAL));
-                continue;
-            }
+            // drm_mode_create_dumb admits any bpp; a 16-bit allocation is a
+            // real guest buffer whose rows are too narrow for a 32-bit copy.
             sys_ioctl(&mut proc,&mut host,fd,DRM_IOCTL_MODE_CREATE_DUMB,&mut create).unwrap();
             let handle = u32::from_le_bytes(create[16..20].try_into().unwrap());
             let pitch = u32::from_le_bytes(create[20..24].try_into().unwrap());
@@ -58488,6 +58508,13 @@ impl HostIO for RelSymlinkMock {
                     bad[24..28].copy_from_slice(&format.to_le_bytes());
                     bad[28..32].copy_from_slice(&stride.to_le_bytes());
                     assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut bad),Err(Errno::EINVAL));
+                    assert_eq!(host.gl_update_surface_calls.len(),calls);
+                }
+            } else {
+                let calls = host.gl_update_surface_calls.len();
+                for format in [DRM_FORMAT_ABGR8888, DRM_FORMAT_ARGB8888] {
+                    attrs[24..28].copy_from_slice(&format.to_le_bytes());
+                    assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_UPDATE_SURFACE,&mut attrs),Err(Errno::EINVAL));
                     assert_eq!(host.gl_update_surface_calls.len(),calls);
                 }
             }
