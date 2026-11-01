@@ -891,6 +891,36 @@ test("internal object groups share textures and programs while context state and
     retainedDeletedBinding:true,deletedBoundName:1,retiredDeletedTexture:true});
 });
 
+test("surfaceless framebuffer zero rejects rendering while user framebuffers remain usable", async ({ page }) => {
+  await installBrowserMemoryBoundaryProbe(page);
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const result = await page.evaluate(async root => {
+    const canvas = document.createElement("canvas"); canvas.width = canvas.height = 1;
+    document.body.replaceChildren(canvas);
+    const worker = new Worker(new URL(`/@fs/${root}apps/browser-demos/test/support/surfaceless-worker.ts`,location.href),{type:"module"});
+    try {
+      return await new Promise<Record<string, unknown>>((resolve,reject) => {
+        const timeout = setTimeout(() => reject(new Error("surfaceless test timed out")),45_000);
+        worker.addEventListener("error", event => { clearTimeout(timeout); reject(new Error(event.message)); });
+        worker.addEventListener("message",({data}) => {
+          if(data.type === "surface_done") { clearTimeout(timeout); resolve(data.results); }
+          if(data.type === "surface_failed") { clearTimeout(timeout); reject(new Error(data.error)); }
+        });
+        // The kernel worker owns the renderer; the page only hands over the canvas.
+        const offscreen = canvas.transferControlToOffscreen();
+        worker.postMessage({canvas:offscreen},[offscreen]);
+      });
+    } finally { worker.terminate(); }
+  },root);
+  expect(result).toEqual({initialStatus:0x8219,viewport:[0,0,0,0],setupError:0,
+    errors:Array(6).fill(0x506),readRc:-22,readBytes:[],attachmentError:0x502,statusAfterAttachment:0x8219,
+    copiedTextureRc:4,copiedTexture:[255,0,0,255],userStatus:0x8cd5,userPixels:[0,255,0,255],userError:0,
+    split:{bindError:0x500,draw:0x8cd5,read:0,readError:0x500,drawName:4,readNameRc:-22,readNameError:0x500,clearError:0},
+    deletedStatus:0x8219,deletedError:0x506,canvasPixels:[0,0,255,255]});
+  expect(await memoryBoundaryFailures(page)).toEqual([]);
+});
+
 test("GLES texture targets and pixel-store state survive alternating contexts", async ({ page }) => {
   const root = process.env.KANDELO_GRAPHICS_SOURCE_ROOT
     ?? fileURLToPath(new URL("../../../", import.meta.url));
