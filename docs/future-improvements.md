@@ -216,6 +216,102 @@ Remove each entry from `scripts/sortix-expectations.sh` when its gap closes; a p
 
 **Files:** `crates/runtime-core/src/syscalls.rs` — `filesystem_pathconf_value`, `host_clock_id`, `is_encoded_process_cpu_clock_id`; `scripts/sortix-expectations.sh`
 
+## Graphics
+
+These graphics items were deferred by the maintainer while completing the
+GLES 2.0, EGL 1.5, GBM and single-display KMS baseline (draft PR #1594). Each
+records why it was deferred and what it would take. Current behavior for each
+is truthful: the feature is not advertised, or the call fails with the error
+its specification defines. The decisions and their evidence are recorded in
+[the graphics compatibility ledger](graphics/compatibility-v1.md).
+
+### Implement OpenGL ES 3.0 contexts
+
+Deferred because Cage, Sway and Labwc (through the wlroots GLES2 renderer),
+SFWBar and the current ScummVM path all use GLES 2, so ES 3.0 was not on the
+desktop's critical path and would roughly double conformance-testing time.
+WebGL 2 is close to ES 3.0, so most entry points map directly; the real work
+is where WebGL 2 falls short: `glMapBufferRange` (a guest-side shadow with
+write-back), ETC2/EAC texture formats (CPU decode where the browser lacks
+them), texture swizzle state (shader variants), primitive restart that cannot
+be disabled, and sync timeouts that must be polled. EGL needs ES3 configs and
+contexts, and dEQP-GLES3 must be packaged and inventoried. A full design and
+work breakdown is in the 2026-11-01 expansion plan (units G0-G13 and GC).
+Today an ES 3 context request fails with `EGL_BAD_MATCH`.
+
+### Render GL on the Node host
+
+Deferred because Node has no WebGL, so GL rendering there needs a software or
+GPU renderer for Node, for example a GLES-on-WebGPU backend over Dawn's Node
+bindings or a headless WebGL 2 implementation. Without an embedder-supplied
+WebGL 2 renderer, `eglInitialize` fails with `EGL_NOT_INITIALIZED` on Node, as
+it does in a browser without WebGL 2. The Node desktop still runs on the CPU
+compositor, and the browser engines carry GL parity testing until this lands.
+
+### Support `EGL_WL_bind_wayland_display` and GBM Wayland-buffer import
+
+Deferred because modern clients and wlroots share buffers through
+linux-dmabuf; the legacy `wl_drm` path this extension serves is not used by
+any program in the current stack. Implementing it means a `wl_drm` server
+global in libEGL, `eglBind/Unbind/QueryWaylandBufferWL`, and the GBM lookup
+behind `gbm_bo_import(GBM_BO_IMPORT_WL_BUFFER)`. That import fails with
+`EINVAL` today, which is also Mesa's behavior when no `wl_drm` is bound.
+
+### Advertise the remaining optional wlroots GL extensions
+
+`GL_EXT_disjoint_timer_query` (wlroots render timers),
+`GL_EXT_texture_type_2_10_10_10_REV` and `GL_EXT_texture_norm16` (10- and
+16-bit client buffers) and `GL_KHR_debug` (debug logging) were deferred
+because no program in the current stack needs them; wlroots works without
+them. Timer queries depend on browser support that Firefox and Safari do not
+reliably provide. `GL_KHR_robustness` and `GL_EXT_read_format_bgra`, which
+wlroots does use, are implemented.
+
+### Expose more than one KMS display
+
+Deferred because no current program needs a second monitor; wlroots can
+already create headless virtual outputs without KMS changes. Multiple
+displays mean extra CRTC/encoder/connector/plane pipes from boot, per-CRTC
+vblank, hotplug through real `NETLINK_KOBJECT_UEVENT` events, one browser pane
+per display, pointer mapping per output, and a measured presentation path,
+since secondary displays may otherwise need a full-frame copy per frame.
+Kandelo exposes one connector and one CRTC today.
+
+### Port IGT and add a `sw_sync` test device
+
+IGT GPU Tools is the Linux graphics community's DRM/KMS uAPI test suite.
+Porting it was deferred because it is substantial (its C tests, a runner, and
+a `sw_sync` timeline test device its sync tests need). Until then, Kandelo's
+KMS, GBM and sync-object coverage comes from Rust and guest tests that mirror
+IGT subtests by name, plus Cage, Sway and Labwc as real consumers.
+
+### Build the compositor packages for wasm64
+
+Deferred because no program needs wasm64 compositors and the wasm32 builds
+work. The foundation is in place: a wasm64 Meson cross file and an
+architecture-aware package build-roots helper. What remains is libffi's
+wasm64 dispatch and closures, a wasm64 Rust target (for librsvg), porting
+about 30 libraries (glib, cairo, pango, libinput, libwayland and others),
+wlroots, Cage, Sway and Labwc, and deciding which images ship which
+architecture and with what memory ceilings on WebKit.
+
+### Offer 10-bit and half-float window surfaces
+
+Deferred because no program in the current stack requests them. EGL window
+configs and `gbm_surface` are 8 bits per channel; 10-bit and FP16 buffers are
+already supported for GBM allocation, EGL dma-buf import and KMS scanout
+(reduced to 8 bits per channel on the 8-bit canvas). Window surfaces would
+need new EGL configs, matching present-target formats and front-copy
+conversion.
+
+### Scan out YUV framebuffers on the KMS primary plane
+
+Deferred because players and compositors import YUV video through EGL, which
+is implemented, and a primary plane that offers only RGB formats is
+conformant (each driver defines its planes' formats). Direct YUV scanout, as
+used by `mpv --vo=drm`, would need the presenter to convert YUV to RGB at
+scanout.
+
 ## Browser
 
 ### Investigate the WebKit fbDOOM WAD-drop failure
