@@ -3160,6 +3160,15 @@ static const EGLint k_dmabuf_formats[] = {
     (EGLint)0x30334258u, /* 'XB30' XBGR2101010 */
     (EGLint)0x48344241u, /* 'AB4H' ABGR16161616F */
     (EGLint)0x48344258u, /* 'XB4H' XBGR16161616F */
+    /* YUV, sampled only through TEXTURE_EXTERNAL_OES (external_only): the
+     * host converts the planes to RGBA when their bytes change. */
+    (EGLint)0x3231564eu, /* 'NV12' */
+    (EGLint)0x3132564eu, /* 'NV21' */
+    (EGLint)0x32315559u, /* 'YU12' YUV420 */
+    (EGLint)0x32315659u, /* 'YV12' YVU420 */
+    (EGLint)0x56595559u, /* 'YUYV' */
+    (EGLint)0x59565955u, /* 'UYVY' */
+    (EGLint)0x30313050u, /* 'P010' */
 };
 #define WPK_DMABUF_FORMAT_COUNT \
     ((EGLint)(sizeof k_dmabuf_formats / sizeof k_dmabuf_formats[0]))
@@ -3376,41 +3385,49 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = EGL_BAD_ALLOC;
         return EGL_NO_IMAGE_KHR;
     }
-    EGLAttrib width = -1, height = -1, fourcc = 0, fd = -1, offset = 0, pitch = -1;
+    /* EXT_image_dma_buf_import(_modifiers): per plane, fd / offset / pitch
+     * and the modifier's two words. Planes 0-2 are named by the base
+     * extension, plane 3 by the modifiers extension. */
+    struct { EGLAttrib fd, offset, pitch; unsigned present; int has_lo, has_hi; uint32_t lo, hi; }
+        planes[4] = {{-1, 0, -1, 0, 0, 0, 0, 0}, {-1, 0, -1, 0, 0, 0, 0, 0},
+                     {-1, 0, -1, 0, 0, 0, 0, 0}, {-1, 0, -1, 0, 0, 0, 0, 0}};
+    static const EGLAttrib plane_keys[4][5] = {
+        {EGL_DMA_BUF_PLANE0_FD_EXT, EGL_DMA_BUF_PLANE0_OFFSET_EXT, EGL_DMA_BUF_PLANE0_PITCH_EXT,
+         EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT},
+        {EGL_DMA_BUF_PLANE1_FD_EXT, EGL_DMA_BUF_PLANE1_OFFSET_EXT, EGL_DMA_BUF_PLANE1_PITCH_EXT,
+         EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT},
+        {EGL_DMA_BUF_PLANE2_FD_EXT, EGL_DMA_BUF_PLANE2_OFFSET_EXT, EGL_DMA_BUF_PLANE2_PITCH_EXT,
+         EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT},
+        {EGL_DMA_BUF_PLANE3_FD_EXT, EGL_DMA_BUF_PLANE3_OFFSET_EXT, EGL_DMA_BUF_PLANE3_PITCH_EXT,
+         EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT},
+    };
+    EGLAttrib width = -1, height = -1, fourcc = 0;
+    /* Absent hints: BT.601, narrow range, chroma co-sited with the first
+     * luma sample, as Mesa defaults them. */
+    EGLAttrib color_space = EGL_ITU_REC601_EXT, sample_range = EGL_YUV_NARROW_RANGE_EXT;
+    EGLAttrib siting_h = EGL_YUV_CHROMA_SITING_0_EXT, siting_v = EGL_YUV_CHROMA_SITING_0_EXT;
     unsigned required = 0;
-    int has_lo = 0, has_hi = 0;
-    uint32_t mod_lo = 0, mod_hi = 0;
     for (size_t i = 0; attrib_list; i += 2) {
         EGLAttrib key = image_attribute(attrib_list, wide, i);
         if (key == EGL_NONE) break;
         /* Validate the key before reading its value. This also rejects wide
          * keys whose low 32 bits happen to name a supported attribute. */
-        switch (key) {
+        int plane = -1, field = -1;
+        for (int p = 0; p < 4 && plane < 0; p++)
+            for (int f = 0; f < 5; f++)
+                if (plane_keys[p][f] == key) { plane = p; field = f; break; }
+        /* No Kandelo format has a fourth plane (drm_format_info.h). */
+        if (plane == 3) {
+            g_last_error = EGL_BAD_ATTRIBUTE;
+            return EGL_NO_IMAGE_KHR;
+        }
+        if (plane < 0) switch (key) {
             case EGL_WIDTH: case EGL_HEIGHT: case EGL_LINUX_DRM_FOURCC_EXT:
-            case EGL_DMA_BUF_PLANE0_FD_EXT: case EGL_DMA_BUF_PLANE0_OFFSET_EXT:
-            case EGL_DMA_BUF_PLANE0_PITCH_EXT:
-            case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT:
-            case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT:
             case EGL_IMAGE_PRESERVED_KHR:
             case EGL_YUV_COLOR_SPACE_HINT_EXT: case EGL_SAMPLE_RANGE_HINT_EXT:
             case EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT:
             case EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT:
                 break;
-            /* Every supported format has one plane. */
-            case EGL_DMA_BUF_PLANE1_FD_EXT: case EGL_DMA_BUF_PLANE1_OFFSET_EXT:
-            case EGL_DMA_BUF_PLANE1_PITCH_EXT:
-            case EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT:
-            case EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT:
-            case EGL_DMA_BUF_PLANE2_FD_EXT: case EGL_DMA_BUF_PLANE2_OFFSET_EXT:
-            case EGL_DMA_BUF_PLANE2_PITCH_EXT:
-            case EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT:
-            case EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT:
-            case EGL_DMA_BUF_PLANE3_FD_EXT: case EGL_DMA_BUF_PLANE3_OFFSET_EXT:
-            case EGL_DMA_BUF_PLANE3_PITCH_EXT:
-            case EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT:
-            case EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT:
-                g_last_error = EGL_BAD_ATTRIBUTE;
-                return EGL_NO_IMAGE_KHR;
             case EGL_GL_TEXTURE_LEVEL: case EGL_GL_TEXTURE_ZOFFSET:
                 g_last_error = EGL_BAD_MATCH;
                 return EGL_NO_IMAGE_KHR;
@@ -3423,8 +3440,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             g_last_error = EGL_BAD_PARAMETER;
             return EGL_NO_IMAGE_KHR;
         }
-        if ((key == EGL_DMA_BUF_PLANE0_FD_EXT || key == EGL_DMA_BUF_PLANE0_OFFSET_EXT ||
-             key == EGL_DMA_BUF_PLANE0_PITCH_EXT) && (value < 0 || value > INT32_MAX)) {
+        if (plane >= 0 && field < 3 && (value < 0 || value > INT32_MAX)) {
             g_last_error = EGL_BAD_ACCESS;
             return EGL_NO_IMAGE_KHR;
         }
@@ -3433,25 +3449,27 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
             g_last_error = EGL_BAD_PARAMETER;
             return EGL_NO_IMAGE_KHR;
         }
-        switch (key) {
-            case EGL_WIDTH: width = value; required |= 1; break;
-            case EGL_HEIGHT: height = value; required |= 2; break;
-            case EGL_LINUX_DRM_FOURCC_EXT: fourcc = value; required |= 4; break;
-            case EGL_DMA_BUF_PLANE0_FD_EXT: fd = value; required |= 8; break;
-            case EGL_DMA_BUF_PLANE0_OFFSET_EXT: offset = value; required |= 16; break;
-            case EGL_DMA_BUF_PLANE0_PITCH_EXT: pitch = value; required |= 32; break;
-            case EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT:
-            case EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT:
+        if (plane >= 0) {
+            if (field == 0) planes[plane].fd = value;
+            else if (field == 1) planes[plane].offset = value;
+            else if (field == 2) planes[plane].pitch = value;
+            else {
                 /* EGLint callers carry unsigned modifier words as signed
                  * bit patterns; wide callers may also use positive u32s. */
                 if ((int64_t)value < INT32_MIN || (int64_t)value > UINT32_MAX) {
                     g_last_error = EGL_BAD_PARAMETER;
                     return EGL_NO_IMAGE_KHR;
                 }
-                if (key == EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT) {
-                    has_lo = 1; mod_lo = (uint32_t)value;
-                } else { has_hi = 1; mod_hi = (uint32_t)value; }
-                break;
+                if (field == 3) { planes[plane].has_lo = 1; planes[plane].lo = (uint32_t)value; }
+                else { planes[plane].has_hi = 1; planes[plane].hi = (uint32_t)value; }
+            }
+            planes[plane].present |= 1u << field;
+            continue;
+        }
+        switch (key) {
+            case EGL_WIDTH: width = value; required |= 1; break;
+            case EGL_HEIGHT: height = value; required |= 2; break;
+            case EGL_LINUX_DRM_FOURCC_EXT: fourcc = value; required |= 4; break;
             case EGL_IMAGE_PRESERVED_KHR:
                 /* Every imported image preserves its pixels. */
                 if (value == EGL_TRUE || value == EGL_FALSE) break;
@@ -3459,50 +3477,78 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
                 return EGL_NO_IMAGE_KHR;
             case EGL_YUV_COLOR_SPACE_HINT_EXT:
                 if (value == EGL_ITU_REC601_EXT || value == EGL_ITU_REC709_EXT ||
-                    value == EGL_ITU_REC2020_EXT) break;
+                    value == EGL_ITU_REC2020_EXT) { color_space = value; break; }
                 g_last_error = EGL_BAD_ATTRIBUTE;
                 return EGL_NO_IMAGE_KHR;
             case EGL_SAMPLE_RANGE_HINT_EXT:
-                if (value == EGL_YUV_FULL_RANGE_EXT || value == EGL_YUV_NARROW_RANGE_EXT) break;
+                if (value == EGL_YUV_FULL_RANGE_EXT || value == EGL_YUV_NARROW_RANGE_EXT) { sample_range = value; break; }
                 g_last_error = EGL_BAD_ATTRIBUTE;
                 return EGL_NO_IMAGE_KHR;
             case EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT:
             case EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT:
-                if (value == EGL_YUV_CHROMA_SITING_0_EXT || value == EGL_YUV_CHROMA_SITING_0_5_EXT) break;
+                if (value == EGL_YUV_CHROMA_SITING_0_EXT || value == EGL_YUV_CHROMA_SITING_0_5_EXT) {
+                    if (key == EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT) siting_h = value; else siting_v = value;
+                    break;
+                }
                 g_last_error = EGL_BAD_ATTRIBUTE;
                 return EGL_NO_IMAGE_KHR;
         }
     }
     /* Keep presence distinct from zero: plane zero's offset is required
      * even though zero is its usual value. Do not narrow wide values into
-     * valid dimensions, descriptors or layout before checking them. */
-    if (required != 63 || has_lo != has_hi) {
+     * valid dimensions, descriptors or layout before checking them. Both
+     * modifier words or neither, per plane; like Mesa, every plane that
+     * names a modifier names plane 0's. */
+    if (required != 7 || (planes[0].present & 7) != 7) {
         g_last_error = EGL_BAD_PARAMETER;
         return EGL_NO_IMAGE_KHR;
     }
-    uint64_t modifier = has_lo ? ((uint64_t)mod_hi << 32) | mod_lo
-                               : WPK_MOD_INVALID;
-    if (!dmabuf_format_supported((EGLint)(uint32_t)fourcc)
-        || (modifier != WPK_MOD_LINEAR && modifier != WPK_MOD_INVALID)) {
+    for (int p = 0; p < 3; p++) {
+        if (planes[p].has_lo != planes[p].has_hi
+            || (p && planes[p].has_lo && (!planes[0].has_lo || planes[p].lo != planes[0].lo
+                                          || planes[p].hi != planes[0].hi))) {
+            g_last_error = EGL_BAD_PARAMETER;
+            return EGL_NO_IMAGE_KHR;
+        }
+    }
+    uint64_t modifier = planes[0].has_lo ? ((uint64_t)planes[0].hi << 32) | planes[0].lo
+                                         : WPK_MOD_INVALID;
+    const struct wpk_drm_format_info *layout = dmabuf_format((EGLint)(uint32_t)fourcc);
+    if (!layout || (modifier != WPK_MOD_LINEAR && modifier != WPK_MOD_INVALID)) {
         g_last_error = EGL_BAD_MATCH;
         return EGL_NO_IMAGE_KHR;
     }
-    uint64_t cpp = dmabuf_format_cpp((EGLint)(uint32_t)fourcc);
-    if (width == 0 || height == 0 || offset < 0
-        || (uint64_t)pitch < (uint64_t)width * cpp) {
+    /* A plane the format does not have is EGL_BAD_ATTRIBUTE; then, as Mesa
+     * checks them, a plane it has needs all three of its attributes. */
+    for (unsigned p = layout->num_planes; p < 3; p++) {
+        if (planes[p].present) {
+            g_last_error = EGL_BAD_ATTRIBUTE;
+            return EGL_NO_IMAGE_KHR;
+        }
+    }
+    for (unsigned p = 1; p < layout->num_planes; p++) {
+        if ((planes[p].present & 7) != 7) {
+            g_last_error = EGL_BAD_PARAMETER;
+            return EGL_NO_IMAGE_KHR;
+        }
+    }
+    /* Each plane's rows hold its samples and its last row lies inside its
+     * own dma-buf (a pitch or offset EGL cannot use is EGL_BAD_ACCESS). */
+    if (width == 0 || height == 0) {
         g_last_error = EGL_BAD_ACCESS;
         return EGL_NO_IMAGE_KHR;
     }
-    struct stat st;
-    if (fstat((int)fd, &st) != 0) {
-        g_last_error = EGL_BAD_ACCESS;
-        return EGL_NO_IMAGE_KHR;
-    }
-    uint64_t last = (uint64_t)offset + (uint64_t)pitch * (uint64_t)(height - 1)
-                  + (uint64_t)width * cpp;
-    if (last > (uint64_t)st.st_size) {
-        g_last_error = EGL_BAD_ACCESS;
-        return EGL_NO_IMAGE_KHR;
+    size_t sizes[3] = {0};
+    for (unsigned p = 0; p < layout->num_planes; p++) {
+        uint64_t row = wpk_drm_row_bytes(layout, (uint32_t)width, p);
+        struct stat st;
+        if ((uint64_t)planes[p].pitch < row || fstat((int)planes[p].fd, &st) != 0
+            || (uint64_t)planes[p].offset + (uint64_t)planes[p].pitch
+                   * (wpk_drm_plane_height(layout, (uint32_t)height, p) - 1) + row > (uint64_t)st.st_size) {
+            g_last_error = EGL_BAD_ACCESS;
+            return EGL_NO_IMAGE_KHR;
+        }
+        sizes[p] = (size_t)st.st_size;
     }
 
     struct wpk_egl_image *image = calloc(1, sizeof *image);
@@ -3512,6 +3558,59 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
     }
     image->generation = generation;
     image->public_handle = g_next_object_handle;
+    image->width = (uint32_t)width;
+    image->height = (uint32_t)height;
+    image->fourcc = (uint32_t)fourcc;
+    image->pitch = (uint32_t)planes[0].pitch;
+    if (layout->is_yuv) {
+        /* A YUV image is converted from its planes' CPU bytes, so every
+         * plane is a mapped CPU-tier dma-buf; the mappings stay for the
+         * image's lifetime like a CPU-tier RGB image's. */
+        image->external_only = 1;
+        image->plane_count = layout->num_planes;
+        image->color_space = color_space == EGL_ITU_REC709_EXT ? WPK_YUV_BT709
+                           : color_space == EGL_ITU_REC2020_EXT ? WPK_YUV_BT2020 : WPK_YUV_BT601;
+        image->full_range = sample_range == EGL_YUV_FULL_RANGE_EXT;
+        image->chroma_siting = (siting_h == EGL_YUV_CHROMA_SITING_0_5_EXT ? WPK_CHROMA_SITING_H_HALF : 0)
+                             | (siting_v == EGL_YUV_CHROMA_SITING_0_5_EXT ? WPK_CHROMA_SITING_V_HALF : 0);
+        EGLint error = EGL_SUCCESS;
+        for (unsigned p = 0; p < layout->num_planes && error == EGL_SUCCESS; p++) {
+            image->planes[p].pitch = (uint32_t)planes[p].pitch;
+            image->planes[p].offset = (uint32_t)planes[p].offset;
+            image->planes[p].handle = import_dmabuf_handle(generation, (int)planes[p].fd);
+            if (!image->planes[p].handle) { error = EGL_BAD_ACCESS; break; }
+            void *map = mmap(NULL, sizes[p], PROT_READ, MAP_SHARED, (int)planes[p].fd, 0);
+            /* A GPU-tier bo has no CPU mapping (EINVAL): no bytes to
+             * convert. */
+            if (map == MAP_FAILED) { error = errno == EINVAL ? EGL_BAD_ACCESS : EGL_BAD_ALLOC; break; }
+            image->planes[p].map = map;
+            image->planes[p].map_len = sizes[p];
+        }
+        if (error != EGL_SUCCESS) {
+            pthread_mutex_lock(&g_image_mutex);
+            for (unsigned p = 0; p < layout->num_planes; p++) {
+                if (image->planes[p].map) munmap(image->planes[p].map, image->planes[p].map_len);
+                if (image->planes[p].handle) close_bo_handle(generation, image->planes[p].handle);
+            }
+            pthread_mutex_unlock(&g_image_mutex);
+            free(image);
+            g_last_error = error;
+            return EGL_NO_IMAGE_KHR;
+        }
+        image->handle = image->planes[0].handle;
+        image->pixels = (const uint8_t *)image->planes[0].map + image->planes[0].offset;
+        image->references = 1;
+        image->public_live = 1;
+        pthread_mutex_lock(&g_image_mutex);
+        image->next = g_images;
+        g_images = image;
+        pthread_mutex_unlock(&g_image_mutex);
+        g_next_object_handle++;
+        return (EGLImageKHR)image->public_handle;
+    }
+    EGLAttrib fd = planes[0].fd, offset = planes[0].offset;
+    size_t size = sizes[0];
+    image->plane_count = 1;
     image->handle = import_dmabuf_handle(generation, (int)fd);
     if (image->handle == 0) {
         free(image);
@@ -3531,12 +3630,8 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         g_last_error = error;
         return EGL_NO_IMAGE_KHR;
     }
-    image->width = (uint32_t)width;
-    image->height = (uint32_t)height;
-    image->fourcc = (uint32_t)fourcc;
-    image->pitch = (uint32_t)pitch;
 
-    void *map = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_SHARED, (int)fd, 0);
+    void *map = mmap(NULL, size, PROT_READ, MAP_SHARED, (int)fd, 0);
     if (map == MAP_FAILED) {
         /* A GPU-tier bo has no CPU mapping (EINVAL). Its texture is the
          * whole bo, so it cannot honor a plane offset. */
@@ -3561,7 +3656,7 @@ static EGLImageKHR create_image_locked(EGLDisplay dpy, EGLContext ctx, EGLenum t
         return EGL_NO_IMAGE_KHR;
     }
     image->map = map;
-    image->map_len = (size_t)st.st_size;
+    image->map_len = size;
     image->pixels = (const uint8_t *)map + offset;
     image->references = 1;
     image->public_live = 1;
@@ -3601,6 +3696,15 @@ static void image_release_locked(struct wpk_egl_image *image) {
     struct wpk_egl_image **slot = &g_images;
     while (*slot && *slot != image) slot = &(*slot)->next;
     if (*slot) *slot = image->next;
+    if (image->external_only) {
+        /* Each plane holds its own import reference and mapping. */
+        for (unsigned p = 0; p < image->plane_count; p++) {
+            munmap(image->planes[p].map, image->planes[p].map_len);
+            close_bo_handle(image->generation, image->planes[p].handle);
+        }
+        free(image);
+        return;
+    }
     if (image->map) munmap(image->map, image->map_len);
     close_bo_handle(image->generation, image->handle);
     free(image);
@@ -3615,7 +3719,7 @@ void _wpk_egl_image_release(struct wpk_egl_image *image) {
  * EGL display currently initialized on that GBM device is importable, whatever
  * context is current. The PRIME descriptor carries the image's own storage. */
 int _wpk_egl_image_export_gbm(const void *public_image, const void *device, uint64_t identity,
-                              struct wpk_gbm_image_plane *plane) {
+                              struct wpk_gbm_image *planes) {
     lock_context();
     pthread_mutex_lock(&g_image_mutex);
     int error = EINVAL;
@@ -3628,16 +3732,25 @@ int _wpk_egl_image_export_gbm(const void *public_image, const void *device, uint
             || display->native_identity != identity)
             continue;
         if (!image->fourcc) break;
-        struct wpk_drm_prime_handle exported = {
-            .handle = image->handle, .flags = O_CLOEXEC | O_RDWR, .fd = -1};
-        if (ioctl(generation->fd, WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported) != 0) {
-            error = errno;
+        /* One descriptor per plane; a YUV image's planes may share a bo. */
+        struct wpk_gbm_image result = {.width = image->width, .height = image->height,
+            .format = image->fourcc, .num_planes = image->external_only ? image->plane_count : 1,
+            .fds = {-1, -1, -1, -1}};
+        error = 0;
+        for (unsigned p = 0; p < result.num_planes && !error; p++) {
+            struct wpk_drm_prime_handle exported = {.flags = O_CLOEXEC | O_RDWR, .fd = -1,
+                .handle = image->external_only ? image->planes[p].handle : image->handle};
+            if (ioctl(generation->fd, WPK_DRM_IOCTL_PRIME_HANDLE_TO_FD, &exported) != 0) { error = errno; break; }
+            result.fds[p] = exported.fd;
+            result.strides[p] = image->external_only ? image->planes[p].pitch : image->pitch;
+            result.offsets[p] = image->external_only ? image->planes[p].offset
+                              : image->pixels ? (uint32_t)(image->pixels - (const uint8_t *)image->map) : 0;
+        }
+        if (error) {
+            for (unsigned p = 0; p < result.num_planes; p++) if (result.fds[p] >= 0) close(result.fds[p]);
             break;
         }
-        *plane = (struct wpk_gbm_image_plane){.fd = exported.fd, .width = image->width,
-            .height = image->height, .format = image->fourcc, .stride = image->pitch,
-            .offset = image->pixels ? (uint32_t)(image->pixels - (const uint8_t *)image->map) : 0};
-        error = 0;
+        *planes = result;
         break;
     }
     pthread_mutex_unlock(&g_image_mutex);
@@ -3702,8 +3815,42 @@ static void retire_imported_images(struct egl_generation *generation) {
     pthread_mutex_unlock(&g_image_mutex);
 }
 
+int _wpk_egl_image_external_only(const struct wpk_egl_image *image) {
+    return image && image->external_only;
+}
+
+/* A YUV image's source: its planes, transferred to the current context's
+ * object session for DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE (each distinct bo
+ * once), with its conversion. */
+static uint32_t planar_image_source(const struct wpk_egl_image *image) {
+    struct egl_context_record *context = g_thread_binding.object;
+    if (!context || context->session->fd < 0 || _wpk_gl_flush_checked() != 0) return 0;
+    struct wpk_drm_import_planar_image req = {.ctx_id = context->backend_id, .width = image->width,
+        .height = image->height, .format = image->fourcc, .color_space = image->color_space,
+        .full_range = image->full_range, .chroma_siting = image->chroma_siting};
+    uint32_t local[3] = {0};
+    int transferred = 1;
+    for (unsigned p = 0; p < image->plane_count && transferred; p++) {
+        for (unsigned q = 0; q < p && !local[p]; q++)
+            if (image->planes[q].handle == image->planes[p].handle) local[p] = local[q];
+        if (!local[p]) local[p] = transfer_bo_handle(image->generation->fd, context->session->fd, image->planes[p].handle);
+        transferred = local[p] != 0;
+        req.bo_handles[p] = local[p];
+        req.pitches[p] = image->planes[p].pitch;
+        req.offsets[p] = image->planes[p].offset;
+    }
+    int rc = transferred ? ioctl(context->session->fd, WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE, &req) : -1;
+    for (unsigned p = 0; p < image->plane_count; p++) {
+        int repeated = 0;
+        for (unsigned q = 0; q < p; q++) repeated |= local[q] == local[p];
+        if (!repeated) release_transferred_bo(image->generation, image->generation->fd, context->session->fd, local[p]);
+    }
+    return rc == 0 ? req.source : 0;
+}
+
 uint32_t _wpk_egl_image_texture(const struct wpk_egl_image *image) {
     if (!image || image->generation != g_thread_binding.generation) return 0;
+    if (image->external_only) return planar_image_source(image);
     if (!image->pixels)
         return bind_bo_texture(image->generation->display->handle, image->handle, WPK_GL_IMAGE_SOURCE_TARGET, 0);
     struct egl_context_record *context = g_thread_binding.object;
@@ -3739,8 +3886,11 @@ EGLBoolean eglQueryDmaBufFormatsEXT(EGLDisplay dpy, EGLint max_formats,
     return EGL_TRUE;
 }
 
-/* Every format has exactly one layout, LINEAR, and it can be rendered to,
- * so no modifier is external-only. */
+/* Every format has exactly one layout, LINEAR. An RGB format can be
+ * rendered to and sampled as TEXTURE_2D; a YUV format is external-only:
+ * only TEXTURE_EXTERNAL_OES samples it (GL_OES_EGL_image_external), as
+ * EXT_image_dma_buf_import_modifiers reports for formats the GL can only
+ * convert. */
 EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
                                       EGLint max_modifiers,
                                       EGLuint64KHR *modifiers,
@@ -3756,6 +3906,6 @@ EGLBoolean eglQueryDmaBufModifiersEXT(EGLDisplay dpy, EGLint format,
     *num_modifiers = 1;
     if (max_modifiers == 0) return EGL_TRUE;
     modifiers[0] = WPK_MOD_LINEAR;
-    if (external_only) external_only[0] = EGL_FALSE;
+    if (external_only) external_only[0] = dmabuf_format(format)->is_yuv ? EGL_TRUE : EGL_FALSE;
     return EGL_TRUE;
 }

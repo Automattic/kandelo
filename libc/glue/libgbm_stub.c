@@ -67,7 +67,7 @@
 /* libEGL's half of GBM_BO_IMPORT_EGL_IMAGE; absent when EGL is not linked,
  * which leaves no EGLImage to import. */
 __attribute__((weak)) int _wpk_egl_image_export_gbm(const void *, const void *, uint64_t,
-                                                    struct wpk_gbm_image_plane *);
+                                                    struct wpk_gbm_image *);
 #include <unistd.h>
 #include <pthread.h>
 
@@ -820,16 +820,19 @@ struct gbm_bo *gbm_bo_import(struct gbm_device *gbm, uint32_t type,
          * with the image's format, extent and pitch (here through a PRIME
          * descriptor of the image's bo). import_plane validates the usage
          * against that storage as for any dma-buf. */
-        struct wpk_gbm_image_plane plane;
+        struct wpk_gbm_image image;
         if (!retain_device(gbm)) return NULL;
         errno = EINVAL;
         int exported = _wpk_egl_image_export_gbm &&
-            _wpk_egl_image_export_gbm(buffer, gbm, gbm->identity, &plane) == 0;
-        struct gbm_bo *bo = exported ? import_plane(gbm, plane.fd, plane.width, plane.height,
-                                                    plane.format, plane.stride, plane.offset, flags)
-                                     : NULL;
+            _wpk_egl_image_export_gbm(buffer, gbm, gbm->identity, &image) == 0;
+        struct gbm_bo *bo = exported && image.num_planes <= GBM_MAX_PLANES
+            ? import_planes(gbm, image.num_planes, image.fds, image.width, image.height,
+                            image.format, image.strides, image.offsets, flags)
+            : NULL;
         int error = errno;
-        if (exported) close(plane.fd);
+        if (exported)
+            for (unsigned plane = 0; plane < image.num_planes && plane < GBM_MAX_PLANES; plane++)
+                close(image.fds[plane]);
         release_device(gbm);
         errno = error;
         return bo;

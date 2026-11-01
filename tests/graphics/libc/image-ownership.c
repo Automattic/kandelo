@@ -209,6 +209,9 @@ static int imported_owners[8];
 static unsigned transfers, transfer_closes, export_closes;
 /* GLES-object image export (EXPORT_IMAGE): handle 99 is the exported bo. */
 #define DOUBLE_EXPORT_IMAGE 0xc03064e3u
+/* DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: the last request and its count. */
+static struct wpk_drm_import_planar_image planar_import_request;
+static unsigned planar_imports;
 static unsigned image_exports, image_export_closes;
 static int image_export_errno;
 static uint32_t image_export_request[4];
@@ -981,6 +984,12 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             if (raw_reply_fail_calloc) fail_calloc = 1;
             egl_trace(13,fd,words,16);
         }
+    } else if (request == WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE) {
+        struct wpk_drm_import_planar_image *req = arg;
+        assert(req->ctx_id == slot->context && !req->source && !req->reserved);
+        planar_import_request = *req;
+        planar_imports++;
+        req->source = 0x51;
     } else if (request == DOUBLE_EXPORT_IMAGE) {
         uint32_t *words = arg;
         assert(words[0] == slot->context && words[2] && !words[4] && !words[9] && !words[10] && !words[11]);
@@ -2655,7 +2664,7 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
             assert(eglGetError() == EGL_NOT_INITIALIZED && count == -1 && modifier == 7);
             if (pass) break;
             assert(eglInitialize(dpy, NULL, NULL));
-            assert(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count == 13);
+            assert(eglQueryDmaBufFormatsEXT(dpy, 0, NULL, &count) && count == 20);
             assert(eglQueryDmaBufModifiersEXT(dpy, 0x34324241, 1, &modifier, NULL, &count));
             assert(count == 1 && modifier == 0);
             assert(eglTerminate(dpy)); count = -1; modifier = 7;
@@ -3114,7 +3123,7 @@ int main(int argc, char **argv) {
          * the plane is the image's own storage with its true layout. */
         const EGLint attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE };
         void *device = (void *)(uintptr_t)0x576200u;
-        struct wpk_gbm_image_plane plane;
+        struct wpk_gbm_image plane;
         EGLDisplay gbm = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, device, NULL);
         gbm_device_initializable = 1;
         assert(gbm != EGL_NO_DISPLAY && eglInitialize(gbm, NULL, NULL));
@@ -3124,10 +3133,11 @@ int main(int argc, char **argv) {
         EGLImageKHR gpu = eglCreateImageKHR(gbm, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, dmabuf);
         assert(gpu != EGL_NO_IMAGE_KHR);
         assert(_wpk_egl_image_export_gbm(gpu, device, wayland_native_identity, &plane) == 0);
-        assert(plane.fd >= 200 && plane.fd < 208 && prime_exports[plane.fd - 200].handle == 77);
+        assert(plane.num_planes == 1 && plane.fds[1] == -1);
+        assert(plane.fds[0] >= 200 && plane.fds[0] < 208 && prime_exports[plane.fds[0] - 200].handle == 77);
         assert(plane.width == 64 && plane.height == 32 && plane.format == 0x34325258 &&
-               plane.stride == 320 && plane.offset == 0);
-        assert(close(plane.fd) == 0);
+               plane.strides[0] == 320 && plane.offsets[0] == 0);
+        assert(close(plane.fds[0]) == 0);
         /* Another device, a recycled identity, an unknown handle, and an
          * image of a different display are not this device's images. */
         errno = 0;
@@ -3139,8 +3149,8 @@ int main(int argc, char **argv) {
         EGLImageKHR cpu = eglCreateImageKHR(gbm, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, dmabuf);
         assert(cpu != EGL_NO_IMAGE_KHR);
         assert(_wpk_egl_image_export_gbm(cpu, device, wayland_native_identity, &plane) == 0);
-        assert(plane.offset == 640 && plane.stride == 320 && plane.format == 0x34325258);
-        assert(close(plane.fd) == 0 && eglDestroyImageKHR(gbm, cpu));
+        assert(plane.offsets[0] == 640 && plane.strides[0] == 320 && plane.format == 0x34325258);
+        assert(close(plane.fds[0]) == 0 && eglDestroyImageKHR(gbm, cpu));
         dmabuf_cpu_tier = 0; dmabuf[9] = 0;
         /* A GLES texture image: its sized format names the DRM format, and
          * the exported bo's rows are 32-bpp. */
@@ -3156,10 +3166,10 @@ int main(int argc, char **argv) {
             (EGLClientBuffer)(uintptr_t)textures[0], NULL);
         assert(texture != EGL_NO_IMAGE_KHR);
         assert(_wpk_egl_image_export_gbm(texture, device, wayland_native_identity, &plane) == 0);
-        assert(prime_exports[plane.fd - 200].handle == 99);
+        assert(prime_exports[plane.fds[0] - 200].handle == 99);
         assert(plane.width == 4 && plane.height == 4 && plane.format == 0x34324241 &&
-               plane.stride == 16 && plane.offset == 0);
-        assert(close(plane.fd) == 0);
+               plane.strides[0] == 16 && plane.offsets[0] == 0);
+        assert(close(plane.fds[0]) == 0);
         /* Other sized formats name their DRM format, and the bo's rows are
          * that format's bytes per pixel, rounded to 4 bytes. */
         static const struct { uint32_t internal, fourcc, stride; } sized[] = {
@@ -3171,8 +3181,8 @@ int main(int argc, char **argv) {
                 (EGLClientBuffer)(uintptr_t)textures[2 + i], NULL);
             assert(typed != EGL_NO_IMAGE_KHR);
             assert(_wpk_egl_image_export_gbm(typed, device, wayland_native_identity, &plane) == 0);
-            assert(plane.format == sized[i].fourcc && plane.stride == sized[i].stride && plane.width == 4);
-            assert(close(plane.fd) == 0 && eglDestroyImageKHR(gbm, typed));
+            assert(plane.format == sized[i].fourcc && plane.strides[0] == sized[i].stride && plane.width == 4);
+            assert(close(plane.fds[0]) == 0 && eglDestroyImageKHR(gbm, typed));
         }
         /* A host-reported RGBA32F image has no DRM format to describe it. */
         image_export_format = 0x8814;
@@ -3728,7 +3738,9 @@ int main(int argc, char **argv) {
             assert(guard != MAP_FAILED && !mprotect(guard+page,page,PROT_NONE));
             EGLAttrib *last = (EGLAttrib *)(guard+page)-1;
             for (unsigned i = 0; i < 4; i++) {
-                *last = i == 0 ? EGL_NONE : i == 1 ? 0x1234 : i == 2 ? EGL_GL_TEXTURE_LEVEL : EGL_DMA_BUF_PLANE1_FD_EXT;
+                /* A plane-1 attribute is valid for planar YUV, so its value is
+                 * read; no Kandelo format has a fourth plane. */
+                *last = i == 0 ? EGL_NONE : i == 1 ? 0x1234 : i == 2 ? EGL_GL_TEXTURE_LEVEL : EGL_DMA_BUF_PLANE3_FD_EXT;
                 assert(!create(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,last));
                 assert(eglGetError() == (i < 2 ? EGL_BAD_PARAMETER : i == 2 ? EGL_BAD_MATCH : EGL_BAD_ATTRIBUTE));
             }
@@ -3749,8 +3761,16 @@ int main(int argc, char **argv) {
                 {0x34325241,4},{0x34325258,4},{0x34324241,4},{0x34324258,4},{0x36314752,2},
                 {0x20203852,1},{0x38385247,2},{0x30335241,4},{0x30335258,4},{0x30334241,4},
                 {0x30334258,4},{0x48344241,8},{0x48344258,8}};
-            EGLint count = 0, listed[16];
-            assert(eglQueryDmaBufFormatsEXT(dpy, 16, listed, &count) && count == 13);
+            EGLint count = 0, listed[24];
+            assert(eglQueryDmaBufFormatsEXT(dpy, 24, listed, &count) && count == 20);
+            /* YUV formats follow, external-only (OES_EGL_image_external). */
+            static const EGLint yuv[] = {0x3231564e,0x3132564e,0x32315559,0x32315659,0x56595559,0x59565955,0x30313050};
+            for (unsigned i = 0; i < 7; i++) {
+                assert(listed[13 + i] == yuv[i]);
+                EGLuint64KHR modifier = 7; EGLBoolean external = EGL_FALSE; EGLint modifiers = 0;
+                assert(eglQueryDmaBufModifiersEXT(dpy, yuv[i], 1, &modifier, &external, &modifiers));
+                assert(modifiers == 1 && modifier == 0 && external == EGL_TRUE);
+            }
             for (unsigned i = 0; i < 13; i++) {
                 EGLint fourcc = formats[i].fourcc, cpp = formats[i].cpp;
                 EGLint height = 16384 / (64 * cpp) < 64 ? 16384 / (64 * cpp) : 64;
@@ -3777,8 +3797,12 @@ int main(int argc, char **argv) {
                 assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,attributes));
                 assert(eglGetError() == EGL_BAD_ACCESS);
             }
+            /* NV12 has a second plane, which these attributes omit. */
             EGLint nv12[13]; memcpy(nv12,narrow,sizeof nv12); nv12[5] = 0x3231564e;
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12));
+            assert(eglGetError() == EGL_BAD_PARAMETER);
+            EGLint rgb888[13]; memcpy(rgb888,narrow,sizeof rgb888); rgb888[5] = 0x34324752;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,rgb888));
             assert(eglGetError() == EGL_BAD_MATCH);
             assert(imports == closes && imports == 26);
         } else if (!strcmp(argv[1],"dmabuf-gpu-format")) {
@@ -3825,6 +3849,79 @@ int main(int argc, char **argv) {
             preserved[12] = EGL_IMAGE_PRESERVED_KHR; preserved[13] = 7; preserved[14] = EGL_NONE;
             assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,preserved));
             assert(eglGetError() == EGL_BAD_PARAMETER && !imports);
+        } else if (!strcmp(argv[1],"dmabuf-yuv")) {
+            /* EXT_image_dma_buf_import with a planar YUV format: one fd,
+             * offset and pitch per plane, each checked against its own
+             * dma-buf (16 KiB here), plane attributes the format lacks are
+             * EGL_BAD_ATTRIBUTE, and the image is external-only. A 64x32
+             * NV12 frame: luma rows of 64 bytes, then 16 rows of 32 Cb,Cr
+             * pairs at offset 2048. */
+            dmabuf_cpu_tier = 1;
+            EGLint nv12[] = {EGL_WIDTH,64,EGL_HEIGHT,32,EGL_LINUX_DRM_FOURCC_EXT,0x3231564e,
+                EGL_DMA_BUF_PLANE0_FD_EXT,100,EGL_DMA_BUF_PLANE0_OFFSET_EXT,0,EGL_DMA_BUF_PLANE0_PITCH_EXT,64,
+                EGL_DMA_BUF_PLANE1_FD_EXT,100,EGL_DMA_BUF_PLANE1_OFFSET_EXT,2048,EGL_DMA_BUF_PLANE1_PITCH_EXT,64,
+                EGL_YUV_COLOR_SPACE_HINT_EXT,EGL_ITU_REC709_EXT,EGL_SAMPLE_RANGE_HINT_EXT,EGL_YUV_FULL_RANGE_EXT,
+                EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT,EGL_YUV_CHROMA_SITING_0_5_EXT,EGL_NONE,EGL_NONE,EGL_NONE};
+            const size_t length = sizeof nv12 / sizeof nv12[0];
+            EGLImageKHR value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12);
+            assert(value && imports == 2); /* one import reference per plane */
+            assert(eglDestroyImageKHR(dpy,value) && closes == 1);
+            struct { unsigned at; EGLint value, error; } bad[] = {
+                {17, 63, EGL_BAD_ACCESS},          /* a chroma row is 64 bytes */
+                {15, 16384 - 64 * 15, EGL_BAD_ACCESS}, /* last chroma row past the end */
+                {12, EGL_DMA_BUF_PLANE2_FD_EXT, EGL_BAD_ATTRIBUTE}, /* NV12 has two planes */
+                {16, EGL_YUV_COLOR_SPACE_HINT_EXT, EGL_BAD_PARAMETER}, /* no plane-1 pitch */
+            };
+            for (unsigned i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+                EGLint list[sizeof nv12 / sizeof nv12[0]]; memcpy(list,nv12,sizeof nv12);
+                list[bad[i].at] = bad[i].value;
+                if (bad[i].at == 16) list[17] = EGL_ITU_REC601_EXT;
+                assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,list));
+                assert(eglGetError() == bad[i].error);
+            }
+            /* Modifiers: both planes LINEAR, or a mismatch (EGL_BAD_PARAMETER). */
+            EGLint modified[sizeof nv12 / sizeof nv12[0] + 8]; memcpy(modified,nv12,sizeof nv12);
+            const EGLint words[] = {EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,0,EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,0,
+                EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT,0,EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT,0};
+            memcpy(modified + length - 3, words, sizeof words); modified[length + 5] = EGL_NONE;
+            value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modified);
+            assert(value && eglDestroyImageKHR(dpy,value));
+            modified[length - 3 + 5] = 1;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,modified));
+            assert(eglGetError() == EGL_BAD_PARAMETER);
+            /* A plane in GPU-tier storage has no CPU bytes to convert. */
+            dmabuf_cpu_tier = 0;
+            unsigned imported = imports, closed = closes;
+            assert(!eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12));
+            /* The first plane's import is released again. */
+            assert(eglGetError() == EGL_BAD_ACCESS && imports == imported + 1 && closes == closed + 1);
+            dmabuf_cpu_tier = 1;
+            /* The image is external-only: TEXTURE_2D and renderbuffers refuse
+             * it; TEXTURE_EXTERNAL_OES imports its planes and conversion. */
+            binding_model = 1;
+            EGLContext context = eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs); assert(context);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,context));
+            value = eglCreateImageKHR(dpy,EGL_NO_CONTEXT,EGL_LINUX_DMA_BUF_EXT,NULL,nv12); assert(value);
+            GLuint textures[2], rb;
+            glGenTextures(2,textures); glGenRenderbuffers(1,&rb);
+            glBindTexture(GL_TEXTURE_2D,textures[0]);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_2D,value);
+            assert(glGetError() == GL_INVALID_OPERATION && !planar_imports);
+            glBindRenderbuffer(GL_RENDERBUFFER,rb);
+            glEGLImageTargetRenderbufferStorageOES(GL_RENDERBUFFER,value);
+            assert(glGetError() == GL_INVALID_OPERATION && !planar_imports);
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES,textures[1]);
+            glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES,value);
+            assert(glGetError() == GL_NO_ERROR && planar_imports == 1);
+            const struct wpk_drm_import_planar_image *req = &planar_import_request;
+            assert(req->width == 64 && req->height == 32 && req->format == 0x3231564e);
+            assert(req->bo_handles[0] && req->bo_handles[0] == req->bo_handles[1] && !req->bo_handles[2]);
+            assert(req->pitches[0] == 64 && req->pitches[1] == 64 && req->offsets[0] == 0 && req->offsets[1] == 2048);
+            assert(req->color_space == WPK_YUV_BT709 && req->full_range == 1 && req->chroma_siting == WPK_CHROMA_SITING_H_HALF);
+            glDeleteTextures(2,textures); glDeleteRenderbuffers(1,&rb);
+            assert(eglDestroyImageKHR(dpy,value));
+            assert(eglDestroyContext(dpy,context) && eglReleaseThread());
+            dmabuf_cpu_tier = 0;
         } else if (!strcmp(argv[1],"dmabuf-hints")) {
             EGLint hints[23]; memcpy(hints,narrow,12*sizeof *narrow);
             const EGLint keys[] = {EGL_YUV_COLOR_SPACE_HINT_EXT,EGL_SAMPLE_RANGE_HINT_EXT,

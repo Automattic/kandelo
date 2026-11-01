@@ -7,9 +7,54 @@ import { applyNativeChanges, nativeInverse, retireNativeRetirement, rethrowNativ
 import { checkedGlCall } from "./program-objects.js";
 import { cpuImageCodec, type CpuImageReadback } from "./cpu-image-codec.js";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./image-writes.js";
+import { drmFormatInfo, planeHeight, rowBytes } from "./drm-format-info.js";
+import { convertYuv, yuvOutputBits, type YuvColorSpace } from "./yuv-convert.js";
+import type { GpuStorageFormat } from "./gpu-storage-format.js";
 
 export type CpuImageLayout = {width: number; height: number; format: number; pitch: number; offset: number};
 export const cpuImageKey = (v: CpuImageLayout) => `${v.width}:${v.height}:${v.format}:${v.pitch}:${v.offset}`;
+
+/** A YUV dma-buf image (DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE): one CPU-tier
+ * plane per plane of the format, and its conversion. `siting` holds the
+ * WPK_CHROMA_SITING_* bits (1: horizontal 0.5, 2: vertical 0.5). */
+export type PlanarImageLayout = {width: number; height: number; format: number;
+  planes: readonly {bo: number; pitch: number; offset: number}[];
+  colorSpace: YuvColorSpace; fullRange: boolean; siting: number};
+export const planarImageKey = (v: PlanarImageLayout) =>
+  `yuv:${v.width}:${v.height}:${v.format}:${v.planes.map(p => `${p.bo}+${p.offset}/${p.pitch}`).join(",")}` +
+  `:${v.colorSpace}:${v.fullRange ? 1 : 0}:${v.siting}`;
+/** Size of shared::dri::WpkDrmImportPlanarImage, the planar import record. */
+export const PLANAR_IMAGE_RECORD_BYTES = 72;
+/** The layout of a kernel planar import record (handles replaced by bo ids):
+ * ctx_id, width, height, format, bo_handles[3], pitches[3], offsets[3],
+ * color_space, full_range, chroma_siting, source, reserved. Null when the
+ * record does not describe a YUV image. */
+export function planarImageRecord(record: DataView): PlanarImageLayout | null {
+  const word = (index: number) => record.getUint32(index * 4, true);
+  const format = word(3), info = drmFormatInfo(format), colorSpace = word(13);
+  if (record.byteLength !== PLANAR_IMAGE_RECORD_BYTES || !info?.isYuv || colorSpace > 2 || word(14) > 1 || word(15) > 3)
+    return null;
+  return {width: word(1), height: word(2), format, colorSpace: colorSpace as YuvColorSpace,
+    fullRange: word(14) === 1, siting: word(15),
+    planes: Array.from({length: info.numPlanes}, (_, plane) =>
+      ({bo: word(4 + plane), pitch: word(7 + plane), offset: word(10 + plane)}))};
+}
+/** The converted image's storage: 8 bits per channel for 8-bit YUV, 10
+ * for P010, so no sample loses precision to the image. */
+const RGBA8_IMAGE: GpuStorageFormat = {internalFormat: 0x8058, format: 0x1908, type: 0x1401, opaque: true};
+const RGB10_A2_IMAGE: GpuStorageFormat = {internalFormat: 0x8059, format: 0x1908, type: 0x8368, opaque: true};
+/** A YUV image converted to RGBA. It is never rendered to (external
+ * textures and YUV images are never render targets), so it is never read
+ * back; it is converted again only when a plane's canonical bytes were
+ * written (GbmBoRegistry.writeCount). */
+type PlanarMirror = {
+  layout: PlanarImageLayout;
+  allocation: GlGpuAllocation;
+  /** Each distinct plane bo and its write count at the last conversion. */
+  converted: Map<number, number> | null;
+  /** With the write-count audit on: the plane bos' bytes converted. */
+  audited: Map<number, Uint8Array<ArrayBuffer>> | null;
+};
 type Mirror = {
   layout: CpuImageLayout;
   allocation: GlGpuAllocation;
@@ -27,6 +72,8 @@ type Mirror = {
  * serialize CPU publication, native execution, and device writeback. */
 export class CpuImageStorage {
   private mirrors = new Map<number, Map<WebGL2RenderingContext, Map<string, Mirror>>>();
+  private planar = new Map<WebGL2RenderingContext, Map<string, PlanarMirror>>();
+  private planarByBo = new Map<number, Set<PlanarMirror>>();
 
   acquire(b: GlBinding, bo: number, store: GbmBoRegistry, layout: CpuImageLayout): GlGpuAllocation | null {
     const gl = b.gl, bytes = store.pixelView(bo);
@@ -58,13 +105,86 @@ export class CpuImageStorage {
     return result;
   }
 
+  /** The converted image of a YUV dma-buf, made on first import of this
+   * layout in this renderer. Null when a plane's object is not CPU storage
+   * or cannot hold the plane's rows. */
+  acquirePlanar(b: GlBinding, store: GbmBoRegistry, layout: PlanarImageLayout): GlGpuAllocation | null {
+    const gl = b.gl, info = drmFormatInfo(layout.format), {width, height, planes} = layout;
+    if (!gl || !info?.isYuv || planes.length !== info.numPlanes || !Number.isSafeInteger(width) ||
+        !Number.isSafeInteger(height) || width <= 0 || height <= 0) return null;
+    for (const [index, plane] of planes.entries()) {
+      const bytes = store.pixelView(plane.bo), row = rowBytes(info, width, index);
+      const span = plane.offset + (planeHeight(info, height, index) - 1) * plane.pitch + row;
+      if (!bytes ||
+          ![plane.offset, plane.pitch, span].every(Number.isSafeInteger) || plane.offset < 0 ||
+          plane.pitch < row || span > bytes.byteLength) return null;
+    }
+    const key = planarImageKey(layout);
+    let views = this.planar.get(gl);
+    const old = views?.get(key);
+    if (old) return old.allocation.retirement.pending ? null : old.allocation;
+    const storage = yuvOutputBits(layout.format) === 10 ? RGB10_A2_IMAGE : RGBA8_IMAGE;
+    let result: GlGpuAllocation | null = null;
+    allocateGpuStorage(gl, width, height, 0, allocation => {
+      const mirror: PlanarMirror = {layout: {...layout, planes: planes.map(plane => ({...plane}))},
+        allocation, converted: null, audited: null};
+      if (!views) { views = new Map(); this.planar.set(gl, views); }
+      views.set(key, mirror);
+      for (const plane of planes) {
+        let owners = this.planarByBo.get(plane.bo);
+        if (!owners) { owners = new Set(); this.planarByBo.set(plane.bo, owners); }
+        owners.add(mirror);
+      }
+      result = allocation;
+    }, storage);
+    return result;
+  }
+
+  /** Convert a YUV image whose planes were written since its last
+   * conversion. The canonical bytes' write counts decide: a CPU writer's
+   * mapping is merged (syncToSab) before its count is read. */
+  private preparePlanar(b: GlBinding, store: GbmBoRegistry, mirror: PlanarMirror): boolean {
+    const bos = [...new Set(mirror.layout.planes.map(plane => plane.bo))];
+    const counts = new Map<number, number>();
+    for (const bo of bos) {
+      store.syncToSab(bo);
+      const count = store.writeCount(bo);
+      if (count === undefined) return false;
+      counts.set(bo, count);
+    }
+    const current = mirror.converted && bos.every(bo => mirror.converted!.get(bo) === counts.get(bo));
+    if (current && !imageWriteAudit()) return true;
+    if (current) {
+      // Audit (debug and tests): unchanged counts must mean unchanged bytes.
+      for (const bo of bos) {
+        const bytes = store.pixelView(bo)!, before = mirror.audited?.get(bo);
+        if (before && (before.length !== bytes.length || bytes.some((value, i) => value !== before[i])))
+          throw new Error(`YUV image plane bo ${bo} changed without a counted write`);
+      }
+      return true;
+    }
+    const {width, height, format} = mirror.layout;
+    let pixels: ArrayBufferView;
+    try {
+      pixels = convertYuv(format, width, height, mirror.layout.planes.map(plane =>
+        ({bytes: store.pixelView(plane.bo)!, offset: plane.offset, pitch: plane.pitch})),
+        {colorSpace: mirror.layout.colorSpace, fullRange: mirror.layout.fullRange,
+          sitingH: mirror.layout.siting & 1 ? 0.5 : 0, sitingV: mirror.layout.siting & 2 ? 0.5 : 0});
+    } catch (caught) { rethrowNativeGlFault(caught); return false; }
+    const storage = mirror.allocation.storage;
+    if (!this.uploadPixels(b, mirror.allocation, pixels, storage.format, storage.type)) return false;
+    mirror.converted = counts;
+    mirror.audited = imageWriteAudit() ? new Map(bos.map(bo => [bo, new Uint8Array(store.pixelView(bo)!)])) : null;
+    return true;
+  }
+
   private *entries(gl?: WebGL2RenderingContext): Iterable<[number, Mirror]> {
     for (const [bo, contexts] of this.mirrors) for (const [context, views] of contexts)
       if (!gl || context === gl) for (const mirror of views.values()) yield [bo, mirror];
   }
 
   private upload(b: GlBinding, mirror: Mirror, bytes: Uint8Array): boolean {
-    const gl = b.gl!, {w, h, tex} = mirror.allocation;
+    const {w, h} = mirror.allocation;
     const codec = cpuImageCodec(mirror.layout.format);
     if (!codec) return false;
     let snapshot: Uint8Array<ArrayBuffer>, pixels: ArrayBufferView;
@@ -72,6 +192,15 @@ export class CpuImageStorage {
       snapshot = new Uint8Array(bytes);
       pixels = codec.pack(snapshot, mirror.layout.offset, mirror.layout.pitch, w, h);
     } catch (caught) { rethrowNativeGlFault(caught); return false; }
+    const accepted = this.uploadPixels(b, mirror.allocation, pixels, codec.storage.format, codec.storage.type);
+    if (accepted) mirror.snapshot = snapshot;
+    return accepted;
+  }
+
+  /** Replace a mirror's whole image with `pixels`. */
+  private uploadPixels(b: GlBinding, allocation: GlGpuAllocation, pixels: ArrayBufferView,
+      format: number, type: number): boolean {
+    const gl = b.gl!, {w, h, tex} = allocation;
     // Typed-array uploads must not inherit a public unpack buffer, skips,
     // orientation, premultiplication, or browser color-space conversion.
     const owner = {gl, errors: [] as number[], shadow: {}};
@@ -93,20 +222,19 @@ export class CpuImageStorage {
         restore: nativeInverse(owner, [["pixelStorei", field, values[index]]])
       })),
       {apply: () => checkedGlCall(owner, () => gl.texSubImage2D(0x0de1, 0, 0, 0, w, h,
-        codec.storage.format, codec.storage.type, pixels)), restore: nativeInverse(owner)},
+        format, type, pixels)), restore: nativeInverse(owner)},
     ], {shared: true, finalizer: nativeInverse(owner,
       [["bindTexture", 0x0de1, texture]], [["bindBuffer", 0x88ec, unpack]],
       fields.map((field, index) => ["pixelStorei", field, values[index]]))});
     // Siblings sampling the mirror copy it again (image-writes.ts).
     noteStorageWrite(tex);
-    if (accepted) mirror.snapshot = snapshot;
     return accepted;
   }
 
   /** Complete pending native writes before examining incoming CPU changes.
    * Failure keeps native authority; a later upload cannot erase that work. */
   prepare(b: GlBinding, store: GbmBoRegistry, captureErrors: (gl: WebGL2RenderingContext) => void): boolean {
-    if (!b.gl || !this.mirrors.size) return true;
+    if (!b.gl || (!this.mirrors.size && !this.planar.size)) return true;
     // A different native renderer cannot consume stale CPU storage while an
     // earlier renderer still owns an unpublished accepted write.
     for (const [, mirror] of this.entries()) if (mirror.dirty)
@@ -121,6 +249,8 @@ export class CpuImageStorage {
       if (!previous || previous.length !== bytes.length || bytes.some((value, index) => value !== previous[index]))
         if (!this.upload(b, mirror, bytes)) return false;
     }
+    for (const mirror of this.planar.get(b.gl)?.values() ?? [])
+      if (!mirror.allocation.retirement.pending && !this.preparePlanar(b, store, mirror)) return false;
     return true;
   }
 
@@ -193,9 +323,21 @@ export class CpuImageStorage {
   }
 
   retire(bo: number): boolean {
-    const contexts = this.mirrors.get(bo);
-    if (!contexts) return true;
+    // A YUV image needs every plane: any plane's object retiring retires it.
     let complete = true;
+    for (const mirror of [...this.planarByBo.get(bo) ?? []]) {
+      if (!retireNativeRetirement(mirror.allocation.retirement)) { complete = false; continue; }
+      const gl = mirror.allocation.gl, views = this.planar.get(gl);
+      views?.delete(planarImageKey(mirror.layout));
+      if (views && !views.size) this.planar.delete(gl);
+      for (const plane of mirror.layout.planes) {
+        const owners = this.planarByBo.get(plane.bo);
+        owners?.delete(mirror);
+        if (owners && !owners.size) this.planarByBo.delete(plane.bo);
+      }
+    }
+    const contexts = this.mirrors.get(bo);
+    if (!contexts) return complete;
     for (const [gl, views] of contexts) {
       for (const [key, mirror] of views) {
         if (retireNativeRetirement(mirror.allocation.retirement)) views.delete(key);

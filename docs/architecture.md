@@ -3861,6 +3861,37 @@ plane of the format (one object or several), checks each plane against
 its own object's size, and `GBM_BO_IMPORT_FD` names one plane, so it
 takes packed YUYV/UYVY but not a planar format.
 
+`EGL_EXT_image_dma_buf_import` imports those YUV formats with one fd,
+offset and pitch per plane (planes 0 to 2; a plane the format lacks is
+`EGL_BAD_ATTRIBUTE`, a missing attribute of a plane it has
+`EGL_BAD_PARAMETER`, a pitch shorter than a row or a plane past its
+dma-buf `EGL_BAD_ACCESS`, and every plane that names a modifier must name
+plane 0's, as Mesa requires). The color-space, sample-range and siting
+hints select the conversion; absent hints are BT.601, narrow range and
+siting 0, Mesa's defaults. `eglQueryDmaBufModifiersEXT` reports the YUV
+formats `external_only`: a YUV image is the sibling of an external texture
+only (`GL_OES_EGL_image_external`), and a TEXTURE_2D or renderbuffer
+target is `GL_INVALID_OPERATION`. Each plane must be CPU-tier storage, and
+`GBM_BO_IMPORT_EGL_IMAGE` of a YUV image yields a bo with all of its
+planes. Binding the image through `DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE`
+gives the host the planes' bo ids and the conversion; the kernel checks
+each plane against its CPU-tier object first. The host
+(`host/src/webgl/yuv-convert.ts`, `cpu-image-storage.ts`) converts the
+planes to an RGBA texture (RGBA8 for 8-bit formats, RGB10_A2 for P010, so
+no sample loses precision) with the BT.601, BT.709 or BT.2020 matrix and
+narrow or full range, reconstructing chroma by linear interpolation
+between the samples where the siting hints place them, and no transfer
+function (the extension keeps the source's color space). Why convert, and
+when: sampling RGBA keeps an external texture to one texture unit and no
+private uniforms, so `REQUIRED_TEXTURE_IMAGE_UNITS_OES` is 1 and no
+advertised limit shrinks; converting only when a plane's canonical bytes
+were written (each BO's write count, advanced when a CPU writer's mapping
+is merged or a device writes it) means no draw and no unchanged frame
+pays for it. The converted texture's own write count then lets sibling
+views copy it only after a conversion. With the image write-count audit
+on (the graphics test gate), an unchanged count with changed plane bytes
+is a fatal fault.
+
 In the image-backed producer path, rendering resources and presenting them
 are separate operations. Authorized KMS operations select a framebuffer;
 the vblank pump presents its retained GPU BO even when the producer uses

@@ -323,20 +323,28 @@ static void import_gpu_tier(void) {
 /* libEGL's half of GBM_BO_IMPORT_EGL_IMAGE: only images of the EGL display
  * initialized on `egl_device` (with its identity) export a plane, each time
  * as a fresh PRIME descriptor naming the image's GEM storage. */
-struct egl_image_double { uint32_t handle; off_t size; struct wpk_gbm_image_plane plane; };
+/* A one-plane image (`plane`) or, with `chroma`, a two-plane NV12 image
+ * whose planes are in `handle` and `chroma`. */
+struct egl_image_plane { uint32_t width, height, format, stride, offset; };
+struct egl_image_double { uint32_t handle; off_t size; struct egl_image_plane plane;
+    uint32_t chroma; off_t chroma_size; uint32_t chroma_stride, chroma_offset; };
 static const void *egl_device;
 static uint64_t egl_identity;
 static int egl_export_error, last_export_fd = -1;
 int _wpk_egl_image_export_gbm(const void *image, const void *device, uint64_t identity,
-                              struct wpk_gbm_image_plane *plane) {
+                              struct wpk_gbm_image *planes) {
     const struct egl_image_double *source = image;
     if (egl_export_error) { errno = egl_export_error; return -1; }
     if (!source || device != egl_device || identity != egl_identity || !source->handle) {
         errno = EINVAL;
         return -1;
     }
-    *plane = source->plane;
-    plane->fd = last_export_fd = prime_fd(source->handle, source->size);
+    *planes = (struct wpk_gbm_image){.width = source->plane.width, .height = source->plane.height,
+        .format = source->plane.format, .num_planes = source->chroma ? 2 : 1, .fds = {-1, -1, -1, -1},
+        .strides = {source->plane.stride, source->chroma_stride},
+        .offsets = {source->plane.offset, source->chroma_offset}};
+    planes->fds[0] = last_export_fd = prime_fd(source->handle, source->size);
+    if (source->chroma) planes->fds[1] = prime_fd(source->chroma, source->chroma_size);
     return 0;
 }
 
@@ -384,6 +392,15 @@ static void import_egl_image(void) {
     off_t at = (off_t)cpu.handle * sysconf(_SC_PAGESIZE) + 32;
     assert(pread(fileno(device_file), &stored, 4, at) == 4 && stored == pixel);
     gbm_bo_destroy(bo);
+    /* A two-plane NV12 image: a bo with both planes' descriptors, as the
+     * image's planes are in separate objects. */
+    struct egl_image_double nv12 = {new_handle(0), 24, {.width = 4, .height = 4, .format = GBM_FORMAT_NV12,
+        .stride = 4}, new_handle(0), 8, 4, 0};
+    bo = gbm_bo_import(device, GBM_BO_IMPORT_EGL_IMAGE, &nv12, GBM_BO_USE_LINEAR);
+    assert(bo && gbm_bo_get_plane_count(bo) == 2 && gbm_bo_get_format(bo) == GBM_FORMAT_NV12);
+    assert(gbm_bo_get_handle_for_plane(bo, 1).u32 == nv12.chroma && gbm_bo_get_stride_for_plane(bo, 1) == 4);
+    gbm_bo_destroy(bo);
+    assert(!live[nv12.handle] && !live[nv12.chroma]);
     /* Geometry the storage cannot back is refused like any dma-buf. */
     cpu.size = 64;
     errno = 0;

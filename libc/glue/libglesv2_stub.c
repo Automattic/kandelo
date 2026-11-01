@@ -4145,7 +4145,8 @@ void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) {
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (name == 0) {
+    /* A YUV image is external-only: no 2D texture can be its sibling. */
+    if (name == 0 || (target == GL_TEXTURE_2D && _wpk_egl_image_external_only(img))) {
         raise_client_error(GL_INVALID_OPERATION);
         _wpk_egl_image_release(img);
         return;
@@ -4172,7 +4173,8 @@ void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) 
         raise_client_error(GL_INVALID_VALUE);
         return;
     }
-    if (g_bound_renderbuffer == 0) {
+    /* A YUV image is external-only and never a render target. */
+    if (g_bound_renderbuffer == 0 || _wpk_egl_image_external_only(img)) {
         raise_client_error(GL_INVALID_OPERATION);
         _wpk_egl_image_release(img);
         return;

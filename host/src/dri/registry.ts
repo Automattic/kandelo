@@ -113,6 +113,11 @@ type InternalEntry = {
   pids: Set<number>;
   bindingsByPid: Map<number, Map<number, InternalBinding>>;
   pendingReaders: Set<number>;
+  /** Advances with every change to `sab`: a CPU writer's mapping merged in
+   * (flushMemoryToSab) or a device write (publishDevicePixels). Readers that
+   * derive data from the bytes (a converted YUV image) redo it only when
+   * this moves. */
+  writes: number;
 };
 
 /** Consulted only for a NEW mapping admission. Later coherence and cleanup
@@ -221,6 +226,7 @@ export class GbmBoRegistry {
         pids: new Set([b.pid]),
         bindingsByPid: new Map(),
         pendingReaders: new Set(),
+        writes: 0,
       });
     }
     for (const l of this.listeners) l(b.pid, b.bo_id, "create");
@@ -548,6 +554,7 @@ export class GbmBoRegistry {
     const src = new Uint8Array(mappingMemoryBuffer(mem), binding.addr, copyLen);
     const snapshot = binding.snapshot;
     if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
+      e.writes++;
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
       for (const reader of this.bindings(e)) if (reader !== binding) e.pendingReaders.add(reader.pid);
@@ -569,6 +576,12 @@ export class GbmBoRegistry {
       if (e.pids.has(pid)) out.push(this.project(e, pid));
     }
     return out;
+  }
+
+  /** The canonical bytes' write count (see InternalEntry.writes); call
+   * syncToSab first to merge pending CPU writes. Undefined for unknown bos. */
+  writeCount(bo_id: number): number | undefined {
+    return this.bos.get(bo_id)?.writes;
   }
 
   /** Direct view onto a bo's canonical pixel SAB. Undefined for unknown bos. */
@@ -605,6 +618,7 @@ export class GbmBoRegistry {
       if (targets.some(target => target.view.byteLength !== target.length) || pixels.byteLength !== e.size)
         return false;
       canonical.set(pixels);
+      e.writes++;
       for (const {pid, view, source, snapshot} of targets) {
         view.set(source);
         snapshot.set(view);

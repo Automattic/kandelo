@@ -4959,6 +4959,46 @@ pub mod dri {
         pub format: u32, // 4  in  the dma-buf's claimed DRM fourcc
     }
 
+    /// `_IOWR('d', 0xE5, WpkDrmImportPlanarImage)` — import a YUV dma-buf
+    /// image (NV12, NV21, YUV420, YVU420, YUYV, UYVY, P010) as an EGLImage
+    /// source: one bo handle, pitch and offset per
+    /// plane of the format (drm_format_info), and the color conversion
+    /// EGL_EXT_image_dma_buf_import's hints select. The host converts the
+    /// planes to an RGBA image whenever their bytes change; `source` is the
+    /// private token of that image, as `IMPORT_IMAGE` returns.
+    pub const DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: u32 = 0xc048_64e5;
+
+    /// YCbCr-to-RGB matrices of `WpkDrmImportPlanarImage::color_space`.
+    pub const WPK_YUV_BT601: u32 = 0;
+    pub const WPK_YUV_BT709: u32 = 1;
+    pub const WPK_YUV_BT2020: u32 = 2;
+    /// `WpkDrmImportPlanarImage::chroma_siting` bits: chroma samples sit
+    /// halfway between luma samples (siting 0.5) rather than on the first.
+    pub const WPK_CHROMA_SITING_H_HALF: u32 = 1;
+    pub const WPK_CHROMA_SITING_V_HALF: u32 = 2;
+
+    /// `IMPORT_PLANAR_IMAGE` argument, 72 bytes. Planes past the format's
+    /// count, `source` and `reserved` are zero on input.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+    pub struct WpkDrmImportPlanarImage {
+        pub ctx_id: u32,
+        pub width: u32,
+        pub height: u32,
+        pub format: u32,
+        pub bo_handles: [u32; 3],
+        pub pitches: [u32; 3],
+        pub offsets: [u32; 3],
+        /// `WPK_YUV_BT601`, `_BT709` or `_BT2020`.
+        pub color_space: u32,
+        /// 1: full-range samples; 0: narrow (16-235 for 8 bits).
+        pub full_range: u32,
+        /// `WPK_CHROMA_SITING_*` bits.
+        pub chroma_siting: u32,
+        pub source: u32,
+        pub reserved: u32,
+    }
+
     /// Publish one GLES object image as an EGLImage source (EGL 1.5 section
     /// 3.9, KHR_gl_texture_2D_image, KHR_gl_texture_cubemap_image and
     /// KHR_gl_renderbuffer_image). `target` is `GL_TEXTURE_2D`, a
@@ -6299,6 +6339,12 @@ mod dri_tests {
         for format in [0, 0x3231564e /* NV12 */, 0x34324752 /* RGB888 */] {
             assert_eq!(gpu_storage_format_cpp(format), None, "{format:#x}");
         }
+    }
+
+    #[test]
+    fn planar_image_import_record_is_72_bytes() {
+        assert_eq!(size_of::<WpkDrmImportPlanarImage>(), 72);
+        assert_eq!(DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, 0xc000_0000 | (72 << 16) | (0x64 << 8) | 0xe5);
     }
 
     #[test]

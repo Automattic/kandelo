@@ -596,6 +596,16 @@ pub trait HostIO {
         -(Errno::ENOSYS as i32)
     }
 
+    /// `DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE`: register the YUV image `record`
+    /// (a `WpkDrmImportPlanarImage` whose `bo_handles` hold the planes' bo
+    /// ids) as an image source of `pid`'s context `ctx_id`, converted to
+    /// RGBA whenever the planes' bytes change. Returns the source token
+    /// (> 0) or a negative errno.
+    #[allow(unused_variables)]
+    fn gl_import_planar_image(&mut self, pid: i32, ctx_id: u32, record: &[u8]) -> i32 {
+        -(Errno::ENOSYS as i32)
+    }
+
     /// `DRM_IOCTL_WPK_EXPORT_IMAGE`: make the selected GLES object's image
     /// the storage of GPU-tier bo `bo_id`. `attrs` is the kernel's copy of
     /// `WpkDrmExportImage`; the host writes `width`, `height`,

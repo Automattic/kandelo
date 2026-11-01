@@ -1898,6 +1898,7 @@ pub(crate) fn handle_dri_ioctl(
     if (gl::GLIO_INIT..=gl::GLIO_SUBMIT_QUERY).contains(&request)
         || request == DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE
         || request == DRM_IOCTL_WPK_IMPORT_IMAGE
+        || request == DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE
         || request == DRM_IOCTL_WPK_EXPORT_IMAGE
     {
         let dri = dri_state(proc, ofd_idx)?;
@@ -2307,6 +2308,52 @@ pub(crate) fn handle_dri_ioctl(
             if !valid { return Err(Errno::EINVAL); }
             require_gl_current(proc, ofd_idx)?;
             let source = host.gl_import_image(pid, req.ctx_id, bo_id, req.width, req.height, req.format, req.pitch, req.offset);
+            if source <= 0 { return Err(Errno::EIO); }
+            req.source = source as u32;
+            unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
+            Ok(())
+        }
+        DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE => {
+            if buf.len() < core::mem::size_of::<WpkDrmImportPlanarImage>() { return Err(Errno::EINVAL); }
+            let mut req: WpkDrmImportPlanarImage = unsafe { core::ptr::read_unaligned(buf.as_ptr() as *const _) };
+            // A YUV format (drm_format_info) with one handle, pitch and
+            // offset per plane; unused planes, the output and the reserved
+            // word are zero, and the hints name a defined conversion.
+            let info = drm_format_info(req.format).filter(|info| info.is_yuv).ok_or(Errno::EINVAL)?;
+            let planes = info.num_planes as usize;
+            if req.width == 0 || req.height == 0 || req.source != 0 || req.reserved != 0
+                || req.color_space > WPK_YUV_BT2020 || req.full_range > 1
+                || req.chroma_siting & !(WPK_CHROMA_SITING_H_HALF | WPK_CHROMA_SITING_V_HALF) != 0
+                || (planes..3).any(|p| req.bo_handles[p] != 0 || req.pitches[p] != 0 || req.offsets[p] != 0)
+            {
+                return Err(Errno::EINVAL);
+            }
+            let mut record = req;
+            {
+                let dri = dri_state(proc, ofd_idx)?;
+                let gem = dri.gem.borrow();
+                for plane in 0..planes {
+                    record.bo_handles[plane] = *gem.handles.get(&req.bo_handles[plane]).ok_or(Errno::ENOENT)?;
+                }
+                let gls = dri.gl.as_ref().ok_or(Errno::EINVAL)?;
+                if !gls.initialized || gls.context_id != Some(req.ctx_id) { return Err(Errno::EINVAL); }
+            }
+            // The host reads each plane's bytes when it converts the image,
+            // so every plane is CPU-tier storage that holds its rows: a
+            // pitch of at least one row and a last row inside the object.
+            for plane in 0..planes {
+                let row = info.row_bytes(req.width, plane);
+                let rows = u64::from(info.plane_height(req.height, plane));
+                let span = u64::from(req.offsets[plane]) + (rows - 1) * u64::from(req.pitches[plane]) + row;
+                let valid = u64::from(req.pitches[plane]) >= row && crate::dri::with_registry(|r|
+                    r.get(record.bo_handles[plane]).map(|bo|
+                        bo.tier == crate::dri::bo::BoTier::CpuShared && span <= bo.size).unwrap_or(false));
+                if !valid { return Err(Errno::EINVAL); }
+            }
+            require_gl_current(proc, ofd_idx)?;
+            let bytes: [u8; core::mem::size_of::<WpkDrmImportPlanarImage>()] =
+                unsafe { core::mem::transmute(record) };
+            let source = host.gl_import_planar_image(pid, req.ctx_id, &bytes);
             if source <= 0 { return Err(Errno::EIO); }
             req.source = source as u32;
             unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut _, req); }
@@ -25048,6 +25095,7 @@ mod tests {
         /// `gl_bind_foreign_texture` call.
         gl_bind_foreign_texture_calls: Vec<(i32, u32, u32, u32)>,
         gl_import_image_calls: Vec<(i32, u32, u32, [u32; 5])>,
+        gl_import_planar_image_calls: Vec<(i32, u32, wasm_posix_shared::dri::WpkDrmImportPlanarImage)>,
         /// `gl_export_image` calls: pid, ctx, bo, (target, name, level).
         gl_export_image_calls: Vec<(i32, u32, u32, [u32; 3])>,
         /// Negative errno, or zero to report `gl_export_image_reply`.
@@ -25225,6 +25273,7 @@ mod tests {
                 kms_addfb_offsets: Vec::new(),
                 gl_bind_foreign_texture_calls: Vec::new(),
                 gl_import_image_calls: Vec::new(),
+                gl_import_planar_image_calls: Vec::new(),
                 gl_export_image_calls: Vec::new(),
                 gl_export_image_rc: 0,
                 gl_export_image_reply: [16, 8, 0x1908, 5, 3],
@@ -26141,6 +26190,12 @@ mod tests {
         fn gl_import_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32,
             width: u32, height: u32, format: u32, pitch: u32, offset: u32) -> i32 {
             self.gl_import_image_calls.push((pid, ctx_id, bo_id, [width, height, format, pitch, offset]));
+            self.gl_bind_foreign_texture_rc
+        }
+        fn gl_import_planar_image(&mut self, pid: i32, ctx_id: u32, record: &[u8]) -> i32 {
+            assert_eq!(record.len(), core::mem::size_of::<wasm_posix_shared::dri::WpkDrmImportPlanarImage>());
+            let record = unsafe { core::ptr::read_unaligned(record.as_ptr() as *const _) };
+            self.gl_import_planar_image_calls.push((pid, ctx_id, record));
             self.gl_bind_foreign_texture_rc
         }
         fn gl_export_image(&mut self, pid: i32, ctx_id: u32, bo_id: u32, attrs: &mut [u8]) -> i32 {
@@ -58041,6 +58096,96 @@ impl HostIO for RelSymlinkMock {
             assert_eq!(import(&mut host, WpkDrmImportImage {format, pitch: 8, ..base}), Err(Errno::EINVAL));
         }
         assert_eq!(host.gl_import_image_calls.len(), calls);
+    }
+
+    #[test]
+    fn drm_import_planar_image_checks_every_plane_and_passes_bo_ids_to_the_host() {
+        use wasm_posix_shared::dri::*;
+        use wasm_posix_shared::gl;
+        let _guard = crate::dri::bo::TEST_REGISTRY_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        crate::dri::bo::reset_registry();
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let dumb = |proc: &mut Process, host: &mut MockHostIO, width: u32, height: u32| {
+            let mut bytes = [0u8; core::mem::size_of::<WpkDrmModeCreateDumb>()];
+            let request = WpkDrmModeCreateDumb {width, height, bpp: 8, ..Default::default()};
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            sys_ioctl(proc, host, fd, DRM_IOCTL_MODE_CREATE_DUMB, &mut bytes).unwrap();
+            let out: WpkDrmModeCreateDumb = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const _) };
+            (out.handle, crate::dri::bo::next_id_for_test() - 1)
+        };
+        // 6x4 NV12: 8x4 luma rows, then 3 Cb,Cr pairs (8 bytes) x 2 rows.
+        let (frame, frame_bo) = dumb(&mut proc, &mut host, 8, 6);
+        let (chroma, chroma_bo) = dumb(&mut proc, &mut host, 8, 2);
+        glio_init_objects_test(&mut proc, &mut host, fd, gl::OP_VERSION).unwrap();
+        let attrs = gl::GlContextAttrs {client_version: 2, share_context_id: 0, flags: 0, context_id: 0};
+        let mut context = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(context.as_mut_ptr() as *mut _, attrs); }
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut context).unwrap();
+        let ctx_id = u32::from_le_bytes(context[12..16].try_into().unwrap());
+        glio_test_bind(&mut proc, &mut host, fd);
+        let good = WpkDrmImportPlanarImage {ctx_id, width: 6, height: 4, format: DRM_FORMAT_NV12,
+            bo_handles: [frame, frame, 0], pitches: [8, 8, 0], offsets: [0, 32, 0],
+            color_space: WPK_YUV_BT709, full_range: 1, chroma_siting: WPK_CHROMA_SITING_V_HALF, ..Default::default()};
+        let import = |proc: &mut Process, host: &mut MockHostIO, request: WpkDrmImportPlanarImage| {
+            let mut bytes = [0u8; core::mem::size_of::<WpkDrmImportPlanarImage>()];
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, request); }
+            let result = sys_ioctl(proc, host, fd, DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, &mut bytes);
+            result.map(|()| unsafe { core::ptr::read_unaligned::<WpkDrmImportPlanarImage>(bytes.as_ptr() as *const _) })
+        };
+        let out = import(&mut proc, &mut host, good).unwrap();
+        assert_eq!(out.source, 7);
+        // The host receives the planes' bo ids, never handles of this file.
+        let (pid, ctx, record) = *host.gl_import_planar_image_calls.last().unwrap();
+        assert_eq!((pid, ctx), (1, ctx_id));
+        assert_eq!(record, WpkDrmImportPlanarImage {bo_handles: [frame_bo, frame_bo, 0], ..good});
+        // The chroma plane may live in its own object; its last row may end
+        // exactly at that object's end.
+        let split = WpkDrmImportPlanarImage {bo_handles: [frame, chroma, 0], offsets: [0, 0, 0], ..good};
+        import(&mut proc, &mut host, split).unwrap();
+        assert_eq!(host.gl_import_planar_image_calls.last().unwrap().2.bo_handles, [frame_bo, chroma_bo, 0]);
+        // Packed YUYV has one plane of whole pixel pairs; YUV420 three.
+        let yuyv = WpkDrmImportPlanarImage {format: DRM_FORMAT_YUYV, width: 3, height: 4,
+            bo_handles: [frame, 0, 0], pitches: [8, 0, 0], offsets: [0, 0, 0], ..good};
+        import(&mut proc, &mut host, yuyv).unwrap();
+        let yuv420 = WpkDrmImportPlanarImage {format: DRM_FORMAT_YUV420, bo_handles: [frame, frame, chroma],
+            pitches: [8, 4, 4], offsets: [0, 32, 0], ..good};
+        import(&mut proc, &mut host, yuv420).unwrap();
+        let calls = host.gl_import_planar_image_calls.len();
+        for (bad, errno) in [
+            (WpkDrmImportPlanarImage {format: DRM_FORMAT_R8, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {format: 0x34324752, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {width: 0, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {source: 1, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {reserved: 1, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {color_space: 3, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {full_range: 2, ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {chroma_siting: 4, ..good}, Errno::EINVAL),
+            // A third plane NV12 does not have.
+            (WpkDrmImportPlanarImage {bo_handles: [frame, frame, frame], ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {pitches: [8, 8, 8], ..good}, Errno::EINVAL),
+            // Rows shorter than the plane's samples, or past the object.
+            (WpkDrmImportPlanarImage {pitches: [5, 8, 0], ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {pitches: [8, 5, 0], ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {offsets: [0, 41, 0], ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {bo_handles: [frame, chroma, 0], offsets: [0, 3, 0], ..good}, Errno::EINVAL),
+            (WpkDrmImportPlanarImage {width: 7, ..yuyv}, Errno::EINVAL),
+            // A handle this file does not hold.
+            (WpkDrmImportPlanarImage {bo_handles: [frame, 999, 0], ..good}, Errno::ENOENT),
+            (WpkDrmImportPlanarImage {ctx_id: 0, ..good}, Errno::EINVAL),
+        ] {
+            let mut bytes = [0u8; core::mem::size_of::<WpkDrmImportPlanarImage>()];
+            unsafe { core::ptr::write_unaligned(bytes.as_mut_ptr() as *mut _, bad); }
+            let original = bytes;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, &mut bytes),
+                Err(errno), "{bad:?}");
+            assert_eq!(bytes, original);
+        }
+        assert_eq!(host.gl_import_planar_image_calls.len(), calls, "no host call on reject");
+        // The host's failure is the renderer's: EIO, with nothing published.
+        host.gl_bind_foreign_texture_rc = -(Errno::ENOMEM as i32);
+        assert_eq!(import(&mut proc, &mut host, good), Err(Errno::EIO));
     }
 
     #[test]

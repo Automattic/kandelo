@@ -21,7 +21,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
   // must finish before its canonical BO backing can retire too.
   if (b.gl && !repairNativeState(b.gl)) return false;
   if (!objects.size) {
-    for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);
+    for (const [token,source] of b.imageSources) if (source.bo === bo || source.bos?.includes(bo)) b.imageSources.delete(token);
     return true;
   }
   if (!b.gl) return false;
@@ -97,7 +97,7 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
   framebufferInputsChanged();
   for (const [name,object] of b.textures) if (objects.has(object)) b.textures.delete(name);
   if (cached && objects.has(cached.tex)) b.foreignTextures.delete(bo);
-  for (const [token,source] of b.imageSources) if (source.bo === bo) b.imageSources.delete(token);
+  for (const [token,source] of b.imageSources) if (source.bo === bo || source.bos?.includes(bo)) b.imageSources.delete(token);
   b.retiredTextures = retired;
   collectRetiredImages(b);
   for (const object of objects) if (b.foreignTextureBos.has(object)) return false;

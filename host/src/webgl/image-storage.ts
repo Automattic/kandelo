@@ -34,6 +34,9 @@ export type GlImageStorage = {
   internalFormat?: number;
   format?: number;
   type?: number;
+  /** Every bo the image is read from when more than `bo` (a YUV image's
+   * planes); the source ends when any of them retires. */
+  bos?: readonly number[];
 };
 export type GlTextureView = {
   native: WebGLTexture;

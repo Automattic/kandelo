@@ -1,7 +1,7 @@
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
-import { cpuImageKey } from "./webgl/cpu-image-storage.js";
+import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageRecord } from "./webgl/cpu-image-storage.js";
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
@@ -3596,6 +3596,29 @@ export class WasmPosixKernel {
           return registerImageSource(b, boId >>> 0, mirror.tex, mirror.w, mirror.h, cpuImageKey(layout),
             gpuSourceStorage(mirror.storage));
           } catch (caught) { rethrowNativeGlFault(caught); return -5; }
+        },
+        // DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE: a YUV dma-buf image. `record`
+        // is the kernel's 72-byte WpkDrmImportPlanarImage copy with the
+        // planes' bo ids; the kernel has checked each plane against its
+        // CPU-tier object. The image is converted to RGBA (cpu-image-
+        // storage.ts) whenever a plane's bytes change; the reply is the
+        // share group's source token, sampled through external textures.
+        host_gl_import_planar_image: (pid: number, ctxId: number, recordPtr: KernelPointer,
+          recordLen: KernelPointer): number => {
+          try {
+            const b = this.gl.getContext(pid, ctxId >>> 0);
+            if (!b?.gl || !this.prepareForeignRetirements(b)) return -5;
+            if (this.#checkedKernelIndex(recordLen, "planar image length") !== PLANAR_IMAGE_RECORD_BYTES) return -22;
+            const record = new DataView(this.#readKernelBytes(recordPtr, PLANAR_IMAGE_RECORD_BYTES).buffer);
+            const layout = planarImageRecord(record);
+            if (!layout) return -22;
+            this.glMuxerFor(b.gl).switchTo(b);
+            const image = this.gl.cpuImages.acquirePlanar(b, this.bos, layout);
+            if (!image || !this.gl.cpuImages.prepare(b, this.bos,
+              gl => this.gl_muxers.get(gl)?.captureCurrentErrors())) return -5;
+            return registerImageSource(b, layout.planes[0].bo, image.tex, image.w, image.h, planarImageKey(layout),
+              {...gpuSourceStorage(image.storage), bos: [...new Set(layout.planes.map(plane => plane.bo))]});
+          } catch { return -5; }
         },
         // DRM_IOCTL_WPK_EXPORT_IMAGE: publish one texture image or
         // renderbuffer of context `ctxId` as GPU-tier bo `boId`. `attrs` is

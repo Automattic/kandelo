@@ -350,10 +350,13 @@ uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_spa
 uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 
-/* An EGLImage made by eglCreateImageKHR from one dma-buf plane. A
+/* An EGLImage made by eglCreateImageKHR from dma-buf planes. A
  * GPU-tier bo (its PRIME fd has no CPU mapping) is sampled and rendered
  * through the host texture the bo owns; a CPU-tier bo is read from
- * `pixels`, the caller's mapping of the dma-buf. */
+ * `pixels`, the caller's mapping of the dma-buf. A YUV image
+ * (`external_only`) holds one CPU-tier plane per plane of its format and
+ * is sampled only through TEXTURE_EXTERNAL_OES, converted to RGBA by the
+ * host when its planes' bytes change. */
 struct egl_generation;
 struct wpk_egl_image {
     struct egl_generation *generation; /* owns the imported GEM handle */
@@ -368,6 +371,14 @@ struct wpk_egl_image {
     const uint8_t *pixels;    /* first row of a CPU-tier image, else NULL */
     void *map;                /* the mmap behind `pixels` */
     size_t map_len;
+    /* YUV images: every plane's GEM handle on the EGL session's fd (each
+     * one import reference), pitch, offset and the mapping proving it is
+     * CPU storage, and the conversion EGL_EXT_image_dma_buf_import's hints
+     * select (WPK_YUV_* color space, full range, WPK_CHROMA_SITING_*). */
+    int external_only;
+    uint32_t plane_count;
+    struct { uint32_t handle, pitch, offset; void *map; size_t map_len; } planes[3];
+    uint32_t color_space, full_range, chroma_siting;
 };
 
 /* DRM_IOCTL_WPK_CHECK_BO_FORMAT mirrors shared::dri::WpkDrmCheckBoFormat:
@@ -376,6 +387,23 @@ struct wpk_egl_image {
 #define WPK_DRM_IOCTL_CHECK_BO_FORMAT 0xc00864e4u
 struct wpk_drm_check_bo_format { uint32_t handle, format; };
 _Static_assert(sizeof(struct wpk_drm_check_bo_format) == 8, "check bo format layout");
+/* DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE mirrors shared::dri::WpkDrmImportPlanarImage:
+ * import a YUV image of context `ctx_id` from one bo handle, pitch and
+ * offset per plane; `source` returns the image's private source token. */
+#define WPK_DRM_IOCTL_IMPORT_PLANAR_IMAGE 0xc04864e5u
+#define WPK_YUV_BT601 0u
+#define WPK_YUV_BT709 1u
+#define WPK_YUV_BT2020 2u
+#define WPK_CHROMA_SITING_H_HALF 1u
+#define WPK_CHROMA_SITING_V_HALF 2u
+struct wpk_drm_import_planar_image {
+    uint32_t ctx_id, width, height, format;
+    uint32_t bo_handles[3], pitches[3], offsets[3];
+    uint32_t color_space, full_range, chroma_siting, source, reserved;
+};
+_Static_assert(sizeof(struct wpk_drm_import_planar_image) == 72, "planar image import layout");
+/* An image that only TEXTURE_EXTERNAL_OES may sample (a YUV dma-buf). */
+int _wpk_egl_image_external_only(const struct wpk_egl_image *image);
 
 /* DRM_IOCTL_WPK_EXPORT_IMAGE mirrors shared::dri::WpkDrmExportImage: publish
  * a texture level, cube-map face level or renderbuffer of `ctx_id` as a new

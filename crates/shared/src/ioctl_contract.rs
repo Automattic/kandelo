@@ -482,6 +482,9 @@ pub const IOCTL_REQUEST_CONTRACTS: &[IoctlRequestContract] = &[
     pointer!(crate::dri::DRM_IOCTL_VERSION_WASM64, InOut, wasm64 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETRESOURCES, InOut, 64),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETPROPERTY, InOut, 64),
+    // ctx / extent / format / per-plane handles, pitches and offsets / hints
+    // in, the image's source token out (WpkDrmImportPlanarImage).
+    pointer!(crate::dri::DRM_IOCTL_WPK_IMPORT_PLANAR_IMAGE, InOut, 72),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCONNECTOR, InOut, 80),
     pointer!(crate::dri::DRM_IOCTL_MODE_GETCRTC, InOut, 104),
     pointer!(crate::dri::DRM_IOCTL_MODE_SETCRTC, In, 104),

@@ -2928,6 +2928,12 @@
       "wasm32Size": 64,
       "wasm64Size": 64
     },
+    "3225969893": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 72,
+      "wasm64Size": 72
+    },
     "3226494119": {
       "argKind": "pointer",
       "direction": "inout",
@@ -4695,6 +4701,12 @@
       "module": "env",
       "name": "host_gl_import_image",
       "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "module": "env",
+      "name": "host_gl_import_planar_image",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",

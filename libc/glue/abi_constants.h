@@ -686,6 +686,10 @@ WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
 return pointer_width == 4u ? 64u :
 pointer_width == 8u ? 64u :
 WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
+             case 0xc04864e5u:
+return pointer_width == 4u ? 72u :
+pointer_width == 8u ? 72u :
+WASM_POSIX_IOCTL_UNSUPPORTED_SIZE;
              case 0xc05064a7u:
 return pointer_width == 4u ? 80u :
 pointer_width == 8u ? 80u :
