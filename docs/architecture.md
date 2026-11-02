@@ -3804,6 +3804,23 @@ target and no texture unit or uniform is taken from the advertised
 limits. Its sibling view copies the image only when the image's storage
 write count moved (`host/src/webgl/image-writes.ts`), as 2D siblings do.
 
+GLSL ES 1.00's built-in limit constants (`gl_MaxVertexAttribs` through
+`gl_MaxDrawBuffers`) must equal the values the guest queries, but WebGL's
+compiler gives them native WebGL 2 values. Those differ where the host
+reserves private uniform rows from the advertised limits (one fragment
+row for the blend-fold variant; one vertex row on Firefox for the
+depth-range workaround; `host/src/webgl/limits.ts`), and for
+`gl_MaxDrawBuffers`, which is 1 because ES 2.0 has one color output and
+Kandelo does not advertise `EXT_draw_buffers`, while WebGL 2 compilers
+report the native draw-buffer count. GLSL ES reserves `gl_` names, so
+the constants cannot be redefined; when `glShaderSource` gives the host
+an ESSL 1.00 shader that names one, the host compiles a rewrite, made
+once, in which each use in code or in a `#define` body becomes
+`int(N)`, N the queried value. `int(N)` is, like the built-in, a
+constant expression, not an l-value and not a macro, so other
+preprocessor directives still treat the name as the engine does.
+`glGetShaderSource` returns the guest's text.
+
 GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
 single-plane formats, each stored exactly: R8, GR88, RGB565, the four
 8888 orders, the four 2101010 orders, and ABGR/XBGR16161616F. A GPU-tier

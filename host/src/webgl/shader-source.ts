@@ -3,9 +3,11 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 import { externalShaderSource, type ExternalShaderSource } from "./external-texture.js";
+import { builtinLimitShaderSource, guestBuiltinLimits } from "./limits.js";
 
 /** The source WebGL was given for a shader whose guest source names
- * OES_EGL_image_external (external-texture.ts); absent otherwise. */
+ * OES_EGL_image_external (external-texture.ts) or a built-in limit constant
+ * (limits.ts builtinLimitShaderSource); absent otherwise. */
 const nativeSources = new WeakMap<WebGLShader, ExternalShaderSource>();
 export function nativeShaderSource(shader: WebGLShader): ExternalShaderSource | undefined {
   return nativeSources.get(shader);
@@ -32,10 +34,17 @@ export function installShaderSource(b: GlBinding, shader: WebGLShader, bytes: Ui
   try { source = new TextDecoder().decode(bytes); }
   catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   const prior = b.shaderSources.get(shader), priorNative = nativeSources.get(shader);
-  // GetShaderSource returns the guest's bytes; WebGL compiles the external
-  // sampler rewrite, made once here (external-texture.ts).
+  // Read before the rewrite's fault handling: a renderer whose limits cannot
+  // hold the private reservations is a renderer fault, as at the query.
+  const limits = source.includes("gl_Max") ? guestBuiltinLimits(b) : null;
+  // GetShaderSource returns the guest's bytes; WebGL compiles the built-in
+  // limit and external sampler rewrites, made once here (limits.ts,
+  // external-texture.ts).
   let native: ExternalShaderSource;
-  try { native = externalShaderSource(source); b.shaderSources.set(shader,bytes); }
+  try {
+    native = externalShaderSource(limits ? builtinLimitShaderSource(source, limits) : source);
+    b.shaderSources.set(shader,bytes);
+  }
   catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   if (native.text !== source) nativeSources.set(shader,native); else nativeSources.delete(shader);
   if (!checkedGlCall(b, () => b.gl!.shaderSource(shader,native.text))) {

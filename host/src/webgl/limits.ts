@@ -1,5 +1,6 @@
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
 import { engineLosesVertexDepthRange } from "./vertex-depth-range.js";
+import { glslTokens } from "./attribute-aliasing.js";
 
 /** Immutable limits belong to the native context, independently of whichever
  * guest currently owns its mutable state. Weak keys do not retain a retired
@@ -119,4 +120,91 @@ export function guestLimit(pname: number, native: unknown): unknown {
     throw new Error(`Renderer reports ${String(native)} ${vertex ? "vertex" : "fragment"} uniform vectors; ` +
       `${reserved} are reserved for private emulation and ES 2.0 requires ${minimum}`);
   return native - reserved;
+}
+
+/**
+ * GLSL ES 1.00 section 7.4 built-in constants and the ES 2.0 query each one
+ * must equal (OpenGL ES 2.0 section 6.1, table 6.20). WebGL's compiler gives
+ * them the native WebGL 2 values, which differ from what the guest queries
+ * wherever `guestLimit` reports less than native, and for
+ * gl_MaxDrawBuffers: ES 2.0 has no MAX_DRAW_BUFFERS query and one color
+ * output, so without EXT_draw_buffers (which Kandelo does not advertise) the
+ * constant is 1, while WebGL 2 compilers give ESSL 1.00 shaders the native
+ * draw-buffer count. The pname 0 marks that fixed value.
+ */
+const BUILTIN_LIMITS: ReadonlyMap<string, number> = new Map([
+  ["gl_MaxVertexAttribs", 0x8869],
+  ["gl_MaxVertexUniformVectors", 0x8dfb],
+  ["gl_MaxVaryingVectors", 0x8dfc],
+  ["gl_MaxVertexTextureImageUnits", 0x8b4c],
+  ["gl_MaxCombinedTextureImageUnits", 0x8b4d],
+  ["gl_MaxTextureImageUnits", 0x8872],
+  ["gl_MaxFragmentUniformVectors", 0x8dfd],
+  ["gl_MaxDrawBuffers", 0],
+]);
+
+const builtinLimitValues = new WeakMap<WebGL2RenderingContext, ReadonlyMap<string, number>>();
+
+/** The guest-visible value of every GLSL ES 1.00 built-in limit constant for
+ * one native context, from the same `guestLimit` the queries report, or null
+ * when the context cannot report its limits (lost; not cached). A renderer
+ * that cannot leave room for private emulation throws as the query does.
+ * Immutable per context, so read once. */
+export function guestBuiltinLimits(owner: CheckedGlOwner): ReadonlyMap<string, number> | null {
+  const gl = owner.gl;
+  if (!gl) return null;
+  const cached = builtinLimitValues.get(gl);
+  if (cached) return cached;
+  const native = new Map<number, unknown>();
+  if (!checkedGlCall(owner, () => {
+    for (const pname of BUILTIN_LIMITS.values()) if (pname) native.set(pname, gl.getParameter(pname));
+  })) return null;
+  // A lost context answers null: compilation will fail anyway; retry later.
+  if ([...native.values()].some(value => value === null)) return null;
+  const values = new Map<string, number>();
+  for (const [name, pname] of BUILTIN_LIMITS) {
+    // Outside the checked call: an impossible limit is a renderer fault.
+    const value = pname ? guestLimit(pname, native.get(pname)) : 1;
+    if (typeof value !== "number" || !Number.isInteger(value) || value <= 0)
+      throw new Error(`Renderer reports ${String(value)} for the limit behind ${name}`);
+    values.set(name, value);
+  }
+  builtinLimitValues.set(gl, values);
+  return values;
+}
+
+/**
+ * The guest's GLSL ES 1.00 source with each built-in limit constant replaced
+ * by `int(N)`, N its guest-visible value, so the shader sees what the guest
+ * queries. Made once per ShaderSource (shader-source.ts); no draw pays for
+ * it. GLSL ES 1.00 section 3.4 reserves `gl_` names and engines reject
+ * redefining them, so a `#define` of the built-in cannot do this; the uses
+ * are rewritten instead, as for the external-image macro
+ * (external-texture.ts). `int(N)` keeps every property of the built-in a
+ * shader can observe: it is a constant expression (array sizes, constant
+ * initializers), not an l-value, and, like the built-in, not a macro, so a
+ * preprocessor `#if` still rejects it. Uses inside a `#define` body are
+ * rewritten (they expand into code); the built-in's name in every other
+ * directive (`#if`, `#ifdef`, `#undef`, a reserved `#define` name) stays as
+ * written for the engine to judge. ESSL 3.00 sources compile unchanged: an
+ * ES 2.0 context has no ESSL 3.00 limits to agree with.
+ */
+export function builtinLimitShaderSource(source: string, limits: ReadonlyMap<string, number>): string {
+  if (!source.includes("gl_Max") || /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)) return source;
+  const list = glslTokens(source, true);
+  let text = "", from = 0, keyword = "", directiveAt = -1;
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i];
+    if (t.directive && t.text === "#" && (i === 0 || !list[i - 1].directive || source.lastIndexOf("\n", t.start) > list[i - 1].start)) {
+      keyword = list[i + 1]?.directive ? list[i + 1].text : ""; directiveAt = i;
+      continue;
+    }
+    const value = limits.get(t.text);
+    if (value === undefined) continue;
+    // In a directive only a #define body (after the macro name) is code.
+    if (t.directive && !(keyword === "define" && i > directiveAt + 2)) continue;
+    text += source.slice(from, t.start) + `int(${value})`;
+    from = t.end;
+  }
+  return from === 0 ? source : text + source.slice(from);
 }

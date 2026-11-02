@@ -4,7 +4,9 @@
  * The host rewrites guest GLSL ES 1.00 shaders for three ES 2.0 behaviours
  * WebGL 2 lacks: reversed depth ranges (reversed-depth.ts), attribute
  * aliasing (attribute-aliasing.ts), luminance sampling of depth textures
- * (depth-sampling.ts) and samplerExternalOES (external-texture.ts). Unit tests only see the text. This page compiles and
+ * (depth-sampling.ts) and samplerExternalOES (external-texture.ts), and
+ * rewrites the GLSL ES 1.00 built-in limit constants to the values the
+ * guest queries (limits.ts). Unit tests only see the text. This page compiles and
  * links the rewritten shaders with the engine's real WebGL 2 compiler and
  * draws with them, reading back pixels to prove the ES 2.0 semantics.
  * It is bundled and driven by run.mjs; it is not the Kandelo runtime.
@@ -13,6 +15,7 @@ import { aliasedVertexShaderSource } from "../../../host/src/webgl/attribute-ali
 import { variantStageSource, type VariantOptions } from "../../../host/src/webgl/reversed-depth.js";
 import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues } from "../../../host/src/webgl/vertex-depth-range.js";
 import { externalShaderSource } from "../../../host/src/webgl/external-texture.js";
+import { builtinLimitShaderSource, guestBuiltinLimits } from "../../../host/src/webgl/limits.js";
 
 /** "inconclusive": the engine fails the same check on unrewritten shaders
  * (a recorded "engine-defect" control), so it cannot judge the rewrite. */
@@ -470,13 +473,71 @@ function externalSampling(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 5. Built-in limit constants equal the guest's queries (limits.ts)
+
+/** dEQP-GLES2.functional.shaders.builtin_variable.max_* compare each
+ * built-in with glGetIntegerv in both stages; the guest-visible values are
+ * `guestBuiltinLimits`, which the unit tests tie to the query path. Each
+ * use form a constant allows is exercised: comparison, array size, const
+ * initializer and a #define body. */
+function builtinLimits(): void {
+  target(false);
+  const limits = guestBuiltinLimits({ gl, errors: [] } as unknown as Parameters<typeof guestBuiltinLimits>[0]);
+  if (!limits) { record("builtin-limits.values", false, "no limits"); return; }
+  const test = (name: string, value: number) =>
+    `#define K_DEFINED ${name}\nconst int k_const = ${name};\nuniform mediump vec4 k_array[${name}];\n` +
+    `bool k_ok() { return ${name} == ${value} && K_DEFINED == ${value} && k_const == ${value}; }\n`;
+  const green = [0, 1, 0, 1];
+  for (const [name, value] of limits) for (const stage of ["vertex", "fragment"] as const) {
+    const vertex = stage === "vertex"
+      ? test(name, value) + "varying mediump vec4 v;\nvoid main() { v = k_ok() ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0); " +
+        "gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n"
+      : "varying mediump vec4 v;\nvoid main() { v = vec4(0.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n";
+    const fragment = stage === "fragment"
+      ? "precision mediump float;\n" + test(name, value) + "varying mediump vec4 v;\n" +
+        "void main() { gl_FragColor = k_ok() ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0) + v; }\n"
+      : "precision mediump float;\nvarying mediump vec4 v;\nvoid main() { gl_FragColor = v; }\n";
+    const built = build(builtinLimitShaderSource(vertex, limits), builtinLimitShaderSource(fragment, limits));
+    const check = `builtin-limits.${name}.${stage}`;
+    if (!built.program) { record(check, false, `rewrite failed to compile/link: ${built.log}`); continue; }
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    drawPoint(built.program);
+    const got = pixel();
+    record(check, near(got, green), `got ${fmt(got)} for guest value ${value}, native ${engineValue(name, stage)}`);
+    gl.deleteProgram(built.program);
+  }
+}
+
+/** The engine's own value of a built-in in one stage (detail only). */
+function engineValue(name: string, stage: "vertex" | "fragment"): string {
+  const probe = (value: number) => {
+    const ok = `${name} >= ${value}`;
+    const built = stage === "vertex"
+      ? build(`varying mediump vec4 v;\nvoid main() { v = ${ok} ? vec4(1.0) : vec4(0.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n`,
+        "precision mediump float;\nvarying mediump vec4 v;\nvoid main() { gl_FragColor = v; }\n")
+      : build(POINT_VERTEX, `precision mediump float;\nvoid main() { gl_FragColor = ${ok} ? vec4(1.0) : vec4(0.0); }\n`);
+    if (!built.program) return null;
+    drawPoint(built.program);
+    gl.deleteProgram(built.program);
+    return pixel()[0] > 0.5;
+  };
+  let low = 0, high = 1 << 16;
+  while (low < high) {
+    const mid = (low + high + 1) >> 1, at = probe(mid);
+    if (at === null) return "unknown";
+    if (at) low = mid; else high = mid - 1;
+  }
+  return String(low);
+}
+
+// ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
   if (!gl) return { renderer: "no WebGL 2", results: [{ name: "webgl2", ok: false, status: "fail", detail: "getContext('webgl2') failed" }] };
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);
