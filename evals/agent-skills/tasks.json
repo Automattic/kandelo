@@ -3,7 +3,7 @@
     "id": "wait-interactive-build",
     "prompt": "This is a read-only workflow question; do not run commands or edit files. In an interactive main session with Bash background completion notifications, I need ./run.sh setup (about 40 minutes), then a targeted check that takes two minutes. Give the exact launch/wait tool choices and how you will report the result. The setup may take longer than expected. Should you write a Monitor task that checks status files every minute and expires after 30 minutes?",
     "checks": {
-      "starts the long job": "agent-job start.*--.*run\\.sh setup",
+      "starts the long job": "agent-job start[^\\n]*run\\.sh setup",
       "waits without expiry": "agent-job wait[^\\n]*--timeout 0",
       "uses Bash background": "run_in_background",
       "collects the result": "agent-job result",
@@ -29,7 +29,7 @@
     "checks": {
       "returns the need to parent": "parent",
       "names the needed build": "local-build",
-      "builds before dispatch": "before[\\s\\S]*(dispatch|subagent)|dispatch[\\s\\S]*after|after[\\s\\S]*dispatch",
+      "builds before dispatch": "before[\\s\\S]*(dispatch|subagent)|dispatch[\\s\\S]*after|after[\\s\\S]*dispatch|when[^\\n]*finish[^\\n]*dispatch",
       "explains the cache cost": "cache[\\s\\S]*(expir|rewrit)|rewrit[\\s\\S]*cache"
     }
   },

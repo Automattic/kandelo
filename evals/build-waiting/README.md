@@ -218,6 +218,56 @@ Do not extend the wait-guard hook in this experiment. A follow-up that
 blocks Monitor/background loops needs its own baseline, denial-precision
 and evasion measures under tool 8, including legitimate monitor commands.
 
+**Pre-landing advice checks (2026-11-02): provisional, not a savings
+claim.** Ran the four waiting tasks with the host Claude CLI's
+`--model sonnet`, one repetition per arm, three times (24 read-only
+headless sessions). The second sample followed a clarification that
+setup/local-build must be passed directly to `start --`, without an
+outer dev-shell wrapper. The third followed committing the skill, after
+an earlier answer said its glob could not find the untracked file.
+All runs completed without runner errors.
+
+| Sample | Arm | Checklist score | Mean cost $ | Mean turns |
+|---|---|---:|---:|---:|
+| Initial | skill on | 0.958 | 0.124 | 1.75 |
+| Initial | skill off | 0.771 | 0.096 | 1.00 |
+| Clarified launch | skill on | 0.958 | 0.079 | 2.75 |
+| Clarified launch | skill off | 0.875 | 0.065 | 1.25 |
+| Tracked skill | skill on | 0.833 | 0.115 | 1.50 |
+| Tracked skill | skill off | 0.729 | 0.090 | 1.00 |
+
+Scores above re-check the saved answers using the final matchers. Two
+matchers initially missed correct advice: `start` accepts an omitted
+`--`, and "when the build finishes, re-dispatch" means build first.
+A third was corrected between samples to accept "zero discovered tests".
+Raw answers, original scores and re-scored records remain locally under
+`.context/wait-skill-eval*`; no transcripts are checked in.
+
+Reading every answer showed why these numbers are only a smoke check:
+
+- Both arms usually chose the right waiter from the updated CLAUDE.md.
+  These tasks do not establish an improvement in interactive waiting.
+- Answers that read the skill gave concrete suite-health, Playwright
+  port and inner-export guidance. Several other answers, including
+  skill-on answers, merely said they would load it and relied on notes.
+  Availability is not proof of loading or following the skill.
+- Some interactive answers still wrapped setup in the dev shell or
+  omitted `agent-job result`; the launch clarification did not reliably
+  fix answers that never read it. Some subagent answers assumed the
+  parent was interactive. These remain risks to review in transcripts.
+- Skill-on answers cost more and took more turns. That bought more
+  complete advice in these samples, not measured waiting-token savings.
+
+Keep the skill as an experiment pending the tool 1a real-session review,
+with the 2026-11-16 checkpoint unchanged. Neither notification delivery,
+re-arm reduction nor lost-result prevention was exercised by advice
+tasks. The new start hints have a separate executable regression test:
+both printed commands return a failing job's actual exit status; the
+test fails on the old hint. The declared dev shell passed all 15
+agent-job tests, all 6 wait-guard tests, and the skill path/frontmatter/
+mirror checks (3 skills). Runtime and browser suites were not run for
+these guidance and CLI-output changes.
+
 ### 1b. Waiting on another workspace's build: `list --all`, commits, `wait --peer`
 
 Several Conductor workspaces on one machine often build the same tree, and
