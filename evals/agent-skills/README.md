@@ -13,14 +13,17 @@ against a short checklist in `tasks.json` of facts a correct answer must
 mention.
 
 ```bash
-python3 evals/agent-skills/run.py              # 4 tasks x 2 arms x 3 reps, Sonnet
+python3 evals/agent-skills/run.py              # all tasks x 2 arms x 3 reps, Sonnet
 python3 evals/agent-skills/run.py --reps 1     # quick check
 ```
 
 - **Isolation:** only project settings load, so your personal hooks and plugins don't skew the result.
 - **Read the score first, then the cost.** A cheaper answer that misses checks is not a win.
 - **Read the saved answers** (the path is printed) before trusting a score. A regex match is not proof the advice is right.
-- **When to run it:** a full run is 24 sessions, about $4 on Sonnet. Run it when a skill changes, not in CI.
+- **When to run it:** run when a skill changes, not in CI. The default
+  runs every task in `tasks.json` in both arms, three times each. Cost
+  grows with that inventory; use `--tasks id,id` and `--reps 1` to scope
+  a quick check instead of assuming a fixed session count or budget.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
 The waiting skill has four read-only scenarios, covering interactive and
