@@ -21348,6 +21348,16 @@ pub fn sys_timerfd_settime(
 
     const TFD_TIMER_ABSTIME: u32 = 1;
 
+    // POSIX timer_settime and Linux timerfd_settime: a time value with a
+    // negative second count or a nanosecond count outside [0, 1e9) is
+    // EINVAL. Accepting one used to store a negative interval that
+    // `timerfd_compute_expirations` cannot advance past, leaving the timer
+    // permanently due.
+    let valid = |sec: i64, nsec: i64| sec >= 0 && (0..1_000_000_000).contains(&nsec);
+    if !valid(interval_sec, interval_nsec) || !valid(value_sec, value_nsec) {
+        return Err(Errno::EINVAL);
+    }
+
     // The clock import is an external callback boundary. Snapshot the timer's
     // immutable clock id under the backing lock, release it for the host call,
     // then reacquire only for the final linearizable state update. Holding the
@@ -21402,6 +21412,10 @@ pub fn sys_timerfd_settime(
                 tfd.value_nsec = total_nsec;
             }
             tfd.expirations = 0;
+            // The new deadline may precede the one the host's kernel timer
+            // is armed for; have it re-read the earliest deadline so a
+            // waiter that is already blocked wakes when this timer expires.
+            crate::wakeup::push_timer_deadline_changed();
         }
 
         Ok(old)
@@ -21465,6 +21479,15 @@ fn timerfd_refresh(host: &mut dyn HostIO, tfd_idx: usize) -> Result<(), Errno> {
         return Ok(());
     };
     let (now_sec, now_nsec) = host.host_clock_gettime(clock_id)?;
+    timerfd_refresh_at(tfd_idx, now_sec as i128 * 1_000_000_000 + now_nsec as i128);
+    Ok(())
+}
+
+/// `timerfd_refresh` with the timer's clock already read (`now_ns`, in that
+/// clock's domain). Returns whether the timer gained expirations.
+fn timerfd_refresh_at(tfd_idx: usize, now_ns: i128) -> bool {
+    let now_sec = now_ns.div_euclid(1_000_000_000) as i64;
+    let now_nsec = now_ns.rem_euclid(1_000_000_000) as i64;
     let changed = crate::descriptor_backing::with_timerfds(|table| {
         if let Some(tfd) = table.get_mut(tfd_idx) {
             let before = tfd.expirations;
@@ -21480,7 +21503,86 @@ fn timerfd_refresh(host: &mut dyn HostIO, tfd_idx: usize) -> Result<(), Errno> {
             0x41,
         );
     }
-    Ok(())
+    changed
+}
+
+/// Armed timerfds as (backing index, clock, absolute deadline in ns of that
+/// clock). Snapshotted under the backing lock so the clock reads that follow
+/// (host calls) never run with it held, as in `sys_timerfd_settime`.
+fn armed_timerfd_deadlines() -> Vec<(usize, u32, i128)> {
+    crate::descriptor_backing::with_timerfds(|table| {
+        table
+            .iter_mut()
+            .filter(|(_, tfd)| tfd.value_sec != 0 || tfd.value_nsec != 0)
+            .map(|(idx, tfd)| {
+                let deadline = tfd.value_sec as i128 * 1_000_000_000 + tfd.value_nsec as i128;
+                (idx, tfd.clock_id, deadline)
+            })
+            .collect()
+    })
+}
+
+/// Read each distinct clock the armed timers use once. `None` when the host
+/// cannot read that clock: such a timer cannot be scheduled, and reading or
+/// polling it reports the clock's error through `timerfd_refresh`. It must
+/// not stop the kernel's other deadlines from being served.
+fn timerfd_clock_now(
+    host: &mut dyn HostIO,
+    cache: &mut Vec<(u32, Option<i128>)>,
+    clock_id: u32,
+) -> Option<i128> {
+    if let Some(&(_, now)) = cache.iter().find(|(id, _)| *id == clock_id) {
+        return now;
+    }
+    let now = host
+        .host_clock_gettime(clock_id)
+        .ok()
+        .map(|(sec, nsec)| sec as i128 * 1_000_000_000 + nsec as i128);
+    cache.push((clock_id, now));
+    now
+}
+
+/// Nanoseconds until the earliest armed timerfd expires, `Some(0)` if one is
+/// already due, `None` when no timerfd is armed.
+///
+/// WHY this is part of the kernel's wait deadline: a timerfd expiry is a
+/// readiness event (Linux wakes its waiters from the timer callback), but
+/// expirations are otherwise only computed when something reads or polls
+/// the descriptor. Without a host timer at this deadline, a task blocked in
+/// epoll_wait/poll/select/read on the timerfd slept until an unrelated host
+/// retry tick -- 10 ms for epoll and read, up to 50 ms for poll and select --
+/// long after the timer had fired. Each timer's deadline is measured on its
+/// own clock, so a CLOCK_REALTIME or TFD_TIMER_ABSTIME target needs no
+/// conversion; the host only ever sees the relative answer.
+pub fn timerfd_next_timeout_ns(host: &mut dyn HostIO) -> Option<i64> {
+    let armed = armed_timerfd_deadlines();
+    let mut clocks = Vec::new();
+    let mut earliest: Option<i128> = None;
+    for (_, clock_id, deadline) in armed {
+        let Some(now) = timerfd_clock_now(host, &mut clocks, clock_id) else {
+            continue;
+        };
+        let remaining = (deadline - now).max(0);
+        earliest = Some(earliest.map_or(remaining, |e| e.min(remaining)));
+    }
+    earliest.map(|ns| ns.min(i64::MAX as i128) as i64)
+}
+
+/// Account every armed timerfd whose deadline has passed: record its
+/// expirations and notify its epoll interests, exactly as a read or poll of
+/// it would. Returns whether any timerfd gained expirations, so the caller
+/// can wake the tasks the host keeps blocked on readiness.
+pub fn timerfd_fire_due(host: &mut dyn HostIO) -> bool {
+    let armed = armed_timerfd_deadlines();
+    let mut clocks = Vec::new();
+    let mut fired = false;
+    for (idx, clock_id, deadline) in armed {
+        match timerfd_clock_now(host, &mut clocks, clock_id) {
+            Some(now) if deadline <= now => fired |= timerfd_refresh_at(idx, now),
+            _ => {}
+        }
+    }
+    fired
 }
 
 /// Helper: compute timerfd expirations lazily.

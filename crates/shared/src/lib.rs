@@ -191,16 +191,19 @@ pub mod wakeup_event_wire {
     pub const TYPE_PROCESS_CONTINUED: u8 = 32;
     pub const TYPE_ADVISORY_LOCK: u8 = 64;
     /// A kernel-owned wait decided a parked task's result (see
-    /// `wait_completion_wire`). `idx` is 0. The host drains
-    /// `kernel_drain_wait_completions` when it sees this bit, so a machine
-    /// with no kernel-parked task pays no extra export call per syscall.
+    /// `wait_completion_wire`), or a timer was armed whose deadline the
+    /// host's kernel timer must now honour. `idx` is 0. The host drains
+    /// `kernel_drain_wait_completions` when it sees this bit, which ends by
+    /// re-reading `kernel_wait_next_timeout_ns`, so a machine with no
+    /// kernel-parked task pays no extra export call per syscall.
     pub const TYPE_WAIT_COMPLETE: u8 = 128;
 
     /// `idx` of a [`TYPE_READABLE`] record that names no pipe: a fence
-    /// signaled, a DRM sync object gained a fence, or a sync-object eventfd
-    /// fired. Parked waits on sync objects, `sync_file`/dma-buf/eventfd
-    /// readiness may now finish, so hosts apply their broad retry. Pipe
-    /// indices never reach the reserved top of the `u32` range.
+    /// signaled, a DRM sync object gained a fence, a sync-object eventfd
+    /// fired, or a timerfd expired. Parked waits on sync objects,
+    /// `sync_file`/dma-buf/eventfd/timerfd readiness may now finish, so hosts
+    /// apply their broad retry. Pipe indices never reach the reserved top of
+    /// the `u32` range.
     pub const IDX_FENCE_READY: u32 = u32::MAX;
     /// `idx` of a [`TYPE_READABLE`] record: the kernel has GL-fence work for
     /// the host (a waiter enabled a separate-context fence the host must

@@ -15948,9 +15948,13 @@ export class CentralizedKernelWorker {
    * signals, so this method makes no decision. The timer is armed for the
    * kernel's *relative* answer, so the host never computes in the kernel's
    * clock domain; a timer that fires early drains nothing and re-arms.
+   * That timer also serves armed timerfds (`fromKernelTimer`): their expiry
+   * is a readiness event the kernel accounts here and the wake drain below
+   * delivers to the waits this host keeps blocked.
    */
   #settleKernelWaitsWithinKernelEntry(
     entry: KernelWorkerEntryContext,
+    fromKernelTimer = false,
   ): void {
     const MAX_RECORDS = 64;
     const bufSize = MAX_RECORDS * WAIT_COMPLETION_RECORD_BYTES;
@@ -16030,6 +16034,16 @@ export class CentralizedKernelWorker {
       );
     }
 
+    if (fromKernelTimer) {
+      // The deadline may be a timerfd's. Collecting completions above
+      // accounted its expiry in the kernel, which queued an untargeted
+      // readiness record; drain it now so the epoll/poll/select/read waits
+      // this host keeps blocked retry at the deadline. No syscall completion
+      // is guaranteed to drain it sooner. Re-arm only after that drain: the
+      // kernel answers 0 once for an undrained expiry record, which would
+      // only schedule a second, empty pass.
+      this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
+    }
     this.#armKernelWaitTimer((this.#kernelInstanceForEntry(entry).exports
       .kernel_wait_next_timeout_ns as () => bigint)());
   }
@@ -16047,7 +16061,7 @@ export class CentralizedKernelWorker {
     this.#kernelWaitTimer = this.#registerTimeout(() => {
       this.#kernelWaitTimer = undefined;
       this.#runOrDeferKernelEntry("kernel wait deadline", (timerEntry) => {
-        this.#settleKernelWaitsWithinKernelEntry(timerEntry);
+        this.#settleKernelWaitsWithinKernelEntry(timerEntry, true);
         return undefined;
       });
     }, delayMs);

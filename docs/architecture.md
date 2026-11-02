@@ -96,7 +96,7 @@ kernel_thread_exit(pid, tid, ran) → 0 | -errno
 kernel_commit_process_exit(status) → committed_low_8_bits
 kernel_dequeue_signal(pid, tid, out_ptr, out_capacity) → 0 | signum | -errno
 kernel_drain_wait_completions(out_ptr, out_len, max_records) → record_count | -errno
-kernel_wait_next_timeout_ns() → relative_ns | -1
+kernel_wait_next_timeout_ns() → relative_ns | -1   (earliest park deadline or armed timerfd expiry)
 kernel_pick_tcp_listener_target(port, exclude_pid, out_ptr, out_capacity) → 1 | 0 | -errno
 kernel_take_process_timer_cleanup(pid, out_ptr, out_capacity) → posix_count | -errno
 kernel_ipc_shmat_for_task(pid, tid, shmid, addr, flags) → segment_size | -errno
@@ -1302,6 +1302,44 @@ the probe assumes neither writer quiescence nor a dirty-store epoch. The host
 still owns the park and its 10 ms safety timer. Moving epoll into the kernel-owned
 wait queue requires complete source, lifecycle and copyout integration; this
 probe does not claim that migration or an application performance gain.
+
+**Timer readiness reaches host-owned waits through the kernel timer and the
+broad retry.** A timerfd expiry changes readiness with no pipe or listener
+token for a targeted wake, and the epoll,
+`poll`/`select` and blocking `read` retries the host owns would otherwise
+see them only at their 10 ms (epoll, read) or up to 50 ms (`poll`,
+`select`) safety retry. Linux wakes those waiters from the timer callback,
+so Kandelo does the same at the real deadline:
+
+- `kernel_wait_next_timeout_ns` answers the earliest of the kernel-owned
+  park deadlines and every armed timerfd's next expiry, each measured on the
+  timer's own clock (`CLOCK_MONOTONIC`, `CLOCK_REALTIME`, absolute or
+  relative), so the host's single kernel timer fires at the deadline.
+  Arming a timerfd queues `TYPE_WAIT_COMPLETE`, which makes the host collect
+  completions and re-read that answer, so a waiter that blocked before
+  another thread armed the timer is still woken on time.
+- `kernel_drain_wait_completions` accounts every due timerfd (expiration
+  count, epoll candidates) exactly as a read or poll of it would, and
+  queues one untargeted `IDX_FENCE_READY` readable record. The host's timer
+  callback collects completions, then drains wake records, so the broad
+  retry re-runs the blocked waits at the deadline. When completions were
+  collected after a wake batch was already drained, the record would wait
+  for some later syscall; `kernel_wait_next_timeout_ns` therefore answers
+  `0` once for an undrained expiry record, and the host re-enters at once.
+  It answers once, not until the record drains, so a host that does not
+  drain wake records on that timer degrades to the old safety retry rather
+  than spinning.
+
+No clock is read per syscall: armed timers are examined only when the host
+collects completions or asks for the next deadline. A clock the host cannot
+read leaves that one timer unscheduled (its read or poll reports the error)
+without stopping the other deadlines. The remaining latency is the host
+timer's granularity, about a millisecond on Node and in browsers, not
+Linux's timer slack. Browsers also clamp a timer that is re-armed from its
+own callback to 4 ms once five such callbacks are nested (the HTML timer
+nesting rule), so successive expiries of a periodic timerfd shorter than
+4 ms are delivered about 4 ms apart in a browser; the expiration count read
+from the descriptor stays exact.
 
 ## Multi-Process Model
 

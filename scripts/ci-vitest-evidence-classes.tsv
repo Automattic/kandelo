@@ -441,6 +441,7 @@ host/test/thread-wasm-patch.test.ts	source-only
 host/test/thread-worker-disposition.test.ts	source-only
 host/test/time-provider.test.ts	source-only
 host/test/timerfd-signalfd-scratch.test.ts	prepared-product
+host/test/timerfd-wake-latency.test.ts	prepared-product
 host/test/tls-network-backend-real-client.test.ts	prepared-product
 host/test/transfer-kernel-wait.test.ts	prepared-product
 host/test/trap-signals.test.ts	source-only

@@ -153,6 +153,7 @@ const TEST_PROGRAMS = [
   "getaddrinfo_test.c",
   "process_native_layout_test.c",
   "timerfd_signalfd_scratch_test.c",
+  "timerfd_wake_latency_test.c",
   "sysv_ipc_test.c",
   "sysv_shm_departed_peer_test.c",
   "shm_mapping_coherence_test.c",

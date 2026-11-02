@@ -177,6 +177,66 @@ pub fn push_fence_ready() {
     append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
 }
 
+/// A timerfd expired. Its waiters may be blocked in host-owned
+/// epoll/poll/select/read retries that no pipe token identifies, so this
+/// travels as the same untargeted record as [`push_fence_ready`]: hosts
+/// apply only their broad retry, and each retried wait re-evaluates the
+/// timerfd's real expiration count in the kernel.
+pub fn push_timer_expired() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
+    set_timer_expiry_unreported(true);
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static TEST_TIMER_EXPIRY_UNREPORTED: core::cell::Cell<bool> =
+        const { core::cell::Cell::new(false) };
+}
+#[cfg(not(test))]
+struct TimerExpiryFlag(UnsafeCell<bool>);
+#[cfg(not(test))]
+unsafe impl Sync for TimerExpiryFlag {}
+#[cfg(not(test))]
+static TIMER_EXPIRY_UNREPORTED: TimerExpiryFlag = TimerExpiryFlag(UnsafeCell::new(false));
+
+fn set_timer_expiry_unreported(value: bool) {
+    #[cfg(test)]
+    TEST_TIMER_EXPIRY_UNREPORTED.with(|flag| flag.set(value));
+    #[cfg(not(test))]
+    unsafe {
+        *TIMER_EXPIRY_UNREPORTED.0.get() = value;
+    }
+}
+
+/// Consume the note that a timer expiry's wake record is queued and the
+/// host has not been told to come back for it.
+///
+/// WHY: expiries are accounted while the host collects wait completions,
+/// and the host also collects them right after draining a batch of wake
+/// records (on `TYPE_WAIT_COMPLETE`). A record queued there would sit until
+/// some later syscall drains the queue, while the waiter it should wake
+/// stays blocked. `kernel_wait_next_timeout_ns` therefore answers 0 once for
+/// it, so the host's kernel timer re-enters at once and drains it. Once, not
+/// for as long as the record is queued: a host that collects completions on
+/// that timer without also draining wake records must not be made to spin.
+/// Draining the record clears the note as well.
+pub fn take_unreported_timer_expiry() -> bool {
+    #[cfg(test)]
+    let was = TEST_TIMER_EXPIRY_UNREPORTED.with(|flag| flag.replace(false));
+    #[cfg(not(test))]
+    let was = unsafe { core::mem::replace(&mut *TIMER_EXPIRY_UNREPORTED.0.get(), false) };
+    was
+}
+
+/// A timer deadline was armed that may be earlier than the one the host's
+/// single kernel timer is waiting for. `TYPE_WAIT_COMPLETE` makes the host
+/// collect wait completions, which ends by re-reading
+/// `kernel_wait_next_timeout_ns` and re-arming that timer; with nothing
+/// decided, the collection itself is a no-op.
+pub fn push_timer_deadline_changed() {
+    append_coalesced(0, wakeup_event_wire::TYPE_WAIT_COMPLETE);
+}
+
 /// The host has GL-fence work to collect (`kernel_dri_fence_host_requests`).
 pub fn push_fence_host_work() {
     append_coalesced(wakeup_event_wire::IDX_FENCE_HOST_WORK, WAKE_READABLE);
@@ -253,6 +313,12 @@ fn drain_events(events: &mut Vec<WakeupEvent>, out: &mut [u8], max_events: u32) 
     // share this channel with readiness events, so dropping overflow could
     // strand a stopped or resumed process indefinitely.
     events.drain(..count);
+    if !events
+        .iter()
+        .any(|e| e.idx == wakeup_event_wire::IDX_FENCE_READY && e.wake_type == WAKE_READABLE)
+    {
+        set_timer_expiry_unreported(false);
+    }
     count as u32
 }
 

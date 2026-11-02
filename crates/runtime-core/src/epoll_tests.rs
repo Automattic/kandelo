@@ -892,3 +892,164 @@ fn epoll_retry_probe_refuses_host_network_authority_without_finishing_wait() {
     );
     assert_eq!(retained_epoll_token(&p), token);
 }
+
+/// The scheduler's view of one timer, robust to timerfds other tests armed in
+/// the shared backing table: those can only make the earliest deadline
+/// earlier, never later.
+fn timerfd_backing_index(p: &Process, fd: i32) -> usize {
+    let entry = p.fd_table.get(fd).unwrap();
+    let ofd = p.ofd_table.get(entry.ofd_ref.0).unwrap();
+    (-(ofd.host_handle + 1)) as usize
+}
+
+fn drain_wake_records() -> Vec<(u32, u8)> {
+    let mut out = [0u8; 64 * wasm_posix_shared::wakeup_event_wire::RECORD_BYTES];
+    let n = crate::wakeup::drain(&mut out, 64) as usize;
+    (0..n)
+        .map(|i| {
+            let off = i * wasm_posix_shared::wakeup_event_wire::RECORD_BYTES;
+            (
+                u32::from_le_bytes(out[off..off + 4].try_into().unwrap()),
+                out[off + wasm_posix_shared::wakeup_event_wire::TYPE_OFFSET],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn timerfd_expiry_is_a_scheduled_readiness_event_for_blocked_epoll() {
+    use wasm_posix_shared::wakeup_event_wire::{IDX_FENCE_READY, TYPE_READABLE, TYPE_WAIT_COMPLETE};
+    let mut p = Process::new(171);
+    let mut h = MockHostIO::new();
+    h.clock_time = (1_000, 0);
+    drain_wake_records();
+    let timer = sys_timerfd_create(&mut p, 0, 0).unwrap();
+    // Arming asks the host to re-read the kernel's next deadline.
+    sys_timerfd_settime(&mut p, &mut h, timer, 0, 0, 0, 0, 500_000).unwrap();
+    assert_eq!(drain_wake_records(), [(0, TYPE_WAIT_COMPLETE)]);
+    let deadline_ns = timerfd_next_timeout_ns(&mut h).expect("armed timer is scheduled");
+    assert!(deadline_ns <= 500_000, "{deadline_ns}");
+
+    let ep = sys_epoll_create1(&mut p, 0).unwrap();
+    sys_epoll_ctl(&mut p, ep, 1, timer, EPOLLIN, 7).unwrap();
+    assert_eq!(sys_epoll_pwait(&mut p, &mut h, ep, 1, -1, None), Err(Errno::EAGAIN));
+    let tid = current_tid_for_process(&p);
+    let token = retained_epoll_token(&p);
+
+    // Not yet due: firing accounts nothing for this timer.
+    h.clock_time = (1_000, 400_000);
+    timerfd_fire_due(&mut h);
+    let idx = timerfd_backing_index(&p, timer);
+    assert_eq!(
+        crate::descriptor_backing::with_timerfds(|t| t.get(idx).unwrap().expirations),
+        0
+    );
+
+    // Due: the expiry is accounted without anyone reading or polling the
+    // descriptor, the blocked epoll wait is no longer blocked, and the host is
+    // told to run its broad retry.
+    h.clock_time = (1_000, 500_000);
+    drain_wake_records();
+    assert!(timerfd_fire_due(&mut h));
+    crate::wakeup::push_timer_expired();
+    assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
+    // Draining the record retires the request to re-enter for it.
+    assert!(!crate::wakeup::take_unreported_timer_expiry());
+    // An undrained one asks once, then never again.
+    crate::wakeup::push_timer_expired();
+    assert!(crate::wakeup::take_unreported_timer_expiry());
+    assert!(!crate::wakeup::take_unreported_timer_expiry());
+    assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
+    assert_eq!(
+        crate::descriptor_backing::with_timerfds(|t| t.get(idx).unwrap().expirations),
+        1
+    );
+    assert_eq!(
+        epoll_wait_still_blocked(&mut p, &mut h, tid, token, &mut []),
+        Ok(false)
+    );
+    assert_eq!(batch(&mut p, &mut h, ep, 1), [(EPOLLIN, 7)]);
+    let mut count = [0u8; 8];
+    assert_eq!(sys_read(&mut p, &mut h, timer, &mut count), Ok(8));
+    assert_eq!(u64::from_le_bytes(count), 1);
+    // A fired one-shot timer is disarmed and leaves the schedule.
+    assert_eq!(
+        crate::descriptor_backing::with_timerfds(|t| {
+            let tfd = t.get(idx).unwrap();
+            (tfd.value_sec, tfd.value_nsec)
+        }),
+        (0, 0)
+    );
+}
+
+#[test]
+fn periodic_timerfd_stays_scheduled_and_counts_every_period() {
+    let mut p = Process::new(172);
+    let mut h = MockHostIO::new();
+    h.clock_time = (2_000, 0);
+    let timer = sys_timerfd_create(&mut p, 1, O_NONBLOCK).unwrap();
+    // CLOCK_MONOTONIC, absolute first expiry, 2 ms period.
+    sys_timerfd_settime(&mut p, &mut h, timer, 1, 0, 2_000_000, 2_000, 2_000_000).unwrap();
+    let idx = timerfd_backing_index(&p, timer);
+    h.clock_time = (2_000, 7_000_000);
+    assert!(timerfd_fire_due(&mut h));
+    let state = crate::descriptor_backing::with_timerfds(|t| {
+        let tfd = t.get(idx).unwrap();
+        (tfd.expirations, tfd.value_sec, tfd.value_nsec)
+    });
+    // Expiries at 2, 4 and 6 ms; the next one is 8 ms.
+    assert_eq!(state, (3, 2_000, 8_000_000));
+    let next = timerfd_next_timeout_ns(&mut h).unwrap();
+    assert!(next <= 1_000_000, "{next}");
+    assert!(!timerfd_fire_due_for_test(&mut h, idx));
+    drain_wake_records();
+}
+
+fn timerfd_fire_due_for_test(h: &mut MockHostIO, idx: usize) -> bool {
+    let before = crate::descriptor_backing::with_timerfds(|t| t.get(idx).unwrap().expirations);
+    timerfd_fire_due(h);
+    crate::descriptor_backing::with_timerfds(|t| t.get(idx).unwrap().expirations) != before
+}
+
+#[test]
+fn timerfd_settime_rejects_invalid_time_values() {
+    let mut p = Process::new(173);
+    let mut h = MockHostIO::new();
+    let timer = sys_timerfd_create(&mut p, 1, O_NONBLOCK).unwrap();
+    for (isec, insec, vsec, vnsec) in [
+        (0, -1, 1, 0),
+        (0, 1_000_000_000, 1, 0),
+        (-1, 0, 1, 0),
+        (0, 0, 0, -1),
+        (0, 0, 0, 1_000_000_000),
+        (0, 0, -1, 0),
+    ] {
+        assert_eq!(
+            sys_timerfd_settime(&mut p, &mut h, timer, 0, isec, insec, vsec, vnsec),
+            Err(Errno::EINVAL),
+            "{isec} {insec} {vsec} {vnsec}"
+        );
+    }
+    // Rejected calls leave the timer disarmed.
+    assert_eq!(
+        sys_timerfd_gettime(&mut p, &mut h, timer),
+        Ok((0, 0, 0, 0))
+    );
+    drain_wake_records();
+}
+
+#[test]
+fn timerfd_schedule_skips_a_clock_the_host_cannot_read() {
+    let mut p = Process::new(174);
+    let mut h = MockHostIO::new();
+    h.clock_time = (3_000, 0);
+    let timer = sys_timerfd_create(&mut p, 1, O_NONBLOCK).unwrap();
+    sys_timerfd_settime(&mut p, &mut h, timer, 0, 0, 0, 1, 0).unwrap();
+    h.clock_error = Some(Errno::EINVAL);
+    // Neither call fails: the kernel's other deadlines must still be served.
+    assert_eq!(timerfd_next_timeout_ns(&mut h), None);
+    assert!(!timerfd_fire_due(&mut h));
+    h.clock_error = None;
+    drain_wake_records();
+    drop(p);
+}

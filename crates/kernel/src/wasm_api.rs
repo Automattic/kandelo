@@ -16842,6 +16842,13 @@ pub extern "C" fn kernel_drain_wait_completions(
     } else {
         None
     };
+    // Timerfds are the other timed kernel state the host's timer serves (see
+    // kernel_wait_next_timeout_ns). Account the due ones now: their epoll
+    // interests are notified here, and the untargeted wake record makes the
+    // host retry the poll/select/epoll/read waits it keeps blocked.
+    if syscalls::timerfd_fire_due(&mut WasmHostIO) {
+        crate::wakeup::push_timer_expired();
+    }
     settle_child_waits();
     settle_signal_waits();
     release_orphaned_ofd_locks();
@@ -16880,24 +16887,41 @@ pub extern "C" fn kernel_drain_wait_completions(
     drained
 }
 
-/// Nanoseconds until the earliest kernel-owned park deadline, `0` if one has
-/// already passed, or `-1` if no park is timed.
+/// Nanoseconds until the earliest kernel-owned park deadline or armed
+/// timerfd expiry, `0` if one has already passed (or, once, if an accounted
+/// expiry's wake record is queued and undrained), or `-1` if nothing is
+/// timed.
 ///
 /// Relative on purpose: a host sleeps this long and re-enters through
 /// [`kernel_drain_wait_completions`], and never computes in the kernel's clock
 /// domain -- which is what lets a deterministic scheduler replace that clock
-/// without touching any host.
+/// without touching any host. A timerfd expiry is included because it is a
+/// readiness event: the drain accounts it and wakes its waiters.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_wait_next_timeout_ns() -> i64 {
-    // No timed park: answer without the clock read (a host call).
-    if !crate::wait_park::with(|parks| parks.has_deadline()) {
-        return -1;
+    // An expiry already accounted, whose wake record the host has not
+    // drained yet, is due now: the host must re-enter to deliver it. Reported
+    // once (see take_unreported_timer_expiry).
+    if crate::wakeup::take_unreported_timer_expiry() {
+        return 0;
     }
-    let now = match crate::wait_park::now_ns(&mut WasmHostIO) {
-        Ok(now) => now,
-        Err(error) => return -(error as i64),
+    let mut host = WasmHostIO;
+    let timer = syscalls::timerfd_next_timeout_ns(&mut host);
+    // No timed park: answer without the clock read (a host call).
+    let park = if crate::wait_park::with(|parks| parks.has_deadline()) {
+        let now = match crate::wait_park::now_ns(&mut host) {
+            Ok(now) => now,
+            Err(error) => return -(error as i64),
+        };
+        crate::wait_park::with(|parks| parks.next_timeout_ns(now))
+    } else {
+        None
     };
-    crate::wait_park::with(|parks| parks.next_timeout_ns(now)).unwrap_or(-1)
+    match (park, timer) {
+        (Some(park), Some(timer)) => park.min(timer),
+        (Some(ns), None) | (None, Some(ns)) => ns,
+        (None, None) => -1,
+    }
 }
 
 /// What the host must do right after a syscall parked (`PARKED_ERRNO`):
