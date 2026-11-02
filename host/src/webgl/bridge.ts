@@ -44,6 +44,7 @@ import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { noteSamplerWrite } from "./depth-sampling.js";
 import { externalTexParameter, recordCompiledExternalSamplers, TEXTURE_EXTERNAL_OES, validateExternalSamplers } from "./external-texture.js";
+import { recordProgramValidation } from "./validate-status.js";
 import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-sizes.js";
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
@@ -1148,7 +1149,11 @@ function dispatch(
     case O.OP_VALIDATE_PROGRAM: {
       const name = v.getUint32(p,true), program = b.programs.get(name);
       if (!program) { recordGlError(b,b.shaders.has(name) ? 0x502 : 0x501); return; }
-      if (checkedGlCall(b, () => gl.validateProgram(program))) validateExternalSamplers(b, program);
+      if (checkedGlCall(b, () => gl.validateProgram(program))) {
+        validateExternalSamplers(b, program);
+        // [RUNTIME-WORKAROUND: FIREFOX-VALIDATE-UNLINKED-PROGRAM]
+        recordProgramValidation(b, program);
+      }
       return;
     }
     case O.OP_DELETE_SHADER: {

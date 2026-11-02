@@ -1,4 +1,5 @@
 import { externalValidationFailed, guestUniformType } from "./external-texture.js";
+import { validationHadNoExecutable } from "./validate-status.js";
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
@@ -579,6 +580,10 @@ export function runGlQuery(
         } else if (pname === 0x8b83 && externalValidationFailed(prog)) {
           // A sampler2D and a samplerExternalOES share a unit (ES 2.0
           // 2.10.4); WebGL validated two sampler2Ds.
+          v = false;
+        } else if (pname === 0x8b83 && validationHadNoExecutable(prog)) {
+          // [RUNTIME-WORKAROUND: FIREFOX-VALIDATE-UNLINKED-PROGRAM] No
+          // linked executable at ValidateProgram: Firefox answers TRUE.
           v = false;
         } else {
           v = gl.getProgramParameter(prog, pname);

@@ -1882,6 +1882,22 @@ describe("GLES2 core object queries", () => {
     send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,17,14]);
     expect([size(0x8d42),size(0x8d43)]).toEqual([0,29]);
   });
+  it("fails validation of a program without a linked executable when the engine reports success", () => {
+    // FIREFOX-VALIDATE-UNLINKED-PROGRAM: Firefox answers VALIDATE_STATUS TRUE
+    // after ValidateProgram on a program whose link failed.
+    const {gl,b,send} = setup(); let linked = false;
+    Object.assign(gl,{validateProgram: () => {},
+      getProgramParameter: (_program: unknown, pname: number) => pname === 0x8b82 ? linked : true});
+    const status = () => {
+      const input = new Uint8Array(new Uint32Array([12,0x8b83]).buffer), out = new Uint8Array(4);
+      expect(runGlQuery(b,O.QOP_GET_PROGRAMIV,input,out)).toBe(4);
+      return new DataView(out.buffer).getInt32(0,true);
+    };
+    send(O.OP_CREATE_PROGRAM,[12]);
+    send(O.OP_VALIDATE_PROGRAM,[12]); expect(status()).toBe(0);
+    linked = true; expect(status()).toBe(0); // until the next ValidateProgram
+    send(O.OP_VALIDATE_PROGRAM,[12]); expect(status()).toBe(1);
+  });
   it("validates only logical programs and preserves native rejection errors", () => {
     const {gl,b,send} = setup(); Object.assign(gl,{validateProgram: (program: unknown) => gl.log.push(["validateProgram",[program]])});
     send(O.OP_CREATE_PROGRAM,[12]); send(O.OP_CREATE_SHADER,[0x8b31,11]);
