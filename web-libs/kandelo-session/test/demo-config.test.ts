@@ -593,6 +593,39 @@ describe("virtual display scale", () => {
   });
 });
 
+describe("dock layout and fixed theme", () => {
+  const presentation = { bootPrimary: "syslog", runningPrimary: ["kms"],
+    terminalAccess: "drawer", internalsAccess: "drawer" };
+  it("carries a minimal dock and a fixed theme", () => {
+    const config = withProfile({ presentation: { ...presentation, dock: "minimal",
+      theme: { family: "wordpress", mode: "dark" } } });
+    validateKandeloDemoConfig(config);
+    const resolved = resolveDemoPresentation(config, "m");
+    expect(resolved?.dock).toBe("minimal");
+    expect(resolved?.theme).toEqual({ family: "wordpress", mode: "dark" });
+  });
+  it("leaves both out when the image omits them", () => {
+    const resolved = resolveDemoPresentation(withProfile({ presentation }), "m");
+    expect(resolved).not.toHaveProperty("dock");
+    expect(resolved).not.toHaveProperty("theme");
+  });
+  it.each(["compact", "", null, 1])("rejects dock %s", (dock) => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      presentation: { ...presentation, dock },
+    }))).toThrow("presentation.dock");
+  });
+  it.each([
+    "wordpress",
+    { family: "wordpress" },
+    { family: "foo", mode: "dark" },
+    { family: "wordpress", mode: "auto" },
+  ])("rejects theme %j", (theme) => {
+    expect(() => validateKandeloDemoConfig(withProfile({
+      presentation: { ...presentation, theme },
+    }))).toThrow("presentation.theme");
+  });
+});
+
 describe("image-owned exchange hints", () => {
   it("resolves the picker's label and accept filter", () => {
     const config = parseKandeloDemoConfig(JSON.stringify({
