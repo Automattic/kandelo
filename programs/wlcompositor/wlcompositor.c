@@ -42,23 +42,24 @@
  * into a gbm dumb-bo and the bo's prime-fd rides SCM_RIGHTS to us as the
  * wl_shm pool fd. COMPOSITING is GPU-first with a CPU fallback:
  *
- *   - GPU path (browser hosts with WebGL2): a GLES3 context on
- *     /dev/dri/renderD128 renders the frame — client bos are imported as
- *     textures via the WPK dmabuf extension (wpkEglImportDmabufHandle +
- *     wpkEglBindBoTexture; the host uploads pixels straight from the
+ *   - GPU path (browser hosts with WebGL2): an OpenGL ES 2.0 context on
+ *     an EGL display for the compositor's own GBM device renders each
+ *     frame into an EGL window on a GBM surface — client bos are imported
+ *     as textures via the WPK dmabuf extension (wpkEglImportDmabufHandle
+ *     + wpkEglBindBoTexture; the host uploads pixels straight from the
  *     bo's shared storage, no cmdbuf marshalling) and composited as
- *     textured quads. The frame is encoded in one cmdbuf flush, so the
- *     display canvas transitions atomically between complete frames.
- *     KMS PAGE_FLIPs still pace the frame clock (frame callbacks, flip
- *     counters); only pixel production moves to the GPU. WLC_NO_GPU=1
- *     forces the CPU path (a manual debug escape hatch, documented in
- *     docs/browser-support.md).
+ *     textured quads. eglSwapBuffers finishes the frame; the bo it
+ *     produced is added as a framebuffer and page-flipped like any
+ *     scanout bo, so the output moves atomically between complete frames
+ *     and PAGE_FLIP completions pace the frame clock (frame callbacks,
+ *     flip counters). WLC_NO_GPU=1 forces the CPU path (a manual debug
+ *     escape hatch, documented in docs/browser-support.md).
  *
  *   - CPU path (Node smokes, hosts without WebGL2, or GPU init/runtime
  *     failure): the committed buffers are CPU-blitted into a scanout
- *     gbm_bo exactly as before. GPU availability is probed at startup by
- *     compiling the compositor shader — sync GL queries fail cleanly on
- *     headless hosts. One-shot WLC_RENDERER marker reports the outcome.
+ *     gbm_bo exactly as before. GPU availability is probed at startup:
+ *     eglInitialize fails on a host with no GLES renderer. One-shot
+ *     WLC_RENDERER marker reports the outcome.
  *
  * Clients are paced with wl_surface.frame callbacks fired on flip
  * completion. ESC is forwarded, never special-cased.
@@ -113,6 +114,7 @@
 #include <drm/drm_fourcc.h>
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 
 #include <wpkdraw/wpkdraw.h>
@@ -386,9 +388,12 @@ struct compositor {
      * (SDL's Wayland backend, and so ScummVM) sees the real display. */
     int32_t mm_width, mm_height;
     struct gbm_device *gbm;
-    struct gbm_surface *gbm_surface;
+    struct gbm_surface *gbm_surface;   /* CPU-composited scanout bos */
     struct gbm_bo *displayed_bo;   /* on-screen right now */
     struct gbm_bo *pending_bo;     /* flip queued, not yet complete */
+    /* The gbm_surface each of those bos came from (the CPU one above or
+     * the GPU path's EGL window), so it is released back to its owner. */
+    struct gbm_surface *displayed_surface, *pending_surface;
     int crtc_configured;           /* SetCrtc done once */
 
     /* Pre-rendered desktop background (pw × ph, tightly packed). */
@@ -522,14 +527,18 @@ static struct {
     struct surface *surface;       /* that surface once it mapped */
 } lk;
 
-/* ---- GPU compositing state (GLES via renderD128) ----------------------- */
+/* ---- GPU compositing state (GLES 2 on the GBM platform) --------------- */
 
 static struct {
     int active;                 /* GL probed OK; repaints render on the GPU */
     EGLDisplay dpy;
     EGLContext ctx;
     EGLSurface srf;
+    /* The EGL window's scanout bos: GL renders into them and the frame
+     * the swap produced is locked, added as a framebuffer and flipped. */
+    struct gbm_surface *gbm_surface;
     GLuint prog;
+    GLuint corners;             /* VBO: the quad's four (0|1, 0|1) corners */
     GLint loc_rect;             /* vec4 NDC x0,y0(top),x1,y1(bottom) */
     GLint loc_uv;               /* vec4 texture uv0.xy,uv1.xy */
     GLint loc_use_tex;          /* 0 = flat u_color; see glc_tex_mode */
@@ -3802,38 +3811,36 @@ static void ext_control_mgr_bind(struct wl_client *c, void *data, uint32_t ver,
 /* GPU compositing: GLES quads over imported client textures              */
 /* ====================================================================== */
 
-/* One quad per draw: the vertex shader expands gl_VertexID (triangle
- * strip, no VBO) across a uniform NDC rect; the fragment shader samples
- * the surface texture or fills a flat color for the focus border. An
- * XRGB/ARGB texture holds [B,G,R,X] bytes uploaded verbatim as RGBA, so it
- * is read with the .bgr swizzle exactly like the host's webgl2-scanout
- * presenter; an XBGR/ABGR one already holds RGBA order and is read as is
- * (see glc_tex_mode). */
+/* One quad per draw: the vertex shader maps the quad's corner (a_t, from a
+ * four-vertex triangle-strip VBO) across a uniform NDC rect; the fragment
+ * shader samples the surface texture or fills a flat color for the focus
+ * border. ESSL 1.00, as GLES 2.0 requires. An XRGB/ARGB texture holds
+ * [B,G,R,X] bytes uploaded verbatim as RGBA, so it is read with the .bgr
+ * swizzle exactly like the host's webgl2-scanout presenter; an XBGR/ABGR
+ * one already holds RGBA order and is read as is (see glc_tex_mode). */
 static const char GLC_VS[] =
-    "#version 300 es\n"
+    "attribute vec2 a_t;\n"
     "uniform vec4 u_rect;\n"
     "uniform vec4 u_uv;\n"
-    "out vec2 v_uv;\n"
+    "varying vec2 v_uv;\n"
     "void main() {\n"
-    "  vec2 t = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));\n"
-    "  v_uv = mix(u_uv.xy, u_uv.zw, t);\n"
-    "  vec2 p = mix(u_rect.xy, u_rect.zw, t);\n"
+    "  v_uv = mix(u_uv.xy, u_uv.zw, a_t);\n"
+    "  vec2 p = mix(u_rect.xy, u_rect.zw, a_t);\n"
     "  gl_Position = vec4(p, 0.0, 1.0);\n"
     "}\n";
 static const char GLC_FS[] =
-    "#version 300 es\n"
     "precision mediump float;\n"
     "uniform sampler2D u_tex;\n"
     "uniform vec4 u_color;\n"
     "uniform int u_use_tex;\n"
-    "in vec2 v_uv;\n"
-    "out vec4 o_color;\n"
+    "varying vec2 v_uv;\n"
     "void main() {\n"
-    "  if (u_use_tex == 0) { o_color = u_color; return; }\n"
-    "  vec4 t = texture(u_tex, v_uv);\n"
+    "  if (u_use_tex == 0) { gl_FragColor = u_color; return; }\n"
+    "  vec4 t = texture2D(u_tex, v_uv);\n"
     "  vec3 c = u_use_tex >= 3 ? t.rgb : t.bgr;\n"
-    "  o_color = vec4(c, (u_use_tex == 2 || u_use_tex == 4) ? t.a : 1.0);\n"
+    "  gl_FragColor = vec4(c, (u_use_tex == 2 || u_use_tex == 4) ? t.a : 1.0);\n"
     "}\n";
+#define GLC_ATTRIB_T 0
 
 /* Compile one shader; returns 0 on failure. On a headless host the sync
  * GL queries fail (EIO) and COMPILE_STATUS reads back 0, so this doubles
@@ -3923,6 +3930,18 @@ static void glc_draw_solid(uint32_t argb, int32_t x, int32_t y,
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 }
 
+/* GLES 2.0 section 3.8.2: a non-power-of-two texture is complete only
+ * with CLAMP_TO_EDGE wrapping and a non-mipmap minification filter, and
+ * client buffers and the wallpaper are any size. Set both on every bind
+ * of a texture the compositor samples. */
+static void glc_texture_params(unsigned tex) {
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+}
+
 /* Import-once + rebind-on-commit texture for a client buffer. Returns 0
  * when the buffer has no GL representation; the caller draws the rest of
  * the frame without it. NOTE: rebinding flushes the cmdbuf, so this must
@@ -3944,6 +3963,7 @@ static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
         unsigned tex = wpkEglBindBoTexture(glc.dpy, b->egl_bo_handle,
                                            GL_TEXTURE_2D);
         if (!tex) return 0;
+        glc_texture_params(tex);
         b->gl_tex = tex;
         b->gl_dirty = 0;
     }
@@ -3971,6 +3991,7 @@ static int gl_wallpaper_upload(void) {
     unsigned tex = wpkEglBindBoTexture(glc.dpy, wallpaper_bo_handle,
                                        GL_TEXTURE_2D);
     if (!tex) return -1;
+    glc_texture_params(tex);
     glc.wallpaper_tex = tex;
     return 0;
 }
@@ -3995,44 +4016,82 @@ static int setup_gl_wallpaper(void) {
     return 0;
 }
 
+/* Undo a partial setup_gl: no bo of the GPU surface was locked yet. */
+static void setup_gl_fail(void) {
+    eglTerminate(glc.dpy);
+    if (glc.gbm_surface) gbm_surface_destroy(glc.gbm_surface);
+    glc.gbm_surface = NULL;
+}
+
 /* Probe + bring up the GPU compositing path. Any failure leaves
  * glc.active = 0 and the compositor on the CPU path — expected on Node
- * (no WebGL2) and forced by WLC_NO_GPU=1. */
+ * (no WebGL2) and forced by WLC_NO_GPU=1.
+ *
+ * This is the ordinary KMS compositor path (kmscube, SDL's KMSDRM video
+ * driver): an EGL display on the compositor's own GBM device, an
+ * OpenGL ES 2.0 context, and an EGL window on a GBM surface whose bos
+ * this process, the DRM master, scans out. EGL offers 8-bit ARGB and ABGR
+ * visuals; ARGB8888 has the scanout's [B,G,R,A] byte order. */
 static void setup_gl(void) {
     if (getenv("WLC_NO_GPU")) return;
 
-    glc.dpy = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+    glc.dpy = eglGetPlatformDisplay(EGL_PLATFORM_GBM_KHR, g.gbm, NULL);
+    if (glc.dpy == EGL_NO_DISPLAY) return;
     EGLint maj = 0, min = 0;
     if (!eglInitialize(glc.dpy, &maj, &min)) return;
 
-    static const EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3,
+    static const EGLint cfg_attrs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
+        EGL_NONE };
+    EGLConfig configs[64], config = NULL;
+    EGLint n = 0;
+    if (!eglChooseConfig(glc.dpy, cfg_attrs, configs, 64, &n)) n = 0;
+    for (EGLint i = 0; i < n && !config; i++) {
+        EGLint visual = 0;
+        if (eglGetConfigAttrib(glc.dpy, configs[i], EGL_NATIVE_VISUAL_ID, &visual)
+            && (uint32_t)visual == GBM_FORMAT_ARGB8888)
+            config = configs[i];
+    }
+    if (!config) {
+        fprintf(stderr, "wlcompositor: no ARGB8888 GLES 2 window config\n");
+        setup_gl_fail();
+        return;
+    }
+
+    static const EGLint ctx_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 2,
                                         EGL_NONE };
-    glc.ctx = eglCreateContext(glc.dpy, NULL, EGL_NO_CONTEXT, ctx_attrs);
-    if (glc.ctx == EGL_NO_CONTEXT) { eglTerminate(glc.dpy); return; }
-    /* EGL window surfaces take no size attributes (EGL 1.5 section
-     * 3.5.1); without a native window the host drawable sets the size.
-     * The ES 3 request above fails on the ES 2-only libEGL, so this
-     * compositor currently runs its CPU path. */
-    glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, NULL);
-    if (glc.srf == EGL_NO_SURFACE) { eglTerminate(glc.dpy); return; }
+    glc.ctx = eglCreateContext(glc.dpy, config, EGL_NO_CONTEXT, ctx_attrs);
+    if (glc.ctx == EGL_NO_CONTEXT) { setup_gl_fail(); return; }
+    glc.gbm_surface = gbm_surface_create(g.gbm, g.pw, g.ph, GBM_FORMAT_ARGB8888,
+                                         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!glc.gbm_surface) { setup_gl_fail(); return; }
+    glc.srf = eglCreatePlatformWindowSurface(glc.dpy, config, glc.gbm_surface, NULL);
+    if (glc.srf == EGL_NO_SURFACE) {
+        fprintf(stderr, "wlcompositor: EGL window surface failed: 0x%x\n", eglGetError());
+        setup_gl_fail();
+        return;
+    }
     if (!eglMakeCurrent(glc.dpy, glc.srf, glc.srf, glc.ctx)) {
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
 
     GLuint vs = glc_compile(GL_VERTEX_SHADER, GLC_VS);
-    if (!vs) { eglTerminate(glc.dpy); return; }   /* headless probe exit */
+    if (!vs) { setup_gl_fail(); return; }   /* headless probe exit */
     GLuint fs = glc_compile(GL_FRAGMENT_SHADER, GLC_FS);
-    if (!fs) { eglTerminate(glc.dpy); return; }
+    if (!fs) { setup_gl_fail(); return; }
     glc.prog = glCreateProgram();
     glAttachShader(glc.prog, vs);
     glAttachShader(glc.prog, fs);
+    glBindAttribLocation(glc.prog, GLC_ATTRIB_T, "a_t");
     glLinkProgram(glc.prog);
     GLint linked = 0;
     glGetProgramiv(glc.prog, GL_LINK_STATUS, &linked);
     if (!linked) {
         fprintf(stderr, "wlcompositor: GL program link failed\n");
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
     glUseProgram(glc.prog);
@@ -4041,6 +4100,13 @@ static void setup_gl(void) {
     glc.loc_use_tex = glGetUniformLocation(glc.prog, "u_use_tex");
     glc.loc_color = glGetUniformLocation(glc.prog, "u_color");
     glUniform1i(glGetUniformLocation(glc.prog, "u_tex"), 0);
+    /* Corner order (0,0) (1,0) (0,1) (1,1) draws the rect as a strip. */
+    static const GLfloat corners[] = { 0, 0, 1, 0, 0, 1, 1, 1 };
+    glGenBuffers(1, &glc.corners);
+    glBindBuffer(GL_ARRAY_BUFFER, glc.corners);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(corners), corners, GL_STATIC_DRAW);
+    glVertexAttribPointer(GLC_ATTRIB_T, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+    glEnableVertexAttribArray(GLC_ATTRIB_T);
     glViewport(0, 0, (GLsizei)g.pw, (GLsizei)g.ph);
     /* Source-over with a premultiplied source, matching wl_shm ARGB8888.
      * Opaque draws emit alpha 1 and so still overwrite. */
@@ -4049,7 +4115,7 @@ static void setup_gl(void) {
 
     if (setup_gl_wallpaper() != 0) {
         fprintf(stderr, "wlcompositor: GL wallpaper staging failed\n");
-        eglTerminate(glc.dpy);
+        setup_gl_fail();
         return;
     }
     glc.active = 1;
@@ -4150,15 +4216,11 @@ static int repaint_gl(void) {
                          glc_px(g.layers[i]->x),
                          glc_px(g.layers[i]->y),
                          glc_px(g.layers[i]->w), glc_px(g.layers[i]->h));
-    /* A failed present (context loss) must degrade like a failed texture
-     * bind — returning 1 here would keep glc.active set and freeze the
-     * canvas on the last GL frame, the exact failure the CPU fallback
-     * exists to prevent. */
-    if (eglSwapBuffers(glc.dpy, glc.srf) != EGL_TRUE) return 0;
-
     /* One-shot proof that client pixels crossed the process boundary,
      * same contract as the CPU path's sample — but read back from the
-     * composited GL framebuffer (glReadPixels via the sync query path). */
+     * composited GL framebuffer (glReadPixels via the sync query path).
+     * Read before the swap: afterwards the window's back buffer contents
+     * are undefined (EGL_BUFFER_DESTROYED). */
     if (top && !g.sampled) {
         /* The sample point is logical (the gates read these coordinates);
          * the framebuffer it is read from is device pixels. */
@@ -4176,7 +4238,11 @@ static int repaint_gl(void) {
             g.sampled = 1;
         }
     }
-    return 1;
+    /* A failed present (context loss) must degrade like a failed texture
+     * bind — returning 1 here would keep glc.active set and freeze the
+     * output on the last GL frame, the exact failure the CPU fallback
+     * exists to prevent. */
+    return eglSwapBuffers(glc.dpy, glc.srf) == EGL_TRUE;
 }
 
 /* Render one frame: lock a free scanout bo, paint wallpaper + every mapped
@@ -4186,30 +4252,35 @@ static int repaint_gl(void) {
  * input bridge maps it absolutely so the two would sit on top of each
  * other. */
 static void repaint(void) {
-    if (!gbm_surface_has_free_buffers(g.gbm_surface)) return; /* retry on flip */
+    struct gbm_bo *bo = NULL;
+    struct gbm_surface *scanout = NULL;
 
-    struct gbm_bo *bo = gbm_surface_lock_front_buffer(g.gbm_surface);
-    if (!bo) return;
-
-    /* GPU path first. The scanout bo's CONTENT is stale under it (the
-     * GL frame goes straight to the display canvas; the pump presenter
-     * stood down when our context claimed it), but the bo still cycles
-     * through ADDFB + PAGE_FLIP below — that is the frame clock for
-     * wl_surface.frame callbacks and the kernel's flip counters. A
-     * runtime GL failure degrades to the CPU path permanently. */
-    if (glc.active && !repaint_gl()) {
-        fprintf(stderr,
-                "wlcompositor: GPU compositing failed; falling back to CPU\n");
-        glc.active = 0;
-        /* Tear the EGL session down so the host hands the display canvas
-         * back to its vblank-pump presenter — otherwise the canvas would
-         * freeze on the last GL frame while we CPU-composite into the
-         * scanout bo. Also invalidates every egl_bo_handle; the CPU path
-         * never touches them and wpkEglCloseBoHandle no-ops once the
-         * session fd is gone. */
-        eglTerminate(glc.dpy);
+    /* GPU path first: render into the EGL window's back buffer, swap, and
+     * scan out the bo the swap produced. A runtime GL failure degrades to
+     * the CPU path permanently, in this same repaint. */
+    if (glc.active) {
+        if (!gbm_surface_has_free_buffers(glc.gbm_surface)) return; /* retry on flip */
+        if (repaint_gl()) {
+            bo = gbm_surface_lock_front_buffer(glc.gbm_surface);
+            scanout = glc.gbm_surface;
+        }
+        if (!bo) {
+            fprintf(stderr,
+                    "wlcompositor: GPU compositing failed; falling back to CPU\n");
+            glc.active = 0;
+            /* Tear the EGL session down. This also invalidates every
+             * egl_bo_handle; the CPU path never touches them and
+             * wpkEglCloseBoHandle no-ops once the session fd is gone. A
+             * GPU bo still on screen or in flight is released to its
+             * surface when the next CPU frame replaces it. */
+            eglTerminate(glc.dpy);
+        }
     }
     if (!glc.active) {
+        if (!gbm_surface_has_free_buffers(g.gbm_surface)) return; /* retry on flip */
+        bo = gbm_surface_lock_front_buffer(g.gbm_surface);
+        if (!bo) return;
+        scanout = g.gbm_surface;
         uint32_t stride = 0;
         void *map_data = NULL;
         uint32_t *dst =
@@ -4272,7 +4343,7 @@ static void repaint(void) {
     if (!fb_id) {
         fprintf(stderr, "wlcompositor: drmModeAddFB failed: %s\n",
                 strerror(errno));
-        gbm_surface_release_buffer(g.gbm_surface, bo);
+        gbm_surface_release_buffer(scanout, bo);
         return;
     }
 
@@ -4280,11 +4351,12 @@ static void repaint(void) {
         if (drmModeSetCrtc(g.card_fd, g.crtc_id, fb_id, 0, 0,
                            &g.connector_id, 1, &g.mode) < 0) {
             perror("drmModeSetCrtc");
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            gbm_surface_release_buffer(scanout, bo);
             return;
         }
         g.crtc_configured = 1;
         g.displayed_bo = bo;
+        g.displayed_surface = scanout;
         printf("FLIP fb=%u first=1\n", fb_id);
         fflush(stdout);
         send_all_frame_callbacks();
@@ -4297,10 +4369,11 @@ static void repaint(void) {
         if (drmModePageFlip(g.card_fd, g.crtc_id, fb_id,
                             DRM_MODE_PAGE_FLIP_EVENT, NULL) < 0) {
             perror("drmModePageFlip");
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            gbm_surface_release_buffer(scanout, bo);
             return;
         }
         g.pending_bo = bo;
+        g.pending_surface = scanout;
     }
 }
 
@@ -4321,9 +4394,11 @@ static void on_flip(int fd, unsigned int seq, unsigned int sec,
                     unsigned int usec, void *user_data) {
     if (g.pending_bo) {
         if (g.displayed_bo)
-            gbm_surface_release_buffer(g.gbm_surface, g.displayed_bo);
+            gbm_surface_release_buffer(g.displayed_surface, g.displayed_bo);
         g.displayed_bo = g.pending_bo;
+        g.displayed_surface = g.pending_surface;
         g.pending_bo = NULL;
+        g.pending_surface = NULL;
         send_all_frame_callbacks();
         send_all_presentation_feedback(sec, usec * 1000u, seq);
         /* The frame that just flipped was drawn locked, so nothing unlocked

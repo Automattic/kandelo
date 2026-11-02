@@ -228,7 +228,8 @@ its specification defines. The decisions and their evidence are recorded in
 ### Implement OpenGL ES 3.0 contexts
 
 Deferred because Cage, Sway and Labwc (through the wlroots GLES2 renderer),
-SFWBar and the current ScummVM path all use GLES 2, so ES 3.0 was not on the
+SFWBar, the current ScummVM path and Kandelo's own wlcompositor (the
+`wayland` and `omarchy` desktops) all use GLES 2, so ES 3.0 was not on the
 desktop's critical path and would roughly double conformance-testing time.
 WebGL 2 is close to ES 3.0, so most entry points map directly; the real work
 is where WebGL 2 falls short: `glMapBufferRange` (a guest-side shadow with

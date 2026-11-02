@@ -517,23 +517,29 @@ The Wayland desktop machine (launched from the gallery, or directly with
 The Modeset pane bridges card0 to an OffscreenCanvas.
 
 **GPU compositing (default in the browser).** At boot wlcompositor
-probes the `/dev/dri/renderD128` GLES bridge (context creation requires a
-live renderer acknowledgement and fails cleanly on renderer-less hosts;
-shader compilation uses synchronous queries) and, when available,
-composites with GLES3: each client `wl_shm` buffer — a gbm dumb bo
-whose prime-fd arrived over `SCM_RIGHTS` — is imported on the EGL fd
-and bound as a `WebGLTexture` through the
+takes the ordinary KMS compositor path that SDL's KMSDRM driver also
+uses: an EGL display on its own GBM device (`EGL_PLATFORM_GBM_KHR`;
+`eglInitialize` fails cleanly on a host with no GLES renderer), an
+OpenGL ES 2.0 context, and an EGL window on an ARGB8888 GBM surface.
+When that succeeds it composites with GLES 2: each client `wl_shm`
+buffer — a gbm dumb bo whose prime-fd arrived over `SCM_RIGHTS` — is
+imported on the EGL fd and bound as a `WebGLTexture` through the
 `DRM_IOCTL_WPK_BIND_FOREIGN_TEXTURE` ioctl (the host uploads pixels
 straight from the bo's shared storage; nothing marshals through the
 cmdbuf). Frames render as textured quads (wallpaper texture + z-ordered
-windows + focus border) in a single cmdbuf flush, so the canvas
-transitions atomically between complete frames. The compositor's GL
-context claims the CRTC canvas (`markKmsCanvasGlOwned`), the vblank
-pump's presenter stands down, and stats slot 7 reports `3`
-(`webgl2-gl` in the chip). KMS PAGE_FLIPs still pace frame callbacks
-and the flip counters — only pixel production moves to the GPU. The
-compositor prints a one-shot `WLC_RENDERER gpu|cpu` marker;
-`WLC_NO_GPU=1` forces the CPU path.
+windows + focus border); `eglSwapBuffers` finishes each one and the GBM
+bo it produced is added as a framebuffer and page-flipped, so the
+output moves atomically between complete frames. The compositor's GL
+context is created on the DRM master's file, so it claims the CRTC
+canvas (`markKmsCanvasGlOwned`), the vblank pump's presenter stands
+down, and stats slot 7 reports `3` (`webgl2-gl` in the chip). PAGE_FLIP
+completions pace frame callbacks and the flip counters. The compositor
+prints a one-shot `WLC_RENDERER gpu|cpu` marker; `WLC_NO_GPU=1` forces
+the CPU path. Until the 2026-11 GLES 2 baseline the compositor asked
+for an ES 3 context on the default display; that request now fails with
+`EGL_BAD_MATCH` (ES 3.0 is deferred, see
+[future improvements](future-improvements.md#implement-opengl-es-30-contexts)),
+which is why the compositor moved to GLES 2.
 
 **CPU compositing (Node smokes, headless degrade, or `WLC_NO_GPU`).**
 The compositor blits committed buffers into the dumb-bo scanout as
