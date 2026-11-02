@@ -1,9 +1,9 @@
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlOperationStream } from "./operation-stream.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
-import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
+import { checkedGlCall, checkedGlCallAfterClean, type CheckedGlOwner } from "./program-objects.js";
 import {
-  reserveNativeRetirement, repairNativeState, retireNativeRetirement,
+  hasNativeRepair, reserveNativeRetirement, repairNativeState, retireNativeRetirement,
   type NativeRetirement, retainNativeRetirement, type NativeRetirementLease, rethrowNativeGlFault } from "./native-recovery.js";
 
 type Fence = {
@@ -133,6 +133,10 @@ export class GlFenceOwner {
     if (this.closed || !gl || !Number.isInteger(token) || token <= this.serial || token > 0xffff_ffff) return result;
     let retirement: NativeRetirement | null = null;
     try {
+      // Without a pending repair, nothing between this capture and the
+      // fence's creation touches the renderer: the creation's own check is
+      // enough (its entry drain could find nothing).
+      const clean = !hasNativeRepair(gl);
       captureNativeGlErrors(gl, source);
       if (!repairNativeState(gl) || gl.isContextLost()) return result;
       const owner = {gl,errors:[] as number[]}, deletion: ["deleteSync",WebGLSync|null] = ["deleteSync",null];
@@ -141,7 +145,8 @@ export class GlFenceOwner {
       const fence: Fence = {token,owner,deletion,retirement,published:false,created:false,destroyed:false,references:0};
       result.candidate = new GlFenceCandidate(this,fence);
       this.fences.set(token,fence); this.serial = token;
-      const accepted = checkedGlCall(owner,() => { deletion[1] = gl.fenceSync(0x9117,0); });
+      const create = () => { deletion[1] = gl.fenceSync(0x9117,0); };
+      const accepted = clean ? checkedGlCallAfterClean(owner,create) : checkedGlCall(owner,create);
       fence.created = accepted && !!deletion[1]; result.accepted = fence.created;
       return result;
     } catch (caught) {

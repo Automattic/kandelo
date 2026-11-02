@@ -31,9 +31,14 @@ export function prepareFenceQuery(b: GlBinding, op: number, input: Uint8Array, o
   try {
     // Polling may refer to a creatorless native context while a peer owns
     // its current GL flags. Do not switch current ownership just to poll.
-    const contexts = b.fences.contexts();
-    if (b.gl) contexts.add(b.gl);
-    for (const gl of contexts) captureErrors(gl);
+    // Creation touches only b.gl, after selecting b: the switch captures an
+    // outgoing peer's flags and creation captures b's own, so capturing
+    // first would be a second round trip that can find nothing.
+    if (op !== QOP_CREATE_FENCE) {
+      const contexts = b.fences.contexts();
+      if (b.gl) contexts.add(b.gl);
+      for (const gl of contexts) captureErrors(gl);
+    }
     if (op === QOP_CREATE_FENCE) {
       if (!b.gl || b.contextId === null) { result.rc = -1; return result; }
       // Retrying an acknowledged request returns its existing identity;

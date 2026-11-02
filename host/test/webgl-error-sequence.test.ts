@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { checkedGlCall, checkedGlSequence, type CheckedGlOwner } from "../src/webgl/program-objects";
+import { checkedGlCall, checkedGlGroups, checkedGlSequence, clearGlErrors, type CheckedGlOwner } from "../src/webgl/program-objects";
 
 function fixture() {
   const pending: number[] = [], actions: number[] = [];
@@ -64,4 +64,36 @@ it("never carries a clean-entry assumption into a separate sequence", () => {
   f.pending.push(0x500);
   expect(checkedGlSequence(f.owner, [() => f.actions.push(1)])).toBe(true);
   expect(f.actions).toEqual([0, 1]); expect(f.owner.errors).toEqual([0x500]); expect(f.reads()).toBe(5);
+});
+
+it("checks dependency groups once each and runs no group after a refused one", () => {
+  for (const [failAt, expected] of [[-1, [0, 1, 2, 3]], [0, [0, 1]], [1, [0, 1]], [2, [0, 1, 2]], [3, [0, 1, 2, 3]]] as const) {
+    const f = fixture(); f.pending.push(0x500);
+    const step = (n: number) => () => { f.actions.push(n); if (n === failAt) f.pending.push(0x502); };
+    const accepted = checkedGlGroups(f.owner, [[step(0), step(1)], [], [step(2)], [step(3)]]);
+    expect(accepted).toBe(failAt < 0);
+    expect(f.actions).toEqual(expected);
+    // Prior flag, entry drain, one read per group that ran.
+    const groups = failAt < 0 ? 3 : failAt <= 1 ? 1 : failAt === 2 ? 2 : 3;
+    expect(f.reads()).toBe(2 + groups);
+    expect(f.owner.errors).toEqual(failAt < 0 ? [0x500] : [0x500, 0x502]);
+  }
+});
+
+it("stops a group at a throw and starts from a caller's clean entry without draining", () => {
+  const f = fixture();
+  expect(checkedGlGroups(f.owner, [[() => f.actions.push(0), () => { throw Error("refused"); }, () => f.actions.push(2)],
+    [() => f.actions.push(3)]])).toBe(false);
+  expect(f.actions).toEqual([0]); expect(f.owner.errors).toEqual([0x502]);
+  const g = fixture();
+  expect(checkedGlGroups(g.owner, [[() => g.actions.push(0)]], true)).toBe(true);
+  expect(g.reads()).toBe(1);
+});
+
+it("drains every pending flag into its owner, and refuses flags that never clear", () => {
+  const f = fixture(); f.pending.push(0x500, 0x505);
+  expect(clearGlErrors(f.owner)).toBe(true);
+  expect(f.owner.errors).toEqual([0x500, 0x505]); expect(f.reads()).toBe(3);
+  const g = fixture(); g.gl.getError = () => 0x502;
+  expect(clearGlErrors(g.owner)).toBe(false); expect(g.owner.errors).toEqual([0x502]);
 });

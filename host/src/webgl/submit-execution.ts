@@ -129,8 +129,11 @@ export class GlSubmitExecution {
     this.closed = true;
     try {
       // Cancellation may run while a different logical owner is selected.
-      // Preserve its GL flags before any retained storage can be collected.
-      this.muxer.deref()?.captureCurrentErrors();
+      // Preserve its GL flags before any retained storage can be collected:
+      // a storage lease's release drains pending flags unowned. Without one,
+      // nothing here reads the flags (a retired context's collection
+      // captures through its muxer itself), so they stay with their owner.
+      if (this.drawLease || this.readLease) this.muxer.deref()?.captureCurrentErrors();
       if (this.drawLease && !this.drawLease.release(null)) nativeGlFault("a GL submission's draw storage refused its release");
       this.drawLease = null;
       if (this.readLease && !this.readLease.release(null)) nativeGlFault("a GL submission's read storage refused its release");

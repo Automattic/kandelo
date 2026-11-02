@@ -1091,13 +1091,19 @@ export class WasmPosixKernel {
   private prepareForeignRetirements(b: GlBinding): boolean {
     if (b.gl) {
       const muxer = this.gl_muxers.get(b.gl);
+      const repair = hasNativeRepair(b.gl);
       // A retirement's guard can own the renderer without owning this muxer.
       // Revoke its selection before any cleanup or pending inverse can run.
-      if (hasNativeRepair(b.gl)) muxer?.invalidateCurrent();
+      if (repair) muxer?.invalidateCurrent();
       try {
         // Refuse before cleanup if the selected peer's flags cannot be read,
         // including when invalidation above retained that unread ownership.
-        muxer?.captureCurrentErrors();
+        // Without a pending repair or retirement, repairNativeState issues no
+        // native call, so nothing could absorb the selected owner's flags:
+        // they stay native and owned until a switch, query or cleanup
+        // captures them. WHY: every submit and query passes here, and a
+        // capture is a synchronous renderer round trip.
+        if (repair) muxer?.captureCurrentErrors();
         if (!repairNativeState(b.gl)) { muxer?.invalidateCurrent(); return false; }
       } catch (caught) { muxer?.invalidateCurrent(); rethrowNativeGlFault(caught); return false; }
     }

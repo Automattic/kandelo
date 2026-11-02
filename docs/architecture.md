@@ -5545,6 +5545,35 @@ consumption, so another session cannot consume them or repeat a duplicate.
 A failed drain preserves the outgoing flags for a later retry and does not
 prevent cleanup. Queue dispatch reports renderer exceptions as EIO and
 releases the consumed frame. Complete GL negative-API coverage remains open.
+
+Because native flags are sticky and owned by the selected session until a
+capture moves them, the host reads them (`getError`, a synchronous renderer
+round trip, a GPU-process IPC in Chromium) only where something depends on
+the answer. Flags are captured when ownership changes (a muxer switch or
+invalidation), when the session queries them, before native work that
+would otherwise absorb them into another owner (a pending repair or
+retirement, a fence poll, a storage lease's release), and before and after
+device operations. A submission or query entry with no pending repair or
+retirement captures nothing. A guest call keeps its own exact check only
+where host bookkeeping commits on native acceptance that the host cannot
+know in advance: object creation and deletion (names, fences, VAOs,
+framebuffers), shader compilation, attachment and program link/use,
+framebuffer binding with its selector rollback, blend factors and depth
+range (whose WebGL-specific refusals the host does not pre-validate), image
+and storage commands, and attribute arrays at or past the renderer's limit.
+A capability toggle on one of ES 2.0's nine capabilities, and an attribute
+array below the limit already read from the renderer, cannot be refused, so
+they commit their shadow with no check. Host device operations built from
+state they just read (KMS blit and readback) check once per dependency
+group: the selectors before the blit or readback that reads and writes
+through them, the blit and alpha mask before the clear that relies on the
+mask; their inverse is one batched group whose single check still turns a
+refusal by a live renderer into a `NativeGlFault`. A flag therefore reaches
+the guest exactly once, possibly in a different order relative to other
+pending flags than a per-call drain gave; ES 2.0 section 2.5 leaves that
+order to the implementation. A renderer whose flags never clear still fails
+loudly at the next capture, and context loss is still detected at every
+entry (`renderer-loss.ts`).
 Host object groups now own shareable name maps, shader/program metadata,
 uniform-location allocation and imported textures. Each binding initially
 has its own group. An internal construction operation can join unused

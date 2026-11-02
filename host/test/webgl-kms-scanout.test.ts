@@ -390,6 +390,11 @@ it("still invalidates generic device callbacks that do not promise a checked inv
 
 const drawSteps = ["disable", "bindFramebuffer:36008", "bindFramebuffer:36009", "blitFramebuffer", "colorMask", "clearColor", "clear"];
 const readSteps = ["bindFramebuffer:36008", "bindBuffer", "pixelStorei:3330", "pixelStorei:3332", "pixelStorei:3331", "readPixels"];
+// Each helper checks dependency groups, not calls (kms-scanout.ts): the
+// selectors before the blit or readback, the blit and alpha mask before the
+// clear that relies on the mask. The last step index of each group:
+const drawGroupEnds = [2, 2, 2, 5, 5, 5, 6];
+const readGroupEnds = [4, 4, 4, 4, 4, 5];
 
 function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "throw", afterEffect = false) {
   const r = renderer(), forward: string[] = [], pending: number[] = [];
@@ -421,10 +426,13 @@ function sequenceFault(kind: "draw" | "read", index: number, fault: "native" | "
 
 for (const kind of ["draw", "read"] as const) for (let index = 0; index < (kind === "draw" ? drawSteps : readSteps).length; index++)
   for (const fault of ["native", "throw"] as const) for (const afterEffect of [false, true])
-    it(`restores KMS ${kind} after ${afterEffect ? "post-effect" : "pre-effect"} ${fault} step ${index} and never executes its dependent suffix`, () => {
+    it(`restores KMS ${kind} after ${afterEffect ? "post-effect" : "pre-effect"} ${fault} step ${index} and never executes a dependent group`, () => {
       const r = sequenceFault(kind, index, fault, afterEffect);
       expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2)).toBe(kind === "draw" ? false : null);
-      expect(r.forward).toEqual((kind === "draw" ? drawSteps : readSteps).slice(0, index + 1));
+      // A refused call is detected at its group's check, after the group's
+      // independent calls; a throw stops at once. No later group runs.
+      const end = fault === "throw" ? index : (kind === "draw" ? drawGroupEnds : readGroupEnds)[index];
+      expect(r.forward).toEqual((kind === "draw" ? drawSteps : readSteps).slice(0, end + 1));
       expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
     });
 
@@ -442,7 +450,10 @@ for (const kind of ["draw", "read"] as const) it(`keeps every KMS ${kind} post-c
   const r = renderer(), originalError = r.gl.getError.bind(r.gl); let reads = 0;
   r.gl.getError = () => { reads++; return originalError(); };
   expect(kind === "draw" ? drawGpuScanout(r.storage, 2, 2) : readGpuScanout(r.storage, 2, 2) !== null).toBe(true);
-  expect(reads).toBe(kind === "draw" ? 16 : 15);
+  // A clean entry, one check per dependency group (draw: selectors, blit
+  // and mask, clear; read: selectors, readPixels) and one batched inverse
+  // (its entry drain and check).
+  expect(reads).toBe(kind === "draw" ? 6 : 5);
   expect(r.state).toEqual(r.initial); expect(hasNativeRepair(r.gl)).toBe(false);
 });
 
@@ -556,7 +567,9 @@ for (const kind of ["gpu","cpu"] as const) {
     const r=selectedFront(kind),getError=r.gl.getError;let captures=0;
     r.binding.renderTargetFbo=null;
     r.gl.getError=()=>{if(++captures>1)throw Error("private capture must not run");return getError();};
-    expect(r.run()).toBe(-22);expect(captures).toBe(1);expect(r.copies()).toBe(0);
+    // Without a pending repair the entry captures nothing; the errno is
+    // returned before any private capture or copy.
+    expect(r.run()).toBe(-22);expect(captures).toBe(0);expect(r.copies()).toBe(0);
     r.gl.getError=getError;r.muxer.switchTo(r.owner);expect(r.selections()).toBe(r.before);
   });
   it(`refuses ${kind} front work when outgoing error capture fails`,()=>{
@@ -725,10 +738,12 @@ it.each([false,true])("adds no selector/error work for clean surfaceless current
   expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);
   expect(errorReads).toBe(0);expect(r.binds).toEqual([]);
   expect(r.submit()).toBe(0);
-  // One extra read consumes the actual queued guest flag, independently of
-  // the ordinary entry's terminal clean read. No private selector checks.
-  expect(errorReads).toBe(ordinaryEntryReads+1);
+  // The entry reads no flags (no repair is pending): the queued guest flag
+  // stays native, owned by the selected binding. No private selector checks.
+  expect(ordinaryEntryReads).toBe(0);expect(errorReads).toBe(0);
   expect(r.binds).toEqual([]);expect(r.selections()).toBe(before);
+  // The binding's own capture (as its glGetError query does) receives it.
+  r.muxer.captureCurrentErrors();
   expect(r.binding.errors).toEqual([0x501]);expect(r.owner.errors).toEqual([]);
 });
 
@@ -802,7 +817,7 @@ it("omits every unchanged native read selector and its inverse while still check
   for (const p of [0x0d02,0x0d04,0x0d03]) r.state.set(p,0);
   const before = new Map(r.state), observed = observeSelectorWrites(r);
   expect(readGpuScanout(r.storage,2,2)).not.toBeNull();
-  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(4);
+  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(2);
   expect(r.state).toEqual(before); expect(hasNativeRepair(r.gl)).toBe(false);
 });
 
@@ -812,7 +827,7 @@ it("omits every unchanged native primary selector and inverse while retaining bl
   r.state.set(0x0c23,[false,false,false,true]); r.state.set(0x0c22,[0,0,0,1]);
   const before = new Map(r.state), observed = observeSelectorWrites(r);
   expect(drawGpuScanout(r.storage,2,2)).toBe(true);
-  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(5);
+  expect(observed.writes).toEqual([]); expect(observed.checks()).toBe(3);
   expect(r.calls).toEqual([[0,0,2,2,0,2,2,0,0x4000,0x2600],["opaque primary"]]);
   expect(r.state).toEqual(before); expect(hasNativeRepair(r.gl)).toBe(false);
 });

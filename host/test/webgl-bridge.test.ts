@@ -8,6 +8,8 @@ import { runGlQuery } from "../src/webgl/query.js";
 import * as O from "../src/webgl/ops.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
+import { maxVertexAttributes } from "../src/webgl/limits.js";
+import { activeVertexArray } from "../src/webgl/buffer-references.js";
 
 /**
  * Hand-rolled WebGL2 stand-in. Records every dispatched call as
@@ -1910,5 +1912,84 @@ describe("GLES2 core object queries", () => {
     Object.assign(gl,{getActiveAttrib: () => { errors.push(0x505); return {name:"partial",size:1,type:0x1406}; }});
     const failed = query(O.QOP_GET_ACTIVE_ATTRIB,[12,0,0,8],20);
     expect(failed.status).toBe(1); expect(failed.bytes.every(v => v === 0)).toBe(true); expect(b.errors).toEqual([0x505]);
+  });
+});
+
+/**
+ * Native GL error flags are sticky and belong to the selected logical
+ * context until something captures them (errors.ts, muxer.ts). Calls whose
+ * acceptance the host already knows (a validated capability, an attribute
+ * index below the renderer's limit) therefore spend no getError of their
+ * own, and a pending flag reaches the guest's glGetError exactly once,
+ * whichever capture moves it. ES 2.0 section 2.5: one flag per error code,
+ * one flag returned and cleared per GetError, in an order the
+ * implementation chooses.
+ */
+describe("deferred native error ownership", () => {
+  function setup() {
+    const gl = new RecordingGl(), pending: number[] = [];
+    let reads = 0;
+    gl.getError = () => { reads++; return pending.shift() ?? 0; };
+    const { b } = setupBinding(gl);
+    const send = (op: number, ...words: number[]) => {
+      const tlv = new Tlv(b.cmdbufView!.buffer);
+      const record = tlv.op(op, words.length*4);
+      words.forEach((word, i) => tlv.view.setUint32(record.p+i*4, word, true));
+      expect(decodeAndDispatch(b,0,tlv.p)).toBe(0);
+    };
+    const getError = () => {
+      const output = new Uint8Array(4);
+      expect(runGlQuery(b,O.QOP_GET_ERROR,new Uint8Array(),output)).toBe(4);
+      return new DataView(output.buffer).getUint32(0,true);
+    };
+    return { b, gl, pending, send, getError, reads: () => reads };
+  }
+
+  it("toggles ES 2.0 capabilities without reading error flags", () => {
+    const { b, gl, send, reads } = setup();
+    send(O.OP_ENABLE, 0x0be2); send(O.OP_ENABLE, 0x0c11); send(O.OP_DISABLE, 0x0be2);
+    expect(reads()).toBe(0);
+    expect(b.shadow.blendEnabled).toBe(false); expect(b.shadow.scissor.enabled).toBe(true);
+    expect(gl.log.filter(([name]) => name === "enable" || name === "disable")).toHaveLength(3);
+    // A capability ES 2.0 does not have is still INVALID_ENUM with no native call.
+    const calls = gl.log.length; send(O.OP_ENABLE, 0x8c89);
+    expect(gl.log.length).toBe(calls); expect(b.errors).toEqual([0x500]);
+  });
+
+  it("toggles attribute arrays below the renderer's limit without reading flags; past it the renderer decides", () => {
+    const { b, gl, pending, send, reads, getError } = setup();
+    // The limit read once from this renderer (RecordingGl reports 42).
+    expect(maxVertexAttributes({ gl: b.gl, errors: [] })).toBe(42);
+    const before = reads();
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 3); send(O.OP_DISABLE_VERTEX_ATTRIB_ARRAY, 3);
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4);
+    expect(reads()).toBe(before);
+    expect(activeVertexArray(b).attributes.get(4)?.enabled).toBe(true);
+    expect(activeVertexArray(b).attributes.get(3)?.enabled).toBe(false);
+    gl.enableVertexAttribArray = () => { pending.push(0x501); };
+    send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 42);
+    expect(reads()).toBeGreaterThan(before);
+    expect(activeVertexArray(b).attributes.get(42)?.enabled).not.toBe(true);
+    expect(getError()).toBe(0x501); expect(getError()).toBe(0);
+  });
+
+  it("returns each pending flag once, whichever capture moves it, and never invents one", () => {
+    const { b, pending, send, getError } = setup();
+    // A native flag left by an unchecked call, then the same and another
+    // error recorded by host validation in a later submission.
+    pending.push(0x502);
+    send(O.OP_ENABLE, 0x0be2);
+    send(O.OP_ENABLE, 0x8c89);
+    b.errors.push(0x502);
+    expect(new Set([getError(), getError()])).toEqual(new Set([0x500, 0x502]));
+    expect(getError()).toBe(0); expect(getError()).toBe(0);
+  });
+
+  it("keeps a renderer whose flags never clear a loud failure at the next capture", () => {
+    const { b, gl, send, getError } = setup();
+    send(O.OP_ENABLE, 0x0be2);
+    gl.getError = () => 0x502;
+    expect(() => getError()).toThrow("Native GL error state did not clear");
+    expect(b.errors).toEqual([0x502]);
   });
 });

@@ -54,7 +54,7 @@ import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData
 import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
-import { combinedTextureUnits, maxViewport } from "./limits.js";
+import { combinedTextureUnits, knownVertexAttributeLimit, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { withMultisampleRead } from "./multisample.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
@@ -646,17 +646,23 @@ function dispatch(
       b.shadow.scissor.rect = [x, y, w, h];
       return;
     }
+    // The capability is one of ES 2.0's nine, each a WebGL 2 capability, and
+    // glEnable/glDisable's only error is INVALID_ENUM for any other. Native
+    // acceptance is therefore known before the call, the shadow is committed
+    // with it, and no getError pair is spent per toggle (compositors toggle
+    // blending and scissoring around most draws). Flags already pending stay
+    // native and owned by this selected context.
     case O.OP_ENABLE: {
       const cap = v.getUint32(p, true);
       if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
-      if (!checkedGlCall(b, () => gl.enable(cap))) return;
+      gl.enable(cap);
       setCap(b.shadow, cap, true);
       return;
     }
     case O.OP_DISABLE: {
       const cap = v.getUint32(p, true);
       if (capabilityEnabled(b,cap) === undefined) { recordGlError(b,0x500); return; }
-      if (!checkedGlCall(b, () => gl.disable(cap))) return;
+      gl.disable(cap);
       setCap(b.shadow, cap, false);
       return;
     }
@@ -1352,15 +1358,20 @@ function dispatch(
     }
 
     // ----- vertex attribs / draws -----------------------------------------
+    // The only error is INVALID_VALUE for an index at or past the native
+    // MAX_VERTEX_ATTRIBS. Below the limit already read from this renderer the
+    // call is accepted, as for OP_ENABLE; otherwise the native answer decides.
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY: {
       const index = v.getUint32(p,true);
-      if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return;
+      if (index < knownVertexAttributeLimit(gl)) gl.enableVertexAttribArray(index);
+      else if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return;
       activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:true});
       return;
     }
     case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY: {
       const index = v.getUint32(p,true);
-      if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return;
+      if (index < knownVertexAttributeLimit(gl)) gl.disableVertexAttribArray(index);
+      else if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return;
       activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:false});
       return;
     }

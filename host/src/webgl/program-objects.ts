@@ -184,6 +184,40 @@ export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[]
   }
 }
 
+/** Drain pending flags into `b`. True once they are clear: the caller's
+ * next checkedGlGroup(…, true) on this owner starts from a clean entry. */
+export function clearGlErrors(b: CheckedGlOwner): boolean {
+  const gl = b.gl;
+  if (!gl) return false;
+  try {
+    for (let i = 0; i < 32; i++) {
+      const error = gl.getError();
+      if (error === 0) return true;
+      recordGlError(b, error);
+    }
+    return false;
+  } catch (error) { rethrowNativeGlFault(error);
+    if (isKernelExportFailure(error)) throw error;
+    recordGlError(b, 0x502);
+    return false;
+  }
+}
+
+/** Checked groups in order, each a checkedGlGroup: a group runs only after
+ * every earlier group was accepted, so a call that depends on an earlier
+ * call's acceptance belongs in a later group. Empty groups are skipped.
+ * `cleanEntry` as for checkedGlGroup; every accepted group is the next
+ * group's clean entry. */
+export function checkedGlGroups(b: CheckedGlOwner, groups: readonly (readonly (() => void)[])[], cleanEntry = false): boolean {
+  let clean = cleanEntry;
+  for (const group of groups) {
+    if (!group.length) continue;
+    if (!checkedGlGroup(b, group, clean)) return false;
+    clean = true;
+  }
+  return true;
+}
+
 /** One call issued right after a clean check of the same owner: no entry
  * drain is needed, only its own post-check. */
 export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): boolean {
