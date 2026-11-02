@@ -225,7 +225,15 @@ reaching the host, for every fence of the buffers the process names, as
 implicit sync orders GPU jobs on Linux (maintainer decision 2026-11-01).
 The sysroot now carries `linux/sync_file.h` and the implicit-fence part of
 `linux/dma-buf.h`, which wlroots probes at configure time; packages built
-before them still need the normal rebuild to see them.
+before them still need the normal rebuild to see them. Once the probe
+succeeds, wlroots compiles `render/dmabuf_linux.c`, which includes
+`linux/version.h`, so the sysroot carries that header too. Its
+`LINUX_VERSION_CODE` (6.0) names the Linux uAPI release the overlay
+headers mirror, not the running system. Only wlroots' Vulkan renderer,
+which Kandelo does not build, calls those helpers. Their runtime check
+also requires `uname()` to report `Linux`, which Kandelo does not
+(`wasm-posix`). So the header changes what compiles, not what wlroots
+does at runtime.
 
 ## Landing scope
 
