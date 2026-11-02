@@ -11,7 +11,8 @@
 #   KANDELO_CTS_OUT          result directory (default .context/graphics-cts-runs/<suite>-<host>-<time>)
 #   KANDELO_CTS_CHUNK_SIZE   cases per chunk (default 100 GLES2, 50 EGL)
 #   KANDELO_CTS_CHUNKS       comma-separated chunk IDs to rerun only those
-#   KANDELO_CTS_ATTEMPT_BASE_MS, KANDELO_CTS_CASE_MS  per-attempt deadline (60000 + 10000/case)
+#   KANDELO_CTS_ATTEMPT_BASE_MS  time for the guest to reach its first case (default 60000)
+#   KANDELO_CTS_CASE_MS      time from one dEQP "Test case" line to the next (default 600000)
 #   KANDELO_CTS_MAX_ATTEMPTS resumes per chunk after attributed crashes (default 8)
 #   KANDELO_CTS_STRICT=1     same as --strict
 # Writes plan.json, <host>/<chunk>.json, <host>/qpa/*.qpa, summary.json and
@@ -43,7 +44,7 @@ mkdir -p "$out"
 out="$(cd "$out" && pwd)"
 
 node --test "$repo_root/tests/graphics/cts-plan.test.mjs" "$repo_root/tests/graphics/cts-accounting.test.mjs" \
-    "$repo_root/tests/graphics/cts-qpa.test.mjs"
+    "$repo_root/tests/graphics/cts-qpa.test.mjs" "$repo_root/tests/graphics/cts-progress.test.mjs"
 plan_arguments=(plan --suite "$suite" --selector "$selector" --out "$out")
 [[ -n "${KANDELO_CTS_CHUNK_SIZE:-}" ]] && plan_arguments+=(--chunk-size "$KANDELO_CTS_CHUNK_SIZE")
 [[ -n "${KANDELO_CTS_CHUNKS:-}" ]] && plan_arguments+=(--chunks "$KANDELO_CTS_CHUNKS")

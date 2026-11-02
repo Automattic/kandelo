@@ -14,7 +14,8 @@ import { it } from "vitest";
 import { NodeKernelHost } from "../../src/node-kernel-host";
 import { chunkFileName } from "../../../tests/graphics/cts-plan.mjs";
 import { runChunk } from "../../../tests/graphics/cts-accounting.mjs";
-import { buildCtsGuest, ctsArguments, ctsAttemptDeadlineMs, ctsCaselist, CTS_CASELIST_PATH, CTS_QPA_MAX_BYTES,
+import { CaseProgress, ctsAttemptCeilingMs, ctsDeadlineConfig, waitForExitOrStall } from "../../../tests/graphics/cts-progress.mjs";
+import { buildCtsGuest, ctsArguments, ctsCaselist, CTS_CASELIST_PATH, CTS_QPA_MAX_BYTES,
   CTS_QPA_PATH, type CtsGuest } from "../../../tests/graphics/cts-guest";
 
 const planPath = process.env.KANDELO_CTS_PLAN, outDir = process.env.KANDELO_CTS_OUT;
@@ -22,6 +23,7 @@ if (!planPath || !outDir) throw new Error("KANDELO_CTS_PLAN and KANDELO_CTS_OUT 
 const plan = JSON.parse(readFileSync(planPath, "utf8"));
 const maxAttempts = Number(process.env.KANDELO_CTS_MAX_ATTEMPTS ?? 8);
 const engineDir = resolve(outDir, "node"), qpaDir = join(engineDir, "qpa");
+const deadlines = ctsDeadlineConfig();
 let guestPromise: Promise<CtsGuest> | undefined;
 
 const bounded = <T>(promise: Promise<T>, ms: number, label: string) => {
@@ -31,15 +33,19 @@ const bounded = <T>(promise: Promise<T>, ms: number, label: string) => {
 };
 
 for (const chunk of plan.chunks) {
-  const deadline = ctsAttemptDeadlineMs(chunk.cases.length);
+  const ceiling = ctsAttemptCeilingMs(chunk.cases.length, deadlines);
   it(chunk.id, async () => {
     const guest = await (guestPromise ??= buildCtsGuest(plan.suite));
     mkdirSync(qpaDir, { recursive: true });
     const result = await runChunk(chunk, async (cases: string[], attempt: number) => {
       const diagnostics: unknown[] = [];
       let output = "";
+      // The deadline follows dEQP's case lines on stdout (cts-progress.mjs).
+      const progress = new CaseProgress(deadlines), decoder = new TextDecoder();
       const append = (_pid: number, bytes: Uint8Array) => {
-        if (output.length < 65536) output += new TextDecoder().decode(bytes).slice(0, 65536 - output.length);
+        const text = decoder.decode(bytes, { stream: true });
+        progress.feed(text);
+        if (output.length < 65536) output += text.slice(0, 65536 - output.length);
       };
       const host = new NodeKernelHost({ maxWorkers: 4, maxPages: 16384, rootfsImage: guest.image,
         onStdout: append, onStderr: append,
@@ -49,10 +55,8 @@ for (const chunk of plan.chunks) {
         await host.init(guest.kernel.buffer.slice(guest.kernel.byteOffset, guest.kernel.byteOffset + guest.kernel.byteLength) as ArrayBuffer);
         await host.writeFileToVfs(CTS_CASELIST_PATH, ctsCaselist(cases), 0o644);
         const child = await host.spawnFromVfs(guest.guestPath, ctsArguments(plan.suite), { env: [], stdin: new Uint8Array() });
-        try { outcome = { kind: "exit", code: await bounded(child.exit, deadline, "deadline") }; }
-        catch (error) {
-          outcome = String(error).includes("deadline") ? { kind: "timeout" } : { kind: "error", message: String(error) };
-        }
+        outcome = await waitForExitOrStall(child.exit, progress);
+        if (outcome.kind === "timeout") diagnostics.push({ deadline: progress.snapshot() });
         // The host stays alive across a deadline, so the open case's begin
         // marker is still readable before teardown.
         try {
@@ -71,5 +75,5 @@ for (const chunk of plan.chunks) {
     }, { maxAttempts });
     writeFileSync(join(engineDir, `${chunkFileName(chunk.id)}.json`), JSON.stringify({ ...result, engine: "node",
       version: process.version, suite: plan.suite, args: ctsArguments(plan.suite), artifacts: guest.artifacts }) + "\n");
-  }, deadline * maxAttempts + 120_000);
+  }, ceiling * maxAttempts + 120_000);
 }

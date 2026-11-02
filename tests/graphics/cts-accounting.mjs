@@ -7,8 +7,9 @@
  * three of its own, never derived from a guess:
  * - Crash: the guest ended abnormally while this case's
  *   `#beginTestCaseResult` was open (or dEQP terminated it as Crash);
- * - Timeout: the chunk deadline expired while this case was open (or dEQP's
- *   watchdog terminated it as Timeout);
+ * - Timeout: the attempt deadline expired while this case was open, i.e. no
+ *   new case began within the per-case limit (cts-progress.mjs), or dEQP's
+ *   watchdog terminated it as Timeout;
  * - Missing: no completed record exists for the case.
  * NotSupported and Missing are never converted to Pass.
  *
@@ -81,7 +82,7 @@ export function accountAttempt(remaining, qpa, outcome, attempt = 1) {
   let attributed = null;
   if (open && abnormal) {
     const status = outcome.kind === "timeout" ? "Timeout" : "Crash";
-    const detail = outcome.kind === "timeout" ? "chunk deadline expired during this case"
+    const detail = outcome.kind === "timeout" ? "case deadline expired during this case"
       : outcome.kind === "error" ? `guest error: ${oneLine(outcome.message)}` : `guest exit ${outcome.code}`;
     rows.push({ path: open, status, detail, attempt });
     attributed = open;

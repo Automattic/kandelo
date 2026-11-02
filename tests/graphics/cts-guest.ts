@@ -41,14 +41,6 @@ export function ctsCaselist(cases: readonly string[]): Uint8Array {
   return new TextEncoder().encode(cases.join("\n") + "\n");
 }
 
-/** Deadline for one guest attempt over `cases` cases. */
-export function ctsAttemptDeadlineMs(cases: number, env: Record<string, string | undefined> = process.env): number {
-  const base = Number(env.KANDELO_CTS_ATTEMPT_BASE_MS ?? 60_000);
-  const perCase = Number(env.KANDELO_CTS_CASE_MS ?? 10_000);
-  if (!(base > 0) || !(perCase > 0)) throw new Error("KANDELO_CTS_ATTEMPT_BASE_MS and KANDELO_CTS_CASE_MS must be positive");
-  return base + perCase * cases;
-}
-
 export async function buildCtsGuest(suite: "gles2" | "egl"): Promise<CtsGuest> {
   const spec = CTS_SUITES[suite];
   const program = readFileSync(resolveBinary(spec.program));

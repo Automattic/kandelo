@@ -75,11 +75,25 @@ the same image. The chunk's cases go to dEQP through
 `--deqp-caselist-file`. Every run passes `--deqp-visibility=hidden`: the
 Kandelo GBM platform has no visible window or KMS presentation service, so
 the default `windowed` visibility would make every dEQP-EGL window case (and
-the GLES2 render target) NotSupported. If the guest exits abnormally or the
-attempt deadline (`KANDELO_CTS_ATTEMPT_BASE_MS` + `KANDELO_CTS_CASE_MS` per
-case, default 60 s + 10 s) expires while a case's `#beginTestCaseResult` is
-open, that case is Crash or Timeout and the chunk resumes after it in a fresh
-kernel (`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
+the GLES2 render target) NotSupported. The attempt deadline follows dEQP's
+own progress: upstream `tcuTestSessionExecutor.cpp` prints `Test case
+'<path>'..` on stdout as it enters each case, and
+[`cts-progress.mjs`](cts-progress.mjs) gives the guest
+`KANDELO_CTS_ATTEMPT_BASE_MS` (default 60 s) to reach its first case and
+`KANDELO_CTS_CASE_MS` (default 600 s) from each case line to the next. A
+flat per-attempt budget (formerly 60 s + 10 s per case) charged every case
+alike, so one legitimately slow case exhausted a chunk that was still
+progressing. A case that exceeds the per-case limit, or a guest that never
+reaches a case, still expires: a hang fails loudly. Some cases are slower
+than the default limit: dEQP-EGL
+`performance.gles2_shared_render.*_small_call` issues 1.2 million draw calls
+per case, and `egl_image.1_thread_1_context_small_call` passed in 35.6
+minutes in headless Chromium, so running that family to completion needs
+`KANDELO_CTS_CASE_MS=2700000`. If the guest exits abnormally or that deadline expires while
+a case's `#beginTestCaseResult` is open, that case is Crash or Timeout, the
+attempt records the deadline evidence (cases entered, last case, time since
+it began), and the chunk resumes after it in a fresh kernel
+(`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
 nothing can be attributed, so the remaining cases are Missing. A lost page
 or host loses only that chunk. Exit status 1 is not abnormal when dEQP's
 own evidence explains it: upstream `tcuMain.cpp` exits with `EXIT_FAILURE`
