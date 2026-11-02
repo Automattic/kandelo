@@ -111,10 +111,11 @@ When `host_call_signal_handler` fails (invalid function table index, handler thr
 Anonymous `MAP_SHARED` inherits one host-owned backing across fork; SysV SHM,
 mappings of files the kernel owns, and stable-identity host-file mappings
 share backings across separately attached or mapped processes. Because each
-PID still owns a different WebAssembly `Memory`, coherence happens only when a
-process crosses a syscall boundary: the host (for the objects whose bytes it
-owns) or the kernel (`SharedMappingTable`) merges bytes changed relative to
-that process's snapshot and then imports peer changes. A direct store does not immediately change another
+PID still owns a different WebAssembly `Memory`, coherence happens only at
+syscall boundaries: the host (for the objects whose bytes it owns) or the
+kernel (`SharedMappingTable`) merges bytes changed relative to a process's
+snapshot and then imports peer changes, the kernel's half when a peer's
+syscall completes. A direct store does not immediately change another
 PID's memory, and futex WAIT/WAKE cannot target the peer's separate
 `SharedArrayBuffer`.
 
@@ -148,14 +149,27 @@ of one file converge at syscall boundaries.
 including `/tmp` and `/dev/shm`, and memfds) are kept coherent by the
 kernel's shared-mapping table (`SharedMappingTable` in
 `crates/runtime-core/src/memory.rs`), which pins the file for its mappings
-and sees descriptor writes through a per-file content generation. Its own
-gap: a sole writer with no live peer publishes only at `msync`, `munmap`,
-`exec`, exit or when another mapping joins, so a descriptor `read` of the
-file does not see a fresh store before then, where Linux's unified page
-cache would. The host kind closes this by publishing every observer before
-a descriptor syscall touches the file's bytes
-(`flushSharedMappingsBeforeFileSyscall`); the kernel has no such
-pre-syscall publication yet.
+and sees descriptor writes through a per-file content generation. It
+publishes every mapping of a file before a descriptor syscall touches the
+file's bytes (`descriptor_fence_for`), as the host does for its kind, and
+pulls mappings lazily, when a peer's syscall completes, skipping processes
+the host proves have not run since their last pull. What remains is cost
+rather than a semantic gap, in order of expected value:
+
+- the host still enters the kernel at every syscall *entry* of a process
+  holding a kernel-owned mapping, only to synchronize SysV attachments; a
+  process with file mappings alone could skip that call;
+- the quiescence query is one host import per pulled process; a completion
+  that pulls many processes could ask once for all of them;
+- kernel-direct wait completions (`publish_transfer_directly`) are refused
+  for any process with a shared mapping and could run the completion pull
+  in the kernel instead;
+- SysV attachments, host-owned anonymous and host-file mappings, and DRI
+  CPU-buffer import synchronization still compare at every boundary, and
+  could adopt the same pull-and-prove protocol;
+- a comparison still reads the whole mapping. Only a store barrier in the
+  SDK (a program-ABI change with a per-store cost) could make it
+  proportional to the bytes actually written.
 
 Both kinds share the observable VM gaps: stores beyond the current file
 size are zero-filled or discarded instead of raising Linux `SIGBUS`, and

@@ -60,12 +60,12 @@ const boundaryProgramPath = resolve(
   "../../../examples/shm_mapping_boundary_test.wasm",
 );
 
-// The completion boundary of a quiet syscall may skip a comparison the
-// kernel proved redundant (BoundaryRecord in runtime-core memory.rs). The
-// browser host makes the same claim as Node; every writer must still reach
-// its peer no later than before.
+// Kernel-owned mappings are pulled lazily, and a pull of a process the host
+// proves has not run since is skipped (CleanStamp in runtime-core
+// memory.rs). The browser host reports the same quiescence as Node; every
+// writer must still reach its peer.
 test(
-  "MAP_SHARED stores still publish around skipped comparisons in Chromium",
+  "MAP_SHARED stores reach peers under lazy pulls in Chromium",
   async ({ page, baseURL, browserName }) => {
     test.skip(
       browserName !== "chromium",
@@ -100,6 +100,9 @@ test(
     expect(result.stdout).toContain("sibling-thread-store: PASS");
     expect(result.stdout).toContain("signal-handler-store: PASS");
     expect(result.stdout).toContain("forked-child-observes-parent: PASS");
+    expect(result.stdout).toContain("visible-after-read: PASS");
+    expect(result.stdout).toContain("store-at-thread-start: PASS");
+    expect(result.stdout).toContain("stopped-reader-output: PASS");
     expect(result.stdout).toContain("SHM_MAPPING_BOUNDARY_PASS");
     expect(result.stderr).toBe("");
     expect(runtimeErrors).toEqual([]);

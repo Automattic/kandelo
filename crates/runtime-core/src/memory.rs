@@ -1580,12 +1580,20 @@ mod tests {
 // peer's memory, so shared mappings are kept coherent by an explicit
 // publish/refresh protocol run at syscall boundaries:
 //
-//   1. **publish** — diff the mapping's bytes in the process against the
-//      per-mapping `snapshot` and merge only the changed byte *runs* into the
-//      authoritative backing, bumping the backing `version`;
+//   1. **publish** (a *pull* when done for another process) — diff the
+//      mapping's bytes in the process against the per-mapping `snapshot` and
+//      merge only the changed byte *runs* into the authoritative backing,
+//      bumping the backing `version`;
 //   2. **refresh** — when the mapping has not seen the backing's current
-//      version, read the authoritative range back, store it into the process,
-//      and advance `snapshot`/`seen_version` together.
+//      version, read the authoritative range back, write the runs that
+//      differ into the process, and advance `snapshot`/`seen_version`
+//      together.
+//
+// For files the kernel owns, step 1 runs when a mapping can be observed --
+// a peer's syscall completion, descriptor I/O on the file, a new mapper, and
+// the forced points -- not at every boundary of its own process, and is
+// skipped when the host proves the process has not run since its last pull
+// (`SharedMappingTable::sync_file_at_completion`, `CleanStamp`).
 //
 // Merging runs rather than whole ranges is what lets two processes write
 // disjoint parts of the same shared object without clobbering each other.
@@ -1661,8 +1669,8 @@ pub trait SharedMappingIo {
     }
     /// Read one complete process range only when it differs from `snapshot`.
     /// `None` means this observation found no local publication; it must not
-    /// suppress authoritative backing refresh. Only a boundary sync may carry
-    /// it forward, under the proof in [`BoundaryRecord`].
+    /// suppress authoritative backing refresh. Only a quiescence proof may
+    /// carry it forward ([`CleanStamp`]).
     /// The default performs the same full read before comparing. A backend
     /// may compare in place, but must validate the entire source and snapshot
     /// ranges, return errors rather than partial bytes, and retain no views.
@@ -1879,17 +1887,20 @@ pub struct AnonymousBacking {
 /// 1. guest code of the process runs: one of its threads, a signal handler
 ///    (which runs after a syscall completes), or a vfork child borrowing its
 ///    memory;
-/// 2. the host writes them: a syscall's output bytes delivered at a
-///    completion, or a write the kernel asks for through
-///    `host_proc_write_bytes`. Every other host write (the syscall channel,
-///    host-owned shared mappings, DRI buffer bindings) targets a region the
-///    address space never lets overlap a kernel-owned mapping;
+/// 2. the host writes them: a syscall's output bytes, or anything a
+///    host-handled syscall stores directly into guest buffers, all of which
+///    land before the completion is materialized; or a write the kernel asks
+///    for through `host_proc_write_bytes`. The host's other writes into
+///    guest memory -- the syscall channel, refreshes of host-owned shared
+///    mappings, DRI buffer bindings -- target those regions' own address
+///    ranges, and an address range belongs to one mapping at a time;
 /// 3. the kernel writes them through `HostIO::proc_write_bytes`, which
 ///    [`KernelProcessWriteLog`] records.
 ///
 /// The host keeps a *mutation epoch* per process memory and changes it at
 /// every event of kinds 1 and 2: a published syscall completion (the only
-/// way a parked thread resumes), a materialized completion (output bytes),
+/// way a parked thread resumes), a materialized completion (whose effects
+/// land even while a stopped process's completion stays parked),
 /// a registered process or attached thread, a kernel-published wait
 /// completion, and every `host_proc_write_bytes`. It reports the epoch
 /// ([`SharedMappingIo::quiescent_epoch`]) only while every thread channel of
@@ -1920,12 +1931,13 @@ pub struct CleanStamp {
 /// Whether a pull whose comparison a [`CleanStamp`] proves redundant may
 /// skip it.
 ///
-/// While this is `false` the proof is only *checked*: the comparison runs
-/// anyway, and a proved-unchanged mapping found changed is a fatal kernel
-/// fault, because it means an epoch event was missed and skipping would
-/// lose a store. This shadow mode runs over every mapping test and a
-/// desktop session before skipping is enabled.
-const SKIP_PROVED_PULLS: bool = false;
+/// A kernel built with the `shared-mapping-proof-verify` feature only
+/// *checks* the proof (shadow mode): the comparison runs anyway, and a
+/// proved-unchanged mapping found changed is a fatal kernel fault, because it
+/// means an epoch event was missed and skipping would have lost a store.
+/// That build runs over every mapping test and a desktop session as the
+/// evidence for skipping.
+const SKIP_PROVED_PULLS: bool = !cfg!(feature = "shared-mapping-proof-verify");
 
 #[cfg(feature = "shared-mapping-proof-verify")]
 static PROOFS_VERIFIED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -1960,16 +1972,6 @@ pub struct SharedMapping {
     /// reported one; its next `msync` fails with `EIO` (Linux reports a
     /// writeback error to `msync` through the mapping's file).
     pub writeback_error: bool,
-    /// The serial of the boundary sync that last saw this process's bytes
-    /// over the mapping equal to `snapshot`, or `None`.
-    ///
-    /// Only [`SharedMappingTable::sync_file_at_boundary`] sets it, and only a
-    /// compare that found no change (or a skip it justified) does. Any change
-    /// found clears it before anything is merged. Boundary serials are unique
-    /// across the table, so a value left behind by an earlier boundary, a
-    /// fork parent or a previous image never equals the serial a later
-    /// boundary proves against. See [`BoundaryRecord`] for the proof.
-    pub clean_at: Option<u64>,
     /// The last time a pull saw this mapping's bytes equal to `snapshot`
     /// while its process was quiescent; see [`CleanStamp`]. Only a pull or
     /// a refresh sets it. Every other change to the bytes or the snapshot
@@ -1991,7 +1993,6 @@ impl SharedMapping {
             snapshot: Some(snapshot),
             seen_version: 0,
             writeback_error: false,
-            clean_at: None,
             clean: None,
         }
     }
@@ -2018,7 +2019,6 @@ impl SharedMapping {
             snapshot: Some(snapshot),
             seen_version,
             writeback_error: false,
-            clean_at: None,
             clean: None,
         }
     }
@@ -2686,106 +2686,27 @@ impl Default for KernelProcessWriteLog {
     }
 }
 
-/// What the table knows about the previous boundary sync of one process.
-///
-/// # Why a boundary may skip a comparison
-///
-/// A boundary sync compares each writable mapping with the bytes the process
-/// last published, because the process may have stored into it since. The
-/// comparison reads the whole mapping: a compositor holding a client's
-/// 4 MiB `wl_shm` pool `PROT_READ|PROT_WRITE` reads 4 MiB per mapping at both
-/// the entry and the completion of every syscall it makes, and nearly every
-/// such comparison finds nothing (measured on the labwc + SFWBar desktop:
-/// about 3,000 comparisons a second, all equal).
-///
-/// Process bytes under a mapping can change in exactly three ways:
-///
-/// 1. a thread of the process runs guest code (or a vfork child borrowing its
-///    memory does);
-/// 2. the host writes them, which for bytes inside a `MAP_SHARED` mapping can
-///    only be a syscall output delivered to a guest pointer: every other host
-///    write targets memory the host itself allocated (the syscall channel,
-///    host-owned shared mappings, DRI buffer mappings), which the address
-///    space never lets overlap a kernel-owned mapping;
-/// 3. the kernel writes them: either the table's own refresh, which updates
-///    the snapshot with the bytes (and so keeps them equal), or a syscall
-///    output through `HostIO::proc_write_bytes`, which
-///    [`KernelProcessWriteLog`] records.
-///
-/// At the *completion* boundary of a syscall none of these needs to have
-/// happened since the *entry* boundary of the same syscall. Only the host can
-/// prove (1) and (2) for that interval, and it says so by passing
-/// [`SHARED_MAPPING_SYNC_UNCHANGED`]: the calling thread was parked inside the
-/// syscall; every other thread of the process was parked in a syscall of its
-/// own (its channel at `PENDING`) at both boundaries, with no boundary of the
-/// process in between, so none of them resumed; no vfork child shares the
-/// memory; and the completion delivers no output bytes. The kernel adds what
-/// only it knows: no other mapping operation touched the process in between
-/// (every other entry point forgets this record), and none of its own writes
-/// landed in the mapping. A mapping whose comparison found it equal at the
-/// previous boundary therefore still equals its snapshot, and comparing it
-/// again cannot find a change: skipping it is exactly the comparison's
-/// result, not an approximation of it.
-///
-/// A mapping whose backing advanced in between (it will be refreshed) is
-/// still compared, so that even a mistaken claim could never let a refresh
-/// overwrite bytes that were not published; such a mistake could only delay a
-/// publication to the next boundary, never lose it.
-///
-/// The entry boundary is never skipped: guest code ran before it. So a
-/// process's stores still publish at its next syscall exactly as before, and
-/// a store that a peer can learn about only through a later syscall of the
-/// writer is visible to that peer exactly as before.
-#[derive(Debug, Clone, Copy)]
-pub struct BoundaryRecord {
-    /// Unique serial of that boundary; mappings it found unchanged carry it
-    /// in [`SharedMapping::clean_at`].
-    pub serial: u64,
-    /// [`KernelProcessWriteLog::position`] at the end of that boundary.
-    pub write_position: u64,
+/// `force` values of `kernel_shared_mapping_sync_process`, the host's call
+/// at a syscall boundary of a process holding a kernel-owned mapping. Kept
+/// beside the host's copies (`KERNEL_SHARED_MAPPING_SYNC_*` in
+/// `host/src/kernel-worker.ts`).
+pub mod sync_force {
+    /// The completion of a syscall: pull the mappings that share a backing
+    /// with the process, then refresh its stale mappings
+    /// ([`super::SharedMappingTable::sync_file_at_completion`]).
+    pub const COMPLETION: i32 = 0;
+    /// A forced publication: fork, the exec preflight, teardown. The
+    /// process's own mappings are published and persisted.
+    pub const FORCED: i32 = 1;
+    /// Retired: a completion the host attested unchanged since its entry.
+    /// Completions no longer need the claim; treated as [`COMPLETION`].
+    pub const LEGACY_UNCHANGED: i32 = 2;
+    /// The entry of a syscall: no kernel-file work (the descriptor fence
+    /// covers file content; completions cover peers). SysV attachments
+    /// still synchronize. A kernel from before this value reads it as
+    /// [`FORCED`], which is correct and only slower.
+    pub const ENTRY: i32 = 3;
 }
-
-/// One ordinary boundary sync: its own serial, and what the previous
-/// boundary of the same process can prove when the host's claim and the
-/// kernel's own conditions hold (see [`BoundaryRecord`]).
-struct BoundaryStamp<'a> {
-    current: u64,
-    /// The previous boundary's serial and kernel write-log position.
-    previous: Option<(u64, u64)>,
-    log: &'a KernelProcessWriteLog,
-}
-
-impl BoundaryStamp<'_> {
-    /// Whether `mapping`'s bytes provably still equal its snapshot.
-    fn proves_unchanged(
-        &self,
-        pid: u32,
-        map_addr: u64,
-        mapping: &SharedMapping,
-        backing: &FileBacking,
-    ) -> bool {
-        let Some((serial, write_position)) = self.previous else {
-            return false;
-        };
-        mapping.clean_at == Some(serial)
-            && mapping.snapshot.as_ref().is_some_and(|snapshot| snapshot.len() == mapping.len)
-            // A mapping about to be refreshed is compared regardless; see
-            // `BoundaryRecord`.
-            && mapping.seen_version == backing.version
-            && self.log.wrote_since(pid, write_position, map_addr, mapping.len as u64)
-                == Some(false)
-    }
-}
-
-/// `kernel_shared_mapping_sync_process` `force` value for a boundary whose
-/// caller attests that, since the previous call for the same process
-/// returned, no guest code of the process ran and the host wrote nothing into
-/// its memory. Any other non-zero value forces publication; zero is an
-/// ordinary boundary. Kept beside the host's copy
-/// (`KERNEL_SHARED_MAPPING_SYNC_UNCHANGED` in `host/src/kernel-worker.ts`).
-/// An older kernel reads it as a forced sync, which is correct and only
-/// slower.
-pub const SHARED_MAPPING_SYNC_UNCHANGED: i32 = 2;
 
 /// What a syscall must fence before the kernel touches file content: the
 /// descriptor-fence half of [`SharedMappingTable::fence_handle`].
@@ -2917,32 +2838,32 @@ enum PullOutcome {
 ///
 /// # Performance
 ///
-/// This is on the syscall path. Two structural facts bound where its cost is
+/// This is on the syscall path. Structural facts bound where its cost is
 /// paid:
 ///
 /// 1. The host enters the kernel for a boundary sync only for a process that
 ///    holds a kernel-owned shared mapping, and caches that per-pid predicate
 ///    instead of asking (see `kernelSharedMappingPids` in
 ///    `host/src/kernel-worker.ts`).
-/// 2. [`SharedMappingTable::sync_file_from_process`] and
-///    [`SharedMappingTable::sync_sysv_from_process`] skip a mapping with no
-///    live peer that has already seen the current version. A mapping with no
-///    live peer is never scanned unless its file or segment changed.
-/// 3. [`SharedMappingTable::sync_file_at_boundary`] skips a file mapping at
-///    the completion of a syscall when the entry boundary of the same
-///    syscall found it unchanged and nothing could have written it since
-///    ([`BoundaryRecord`]).
+/// 2. File mappings are pulled lazily: a process's own copy is not compared
+///    at its own boundaries, only when something can observe it -- the
+///    completion of another mapper's syscall, a descriptor operation on the
+///    file, a new mapper joining, and the forced points (`msync`, `munmap`,
+///    `mremap`, `MAP_FIXED`, fork, exec, teardown). See
+///    [`SharedMappingTable::sync_file_at_completion`].
+/// 3. A pull of a process that has stayed parked since its last pull is
+///    proved unchanged and skipped ([`CleanStamp`]).
 ///
-/// So the comparison across `host_proc_compare_bytes` is paid by a process
-/// holding a writable shared mapping **with at least one live peer**, once
-/// per mapping per syscall, plus once more at a completion that cannot be
-/// proved quiet.
+/// So a busy compositor costs an idle client nothing, and a client's copy is
+/// compared at most once per time it ran guest code, however many syscalls
+/// the compositor makes meanwhile.
 ///
 /// # What this does not fix
 ///
-/// Coherence stays boundary-synchronous. A store in one process becomes
-/// visible to a peer at the peer's next syscall boundary, not immediately, and
-/// `futex` cannot target a peer's memory. See the module comment above.
+/// Coherence stays syscall-synchronous. A store in one process becomes
+/// visible to a peer at the completion of the peer's next syscall (and to
+/// descriptor I/O at once), not on the store itself, and `futex` cannot
+/// target a peer's memory. See the module comment above.
 #[derive(Debug, Default)]
 pub struct SharedMappingTable {
     /// pid → (mapping start address → mapping).
@@ -2958,9 +2879,6 @@ pub struct SharedMappingTable {
     sysv: BTreeMap<u32, BTreeMap<u64, SysvShmMapping>>,
     /// Authoritative segment version, bumped after each merged publication.
     sysv_versions: BTreeMap<i32, u64>,
-    /// pid → its previous boundary sync; see [`BoundaryRecord`].
-    boundaries: BTreeMap<u32, BoundaryRecord>,
-    next_boundary_serial: u64,
     /// Stable handle -> backing key, for every file backing. The descriptor
     /// fence ([`Self::fence_handle`]) starts from the handle an open file
     /// description carries and must find the backing without formatting a
@@ -2984,8 +2902,6 @@ impl SharedMappingTable {
             releasing_pids: BTreeSet::new(),
             sysv: BTreeMap::new(),
             sysv_versions: BTreeMap::new(),
-            boundaries: BTreeMap::new(),
-            next_boundary_serial: 1,
             fence_handles: BTreeMap::new(),
         }
     }
@@ -3390,68 +3306,189 @@ impl SharedMappingTable {
         force: bool,
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
-        self.sync_file_inner(pid, force, None, io)
+        self.sync_file_inner(pid, force, io)
     }
 
-    /// [`Self::sync_file_from_process`] at an ordinary (unforced) syscall
-    /// boundary, recording what this boundary saw so the next one can skip
-    /// comparisons it can prove would find nothing; see [`BoundaryRecord`].
-    ///
-    /// `unchanged_claim` is the host's statement that, since the previous
-    /// boundary of `pid` returned, no guest code of the process ran (on any
-    /// of its threads, or a vfork child sharing its memory) and the host
-    /// wrote nothing into its memory. `log` holds the kernel's own syscall
-    /// writes into process memory.
-    pub fn sync_file_at_boundary(
+    /// Bring `pid`'s file mappings at `addrs` that are behind their backing
+    /// up to date. Every range is read before any process memory is written,
+    /// so one unreadable backing cannot leave the process half refreshed, and
+    /// only the runs that differ from the snapshot are written. Callers pull
+    /// the mappings first, so the snapshot is the process's own bytes.
+    fn refresh_mappings(
         &mut self,
         pid: u32,
-        unchanged_claim: bool,
-        log: &KernelProcessWriteLog,
+        addrs: &[u64],
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
-        let serial = self.next_boundary_serial;
-        self.next_boundary_serial += 1;
-        // Taken, not read: a boundary that fails leaves no record, so the
-        // next one compares everything.
-        let previous = self
-            .boundaries
-            .remove(&pid)
-            .filter(|_| unchanged_claim);
-        let stamp = BoundaryStamp {
-            current: serial,
-            previous: previous.map(|previous| (previous.serial, previous.write_position)),
-            log,
-        };
-        self.sync_file_inner(pid, false, Some(&stamp), io)?;
-        self.boundaries.insert(
-            pid,
-            BoundaryRecord {
-                serial,
-                write_position: log.position(),
-            },
-        );
+        // Phase 2a — read every final snapshot before mutating process memory.
+        let mut refreshes: Vec<(u64, Vec<u8>, u64)> = Vec::new();
+        for map_addr in addrs {
+            let Self {
+                mappings,
+                file_backings,
+                ..
+            } = self;
+            let Some(mapping) = mappings.get(&pid).and_then(|m| m.get(map_addr)) else {
+                continue;
+            };
+            let Some(backing) = mapping
+                .backing_key
+                .as_deref()
+                .and_then(|key| file_backings.get_mut(key))
+            else {
+                continue;
+            };
+            if mapping.seen_version == backing.version {
+                continue;
+            }
+            let latest = backing.read_range(mapping.file_offset, mapping.len, io)?;
+            refreshes.push((*map_addr, latest, backing.version));
+        }
+
+        // Phase 2b — apply them, writing only the runs a peer changed.
+        //
+        // After phase 1 a writable alias's snapshot is the process's own
+        // bytes, so `latest` differs from it exactly where peers (or
+        // descriptor writes) changed the file. Writing the whole range
+        // would also rewrite bytes nobody else changed, and could overwrite
+        // a store a sibling thread of this process made to them after phase
+        // 1 read them. See `refresh_runs`.
+        for (map_addr, latest, version) in refreshes {
+            let runs = match self
+                .mappings
+                .get(&pid)
+                .and_then(|m| m.get(&map_addr))
+                .and_then(|mapping| mapping.snapshot.as_deref())
+            {
+                Some(snapshot) => refresh_runs(&latest, snapshot),
+                None => alloc::vec![(0, latest.len())],
+            };
+            for (start, end) in runs {
+                io.write_process(pid, map_addr + start as u64, &latest[start..end])?;
+            }
+            // The writes above changed the process's epoch; a stamp taken
+            // now covers the bytes they left, which equal `latest`.
+            let observed = io
+                .quiescent_epoch(pid)
+                .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
+            if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
+                mapping.snapshot = Some(latest);
+                mapping.seen_version = version;
+                mapping.clean = observed;
+            }
+        }
         Ok(())
     }
 
-    /// Forget the previous boundary of `pid`, so its next boundary compares
-    /// every mapping. Every mapping operation other than an ordinary boundary
-    /// sync calls this for each process it touches: the proof in
-    /// [`BoundaryRecord`] covers only an interval in which nothing but the
-    /// syscall itself happened to the process.
-    pub fn forget_boundary(&mut self, pid: u32) {
-        self.boundaries.remove(&pid);
-    }
-
-    /// Whether the previous boundary of `pid` is still on record.
-    pub fn has_boundary_record(&self, pid: u32) -> bool {
-        self.boundaries.contains_key(&pid)
+    /// The kernel-file half of a syscall *completion* of `pid`: make every
+    /// store another mapper of the same files has made visible to `pid`
+    /// before it resumes.
+    ///
+    /// # Why the completion is enough
+    ///
+    /// A process learns that a peer stored into a shared file only through
+    /// the kernel: a pipe or socket byte, a signal, an exit status, a lock, a
+    /// file write. Each such chain starts with a syscall the writer made
+    /// after its store -- and that syscall's `CH_PENDING` store is
+    /// sequentially consistent, so anything that reads the writer's memory
+    /// after seeing it parked sees the store -- and ends at a syscall of the
+    /// reader that consumes the event. Pulling every other mapper of the
+    /// reader's files when that syscall completes therefore finds the store,
+    /// and the refresh below delivers it before the reader runs again.
+    /// Nothing is needed at the entry: the reader has not learned anything
+    /// yet. A writer that makes no syscall at all after its store is still
+    /// pulled by the reader's next completion, sooner than before, when it
+    /// published only at its own next syscall.
+    ///
+    /// The process's own copy is pulled here only when it holds another
+    /// mapping of the same file (an alias it may read through), or when the
+    /// mapping is about to be refreshed, so that its own pending stores win
+    /// their bytes. Otherwise its stores wait for an observer: a peer's
+    /// completion, a descriptor operation on the file (the fence), a new
+    /// mapper, `msync`, `munmap`, `mremap`, `MAP_FIXED`, fork, exec or exit.
+    /// Pulls of processes that have stayed parked since their last pull are
+    /// proved unchanged and skipped ([`CleanStamp`]).
+    pub fn sync_file_at_completion(
+        &mut self,
+        pid: u32,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<(), Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            return Ok(());
+        };
+        // backing key -> how many mappings of it `pid` holds
+        let mut keys: BTreeMap<String, usize> = BTreeMap::new();
+        for mapping in self.mappings.get(&pid).into_iter().flat_map(|m| m.values()) {
+            if mapping.backing_kind != Some(BackingKind::File) {
+                continue;
+            }
+            if let Some(key) = mapping.backing_key.as_ref() {
+                *keys.entry(key.clone()).or_insert(0) += 1;
+            }
+        }
+        if keys.is_empty() {
+            return Ok(());
+        }
+        // 1. Publish what the other mappers stored. A refused write-through
+        //    is reported to the peer's mappings and the file's descriptions;
+        //    it does not fail this process's syscall.
+        for (key, count) in &keys {
+            let except = if *count > 1 { None } else { Some(pid) };
+            self.pull_backing(key, except, io)?;
+        }
+        // 2. Refresh what that (or a descriptor write) left behind, after
+        //    publishing the process's own stores to those mappings.
+        let stale: Vec<(u64, bool)> = self
+            .mappings
+            .get(&pid)
+            .into_iter()
+            .flat_map(|m| m.iter())
+            .filter(|(addr, mapping)| {
+                mapping.backing_kind == Some(BackingKind::File)
+                    && mapping.snapshot.is_some()
+                    && addr.saturating_add(mapping.len as u64) <= mem_len
+                    && mapping
+                        .backing_key
+                        .as_deref()
+                        .and_then(|key| self.file_backings.get(key))
+                        .is_some_and(|backing| backing.version != mapping.seen_version)
+            })
+            .map(|(addr, mapping)| {
+                // An alias was pulled with its peers in step 1 already.
+                let pulled = mapping.backing_key.as_ref().is_some_and(|key| keys[key] > 1);
+                (*addr, pulled)
+            })
+            .collect();
+        let mut result = Ok(());
+        for (addr, _) in stale.iter().filter(|(_, pulled)| !pulled) {
+            match self.pull_mapping(pid, *addr, io) {
+                Ok(PullOutcome::WritebackFailed) => {
+                    result = Err(Errno::EIO);
+                    break;
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    result = Err(err);
+                    break;
+                }
+            }
+        }
+        if result.is_ok() {
+            let addrs: Vec<u64> = stale.iter().map(|(addr, _)| *addr).collect();
+            result = self.refresh_mappings(pid, &addrs, io);
+        }
+        for key in keys.keys() {
+            if let Some(backing) = self.file_backings.get_mut(key) {
+                backing.settle();
+            }
+        }
+        result
     }
 
     fn sync_file_inner(
         &mut self,
         pid: u32,
         force: bool,
-        stamp: Option<&BoundaryStamp<'_>>,
         io: &mut dyn SharedMappingIo,
     ) -> Result<(), Errno> {
         let Some(mem_len) = io.process_memory_len(pid) else {
@@ -3511,67 +3548,13 @@ impl SharedMappingTable {
         // the alias's snapshot, so phase 2 can tell peer changes from the
         // process's own.
         for (map_addr, _) in &candidates {
-            if self.pull_mapping(pid, *map_addr, stamp, io)? == PullOutcome::WritebackFailed {
+            if self.pull_mapping(pid, *map_addr, io)? == PullOutcome::WritebackFailed {
                 return Err(Errno::EIO);
             }
         }
 
-        // Phase 2a — read every final snapshot before mutating process memory.
-        let mut refreshes: Vec<(u64, Vec<u8>, u64)> = Vec::new();
-        for (map_addr, key) in &candidates {
-            let Self {
-                mappings,
-                file_backings,
-                ..
-            } = self;
-            let Some(mapping) = mappings.get(&pid).and_then(|m| m.get(map_addr)) else {
-                continue;
-            };
-            let Some(backing) = file_backings.get_mut(key) else {
-                continue;
-            };
-            if mapping.seen_version == backing.version {
-                continue;
-            }
-            let latest = backing.read_range(mapping.file_offset, mapping.len, io)?;
-            refreshes.push((*map_addr, latest, backing.version));
-        }
-
-        // Phase 2b — apply them, writing only the runs a peer changed.
-        //
-        // After phase 1 a writable alias's snapshot is the process's own
-        // bytes, so `latest` differs from it exactly where peers (or
-        // descriptor writes) changed the file. Writing the whole range
-        // would also rewrite bytes nobody else changed, and could overwrite
-        // a store a sibling thread of this process made to them after phase
-        // 1 read them. See `refresh_runs`.
-        for (map_addr, latest, version) in refreshes {
-            let runs = match self
-                .mappings
-                .get(&pid)
-                .and_then(|m| m.get(&map_addr))
-                .and_then(|mapping| mapping.snapshot.as_deref())
-            {
-                Some(snapshot) => refresh_runs(&latest, snapshot),
-                None => alloc::vec![(0, latest.len())],
-            };
-            for (start, end) in runs {
-                io.write_process(pid, map_addr + start as u64, &latest[start..end])?;
-            }
-            // The writes above changed the process's epoch; a stamp taken
-            // now covers the bytes they left, which equal `latest`.
-            let observed = io
-                .quiescent_epoch(pid)
-                .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
-            if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
-                mapping.snapshot = Some(latest);
-                mapping.seen_version = version;
-                // Bytes and snapshot agree again, but this boundary did not
-                // observe them by comparison; let the next one do so.
-                mapping.clean_at = None;
-                mapping.clean = observed;
-            }
-        }
+        let addrs: Vec<u64> = candidates.iter().map(|(addr, _)| *addr).collect();
+        self.refresh_mappings(pid, &addrs, io)?;
         for key in &keys {
             if let Some(backing) = self.file_backings.get_mut(key) {
                 backing.settle();
@@ -3679,18 +3662,10 @@ impl SharedMappingTable {
     /// same runs again over a peer's newer bytes. The mapping's
     /// `seen_version` advances only when it was current before its own merge,
     /// because only then does the backing range equal those bytes afterwards.
-    ///
-    /// `stamp` is set only by an ordinary boundary sync of `pid` itself; it
-    /// lets a comparison the previous boundary proved redundant be skipped
-    /// and records the boundaries that found the bytes equal (see
-    /// [`BoundaryRecord`]). A pull on behalf of another process passes
-    /// `None`: it can neither extend nor carry a proof, only void one by
-    /// finding a change.
     fn pull_mapping(
         &mut self,
         pid: u32,
         map_addr: u64,
-        stamp: Option<&BoundaryStamp<'_>>,
         io: &mut dyn SharedMappingIo,
     ) -> Result<PullOutcome, Errno> {
         let Some(mem_len) = io.process_memory_len(pid) else {
@@ -3716,16 +3691,6 @@ impl SharedMappingTable {
         };
         if map_addr.saturating_add(mapping.len as u64) > mem_len {
             return Ok(PullOutcome::Unchanged);
-        }
-        if let Some(stamp) = stamp {
-            if stamp.proves_unchanged(pid, map_addr, mapping, backing) {
-                // The previous boundary found these bytes equal to the
-                // snapshot and nothing could have written them since (see
-                // `BoundaryRecord`), so the comparison would answer "no
-                // change"; that is its result, carried forward.
-                mapping.clean_at = Some(stamp.current);
-                return Ok(PullOutcome::Unchanged);
-            }
         }
         let Some(snapshot) = mapping.snapshot.take() else {
             return Ok(PullOutcome::Unchanged);
@@ -3757,15 +3722,10 @@ impl SharedMappingTable {
                 if proved {
                     PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 }
-                // An ordinary boundary records that it saw the bytes equal.
-                if let Some(stamp) = stamp {
-                    mapping.clean_at = Some(stamp.current);
-                }
                 return Ok(PullOutcome::Unchanged);
             }
             Err(err) => {
                 mapping.snapshot = Some(snapshot);
-                mapping.clean_at = None;
                 mapping.clean = None;
                 return Err(err);
             }
@@ -3823,14 +3783,8 @@ impl SharedMappingTable {
             // A backend without the in-place comparator answers with a full
             // copy even when nothing changed. Equal bytes are still an equal
             // observation.
-            if let Some(stamp) = stamp {
-                mapping.clean_at = Some(stamp.current);
-            }
             return Ok(PullOutcome::Unchanged);
         }
-        // The process changed these bytes since its snapshot: no earlier
-        // boundary's proof covers them any more.
-        mapping.clean_at = None;
         backing.version += 1;
         if was_current {
             mapping.seen_version = backing.version;
@@ -3882,7 +3836,7 @@ impl SharedMappingTable {
         let mut persisted = true;
         let mut result = Ok(());
         for (pid, addr) in targets {
-            match self.pull_mapping(pid, addr, None, io) {
+            match self.pull_mapping(pid, addr, io) {
                 Ok(PullOutcome::WritebackFailed) => persisted = false,
                 Ok(_) => {}
                 Err(err) => {
@@ -4553,7 +4507,6 @@ impl SharedMappingTable {
 
         if self.mappings.get(&pid).is_some_and(|m| m.is_empty()) {
             self.mappings.remove(&pid);
-            self.boundaries.remove(&pid);
         }
     }
 
@@ -4756,7 +4709,6 @@ impl SharedMappingTable {
             }
         }
         self.release_all_sysv_for_process(pid, false, io);
-        self.boundaries.remove(&pid);
 
         self.releasing_pids.remove(&pid);
     }
@@ -4827,7 +4779,6 @@ impl SharedMappingTable {
             // The child's bytes were just written and it has never been
             // observed: no stamp, and no boundary proof, carries over.
             inherited.clean = None;
-            inherited.clean_at = None;
             staged.push((map_addr, inherited, latest));
         }
 
@@ -5034,6 +4985,12 @@ mod shared_mapping_tests {
         /// A completion is published: guest code of `pid` may run.
         fn resume(&mut self, pid: u32) {
             self.parked.remove(&pid);
+            *self.epochs.entry(pid).or_insert(0) += 1;
+        }
+
+        /// A completion is materialized while the process is still parked
+        /// (its output bytes land): an epoch event, without resuming it.
+        fn materialize(&mut self, pid: u32) {
             *self.epochs.entry(pid).or_insert(0) += 1;
         }
 
@@ -5951,7 +5908,7 @@ mod shared_mapping_tests {
         assert_eq!(backing.cached_page_count(), 0, "a write-through backing caches nothing at rest");
     }
 
-    // -- boundary proofs: skipping a comparison that cannot find a change ---
+    // -- lazy completions: who is compared, and when ----------------------
 
     /// Two processes mapping one kernel-owned file, as a compositor and a
     /// client map a `wl_shm` pool.
@@ -5969,214 +5926,130 @@ mod shared_mapping_tests {
             .with_kernel_file(10, 1, 2, b"........".to_vec())
     }
 
-    /// Entry boundary, then the completion boundary of the same syscall with
-    /// the host's claim that nothing ran or was written in between.
-    fn entry_then_completion(
-        table: &mut SharedMappingTable,
-        log: &KernelProcessWriteLog,
-        io: &mut MockIo,
-        pid: u32,
-    ) {
-        table.sync_file_at_boundary(pid, false, log, io).unwrap();
-        table.sync_file_at_boundary(pid, true, log, io).unwrap();
+    /// A completion of `pid` with every other process parked, as when a
+    /// compositor's syscall completes while its clients sit in `poll`.
+    fn completion(table: &mut SharedMappingTable, io: &mut MockIo, pid: u32) {
+        table.sync_file_at_completion(pid, io).unwrap();
     }
 
     #[test]
-    fn a_completion_boundary_skips_the_comparison_its_entry_proved() {
+    fn a_completion_pulls_peers_and_imports_their_stores() {
         let mut io = kernel_file_io();
         let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        let after_entry = io.reads_of(1);
-        assert_eq!(after_entry, 1, "the entry boundary compares");
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), after_entry, "the completion boundary is proved unchanged");
-
-        // Guest code runs after the completion and stores; the next entry
-        // boundary carries no claim, compares, and publishes as before.
-        io.poke(1, 0, b"AAAA....");
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), after_entry + 1, "the change is compared again");
-        assert_eq!(io.files[&10], b"AAAA....".to_vec());
-        table.sync_file_at_boundary(2, false, &log, &mut io).unwrap();
-        assert_eq!(io.peek(2, 0, 8), b"AAAA....".to_vec(), "the peer imports it");
-    }
-
-    #[test]
-    fn a_proof_carries_across_consecutive_quiet_boundaries_only_with_a_claim() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        entry_then_completion(&mut table, &log, &mut io, 1);
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 1, "a skip re-records the proof");
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 2, "a boundary without the claim always compares");
-    }
-
-    #[test]
-    fn a_claim_with_no_previous_boundary_still_compares() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        io.poke(1, 0, b"AAAA....");
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.files[&10], b"AAAA....".to_vec(), "the store is published");
-    }
-
-    #[test]
-    fn a_kernel_write_into_the_mapping_is_published_at_the_completion() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let mut log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        // A syscall output the kernel stores straight into the mapping, as a
-        // `read` into a mapped buffer does.
-        io.poke(1, 2, b"KK");
-        log.record(1, 2, 2);
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.files[&10], b"..KK....".to_vec(), "published at this boundary");
-        table.sync_file_at_boundary(2, false, &log, &mut io).unwrap();
-        assert_eq!(io.peek(2, 0, 8), b"..KK....".to_vec());
-    }
-
-    #[test]
-    fn kernel_writes_elsewhere_keep_the_proof() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let mut log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        log.record(1, 8, 16); // just past the mapping
-        log.record(2, 0, 8); // another process
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 1);
-    }
-
-    #[test]
-    fn more_kernel_writes_than_the_log_holds_force_the_comparison() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let mut log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        for _ in 0..=KERNEL_PROCESS_WRITE_LOG_LEN {
-            log.record(2, 0, 8);
-        }
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 2, "an unknown history is compared");
-    }
-
-    #[test]
-    fn a_mapping_due_for_refresh_is_compared_even_with_a_proof() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        // The peer publishes while process 1 is parked in its syscall.
+        // Process 2 stores and makes no further syscall.
         io.poke(2, 0, b"....BBBB");
-        table.sync_file_at_boundary(2, false, &log, &mut io).unwrap();
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 2, "a stale mapping is compared before it is refreshed");
-        assert_eq!(io.peek(1, 0, 8), b"....BBBB".to_vec(), "and imports the peer's bytes");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 0, 8), b"....BBBB".to_vec(), "imported before 1 resumes");
+        assert_eq!(io.files[&10], b"....BBBB".to_vec(), "and written through");
     }
 
+    /// The process's own copy waits for an observer: its own completion
+    /// does not compare it when it holds no alias and nothing is stale.
     #[test]
-    fn another_mapping_operation_forgets_the_proof() {
+    fn a_completion_does_not_compare_the_completing_process() {
         let mut io = kernel_file_io();
         let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        table.forget_boundary(1);
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 2);
+        io.poke(1, 0, b"AAAA");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.reads_of(1), 0);
+        assert_eq!(io.files[&10], b"........".to_vec(), "not yet published");
+        // The peer's completion observes it.
+        completion(&mut table, &mut io, 2);
+        assert_eq!(io.files[&10], b"AAAA....".to_vec());
+        assert_eq!(io.peek(2, 0, 8), b"AAAA....".to_vec());
     }
 
+    /// A busy compositor (process 1) and a client parked in a syscall
+    /// (process 2): the client's pool is compared once after it last ran,
+    /// then proved unchanged at every further compositor completion.
     #[test]
-    fn a_change_found_at_the_entry_is_not_carried_forward() {
+    fn a_parked_peer_is_compared_once_per_resume() {
         let mut io = kernel_file_io();
         let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        io.poke(1, 0, b"AAAA....");
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert!(table.mapping(1, 0).unwrap().clean_at.is_none());
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), 2, "the completion compares again");
+        io.park(2);
+        for _ in 0..5 {
+            completion(&mut table, &mut io, 1);
+        }
+        let expected = if SKIP_PROVED_PULLS { 1 } else { 5 };
+        assert_eq!(io.reads_of(2), expected);
+        // The client resumes, stores, and parks again: one more comparison,
+        // which publishes the store.
+        io.resume(2);
+        io.poke(2, 0, b"CC");
+        io.park(2);
+        for _ in 0..5 {
+            completion(&mut table, &mut io, 1);
+        }
+        assert_eq!(io.reads_of(2), expected * 2);
+        assert_eq!(io.peek(1, 0, 8), b"CC......".to_vec());
     }
 
+    /// A store made after the writer's last syscall, by a writer that never
+    /// makes another one, reaches the reader at the reader's next completion.
     #[test]
-    fn a_failed_boundary_leaves_no_proof() {
+    fn a_spinning_writer_is_observed_without_a_syscall_of_its_own() {
         let mut io = kernel_file_io();
         let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        io.fail_read_process_at = Some((1, 0));
-        io.poke(1, 0, b"AAAA....");
-        // The forced sync of a peer's mmap reads process 1 and fails.
-        assert!(table.sync_file_from_process(1, true, &mut io).is_err());
-        assert!(table.mapping(1, 0).unwrap().clean_at.is_none());
-        io.fail_read_process_at = None;
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.files[&10], b"AAAA....".to_vec(), "nothing was carried past the failure");
+        io.park(2);
+        completion(&mut table, &mut io, 1);
+        io.resume(2); // never parks again: it spins
+        io.poke(2, 6, b"SS");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 0, 8), b"......SS".to_vec());
+        io.poke(2, 0, b"T");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 0, 8), b"T.....SS".to_vec(), "a running writer is always compared");
     }
 
+    /// Two mappings of one file in one process converge at its own
+    /// completion: each alias observes the other.
     #[test]
-    fn a_forked_child_never_inherits_a_proof() {
-        let mut io = kernel_file_io().with_process(3, 64);
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        table.inherit_process_mappings(1, 3, &mut io).unwrap();
-        assert!(!table.has_boundary_record(3));
-        io.poke(3, 0, b"CCCC....");
-        table.sync_file_at_boundary(3, true, &log, &mut io).unwrap();
-        assert_eq!(io.files[&10], b"CCCC....".to_vec(), "the child's store publishes");
-    }
-
-    #[test]
-    fn teardown_forgets_the_process_boundary() {
-        let mut io = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut io);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert!(table.has_boundary_record(1));
-        table.release_all_for_process(1, true, &mut io);
-        assert!(!table.has_boundary_record(1));
-    }
-
-    #[test]
-    fn tracked_kernel_file_mappings_are_proved_at_a_claimed_completion() {
+    fn aliases_in_one_process_converge_at_its_completion() {
         let mut io = MockIo::new()
             .with_process(1, 256)
             .with_kernel_file(10, 1, 2, b"........".to_vec());
         let key = io.key_of(10);
         let mut table = SharedMappingTable::new();
-        let log = KernelProcessWriteLog::new();
         for addr in [64u64, 128] {
             table
                 .track_kernel_file_mapping(1, addr, 3, &key, 10, 0, 8, true, true, &mut io)
                 .unwrap();
         }
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        let after_entry = io.reads_of(1);
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.reads_of(1), after_entry, "both aliases are proved unchanged");
+        io.poke(1, 64, b"AA");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 128, 8), b"AA......".to_vec());
+    }
+
+    /// A stale mapping's own stores are published before the refresh, so
+    /// they keep their bytes and the refresh writes only the peer's.
+    #[test]
+    fn a_stale_completion_publishes_its_own_stores_first() {
+        let mut io = kernel_file_io();
+        let (mut table, _) = kernel_file_pair(&mut io);
+        io.poke(2, 4, b"BBBB");
+        io.poke(1, 0, b"AAAA");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 0, 8), b"AAAABBBB".to_vec());
+        assert_eq!(io.files[&10], b"AAAABBBB".to_vec());
+        completion(&mut table, &mut io, 2);
+        assert_eq!(io.peek(2, 0, 8), b"AAAABBBB".to_vec());
+    }
+
+    /// A descriptor write shows through a mapping at its next completion,
+    /// even with no peer mapping.
+    #[test]
+    fn a_descriptor_write_shows_through_at_the_next_completion() {
+        let mut io = kernel_file_io();
+        let mut table = sole_kernel_mapping(&mut io);
+        io.descriptor_write(10, 2, b"WW");
+        completion(&mut table, &mut io, 1);
+        assert_eq!(io.peek(1, 0, 8), b"..WW....".to_vec());
     }
 
     /// A backend that answers every comparison with a full copy (no
-    /// in-place comparator) still lets an equal entry prove the completion.
+    /// in-place comparator) still stamps an equal observation.
     #[test]
-    fn an_equal_full_copy_still_proves_the_completion() {
+    fn an_equal_full_copy_still_stamps_the_observation() {
         struct CopyingIo(MockIo);
         impl SharedMappingIo for CopyingIo {
             fn read_process(&mut self, pid: u32, addr: u64, dst: &mut [u8]) -> Result<(), Errno> {
@@ -6227,22 +6100,240 @@ mod shared_mapping_tests {
             fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str) {
                 self.0.report_writeback_loss(pid, map_addr, file_key, reason)
             }
+            fn quiescent_epoch(&mut self, pid: u32) -> Option<u64> {
+                self.0.quiescent_epoch(pid)
+            }
+            fn kernel_write_position(&mut self) -> u64 {
+                self.0.kernel_write_position()
+            }
+            fn kernel_wrote_since(&mut self, pid: u32, since: u64, addr: u64, len: u64) -> Option<bool> {
+                self.0.kernel_wrote_since(pid, since, addr, len)
+            }
         }
         let mut inner = kernel_file_io();
-        let (mut table, _) = kernel_file_pair(&mut inner);
+        let (mut table, key) = kernel_file_pair(&mut inner);
         let mut io = CopyingIo(inner);
-        let log = KernelProcessWriteLog::new();
-
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert!(table.mapping(1, 0).unwrap().clean_at.is_some());
-        let after_entry = io.0.reads_of(1);
-        table.sync_file_at_boundary(1, true, &log, &mut io).unwrap();
-        assert_eq!(io.0.reads_of(1), after_entry);
+        io.0.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert!(table.mapping(2, 0).unwrap().clean.is_some());
+        let reads = io.0.reads_of(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        let expected = if SKIP_PROVED_PULLS { reads } else { reads + 1 };
+        assert_eq!(io.0.reads_of(2), expected);
         // A real change through the same backend is still published.
-        io.0.poke(1, 0, b"ZZZZ....");
-        table.sync_file_at_boundary(1, false, &log, &mut io).unwrap();
-        assert!(table.mapping(1, 0).unwrap().clean_at.is_none());
+        io.0.resume(2);
+        io.0.poke(2, 0, b"ZZZZ....");
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
         assert_eq!(io.0.files[&10], b"ZZZZ....".to_vec());
+    }
+
+    // -- randomized model against a single-memory reference ----------------
+
+    /// Deterministic xorshift64*, so a failing seed reproduces exactly.
+    struct ModelRng(u64);
+    impl ModelRng {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            self.0 = x;
+            x.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// Random interleavings of mapped stores, syscalls, blocking waits,
+    /// cross-process wake-ups, descriptor reads and writes, checked against
+    /// what one shared memory would guarantee:
+    ///
+    /// - happens-before visibility (H): when a process consumes a wake-up,
+    ///   its mappings show every store that happened before the wake-up was
+    ///   sent (vector clocks), or a later store to the same byte;
+    /// - descriptor coherence: a fenced read of the file shows the same;
+    /// - no clobber: a process's own latest store to a byte is never
+    ///   replaced by an older value, whatever runs elsewhere;
+    /// - no loss: after a final `msync` by every process, the file holds
+    ///   every byte's latest store.
+    ///
+    /// Each byte has one writing process (racing writers to one byte have no
+    /// defined winner on any system), process 1 holds a second, read-only
+    /// alias of its mapping, and process 4 never maps the file and reads it
+    /// only through the descriptor. With the `shared-mapping-proof-verify`
+    /// feature every skipped comparison is also checked.
+    #[test]
+    fn randomized_lazy_coherence_matches_a_single_memory_reference() {
+        const LEN: usize = 24;
+        const MAPPERS: u32 = 3;
+        const READER: u32 = 4;
+        const ALIAS: u64 = 64;
+        let owner = |byte: usize| 1 + (byte as u32 % MAPPERS);
+        for seed in 1..=200u64 {
+            let mut rng = ModelRng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let mut io = MockIo::new().with_kernel_file(10, 1, 2, vec![0; LEN]);
+            for pid in 1..=READER {
+                io = io.with_process(pid, 128);
+            }
+            let key = io.key_of(10);
+            let mut table = SharedMappingTable::new();
+            for (pid, addr) in [(1u32, 0u64), (1, ALIAS), (2, 0), (3, 0)] {
+                table
+                    .track_kernel_file_mapping(pid, addr, 3, &key, 10, 0, LEN, true, true, &mut io)
+                    .unwrap();
+            }
+            // history[byte] = (writer's clock, value) of every store, in order.
+            let mut history: Vec<Vec<(u64, u8)>> = vec![Vec::new(); LEN];
+            // clock[p][w]: the latest store of w that p knows happened before.
+            let mut clock = [[0u64; 5]; 5];
+            let mut blocked = [false; 5];
+            blocked[READER as usize] = true;
+            let mut next_value = 0u8;
+            let mut value = || {
+                next_value = next_value.wrapping_add(1).max(1);
+                next_value
+            };
+
+            let latest = |history: &Vec<Vec<(u64, u8)>>, byte: usize| {
+                history[byte].last().map(|(_, v)| *v).unwrap_or(0)
+            };
+            // Whether `seen` is the writer's last store to `byte` at or before
+            // its clock `known` (or the file's initial zero, if there is
+            // none), or a later store to the same byte.
+            let acceptable = |history: &Vec<Vec<(u64, u8)>>, byte: usize, known: u64, seen: u8| {
+                let stores = &history[byte];
+                match stores.iter().rposition(|(ts, _)| *ts <= known) {
+                    Some(at) => stores[at..].iter().any(|(_, v)| *v == seen),
+                    None => seen == 0 || stores.iter().any(|(_, v)| *v == seen),
+                }
+            };
+            let check_view = |io: &MockIo, history: &Vec<Vec<(u64, u8)>>, clock: &[u64; 5], view: &[u8], who: &str| {
+                for byte in 0..LEN {
+                    let w = owner(byte) as usize;
+                    assert!(
+                        acceptable(history, byte, clock[w], view[byte]),
+                        "seed {seed}: {who} byte {byte} = {} misses store {} of writer {w}",
+                        view[byte], clock[w]
+                    );
+                }
+                let _ = io;
+            };
+            // One syscall of `pid`: it parks, the completion materializes,
+            // the kernel synchronizes, and the completion is published.
+            let syscall = |table: &mut SharedMappingTable, io: &mut MockIo, pid: u32| {
+                io.park(pid);
+                io.materialize(pid);
+                table.sync_file_at_completion(pid, io).unwrap();
+                io.resume(pid);
+            };
+
+            for _ in 0..300 {
+                let running: Vec<u32> = (1..=MAPPERS).filter(|p| !blocked[*p as usize]).collect();
+                let op = rng.below(7);
+                match op {
+                    // A mapped store by a running process to a byte it owns.
+                    0 | 1 if !running.is_empty() => {
+                        let pid = running[rng.below(running.len() as u64) as usize];
+                        let candidates: Vec<usize> = (0..LEN).filter(|b| owner(*b) == pid).collect();
+                        let byte = candidates[rng.below(candidates.len() as u64) as usize];
+                        let v = value();
+                        io.poke(pid, byte as u64, &[v]);
+                        clock[pid as usize][pid as usize] += 1;
+                        history[byte].push((clock[pid as usize][pid as usize], v));
+                    }
+                    // A syscall that changes nothing shared.
+                    2 if !running.is_empty() => {
+                        let pid = running[rng.below(running.len() as u64) as usize];
+                        syscall(&mut table, &mut io, pid);
+                    }
+                    // A process blocks in a syscall (poll, read on an empty pipe).
+                    3 if running.len() > 1 => {
+                        let pid = running[rng.below(running.len() as u64) as usize];
+                        io.park(pid);
+                        blocked[pid as usize] = true;
+                    }
+                    // A running process wakes a blocked one through the kernel.
+                    4 if !running.is_empty() => {
+                        let sleepers: Vec<u32> = (1..=READER).filter(|p| blocked[*p as usize]).collect();
+                        if sleepers.is_empty() {
+                            continue;
+                        }
+                        let from = running[rng.below(running.len() as u64) as usize];
+                        let to = sleepers[rng.below(sleepers.len() as u64) as usize];
+                        syscall(&mut table, &mut io, from);
+                        let sent = clock[from as usize];
+                        for w in 0..5 {
+                            clock[to as usize][w] = clock[to as usize][w].max(sent[w]);
+                        }
+                        if to == READER {
+                            // Never mapped: it observes through a fenced read.
+                            table.fence_handle(10, &mut io).unwrap();
+                            let file = io.files[&10].clone();
+                            check_view(&io, &history, &clock[READER as usize], &file, "descriptor reader");
+                            continue;
+                        }
+                        io.materialize(to);
+                        table.sync_file_at_completion(to, &mut io).unwrap();
+                        io.resume(to);
+                        blocked[to as usize] = false;
+                        let view = io.peek(to, 0, LEN);
+                        check_view(&io, &history, &clock[to as usize], &view, "woken mapper");
+                        if to == 1 {
+                            let alias = io.peek(1, ALIAS, LEN);
+                            check_view(&io, &history, &clock[1], &alias, "woken alias");
+                        }
+                    }
+                    // A running mapper reads the file through its descriptor.
+                    5 if !running.is_empty() => {
+                        let pid = running[rng.below(running.len() as u64) as usize];
+                        io.park(pid);
+                        table.fence_handle(10, &mut io).unwrap();
+                        let file = io.files[&10].clone();
+                        check_view(&io, &history, &clock[pid as usize], &file, "fenced read");
+                        io.materialize(pid);
+                        table.sync_file_at_completion(pid, &mut io).unwrap();
+                        io.resume(pid);
+                    }
+                    // A running mapper pwrites a byte it owns.
+                    6 if !running.is_empty() => {
+                        let pid = running[rng.below(running.len() as u64) as usize];
+                        let candidates: Vec<usize> = (0..LEN).filter(|b| owner(*b) == pid).collect();
+                        let byte = candidates[rng.below(candidates.len() as u64) as usize];
+                        io.park(pid);
+                        table.fence_handle(10, &mut io).unwrap();
+                        let v = value();
+                        io.descriptor_write(10, byte, &[v]);
+                        clock[pid as usize][pid as usize] += 1;
+                        history[byte].push((clock[pid as usize][pid as usize], v));
+                        io.materialize(pid);
+                        table.sync_file_at_completion(pid, &mut io).unwrap();
+                        io.resume(pid);
+                    }
+                    _ => {}
+                }
+                // No clobber: each mapper's primary view of its own bytes is
+                // exactly its latest store, whatever else ran.
+                for pid in 1..=MAPPERS {
+                    let view = io.peek(pid, 0, LEN);
+                    for byte in (0..LEN).filter(|b| owner(*b) == pid) {
+                        assert_eq!(
+                            view[byte],
+                            latest(&history, byte),
+                            "seed {seed}: process {pid} lost its own store to byte {byte}"
+                        );
+                    }
+                }
+            }
+            // No loss: every process publishes; the file has every latest store.
+            for pid in 1..=MAPPERS {
+                io.resume(pid);
+                assert!(table.flush_mappings(pid, 0, u64::MAX, &mut io));
+            }
+            for byte in 0..LEN {
+                assert_eq!(io.files[&10][byte], latest(&history, byte), "seed {seed}: byte {byte} lost");
+            }
+        }
     }
 
     #[test]
@@ -6701,6 +6792,7 @@ mod shared_mapping_tests {
     /// A host that changed process bytes without an epoch event breaks the
     /// proof's premise. Shadow mode turns that into a fatal fault rather than
     /// a store a skipped comparison would have lost.
+    #[cfg(feature = "shared-mapping-proof-verify")]
     #[test]
     #[should_panic(expected = "missed a change")]
     fn a_missed_epoch_event_is_a_fatal_fault() {
@@ -6710,6 +6802,24 @@ mod shared_mapping_tests {
         table.pull_backing(&key, Some(1), &mut io).unwrap();
         io.poke(2, 0, b"?");
         let _ = table.pull_backing(&key, Some(1), &mut io);
+    }
+
+    /// Without the shadow check, the skip trusts the host's epoch: a change
+    /// the host never announced is not compared. This is why every host
+    /// write and every resume must change the epoch, and why the verify
+    /// build is run over the mapping tests and a desktop session.
+    #[cfg(not(feature = "shared-mapping-proof-verify"))]
+    #[test]
+    fn a_proved_pull_trusts_the_hosts_epoch() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        let reads = io.reads_of(2);
+        io.poke(2, 0, b"?");
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert_eq!(io.reads_of(2), reads, "skipped");
+        assert_eq!(io.files[&10], b"........".to_vec());
     }
 
     /// A refresh writes the process (an epoch event) and stamps what it left.

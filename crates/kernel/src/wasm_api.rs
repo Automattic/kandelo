@@ -8568,7 +8568,9 @@ fn fence_all_mapped_files() -> Result<(), Errno> {
 //
 // Each process owns a separate linear memory, so `MAP_SHARED` coherence is a
 // publish/refresh protocol run at syscall boundaries
-// ([`crate::memory::SharedMappingTable`]). The kernel owns that protocol for
+// ([`crate::memory::SharedMappingTable`]); for kernel-owned files a process's
+// stores are pulled when a peer's syscall completes or the file is used
+// through a descriptor, not at every boundary of its own. The kernel owns that protocol for
 // the shared objects whose bytes it owns: SysV segments
 // ([`crate::ipc::IpcTable`]) and regular files in its own filesystem (rootfs,
 // the tmpfs scratch mounts including `/dev/shm`, and memfds). The host keeps
@@ -8626,46 +8628,40 @@ pub extern "C" fn kernel_shared_mapping_proofs_verified() -> i64 {
 }
 
 /// Reconcile every kernel-owned shared mapping of one process at a syscall
-/// boundary.
+/// boundary. `force` is one of `runtime_core::memory::sync_force`:
 ///
-/// `force` bypasses the sole-observer skip, for the publication points where a
-/// process must become current even with no live peer: `fork`, the `exec`
-/// address-space preflight, and teardown. A forced sync also persists every
-/// dirty kernel-file page.
-///
-/// [`crate::memory::SHARED_MAPPING_SYNC_UNCHANGED`] is not a force: it is an
-/// ordinary boundary whose caller attests that, since the previous call for
-/// `pid` returned, no guest code of the process ran and the host wrote
-/// nothing into its memory (the completion of a syscall whose entry was that
-/// previous call, with every other thread of the process parked throughout
-/// and no output bytes). The kernel combines that with what it knows itself
-/// (no other mapping operation touched the process, and none of its own
-/// writes landed in a mapping) to skip comparisons that cannot find a change;
-/// see
-/// [`crate::memory::BoundaryRecord`]. It never skips a publication: every
-/// boundary that follows guest code still compares.
+/// - `ENTRY` (3): the entry of a syscall. Kernel-owned files need nothing
+///   here: the descriptor fence publishes a file's mappings before the
+///   syscall touches its content, and completions deliver peers' stores.
+///   SysV attachments still synchronize.
+/// - `COMPLETION` (0), and the retired `LEGACY_UNCHANGED` (2): the
+///   completion of a syscall. Every other mapper of the process's files is
+///   pulled and the process's stale mappings are refreshed before it resumes
+///   ([`crate::memory::SharedMappingTable::sync_file_at_completion`]).
+/// - `FORCED` (1), and any other value: a publication point where the
+///   process must become current with no live peer -- `fork`, the `exec`
+///   address-space preflight, teardown. Its own mappings are published and
+///   every dirty kernel-file page persisted.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shared_mapping_sync_process(pid: u32, force: i32) -> i32 {
+    use crate::memory::sync_force;
     let _gkl = GklGuard::acquire();
-    let unchanged_claim = force == crate::memory::SHARED_MAPPING_SYNC_UNCHANGED;
-    let forced = force != 0 && !unchanged_claim;
     let table = unsafe { crate::memory::global_shared_mapping_table() };
     let has_files = table.mappings_for(pid).next().is_some();
     if table.sysv_mapping_count_for(pid) == 0 && !has_files {
-        table.forget_boundary(pid);
         return 0;
     }
     let mut io = WasmSharedMappingIo::for_table(table);
     let mut ok = true;
+    let forced = !matches!(
+        force,
+        sync_force::ENTRY | sync_force::COMPLETION | sync_force::LEGACY_UNCHANGED
+    );
     if has_files {
         if forced {
-            table.forget_boundary(pid);
             ok &= table.flush_mappings(pid, 0, u64::MAX, &mut io);
-        } else {
-            ok &= crate::memory::with_kernel_process_write_log(|log| {
-                table.sync_file_at_boundary(pid, unchanged_claim, log, &mut io)
-            })
-            .is_ok();
+        } else if force != sync_force::ENTRY {
+            ok &= table.sync_file_at_completion(pid, &mut io).is_ok();
         }
     }
     ok &= table.sync_sysv_from_process(pid, forced, &mut io);
@@ -8734,7 +8730,6 @@ pub extern "C" fn kernel_shared_mapping_file_track(
         return -(Errno::EINVAL as i32);
     }
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if table.mapping(pid, addr).is_some() {
         return -(Errno::EEXIST as i32);
     }
@@ -8764,7 +8759,6 @@ pub extern "C" fn kernel_shared_mapping_file_track(
 pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if table.mappings_for(pid).next().is_none() {
         return 0;
     }
@@ -8808,7 +8802,6 @@ pub extern "C" fn kernel_report_host_mapping_writeback_error(
 pub extern "C" fn kernel_shared_mapping_unmap(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if table.mappings_for(pid).next().is_none() {
         return 0;
     }
@@ -8828,7 +8821,6 @@ pub extern "C" fn kernel_shared_mapping_remap(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if table.mapping(pid, old_addr).is_none() {
         return 0;
     }
@@ -8846,7 +8838,6 @@ pub extern "C" fn kernel_shared_mapping_remap(
 pub extern "C" fn kernel_shared_mapping_prepare_write(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     shared_mapping_errno(table.prepare_file_mappings_for_write(pid, addr, len))
 }
 
@@ -8862,7 +8853,6 @@ pub extern "C" fn kernel_shared_mapping_protect(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     table.update_mapping_protection(pid, addr, len, writable != 0);
     0
 }
@@ -8886,7 +8876,6 @@ pub extern "C" fn kernel_shared_mapping_sysv_track(
         return -(Errno::EINVAL as i32);
     }
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if table.sysv_mapping(pid, addr as u64).is_some() {
         return -(Errno::EEXIST as i32);
     }
@@ -8950,7 +8939,6 @@ pub extern "C" fn kernel_shared_mapping_sysv_publish_mapping(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
@@ -8976,7 +8964,6 @@ pub extern "C" fn kernel_shared_mapping_sysv_drop_mapping(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
@@ -9008,7 +8995,6 @@ pub extern "C" fn kernel_shared_mapping_release_process(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(pid);
     let mut io = WasmSharedMappingIo::for_table(table);
     if publish != 0 {
         table.sync_sysv_from_process(pid, true, &mut io);
@@ -9083,8 +9069,6 @@ pub extern "C" fn kernel_shared_mapping_inherit(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
-    table.forget_boundary(parent_pid);
-    table.forget_boundary(child_pid);
     let mut io = WasmSharedMappingIo::for_table(table);
     io.set_process_memory_len(child_pid, child_memory_len);
     shared_mapping_errno(table.inherit_sysv_attachments(

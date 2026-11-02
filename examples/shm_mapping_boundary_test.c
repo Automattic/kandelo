@@ -4,12 +4,9 @@
  * buffer pool to its compositor).
  *
  * Kandelo gives each process its own linear memory and makes mappings agree
- * at syscall boundaries (docs/posix-status.md, mmap()). The kernel may skip
- * re-comparing a mapping at the completion of a syscall when it can prove
- * nothing wrote it since the same syscall's entry (BoundaryRecord in
- * crates/runtime-core/src/memory.rs). Each case below is a way the bytes can
- * change in that interval, or right after it, and checks the peer still sees
- * them no later than before:
+ * at syscall boundaries (docs/posix-status.md, mmap()). Each case below is a
+ * way a process's bytes can change without that process making the syscall
+ * that would once have published them, and checks a peer still sees them:
  *
  *  - guest stores made after a quiet syscall publish at the next syscall;
  *  - bytes a syscall itself delivers into the mapping (a read() into the
@@ -18,7 +15,20 @@
  *  - stores by a second thread made while the first is parked in a syscall
  *    publish at that syscall's completion;
  *  - stores made by a signal handler publish at the next syscall;
- *  - stores made by a forked child publish at its next syscall.
+ *  - stores made by a forked child publish at its next syscall;
+ *  - a store made before the writer signals a pipe is visible to the reader
+ *    as soon as its read() returns, with the writer spinning afterwards;
+ *  - a thread that stores right after it starts, while the main thread is
+ *    parked, reaches a peer although neither makes another syscall;
+ *  - bytes a read() delivers into a stopped reader's mapping reach a peer
+ *    once the reader continues, and no peer's pull while it is stopped may
+ *    mistake them for unchanged bytes.
+ *
+ * Mappings of kernel-owned files are pulled lazily: a process's stores are
+ * compared when a peer's syscall completes, when the file is read or
+ * written through a descriptor, or at msync/munmap/fork/exec/exit, and a
+ * pull is skipped when the host proves the process has not run since the
+ * previous one (`CleanStamp` in crates/runtime-core/src/memory.rs).
  *
  * The cases that must observe a publication before the writer's next syscall
  * leave the writer spinning without syscalls and kill it afterwards.
@@ -269,6 +279,99 @@ static int forked_child_observes_parent(void) {
     return finish(name, ok, -1, view, fd);
 }
 
+/* The writer stores, then tells the reader through a pipe and spins. The
+ * reader checks the mapping right after read() returns. */
+static int visible_after_read(void) {
+    const char *name = "visible-after-read";
+    int fd;
+    volatile unsigned char *view = new_pool(name, &fd);
+    if (!view) return 1;
+    int p[2];
+    if (pipe(p) < 0) return finish(name, 0, -1, view, fd);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p[0]);
+        fill(view, 6);
+        if (write(p[1], "x", 1) != 1) _exit(2);
+        spin_forever();
+    }
+    close(p[1]);
+    char byte;
+    int ok = pid > 0 && read(p[0], &byte, 1) == 1 && matches(view, 6);
+    close(p[0]);
+    return finish(name, ok, pid, view, fd);
+}
+
+static volatile unsigned char *launch_view;
+
+static void *store_on_start(void *arg) {
+    (void)arg;
+    fill(launch_view, 7);
+    spin_forever();
+    return NULL;
+}
+
+/* A new thread stores as soon as it runs while the main thread stays parked
+ * in read(); neither makes a syscall afterwards. */
+static int store_at_thread_start(void) {
+    const char *name = "store-at-thread-start";
+    int fd;
+    volatile unsigned char *view = new_pool(name, &fd);
+    if (!view) return 1;
+    int p[2];
+    if (pipe(p) < 0) return finish(name, 0, -1, view, fd);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(p[1]);
+        launch_view = view;
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, store_on_start, NULL) != 0) _exit(2);
+        char byte;
+        (void)read(p[0], &byte, 1);
+        spin_forever();
+    }
+    close(p[0]);
+    int ok = pid > 0 && wait_for(view, 7);
+    close(p[1]);
+    return finish(name, ok, pid, view, fd);
+}
+
+/* The reader is stopped while blocked in read() into its mapping; the data
+ * arrives while it is stopped. The peer keeps making syscalls meanwhile, then
+ * continues the reader, which spins without another syscall. */
+static int stopped_reader_output(void) {
+    const char *name = "stopped-reader-output";
+    int fd;
+    volatile unsigned char *view = new_pool(name, &fd);
+    if (!view) return 1;
+    int data[2], ready[2];
+    if (pipe(data) < 0 || pipe(ready) < 0) return finish(name, 0, -1, view, fd);
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(data[1]);
+        close(ready[0]);
+        if (write(ready[1], "r", 1) != 1) _exit(2);
+        if (read(data[0], (void *)view, PATTERN_LEN) != PATTERN_LEN) _exit(3);
+        spin_forever();
+    }
+    close(data[0]);
+    close(ready[1]);
+    char byte;
+    int status = 0;
+    int ok = pid > 0 && read(ready[0], &byte, 1) == 1;
+    sleep_ms(200); /* let the reader block in read() */
+    ok = ok && kill(pid, SIGSTOP) == 0 && waitpid(pid, &status, WUNTRACED) == pid
+        && WIFSTOPPED(status);
+    unsigned char buf[PATTERN_LEN];
+    for (int i = 0; i < PATTERN_LEN; i++) buf[i] = pattern_byte(8, i);
+    ok = ok && write(data[1], buf, sizeof buf) == (ssize_t)sizeof buf;
+    for (int i = 0; i < 50; i++) sleep_ms(2);
+    ok = ok && kill(pid, SIGCONT) == 0 && wait_for(view, 8);
+    close(data[1]);
+    close(ready[0]);
+    return finish(name, ok, pid, view, fd);
+}
+
 int main(void) {
     int failures = 0;
     failures += store_after_quiet_syscalls();
@@ -276,6 +379,9 @@ int main(void) {
     failures += sibling_thread_store();
     failures += signal_handler_store();
     failures += forked_child_observes_parent();
+    failures += visible_after_read();
+    failures += store_at_thread_start();
+    failures += stopped_reader_output();
     if (failures == 0) printf("SHM_MAPPING_BOUNDARY_PASS\n");
     return failures == 0 ? 0 : 1;
 }

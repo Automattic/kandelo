@@ -2458,6 +2458,20 @@ example `ABI_CHECK_BASE_REF=07e8e10aec`) and as consistent against main,
 whose kernel-host version is 2; the decision to keep it within host 3
 follows the treatment of `host_proc_compare_bytes` above.
 
+The same contract changes what `kernel_shared_mapping_sync_process`'s
+`force` argument means (`sync_force` in `crates/runtime-core/src/memory.rs`,
+`KERNEL_SHARED_MAPPING_SYNC_*` in `host/src/kernel-worker.ts`): `0` is a
+syscall completion, at which the kernel pulls every other mapper of the
+process's kernel-owned files and refreshes the process; the new `3` is a
+syscall entry, at which it does no kernel-file work and only synchronizes
+SysV attachments; `1` stays a forced publication (fork, exec preflight,
+exit, teardown); and `2`, which claimed a completion unchanged since its
+entry, is retired and read as `0`. The signature is unchanged, so the
+snapshot does not record it, but a host and kernel from either side of the
+change are not interchangeable: an older kernel reads `3` as a forced sync
+(correct, slower), while an older host would never pass `3` and would
+leave a newer kernel pulling at both boundaries. Rebuild them together.
+
 The same contract drops the four optional kernel exports
 `kernel_gl_query_capture`, `kernel_gl_query_session`,
 `kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved

@@ -2227,6 +2227,8 @@ coordinates anonymous `MAP_SHARED`, SysV SHM attachments, and regular-file
 the owner of the bytes compares process memory with the snapshot that process
 last observed, merges only changed byte runs into one authoritative backing,
 and then imports peer updates into every stale alias in the calling process.
+For files the kernel owns, the comparison happens when the mapping can be
+observed rather than at every boundary of its own process; see below.
 Fork force-publishes the parent before the child inherits the same backing;
 `exec`, exit, crash, `munmap`, `mremap`, and `MAP_FIXED` update backing
 ownership explicitly.
@@ -2299,12 +2301,17 @@ mapping, and a new thread's channel is zeroed (idle) and attached before
 its Worker is created, so a process that reports an epoch has no guest
 code running. A pull that read a mapping at epoch `e`, and finds the
 process quiescent at the same `e` with no kernel write into the range
-since (`KernelProcessWriteLog`), would read the same bytes again. At this
-stage the proof is only checked: the comparison still runs, and a proof
-the comparison contradicts is a fatal kernel fault, because it means an
-epoch event was missed. A kernel built with the
-`shared-mapping-proof-verify` cargo feature also counts confirmed proofs
-in the diagnostic export `kernel_shared_mapping_proofs_verified`.
+since (`KernelProcessWriteLog`), would read the same bytes again, so the
+comparison is skipped. Host writes into guest memory are covered: a
+completion's output bytes, and anything a host-handled syscall stores
+directly into guest buffers, land before the completion is materialized,
+which changes the epoch even while a stopped process's completion stays
+parked; refreshes of host-owned shared mappings and DRI buffer bindings
+write only those mappings' own address ranges, and an address range
+belongs to one mapping at a time (`MAP_FIXED` replaces by unmapping first).
+A kernel built with the `shared-mapping-proof-verify` cargo feature
+compares anyway, traps on a contradicted proof, and counts confirmed
+proofs in the diagnostic export `kernel_shared_mapping_proofs_verified`.
 
 When a kernel-owned file refuses a mapping's bytes (for example a full
 tmpfs), the loss is real data the program believed it stored, so it is
@@ -2355,57 +2362,54 @@ invalidate or refresh mapped cache pages. `msync`, replacement, unmap, exec,
 and process teardown persist dirty pages through the stable handle, including
 after the original guest fd is closed or its pathname is unlinked or renamed.
 
-A kernel-owned file mapping is compared at both boundaries of every
-syscall of a process that holds it with a live peer, and the comparison
-reads the whole mapping. A Wayland compositor maps each client's
-`wl_shm` pool `PROT_READ|PROT_WRITE`, so with one 4 MiB SFWBar pool,
-labwc and sway compared about 3,000 times a second during pointer motion,
-every comparison equal, for 2.6-2.8 s of kernel-worker time per 10 s.
-The completion comparison is usually redundant: bytes under a mapping
-change only when guest code of the process runs, when the host delivers a
-syscall's output bytes into it, or when the kernel writes it. So the
-completion boundary of a syscall may skip a mapping when all of these
-hold (`BoundaryRecord` in `crates/runtime-core/src/memory.rs`):
+Kernel-owned file mappings are *pulled lazily*. A compositor maps each
+client's `wl_shm` pool `PROT_READ|PROT_WRITE`, and comparing every
+writable mapping at both boundaries of every syscall cost labwc and sway
+with one 4 MiB SFWBar pool about 3,000 whole-pool comparisons a second
+during pointer motion, every one equal (6.5 ms of kernel-worker time per
+frame after an earlier completion-only skip). A process's own copy is
+therefore not compared at its own boundaries any more; it is compared
+when something can observe it (`sync_file_at_completion` in
+`crates/runtime-core/src/memory.rs`):
 
-- the host attests that the previous sync of the process was this
-  syscall's own entry boundary and that the completion delivers no output
-  bytes. Only the generic kernel dispatch and the opaque-record path qualify;
-  every other completion path compares as before. The host passes
-  `force = 2` (`SHARED_MAPPING_SYNC_UNCHANGED`) to
-  `kernel_shared_mapping_sync_process`, which an older kernel reads as a
-  forced sync;
-- the host also attests that no other guest code ran on the process's
-  memory meanwhile: at both boundaries every other thread channel of the
-  process sits at `CH_PENDING` (its thread is blocked in a syscall), no
-  other process (a vfork child) borrows the memory, and no completion was
-  published, process registered or thread channel attached on that memory
-  in between. Both desktop compositors and SFWBar are multithreaded, so a
-  sole-thread rule would have skipped nothing; a sibling that resumes
-  always passes through a published completion. Kernel-direct wait
-  completions are never used for a process with a shared mapping;
-- no other shared-mapping operation touched the process in between, the
-  entry boundary compared the mapping and found it equal, and no write the
-  kernel made through `HostIO::proc_write_bytes` since then overlaps it
-  (a fixed ring of recent kernel writes; if it overflowed, the boundary
-  compares);
-- the backing has not advanced since, so the mapping is not about to be
-  refreshed. This last condition is defense in depth: even a mistaken
-  claim could then only delay a publication to the next boundary, never let
-  a refresh overwrite unpublished bytes.
+- at the *completion* of a syscall of another process that maps the same
+  file, which then imports what it published before it resumes. This is
+  where every cross-process happens-before edge ends: a process learns of
+  a peer's store only through the kernel (a pipe or socket byte, a signal,
+  an exit status, a lock, a file write), every such chain begins with a
+  syscall the writer made after storing (its `CH_PENDING` store is
+  sequentially consistent, so a read of its memory that sees it parked
+  sees the store), and ends at the syscall of the reader that consumes
+  it. A writer that never makes another syscall is still observed, at the
+  reader's next completion. Nothing is needed at an entry: the reader has
+  learned nothing new there;
+- before the kernel reads or writes the file's content through a
+  descriptor (the fence above), when a new mapping joins the file, and at
+  `msync`, `munmap`, `mremap`, `MAP_FIXED`, fork, the exec preflight, exit
+  (the exit syscall publishes the process's file mappings before its
+  memory goes away) and teardown;
+- at its own completion only when it holds a second mapping of the same
+  file, or when the mapping is about to be refreshed, so that its pending
+  stores (including a syscall's output into the mapping) win their bytes.
 
-Under those conditions the mapping still equals its snapshot, so skipping
-the comparison is exactly its result. Host writes outside a completion
-(DRI buffer copies, host-owned shared mappings, the syscall channel)
-target memory the address space never lets overlap a kernel-owned mapping.
-The entry boundary is never skipped, so a store still publishes at the
-writer's next syscall, and every way a peer can learn of a store through a
-later syscall of the writer still finds it published. Host-owned mappings
-(anonymous `MAP_SHARED`, host-mounted files) and SysV attachments keep
-comparing at both boundaries.
+A pull of a process the host proves has not run since its previous pull
+is skipped (the `CleanStamp` proof above), so an idle client costs a busy
+compositor nothing, and a client's pool is compared at most once for each
+time the client ran guest code. A kernel built with the
+`shared-mapping-proof-verify` feature keeps comparing and traps if any
+proof is contradicted; it is the evidence that every epoch event is
+accounted for, run over the mapping tests and a desktop session. The host
+passes `force = 3` (`ENTRY`) to `kernel_shared_mapping_sync_process` at an
+entry, which does SysV work only, and `0` (`COMPLETION`) at a completion;
+the retired `2` is read as a completion. Host-owned mappings (anonymous
+`MAP_SHARED`, host-mounted files) and SysV attachments keep comparing at
+both boundaries.
 
 This is syscall-boundary coherence, not shared physical memory. A process that
-only performs direct loads/stores does not publish or import peer changes until
-it crosses into the kernel. Futex waits and wakes also target the caller's own
+only performs direct loads/stores does not import peer changes until one of its
+syscalls completes; for kernel-owned files its own stores reach a peer at the
+peer's next completion without a syscall of its own, and for host-owned
+mappings and SysV attachments only at its next syscall. Futex waits and wakes also target the caller's own
 process `SharedArrayBuffer`, so process-shared pthread mutexes/futexes remain
 unsupported across PIDs. In-kernel memfd shared mappings converge the same
 way, backed by the memfd's kernel pages. File mappings on any backend that

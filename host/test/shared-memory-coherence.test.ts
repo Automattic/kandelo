@@ -484,7 +484,7 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       // Raw error completion contains one further synchronization attempt;
       // it catches that failure rather than replaying the syscall.
       expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
-        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
+        { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 3] },
         { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
       ]);
       expect(view.getBigInt64(CH_RETURN, true)).toBe(-5n);
@@ -509,42 +509,7 @@ describe("kernel-owned shared-mapping boundary failures", () => {
     expect(relisten).toHaveBeenCalledExactlyOnceWith(channel);
   });
 
-  it("tells the kernel a quiet completion is unchanged since its own entry", () => {
-    const h = sysvHarness();
-    const channel = pendingChannel(h);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
-    (h.kw as any).handleSyscall(channel);
-    // Entry: an ordinary boundary (0). Completion of a generic dispatch with
-    // no output bytes, right after that entry: the unchanged claim (2).
-    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process")).toEqual([
-      { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
-      { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 2] },
-    ]);
-  });
-
-  it.each([
-    ["parked in a syscall", CHANNEL_STATUS_PENDING, 2],
-    ["running guest code", CHANNEL_STATUS_COMPLETE, 0],
-  ])("claims a completion only while every sibling thread is %s", (_, siblingStatus, expected) => {
-    const h = sysvHarness();
-    const channel = pendingChannel(h);
-    const registration = (h.kw as any).processes.get(h.pids[0]);
-    const siblingOffset = 0x8000;
-    const sibling = {
-      pid: channel.pid,
-      memory: channel.memory,
-      channelOffset: siblingOffset,
-      i32View: new Int32Array(channel.memory.buffer, siblingOffset, 1),
-    };
-    Atomics.store(sibling.i32View, CH_STATUS / 4, siblingStatus);
-    registration.channels.push(sibling);
-    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
-    (h.kw as any).handleSyscall(channel);
-    expect(h.sysv.callsTo("kernel_shared_mapping_sync_process").map((c) => c.args))
-      .toEqual([[channel.pid, 0], [channel.pid, expected]]);
-  });
-
-  it("claims only a completion, never the next request's entry", () => {
+  it("tells the kernel which boundary each sync is", () => {
     const h = sysvHarness();
     const channel = pendingChannel(h);
     h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
@@ -552,12 +517,12 @@ describe("kernel-owned shared-mapping boundary failures", () => {
     writeChannelSyscall(channel, ABI_SYSCALLS.Getpid, []);
     Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
     (h.kw as any).handleSyscall(channel);
-    // Guest code ran between the first completion and the second entry.
+    // Entry (3): no kernel-file work. Completion (0): pull peers, refresh.
     expect(h.sysv.callsTo("kernel_shared_mapping_sync_process").map((c) => c.args))
-      .toEqual([[channel.pid, 0], [channel.pid, 2], [channel.pid, 0], [channel.pid, 2]]);
+      .toEqual([[channel.pid, 3], [channel.pid, 0], [channel.pid, 3], [channel.pid, 0]]);
   });
 
-  it("makes no claim for a completion without a recorded entry or with output bytes", () => {
+  it("treats a completion without a recorded entry, or with output bytes, as a completion", () => {
     const h = sysvHarness();
     const channel = pendingChannel(h);
     h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
@@ -570,6 +535,73 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
       { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
     ]);
+  });
+
+  // `host_proc_quiescent_epoch` (`CleanStamp` in runtime-core memory.rs):
+  // an epoch only while no guest code of the process can run, and a new one
+  // after anything that can change its memory.
+  describe("quiescent epoch", () => {
+    function addSibling(h: ReturnType<typeof sysvHarness>, status: number) {
+      const channel = (h.kw as any).processes.get(h.pids[0]).channels[0];
+      const registration = (h.kw as any).processes.get(h.pids[0]);
+      const siblingOffset = 0x8000;
+      const sibling = {
+        pid: channel.pid,
+        memory: channel.memory,
+        channelOffset: siblingOffset,
+        i32View: new Int32Array(channel.memory.buffer, siblingOffset, 1),
+      };
+      Atomics.store(sibling.i32View, CH_STATUS / 4, status);
+      registration.channels.push(sibling);
+      return sibling;
+    }
+
+    it("is reported only while every thread channel is pending", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      const epoch = () => h.kw.testAuthority.processQuiescentEpochForTest(channel.pid);
+      expect(epoch()).toBeGreaterThanOrEqual(0n);
+      const sibling = addSibling(h, CHANNEL_STATUS_COMPLETE);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(sibling.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBeGreaterThanOrEqual(0n);
+      // A thread whose channel was attached but has made no syscall yet.
+      Atomics.store(sibling.i32View, CH_STATUS / 4, 0);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_COMPLETE);
+      Atomics.store(sibling.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBe(-1n);
+    });
+
+    it("is never reported for an unknown process or one whose memory is borrowed", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      expect(h.kw.testAuthority.processQuiescentEpochForTest(9999)).toBe(-1n);
+      const processes = (h.kw as any).processes as Map<number, any>;
+      const borrower = { ...processes.get(channel.pid), pid: 4242, channels: [] };
+      processes.set(4242, borrower);
+      try {
+        expect(h.kw.testAuthority.processQuiescentEpochForTest(channel.pid)).toBe(-1n);
+      } finally { processes.delete(4242); }
+    });
+
+    it("changes when a completion is materialized and when it is published", () => {
+      const h = sysvHarness();
+      const channel = pendingChannel(h);
+      const epoch = () => h.kw.testAuthority.processQuiescentEpochForTest(channel.pid);
+      const before = epoch();
+      const prepared = {
+        kind: "marshalled", outputWrites: [], retVal: 0, errVal: 0,
+        materialized: false, relistenRequested: false,
+      };
+      (h.kw as any).materializePreparedChannelCompletion(channel, prepared);
+      const materialized = epoch();
+      expect(materialized).toBeGreaterThan(before);
+      (h.kw as any).publishPreparedChannelCompletion(channel, prepared);
+      expect(epoch()).toBe(-1n);
+      Atomics.store(channel.i32View, CH_STATUS / 4, CHANNEL_STATUS_PENDING);
+      expect(epoch()).toBeGreaterThan(materialized);
+    });
   });
 
   it.each([-5, 0])("completes a detached output with sync result %i without hiding its effects", (result) => {
