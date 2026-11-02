@@ -54,13 +54,16 @@ async function readTmp(page: Page, name: string, expected: string | RegExp = "DA
     has: page.locator("td:first-child", { hasText: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`) }),
   }).first();
   await row("tmp/").click();
+  // A row exists once the guest shell opens the file, and the preview shows
+  // the bytes read when the row was opened. Reopen it from a refreshed
+  // listing until the expected content is there.
+  const preview = page.locator("pre").filter({ hasText: expected });
   await expect.poll(async () => {
     await page.getByRole("button", { name: "refresh", exact: true }).click();
-    return row(name).count();
-  }, { timeout }).toBe(1);
-  await row(name).click();
-  const preview = page.locator("pre").filter({ hasText: expected });
-  await expect(preview).toBeVisible({ timeout });
+    if (await row(name).count() !== 1) return false;
+    await row(name).click();
+    return preview.isVisible();
+  }, { timeout, intervals: [500, 1_000] }).toBe(true);
   return preview.innerText();
 }
 
@@ -79,9 +82,9 @@ type Paint = {
  * Connected filled rectangles and separate glyph rows exclude a cursor or
  * terminal output from satisfying panel/menu readiness.
  */
-async function paint(page: Page, savedPager?: PagerCell): Promise<Paint> {
+async function paint(page: Page, savedPager?: PagerCell, menuEdge?: number): Promise<Paint> {
   const png = await scene(page).screenshot({ animations: "disabled" });
-  return page.evaluate(async ([base64, savedPager]: readonly [string, PagerCell | undefined]) => {
+  return page.evaluate(async ([base64, savedPager, menuEdge]: readonly [string, PagerCell | undefined, number | undefined]) => {
     const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
     const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
     const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
@@ -185,9 +188,20 @@ async function paint(page: Page, savedPager?: PagerCell): Promise<Paint> {
           && Math.abs(r.width - savedPager.width) <= 4 && r.textRows === 1),
       };
     }
+    // The panel's own #323232 background starts a few rows above the Start
+    // fill (Labwc: 3), and a popup can end right on it; stop well above
+    // Start so the panel row never joins a menu into one wide component.
     const menuMask = new Uint8Array(width * height);
     if (start) for (let p = 0; p < menuMask.length; p++)
-      if (Math.floor(p / width) < start.y - 1) menuMask[p] = gray[p] || blue[p];
+      if (Math.floor(p / width) < start.y - 8) menuMask[p] = gray[p] || blue[p];
+    // GTK places a submenu against its parent item's edge; whether a gap is
+    // left depends on the compositor's popup placement (Labwc abuts it), and
+    // the open item's highlight and the submenu's fills would then form one
+    // component. A caller that knows the parent menu's right edge measures
+    // only what lies right of it, so a flush submenu is its own rectangle.
+    if (menuEdge !== undefined)
+      for (let y = 0; y < height; y++)
+        for (let x = 0; x < Math.min(menuEdge, width); x++) menuMask[y * width + x] = 0;
     const menus = components(menuMask).filter(r => r.width >= 80 && r.width < 450
       && r.height >= 24 && r.height < 350 && r.textRows > 0);
     const highlights = colored.filter(r => start && r.y + r.height < start.y
@@ -205,7 +219,58 @@ async function paint(page: Page, savedPager?: PagerCell): Promise<Paint> {
         tasks.push({ x: begin + a, y: start.y, width: b - a + 1, height: start.height });
     }
     return { width, height, start, pager, returnPager, menus, highlights, tasks, red, blue: terminalBlue, green, purple };
-  }, [png.toString("base64"), savedPager] as const);
+  }, [png.toString("base64"), savedPager, menuEdge] as const);
+}
+
+/** Hover a bar widget as a person does before clicking it, and wait for
+ * GTK to show the widget's tooltip (sfwbar.config gives Start the tooltip
+ * "Applications" and enables task tooltips). Upstream SFWBar requests
+ * on-demand keyboard interactivity only while the pointer is over its bar
+ * (bar.c enter/leave), and Sway and Labwc give an on-demand layer the
+ * keyboard on a click only once that request is committed. A tooltip
+ * appears only after SFWBar has processed the pointer's entry and rested
+ * motion, so it is a painted sign that the following click can focus the
+ * bar. Without the hover, keys meant for a bar menu reach the focused
+ * window instead. The tooltip is a popup just above the panel; the
+ * cursor stays on the widget inside the panel row. Its dark background
+ * can match a dark desktop, so count every changed pixel in the band
+ * above the panel (its light label at least) rather than one filled
+ * rectangle.
+ */
+async function hoverBar(page: Page, frame: Paint, rect: Rect) {
+  const before = (await scene(page).screenshot({ animations: "disabled" })).toString("base64");
+  const box = (await scene(page).boundingBox())!;
+  await page.mouse.move(box.x + (rect.x + rect.width / 2) * box.width / frame.width,
+    box.y + (rect.y + rect.height / 2) * box.height / frame.height);
+  const panelTop = frame.start!.y;
+  await expect.poll(async () => {
+    const after = (await scene(page).screenshot({ animations: "disabled" })).toString("base64");
+    return page.evaluate(async ([before, after, panelTop]) => {
+      const decode = async (base64: string) => {
+        const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+        const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+        context.drawImage(bitmap, 0, 0);
+        const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
+        bitmap.close();
+        return image;
+      };
+      const a = await decode(before), b = await decode(after);
+      if (a.width !== b.width || a.height !== b.height) return false;
+      const { width } = a;
+      let count = 0, left = width, top = panelTop, right = -1, bottom = -1;
+      for (let y = Math.max(0, panelTop - 150); y < Math.min(panelTop, a.height); y++) {
+        for (let x = 0; x < width; x++) {
+          const at = (y * width + x) * 4;
+          if (Math.max(...[0, 1, 2].map(c => Math.abs(a.data[at + c] - b.data[at + c]))) <= 35) continue;
+          count++;
+          left = Math.min(left, x); right = Math.max(right, x);
+          top = Math.min(top, y); bottom = Math.max(bottom, y);
+        }
+      }
+      return count >= 40 && right - left >= 30 && bottom - top >= 8;
+    }, [before, after, panelTop] as const);
+  }, { timeout: 30_000, intervals: [250, 500, 1_000] }).toBe(true);
 }
 
 async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | "right" = "left") {
@@ -339,8 +404,11 @@ for (const compositor of ["sway", "labwc"] as const) {
     await typePhysicalText(page, "{ printf 'DATA_HOME=%s\\nDATA_DIRS=%s\\n' \"${XDG_DATA_HOME-}\" \"${XDG_DATA_DIRS-}\"; "
       + "for d in \"${XDG_DATA_HOME:-$HOME/.local/share}/applications\" /usr/local/share/applications /usr/share/applications; "
       + "do for f in \"$d\"/*.desktop; do if test -f \"$f\"; then printf 'FILE:%s\\n' \"$f\"; cat \"$f\"; fi; done; done; "
-      + "} > /tmp/sfwbar-inventory\n", { delay: 15 });
-    const inventory = await readTmp(page, "sfwbar-inventory");
+      + "printf 'INVENTORY_END\\n'; } > /tmp/sfwbar-inventory\n", { delay: 15 });
+    // The VFS row appears as soon as the shell opens the file. Wait for the
+    // marker the command writes last, not the first line, so the read sees
+    // the whole inventory.
+    const inventory = await readTmp(page, "sfwbar-inventory", "INVENTORY_END");
     expect(inventory).toMatch(/^DATA_HOME=\nDATA_DIRS=\n/);
     expect([...inventory.matchAll(/^FILE:(.+)$/gm)].map(m => m[1]).sort()).toEqual([
       "/usr/share/applications/kandelo-terminal.desktop", "/usr/share/applications/scummvm.desktop",
@@ -355,6 +423,9 @@ for (const compositor of ["sway", "labwc"] as const) {
     const panel = await paint(page);
     expect(panel.start).not.toBeNull();
     await screenshot(page, `${compositor}-sfwbar-panel`, panel);
+    // The Start menu is driven by keys below, so the bar must take the
+    // keyboard on this click (see hoverBar).
+    await hoverBar(page, panel, panel.start!);
     await clickRect(page, panel, panel.start!);
     await expect.poll(async () => (await paint(page)).menus.some(r => r.textRows === 3),
       { timeout: 60_000, intervals: [500, 1_000] }).toBe(true);
@@ -367,8 +438,16 @@ for (const compositor of ["sway", "labwc"] as const) {
     await page.keyboard.press("End"); await page.keyboard.press("ArrowRight");
     const terminalMenu = (p: Paint) => p.menus.find(r => r.textRows === 1
       && r.x >= categories.x + categories.width - 10 && r.height < categories.height * 0.65);
-    await expect.poll(async () => terminalMenu(await paint(page)) !== undefined, { timeout: 30_000 }).toBe(true);
-    const submenu = await paint(page);
+    const categoriesEdge = categories.x + categories.width;
+    try {
+      await expect.poll(async () => terminalMenu(await paint(page, undefined, categoriesEdge)) !== undefined,
+        { timeout: 30_000 }).toBe(true);
+    } catch (error) {
+      await test.info().attach(`${compositor}-sfwbar-submenu-geometry`, { contentType: "application/json",
+        body: JSON.stringify({ categories, frame: await paint(page, undefined, categoriesEdge) }) });
+      throw error;
+    }
+    const submenu = await paint(page, undefined, categoriesEdge);
     await screenshot(page, `${compositor}-sfwbar-terminal-entry`, submenu);
     await clickRect(page, submenu, terminalMenu(submenu)!);
     // The real GTK menu action execs the shipped terminal launcher. A Start
@@ -410,6 +489,8 @@ for (const compositor of ["sway", "labwc"] as const) {
     // Minimize and Maximize; select its second actual painted row and click.
     await releasePointer(page);
     tasks = await paint(page);
+    // The window-operations menu is driven by keys too (see hoverBar).
+    await hoverBar(page, tasks, tasks.tasks[1]);
     await clickRect(page, tasks, tasks.tasks[1], "right");
     await expect.poll(async () => (await paint(page)).menus.some(r => r.textRows === 4),
       { timeout: 30_000 }).toBe(true);
