@@ -164,6 +164,20 @@ standalone self-judging reproduction confirms it on Firefox 155 only; it is
 registered as `FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM` with a Firefox-scoped,
 tagged substitution of a private uniform.
 
+**Firefox-only dEQP-GLES2 failures (2026-11-02).** Each Firefox-only
+failure of the full runs traced to a Firefox WebGL 2 defect that a
+standalone page confirms (Firefox 155 on macOS; Chromium and WebKit are
+controls). Two have tagged workarounds that answer from Kandelo's own
+records: `FIREFOX-RENDERBUFFER-EMPTY-SIZE` (`state_query.rbo.renderbuffer_size`)
+and `FIREFOX-VALIDATE-UNLINKED-PROGRAM`
+(`state_query.shader.program_validate_status`); the state_query chunk then
+passes 96/96 on all three engines. Two have none and stay failing on
+Firefox: the compiler rejecting a variable that hides a struct type (four
+`shaders.scoping.valid` cases), and a mipmap level taken from the
+neighbouring triangle at a shared edge (12 `texture.mipmap.2d.projected`
+cases, and by the same signature 2 `cube.projected.nearest_*`). Evidence is
+in `docs/measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md`.
+
 **Robust buffer access (maintainer decision D-25, 2026-11-01): emulated for
 robust contexts only.** `EXT_robustness` §2.8 (`KHR_robustness` §10.3.1.1rob)
 makes an out-of-range vertex index give the attribute undefined values with no

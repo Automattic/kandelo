@@ -3377,6 +3377,34 @@ meeting that condition, draws run a private variant whose vertex stage reads
 the depth range from a private uniform, so guest OpenGL ES programs see the
 same `gl_DepthRange` on every engine. A released Firefox has not been checked.
 
+### Firefox WebGL query and compiler defects seen by guest OpenGL ES
+
+On Playwright Firefox 155.0 on macOS, standalone pages with no Kandelo code
+show four more WebGL 2 defects that guest OpenGL ES 2.0 programs would
+otherwise observe. Chromium and WebKit are correct in each. A released
+Firefox, Linux and Windows have not been checked.
+
+- After `renderbufferStorage` with one zero dimension (0x29), both
+  `RENDERBUFFER_WIDTH` and `RENDERBUFFER_HEIGHT` read 0
+  ([`FIREFOX-RENDERBUFFER-EMPTY-SIZE`](../tests/runtime-workarounds/FIREFOX-RENDERBUFFER-EMPTY-SIZE/entry.md)).
+  Kandelo answers both from the size it records for every accepted storage
+  call, on every engine.
+- `validateProgram` on a program with no linked executable sets
+  `VALIDATE_STATUS` to true
+  ([`FIREFOX-VALIDATE-UNLINKED-PROGRAM`](../tests/runtime-workarounds/FIREFOX-VALIDATE-UNLINKED-PROGRAM/entry.md)).
+  Kandelo records whether the program was linked when it was validated and
+  answers false when it was not, on every engine.
+- The GLSL ES 1.00 compiler rejects a local variable that hides a struct
+  type of the same name (`int S = S(u).val;`), which section 4.2 allows.
+- A fragment alone in its 2x2 pixel quad at the shared edge of two
+  triangles in one draw can get the mipmap level of the other triangle.
+
+The last two have no workaround (one would need a GLSL scope rewriter, the
+other one draw per triangle), so guest programs see them on Firefox and the
+corresponding dEQP-GLES2 cases fail there. The reproductions and results
+are in
+[`docs/measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md`](measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md).
+
 ### WebKit page-process crash when thread workers end
 
 This is a confirmed WebKit defect, recorded in the runtime workaround
