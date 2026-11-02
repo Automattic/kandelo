@@ -412,6 +412,12 @@ capture, window blur, and input teardown, retaining the last absolute position.
   ([`WEBKIT-AUDIOWORKLET-CLOSE-LEAK`](../tests/runtime-workarounds/WEBKIT-AUDIOWORKLET-CLOSE-LEAK/entry.md));
   explicitly supplied private contexts are closed. A suspended or interrupted context is never resumed
   implicitly during teardown.
+- **A machine switch keeps the page's audio running.** When teardown suspended
+  a running context, the next machine that attaches resumes it: the user
+  already started that context, and without a consumer the new machine's ring
+  fills and its next `/dev/dsp` write blocks until the next gesture. While
+  another machine still renders through the context, teardown does not
+  suspend it at all. A context the user never started stays suspended.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
   path from a click, keypress, or other browser-recognized activation. If the
