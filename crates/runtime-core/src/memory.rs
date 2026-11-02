@@ -1,17 +1,68 @@
 extern crate alloc;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use wasm_posix_shared::Errno;
+
+/// The object a file-backed mapping maps, as `/proc/<pid>/maps` reports it.
+///
+/// WHY recorded at `mmap` time: POSIX keeps a mapping valid after the
+/// descriptor that created it is closed, so the descriptor cannot be
+/// consulted later. Linux keeps the mapping's `struct file`; Kandelo keeps
+/// the identity `fstat` reported for that descriptor and the name its
+/// `/proc/<pid>/fd` link showed, so the maps line and a program's own
+/// `fstat` agree. Shared by every fragment of one mapping (`munmap` and
+/// `MAP_FIXED` splits), so splitting never copies the name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappingFile {
+    /// `st_dev` of the mapped object, encoded as the libc `makedev` does.
+    pub dev: u64,
+    /// `st_ino` of the mapped object.
+    pub ino: u64,
+    /// Pathname column, already in Linux's spelling for unlinked objects
+    /// (for example `/memfd:name (deleted)`).
+    pub name: Vec<u8>,
+}
 
 /// Tracks a single mmap'd region.
 #[derive(Debug, Clone)]
 pub struct MappedRegion {
     pub addr: usize, // start address in linear memory
     pub len: usize,  // length in bytes
-    pub prot: u32,   // protection flags (tracked but not enforced)
+    pub prot: u32,   // protection flags requested at mmap (not enforced)
     pub flags: u32,  // map flags
+    /// Byte offset into `file` that `addr` maps. Zero for anonymous memory.
+    pub file_offset: u64,
+    /// The mapped object for a file-backed mapping; `None` for anonymous
+    /// memory.
+    pub file: Option<Rc<MappingFile>>,
+}
+
+impl MappedRegion {
+    /// An anonymous region (no backing object).
+    pub fn anonymous(addr: usize, len: usize, prot: u32, flags: u32) -> Self {
+        MappedRegion {
+            addr,
+            len,
+            prot,
+            flags,
+            file_offset: 0,
+            file: None,
+        }
+    }
+
+    /// The file offset mapped at `addr + delta`, for a fragment that starts
+    /// `delta` bytes into this region. Anonymous memory stays at zero, as
+    /// Linux reports it.
+    fn offset_after(&self, delta: usize) -> u64 {
+        if self.file.is_some() {
+            self.file_offset.saturating_add(delta as u64)
+        } else {
+            0
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,17 +259,40 @@ impl MemoryManager {
         }
         // Insert sorted by address
         let pos = self.mappings.partition_point(|m| m.addr < addr);
-        self.mappings.insert(
-            pos,
-            MappedRegion {
-                addr,
-                len: aligned_len,
-                prot,
-                flags,
-            },
-        );
+        self.mappings.insert(pos, MappedRegion::anonymous(addr, aligned_len, prot, flags));
 
         addr
+    }
+
+    /// Record the object a fresh mapping at exactly `addr` maps, and the file
+    /// offset at `addr`. Returns whether a mapping starts at `addr`.
+    pub fn set_mapping_file(&mut self, addr: usize, file_offset: u64, file: Rc<MappingFile>) -> bool {
+        match self.mappings.iter_mut().find(|m| m.addr == addr) {
+            Some(mapping) => {
+                mapping.file_offset = file_offset;
+                mapping.file = Some(file);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Copy each mapping's backing object from the live parent at `fork`.
+    ///
+    /// WHY not serialized: fork state carries the address layout, and the
+    /// child's mappings are exactly the parent's. The backing object is a
+    /// shared reference, as Linux's child VMAs share the parent's `struct
+    /// file`, so it is taken from the parent rather than re-encoded.
+    pub fn inherit_mapping_files(&mut self, parent: &[MappedRegion]) {
+        for mapping in &mut self.mappings {
+            if let Some(source) = parent
+                .iter()
+                .find(|p| p.addr == mapping.addr && p.len == mapping.len)
+            {
+                mapping.file_offset = source.file_offset;
+                mapping.file = source.file.clone();
+            }
+        }
     }
 
     /// Find the first gap in [mmap_base, max_addr) that can fit `needed` bytes.
@@ -397,8 +471,12 @@ impl MemoryManager {
                     i += 1;
                 }
                 (false, true) => {
+                    // The surviving tail still maps the same file bytes it
+                    // did, so its offset advances with its start address.
+                    let offset = self.mappings[i].offset_after(unmap_end - m_addr);
                     self.mappings[i].addr = unmap_end;
                     self.mappings[i].len = m_end - unmap_end;
+                    self.mappings[i].file_offset = offset;
                     break;
                 }
                 (true, true) => {
@@ -407,6 +485,8 @@ impl MemoryManager {
                         len: m_end - unmap_end,
                         prot: self.mappings[i].prot,
                         flags: self.mappings[i].flags,
+                        file_offset: self.mappings[i].offset_after(unmap_end - m_addr),
+                        file: self.mappings[i].file.clone(),
                     };
                     self.mappings[i].len = addr - m_addr;
                     self.mappings.insert(i + 1, right);
@@ -648,12 +728,7 @@ mod tests {
     use wasm_posix_shared::mmap::*;
 
     fn mapped_region(addr: usize, len: usize) -> MappedRegion {
-        MappedRegion {
-            addr,
-            len,
-            prot: PROT_READ | PROT_WRITE,
-            flags: MAP_PRIVATE | MAP_ANONYMOUS,
-        }
+        MappedRegion::anonymous(addr, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS)
     }
 
     /// Reference the former combined-list implementation so the stream merge

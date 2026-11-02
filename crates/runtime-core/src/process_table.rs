@@ -1515,6 +1515,15 @@ impl ProcessTable {
                 assert_eq!(registry.decref(bo), Some(before - 1));
             }),
         )?;
+        // Fork state carries the address layout only; each mapping's backing
+        // object (what /proc/<pid>/maps names) is shared with the parent.
+        child.memory.inherit_mapping_files(
+            self.processes
+                .get(&parent_pid)
+                .ok_or(Errno::ESRCH)?
+                .memory
+                .mappings(),
+        );
         // POSIX fork leaves one thread in the child, and that thread inherits
         // the mask of the task that called fork rather than the process
         // leader's mask.

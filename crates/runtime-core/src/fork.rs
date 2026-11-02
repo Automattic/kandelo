@@ -1590,12 +1590,10 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
         let len = r.read_u32()? as usize;
         let prot = r.read_u32()?;
         let flags = r.read_u32()?;
-        mappings.push(MappedRegion {
-            addr,
-            len,
-            prot,
-            flags,
-        });
+        // The backing object of a file mapping is not serialized; the
+        // process table copies it from the live parent
+        // (`MemoryManager::inherit_mapping_files`).
+        mappings.push(MappedRegion::anonymous(addr, len, prot, flags));
     }
     memory.set_mappings(mappings);
 

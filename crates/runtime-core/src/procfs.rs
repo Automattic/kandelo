@@ -430,25 +430,160 @@ pub fn generate_environ(proc: &Process) -> Vec<u8> {
     buf
 }
 
-/// Generate /proc/<pid>/maps content.
+/// Generate /proc/<pid>/maps content from the kernel's mapping tables.
 pub fn generate_maps(proc: &Process) -> Vec<u8> {
-    use alloc::format;
+    format_maps(proc, |shmid| {
+        // SAFETY: the kernel is single-threaded; this is a read of the
+        // segment table the shmget/shmctl syscalls own.
+        unsafe { crate::ipc::global_ipc_table() }.shm_key(shmid)
+    })
+}
 
-    let mut buf = Vec::new();
+/// One `/proc/<pid>/maps` line before formatting.
+struct MapsLine<'a> {
+    start: u64,
+    end: u64,
+    prot: u32,
+    shared: bool,
+    offset: u64,
+    dev: u64,
+    ino: u64,
+    name: Option<NameColumn<'a>>,
+}
+
+enum NameColumn<'a> {
+    Bytes(&'a [u8]),
+    Owned(Vec<u8>),
+}
+
+/// Format `/proc/<pid>/maps` in Linux's layout (fs/proc/task_mmu.c,
+/// `show_vma_header_prefix` and `show_map_vma`):
+///
+/// ```text
+/// start-end perms offset major:minor inode [padding pathname]
+/// ```
+///
+/// Every value comes from kernel state: the process's mmap regions (with the
+/// object recorded at `mmap` for a file mapping), its SysV attachments, and
+/// its program break. `sysv_key` maps a shmid to the segment's key, or `None`
+/// once `IPC_RMID` removed it (Linux then reports key 0, `IPC_PRIVATE`).
+///
+/// Two regions Linux lists are absent because the kernel does not know them,
+/// and they are not invented: the main thread's `[stack]` (the shadow stack
+/// lives in the program's data area, whose bounds the kernel is not told)
+/// and the program image (Wasm code is not in linear memory, and the data
+/// segment below the initial break is not recorded as a region).
+pub fn format_maps(proc: &Process, sysv_key: impl Fn(i32) -> Option<i32>) -> Vec<u8> {
+    use wasm_posix_shared::mmap::MAP_SHARED;
+
+    let mut lines: Vec<MapsLine> = Vec::with_capacity(proc.memory.mappings().len() + 1);
     for region in proc.memory.mappings() {
         let start = region.addr as u64;
         let end = start + region.len as u64;
-        let r = if region.prot & 1 != 0 { 'r' } else { '-' }; // PROT_READ
-        let w = if region.prot & 2 != 0 { 'w' } else { '-' }; // PROT_WRITE
-        let x = if region.prot & 4 != 0 { 'x' } else { '-' }; // PROT_EXEC
-        let p = if region.flags & 2 != 0 { 's' } else { 'p' }; // MAP_SHARED vs MAP_PRIVATE
-        let line = format!(
-            "{:08x}-{:08x} {}{}{}{} 00000000 00:00 0\n",
-            start, end, r, w, x, p,
-        );
-        buf.extend_from_slice(line.as_bytes());
+        // WHY: the host attaches a SysV segment through an ordinary
+        // MAP_PRIVATE|MAP_ANONYMOUS reservation and supplies the sharing
+        // itself, so the attachment table, not the reservation's flags, is
+        // what says this region is shared. Linux names it after the
+        // segment's key and uses the shmid as its inode.
+        if let Some(attachment) = proc.shm_mapping_at(region.addr) {
+            let key = sysv_key(attachment.shmid).unwrap_or(0);
+            lines.push(MapsLine {
+                start,
+                end,
+                prot: region.prot,
+                shared: true,
+                offset: 0,
+                dev: 0,
+                ino: attachment.shmid as u64,
+                name: Some(NameColumn::Owned(
+                    alloc::format!("/SYSV{:08x} (deleted)", key as u32).into_bytes(),
+                )),
+            });
+            continue;
+        }
+        let (offset, dev, ino, name) = match &region.file {
+            Some(file) => (
+                region.file_offset,
+                file.dev,
+                file.ino,
+                Some(NameColumn::Bytes(&file.name[..])),
+            ),
+            None => (0, 0, 0, None),
+        };
+        lines.push(MapsLine {
+            start,
+            end,
+            prot: region.prot,
+            shared: region.flags & MAP_SHARED != 0,
+            offset,
+            dev,
+            ino,
+            name,
+        });
+    }
+
+    // The program break's range is the heap Linux labels `[heap]`. Its end
+    // is rounded up to Kandelo's 64 KiB page, as Linux rounds `brk` to its
+    // page; a break that has not grown has no heap region.
+    let layout = proc.memory.layout_metadata();
+    let brk = proc.memory.get_brk();
+    if brk > layout.initial_brk {
+        lines.push(MapsLine {
+            start: layout.initial_brk as u64,
+            end: (brk as u64).saturating_add(0xFFFF) & !0xFFFF,
+            prot: wasm_posix_shared::mmap::PROT_READ | wasm_posix_shared::mmap::PROT_WRITE,
+            shared: false,
+            offset: 0,
+            dev: 0,
+            ino: 0,
+            name: Some(NameColumn::Bytes(b"[heap]")),
+        });
+    }
+    lines.sort_by_key(|line| line.start);
+
+    // Linux pads the fixed columns to `25 + sizeof(void *) * 6 - 1` bytes
+    // before a pathname, then writes one space.
+    let name_column = 25 + usize::from(proc.pointer_width.max(4)) * 6 - 1;
+    let mut buf = Vec::new();
+    for line in &lines {
+        write_maps_line(&mut buf, line, name_column);
     }
     buf
+}
+
+fn write_maps_line(buf: &mut Vec<u8>, line: &MapsLine, name_column: usize) {
+    use alloc::format;
+    use wasm_posix_shared::mmap::{PROT_EXEC, PROT_READ, PROT_WRITE};
+
+    let line_start = buf.len();
+    let r = if line.prot & PROT_READ != 0 { 'r' } else { '-' };
+    let w = if line.prot & PROT_WRITE != 0 { 'w' } else { '-' };
+    let x = if line.prot & PROT_EXEC != 0 { 'x' } else { '-' };
+    let s = if line.shared { 's' } else { 'p' };
+    // dev_t decoded as libc's major()/minor() decode it, so the column
+    // matches what a program computes from its own fstat.
+    let major = ((line.dev >> 32) & 0xffff_f000) | ((line.dev >> 8) & 0x0fff);
+    let minor = ((line.dev >> 12) & 0xffff_ff00) | (line.dev & 0x00ff);
+    buf.extend_from_slice(
+        format!(
+            "{:08x}-{:08x} {}{}{}{} {:08x} {:02x}:{:02x} {} ",
+            line.start, line.end, r, w, x, s, line.offset, major, minor, line.ino,
+        )
+        .as_bytes(),
+    );
+    if let Some(name) = &line.name {
+        let name: &[u8] = match name {
+            NameColumn::Bytes(bytes) => bytes,
+            NameColumn::Owned(bytes) => bytes,
+        };
+        let written = buf.len() - line_start;
+        if written < name_column {
+            buf.resize(buf.len() + (name_column - written), b' ');
+        }
+        buf.push(b' ');
+        buf.extend_from_slice(name);
+    }
+    buf.push(b'\n');
 }
 
 /// Generate /proc/<pid>/fdinfo/<fd> content.
@@ -1963,5 +2098,147 @@ mod tests {
             WRITEBACK_LOSS_RECORD_CAPACITY,
             "the report must list exactly the records it says it kept"
         );
+    }
+
+    fn maps_text(proc: &Process, sysv_key: impl Fn(i32) -> Option<i32>) -> String {
+        String::from_utf8(format_maps(proc, sysv_key)).unwrap()
+    }
+
+    #[test]
+    fn maps_reports_shared_and_private_from_the_mapping_flags() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let private = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        let shared = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS);
+        let text = maps_text(&proc, |_| None);
+        assert_eq!(
+            text,
+            alloc::format!(
+                "{:08x}-{:08x} rw-p 00000000 00:00 0 \n{:08x}-{:08x} rw-s 00000000 00:00 0 \n",
+                private, private + 0x10000, shared, shared + 0x10000,
+            )
+        );
+    }
+
+    #[test]
+    fn maps_formats_a_file_mapping_like_linux() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x30000, PROT_READ | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+        // makedev(0x103, 0x2a5): major 259, minor 677 use the extended bits.
+        let dev = ((0x103u64 & 0xfff) << 8) | (0x2a5 & 0xff) | ((0x2a5u64 & !0xff) << 12);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev,
+            ino: 1234,
+            name: b"/usr/lib/libfoo.so".to_vec(),
+        });
+        assert!(proc.memory.set_mapping_file(addr, 0x20000, file));
+        let line = maps_text(&proc, |_| None);
+        let header = alloc::format!(
+            "{:08x}-{:08x} r-xp 00020000 103:2a5 1234 ",
+            addr, addr + 0x30000,
+        );
+        assert!(line.starts_with(&header), "{line}");
+        // wasm32 pads to 25 + 4 * 6 - 1 = 48 bytes, then one space.
+        assert_eq!(&line[48..], " /usr/lib/libfoo.so\n", "{line:?}");
+        assert!(line[header.len()..48].bytes().all(|b| b == b' '));
+    }
+
+    #[test]
+    fn maps_pads_a_wasm64_process_to_the_64_bit_column() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        proc.pointer_width = 8;
+        let addr = proc.memory.mmap_anonymous(0, 0x10000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0,
+            ino: 9,
+            name: b"/dev/fb0".to_vec(),
+        });
+        proc.memory.set_mapping_file(addr, 0, file);
+        let line = maps_text(&proc, |_| None);
+        assert_eq!(&line[72..], " /dev/fb0\n", "{line:?}");
+    }
+
+    #[test]
+    fn maps_moves_the_file_offset_with_a_trimmed_or_split_mapping() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x40000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0x801,
+            ino: 55,
+            name: b"/dev/shm/pool".to_vec(),
+        });
+        proc.memory.set_mapping_file(addr, 0x100000, file);
+        // Trim the first page, then punch a hole in the middle.
+        proc.memory.munmap(addr, 0x10000);
+        proc.memory.munmap(addr + 0x20000, 0x10000);
+        let text = maps_text(&proc, |_| None);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text}");
+        assert!(lines[0].starts_with(&alloc::format!(
+            "{:08x}-{:08x} r--s 00110000 08:01 55 ",
+            addr + 0x10000, addr + 0x20000,
+        )), "{text}");
+        assert!(lines[1].starts_with(&alloc::format!(
+            "{:08x}-{:08x} r--s 00130000 08:01 55 ",
+            addr + 0x30000, addr + 0x40000,
+        )), "{text}");
+        assert!(lines.iter().all(|line| line.ends_with(" /dev/shm/pool")));
+    }
+
+    #[test]
+    fn maps_reports_a_sysv_attachment_as_a_shared_segment() {
+        use wasm_posix_shared::mmap::*;
+        let mut proc = Process::new(7);
+        // The host reserves a SysV attachment as private anonymous memory and
+        // supplies the sharing itself; the attachment table is the authority.
+        let addr = proc.memory.mmap_anonymous(
+            0, 0x10000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        proc.record_shm_mapping(addr, 3, 4096).unwrap();
+        let live = maps_text(&proc, |id| (id == 3).then_some(0x1234_abcd));
+        assert!(live.contains(" rw-s 00000000 00:00 3 "), "{live}");
+        assert!(live.ends_with(" /SYSV1234abcd (deleted)\n"), "{live}");
+        // After IPC_RMID Linux reports the key as IPC_PRIVATE.
+        let removed = maps_text(&proc, |_| None);
+        assert!(removed.ends_with(" /SYSV00000000 (deleted)\n"), "{removed}");
+    }
+
+    #[test]
+    fn maps_reports_the_grown_program_break_as_the_heap() {
+        let mut proc = Process::new(7);
+        proc.memory.set_brk_base(0x0012_3450);
+        assert_eq!(maps_text(&proc, |_| None), "", "an ungrown break has no heap");
+        assert_eq!(proc.memory.set_brk(0x0013_0000 + 0x10), 0x0013_0010);
+        let text = maps_text(&proc, |_| None);
+        assert!(
+            text.starts_with("00123450-00140000 rw-p 00000000 00:00 0 "),
+            "{text}"
+        );
+        assert_eq!(&text[48..], " [heap]\n", "{text:?}");
+    }
+
+    #[test]
+    fn maps_inherits_file_mappings_across_fork() {
+        use wasm_posix_shared::mmap::*;
+        let mut parent = Process::new(7);
+        let addr = parent.memory.mmap_anonymous(0, 0x10000, PROT_READ, MAP_SHARED | MAP_ANONYMOUS);
+        let file = alloc::rc::Rc::new(crate::memory::MappingFile {
+            dev: 0,
+            ino: 77,
+            name: b"/memfd:pool (deleted)".to_vec(),
+        });
+        parent.memory.set_mapping_file(addr, 0, file);
+        let mut child = Process::new(8);
+        child.memory.set_mappings(parent.memory.mappings().iter()
+            .map(|m| crate::memory::MappedRegion::anonymous(m.addr, m.len, m.prot, m.flags))
+            .collect());
+        child.memory.inherit_mapping_files(parent.memory.mappings());
+        assert_eq!(maps_text(&child, |_| None), maps_text(&parent, |_| None));
     }
 }

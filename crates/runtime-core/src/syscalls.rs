@@ -12905,6 +12905,14 @@ pub fn sys_mremap(
         if new_addr == wasm_posix_shared::mmap::MAP_FAILED {
             return Err(Errno::ENOMEM);
         }
+        // A moved file mapping still maps the same object from the offset
+        // the old address mapped.
+        if let Some(file) = original.file.clone() {
+            let file_offset = original
+                .file_offset
+                .saturating_add((old_addr - original.addr) as u64);
+            proc.memory.set_mapping_file(new_addr, file_offset, file);
+        }
         proc.memory.munmap(old_addr, aligned_old);
         return Ok(new_addr);
     }
@@ -13025,6 +13033,61 @@ pub fn fd_supports_mmap_writeback(proc: &Process, fd: i32) -> bool {
 /// pixel range to a display surface. Linux fbdev allows only one mapping
 /// per process; a second mmap on the same fd returns `EINVAL`.
 pub fn sys_mmap(
+    proc: &mut Process,
+    host: &mut dyn HostIO,
+    addr: usize,
+    len: usize,
+    prot: u32,
+    flags: u32,
+    fd: i32,
+    offset: i64,
+) -> Result<usize, Errno> {
+    let mapped = mmap_region(proc, host, addr, len, prot, flags, fd, offset)?;
+    if flags & MAP_ANONYMOUS == 0 {
+        // Record what the new mapping maps while the descriptor still names
+        // it; /proc/<pid>/maps reports it after the descriptor is closed.
+        if let Some(file) = mapping_file_for_fd(proc, host, fd) {
+            // The offset column is the one the caller passed, as Linux
+            // reports `vm_pgoff`: a file offset, or the fake offset
+            // DRM_IOCTL_MODE_MAP_DUMB handed out for a dumb buffer.
+            let file_offset = u64::try_from(offset).unwrap_or(0);
+            proc.memory
+                .set_mapping_file(mapped, file_offset, alloc::rc::Rc::new(file));
+        }
+    }
+    Ok(mapped)
+}
+
+/// The identity and name `/proc/<pid>/maps` reports for a mapping of `fd`:
+/// the device and inode `fstat(fd)` reports and the descriptor's
+/// `/proc/<pid>/fd` name. A memfd has no directory entry, so it is named as
+/// Linux names an unlinked shmem file, `/memfd:<name> (deleted)`. If `fstat`
+/// fails, the device and inode are reported as 0 rather than guessed.
+fn mapping_file_for_fd(
+    proc: &Process,
+    host: &mut dyn HostIO,
+    fd: i32,
+) -> Option<crate::memory::MappingFile> {
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    let name = if ofd.file_type == FileType::MemFd {
+        let mut name = Vec::with_capacity(ofd.path.len() + 11);
+        name.push(b'/');
+        name.extend_from_slice(&ofd.path);
+        name.extend_from_slice(b" (deleted)");
+        name
+    } else {
+        ofd.path.clone()
+    };
+    let (dev, ino) = sys_fstat(proc, host, fd)
+        .map(|st| (st.st_dev, st.st_ino))
+        .unwrap_or((0, 0));
+    Some(crate::memory::MappingFile { dev, ino, name })
+}
+
+/// Reserve the address range for `sys_mmap` and bind any device to it.
+#[allow(clippy::too_many_arguments)]
+fn mmap_region(
     proc: &mut Process,
     host: &mut dyn HostIO,
     addr: usize,
@@ -35191,6 +35254,67 @@ mod tests {
                                                                                          // MAP_PRIVATE without MAP_ANONYMOUS should succeed (host populates data)
         let addr = sys_mmap(&mut proc, &mut host, 0, 4096, 3, 0x02, fd, 0).unwrap(); // PROT_READ|WRITE, MAP_PRIVATE
         assert_ne!(addr, 0xFFFFFFFF);
+    }
+
+    /// The maps line a process reports for the mapping that starts at `addr`.
+    fn maps_line_at(proc: &Process, addr: usize) -> String {
+        let maps = crate::procfs::format_maps(proc, |_| None);
+        let prefix = alloc::format!("{:08x}-", addr);
+        String::from_utf8(maps)
+            .unwrap()
+            .lines()
+            .find(|line| line.starts_with(&prefix))
+            .unwrap_or_else(|| panic!("no maps line at {addr:#x}"))
+            .to_string()
+    }
+
+    #[test]
+    fn mmap_records_the_mapped_file_for_proc_maps() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/maps-file", 0x42, 0o644).unwrap();
+        let st = sys_fstat(&proc, &mut host, fd).unwrap();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x20000, 1, 0x01, fd, 0x10000).unwrap();
+        // The mapping outlives its descriptor, as POSIX requires.
+        sys_close(&mut proc, &mut host, fd).unwrap();
+        let line = maps_line_at(&proc, addr);
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        assert_eq!(fields[1], "r--s", "{line}");
+        assert_eq!(fields[2], "00010000", "{line}");
+        assert_eq!(fields[4], alloc::format!("{}", st.st_ino), "{line}");
+        assert_eq!(fields[5], "/tmp/maps-file", "{line}");
+    }
+
+    #[test]
+    fn mmap_names_a_memfd_as_linux_names_an_unlinked_shmem_file() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_memfd_create(&mut proc, b"wl_shm", 0).unwrap();
+        sys_ftruncate(&mut proc, &mut host, fd, 0x10000).unwrap();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x10000, 3, 0x01, fd, 0).unwrap();
+        let line = maps_line_at(&proc, addr);
+        assert!(line.contains(" rw-s 00000000 "), "{line}");
+        assert!(line.ends_with(" /memfd:wl_shm (deleted)"), "{line}");
+    }
+
+    #[test]
+    fn mremap_move_keeps_the_mapped_file_and_offset() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/tmp/maps-move", 0x42, 0o644).unwrap();
+        let addr = sys_mmap(&mut proc, &mut host, 0, 0x20000, 1, 0x02, fd, 0x30000).unwrap();
+        // Block in-place growth so the remap must move.
+        let blocker = addr + 0x20000;
+        assert_eq!(
+            sys_mmap(&mut proc, &mut host, blocker, 0x10000, 1, 0x32, -1, 0).unwrap(),
+            blocker
+        );
+        // Move the second page only: it mapped file offset 0x40000.
+        let moved = sys_mremap(&mut proc, &mut host, addr + 0x10000, 0x10000, 0x20000, 1).unwrap();
+        assert_ne!(moved, addr + 0x10000);
+        let line = maps_line_at(&proc, moved);
+        assert!(line.contains(" r--p 00040000 "), "{line}");
+        assert!(line.ends_with(" /tmp/maps-move"), "{line}");
     }
 
     #[test]
