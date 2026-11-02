@@ -293,6 +293,42 @@ async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | 
   await page.mouse.down({ button }); await page.mouse.up({ button });
 }
 
+/** Click a task button, then wait until the compositor has focused that
+ * window before anything is typed. The Focus action is asynchronous: Sway
+ * and Labwc give the on-demand bar the keyboard for the click itself, and
+ * the window receives it only after SFWBar has handled the click and asked
+ * the compositor to focus it (Sway IPC focus, foreign-toplevel activate).
+ * Keys typed in between go to the bar, as they would on any system; with
+ * no wait the shell received "ntf"/"tf" instead of "printf". SFWBar paints
+ * a task focused only after the compositor reports that focus, which is
+ * the same transaction that moves the keyboard. The hover style uses the
+ * same colour, so move the pointer onto the bar's empty spacer first; that
+ * also lets a later hover over this task show its tooltip again.
+ */
+async function focusTask(page: Page, frame: Paint, rect: Rect) {
+  await clickRect(page, frame, rect);
+  const box = (await scene(page).boundingBox())!;
+  await page.mouse.move(box.x + box.width * 0.6,
+    box.y + (rect.y + rect.height / 2) * box.height / frame.height);
+  await expect.poll(async () => {
+    const png = await scene(page).screenshot({ animations: "disabled" });
+    return page.evaluate(async ([base64, rect]) => {
+      const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(rect.x, rect.y, rect.width, rect.height);
+      bitmap.close();
+      let focused = 0;
+      // sfwbar.config: button#taskbar_item.focused is #40516b.
+      for (let at = 0; at < data.length; at += 4)
+        if (Math.abs(data[at] - 64) <= 3 && Math.abs(data[at + 1] - 81) <= 3
+          && Math.abs(data[at + 2] - 107) <= 3) focused++;
+      return focused > rect.width * rect.height * 0.4;
+    }, [png.toString("base64"), rect] as const);
+  }, { timeout: 30_000, intervals: [250, 500, 1_000] }).toBe(true);
+}
+
 async function screenshot(page: Page, name: string, frame: Paint) {
   await test.info().attach(name, { body: await scene(page).screenshot(), contentType: "image/png" });
   await test.info().attach(`${name}-geometry`, { body: JSON.stringify(frame), contentType: "application/json" });
@@ -481,14 +517,14 @@ for (const compositor of ["sway", "labwc"] as const) {
     // The two saved shell variables must differ: a focus repaint, key echo,
     // or writing twice to the same PTY cannot pass the final file assertions.
     let tasks = await paint(page);
-    await clickRect(page, tasks, tasks.tasks[0]);
+    await focusTask(page, tasks, tasks.tasks[0]);
     await typePhysicalText(page, "printf 'LEFT:%s\\n' \"$mark\" > /tmp/sfwbar-left; "
       + "printf '\\033[48;2;30;180;60mFOCUSED_LEFT\\033[0m\\n'\n", { delay: 20 });
     await expect.poll(async () => (await paint(page)).green, { timeout: 60_000 }).toBeGreaterThan(200);
     await releasePointer(page);
     tasks = await paint(page);
     expect(tasks.tasks).toHaveLength(2);
-    await clickRect(page, tasks, tasks.tasks[1]);
+    await focusTask(page, tasks, tasks.tasks[1]);
     await typePhysicalText(page, "printf 'RIGHT:%s\\n' \"$mark\" > /tmp/sfwbar-right; "
       + "printf '\\033[48;2;180;30;180mFOCUSED_RIGHT\\033[0m\\n'\n", { delay: 20 });
     await expect.poll(async () => (await paint(page)).purple, { timeout: 60_000 }).toBeGreaterThan(200);
@@ -518,7 +554,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     // No host kill, test exit wrapper or forced click. Sway's CtrlShiftE
     // opens a separate swaynag confirmation, covered by kandelo-sway.spec.
     const remaining = await paint(page);
-    await clickRect(page, remaining, remaining.tasks[0]);
+    await focusTask(page, remaining, remaining.tasks[0]);
     await typePhysicalText(page, `${compositor === "sway" ? "swaymsg exit" : "labwc --exit"}\n`, { delay: 20 });
     await expect.poll(() => owner(page), { timeout: 90_000 }).toBe(0);
     await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))
