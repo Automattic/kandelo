@@ -483,6 +483,12 @@ export function externalDrawUnits(b: GlBinding): readonly ExternalDrawUnit[] | n
   const program = b.currentProgram;
   const record = program ? programSamplers.get(program) : undefined;
   if (!program || !record) return NO_UNITS;
+  // Kept apart so this per-draw function stays as small as the lookup
+  // every other program pays (measured: a larger body cost them ~1 ns).
+  return programDrawUnits(b, program, record);
+}
+
+function programDrawUnits(b: GlBinding, program: WebGLProgram, record: ProgramSamplers): readonly ExternalDrawUnit[] | null {
   const units = samplerUnits(b, program, record.paths);
   if (!units) return null;
   if (units.conflict) { recordGlError(b, 0x502); return null; }
