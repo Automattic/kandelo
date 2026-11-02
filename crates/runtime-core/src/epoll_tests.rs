@@ -1053,3 +1053,33 @@ fn timerfd_schedule_skips_a_clock_the_host_cannot_read() {
     drain_wake_records();
     drop(p);
 }
+
+#[test]
+fn eventfd_counter_changes_wake_untargeted_waiters() {
+    use wasm_posix_shared::wakeup_event_wire::{IDX_FENCE_READY, TYPE_READABLE};
+    let mut p = Process::new(175);
+    let mut h = MockHostIO::new();
+    let fd = sys_eventfd2(&mut p, 0, O_NONBLOCK).unwrap();
+    drain_wake_records();
+    // Every write wakes blocked readers, as Linux's eventfd_write does.
+    sys_write(&mut p, &mut h, fd, &1u64.to_le_bytes()).unwrap();
+    assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
+    // A read with no writer that could be waiting raises nothing.
+    assert_eq!(sys_read(&mut p, &mut h, fd, &mut [0; 8]), Ok(8));
+    assert!(drain_wake_records().is_empty());
+    // A refused write leaves a writer to wake on the next read.
+    sys_write(&mut p, &mut h, fd, &(u64::MAX - 2).to_le_bytes()).unwrap();
+    drain_wake_records();
+    assert_eq!(
+        sys_write(&mut p, &mut h, fd, &2u64.to_le_bytes()),
+        Err(Errno::EAGAIN)
+    );
+    assert!(drain_wake_records().is_empty());
+    assert_eq!(sys_read(&mut p, &mut h, fd, &mut [0; 8]), Ok(8));
+    assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
+    // A saturated counter is not writable for a poller either.
+    sys_write(&mut p, &mut h, fd, &(u64::MAX - 1).to_le_bytes()).unwrap();
+    drain_wake_records();
+    assert_eq!(sys_read(&mut p, &mut h, fd, &mut [0; 8]), Ok(8));
+    assert_eq!(drain_wake_records(), [(IDX_FENCE_READY, TYPE_READABLE)]);
+}

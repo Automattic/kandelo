@@ -961,6 +961,9 @@ impl ThreadInfo {
 pub struct EventFdState {
     pub counter: u64,
     pub semaphore: bool,
+    /// A write was refused (`EAGAIN`) because it would overflow the counter
+    /// since the last read. The next read then has a writer to wake.
+    pub write_refused: bool,
 }
 
 /// An entry in an epoll interest list.

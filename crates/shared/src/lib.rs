@@ -200,10 +200,10 @@ pub mod wakeup_event_wire {
 
     /// `idx` of a [`TYPE_READABLE`] record that names no pipe: a fence
     /// signaled, a DRM sync object gained a fence, a sync-object eventfd
-    /// fired, or a timerfd expired. Parked waits on sync objects,
-    /// `sync_file`/dma-buf/eventfd/timerfd readiness may now finish, so hosts
-    /// apply their broad retry. Pipe indices never reach the reserved top of
-    /// the `u32` range.
+    /// fired, an eventfd's counter changed, or a timerfd expired. Parked
+    /// waits on sync objects, `sync_file`/dma-buf/eventfd/timerfd readiness
+    /// may now finish, so hosts apply their broad retry. Pipe indices never
+    /// reach the reserved top of the `u32` range.
     pub const IDX_FENCE_READY: u32 = u32::MAX;
     /// `idx` of a [`TYPE_READABLE`] record: the kernel has GL-fence work for
     /// the host (a waiter enabled a separate-context fence the host must

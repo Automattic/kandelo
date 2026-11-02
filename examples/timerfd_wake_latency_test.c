@@ -28,6 +28,8 @@
  *   stress-foot-pattern     several threads each re-arming two timerfds
  *                           around pipe input, as foot's delayed rendering
  *                           does; any lost expiry is reported as a stall
+ *   eventfd-thread-*        an eventfd written by another thread, the same
+ *                           kind of token-less readiness source
  *
  * Output: one TIMERFD_WAKE line per case with p50/max in microseconds,
  * then TIMERFD_WAKE_PASS.
@@ -42,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/epoll.h>
+#include <sys/eventfd.h>
 #include <sys/select.h>
 #include <sys/timerfd.h>
 #include <time.h>
@@ -244,6 +247,50 @@ static int armed_while_parked_case(void)
     return report("armed-while-parked", lat, N);
 }
 
+/* An eventfd written by another thread is the same kind of readiness
+ * source: no pipe token names it, and Linux wakes its waiters on every
+ * write. GLib's cross-thread main-loop wakeup is exactly this. */
+struct eventfd_writer {
+    int fd;
+    int64_t written_at;
+};
+
+static void *write_eventfd_after_delay(void *arg)
+{
+    struct eventfd_writer *w = arg;
+    struct timespec pause = { .tv_nsec = 20 * 1000000 };
+    nanosleep(&pause, NULL);
+    uint64_t one = 1;
+    w->written_at = clock_us(CLOCK_MONOTONIC);
+    require(write(w->fd, &one, sizeof(one)) == (ssize_t)sizeof(one), "eventfd write");
+    return NULL;
+}
+
+static int eventfd_case(const char *name, enum wait_api api)
+{
+    enum { N = 6 };
+    int64_t lat[N];
+    for (int i = 0; i < N; i++) {
+        struct eventfd_writer w = { .fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK) };
+        require(w.fd >= 0, "eventfd");
+        int epfd = epoll_create1(EPOLL_CLOEXEC);
+        require(epfd >= 0, "epoll_create1 eventfd");
+        struct epoll_event ev = { .events = EPOLLIN, .data.fd = w.fd };
+        require(epoll_ctl(epfd, EPOLL_CTL_ADD, w.fd, &ev) == 0, "epoll_ctl eventfd");
+        pthread_t thread;
+        require(pthread_create(&thread, NULL, write_eventfd_after_delay, &w) == 0,
+                "pthread_create eventfd");
+        wait_readable(api, w.fd, epfd);
+        int64_t woke = clock_us(CLOCK_MONOTONIC);
+        require(pthread_join(thread, NULL) == 0, "pthread_join eventfd");
+        require(read_expirations(w.fd) == 1, "eventfd count");
+        lat[i] = woke - w.written_at;
+        close(epfd);
+        close(w.fd);
+    }
+    return report(name, lat, N);
+}
+
 /*
  * Stress: foot's delayed-render pattern, many times over, in several threads
  * at once. Each thread owns an epoll set holding a pipe and two timerfds (a
@@ -364,6 +411,8 @@ int main(void)
     ok &= periodic_case();
     ok &= armed_while_parked_case();
     ok &= stress_case();
+    ok &= eventfd_case("eventfd-thread-epoll", API_EPOLL);
+    ok &= eventfd_case("eventfd-thread-poll", API_POLL);
     if (!ok) {
         fprintf(stderr, "FAIL timerfd expiry did not wake its waiter promptly\n");
         return 1;

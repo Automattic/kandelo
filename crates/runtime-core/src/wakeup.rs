@@ -187,6 +187,15 @@ pub fn push_timer_expired() {
     set_timer_expiry_unreported(true);
 }
 
+/// An eventfd's counter changed in a way a blocked reader or writer can
+/// observe. Like a timer expiry it has no pipe token, so it is the same
+/// untargeted record: hosts apply their broad retry. It is raised inside the
+/// syscall that changed the counter, so that syscall's own completion drains
+/// it.
+pub fn push_eventfd_changed() {
+    append_coalesced(wakeup_event_wire::IDX_FENCE_READY, WAKE_READABLE);
+}
+
 #[cfg(test)]
 std::thread_local! {
     static TEST_TIMER_EXPIRY_UNREPORTED: core::cell::Cell<bool> =

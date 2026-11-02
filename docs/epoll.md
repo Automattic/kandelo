@@ -28,8 +28,8 @@ clarifies exclusive callback selection and the four-edge nesting limit.
 
 The host intercepts only waits. It dispatches one kernel attempt without
 sleeping the dedicated worker. Pipe and listener tokens provide targeted
-wakeups; a timerfd expiry raises the host's broad retry at its deadline
-(the kernel timer fires at the earliest armed timerfd deadline);
+wakeups; a timerfd expiry or an eventfd write raises the host's broad retry
+at once (the kernel timer fires at the earliest armed timerfd deadline);
 bounded timer retries cover asynchronous devices, network engines, new
 registrations, and targets reachable only in another process. The retry
 uses the same absolute monotonic deadline. An empty set can sleep and later

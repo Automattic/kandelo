@@ -1303,13 +1303,13 @@ still owns the park and its 10 ms safety timer. Moving epoll into the kernel-own
 wait queue requires complete source, lifecycle and copyout integration; this
 probe does not claim that migration or an application performance gain.
 
-**Timer readiness reaches host-owned waits through the kernel timer and the
-broad retry.** A timerfd expiry changes readiness with no pipe or listener
-token for a targeted wake, and the epoll,
+**Timer and eventfd readiness reach host-owned waits through the kernel
+timer and the broad retry.** A timerfd expiry and an eventfd write change
+readiness with no pipe or listener token for a targeted wake, and the epoll,
 `poll`/`select` and blocking `read` retries the host owns would otherwise
 see them only at their 10 ms (epoll, read) or up to 50 ms (`poll`,
-`select`) safety retry. Linux wakes those waiters from the timer callback,
-so Kandelo does the same at the real deadline:
+`select`) safety retry. Linux wakes those waiters from the timer callback
+and from `eventfd_write`, so Kandelo does the same at the real deadline:
 
 - `kernel_wait_next_timeout_ns` answers the earliest of the kernel-owned
   park deadlines and every armed timerfd's next expiry, each measured on the
@@ -1329,6 +1329,10 @@ so Kandelo does the same at the real deadline:
   It answers once, not until the record drains, so a host that does not
   drain wake records on that timer degrades to the old safety retry rather
   than spinning.
+- An eventfd write queues the same untargeted record from inside the
+  syscall, whose own completion drains it. A read queues it only when a
+  writer can be waiting: one was refused `EAGAIN` since the last read, or
+  the counter was saturated and therefore not writable for a poller.
 
 No clock is read per syscall: armed timers are examined only when the host
 collects completions or asks for the next deadline. A clock the host cannot

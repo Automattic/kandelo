@@ -10,8 +10,9 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
 // CLOCK_REALTIME, TFD_TIMER_ABSTIME and periodic timers, and for a timer
 // armed by another thread after the waiter blocked, and under a multi-thread
 // stress of foot's re-armed delayed-render timers, where a lost expiry is a
-// stall. The browser counterpart
-// is apps/browser-demos/test/timerfd-wake-latency.spec.ts.
+// stall. An eventfd written by another thread, the same kind of token-less
+// readiness source, is covered too. The browser counterpart is
+// apps/browser-demos/test/timerfd-wake-latency.spec.ts.
 describe("timerfd expiry wakes blocked waiters", () => {
   it("wakes epoll, poll, select and read at the deadline", async () => {
     const result = await runCentralizedProgram({
@@ -24,7 +25,7 @@ describe("timerfd expiry wakes blocked waiters", () => {
     console.log(result.stdout.match(/TIMERFD_WAKE(_STRESS)? .*/g)?.join("\n"));
     expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("TIMERFD_WAKE_PASS");
-    expect(result.stdout.match(/TIMERFD_WAKE case=\S+ .* ok$/gm)).toHaveLength(9);
+    expect(result.stdout.match(/TIMERFD_WAKE case=\S+ .* ok$/gm)).toHaveLength(11);
     expect(result.stdout).toMatch(/TIMERFD_WAKE_STRESS threads=\d+ rounds=\d+ stalls=0$/m);
     expect(result.stderr).toBe("");
     expect(result.hostDiagnostics).toEqual([]);

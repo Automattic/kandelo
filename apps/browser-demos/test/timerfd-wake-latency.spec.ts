@@ -23,7 +23,7 @@ test("timerfd expiry wakes blocked epoll, poll, select and read in browser worke
   console.log(result.stdout.match(/TIMERFD_WAKE(_STRESS)? .*/g)?.join("\n"));
   expect(result.exitCode, `${result.stdout}\n${result.stderr}`).toBe(0);
   expect(result.stdout).toContain("TIMERFD_WAKE_PASS");
-  expect(result.stdout.match(/TIMERFD_WAKE case=\S+ .* ok$/gm)).toHaveLength(9);
+  expect(result.stdout.match(/TIMERFD_WAKE case=\S+ .* ok$/gm)).toHaveLength(11);
   expect(result.stdout).toMatch(/TIMERFD_WAKE_STRESS threads=\d+ rounds=\d+ stalls=0$/m);
   expect(result.stderr).toBe("");
   expect(result.hostDiagnostics).toEqual([]);

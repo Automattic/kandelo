@@ -7189,24 +7189,34 @@ pub fn sys_read(
                 return Err(Errno::EINVAL);
             }
             let efd_idx = (-(host_handle + 1)) as usize;
-            let value = crate::descriptor_backing::with_eventfds(|table| {
+            let (value, writer_waiting) = crate::descriptor_backing::with_eventfds(|table| {
                 let efd = table.get_mut(efd_idx).ok_or(Errno::EBADF)?;
                 if efd.counter == 0 {
                     return Err(Errno::EAGAIN);
                 }
+                // A writer can only be waiting if one was refused, or if the
+                // counter was saturated (not POLLOUT) for a poller.
+                let writer_waiting =
+                    core::mem::take(&mut efd.write_refused) || efd.counter >= u64::MAX - 1;
                 if efd.semaphore {
                     efd.counter -= 1;
-                    Ok(1u64)
+                    Ok((1u64, writer_waiting))
                 } else {
                     let value = efd.counter;
                     efd.counter = 0;
-                    Ok(value)
+                    Ok((value, writer_waiting))
                 }
             })?;
             crate::epoll::notify(
                 crate::epoll::Source::Backing(FileType::EventFd, host_handle),
                 0x104,
             );
+            // Wake writers only when one can exist: a read that every
+            // GLib-style consumer makes after each wakeup would otherwise
+            // double the broad retries the write already caused.
+            if writer_waiting {
+                crate::wakeup::push_eventfd_changed();
+            }
             buf[..8].copy_from_slice(&value.to_le_bytes());
             Ok(8)
         }
@@ -7709,6 +7719,7 @@ pub fn sys_write(
                 let efd = table.get_mut(efd_idx).ok_or(Errno::EBADF)?;
                 let max_val = u64::MAX - 1;
                 if efd.counter > max_val - value {
+                    efd.write_refused = true;
                     return Err(Errno::EAGAIN);
                 }
                 efd.counter += value;
@@ -7718,6 +7729,13 @@ pub fn sys_write(
                 crate::epoll::Source::Backing(FileType::EventFd, host_handle),
                 0x41,
             );
+            // Linux wakes the eventfd's waiters on every write. A reader may
+            // be blocked in another thread or process, in a host-owned
+            // epoll/poll/select/read retry that no pipe token names; without
+            // this record it slept until that retry's fallback timer (10 ms
+            // for epoll and read, up to 50 ms for poll and select). GLib's
+            // cross-thread main-loop wakeup is exactly this write.
+            crate::wakeup::push_eventfd_changed();
             Ok(8)
         }
         FileType::PtyMaster => {
@@ -20269,6 +20287,7 @@ pub fn sys_eventfd2(proc: &mut Process, initval: u32, flags: u32) -> Result<i32,
     let state = EventFdState {
         counter: initval as u64,
         semaphore,
+        write_refused: false,
     };
 
     let efd_idx = crate::descriptor_backing::with_eventfds(|table| table.alloc(state));
@@ -32633,6 +32652,7 @@ mod tests {
             table.alloc(crate::process::EventFdState {
                 counter: 0,
                 semaphore: false,
+                write_refused: false,
             })
         });
         let timerfd = crate::descriptor_backing::with_timerfds(|table| {
