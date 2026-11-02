@@ -7,6 +7,9 @@ export interface Frame { width: number; height: number; foot: Rect | null; ink: 
 
 /** Find the connected neutral dark background of the real foot client.
  * Root background and SSD titlebars are lighter; text creates small holes.
+ * The band admits foot's default #242424 background and excludes the
+ * SFWBar panel's #323232, which a window moved down to the panel touches:
+ * a wider band merged the two into one panel-wide component.
  * This reads the rendered screenshot, never a guest-memory or mock surface.
  */
 export async function footFrame(page: Page): Promise<Frame> {
@@ -23,7 +26,7 @@ export async function footFrame(page: Page): Promise<Frame> {
     const queue = new Int32Array(width * height);
     const dark = (pixel: number) => {
       const at = pixel * 4, r = data[at], g = data[at + 1], b = data[at + 2];
-      return r > 20 && r < 60 && Math.abs(r - g) < 8 && Math.abs(r - b) < 8;
+      return r >= 30 && r <= 42 && Math.abs(r - g) < 8 && Math.abs(r - b) < 8;
     };
     let foot: Rect | null = null;
     let largest = 0;

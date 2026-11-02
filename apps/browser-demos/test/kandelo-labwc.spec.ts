@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { typePhysicalText } from "./support/physical-typing";
-import { footFrame, menuChange, panelStart, type Frame } from "./support/labwc-frame";
+import { footFrame, menuChange, panelStart, type Frame, type Rect } from "./support/labwc-frame";
 
 // These real-rendering checks must never claim the user's desktop focus.
 test.use({ headless: true });
@@ -104,6 +104,12 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   await footProcesses(page, 1);
   await typePhysicalText(page, "mark=first\n", { delay: 40 });
 
+  // The panel is an exclusive bottom layer above every window. Its Start
+  // button fills the bar's height, so its top is the bottom of the area in
+  // which a window is visible rather than covered by the panel. Read it from
+  // the settled desktop, not from the panel's first frame.
+  const panelTop = (await panelStart(page))!.y;
+
   // Drag the server-side title, above the client background. The renderer
   // must move the same-sized client, exposing root at its original position.
   const titleX = bounds.x + bounds.width / 2, titleY = bounds.y - 12;
@@ -123,18 +129,29 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   try {
     await movePointer(page, first, titleX + dx!, titleY + dy!, 12);
   } finally { await page.mouse.up(); }
-  await expect.poll(async () => {
-    const after = (await footFrame(page)).foot;
-    return after !== null && Math.abs(after.x - bounds.x) > 40 && Math.abs(after.y - bounds.y) > 25
-      && Math.abs(after.width - bounds.width) < 5 && Math.abs(after.height - bounds.height) < 5;
-  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  // A floating window may legitimately move under the panel. The painted
+  // client is then the part above the panel, so the same-size check
+  // compares against the height a translated window leaves uncovered.
+  const movedHeight = Math.min(bounds.y + bounds.height + dy!, panelTop) - (bounds.y + dy!);
+  let after: Rect | null = null;
+  try {
+    await expect.poll(async () => {
+      after = (await footFrame(page)).foot;
+      return after !== null && Math.abs(after.x - bounds.x) > 40 && Math.abs(after.y - bounds.y) > 25
+        && Math.abs(after.width - bounds.width) < 5 && Math.abs(after.height - movedHeight) < 5;
+    }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  } catch (error) {
+    await test.info().attach("labwc-drag-geometry", { contentType: "text/plain",
+      body: JSON.stringify({ bounds, dx, dy, panelTop, movedHeight, after }) });
+    throw error;
+  }
 
   // Right-click exposed root: the shipped menu is real compositor paint,
   // with a connected rectangle far larger than a hardware cursor. Escape
   // must remove that rectangle; reopen it and activate its Terminal item.
   const movedFrame = await footFrame(page), movedBounds = movedFrame.foot!;
-  const root = [[24, 24], [movedFrame.width - 30, 24], [24, movedFrame.height - 30],
-    [movedFrame.width - 30, movedFrame.height - 30]].find(([x, y]) =>
+  const root = [[24, 24], [movedFrame.width - 30, 24], [24, panelTop - 30],
+    [movedFrame.width - 30, panelTop - 30]].find(([x, y]) =>
     x < movedBounds.x - 10 || x > movedBounds.x + movedBounds.width + 10
       || y < movedBounds.y - 50 || y > movedBounds.y + movedBounds.height + 10);
   expect(root, "floating desktop leaves an exposed root point").toBeDefined();
