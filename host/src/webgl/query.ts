@@ -52,7 +52,7 @@ import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
 import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
 import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
-import { readGlErrorQueryMask } from "./error-query.js";
+import { drainGlErrors, readGlErrorQuery } from "./error-query.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
 
 const GL_VENDOR = 0x1F00;
@@ -263,8 +263,9 @@ export function runGlQuery(
   input: Uint8Array,
   out: Uint8Array,
 ): number {
-  const errorMask = op === O.QOP_GET_ERROR ? readGlErrorQueryMask(input) : 0;
-  if (op === O.QOP_GET_ERROR && (errorMask === null || out.byteLength < 4)) return -22;
+  const errorQuery = op === O.QOP_GET_ERROR ? readGlErrorQuery(input) : null;
+  if (op === O.QOP_GET_ERROR && (errorQuery === null ||
+      (errorQuery.drain ? out.byteLength !== O.GL_ERROR_DRAIN_REPLY_BYTES : out.byteLength < 4))) return -22;
   if (interruptUniformUpload(b)) return -5;
   if (op !== O.QOP_COMPRESSED_UPLOAD && interruptCompressedUpload(b)) return -5;
   if ((op === O.QOP_FINISH || op === O.QOP_FLUSH) && (input.byteLength !== 0 || out.byteLength !== 0)) return -22;
@@ -403,7 +404,8 @@ export function runGlQuery(
       captureNativeGlErrors(gl, b);
       // Failed command submission can leave C flags for this fallback route.
       // Merge into the same owner as native/trailer flags, without duplicates.
-      mergeClientGlErrors(b, errorMask!);
+      mergeClientGlErrors(b, errorQuery!.mask);
+      if (errorQuery!.drain) return drainGlErrors(b, out);
       outDv.setUint32(0, b.errors[0] ?? 0, true);
       b.errors.shift();
       return 4;

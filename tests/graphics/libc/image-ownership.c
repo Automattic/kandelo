@@ -18,6 +18,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <sys/wait.h>
 #include "gl_abi.h"
 #include "gbm_window.h"
 #include "wayland-native.h"
@@ -262,6 +263,10 @@ static unsigned program_model, current_program_queries, inactive_uniform_checks;
 static int program_link_failure;
 static uint32_t query_gl_error;
 static uint32_t client_error_masks[8];
+/* QOP_GET_ERROR accounting and drain-reply fault injection. */
+static unsigned error_queries, drain_requests, drain_capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
+static unsigned drain_corrupt, drain_lost_reply;
+static uint32_t drain_extra_error;
 
 static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
     for (unsigned i = 0; i < 32; ++i)
@@ -2044,7 +2049,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (numeric_queries == 3) { errno = EINVAL; return -1; }
         if (q->op == QOP_GET_ERROR) {
             if (combined.enabled) combined.error_queries++;
-            assert(q->in_buf_len == 0 || q->in_buf_len == 4);
+            error_queries++;
+            const int drain = q->in_buf_len == WPK_GL_ERROR_DRAIN_REQUEST_BYTES;
+            assert(q->in_buf_len == 0 || q->in_buf_len == 4 || drain);
             if (q->in_buf_len) {
                 uint32_t pending; memcpy(&pending,allocation_for(q->in_buf_ptr,4),4);
                 assert(!(pending & ~0x67u)); client_error_masks[fd-10] |= pending;
@@ -2053,6 +2060,25 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 assert(query_gl_error >= GL_INVALID_ENUM && query_gl_error <= GL_INVALID_FRAMEBUFFER_OPERATION);
                 client_error_masks[fd-10] |= 1u << (query_gl_error - GL_INVALID_ENUM);
                 query_gl_error = 0;
+            }
+            if (drain) {
+                uint32_t mode; memcpy(&mode,(const uint8_t *)allocation_for(q->in_buf_ptr,8)+4,4);
+                assert(mode == WPK_GL_ERROR_DRAIN_REQUEST && q->out_buf_len == WPK_GL_ERROR_DRAIN_REPLY_BYTES);
+                drain_requests++;
+                uint32_t reply[WPK_GL_ERROR_DRAIN_REPLY_BYTES/4] = {0}, count = 0;
+                /* Host recording order is modelled as bit order; the extra
+                 * value stands in for a native-only flag. */
+                if (drain_extra_error) reply[2+count++] = drain_extra_error;
+                for (unsigned bit=0; bit<=6; bit++) if (client_error_masks[fd-10] & (1u << bit)) {
+                    if (count == drain_capacity) { reply[1] = 1; break; }
+                    reply[2+count++] = GL_INVALID_ENUM + bit; client_error_masks[fd-10] &= ~(1u << bit);
+                }
+                reply[0] = count; reply[2+WPK_GL_ERROR_DRAIN_CAPACITY] = WPK_GL_QUERY_REPLY_MAGIC;
+                if (drain_corrupt) { reply[drain_corrupt-1] ^= 0x100u; drain_corrupt = 0; }
+                drain_extra_error = 0;
+                memcpy(allocation_for(q->out_buf_ptr,q->out_buf_len),reply,sizeof reply);
+                if (drain_lost_reply) { drain_lost_reply = 0; errno = EIO; return -1; }
+                return 0;
             }
             uint32_t result = GL_NO_ERROR;
             for (unsigned bit=0; bit<=6; bit++) if (client_error_masks[fd-10] & (1u << bit)) {
@@ -2186,6 +2212,15 @@ static void *check_thread_error(void *unused) {
 }
 
 struct thread_context { EGLDisplay display; EGLContext context; };
+/* A peer thread's device requests void the main thread's local glGetError
+ * knowledge even though they run on another context. */
+static void *flush_peer_context(void *arg) {
+    struct thread_context *input = arg;
+    assert(eglMakeCurrent(input->display, EGL_NO_SURFACE, EGL_NO_SURFACE, input->context));
+    glClear(GL_COLOR_BUFFER_BIT); glFlush();
+    assert(eglReleaseThread());
+    return NULL;
+}
 static void *change_without_current_context(void *arg) {
     (void)arg;
     assert(eglGetCurrentContext() == EGL_NO_CONTEXT);
@@ -4498,10 +4533,14 @@ int main(int argc, char **argv) {
         puts("PASS encoder-error-allocation"); return 0;
     }
     if (!strcmp(argv[1], "encoder-error-submit")) {
-        glBindBuffer(0xdead,17);fail_submit=1;
-        assert(glGetError() == GL_INVALID_ENUM);
-        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        /* A client flag and a rejected command prefix: the drain request that
+         * carries both reports the failed submission, then the client flag. */
+        glClear(GL_COLOR_BUFFER_BIT);glBindBuffer(0xdead,17);fail_submit=1;
+        const unsigned clears = clear_commands, compounds = compound_batches;
+        assert(glGetError() == GL_INVALID_OPERATION && compound_batches == compounds + 1);
         fail_submit=0;
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        glFlush(); assert(clear_commands == clears); /* Never resubmitted. */
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-error-submit"); return 0;
     }
@@ -4517,6 +4556,114 @@ int main(int argc, char **argv) {
         assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
         assert(eglDestroyContext(dpy,peer) && eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS encoder-error-current"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-local")) {
+        /* A drain that reports nothing retained answers every later call
+         * until the next device request, including client-detected flags. */
+        glClear(GL_COLOR_BUFFER_BIT);
+        const unsigned queries = error_queries, compounds = compound_batches, submits = submit_batches,
+                       drains = drain_requests;
+        assert(glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries + 1 && drain_requests == drains + 1 && compound_batches == compounds + 1);
+        for (unsigned i = 0; i < 5; ++i) assert(glGetError() == GL_NO_ERROR);
+        glBindBuffer(0xdead,17);
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries + 1 && submit_batches == submits + 1);
+        /* A queued command makes the next call ask, as the prefix of one
+         * compound request; the call after that is local again. */
+        glEnable(0xdead);
+        assert(glGetError() == GL_INVALID_ENUM);
+        assert(error_queries == queries + 2 && compound_batches == compounds + 2 && submit_batches == submits + 2);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        glFlush(); assert(submit_batches == submits + 2);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-local"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-multiple")) {
+        /* Host and client flags arrive in one request; each is returned
+         * exactly once and a flag present in both is one flag. */
+        glEnable(0xdead); glDrawArrays(GL_POINTS,0,-1); glBindBuffer(0xdead,17);
+        const unsigned queries = error_queries;
+        GLenum first = glGetError(), second = glGetError();
+        assert((first == GL_INVALID_ENUM && second == GL_INVALID_VALUE) ||
+               (first == GL_INVALID_VALUE && second == GL_INVALID_ENUM));
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        /* The fake host reports in flag order, so VALUE stays held... */
+        glEnable(0xdead); glDrawArrays(GL_POINTS,0,-1);
+        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 2);
+        /* ...and merges with the same flag recorded again by host and client. */
+        glDrawArrays(GL_POINTS,0,-1); glEnable(0xdead);
+        assert(glGetError() == GL_INVALID_VALUE && error_queries == queries + 3);
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries + 3);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-multiple"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-retained")) {
+        /* A host that cannot move every flag keeps the guest asking. */
+        glEnable(0xdead); glDrawArrays(GL_POINTS,0,-1); glFlush();
+        drain_capacity = 1;
+        const unsigned queries = error_queries;
+        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 1);
+        assert(glGetError() == GL_INVALID_VALUE && error_queries == queries + 2);
+        drain_capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        /* A native-only value outside the five ES2 flags is reported too. */
+        glClear(GL_COLOR_BUFFER_BIT); drain_extra_error = 0x9242u;
+        assert(glGetError() == 0x9242u && glGetError() == GL_NO_ERROR && error_queries == queries + 3);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-retained"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-malformed")) {
+        /* Malformed or lost replies are this call's INVALID_OPERATION and
+         * never establish local knowledge. Client flags survive them. Words:
+         * count, retained, last error slot, magic; then a duplicated value
+         * and a lost reply. */
+        const unsigned corrupt[] = {1, 2, 10, 11, 0, 0};
+        for (unsigned i = 0; i < sizeof corrupt / sizeof corrupt[0]; ++i) {
+            glClear(GL_COLOR_BUFFER_BIT); glBindBuffer(0xdead,17); /* Must ask. */
+            const unsigned queries = error_queries;
+            drain_corrupt = corrupt[i];
+            if (i == 4) drain_extra_error = GL_INVALID_ENUM;
+            if (i == 5) drain_lost_reply = 1;
+            assert(glGetError() == GL_INVALID_OPERATION && error_queries == queries + 1);
+            assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 2);
+            assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-malformed"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-requests")) {
+        EGLContext peer = eglCreateContext(dpy,(EGLConfig)1,ctx,attrs); assert(peer);
+        unsigned queries = error_queries;
+        assert(glGetError() == GL_NO_ERROR && glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        /* Any GL device request voids the knowledge, even an empty finish. */
+        glFinish();
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        /* EGL requests count, including a context switch away and back. */
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+        assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 3);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 3);
+        /* So do another thread's requests on another context. */
+        struct thread_context input = {dpy, peer};
+        pthread_t thread; assert(!pthread_create(&thread,NULL,flush_peer_context,&input));
+        assert(!pthread_join(thread,NULL));
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
+        /* A fork child never repeats the parent's knowledge. */
+        fflush(NULL);
+        const pid_t child = fork(); assert(child >= 0);
+        if (child == 0) {
+            const unsigned before = error_queries;
+            (void)glGetError();
+            _exit(error_queries == before + 1 ? 0 : 1);
+        }
+        int status = 0; assert(waitpid(child,&status,0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
+        assert(eglDestroyContext(dpy,peer) && eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-requests"); return 0;
     }
     if (!strncmp(argv[1], "encoder-hint-",13)) {
         const GLenum targets[] = {GL_GENERATE_MIPMAP_HINT, GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES};
@@ -5039,11 +5186,12 @@ int main(int argc, char **argv) {
                allocation_count() == allocations_before);
         /* Explicit later API call, not a transport retry hidden inside the
          * first call. The first unknown query used only an empty error set;
-         * arbitrary host-error copyout custody is not established here. */
+         * arbitrary host-error copyout custody is not established here. After
+         * a complete drain no request has followed, so the answer is local. */
         assert(glGetError() == GL_NO_ERROR);
         assert(compound_batches == compounds + 1 && submit_batches == submits + 1 &&
                clear_commands == clears + (rejected ? 0u : 1u) &&
-               combined.error_queries == (rejected ? 1u : 2u));
+               combined.error_queries == (rejected ? 1u : noalloc ? 1u : 2u));
         glFlush(); assert(submit_batches == submits + 1);
         combined.enabled = 0;
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
@@ -5245,12 +5393,11 @@ int main(int argc, char **argv) {
         else assert(bind_queries==queries+1);
         assert(glGetError()==expected && glGetError()==GL_NO_ERROR);
         // Reading errors and an explicit empty flush must never resubmit an
-        // accepted, rejected or unacknowledged prefix.
+        // accepted, rejected or unacknowledged prefix. The client flag from a
+        // failed bind rides in the error drain request, not a trailer batch.
         glFlush();
-        const unsigned error_transfers = !strcmp(argv[1],"compound-query-query-reject") ? 0u : 1u;
-        assert(error_only_batches == error_batches + error_transfers);
-        assert(submit_batches == batches + 1 + error_transfers);
-        assert(submit_batches - error_only_batches == batches - error_batches + 1);
+        assert(error_only_batches == error_batches);
+        assert(submit_batches == batches + 1);
         if (!strcmp(argv[1],"compound-query-query-reject")) {
             GLint bound=-1;glGetIntegerv(GL_TEXTURE_BINDING_2D,&bound);assert(bound==17);
         }

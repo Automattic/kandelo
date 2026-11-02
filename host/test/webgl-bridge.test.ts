@@ -238,6 +238,63 @@ describe("ordered client error flags", () => {
     expect(results).toEqual([0x500,0x501,0x505,0]);
   });
 
+  const drainRequest = (mask = 0, mode = O.GL_ERROR_DRAIN_REQUEST) => {
+    const input = new Uint8Array(O.GL_ERROR_DRAIN_REQUEST_BYTES), view = new DataView(input.buffer);
+    view.setUint32(0, mask, true); view.setUint32(4, mode, true);
+    return input;
+  };
+  const readDrain = (out: Uint8Array) => {
+    const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+    const words = Array.from({ length: out.byteLength / 4 }, (_, i) => view.getUint32(4 * i, true));
+    return { count: words[0], retained: words[1], errors: words.slice(2, 2 + O.GL_ERROR_DRAIN_CAPACITY),
+      magic: words[2 + O.GL_ERROR_DRAIN_CAPACITY] };
+  };
+
+  it("drains every recorded flag in recording order in one reply", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const pending = [0x505, 0x500, 0];
+    gl.getError = () => pending.shift() ?? 0;
+    b.errors.push(0x502);
+    const owner = b.errors, out = new Uint8Array(O.GL_ERROR_DRAIN_REPLY_BYTES).fill(0xff);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(0x03), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    // Recorded, then native, then the client mask; 0x500 appears once.
+    expect(readDrain(out)).toEqual({ count: 4, retained: 0, errors: [0x502, 0x505, 0x500, 0x501, 0, 0, 0, 0],
+      magic: 0x47514c33 });
+    // The muxer may alias this array as its error owner: mutate in place.
+    expect(b.errors).toBe(owner); expect(b.errors).toEqual([]);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: 0, retained: 0, errors: [0, 0, 0, 0, 0, 0, 0, 0] });
+  });
+
+  it("reports flags beyond the reply capacity as retained", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    gl.getError = () => 0;
+    const recorded = Array.from({ length: O.GL_ERROR_DRAIN_CAPACITY + 2 }, (_, i) => 0x9000 + i);
+    b.errors.push(...recorded);
+    const out = new Uint8Array(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: O.GL_ERROR_DRAIN_CAPACITY, retained: 1,
+      errors: recorded.slice(0, O.GL_ERROR_DRAIN_CAPACITY) });
+    expect(b.errors).toEqual(recorded.slice(O.GL_ERROR_DRAIN_CAPACITY));
+    expect(runGlQuery(b, O.QOP_GET_ERROR, drainRequest(), out)).toBe(O.GL_ERROR_DRAIN_REPLY_BYTES);
+    expect(readDrain(out)).toMatchObject({ count: 2, retained: 0 });
+  });
+
+  it.each([
+    ["an unknown mode word", drainRequest(0, 0), O.GL_ERROR_DRAIN_REPLY_BYTES],
+    ["an unsupported mask bit", drainRequest(0x08), O.GL_ERROR_DRAIN_REPLY_BYTES],
+    ["a legacy-sized reply", drainRequest(), 4],
+    ["an oversized reply", drainRequest(), O.GL_ERROR_DRAIN_REPLY_BYTES + 4],
+    ["a 12-byte request", new Uint8Array(12), O.GL_ERROR_DRAIN_REPLY_BYTES],
+  ])("rejects a drain with %s before consuming any flag", (_name, input, outBytes) => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    let nativeReads = 0;
+    gl.getError = () => { nativeReads++; return 0; };
+    b.errors.push(0x501);
+    expect(runGlQuery(b, O.QOP_GET_ERROR, input, new Uint8Array(outBytes))).toBe(-22);
+    expect(b.errors).toEqual([0x501]); expect(nativeReads).toBe(0);
+  });
+
   it("propagates a native fault from a command even when CPU-image publication then fails", () => {
     // A finally that returned EIO used to replace the fault with a result.
     const gl = new RecordingGl(), { b } = setupBinding(gl);

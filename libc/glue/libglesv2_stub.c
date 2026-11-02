@@ -290,8 +290,22 @@ struct wpk_gles_context {
     GLint pack_alignment;
     /* Unacknowledged flags transfer into the same host context error owner. */
     uint32_t client_errors;
-    uint32_t error_reply;
+    /* glGetError's drain request and reply (shared::gl::error_drain) live in
+     * the context, so reporting OUT_OF_MEMORY never allocates. */
+    uint32_t error_request[WPK_GL_ERROR_DRAIN_REQUEST_BYTES / 4];
+    uint32_t error_drain[WPK_GL_ERROR_DRAIN_REPLY_BYTES / 4];
     struct gl_submit_query_info error_packet;
+    /* Flags a drain moved out of the host context, oldest first, not yet
+     * returned. Together with client_errors and the host's flags they are
+     * the context's error state (ES 2.0 section 2.5). */
+    GLenum held_errors[WPK_GL_ERROR_DRAIN_CAPACITY];
+    uint32_t held_error_count;
+    /* The host held no flags after the last drain, and errors_known_at is
+     * the device request count that drain left. While the count and an empty
+     * command buffer both still hold, held_errors + client_errors are the
+     * complete error state and glGetError needs no round trip. */
+    int errors_known;
+    uint64_t errors_known_at;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_compressed_upload;
     uint32_t next_shader_upload;
@@ -418,6 +432,7 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
  * the current context's renderer was lost (a graphics reset); libEGL keeps
  * that state, so the reset status needs no request of its own. */
 static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
+    _wpk_gl_note_device_request(); /* Voids local glGetError knowledge. */
     int rc = ioctl(fd, request, arg);
     if (rc != 0 && errno == ENODEV) _wpk_gl_note_reset();
     return rc;
@@ -1476,6 +1491,63 @@ abort:
     free(request); free(reply);
 }
 
+/* ----- glGetError ----------------------------------------------------
+ * ES 2.0 section 2.5: each error flag is recorded once, glGetError returns
+ * and clears one recorded flag (which one is implementation-dependent) and
+ * NO_ERROR when none is recorded. Flags come from three places: the host
+ * renderer (commands it executed), client_errors (detected by this encoder)
+ * and held_errors (host flags already moved here by a drain).
+ *
+ * Programs that check every call (ScummVM's OPENGL_DEBUG GL_CALL is
+ * glGetError; call; glGetError) used to pay one synchronous host request per
+ * glGetError. A drain request moves all host flags into held_errors. When
+ * it reports none retained and no device request has followed it, nothing
+ * can have recorded a new host flag, so later calls answer from
+ * held_errors/client_errors with no request. Any device request voids that
+ * knowledge (see _wpk_gl_note_device_request in libEGL), and queued
+ * commands are sent as the prefix of the drain that observes their errors,
+ * so a check after a command costs exactly the one request it always did. */
+static int hold_error(struct wpk_gles_context *state, GLenum error) {
+    for (uint32_t i = 0; i < state->held_error_count; ++i)
+        if (state->held_errors[i] == error) return 1; /* One flag per value. */
+    if (state->held_error_count == WPK_GL_ERROR_DRAIN_CAPACITY) return 0;
+    state->held_errors[state->held_error_count++] = error;
+    return 1;
+}
+/* Return one flag the guest holds; the caller proved no host flag exists
+ * (or exists no longer) that this could duplicate. */
+static GLenum take_held_error(struct wpk_gles_context *state) {
+    for (unsigned bit = 0; bit <= 6; ++bit)
+        if ((state->client_errors & (1u << bit)) && hold_error(state, GL_INVALID_ENUM + bit))
+            state->client_errors &= ~(1u << bit);
+    if (!state->held_error_count) return GL_NO_ERROR;
+    const GLenum error = state->held_errors[0];
+    memmove(state->held_errors, state->held_errors + 1,
+            --state->held_error_count * sizeof state->held_errors[0]);
+    return error;
+}
+/* Validate the complete checked reply before taking custody of any flag.
+ * At most six distinct values exist (WebGL getError's five ES2 flags and
+ * CONTEXT_LOST_WEBGL), so a merge that overflows held_errors is malformed. */
+static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
+    const uint32_t *reply = state->error_drain, capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
+    const uint32_t count = reply[0];
+    if (count > capacity || reply[1] > 1 || reply[2 + capacity] != WPK_GL_QUERY_REPLY_MAGIC) return 0;
+    uint32_t fresh = 0;
+    for (uint32_t i = 0; i < capacity; ++i) {
+        const uint32_t error = reply[2 + i];
+        if (i >= count) { if (error) return 0; continue; }
+        if (!error) return 0;
+        for (uint32_t j = 0; j < i; ++j) if (reply[2 + j] == error) return 0;
+        int held = 0;
+        for (uint32_t j = 0; j < state->held_error_count; ++j) held |= state->held_errors[j] == error;
+        fresh += !held;
+    }
+    if (state->held_error_count + fresh > capacity) return 0;
+    for (uint32_t i = 0; i < count; ++i) (void)hold_error(state, reply[2 + i]);
+    *retained = (int)reply[1];
+    return 1;
+}
 GLenum glGetError(void) {
     /* KHR_robustness section 2.3.1rob: GetError keeps working after a
      * reset, reporting CONTEXT_LOST rather than lost context errors. */
@@ -1485,33 +1557,51 @@ GLenum glGetError(void) {
     if (!state) return GL_NO_ERROR;
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
+    const int idle = !g_cursor || g_cursor == base;
+    if (state->errors_known && idle && _wpk_gl_device_requests() == state->errors_known_at)
+        return take_held_error(state);
+    state->errors_known = 0;
+    /* One request carries the queued commands (as the compound prefix), the
+     * unacknowledged client flags and the drain, in that order, matching the
+     * ordering the separate trailer flush used to give. */
     const int fd = _wpk_gl_fd();
-    state->error_reply = GL_NO_ERROR;
-    if (state->client_errors) {
-        /* Keep trailer ordering and the existing ability to drain local flags
-         * even after a failed ordinary submission. No reply allocation is
-         * needed while reporting OUT_OF_MEMORY. This is fresh error-drain
-         * work; the failed draw prefix is never submitted again. */
-        (void)flush_commands();
-        const uint32_t errors = state->client_errors;
-        if (query_owned_reply(state,base,fd,QOP_GET_ERROR,
-            errors ? &state->client_errors : NULL,errors ? 4 : 0,
-            &state->error_reply,4,0,NULL,NULL) != 0)
-            return _wpk_gl_reset_error(&reset_error) ? reset_error : GL_INVALID_OPERATION;
-        state->client_errors &= ~errors;
-        return state->error_reply;
-    }
-    const uint32_t prefix = g_cursor && g_cursor != base ? (uint32_t)(g_cursor-base) : 0;
-    if (query_owned_reply(state,base,fd,QOP_GET_ERROR,NULL,0,&state->error_reply,4,
-        prefix,prefix ? &state->error_packet : NULL,NULL) != 0) {
-        /* There were no C flags at entry. Consume the transport flag returned
-         * by this call, without reissuing an error-consuming query whose
-         * completion may be unknown. Host copyout ambiguity remains a separate
-         * ordinary error-query custody gap. */
+    const uint32_t errors = state->client_errors;
+    const uint32_t prefix = idle ? 0 : (uint32_t)(g_cursor-base);
+    state->error_request[0] = errors;
+    state->error_request[1] = WPK_GL_ERROR_DRAIN_REQUEST;
+    memset(state->error_drain, 0, sizeof state->error_drain);
+    const uint64_t requests = _wpk_gl_device_requests();
+    int retained = 1;
+    int rc = query_owned_reply(state,base,fd,QOP_GET_ERROR,state->error_request,
+        WPK_GL_ERROR_DRAIN_REQUEST_BYTES,state->error_drain,WPK_GL_ERROR_DRAIN_REPLY_BYTES,
+        prefix,prefix ? &state->error_packet : NULL,NULL);
+    if (rc == 0 && !accept_error_drain(state, &retained)) { errno = EIO; rc = -1; }
+    if (rc != 0) {
+        /* Report the failed transport as this call's INVALID_OPERATION and
+         * clear that one flag wherever the guest holds it. Client flags stay
+         * until a reply proves the host received them, so none is lost; host
+         * flags a failed reply may have carried away are the remaining
+         * copyout custody gap, as for any query whose completion is unknown.
+         * The next call asks the host again. */
         state->client_errors &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
+        for (uint32_t i = 0; i < state->held_error_count; ++i)
+            if (state->held_errors[i] == GL_INVALID_OPERATION) {
+                memmove(state->held_errors + i, state->held_errors + i + 1,
+                        (--state->held_error_count - i) * sizeof state->held_errors[0]);
+                break;
+            }
         return _wpk_gl_reset_error(&reset_error) ? reset_error : GL_INVALID_OPERATION;
     }
-    return state->error_reply;
+    state->client_errors &= ~errors;
+    /* Exactly one request since the snapshot means no other thread reached
+     * a device in between. A fork child must not inherit this knowledge;
+     * when that cannot be arranged, every call keeps asking the host. */
+    if (!retained && (!g_cursor || g_cursor == base) &&
+        _wpk_gl_device_requests() == requests + 1 && _wpk_gl_device_requests_fork_safe()) {
+        state->errors_known = 1;
+        state->errors_known_at = requests + 1;
+    }
+    return take_held_error(state);
 }
 
 /* glFinish blocks until every earlier command has completed. Commands reach

@@ -4193,7 +4193,26 @@ pub mod gl {
 
     // --- sync query op tags (used in GlQueryInfo.op) -----------------------
 
+    /// Legacy input is empty or one ES2 client-flag mask (4 bytes); the
+    /// reply pops one recorded flag (4 bytes). The 8-byte input form in
+    /// [`error_drain`] transfers every recorded flag in one reply instead.
     pub const QOP_GET_ERROR: u32 = 0x01;
+    /// Additive `QOP_GET_ERROR` form within operation table 17. Input:
+    /// [ES2 client-flag mask, `REQUEST`]. Checked reply of `REPLY_BYTES`:
+    /// [count, retained, errors[CAPACITY], QUERY_REPLY_MAGIC]. The renderer
+    /// captures native flags, merges the mask, then moves up to `CAPACITY`
+    /// recorded flags (oldest first, distinct, nonzero) into the reply and
+    /// removes them from the context. `retained` is 1 when flags remain
+    /// recorded, else 0. Unused error slots are zero. A guest that received
+    /// `retained == 0` holds the whole error state of the context until its
+    /// next request on the device, so it can answer later glGetError calls
+    /// with no transport round trip (libc/glue/libglesv2_stub.c).
+    pub mod error_drain {
+        pub const REQUEST: u32 = 0x4744_524e;
+        pub const REQUEST_BYTES: u32 = 8;
+        pub const CAPACITY: u32 = 8;
+        pub const REPLY_BYTES: u32 = (3 + CAPACITY) * 4;
+    }
     pub const QOP_GET_STRING: u32 = 0x02;
     pub const QOP_GET_INTEGERV: u32 = 0x03;
     pub const QOP_GET_FLOATV: u32 = 0x04;
@@ -6634,6 +6653,16 @@ mod gl_tests {
         assert_eq!(IMAGE_MUTATION_LEGACY_REPLY_BYTES, 3 * 4);
         assert_eq!(IMAGE_ATTACHMENT_CONTAINER_REPLY_BYTES, 4 * 4);
         assert_eq!(IMAGE_DELETION_CONTAINERS_REPLY_BYTES, 5 * 4);
+    }
+
+    #[test]
+    fn error_drain_layout_matches_c_and_typescript_mirrors() {
+        // Mirrored by WPK_GL_ERROR_DRAIN_* (libc/glue/gl_abi.h) and
+        // GL_ERROR_DRAIN_* (host/src/webgl/ops.ts).
+        assert_eq!(error_drain::REQUEST, 0x4744_524e);
+        assert_eq!(error_drain::REQUEST_BYTES, 8);
+        assert_eq!(error_drain::CAPACITY, 8);
+        assert_eq!(error_drain::REPLY_BYTES, 44);
     }
 
     #[test]

@@ -167,6 +167,14 @@
 
 /* Sync-query op tags. */
 #define QOP_GET_ERROR             0x01u
+/* Additive QOP_GET_ERROR form (shared::gl::error_drain): input
+ * [client mask, REQUEST]; checked reply [count, retained,
+ * errors[CAPACITY], WPK_GL_QUERY_REPLY_MAGIC]. retained==0 means the
+ * reply carried every flag the context had recorded. */
+#define WPK_GL_ERROR_DRAIN_REQUEST 0x4744524eu
+#define WPK_GL_ERROR_DRAIN_REQUEST_BYTES 8u
+#define WPK_GL_ERROR_DRAIN_CAPACITY 8u
+#define WPK_GL_ERROR_DRAIN_REPLY_BYTES 44u
 #define QOP_GET_STRING            0x02u
 #define QOP_GET_INTEGERV          0x03u
 #define QOP_GET_FLOATV            0x04u
@@ -314,6 +322,13 @@ int      _wpk_gl_context_reset(void);
 int      _wpk_gl_reset_error(unsigned int *error);
 unsigned int _wpk_gl_graphics_reset_status(void);
 int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);
+/* Process-wide graphics-device request count (libEGL). Every request from
+ * libEGL or libGLESv2 advances it before entering the device; glGetError
+ * uses it to prove no request followed the drain it answers from. The
+ * fork guard returns 0 when a fork child could not be made to advance it. */
+void     _wpk_gl_note_device_request(void);
+uint64_t _wpk_gl_device_requests(void);
+int      _wpk_gl_device_requests_fork_safe(void);
 
 /* Opaque client encoder state belongs to an EGL context, not its current
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
