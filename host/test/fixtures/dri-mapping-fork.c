@@ -152,7 +152,9 @@ static void replaced_device_mapping(int same_bo) {
     CHECK(mirror!=MAP_FAILED);
     int replacement=-1;uint64_t replacement_offset=0;
     if (same_bo) {
-        struct prime export={.handle=old.handle,.fd=-1};
+        /* DRM_RDWR: Linux exports a read-only dma-buf without it, and the
+         * writable MAP_SHARED replacement below would fail with EACCES. */
+        struct prime export={.handle=old.handle,.flags=O_RDWR,.fd=-1};
         CHECK(ioctl(fd,0xc00c642du,&export)==0 && export.fd>=0);
         replacement=export.fd;
     }
