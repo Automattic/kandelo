@@ -42,12 +42,17 @@ Paths below are relative to the repo root.
   over status files or `agent-job list`: expiry creates re-arm turns.
 - **Headless main session or subagent's allowed targeted job:** repeat
   foreground `scripts/agent-job wait <id>` (up to nine minutes per call).
-  Exit 124 means still running; run the same wait again. Never end the
-  turn while waiting: execution stops there and the result is lost.
+  Repeat only when the wait-window notice says `agent-job: still running`.
+  Exit 124 alone is ambiguous: `FAILED (exit 124)` is a completed failed
+  job, not a reason to retry. Never end the turn while waiting: execution
+  stops there and the result is lost.
 - **Peer workspace build:** discover it with
   `scripts/agent-job list --all`, check its worktree/commit, then wait on
   its id or `scripts/agent-job wait --peer <text>` using the session rule
-  above. No match or ambiguity exits 2; choose an id from the candidates.
+  above. After a selector wait times out, retry with the resolved id from
+  `waiting on <id>` or `resume with:`, never with `--peer` again: another
+  job can match later. No match or ambiguity exits 2; rediscover or choose
+  an id from the candidates. A job can also exit 2; read its final status.
   Never wait on its PID or `pgrep -f`. Your own build can then reuse
   matching cached inputs; a peer's result alone does not validate yours.
 

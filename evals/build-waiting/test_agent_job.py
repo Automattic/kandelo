@@ -87,7 +87,8 @@ class AgentJobTest(JobsDirCase):
         self.assertIn("--timeout 0", hints["interactive main"])
         self.assertIn("one completion notification", hints["interactive main"])
         self.assertIn("foreground", hints["headless/subagent"])
-        self.assertIn("repeat on exit 124", hints["headless/subagent"])
+        self.assertIn("repeat only if wait reports still running", hints["headless/subagent"])
+        self.assertIn("FAILED (exit 124) is final", hints["headless/subagent"])
         self.assertIn("never end the turn", hints["headless/subagent"])
         for session_type, hint in hints.items():
             with self.subTest(session_type=session_type):
@@ -126,6 +127,19 @@ class AgentJobTest(JobsDirCase):
         # outer shell would run `true`: a failure reported as success.
         code, _ = self.run_job("bash", "-c", "exit 7; true")
         self.assertEqual(code, 7)
+
+    def test_finished_exit_124_is_a_final_failure_not_a_wait_timeout(self):
+        job_id = self.agent_job("start", "--", "exit 124").stdout.splitlines()[0]
+        for timeout in ("30", "0"):
+            with self.subTest(timeout=timeout):
+                waited = self.agent_job("wait", job_id, "--timeout", timeout, check=False)
+                self.assertEqual(waited.returncode, 124, waited.stdout + waited.stderr)
+                self.assertIn(f"{job_id}: FAILED (exit 124)", waited.stdout)
+                self.assertNotIn("agent-job: still running", waited.stdout)
+                self.assertNotIn("resume with:", waited.stdout)
+        result = self.agent_job("result", job_id, check=False)
+        self.assertEqual(result.returncode, 124)
+        self.assertIn(f"{job_id}: FAILED (exit 124)", result.stdout)
 
     def test_job_key_unchanged_for_common_commands(self):
         # Timing history ("usually takes 18m") is keyed by job_key. The same
@@ -349,6 +363,37 @@ class PeerJobTest(JobsDirCase):
         self.assertIn(f"waiting on {job_id}", r.stdout)
         self.assertIn("a descendant of your HEAD (1 commit ahead of it)", r.stdout)
         self.assertIn(f"{job_id}: FAILED (exit 5)", r.stdout)
+
+    def test_timed_out_peer_wait_prints_retry_pinned_to_original_job(self):
+        marker = "peer-retry-5c2d"
+        release = pathlib.Path(self.tmp.name, "release-peer")
+        original = self.start_running(self.peer,
+            f"while [ ! -e {shlex.quote(str(release))} ]; do sleep 0.05; done; exit 7; : {marker}")
+        timed_out = self.agent_job("wait", "--peer", marker, "--timeout", "1",
+                                   cwd=self.main, check=False)
+        self.assertEqual(timed_out.returncode, 124, timed_out.stdout + timed_out.stderr)
+        self.assertIn(f"waiting on {original}", timed_out.stdout)
+        self.assertIn("agent-job: still running", timed_out.stdout)
+        resume = [line.removeprefix("resume with: ") for line in timed_out.stdout.splitlines()
+                  if line.startswith("resume with: ")]
+        self.assertEqual(len(resume), 1, timed_out.stdout)
+        command = shlex.split(resume[0])
+        self.assertNotIn("--peer", command)
+
+        release.touch()
+        finished = self.agent_job("wait", original, "--timeout", "30", check=False)
+        self.assertEqual(finished.returncode, 7, finished.stdout + finished.stderr)
+        # A selector no longer finds the original after it finishes.
+        missing = self.agent_job("wait", "--peer", marker, check=False)
+        self.assertEqual(missing.returncode, 2)
+        replacement = self.start_running(self.main, f"sleep 60; : {marker}")
+        # Execute the printed retry while a replacement matches the same
+        # selector. It must still report the original job's failure.
+        retried = subprocess.run([sys.executable, *command], cwd=self.main, env=self.env,
+                                 capture_output=True, text=True, timeout=30)
+        self.assertEqual(retried.returncode, 7, retried.stdout + retried.stderr)
+        self.assertIn(f"{original}: FAILED (exit 7)", retried.stdout)
+        self.assertNotIn(replacement, retried.stdout)
 
     def test_wait_timeout_exits_124_without_ps_on_path(self):
         # scripts/dev-shell.sh's PATH has no `ps`. A timed-out wait prints

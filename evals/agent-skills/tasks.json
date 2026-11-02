@@ -1,5 +1,24 @@
 [
   {
+    "id": "wait-finished-124",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. Read relevant available repository guidance before answering. You are a headless main session. `scripts/agent-job wait suite-1102-170000-1234` returned exit 124 and printed `suite-1102-170000-1234: FAILED (exit 124) after 25m00s`, then a log tail saying the suite's timeout expired. Should you repeat the wait, and what outcome do you report? How does this differ from a wait-window timeout?",
+    "checks": {
+      "recognizes terminal failure": "(completed|finished|final)[\\s\\S]*(failure|failed)|(failure|failed)[\\s\\S]*(completed|finished|final)",
+      "does not retry finished job": "(do not|don't|never|not|no)[^\\n]*(repeat|retry|wait again)|stop[^\\n]*(repeat|retry|wait)",
+      "uses running output to decide a retry": "still running"
+    }
+  },
+  {
+    "id": "wait-peer-retry",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. Read relevant available repository guidance before answering. You are a headless main session. A `scripts/agent-job wait --peer prepare-browser` call returned 124 with a wait-window timeout notice and first printed `waiting on prepare-browser-1102-170000-1234 in /peer: ./run.sh prepare-browser`. Before your next call, that job may have finished and another prepare-browser may have started. Give the exact next wait command and explain how you preserve the original job's outcome.",
+    "checks": {
+      "retries the resolved id": "agent-job wait prepare-browser-1102-170000-1234",
+      "explains changed selector match": "replacement|different|another|newer|new job",
+      "uses the default or nine-minute foreground timeout": "agent-job wait prepare-browser-1102-170000-1234(?:[ \\t]+--timeout[ \\t]+540)?[ \\t]*\\n",
+      "preserves original result": "original[^\\n]*(result|outcome|status|failure)|(result|outcome|status|failure)[^\\n]*original"
+    }
+  },
+  {
     "id": "wait-interactive-build",
     "prompt": "This is a read-only workflow question; do not run commands or edit files. In an interactive main session with Bash background completion notifications, I need ./run.sh setup (about 40 minutes), then a targeted check that takes two minutes. Give the exact launch/wait tool choices and how you will report the result. The setup may take longer than expected. Should you write a Monitor task that checks status files every minute and expires after 30 minutes?",
     "checks": {

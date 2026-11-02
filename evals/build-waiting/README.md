@@ -268,6 +268,40 @@ agent-job tests, all 6 wait-guard tests, and the skill path/frontmatter/
 mirror checks (3 skills). Runtime and browser suites were not run for
 these guidance and CLI-output changes.
 
+**Adversarial-review corrections (2026-11-02).** The first independent
+review reproduced two unsafe retry decisions: a completed job exiting
+124 could be mistaken for an unfinished job, and repeating a peer
+selector could switch to a replacement job. The skill, validation guide,
+CLAUDE.md and CLI help/hints now distinguish a still-running wait-window
+notice from a final `FAILED (exit 124)` result. Timeout output prints an
+executable `resume with:` command pinned to the original id.
+
+The declared dev shell passed 17 agent-job tests and the 3-skill checks.
+Coverage now includes completed exit-124 results with bounded and
+unbounded waits, and executing a printed peer retry after the original
+failed and a replacement started. Both updated CLI-guidance regression
+tests fail on the preceding script. The hook was not changed.
+
+Ran two new read-only retry scenarios, one repetition per arm (four
+headless sessions, CLI `--model sonnet`); read all four answers. Re-scored
+the saved answers after correcting a missed synonym ("newer") and adding
+a timeout-unit check that the first checklist lacked:
+
+| Arm | Checklist score | Mean cost $ | Mean turns |
+|---|---:|---:|---:|
+| Skill on | 1.000 | 0.120 | 2.50 |
+| Skill off | 0.875 | 0.118 | 2.50 |
+
+All four answers correctly treated a completed exit 124 as final and
+pinned peer retries to the original id. One skill-off answer proposed
+`--timeout 540000` while calling it nine minutes; that flag is seconds,
+so it is not a valid bounded headless wait. The original regex score
+missed this error. Raw and re-scored records are local under
+`.context/wait-skill-retry-eval*`. The shared updated guidance is available
+to both arms, so this small advice sample verifies the corrected
+decisions without isolating the skill's effect or demonstrating savings.
+The real-session judgment and 2026-11-16 checkpoint remain pending.
+
 ### 1b. Waiting on another workspace's build: `list --all`, commits, `wait --peer`
 
 Several Conductor workspaces on one machine often build the same tree, and

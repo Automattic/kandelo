@@ -279,7 +279,7 @@ turns. For anything longer:
 
 ```bash
 scripts/agent-job start -- ./run.sh setup   # prints a job id (run.sh enters the dev shell itself)
-scripts/agent-job wait <id>      # blocks on the job's PID for up to 9 min; exit 124 = still running, run it again
+scripts/agent-job wait <id>      # up to 9 min; repeat only on the still-running wait-window notice
 scripts/agent-job status [<id>]  # elapsed vs usual duration, local-build progress, live processes
 scripts/agent-job result <id>    # exit status, [suite-health] lines, log tail
 ```
@@ -306,7 +306,10 @@ run used the wrong config and toolchain, and its results are invalid.
   Never write Monitor, `until`, or `sleep` loops over status files or
   `agent-job list`; expiring waiters create re-arm turns. A headless
   session or subagent repeats foreground `agent-job wait <id>` until it
-  returns the job's status (exit 124 means still running). It must not end
+  returns the job's status. Repeat only when the wait-window notice says
+  `agent-job: still running`. Exit 124 alone is ambiguous: a finished
+  command can itself exit 124 (for example, when killed by `timeout`).
+  `FAILED (exit 124)` is a completed failure, not a retry. It must not end
   its turn while waiting: it stops there, and the result is lost. If an
   agent client yields a running terminal session, resume that session to
   collect the result. The discoverable decision guide is
@@ -352,6 +355,11 @@ run used the wrong config and toolchain, and its results are invalid.
     contains `<text>`, or more than one does, it lists the candidates on
     stderr and exits 2; then wait on one by id. A job that itself exits
     2 also makes `wait` exit 2, so read the output.
+  - **Pin retries to the resolved job id.** If a selector wait times out,
+    use the id printed in `waiting on <id>` or the `resume with:` command.
+    Never repeat `--peer`: the original can finish before the next call,
+    so the selector can match a replacement job or miss the original's
+    recorded result. Wait by id to retain that job's outcome.
   - The locked-run check is per worktree: a peer's `local-build` does not
     stop yours from starting. Choosing to wait on it is the agent's call.
 - **Before a suite**, `npx tsx scripts/check-artifact-closures.ts` reports

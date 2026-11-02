@@ -111,12 +111,14 @@ Longer runs: load `.agents/skills/waiting-on-kandelo-jobs/SKILL.md` and use
 `scripts/agent-job wait <id> --timeout 0` once with Bash's
 `run_in_background`, then act on its single completion notification.
 Headless sessions and subagents repeat foreground `scripts/agent-job wait
-<id>` (it blocks on the job's PID up to 9 minutes per call). To wait on
-another workspace's build, find it with `scripts/agent-job list --all` and
-wait on its id (or `wait --peer <text>`), not on its PID. Do not poll with
-Monitor/status-file loops, `sleep` or `pgrep -f`; never end a headless
-session's or subagent's turn to wait, and do not make subagents wait on
-whole-tree builds. Why: each poll
+<id>` only when the wait-window notice says the job is still running
+(up to 9 minutes per call). `FAILED (exit 124)` is final, not a retry.
+To wait on another workspace's build, find it with
+`scripts/agent-job list --all` and wait on its id (or `wait --peer <text>`),
+not on its PID. After a selector wait times out, retry by its resolved id,
+never by `--peer` again. Do not poll with Monitor/status-file loops,
+`sleep` or `pgrep -f`; never end a headless session's or subagent's turn to
+wait, and do not make subagents wait on whole-tree builds. Why: each poll
 turn re-reads the whole conversation; `pgrep -f` matches the waiting shell
 and never returns; a headless session or subagent stops when its turn ends,
 losing the result; and a subagent's 5-minute cache makes long waits rewrite

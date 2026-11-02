@@ -36,6 +36,13 @@ These are advice checks; they do not deliver interactive completion
 notifications. The transcript measures, checkpoint date and keep/revise/
 remove rule live in `evals/build-waiting/README.md`, tool 1a.
 
+Two adversarial retry scenarios cover finished jobs exiting 124 and peer
+selectors whose matches change between wait calls:
+
+```bash
+python3 evals/agent-skills/run.py --reps 1 --tasks wait-finished-124,wait-peer-retry
+```
+
 ## 2. Is it helping me? (`skill-impact.py`)
 
 ```bash
