@@ -147,7 +147,15 @@ range, attribute aliasing including the dEQP-GLES2 `bind_aliasing` templates,
 depth-texture luminance sampling, and their combinations) with the real WebGL 2
 compiler of headless Chromium, Firefox and WebKit, proving the ES 2.0 results
 by pixel readback. It bundles the rewriters from `host/src/webgl` and needs no
-Kandelo build; it is not the runtime path or a conformance suite.
+Kandelo build; it is not the runtime path or a conformance suite. Its cube-map
+section samples six-layer 2D array storage through the ESSL 3.00 translation
+and checks it against ES 2.0 references computed in the page: per-face linear
+filtering at an edge, the orientation of every face, and the level of detail
+of every pixel of a quad that crosses four face edges, with controls showing
+WebGL's own seamless cube map and an array lookup with implicit derivatives
+failing. `node tests/graphics/shader-rewrite-check/cube-bench.mjs [engine...]`
+measures what those per-face lookups cost against WebGL's own cube map
+(compile time and draw time).
 
 ## Initial adapted EGL harness
 

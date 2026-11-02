@@ -244,6 +244,24 @@ neighbouring triangle at a shared edge (12 `texture.mipmap.2d.projected`
 cases, and by the same signature 2 `cube.projected.nearest_*`). Evidence is
 in `docs/measurements/2026-11-02-firefox-gles2-shader-scope-and-edge-lod.md`.
 
+**ES 2.0 cube maps sampled per face (maintainer decision D-39,
+2026-11-02).** WebGL 2 samples cube maps seamlessly (ES 3.0), so linear
+filtering at a face edge mixed in the adjacent face, which ES 2.0 does not.
+A guest cube map is now six-layer 2D array storage sampled per face by the
+ESSL 3.00 translation (`docs/architecture.md`). Against the 2026-11-01 runs,
+`functional.texture`, `fbo`, `state_query`, `negative_api`,
+`accuracy.texture` and `shaders.texture_functions`, plus dEQP-EGL `image`
+and `sharing`, newly fail nothing on any engine; newly passing are
+`texture.mipmap.cube.{basic,bias,projected}.linear_*`,
+`texture.vertex.cube.wrap.*` and four `vertex.cube.filtering` cases, and
+`texture_functions.vertex.texturecubelod` (17 on Chromium and WebKit, 16
+on Firefox). Still failing: six `vertex.cube.filtering.nearest_mipmap_*_linear_*`
+cases on every engine, from ES 2.0's minification/magnification switch-over
+point c = 0.5, which WebGL 2 does not apply to any texture (a separate gap),
+and on Firefox `mipmap.cube.projected.{linear_linear,nearest_*}`, from the
+Firefox triangle-edge level-of-detail defect above. Evidence and costs:
+`docs/measurements/2026-11-02-gles2-cube-maps-per-face.md`.
+
 **Robust buffer access (maintainer decision D-25, 2026-11-01): emulated for
 robust contexts only.** `EXT_robustness` §2.8 (`KHR_robustness` §10.3.1.1rob)
 makes an out-of-range vertex index give the attribute undefined values with no

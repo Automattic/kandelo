@@ -3967,7 +3967,9 @@ Known gaps in translated programs: a fragment shader's `invariant
 gl_FragCoord` no longer requires an invariant `gl_Position` in the vertex
 shader (ES 1.00 makes that a link error); a dynamically indexed
 `gl_FragData` is still rejected, as ESSL 3.00 requires constant output
-indices; and a guest ESSL 3.00 shader, which the ES 2.0 host already
+indices; a sampler array indexed by a loop index (ES 1.00 Appendix A
+allows it; ESSL 3.00 requires a constant expression) fails to compile;
+and a guest ESSL 3.00 shader, which the ES 2.0 host already
 compiles as written although ES 2.0 has no ESSL 3.00, links with a
 translated partner. Headless Chromium also loses the WebGL context when it
 links an ESSL 3.00 program that overloads a function by array size (a
@@ -3977,6 +3979,77 @@ context. ANGLE's own failures stay what they are in either language:
 "Expression too complex" for very long expressions, a `defined` produced
 by macro expansion in `#if`, and a local variable that hides a function
 parameter (valid ES 1.00, where the function body is a new scope).
+
+OpenGL ES 2.0 samples a cube map one face at a time (sections 3.7.5 and
+3.7.7): the major axis of the direction selects a face, and that face's
+(s, t) are wrapped and filtered within the face alone. WebGL 2 follows ES
+3.0, where cube-map sampling is always seamless: linear filtering near an
+edge mixes texels of the adjacent face, and no WebGL state turns that off
+(reproduced in Chromium, Firefox and WebKit without Kandelo code). So a
+guest cube map is stored as a native six-layer `TEXTURE_2D_ARRAY` (layer i
+is face `TEXTURE_CUBE_MAP_POSITIVE_X + i`, `host/src/webgl/cube-storage.ts`),
+each layer wrapped and filtered by itself exactly as ES 2.0 samples a
+face, and every shader that uses `samplerCube` is compiled as its ESSL
+3.00 translation, even when ES 1.00 accepts it, because ESSL 1.00 has no
+`sampler2DArray`. There `samplerCube` becomes `sampler2DArray` (with
+`samplerCube`'s default `lowp` precision) and `textureCube` and
+`textureCubeLod` become private functions that select the face by ES 2.0
+table 3.21 and sample its layer. A fragment lookup passes explicit
+gradients: the derivatives of the selected face's (s, t), computed from
+the derivatives of the direction in that face's frame by the quotient
+rule. Why: ES 2.0 derives the level of detail from the selected face's
+u(x, y) and v(x, y); `texture()` on the array would differentiate the face
+coordinates themselves, which jump where neighbouring fragments select
+different faces, and pick a far too small level along every edge. A bias
+scales the gradients by 2^bias; a vertex lookup uses level 0 or the given
+level. Reflection reports `SAMPLER_CUBE` for those uniforms. Every cube
+image command (`TexImage2D`, `TexSubImage2D`, `CopyTexImage2D`,
+`CopyTexSubImage2D` and the compressed commands on a face,
+`GenerateMipmap`, `TexParameter`, `GetTexParameter`) works on that
+storage; `FramebufferTexture2D` of a face attaches its layer; an EGLImage
+exported from a face (`KHR_gl_texture_cubemap_image`) is its layer and is
+orphaned on respecification as a 2D source is. `MAX_CUBE_MAP_TEXTURE_SIZE`
+reports what that storage can hold: the smaller of the native cube and 2D
+limits (array layers are 2D-limited; WebGL 2 guarantees at least 256
+layers).
+
+A 2D array level has one size and format for all six layers, while ES 2.0
+lets each face of a level have its own while the cube is incomplete, and
+every face image stays an image that can be attached, copied from or
+updated. So a cube owns one or more arrays, each face image lives in
+exactly one at its own layer, and images of one size and format gather in
+one array: a cube specified in the usual ways (six faces per level in any
+order, `GenerateMipmap`, every face respecified at a new size) has all its
+images in its own array, while a face respecified apart from its siblings
+moves to a second array instead of destroying their images, taking its
+framebuffer attachments along. When the images a complete cube samples
+are spread over arrays they are copied into the array holding the base
+level; that copy goes through a framebuffer, so a format that cannot be
+attached (luminance, for one) reports `GL_OUT_OF_MEMORY` there, as
+orphaning a linked EGLImage source already does. A draw samples the array
+holding all six base images only while the cube is complete under ES 2.0
+rules; otherwise no texture, which samples (0, 0, 0, 1), because the
+array allocates all six layers of a level and would otherwise accept
+faces never specified (likewise, an attached face never specified is
+`FRAMEBUFFER_INCOMPLETE_ATTACHMENT`). That array is bound to the unit's
+`TEXTURE_2D_ARRAY` for the draw only when it differs from the unit's
+guest binding; a complete cube in its own array costs a cached comparison,
+and a program without cube samplers keeps the one per-draw lookup it
+already made for external textures. A guest ESSL 3.00 shader (no ES 2.0
+language) still samples a native `samplerCube`, whose binding now holds
+nothing, so its lookups return (0, 0, 0, 1).
+
+One ES 2.0 filtering rule WebGL 2 engines do not apply to any texture:
+section 3.7.9 makes the minification/magnification switch-over point
+c = 0.5 when the magnification filter is `LINEAR` and the minification
+filter is `NEAREST_MIPMAP_NEAREST` or `NEAREST_MIPMAP_LINEAR`, so a
+level of detail in (0, 0.5] magnifies (`LINEAR` on the base level).
+Chromium, Firefox and WebKit minify there (c = 0, the hardware rule), so
+those lookups use `NEAREST` on the base level instead. dEQP-GLES2 builds
+its references for an ES 2.0 context with c = 0.5, and
+`functional.texture.vertex.cube.filtering.nearest_mipmap_nearest_linear_*`
+fail on that alone (a constant level of detail of 0.19); this is a known
+gap for 2D and cube lookups alike.
 
 GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
 single-plane formats, each stored exactly: R8, GR88, RGB565, the four
