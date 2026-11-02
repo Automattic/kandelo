@@ -7,7 +7,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import type { GlImageStorage } from "./image-storage.js";
-import { renderbufferLogicalFormat } from "./image-sizes.js";
+import { renderbufferLogicalFormat, renderbufferRecordedSize } from "./image-sizes.js";
 import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
@@ -126,6 +126,12 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
           const value=arg===0x8d42?image.width:arg===0x8d43?image.height:arg===0x8d44?format[0]:format[1][arg-0x8d50];
           result.setInt32(0,value,true);return 4;
         }
+        // [RUNTIME-WORKAROUND: FIREFOX-RENDERBUFFER-EMPTY-SIZE] The width and
+        // height of the image last specified (glGetRenderbufferParameteriv).
+        // Firefox reports 0x0 for storage with one zero dimension (0x29 reads
+        // back as 0x0), so both come from the record of the accepted call.
+        const size = arg === 0x8d42 || arg === 0x8d43 ? renderbufferRecordedSize(b.shadow.renderbuffer) : undefined;
+        if (size) { result.setInt32(0,size[arg === 0x8d42 ? 0 : 1],true); return 4; }
         let value = 0;
         if (!checkedGlCall(b, () => { value = Number(gl.getRenderbufferParameter(name,arg)); })) return -5;
         // BGRA renderbuffers are stored as RGBA8 and RGB16F as RGBA16F; report

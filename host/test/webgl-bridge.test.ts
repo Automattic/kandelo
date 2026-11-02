@@ -1865,6 +1865,23 @@ describe("GLES2 core object queries", () => {
     expect(query(O.QOP_GET_TEX_PARAMETER,[0x0de1,0x813c],4).status).toBe(1);
     expect(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,0x8cab],4).status).toBe(1); expect(b.errors).toContain(0x500);
   });
+  it("reports the specified renderbuffer size when the engine reports an empty image as 0x0", () => {
+    // FIREFOX-RENDERBUFFER-EMPTY-SIZE: Firefox answers 0 for both dimensions
+    // after storage with one zero dimension; the specified image is 0x29.
+    const {gl,send,query} = setup();
+    Object.assign(gl,{getRenderbufferParameter: () => 0});
+    const size = (pname: number) => new DataView(query(O.QOP_GET_RENDERBUFFER_PARAMETER,[0x8d41,pname],4).bytes.buffer,4,4).getInt32(0,true);
+    send(O.OP_BIND_RENDERBUFFER,[0x8d41,9]);
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,84,66]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([84,66]);
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,0,29]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([0,29]);
+    // A rejected call leaves the previous image (and its size) in place.
+    const errors: number[] = []; gl.getError = () => errors.shift() ?? 0;
+    Object.assign(gl,{renderbufferStorage: () => errors.push(0x505)});
+    send(O.OP_RENDERBUFFER_STORAGE,[0x8d41,0x8056,17,14]);
+    expect([size(0x8d42),size(0x8d43)]).toEqual([0,29]);
+  });
   it("validates only logical programs and preserves native rejection errors", () => {
     const {gl,b,send} = setup(); Object.assign(gl,{validateProgram: (program: unknown) => gl.log.push(["validateProgram",[program]])});
     send(O.OP_CREATE_PROGRAM,[12]); send(O.OP_CREATE_SHADER,[0x8b31,11]);

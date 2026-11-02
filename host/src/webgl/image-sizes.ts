@@ -40,6 +40,16 @@ export function recordRenderbufferSize(renderbuffer: WebGLRenderbuffer | null, w
   framebufferInputsChanged();
 }
 
+/** The width and height the guest last specified for this renderbuffer's
+ * storage; undefined before any storage was specified.
+ * [RUNTIME-WORKAROUND: FIREFOX-RENDERBUFFER-EMPTY-SIZE] RENDERBUFFER_WIDTH and
+ * RENDERBUFFER_HEIGHT are answered from this record (object-query.ts),
+ * because Firefox reports 0 for both after storage with a zero width or
+ * height. */
+export function renderbufferRecordedSize(renderbuffer: WebGLRenderbuffer | null): Size | undefined {
+  return renderbuffer ? renderbufferImages.get(renderbuffer)?.size : undefined;
+}
+
 /** The internal format the guest specified, when native storage differs. */
 export function renderbufferLogicalFormat(renderbuffer: WebGLRenderbuffer | null): number | undefined {
   return renderbuffer ? renderbufferImages.get(renderbuffer)?.internal : undefined;
