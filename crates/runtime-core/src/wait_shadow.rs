@@ -155,8 +155,6 @@ pub struct HostWake {
     pub source: Option<WakeSource>,
     /// The host's optional pid narrowing.
     pub pid_filter: Option<u32>,
-    /// Whether the host held back its signal-safe waiters.
-    pub defer_signal_safe: bool,
     /// The waiters the host woke, in the order it woke them.
     pub woke: Vec<WaiterId>,
     /// `CLOCK_MONOTONIC` reading at the moment of the wake.
@@ -290,9 +288,7 @@ impl ShadowScheduler {
             })
             .collect();
 
-        let (shadow_woken, _deferred) =
-            self.queue
-                .wake(source, host.pid_filter, host.defer_signal_safe);
+        let shadow_woken = self.queue.wake(source, host.pid_filter);
         let shadow_ids: Vec<WaiterId> = shadow_woken.iter().map(|w| w.id).collect();
 
         for (id, detail) in &host_details {
@@ -477,7 +473,6 @@ mod tests {
             sources,
             deadline,
             target: None,
-            signal_safe: false,
         })
         .expect("park")
     }
@@ -486,7 +481,6 @@ mod tests {
         HostWake {
             source: Some(source),
             pid_filter: None,
-            defer_signal_safe: false,
             woke,
             now_ns: 0,
         }
@@ -496,7 +490,6 @@ mod tests {
         HostWake {
             source: None,
             pid_filter: None,
-            defer_signal_safe: false,
             woke,
             now_ns: 0,
         }
@@ -709,9 +702,8 @@ mod tests {
     /// A model of the host's parking containers and wake routing.
     ///
     /// Rules transcribed from `kernel-worker.ts`:
-    ///   - `wakeBlockedPollRetriesForPipe` (`:15811`): match on
-    ///     `pipeIndices.includes(idx)`, optional pid narrowing, signal-safe
-    ///     entries deferred.
+    ///   - `wakeBlockedPollRetriesForPipe`: match on
+    ///     `pipeIndices.includes(idx)`, optional pid narrowing.
     ///   - `wakeAllBlockedRetries` (`:16358`): snapshot and clear every poll
     ///     retry, select retry, pipe reader and pipe writer, unconditionally.
     ///   - `wakeBlockedAdvisoryLockRetries` (`:16186`): every advisory-lock
@@ -724,7 +716,6 @@ mod tests {
         id: WaiterId,
         pid: u32,
         sources: Vec<WakeSource>,
-        signal_safe: bool,
         /// True for the four container kinds the broad sweep drains.
         swept_by_broad_wake: bool,
     }
@@ -739,14 +730,12 @@ mod tests {
             id: WaiterId,
             pid: u32,
             sources: Vec<WakeSource>,
-            signal_safe: bool,
             swept_by_broad_wake: bool,
         ) {
             self.entries.push(HostEntry {
                 id,
                 pid,
                 sources,
-                signal_safe,
                 swept_by_broad_wake,
             });
         }
@@ -755,7 +744,6 @@ mod tests {
             &mut self,
             source: WakeSource,
             pid_filter: Option<u32>,
-            defer_signal_safe: bool,
         ) -> Vec<WaiterId> {
             let mut woke = Vec::new();
             self.entries.retain(|e| {
@@ -765,9 +753,6 @@ mod tests {
                     }
                 }
                 if !e.sources.contains(&source) {
-                    return true;
-                }
-                if defer_signal_safe && e.signal_safe {
                     return true;
                 }
                 woke.push(e.id);
@@ -811,15 +796,14 @@ mod tests {
                     sources: alloc::vec![WakeSource::Pipe(pipe)],
                     deadline: None,
                     target: None,
-                    signal_safe: false,
                 })
                 .expect("park");
-            host.park(id, pid, alloc::vec![WakeSource::Pipe(pipe)], false, true);
+            host.park(id, pid, alloc::vec![WakeSource::Pipe(pipe)], true);
             ids.push(id);
         }
 
         for pipe in 0..4u32 {
-            let woke = host.wake_targeted(WakeSource::Pipe(pipe), None, false);
+            let woke = host.wake_targeted(WakeSource::Pipe(pipe), None);
             let found = s.observe_wake(targeted(WakeSource::Pipe(pipe), woke));
             assert!(found.is_empty(), "pipe {pipe}: {found:?}");
         }
@@ -847,74 +831,21 @@ mod tests {
                     sources: alloc::vec![WakeSource::Pipe(7)],
                     deadline: None,
                     target: None,
-                    signal_safe: false,
                 })
                 .expect("park");
-            host.park(id, pid, alloc::vec![WakeSource::Pipe(7)], false, true);
+            host.park(id, pid, alloc::vec![WakeSource::Pipe(7)], true);
             ids.push(id);
         }
 
-        let woke = host.wake_targeted(WakeSource::Pipe(7), Some(2), false);
+        let woke = host.wake_targeted(WakeSource::Pipe(7), Some(2));
         assert_eq!(woke.len(), 1);
         let found = s.observe_wake(HostWake {
             source: Some(WakeSource::Pipe(7)),
             pid_filter: Some(2),
-            defer_signal_safe: false,
             woke,
             now_ns: 0,
         });
         assert!(found.is_empty(), "{found:?}");
-    }
-
-    #[test]
-    fn differential_signal_safe_deferral_agrees() {
-        let mut s = ShadowScheduler::new();
-        let mut host = HostModel::new();
-        let c = s.open_channel();
-
-        let plain = s
-            .observe_park(ParkRequest {
-                pid: 1,
-                tid: 1,
-                channel: c,
-                kind: WaitKind::Poll,
-                sources: alloc::vec![WakeSource::Pipe(1)],
-                deadline: None,
-                target: None,
-                signal_safe: false,
-            })
-            .expect("park");
-        host.park(plain, 1, alloc::vec![WakeSource::Pipe(1)], false, true);
-
-        let safe = s
-            .observe_park(ParkRequest {
-                pid: 2,
-                tid: 2,
-                channel: c,
-                kind: WaitKind::Poll,
-                sources: alloc::vec![WakeSource::Pipe(1)],
-                deadline: None,
-                target: None,
-                signal_safe: true,
-            })
-            .expect("park");
-        host.park(safe, 2, alloc::vec![WakeSource::Pipe(1)], true, true);
-
-        let woke = host.wake_targeted(WakeSource::Pipe(1), None, true);
-        assert_eq!(woke, alloc::vec![plain], "the signal-safe waiter is held back");
-        let found = s.observe_wake(HostWake {
-            source: Some(WakeSource::Pipe(1)),
-            pid_filter: None,
-            defer_signal_safe: true,
-            woke,
-            now_ns: 0,
-        });
-        assert!(found.is_empty(), "{found:?}");
-
-        let woke = host.wake_targeted(WakeSource::Pipe(1), None, false);
-        let found = s.observe_wake(targeted(WakeSource::Pipe(1), woke));
-        assert!(found.is_empty(), "{found:?}");
-        assert!(s.observe_quiesce().is_empty());
     }
 
     #[test]
@@ -937,10 +868,9 @@ mod tests {
                     sources: alloc::vec![WakeSource::Pipe(i)],
                     deadline: None,
                     target: None,
-                    signal_safe: false,
                 })
                 .expect("park");
-            host.park(id, 1 + i, alloc::vec![WakeSource::Pipe(i)], false, true);
+            host.park(id, 1 + i, alloc::vec![WakeSource::Pipe(i)], true);
         }
         // An advisory-lock waiter, which the broad sweep does not drain.
         let lock = s
@@ -952,10 +882,9 @@ mod tests {
                 sources: alloc::vec![WakeSource::AdvisoryLock],
                 deadline: None,
                 target: None,
-                signal_safe: false,
             })
             .expect("park");
-        host.park(lock, 20, alloc::vec![WakeSource::AdvisoryLock], false, false);
+        host.park(lock, 20, alloc::vec![WakeSource::AdvisoryLock], false);
 
         let woke = host.wake_all();
         assert_eq!(woke.len(), 6);
@@ -991,10 +920,9 @@ mod tests {
                 sources: alloc::vec![WakeSource::Pipe(3)],
                 deadline: None,
                 target: None,
-                signal_safe: false,
             })
             .expect("park");
-        host.park(stale, 42, alloc::vec![WakeSource::Pipe(3)], false, true);
+        host.park(stale, 42, alloc::vec![WakeSource::Pipe(3)], true);
 
         // exec: the host drops its entry, the shadow retires the generation.
         host.entries.retain(|e| e.id != stale);
@@ -1010,12 +938,11 @@ mod tests {
                 sources: alloc::vec![WakeSource::Pipe(3)],
                 deadline: None,
                 target: None,
-                signal_safe: false,
             })
             .expect("park");
-        host.park(fresh, 42, alloc::vec![WakeSource::Pipe(3)], false, true);
+        host.park(fresh, 42, alloc::vec![WakeSource::Pipe(3)], true);
 
-        let woke = host.wake_targeted(WakeSource::Pipe(3), None, false);
+        let woke = host.wake_targeted(WakeSource::Pipe(3), None);
         assert_eq!(woke, alloc::vec![fresh]);
         let found = s.observe_wake(targeted(WakeSource::Pipe(3), woke));
         assert!(found.is_empty(), "{found:?}");
@@ -1043,18 +970,16 @@ mod tests {
                 sources: alloc::vec![WakeSource::Pipe(1)],
                 deadline: None,
                 target: None,
-                signal_safe: false,
             })
             .expect("park");
         host.park(
             id,
             1,
             alloc::vec![WakeSource::Pipe(1), WakeSource::Accept(5)],
-            false,
             true,
         );
 
-        let woke = host.wake_targeted(WakeSource::Accept(5), None, false);
+        let woke = host.wake_targeted(WakeSource::Accept(5), None);
         assert_eq!(woke, alloc::vec![id]);
         let found = s.observe_wake(targeted(WakeSource::Accept(5), woke));
         assert_eq!(found.len(), 1);

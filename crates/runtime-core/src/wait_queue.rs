@@ -194,15 +194,6 @@ pub struct Sleeper {
     pub deadline: Option<MonotonicNs>,
     /// The pinned resource authority for a transfer wait. Invariant 3.
     pub target: Option<BlockingRetryTarget>,
-    /// Reproduces the host's `needsSignalSafeWake`.
-    ///
-    /// The host defers waking these by a fixed 50 ms
-    /// (`SIGNAL_SAFE_POLL_WAKE_DELAY_MS`) so that a signal-safe poll observes
-    /// a `write` before the `raise` that follows it. That delay is a race
-    /// papered over with a constant. Recording the property here -- rather
-    /// than the delay -- is what lets the ordering become structural when
-    /// poll/select cut over.
-    pub signal_safe: bool,
 }
 
 impl Sleeper {
@@ -221,7 +212,6 @@ pub struct ParkRequest {
     pub sources: Vec<WakeSource>,
     pub deadline: Option<MonotonicNs>,
     pub target: Option<BlockingRetryTarget>,
-    pub signal_safe: bool,
 }
 
 /// Why a sleeper stopped sleeping.
@@ -413,7 +403,6 @@ impl WaitQueue {
                 sources: request.sources,
                 deadline: request.deadline,
                 target: request.target,
-                signal_safe: request.signal_safe,
             },
         );
         self.stats.parked += 1;
@@ -442,9 +431,10 @@ impl WaitQueue {
     /// TCP pipes omit it because fork children can inherit the same
     /// connection, while unshareable ownership passes it.
     ///
-    /// `defer_signal_safe` reproduces the host's signal-safe deferral. It
-    /// returns whether any sleeper was held back, so the caller can decide
-    /// what to do about it, rather than the queue silently applying a delay.
+    /// A waiter that swapped its signal mask (`ppoll`, `pselect6`) wakes like
+    /// any other: POSIX requires the swap and the wait to be atomic, not that
+    /// a signal generated after readiness win over it, so no waiter is held
+    /// back.
     ///
     /// # Why this cannot livelock
     ///
@@ -460,9 +450,7 @@ impl WaitQueue {
         &mut self,
         source: WakeSource,
         pid_filter: Option<u32>,
-        defer_signal_safe: bool,
-    ) -> (Vec<Wakeup>, bool) {
-        let mut deferred = false;
+    ) -> Vec<Wakeup> {
         let mut selected: Vec<WaiterId> = Vec::new();
         for (id, sleeper) in self.sleepers.iter() {
             if let Some(pid) = pid_filter {
@@ -471,10 +459,6 @@ impl WaitQueue {
                 }
             }
             if !sleeper.matches(source) {
-                continue;
-            }
-            if defer_signal_safe && sleeper.signal_safe {
-                deferred = true;
                 continue;
             }
             selected.push(*id);
@@ -492,7 +476,7 @@ impl WaitQueue {
                 woken.push(into_wakeup(sleeper, WakeReason::Source(source)));
             }
         }
-        (woken, deferred)
+        woken
     }
 
     /// Wake at most `max` sleepers registered for `source` that `accept`
@@ -877,7 +861,6 @@ pub mod global {
                 sources: Vec::new(),
                 deadline,
                 target: None,
-                signal_safe: false,
             });
             match result {
                 Ok(_) => Ok(channel),
@@ -980,7 +963,6 @@ mod tests {
             sources,
             deadline,
             target: None,
-            signal_safe: false,
         })
         .expect("park")
     }
@@ -1001,8 +983,7 @@ mod tests {
         let a = park(&mut q, c, 1, WaitKind::Poll, alloc::vec![WakeSource::Pipe(7)], None);
         let _b = park(&mut q, c, 1, WaitKind::Poll, alloc::vec![WakeSource::Pipe(8)], None);
 
-        let (woken, deferred) = q.wake(WakeSource::Pipe(7), None, false);
-        assert!(!deferred);
+        let woken = q.wake(WakeSource::Pipe(7), None);
         assert_eq!(woken.len(), 1);
         assert_eq!(woken[0].id, a);
         assert_eq!(woken[0].reason, WakeReason::Source(WakeSource::Pipe(7)));
@@ -1022,7 +1003,7 @@ mod tests {
             alloc::vec![WakeSource::Pipe(3), WakeSource::Accept(9)],
             None,
         );
-        let (woken, _) = q.wake(WakeSource::Accept(9), None, false);
+        let woken = q.wake(WakeSource::Accept(9), None);
         assert_eq!(woken.len(), 1);
         assert_eq!(woken[0].id, id);
     }
@@ -1033,7 +1014,7 @@ mod tests {
         let mine = park(&mut q, c, 4, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
         let _theirs = park(&mut q, c, 5, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
 
-        let (woken, _) = q.wake(WakeSource::Pipe(1), Some(4), false);
+        let woken = q.wake(WakeSource::Pipe(1), Some(4));
         assert_eq!(woken.len(), 1);
         assert_eq!(woken[0].id, mine);
         assert_eq!(q.len(), 1);
@@ -1050,7 +1031,7 @@ mod tests {
             alloc::vec![WakeSource::AdvisoryLock],
             None,
         );
-        let (woken, _) = q.wake(WakeSource::AdvisoryLock, None, false);
+        let woken = q.wake(WakeSource::AdvisoryLock, None);
         assert_eq!(woken.len(), 1);
         assert_eq!(
             q.stats().broad_wakes,
@@ -1058,31 +1039,6 @@ mod tests {
             "an untargeted wake must be visible in the counters"
         );
         assert_eq!(q.stats().woken_by_source, 0);
-    }
-
-    #[test]
-    fn signal_safe_waiters_can_be_deferred() {
-        let (mut q, c) = queue_with_channel();
-        q.park(ParkRequest {
-            pid: 1,
-            tid: 1,
-            channel: c,
-            kind: WaitKind::Poll,
-            sources: alloc::vec![WakeSource::Pipe(2)],
-            deadline: None,
-            target: None,
-            signal_safe: true,
-        })
-        .expect("park");
-
-        let (woken, deferred) = q.wake(WakeSource::Pipe(2), None, true);
-        assert!(woken.is_empty());
-        assert!(deferred, "the caller must learn that a waiter was held back");
-        assert_eq!(q.len(), 1);
-
-        let (woken, deferred) = q.wake(WakeSource::Pipe(2), None, false);
-        assert_eq!(woken.len(), 1);
-        assert!(!deferred);
     }
 
     #[test]
@@ -1148,7 +1104,7 @@ mod tests {
         assert_eq!(q.next_deadline_ns(), Some(20 * MS));
 
         // Waking the early waiter by readiness leaves a stale heap entry.
-        let (woken, _) = q.wake(WakeSource::Pipe(1), None, false);
+        let woken = q.wake(WakeSource::Pipe(1), None);
         assert_eq!(woken[0].id, early);
         assert_eq!(
             q.next_deadline_ns(),
@@ -1174,7 +1130,7 @@ mod tests {
         assert_eq!(dropped[0].reason, WakeReason::Retired);
         assert!(q.is_empty());
 
-        let (woken, _) = q.wake(WakeSource::Pipe(1), None, false);
+        let woken = q.wake(WakeSource::Pipe(1), None);
         assert!(woken.is_empty());
     }
 
@@ -1191,7 +1147,7 @@ mod tests {
         assert_ne!(before, after, "a generation must never be reused");
 
         let fresh = park(&mut q, after, 42, WaitKind::Poll, alloc::vec![WakeSource::Pipe(5)], None);
-        let (woken, _) = q.wake(WakeSource::Pipe(5), Some(42), false);
+        let woken = q.wake(WakeSource::Pipe(5), Some(42));
         assert_eq!(woken.len(), 1);
         assert_eq!(
             woken[0].id, fresh,
@@ -1212,7 +1168,6 @@ mod tests {
                 sources: Vec::new(),
                 deadline: None,
                 target: None,
-                signal_safe: false,
             })
             .unwrap_err();
         assert_eq!(err, Errno::ESRCH);
@@ -1230,7 +1185,6 @@ mod tests {
             sources: alloc::vec![WakeSource::Pipe(1)],
             deadline: Some(MS),
             target: None,
-            signal_safe: false,
         })
         .expect("park");
         q.park(ParkRequest {
@@ -1244,7 +1198,6 @@ mod tests {
             }],
             deadline: None,
             target: None,
-            signal_safe: false,
         })
         .expect("park");
         let other = park(&mut q, c, 4, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
@@ -1265,7 +1218,7 @@ mod tests {
         let (mut q, c) = queue_with_channel();
         park(&mut q, c, 1, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
 
-        let (woken, _) = q.wake(WakeSource::Pipe(1), None, false);
+        let woken = q.wake(WakeSource::Pipe(1), None);
         assert_eq!(woken.len(), 1);
 
         // The caller re-executes, still gets EAGAIN, and re-parks.
@@ -1281,7 +1234,7 @@ mod tests {
         let second = park(&mut q, c, 2, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
         let third = park(&mut q, c, 3, WaitKind::Poll, alloc::vec![WakeSource::Pipe(1)], None);
 
-        let (woken, _) = q.wake(WakeSource::Pipe(1), None, false);
+        let woken = q.wake(WakeSource::Pipe(1), None);
         let ids: Vec<WaiterId> = woken.iter().map(|w| w.id).collect();
         assert_eq!(ids, alloc::vec![first, second, third]);
     }
@@ -1300,7 +1253,7 @@ mod tests {
             alloc::vec![WakeSource::Pipe(2)],
             None,
         );
-        let (woken, _) = q.wake(WakeSource::Pipe(2), None, false);
+        let woken = q.wake(WakeSource::Pipe(2), None);
         assert_eq!(
             woken[0].kind,
             WaitKind::Transfer {
@@ -1346,7 +1299,7 @@ mod tests {
             alloc::vec![WakeSource::ChildEvent { parent: 2 }],
             None,
         );
-        let (woken, _) = q.wake(WakeSource::ChildEvent { parent: 1 }, None, false);
+        let woken = q.wake(WakeSource::ChildEvent { parent: 1 }, None);
         assert_eq!(woken.len(), 1);
         assert_eq!(woken[0].id, parent);
 
@@ -1358,7 +1311,7 @@ mod tests {
             alloc::vec![WakeSource::Signal { pid: 3, tid: 3 }],
             None,
         );
-        let (woken, _) = q.wake(WakeSource::Signal { pid: 3, tid: 3 }, None, false);
+        let woken = q.wake(WakeSource::Signal { pid: 3, tid: 3 }, None);
         assert_eq!(woken.len(), 1);
         assert_eq!(woken[0].id, sig);
     }

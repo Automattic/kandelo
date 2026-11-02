@@ -302,7 +302,6 @@ impl Parks {
             sources,
             deadline,
             target: None,
-            signal_safe: false,
         }) {
             Ok(id) => id,
             Err(error) => {
