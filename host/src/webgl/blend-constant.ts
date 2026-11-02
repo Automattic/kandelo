@@ -94,10 +94,8 @@ export function drawColorBufferKind(b: GlBinding): "fixed" | "float" | null {
 /** The fragment stage of a folding variant: the guest's main becomes an
  * ordinary function, then the color it wrote is multiplied by the source
  * factor. GLSL ES 1.00 shaders write gl_FragColor or gl_FragData[0] (WebGL 2
- * rejects other gl_FragData indices). Null for GLSL ES 3.00 sources, which
- * are not ES 2.0 shaders and have no built-in color output to fold. */
-export function blendFoldShaderSource(source: string, clampColor: boolean): string | null {
-  if (/^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)) return null;
+ * rejects other gl_FragData indices). */
+export function blendFoldShaderSource(source: string, clampColor: boolean): string {
   const output = glslTokens(source, true).some(token => token.text === "gl_FragData") ? "gl_FragData[0]" : "gl_FragColor";
   const { text } = renameIdentifiers(source, new Map([["main", MAIN]]));
   const product = clampColor

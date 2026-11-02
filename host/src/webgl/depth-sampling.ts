@@ -68,9 +68,8 @@ function splitArguments(list: GlslToken[], open: number, close: number): [number
 
 /** The variant source for one stage, or null when it cannot be exact.
  * `depth` names the depth-bound sampler uniforms (array elements as
- * `name[i]`). GLSL ES 3.00 lookups are ES 3.0 semantics and stay unchanged. */
+ * `name[i]`). */
 export function depthSamplingShaderSource(source: string, depth: ReadonlySet<string>): string | null {
-  if (/^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)) return source;
   const list = glslTokens(source, true);
   const word = (i: number) => /^[A-Za-z_]\w*$/.test(list[i]?.text ?? "");
 

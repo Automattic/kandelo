@@ -6,7 +6,7 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import { preprocessEssl100 } from "../src/webgl/essl-preprocessor.js";
 import {
   compileGuestShader, derivativeValidationSource, guestInterfaceName, nativeInterfaceName, onlyAppendixALimitations,
-  prepareLinkLanguages, recordShaderLanguage, standardDerivativesShaderSource, translateEssl100,
+  prepareLinkLanguages, recordShaderLanguage, standardDerivativesShaderSource, translateEssl100, unsupportedShaderVersion,
 } from "../src/webgl/essl3-translation.js";
 
 /**
@@ -233,6 +233,23 @@ describe("GL_OES_standard_derivatives on ES 1.00 sources", () => {
   });
 });
 
+describe("GLSL ES 1.00 is the only guest language", () => {
+  it("finds a leading #version naming any other number", () => {
+    expect(unsupportedShaderVersion("#version 300 es\nvoid main() {}\n")).toEqual({ line: 1, version: "300 es" });
+    expect(unsupportedShaderVersion("// header\n/* a\n b */  #version 310 es // why\n")).toEqual({ line: 3, version: "310 es" });
+    expect(unsupportedShaderVersion("\n  # version 110\n")).toEqual({ line: 2, version: "110" });
+    expect(unsupportedShaderVersion("#version 99\n")).toEqual({ line: 1, version: "99" });
+    expect(unsupportedShaderVersion("#version 101\n")).toEqual({ line: 1, version: "101" });
+  });
+
+  it("leaves #version 100, missing and malformed versions and later directives to the ES 1.00 compile", () => {
+    for (const source of ["#version 100\nvoid main() {}\n", "/* asdf */\n#version 100\n", "void main() {}\n",
+      "#version\n", "#version AAA\n", "#version 100.0\n", "#version foobar\n", "#version 100 foobar\n",
+      "precision mediump float;\n#version 300 es\n", "#define FOO BAR\n#version 300 es\n", "#extension GL_OES_standard_derivatives : enable\n"])
+      expect(unsupportedShaderVersion(source)).toBeNull();
+  });
+});
+
 describe("which compiles are translated", () => {
   it("recognizes logs whose every error is an Appendix A limitation", () => {
     expect(onlyAppendixALimitations("ERROR: 0:3: 'while' : This type of loop is not allowed\n")).toBe(true);
@@ -268,7 +285,7 @@ class TranslationGl {
     const errors = [];
     if (shader.source.includes("BROKEN")) errors.push("ERROR: 0:1: 'BROKEN' : undeclared identifier");
     if (!essl300 && /\bwhile\b/.test(shader.source)) errors.push("ERROR: 0:2: 'while' : This type of loop is not allowed");
-    if (essl300 && shader.source.includes("#error")) errors.push("ERROR: 0:1: '#error' : translation");
+    if (shader.source.includes("#error")) errors.push("ERROR: 0:1: '#error' : " + (essl300 ? "translation" : "directive"));
     shader.compiled = !errors.length;
     shader.log = errors.join("\n");
   }
@@ -387,6 +404,41 @@ describe("compiling and linking through the host", () => {
     send(O.OP_LINK_PROGRAM, [3]);
     expect([vertex, fragment].map(s => [s.source.startsWith("#version 300 es"), s.compiles])).toEqual([[false, 1], [false, 1]]);
     expect(activeName(O.QOP_GET_ACTIVE_UNIFORM_INFO, 3, 0)).toBe("sample");
+  });
+
+  it("fails a shader declaring another language before any translation; GetShaderSource keeps the guest's bytes", () => {
+    const { b, send, shader } = setup();
+    const source = "#version 300 es\nprecision mediump float;\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n";
+    const fragment = shader(1, 0x8b30, source);
+    expect(fragment.compiled).toBe(false);
+    expect(fragment.compiles).toBe(1);
+    expect(fragment.source).toBe("#error unsupported shading language version 300 es; " +
+      "this OpenGL ES 2.0 context supports GLSL ES 1.00 (#version 100) only\n");
+    expect(new TextDecoder().decode(b.shaderSources.get(b.shaders.get(1)!))).toBe(source);
+    // The directive's line is the error's line.
+    const later = shader(2, 0x8b31, "// vertex\n\n#version 300 es\nin vec4 p;\nvoid main() { gl_Position = p; }\n");
+    expect(later.source.startsWith("\n\n#error unsupported shading language version 300 es;")).toBe(true);
+    // A program linking it fails, and nothing was translated for it.
+    const vertex = shader(3, 0x8b31, "attribute vec4 p;\nvoid main() { gl_Position = p; }\n");
+    send(O.OP_CREATE_PROGRAM, [4]);
+    send(O.OP_ATTACH_SHADER, [4, 3]);
+    send(O.OP_ATTACH_SHADER, [4, 1]);
+    send(O.OP_LINK_PROGRAM, [4]);
+    expect((b.programs.get(4) as unknown as Program).linked).toBe(false);
+    expect(vertex.source.startsWith("#version 300 es")).toBe(false);
+    expect(b.errors).toEqual([]);
+  });
+
+  it("does not link a translated shader with a partner that declares ESSL 3.00", () => {
+    const { b, send, shader } = setup();
+    shader(1, 0x8b31, "#version 300 es\nin vec4 p;\nvoid main() { gl_Position = p; }\n");
+    const fragment = shader(2, 0x8b30, FRAGMENT);
+    expect(fragment.source.startsWith("#version 300 es")).toBe(true);
+    send(O.OP_CREATE_PROGRAM, [3]);
+    send(O.OP_ATTACH_SHADER, [3, 1]);
+    send(O.OP_ATTACH_SHADER, [3, 2]);
+    send(O.OP_LINK_PROGRAM, [3]);
+    expect((b.programs.get(3) as unknown as Program).linked).toBe(false);
   });
 
   it("restores a partner's ES 1.00 compile when its translation fails, leaving the version mismatch to the link", () => {

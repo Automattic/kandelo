@@ -134,9 +134,8 @@ describe("GLSL ES built-in limit constants equal the guest's queries", () => {
       "void main() { gl_FragColor = vec4(float(int(1) + N), float(int(16)), 0.0, 1.0); }\n");
   });
 
-  it("leaves sources without built-in limits, ESSL 3.00 sources and longer names unchanged", () => {
+  it("leaves sources without built-in limits and longer names unchanged", () => {
     for (const source of ["void main() { gl_FragColor = vec4(1.0); }\n",
-      "#version 300 es\nout highp vec4 o; void main() { o = vec4(float(gl_MaxDrawBuffers)); }\n",
       "void main() { gl_FragColor = vec4(float(gl_MaxDrawBuffersX)); }\n"])
       expect(builtinLimitShaderSource(source, LIMITS)).toBe(source);
   });

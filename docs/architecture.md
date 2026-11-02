@@ -4005,6 +4005,26 @@ constant expression, not an l-value and not a macro, so other
 preprocessor directives still treat the name as the engine does.
 `glGetShaderSource` returns the guest's text.
 
+OpenGL ES 2.0 has one shading language, GLSL ES 1.00, and the context
+reports `OpenGL ES GLSL ES 1.00` as `GL_SHADING_LANGUAGE_VERSION`. WebGL 2
+also compiles ESSL 3.00, so `glCompileShader` refuses a shader whose
+leading `#version` directive names any other number (`#version 300 es`,
+`#version 110`, ...) before any rewrite or translation
+(`unsupportedShaderVersion` in `host/src/webgl/essl3-translation.ts`). The
+shader object then fails natively, as on an ES 2.0 driver:
+`COMPILE_STATUS` is `GL_FALSE`, the info log reads `unsupported shading
+language version 300 es; this OpenGL ES 2.0 context supports GLSL ES 1.00
+(#version 100) only` at the directive's line, a program linking it fails,
+and `glGetShaderSource` still returns the guest's text. Why: compiling the
+guest's ESSL 3.00 as written gave an ES 2.0 context ES 3.0 shaders
+(integer types, `texture()`, `in`/`out`, ES 3.0 sampling of cube maps and
+depth textures) that no ES 2.0 driver offers, and let them link with the
+host's translations of ES 1.00 partners. A version that is not a decimal
+number (`#version AAA`, `#version 100.0`) and a `#version` that is not
+first stay with the ES 1.00 compile, which rejects them with its own log.
+The ESSL 3.00 that WebGL compiles is therefore always the host's own
+translation of an ES 1.00 shader.
+
 OpenGL ES 2.0 compiles all of GLSL ES 1.00, but WebGL holds ESSL 1.00
 shaders to the "minimum functionality" of GLSL ES 1.00 Appendix A: no
 `while` or `do`-`while` loops, `for` loops only with a constant-bounded,
@@ -4086,11 +4106,9 @@ Known gaps in translated programs: a fragment shader's `invariant
 gl_FragCoord` no longer requires an invariant `gl_Position` in the vertex
 shader (ES 1.00 makes that a link error); a dynamically indexed
 `gl_FragData` is still rejected, as ESSL 3.00 requires constant output
-indices; a sampler array indexed by a loop index (ES 1.00 Appendix A
-allows it; ESSL 3.00 requires a constant expression) fails to compile;
-and a guest ESSL 3.00 shader, which the ES 2.0 host already
-compiles as written although ES 2.0 has no ESSL 3.00, links with a
-translated partner. Headless Chromium also loses the WebGL context when it
+indices; and a sampler array indexed by a loop index (ES 1.00 Appendix A
+allows it; ESSL 3.00 requires a constant expression) fails to compile.
+Headless Chromium also loses the WebGL context when it
 links an ESSL 3.00 program that overloads a function by array size (a
 suspected engine defect, reproduced without Kandelo code; the ES 1.00
 form links), so such a shader that also needs the translation loses the
@@ -4154,9 +4172,7 @@ faces never specified (likewise, an attached face never specified is
 `TEXTURE_2D_ARRAY` for the draw only when it differs from the unit's
 guest binding; a complete cube in its own array costs a cached comparison,
 and a program without cube samplers keeps the one per-draw lookup it
-already made for external textures. A guest ESSL 3.00 shader (no ES 2.0
-language) still samples a native `samplerCube`, whose binding now holds
-nothing, so its lookups return (0, 0, 0, 1).
+already made for external textures.
 
 One ES 2.0 filtering rule WebGL 2 engines do not apply to any texture:
 section 3.7.9 makes the minification/magnification switch-over point

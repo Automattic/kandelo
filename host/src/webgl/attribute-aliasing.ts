@@ -198,8 +198,7 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
     }
   }) || !vertexShader || !fragmentShader) return null;
   const vertex = compiledShaderSource(vertexShader), fragment = compiledShaderSource(fragmentShader);
-  // ES 3.00 shaders forbid aliasing; only GLSL ES 1.00 permits it.
-  if (vertex === undefined || fragment === undefined || /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(vertex)) return null;
+  if (vertex === undefined || fragment === undefined) return null;
   const bindings = b.programAttributeBindings.get(name) ?? new Map<string, number>();
   const rewrite = aliasedVertexShaderSource(vertex, bindings);
   if (!rewrite) return null;

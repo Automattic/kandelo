@@ -67,13 +67,11 @@ export type ExternalShaderSource = {
   samplers: string[];
 };
 
-/** The WebGL source of a guest shader. ESSL 3.00 sources and sources that
- * never mention the extension compile unchanged: the extension's macro and
- * type are then unobservable. */
+/** The WebGL source of a guest shader. Sources that never mention the
+ * extension compile unchanged: the extension's macro and type are then
+ * unobservable. */
 export function externalShaderSource(source: string): ExternalShaderSource {
-  if (/^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)
-      || (!source.includes(EXTENSION) && !source.includes(GUEST_TYPE)))
-    return { text: source, samplers: [] };
+  if (!source.includes(EXTENSION) && !source.includes(GUEST_TYPE)) return { text: source, samplers: [] };
   const list = glslTokens(source, true);
   const edits: Edit[] = [];
   const lineOf = (offset: number) => source.slice(0, offset).split("\n").length;

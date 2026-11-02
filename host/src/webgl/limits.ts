@@ -202,11 +202,10 @@ export function guestBuiltinLimits(owner: CheckedGlOwner): ReadonlyMap<string, n
  * preprocessor `#if` still rejects it. Uses inside a `#define` body are
  * rewritten (they expand into code); the built-in's name in every other
  * directive (`#if`, `#ifdef`, `#undef`, a reserved `#define` name) stays as
- * written for the engine to judge. ESSL 3.00 sources compile unchanged: an
- * ES 2.0 context has no ESSL 3.00 limits to agree with.
+ * written for the engine to judge.
  */
 export function builtinLimitShaderSource(source: string, limits: ReadonlyMap<string, number>): string {
-  if (!source.includes("gl_Max") || /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)) return source;
+  if (!source.includes("gl_Max")) return source;
   const list = glslTokens(source, true);
   let text = "", from = 0, keyword = "", directiveAt = -1;
   for (let i = 0; i < list.length; i++) {

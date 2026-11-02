@@ -52,8 +52,4 @@ describe("depth-sampler shader rewrite", () => {
     expect(depthSamplingShaderSource(member, new Set(["u.t"]))).toBeNull();
   });
 
-  it("leaves GLSL ES 3.00 sources unchanged", () => {
-    const source = "#version 300 es\nprecision mediump float;\nuniform sampler2D d;\nout vec4 o;\nvoid main() { o = texture(d, vec2(0.0)); }\n";
-    expect(depthSamplingShaderSource(source, new Set(["d"]))).toBe(source);
-  });
 });

@@ -979,13 +979,50 @@ function cubeSampling(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 8. GLSL ES 1.00 is the only guest language (essl3-translation.ts
+//    unsupportedShaderVersion): a shader declaring #version 300 es (or any
+//    other number) fails its compile with a driver-style log, while the
+//    engine's control shows WebGL 2 would have compiled it.
+
+function shadingLanguageVersion(): void {
+  const fragments: [string, string][] = [
+    ["300-es", "#version 300 es\nprecision mediump float;\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n"],
+    ["310-es-after-comments", "// comment\n/* block\n */\n#version 310 es\nprecision mediump float;\nout vec4 o;\nvoid main() { o = vec4(1.0); }\n"],
+    ["110", "#version 110\nvoid main() { gl_FragColor = vec4(1.0); }\n"],
+  ];
+  for (const [name, source] of fragments) {
+    const shader = gl.createShader(gl.FRAGMENT_SHADER)!;
+    const language = compileGuestShader(gl, shader, source, true);
+    const status = !!gl.getShaderParameter(shader, gl.COMPILE_STATUS), log = gl.getShaderInfoLog(shader) ?? "";
+    gl.deleteShader(shader);
+    const line = source.split("\n").findIndex(l => l.startsWith("#version")) + 1;
+    const ok = language === null && !status && log.includes("unsupported shading language version") && log.includes(`:${line}:`);
+    record(`version.${name}`, ok, `language ${language}, COMPILE_STATUS ${status}, log ${JSON.stringify(log.trim())}`);
+  }
+  // Control: WebGL 2 compiles ESSL 3.00 as written.
+  const native = nativeCompile(fragments[0][1], true);
+  record("version.300-es.native-control", native.ok, native.ok ? "WebGL 2 compiles #version 300 es" : native.log);
+  // #version 100 and no directive still compile and draw.
+  target(false);
+  for (const [label, header] of [["100", "#version 100\n"], ["100-after-comment", "/* asdf */\n#version 100\n"], ["none", ""]]) {
+    const built = buildGuest(VARYING_VERTEX, `${header}precision mediump float;\nvoid main() { gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0); }\n`);
+    let got: number[] = [];
+    if (built.program) {
+      gl.useProgram(built.program); gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1);
+      got = pixel(); gl.deleteProgram(built.program);
+    }
+    record(`version.accepted.${label}`, !!built.program && near(got, GREEN), built.program ? `got ${fmt(got)}` : built.log);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
   if (!gl) return { renderer: "no WebGL 2", results: [{ name: "webgl2", ok: false, status: "fail", detail: "getContext('webgl2') failed" }] };
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling, shadingLanguageVersion]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

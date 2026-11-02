@@ -87,13 +87,18 @@
  *
  * Known differences that remain (truthful gaps, see docs/architecture.md):
  * a fragment shader's `invariant gl_FragCoord` no longer requires the vertex
- * shader's gl_Position to be invariant; a dynamically indexed gl_FragData is
- * still rejected (ESSL 3.00 requires constant output indices); and a guest
- * ESSL 3.00 shader (which the host compiles as written) links with a
- * translated partner. ESSL 3.00 indexes sampler arrays only with constant
+ * shader's gl_Position to be invariant; and a dynamically indexed
+ * gl_FragData is still rejected (ESSL 3.00 requires constant output
+ * indices). ESSL 3.00 indexes sampler arrays only with constant
  * expressions, so a translated shader that indexes one with a loop index
  * (ES 1.00 Appendix A allows it) fails to compile; every shader that
  * samples a cube map is translated.
+ *
+ * Only GLSL ES 1.00 is a guest language. OpenGL ES 2.0 has one shading
+ * language, and Kandelo reports `OpenGL ES GLSL ES 1.00`, so a guest shader
+ * declaring any other version (`#version 300 es` included) fails to compile
+ * before any translation, as on an ES 2.0 driver (`compileGuestShader`).
+ * The ESSL 3.00 text WebGL compiles is always the host's own translation.
  */
 import { preprocessEssl100, type EsslToken } from "./essl-preprocessor.js";
 
@@ -172,12 +177,50 @@ export function onlyAppendixALimitations(log: string): boolean {
 // --- compiling a guest shader ----------------------------------------------------
 
 /** What a compiled guest shader object holds natively: its ES 1.00 source,
- * the ESSL 3.00 translation of it, or a source the guest wrote in another
- * language version (compiled as written). */
-export type ShaderLanguage = "essl100" | "essl300" | "guest";
+ * or the ESSL 3.00 translation of it. */
+export type ShaderLanguage = "essl100" | "essl300";
 
 const COMPILE_STATUS = 0x8b81;
-const GUEST_VERSION = /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m;
+
+/**
+ * The `#version` directive of a source that declares a language other than
+ * GLSL ES 1.00: its line and its text after `version`. Null for a source
+ * without one, for `#version 100`, and for a directive that is not a
+ * decimal number (`#version AAA`, `#version 100.0`), which the ES 1.00
+ * compile rejects itself. Only the directive that comes first (after
+ * comments and white space) is a version declaration (GLSL ES 1.00 section
+ * 3.4); a later one is an ES 1.00 error the native compile reports.
+ */
+export function unsupportedShaderVersion(source: string): { line: number; version: string } | null {
+  let i = 0, line = 1;
+  const n = source.length;
+  while (i < n) {
+    const c = source[i];
+    if (c === "\n") { line++; i++; }
+    else if (c === " " || c === "\t" || c === "\r" || c === "\v" || c === "\f") i++;
+    else if (c === "/" && source[i + 1] === "/") { while (i < n && source[i] !== "\n") i++; }
+    else if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2), stop = end < 0 ? n : end + 2;
+      for (let j = i; j < stop; j++) if (source[j] === "\n") line++;
+      i = stop;
+    } else break;
+  }
+  const directive = /^#[ \t]*version[ \t]+([^\n]*)/.exec(source.slice(i, i + 256));
+  if (!directive) return null;
+  const version = directive[1].replace(/\/[/*].*$/, "").trim();
+  const number = /^[0-9]+/.exec(version)?.[0];
+  if (number === undefined || number === "100" || !/^[0-9]+(\s|$)/.test(version)) return null;
+  return { line, version };
+}
+
+/** The native source of a rejected version: an error at the directive's line
+ * with a driver's message. Compiling it leaves the shader object failed
+ * natively (COMPILE_STATUS false, the message in its info log, and a link
+ * that names it fails), exactly as the guest's compile did. */
+function unsupportedVersionSource(rejected: { line: number; version: string }): string {
+  return `${"\n".repeat(rejected.line - 1)}#error unsupported shading language version ${rejected.version}; ` +
+    "this OpenGL ES 2.0 context supports GLSL ES 1.00 (#version 100) only\n";
+}
 
 /**
  * CompileShader of a guest source (after the ES 1.00 extension rewrites of
@@ -189,9 +232,13 @@ const GUEST_VERSION = /^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m;
  */
 export function compileGuestShader(gl: WebGL2RenderingContext, shader: WebGLShader, source: string,
     fragment: boolean): ShaderLanguage | null {
-  if (GUEST_VERSION.test(source) && !/^\s*#\s*version\s+100\b/m.test(source)) {
-    gl.shaderSource(shader, source); gl.compileShader(shader);
-    return gl.getShaderParameter(shader, COMPILE_STATUS) ? "guest" : null;
+  // An ES 2.0 compiler accepts GLSL ES 1.00 only. WebGL 2 would compile
+  // `#version 300 es` as written, which would make ES 3.0 shaders run in an
+  // ES 2.0 context; the version is refused before any translation instead.
+  const rejected = unsupportedShaderVersion(source);
+  if (rejected) {
+    gl.shaderSource(shader, unsupportedVersionSource(rejected)); gl.compileShader(shader);
+    return null;
   }
   const validation = derivativeValidationSource(source, fragment);
   gl.shaderSource(shader, validation ?? source); gl.compileShader(shader);
@@ -254,9 +301,8 @@ export function shaderLanguage(shader: WebGLShader): ShaderLanguage | undefined 
  * state, which for that shader is unchanged in meaning; only its info log
  * now comes from the 3.00 compile. Should that compile fail anyway (a
  * translator defect), its ES 1.00 compile is restored and the native link
- * reports the version mismatch. A shader the guest wrote in ESSL 3.00 is
- * never recompiled. True when the program links translated shaders, whose
- * interface names the reflection queries translate.
+ * reports the version mismatch. True when the program links translated
+ * shaders, whose interface names the reflection queries translate.
  */
 export function prepareLinkLanguages(gl: WebGL2RenderingContext, shaders: readonly WebGLShader[]): boolean {
   const entries = shaders.map(shader => compiledShaders.get(shader));
@@ -329,7 +375,6 @@ const GEN_TYPES = ["float", "vec2", "vec3", "vec4"];
  */
 export function standardDerivativesShaderSource(source: string): string {
   if (!source.includes(DERIVATIVES) && !DERIVATIVE_FUNCTIONS.some(f => source.includes(f))) return source;
-  if (/^\s*#\s*version\s+[1-9][0-9][0-9]\s+es/m.test(source)) return source;
   const lines = source.split("\n");
   const out: string[] = [];
   let changed = false;
