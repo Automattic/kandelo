@@ -2245,6 +2245,35 @@ cache policy: the kernel pins the inode for its mappings, observes
 descriptor writes through a content generation its filesystem advances on
 every write and truncation, and writes each publication through to the file.
 
+The other direction, mapped stores reaching descriptor I/O, needs a fence.
+A process's stores sit in its own linear memory until something publishes
+them, so before any syscall reads or writes a kernel-owned file's content
+the kernel *pulls* every writable mapping of that file: it compares each
+process's bytes with its snapshot and merges the changed runs into the
+file, without writing any process's memory. The pull is publish-only on
+purpose. The pulled process may be running on another thread, and writing
+its memory back could overwrite a store it made between the read and the
+write. One classifier, `descriptor_fence_for` in
+`crates/runtime-core/src/memory.rs`, lists the syscalls that touch file
+content (`read`/`pread`/`readv`/`preadv`, `write`/`pwrite`/`writev`/`pwritev`,
+`sendfile`, `splice` and `copy_file_range` on both descriptors, `ftruncate`,
+`fallocate`). `kernel_handle_channel` runs the fence before dispatch and
+before any `&mut Process` borrow, for the raw and record transports alike,
+and so also before the `pread` that fills a `MAP_PRIVATE` copy. `fsync`,
+`fdatasync` and `truncate` fence inside their exports because the host calls
+those exports directly too. Operations that name the file by path rather
+than descriptor (`truncate`, an `O_TRUNC` open, an exec or spawn target, and
+the host's `kernel_rootfs_read_file`, `kernel_rootfs_inspect_read_file`,
+`kernel_rootfs_write_file` and filesystem exports) fence every mapped file
+instead of resolving the path before dispatch; nothing is done when no
+kernel-owned file is mapped. `host/test/descriptor-fence-contract.test.ts`
+keeps the classifier's list in step with the host's own list for
+host-mounted files. A publication the file refuses fails the descriptor
+operation with `EIO`, as the host's `flushSharedBackingForFd` does. Without
+the fence a sole writer's store was invisible to `read()` until `msync`,
+`munmap`, `exec` or exit, and a later `pwrite` or `ftruncate` could be
+overwritten by that store when it was finally published.
+
 When a kernel-owned file refuses a mapping's bytes (for example a full
 tmpfs), the loss is real data the program believed it stored, so it is
 never quiet. The dirty pages stay on the backing for a later attempt, the

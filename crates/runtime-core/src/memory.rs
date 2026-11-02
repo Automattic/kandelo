@@ -2653,6 +2653,92 @@ impl BoundaryStamp<'_> {
 /// slower.
 pub const SHARED_MAPPING_SYNC_UNCHANGED: i32 = 2;
 
+/// What a syscall must fence before the kernel touches file content: the
+/// descriptor-fence half of [`SharedMappingTable::fence_handle`].
+///
+/// This is the one list of syscalls that read or write the *content* of a
+/// file through a descriptor or a pathname. A kernel-owned file can be mapped
+/// `MAP_SHARED` by processes whose stores the kernel has not yet published
+/// (each process owns a separate linear memory), so before any of these
+/// reaches the file, every mapping of it is pulled. Keep it in step with the
+/// host's `syscallTouchesFdStorageBeforeKernel` and its `sendfile`,
+/// `splice` and `copy_file_range` cases (`host/src/kernel-worker.ts`), which
+/// do the same for host-mounted files; `host/test/descriptor-fence-contract`
+/// checks the two lists name the same syscalls.
+///
+/// Not fenced, deliberately: `stat`/`fstat` (a store never changes the size,
+/// and POSIX lets the timestamps lag), `close`, locks and `lseek` (no
+/// content), and file-change notifications. `mmap` of a private copy
+/// populates through `pread`, which is fenced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescriptorFence {
+    /// The syscall touches no file content.
+    None,
+    /// The content behind these descriptors of the calling process.
+    Fds([Option<i32>; 2]),
+    /// A file named by path (`O_TRUNC` open). The kernel does not resolve
+    /// the path before dispatch, so every mapped file is fenced; such opens
+    /// are rare next to descriptor I/O.
+    AllMappedFiles,
+    /// The kernel export the syscall dispatches to fences itself, because the
+    /// host also calls that export directly (`fsync`, `fdatasync`,
+    /// `truncate`).
+    InExport,
+}
+
+/// Classify one channel syscall for the descriptor fence. See
+/// [`DescriptorFence`].
+pub fn descriptor_fence_for(nr: u32, args: &[i64; 6]) -> DescriptorFence {
+    use wasm_posix_shared::Syscall as S;
+    use wasm_posix_shared::abi::extended_syscalls::{
+        SYS_COPY_FILE_RANGE, SYS_FALLOCATE, SYS_PREADV, SYS_PREADV2, SYS_PWRITEV, SYS_PWRITEV2,
+        SYS_SENDFILE, SYS_SPLICE,
+    };
+    // Named as the host names them, so the parity check can compare lists.
+    const SYS_READ: u32 = S::Read as u32;
+    const SYS_WRITE: u32 = S::Write as u32;
+    const SYS_PREAD: u32 = S::Pread as u32;
+    const SYS_PWRITE: u32 = S::Pwrite as u32;
+    const SYS_READV: u32 = S::Readv as u32;
+    const SYS_WRITEV: u32 = S::Writev as u32;
+    const SYS_FTRUNCATE: u32 = S::Ftruncate as u32;
+    const SYS_FSYNC: u32 = S::Fsync as u32;
+    const SYS_FDATASYNC: u32 = S::Fdatasync as u32;
+    const SYS_TRUNCATE: u32 = S::Truncate as u32;
+    const SYS_OPEN: u32 = S::Open as u32;
+    const SYS_OPENAT: u32 = S::Openat as u32;
+    let fd = |index: usize| Some(args[index] as i32);
+    match nr {
+        SYS_READ | SYS_WRITE | SYS_PREAD | SYS_PWRITE | SYS_READV | SYS_WRITEV
+        | SYS_FTRUNCATE | SYS_PREADV | SYS_PWRITEV | SYS_PREADV2 | SYS_PWRITEV2
+        | SYS_FALLOCATE => DescriptorFence::Fds([fd(0), None]),
+        // sendfile(out_fd, in_fd, ...): both sides.
+        SYS_SENDFILE => DescriptorFence::Fds([fd(0), fd(1)]),
+        // splice / copy_file_range (fd_in, off_in, fd_out, off_out, ...).
+        SYS_SPLICE | SYS_COPY_FILE_RANGE => DescriptorFence::Fds([fd(0), fd(2)]),
+        SYS_FSYNC | SYS_FDATASYNC | SYS_TRUNCATE => DescriptorFence::InExport,
+        SYS_OPEN if (args[1] as u32) & wasm_posix_shared::flags::O_TRUNC != 0 => {
+            DescriptorFence::AllMappedFiles
+        }
+        SYS_OPENAT if (args[2] as u32) & wasm_posix_shared::flags::O_TRUNC != 0 => {
+            DescriptorFence::AllMappedFiles
+        }
+        _ => DescriptorFence::None,
+    }
+}
+
+/// What one publish-only pull ([`SharedMappingTable::pull_backing`]) did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PullOutcome {
+    /// The process's bytes equal its snapshot (or there was nothing to pull).
+    Unchanged,
+    /// Changed bytes were merged into the backing and reached the file.
+    Published,
+    /// Changed bytes were merged but the file refused them; the loss was
+    /// reported and the pages stay dirty.
+    WritebackFailed,
+}
+
 /// Every process's kernel-owned shared mappings, the authoritative backings
 /// behind them, and the coherence protocol that keeps the two in step.
 ///
@@ -2741,6 +2827,11 @@ pub struct SharedMappingTable {
     /// pid → its previous boundary sync; see [`BoundaryRecord`].
     boundaries: BTreeMap<u32, BoundaryRecord>,
     next_boundary_serial: u64,
+    /// Stable handle -> backing key, for every file backing. The descriptor
+    /// fence ([`Self::fence_handle`]) starts from the handle an open file
+    /// description carries and must find the backing without formatting a
+    /// key on the syscall path.
+    fence_handles: BTreeMap<i64, String>,
 }
 
 impl SharedMappingTable {
@@ -2761,6 +2852,7 @@ impl SharedMappingTable {
             sysv_versions: BTreeMap::new(),
             boundaries: BTreeMap::new(),
             next_boundary_serial: 1,
+            fence_handles: BTreeMap::new(),
         }
     }
 
@@ -3019,6 +3111,8 @@ impl SharedMappingTable {
                 existing.size = stat.size;
                 existing.size_valid = true;
                 io.release_handle(old_handle);
+                self.fence_handles.remove(&old_handle);
+                self.fence_handles.insert(source_handle, String::from(key));
             } else {
                 existing.revalidate(io)?;
             }
@@ -3031,6 +3125,7 @@ impl SharedMappingTable {
             FileBacking::new(String::from(key), source_handle, source_writable, stat.size);
         backing.observe_source_generation(io);
         self.file_backings.insert(String::from(key), backing);
+        self.fence_handles.insert(source_handle, String::from(key));
         Ok(self.file_backings.get_mut(key).expect("just inserted"))
     }
 
@@ -3122,6 +3217,7 @@ impl SharedMappingTable {
         }
         let handle = backing.handle;
         self.file_backings.remove(key);
+        self.fence_handles.remove(&handle);
         io.release_handle(handle);
     }
 
@@ -3141,6 +3237,7 @@ impl SharedMappingTable {
         }
         let handle = backing.handle;
         self.file_backings.remove(key);
+        self.fence_handles.remove(&handle);
         io.release_handle(handle);
     }
 
@@ -3529,6 +3626,221 @@ impl SharedMappingTable {
             self.sync_file_from_process(pid, true, io)?;
         }
         Ok(())
+    }
+
+    // -- publish-only pulls and the descriptor fence ----------------------
+    //
+    // A *pull* compares one mapping's process bytes with its snapshot and
+    // merges what changed into the backing. It never writes the process's
+    // memory. That is what makes it safe to run on a process other than the
+    // one whose syscall is being handled: the pulled process may be running
+    // guest code on another thread, and a whole-range refresh of its memory
+    // could overwrite a store it made between the read and the write.
+
+    /// Publish one file mapping's stores into its backing, without touching
+    /// the process's memory.
+    ///
+    /// The snapshot becomes the bytes just read, so a later pull finds only
+    /// stores made after this one; keeping the old snapshot would merge the
+    /// same runs again over a peer's newer bytes. The mapping's
+    /// `seen_version` advances only when it was current before its own merge,
+    /// because only then does the backing range equal those bytes afterwards.
+    fn pull_mapping(
+        &mut self,
+        pid: u32,
+        map_addr: u64,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<PullOutcome, Errno> {
+        let Some(mem_len) = io.process_memory_len(pid) else {
+            // The process is gone; its mappings are published at teardown.
+            return Ok(PullOutcome::Unchanged);
+        };
+        let Self {
+            mappings,
+            file_backings,
+            ..
+        } = self;
+        let Some(mapping) = mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) else {
+            return Ok(PullOutcome::Unchanged);
+        };
+        if mapping.backing_kind != Some(BackingKind::File) || !mapping.writable {
+            return Ok(PullOutcome::Unchanged);
+        }
+        let Some(key) = mapping.backing_key.clone() else {
+            return Ok(PullOutcome::Unchanged);
+        };
+        let Some(backing) = file_backings.get_mut(&key) else {
+            return Ok(PullOutcome::Unchanged);
+        };
+        if map_addr.saturating_add(mapping.len as u64) > mem_len {
+            return Ok(PullOutcome::Unchanged);
+        }
+        let Some(snapshot) = mapping.snapshot.take() else {
+            return Ok(PullOutcome::Unchanged);
+        };
+        let current = match io.read_process_if_changed(pid, map_addr, mapping.len, &snapshot) {
+            Ok(Some(current)) => current,
+            Ok(None) => {
+                mapping.snapshot = Some(snapshot);
+                return Ok(PullOutcome::Unchanged);
+            }
+            Err(err) => {
+                mapping.snapshot = Some(snapshot);
+                return Err(err);
+            }
+        };
+        let was_current = mapping.seen_version == backing.version;
+        let mut changed = false;
+        let mut failure = None;
+        for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
+            let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
+            let src = &current[offset..offset + chunk];
+            let snap = snapshot.get(offset..offset + chunk).unwrap_or(&[]);
+            if snap.len() == chunk && !range_differs_from_snapshot(src, snap) {
+                continue;
+            }
+            match backing.merge_changed_runs(src, snap, mapping.file_offset + offset as u64, io) {
+                Ok(true) => changed = true,
+                Ok(false) => {}
+                Err(err) => {
+                    failure = Some(err);
+                    break;
+                }
+            }
+        }
+        if let Some(err) = failure {
+            // Nothing past the failing page was merged; keep the old
+            // snapshot so the next pull retries every unmerged run. Runs
+            // already merged are merged again then, which is idempotent for
+            // bytes no peer has changed since.
+            mapping.snapshot = Some(snapshot);
+            if changed {
+                backing.version += 1;
+            }
+            return Err(err);
+        }
+        mapping.snapshot = Some(current);
+        if !changed {
+            return Ok(PullOutcome::Unchanged);
+        }
+        backing.version += 1;
+        if was_current {
+            mapping.seen_version = backing.version;
+        }
+        // A write-through backing persists the publication now, so a
+        // descriptor `read` sees it.
+        if backing.writes_through() && !backing.flush_all(io) {
+            self.report_writeback_loss(pid, map_addr, &key, "write failed", io);
+            return Ok(PullOutcome::WritebackFailed);
+        }
+        Ok(PullOutcome::Published)
+    }
+
+    /// Publish every writable mapping of one backing, in every process
+    /// except `except`, into the backing. Publish-only: no process memory is
+    /// written (see [`Self::pull_mapping`]).
+    ///
+    /// Descriptor writes are reconciled first, so a pull merges a mapping's
+    /// stores over the file's current bytes rather than over a cache the file
+    /// has moved past. A process that is gone is skipped. A refused
+    /// write-through is reported through the writeback-loss path (the
+    /// mapping's next `msync`, and every open description of the file) and
+    /// leaves the pages dirty; the return value says whether every
+    /// publication reached the file.
+    pub fn pull_backing(
+        &mut self,
+        key: &str,
+        except: Option<u32>,
+        io: &mut dyn SharedMappingIo,
+    ) -> Result<bool, Errno> {
+        let Some(backing) = self.file_backings.get_mut(key) else {
+            return Ok(true);
+        };
+        backing.reconcile_source(io);
+        let targets: Vec<(u32, u64)> = self
+            .mappings
+            .iter()
+            .filter(|(pid, _)| Some(**pid) != except)
+            .flat_map(|(pid, m)| {
+                m.iter()
+                    .filter(|(_, mapping)| {
+                        mapping.writable
+                            && mapping.backing_kind == Some(BackingKind::File)
+                            && mapping.backing_key.as_deref() == Some(key)
+                    })
+                    .map(move |(addr, _)| (*pid, *addr))
+            })
+            .collect();
+        let mut persisted = true;
+        let mut result = Ok(());
+        for (pid, addr) in targets {
+            match self.pull_mapping(pid, addr, io) {
+                Ok(PullOutcome::WritebackFailed) => persisted = false,
+                Ok(_) => {}
+                Err(err) => {
+                    result = Err(err);
+                    break;
+                }
+            }
+        }
+        if let Some(backing) = self.file_backings.get_mut(key) {
+            backing.settle();
+        }
+        result.map(|()| persisted)
+    }
+
+    /// Make the file behind a stable handle current before the kernel reads
+    /// or writes its content through a descriptor: publish every writable
+    /// mapping of it, and persist anything still dirty.
+    ///
+    /// POSIX makes a `MAP_SHARED` mapping and descriptor I/O two views of one
+    /// object, so a `read` must observe a store already made through a
+    /// mapping, and a `write`, truncation or `O_TRUNC` open must land after
+    /// it rather than be overwritten by it at a later publication. This is
+    /// the kernel's equivalent of the host's `flushSharedBackingForFd`.
+    ///
+    /// `Err(EIO)` means a publication or a dirty page could not reach the
+    /// file; the descriptor operation fails with it, as the host's does. A
+    /// handle no backing holds is not mapped and costs one map lookup.
+    pub fn fence_handle(&mut self, handle: i64, io: &mut dyn SharedMappingIo) -> Result<(), Errno> {
+        let Some(key) = self.fence_handles.get(&handle).cloned() else {
+            return Ok(());
+        };
+        self.fence_key(&key, io)
+    }
+
+    /// Whether a backing holds `handle`, i.e. whether [`Self::fence_handle`]
+    /// has any work to do for it.
+    pub fn is_fenced_handle(&self, handle: i64) -> bool {
+        self.fence_handles.contains_key(&handle)
+    }
+
+    /// [`Self::fence_handle`] for every mapped file, for an operation that
+    /// names its file by path (`truncate`, an `O_TRUNC` open, `exec`, a host
+    /// export) and is not worth resolving before dispatch.
+    pub fn fence_all(&mut self, io: &mut dyn SharedMappingIo) -> Result<(), Errno> {
+        let keys: Vec<String> = self.file_backings.keys().cloned().collect();
+        let mut result = Ok(());
+        for key in keys {
+            if let Err(err) = self.fence_key(&key, io) {
+                result = Err(err);
+            }
+        }
+        result
+    }
+
+    fn fence_key(&mut self, key: &str, io: &mut dyn SharedMappingIo) -> Result<(), Errno> {
+        let persisted = self.pull_backing(key, None, io)?;
+        let Some(backing) = self.file_backings.get_mut(key) else {
+            return Ok(());
+        };
+        let flushed = backing.dirty_page_count() == 0 || backing.flush_all(io);
+        backing.settle();
+        if persisted && flushed {
+            Ok(())
+        } else {
+            Err(Errno::EIO)
+        }
     }
 
     // -- writeback-loss reporting ----------------------------------------
@@ -5934,6 +6246,154 @@ mod shared_mapping_tests {
         io.poke(1, 0, b"AAAA....");
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
+    }
+
+    // -- the descriptor fence and publish-only pulls ----------------------
+
+    fn sole_kernel_mapping(io: &mut MockIo) -> SharedMappingTable {
+        let key = io.key_of(10);
+        let mut table = SharedMappingTable::new();
+        table
+            .track_kernel_file_mapping(1, 0, 3, &key, 10, 0, 8, true, true, io)
+            .unwrap();
+        table
+    }
+
+    /// The sole mapper of a file defers publication at its own boundaries,
+    /// but a descriptor operation on the file publishes it first.
+    #[test]
+    fn a_fence_publishes_a_sole_writers_store_before_descriptor_io() {
+        let mut io = kernel_file_io();
+        let mut table = sole_kernel_mapping(&mut io);
+        io.poke(1, 0, b"AAAA");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"........".to_vec(), "a sole observer defers");
+        assert!(table.is_fenced_handle(10));
+        table.fence_handle(10, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"AAAA....".to_vec(), "the fence published it");
+        assert_eq!(table.file_backing(&io.key_of(10)).unwrap().cached_page_count(), 0);
+    }
+
+    #[test]
+    fn a_pull_publishes_without_writing_the_pulled_process() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.poke(2, 0, b"....BBBB");
+        // Process 1 is running and stores at bytes no peer touched; a pull of
+        // process 2 must leave process 1's memory exactly as it is.
+        io.poke(1, 0, b"AA");
+        assert!(table.pull_backing(&key, Some(1), &mut io).unwrap());
+        assert_eq!(io.files[&10], b"....BBBB".to_vec());
+        assert_eq!(io.peek(1, 0, 8), b"AA......".to_vec(), "process 1 untouched");
+        assert_eq!(io.peek(2, 0, 8), b"....BBBB".to_vec(), "process 2 untouched");
+        // Process 1's own store is still unpublished and is found later.
+        assert!(table.pull_backing(&key, None, &mut io).unwrap());
+        assert_eq!(io.files[&10], b"AA..BBBB".to_vec());
+    }
+
+    /// A pull adopts the bytes it read as the snapshot. Keeping the old one
+    /// would merge the same store again over a peer's newer bytes.
+    #[test]
+    fn a_repeated_pull_does_not_republish_over_a_newer_peer_store() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.poke(1, 0, b"XXXX");
+        table.pull_backing(&key, None, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"XXXX....".to_vec());
+        io.poke(2, 0, b"YYYY");
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert_eq!(io.files[&10], b"YYYY....".to_vec());
+        let version = table.file_backing(&key).unwrap().version;
+        table.pull_backing(&key, None, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"YYYY....".to_vec(), "the older store stays superseded");
+        assert_eq!(table.file_backing(&key).unwrap().version, version, "nothing new to publish");
+    }
+
+    #[test]
+    fn a_handle_nothing_maps_needs_no_fence() {
+        let mut io = kernel_file_io();
+        let mut table = sole_kernel_mapping(&mut io);
+        let reads = io.reads_of(1);
+        assert!(!table.is_fenced_handle(99));
+        table.fence_handle(99, &mut io).unwrap();
+        assert_eq!(io.reads_of(1), reads);
+    }
+
+    #[test]
+    fn a_refused_fence_publication_fails_the_descriptor_operation() {
+        let mut io = kernel_file_io();
+        let mut table = sole_kernel_mapping(&mut io);
+        io.poke(1, 0, b"AAAA");
+        io.fail_pwrite = true;
+        assert_eq!(table.fence_handle(10, &mut io), Err(Errno::EIO));
+        assert_eq!(io.losses.len(), 1, "the loss is reported");
+        assert!(table.take_writeback_error(1, 0, 8), "and the mapping's msync is told");
+        let key = io.key_of(10);
+        assert!(table.file_backing(&key).unwrap().dirty_page_count() > 0, "the store is kept");
+        io.fail_pwrite = false;
+        table.fence_handle(10, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"AAAA....".to_vec(), "and reaches the file later");
+    }
+
+    #[test]
+    fn fence_all_publishes_every_mapped_file() {
+        let mut io = kernel_file_io().with_kernel_file(11, 1, 3, b"________".to_vec());
+        let mut table = sole_kernel_mapping(&mut io);
+        let other = io.key_of(11);
+        table
+            .track_kernel_file_mapping(2, 0, 4, &other, 11, 0, 8, true, true, &mut io)
+            .unwrap();
+        io.poke(1, 0, b"A");
+        io.poke(2, 0, b"B");
+        table.fence_all(&mut io).unwrap();
+        assert_eq!(io.files[&10], b"A.......".to_vec());
+        assert_eq!(io.files[&11], b"B_______".to_vec());
+    }
+
+    #[test]
+    fn the_descriptor_fence_names_the_files_each_syscall_touches() {
+        use wasm_posix_shared::abi::extended_syscalls as x;
+        use wasm_posix_shared::Syscall as S;
+        let args = |a: i64, b: i64, c: i64| [a, b, c, 0, 0, 0];
+        let one = |fd| DescriptorFence::Fds([Some(fd), None]);
+        for nr in [
+            S::Read as u32,
+            S::Write as u32,
+            S::Pread as u32,
+            S::Pwrite as u32,
+            S::Readv as u32,
+            S::Writev as u32,
+            S::Ftruncate as u32,
+            x::SYS_PREADV,
+            x::SYS_PWRITEV,
+            x::SYS_PREADV2,
+            x::SYS_PWRITEV2,
+            x::SYS_FALLOCATE,
+        ] {
+            assert_eq!(descriptor_fence_for(nr, &args(7, 0, 0)), one(7), "syscall {nr}");
+        }
+        assert_eq!(
+            descriptor_fence_for(x::SYS_SENDFILE, &args(4, 5, 0)),
+            DescriptorFence::Fds([Some(4), Some(5)])
+        );
+        for nr in [x::SYS_SPLICE, x::SYS_COPY_FILE_RANGE] {
+            assert_eq!(
+                descriptor_fence_for(nr, &args(4, 0, 6)),
+                DescriptorFence::Fds([Some(4), Some(6)])
+            );
+        }
+        for nr in [S::Fsync as u32, S::Fdatasync as u32, S::Truncate as u32] {
+            assert_eq!(descriptor_fence_for(nr, &args(3, 0, 0)), DescriptorFence::InExport);
+        }
+        let trunc = wasm_posix_shared::flags::O_TRUNC as i64;
+        let rdwr = wasm_posix_shared::flags::O_RDWR as i64;
+        assert_eq!(descriptor_fence_for(S::Open as u32, &args(0, trunc | rdwr, 0)), DescriptorFence::AllMappedFiles);
+        assert_eq!(descriptor_fence_for(S::Open as u32, &args(0, rdwr, 0)), DescriptorFence::None);
+        assert_eq!(descriptor_fence_for(S::Openat as u32, &args(-100, 0, trunc)), DescriptorFence::AllMappedFiles);
+        assert_eq!(descriptor_fence_for(S::Openat as u32, &args(-100, 0, rdwr)), DescriptorFence::None);
+        for nr in [S::Fstat as u32, S::Close as u32, S::Seek as u32, S::Mmap as u32] {
+            assert_eq!(descriptor_fence_for(nr, &args(3, 0, 0)), DescriptorFence::None);
+        }
     }
 
     #[test]

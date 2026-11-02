@@ -2415,6 +2415,12 @@ pub extern "C" fn kernel_rootfs_read_file(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // A host read observes stores already made through a mapping; see
+    // `fence_channel_storage`. The path is not resolved here, so every
+    // mapped file is fenced (free when nothing is mapped).
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -2470,6 +2476,12 @@ pub extern "C" fn kernel_rootfs_write_file(
     mode: u32,
     truncate: i32,
 ) -> i32 {
+    // A host write lands after stores already made through a mapping, rather
+    // than being overwritten by them at a later publication; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -2653,6 +2665,12 @@ pub extern "C" fn kernel_rootfs_inspect_read_file(
     buf_ptr: *mut u8,
     buf_len: u32,
 ) -> i32 {
+    // A host read observes stores already made through a mapping; see
+    // `fence_channel_storage`. The path is not resolved here, so every
+    // mapped file is fenced (free when nothing is mapped).
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     if path_ptr.is_null() || buf_ptr.is_null() {
         return -(Errno::EFAULT as i32);
     }
@@ -2752,6 +2770,13 @@ pub extern "C" fn kernel_rootfs_export_tree(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // The exported tree carries stores already made through a mapping. Only
+    // the first chunk serializes the tree, so only it needs the fence.
+    if offset_lo == 0 && offset_hi == 0 {
+        if let Err(error) = fence_all_mapped_files() {
+            return -(error as i32);
+        }
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -2809,6 +2834,13 @@ pub extern "C" fn kernel_rootfs_export_container_read(
     buf_ptr: usize,
     buf_len: usize,
 ) -> i32 {
+    // The exported tree carries stores already made through a mapping. Only
+    // the first chunk serializes the tree, so only it needs the fence.
+    if offset_lo == 0 && offset_hi == 0 {
+        if let Err(error) = fence_all_mapped_files() {
+            return -(error as i32);
+        }
+    }
     if buf_len > i32::MAX as usize {
         return -(Errno::EOVERFLOW as i32);
     }
@@ -3343,6 +3375,11 @@ pub extern "C" fn kernel_spawn_process(
     blob_addr: u64,
     blob_len: u32,
 ) -> i32 {
+    // The program image is read from the file as mappings last published it;
+    // see `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let table = unsafe { &mut *PROCESS_TABLE.0.get() };
     let mut host = WasmHostIO;
     let parsed = {
@@ -4303,6 +4340,11 @@ pub extern "C" fn kernel_exec_target_prepare(
     path_len: usize,
     flags: u32,
 ) -> i32 {
+    // The program image is read from the file as mappings last published it;
+    // see `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let path = match checked_exec_path(path_ptr, path_len) {
         Ok(path) => path,
         Err(error) => return -(error as i32),
@@ -4931,6 +4973,13 @@ fn handle_owned_channel_allocation(
     } else {
         Err(Errno::ESRCH)
     };
+    // Descriptor fence: before the kernel reads or writes the content of a
+    // file it owns, every `MAP_SHARED` mapping of that file publishes, so the
+    // descriptor operation observes (or lands after) stores already made
+    // through a mapping. Runs before any `&mut Process` borrow, because the
+    // mapping table reads other processes' memory. See
+    // `runtime_core::memory::DescriptorFence`.
+    let activation = activation.and_then(|()| fence_channel_storage(syscall_nr, &args));
     let mut outcome = if let Err(error) = activation {
         ChannelDispatchOutcome::narrow(-(error as i32))
     } else {
@@ -8403,6 +8452,83 @@ pub extern "C" fn kernel_ipc_shm_write_chunk(
         Ok(n) => n as i32,
         Err(e) => -(e as i32),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Descriptor fence for kernel-owned mapped files
+// ---------------------------------------------------------------------------
+
+/// The kernel mapping handle behind descriptor `fd` of the calling process,
+/// or `None` when `fd` is not a regular file the kernel owns (a pipe, socket,
+/// host file, or a closed descriptor; the syscall itself reports those).
+fn current_fd_mapping_handle(fd: i32) -> Option<i64> {
+    let table = unsafe { &*PROCESS_TABLE.0.get() };
+    let proc = table.get(crate::process_table::current_pid())?;
+    let entry = proc.fd_table.get(fd).ok()?;
+    let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
+    runtime_core::kernel_file_mapping::mapping_handle_for(ofd.file_type, ofd.host_handle)
+}
+
+/// Fence the files one channel syscall is about to read or write; see
+/// [`runtime_core::memory::DescriptorFence`]. Free when nothing maps a
+/// kernel-owned file, and one descriptor lookup per fenced descriptor when
+/// something does.
+fn fence_channel_storage(nr: u32, args: &[i64; 6]) -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    use runtime_core::memory::DescriptorFence;
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    match runtime_core::memory::descriptor_fence_for(nr, args) {
+        DescriptorFence::None | DescriptorFence::InExport => Ok(()),
+        DescriptorFence::Fds(fds) => {
+            for fd in fds.into_iter().flatten() {
+                let Some(handle) = current_fd_mapping_handle(fd) else {
+                    continue;
+                };
+                if !table.is_fenced_handle(handle) {
+                    continue;
+                }
+                let mut io = WasmSharedMappingIo::for_table(table);
+                table.fence_handle(handle, &mut io)?;
+            }
+            Ok(())
+        }
+        DescriptorFence::AllMappedFiles => fence_all_mapped_files(),
+    }
+}
+
+/// Fence the file behind `fd` of the calling process, for the exports the
+/// host also calls directly (`kernel_fsync`, `kernel_fdatasync`). Must run
+/// before the caller borrows its `Process` mutably.
+fn fence_current_fd(fd: i32) -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    let Some(handle) = current_fd_mapping_handle(fd) else {
+        return Ok(());
+    };
+    if !table.is_fenced_handle(handle) {
+        return Ok(());
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.fence_handle(handle, &mut io)
+}
+
+/// Fence every mapped kernel-owned file, for an operation that names its
+/// file by path (`truncate`, an `O_TRUNC` open, an exec target, a host
+/// export of the filesystem).
+fn fence_all_mapped_files() -> Result<(), Errno> {
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { crate::memory::global_shared_mapping_table() };
+    if !table.has_file_backings() {
+        return Ok(());
+    }
+    let mut io = WasmSharedMappingIo::for_table(table);
+    table.fence_all(&mut io)
 }
 
 // ---------------------------------------------------------------------------
@@ -13447,6 +13573,11 @@ pub extern "C" fn kernel_ftruncate(fd: i32, length: i64) -> i32 {
 /// Synchronize file state to storage. Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
+    // Mapped stores reach the file before it is synchronized; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_current_fd(fd) {
+        return -(error as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fsync(proc, &mut host, fd) {
@@ -13460,6 +13591,12 @@ pub extern "C" fn kernel_fsync(fd: i32) -> i32 {
 /// Truncate a file to a specified length (path-based). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i64) -> i32 {
+    // Mapped stores reach the file before it is truncated, so bytes past the
+    // new size are dropped rather than republished later; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_all_mapped_files() {
+        return -(error as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let path = unsafe { slice::from_raw_parts(path_ptr, path_len as usize) };
@@ -13474,6 +13611,11 @@ pub extern "C" fn kernel_truncate(path_ptr: *const u8, path_len: u32, length: i6
 /// Synchronize file data to storage (alias for fsync). Returns 0 on success, or negative errno on error.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_fdatasync(fd: i32) -> i32 {
+    // Mapped stores reach the file before it is synchronized; see
+    // `fence_channel_storage`.
+    if let Err(error) = fence_current_fd(fd) {
+        return -(error as i32);
+    }
     let (_gkl, proc, advisory_locks) = unsafe { get_process_and_advisory_locks() };
     let mut host = WasmHostIO;
     let result = match syscalls::sys_fdatasync(proc, &mut host, fd) {

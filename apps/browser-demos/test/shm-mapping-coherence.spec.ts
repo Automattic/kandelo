@@ -163,3 +163,60 @@ test(
     expect(runtimeErrors).toEqual([]);
   },
 );
+
+const fenceProgramPath = resolve(
+  __dirname,
+  "../../../examples/shm_mapping_fence_test.wasm",
+);
+
+// Descriptor I/O fences a kernel-owned file's mappings first (DescriptorFence
+// in runtime-core memory.rs). The browser host reaches the same kernel fence
+// as Node: read, sendfile, copy_file_range and a MAP_PRIVATE copy see a sole
+// writer's store, and a later pwrite or truncation lands after it.
+test(
+  "descriptor I/O sees and orders after MAP_SHARED stores in Chromium",
+  async ({ page, baseURL, browserName }) => {
+    test.skip(
+      browserName !== "chromium",
+      "the aggregate browser gate uses Chromium",
+    );
+    expect(baseURL).toBeTruthy();
+
+    const runtimeErrors: string[] = [];
+    page.on("pageerror", (error) => {
+      runtimeErrors.push(`pageerror: ${error.message}`);
+    });
+    page.on("console", (message) => {
+      if (message.type() === "error") {
+        runtimeErrors.push(`console: ${message.text()}`);
+      }
+    });
+
+    await page.goto(new URL("/pages/test-runner/?minimal=1", baseURL).href);
+    await page.waitForFunction(
+      () => (window as any).__testRunnerReady === true,
+    );
+
+    const result = await page.evaluate(runFetchedWasmProgram, {
+      programUrl: new URL(`/@fs/${fenceProgramPath}`, baseURL).href,
+      argv: ["shm-mapping-fence-test"],
+      timeoutMs: 60_000,
+    });
+
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    for (const name of [
+      "own-pread-after-store",
+      "pread-after-edge",
+      "sendfile-after-edge",
+      "copy-file-range-after-edge",
+      "private-map-after-edge",
+      "truncate-drops-mapped-store",
+      "pwrite-after-mapped-store",
+    ]) {
+      expect(result.stdout).toContain(`${name}: PASS`);
+    }
+    expect(result.stdout).toContain("SHM_MAPPING_FENCE_PASS");
+    expect(result.stderr).toBe("");
+    expect(runtimeErrors).toEqual([]);
+  },
+);

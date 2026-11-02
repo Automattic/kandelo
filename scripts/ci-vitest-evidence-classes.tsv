@@ -58,6 +58,7 @@ host/test/dbus-smoke.test.ts	prepared-product
 host/test/deferred-worker-start.test.ts	source-only
 host/test/demo-login-image.test.ts	source-only
 host/test/derived-vfs-symlink.test.ts	prepared-product
+host/test/descriptor-fence-contract.test.ts	source-only
 host/test/destroy-progress-fanout.test.ts	source-only
 host/test/destroy-progress-protocol.test.ts	source-only
 host/test/destroy-progress-reporter.test.ts	source-only
