@@ -23,6 +23,19 @@ python3 evals/agent-skills/run.py --reps 1     # quick check
 - **When to run it:** a full run is 24 sessions, about $4 on Sonnet. Run it when a skill changes, not in CI.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
+The waiting skill has four read-only scenarios, covering interactive and
+headless main sessions, subagent build requests, and peer workspaces:
+
+```bash
+python3 evals/agent-skills/run.py --reps 1 --tasks wait-interactive-build,wait-headless-suite,wait-subagent-build,wait-peer-browser
+```
+
+Review answers for early turn endings, Monitor/status polling, duplicate
+waiters and incorrect validation claims even when every regex matches.
+These are advice checks; they do not deliver interactive completion
+notifications. The transcript measures, checkpoint date and keep/revise/
+remove rule live in `evals/build-waiting/README.md`, tool 1a.
+
 ## 2. Is it helping me? (`skill-impact.py`)
 
 ```bash

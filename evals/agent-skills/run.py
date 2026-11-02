@@ -26,7 +26,7 @@ import time
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parents[1]
-SKILLS = ["porting-software-to-kandelo", "tracking-runtime-workarounds"]
+SKILLS = ["porting-software-to-kandelo", "tracking-runtime-workarounds", "waiting-on-kandelo-jobs"]
 ARMS = {
     "skills-on": {},
     "skills-off": {"skillOverrides": {name: "off" for name in SKILLS}},

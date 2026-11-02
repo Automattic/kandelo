@@ -1,5 +1,51 @@
 [
   {
+    "id": "wait-interactive-build",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. In an interactive main session with Bash background completion notifications, I need ./run.sh setup (about 40 minutes), then a targeted check that takes two minutes. Give the exact launch/wait tool choices and how you will report the result. The setup may take longer than expected. Should you write a Monitor task that checks status files every minute and expires after 30 minutes?",
+    "checks": {
+      "starts the long job": "agent-job start.*--.*run\\.sh setup",
+      "waits without expiry": "agent-job wait[^\\n]*--timeout 0",
+      "uses Bash background": "run_in_background",
+      "collects the result": "agent-job result",
+      "uses a single completion notification": "(single|one).*completion|completion.*(single|one)",
+      "short check is foreground with a log": "foreground[\\s\\S]*log|log[\\s\\S]*foreground"
+    }
+  },
+  {
+    "id": "wait-headless-suite",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. You are a headless main session (claude -p). A full Vitest suite is expected to take 25 minutes in this worktree. How do you launch and wait, what does wait exit 124 mean, and when can you end the turn? What evidence makes this a passing suite if the process exits zero?",
+    "checks": {
+      "starts a tracked job": "agent-job start",
+      "waits in foreground": "foreground",
+      "repeats on timeout": "repeat|again",
+      "explains 124": "124[\\s\\S]*(still running|not finished)|still running[\\s\\S]*124",
+      "checks suite health": "suite-health",
+      "checks zero tests": "zero(?:[ -]discovered)?[ -]test|0 test"
+    }
+  },
+  {
+    "id": "wait-subagent-build",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. You are a subagent assigned one targeted host test, but the worktree lacks artifacts and needs a whole-tree local-build that usually takes 35 minutes. Tell the parent the concrete next step and who should launch and wait for the build. Why?",
+    "checks": {
+      "returns the need to parent": "parent",
+      "names the needed build": "local-build",
+      "builds before dispatch": "before[\\s\\S]*(dispatch|subagent)|dispatch[\\s\\S]*after|after[\\s\\S]*dispatch",
+      "explains the cache cost": "cache[\\s\\S]*(expir|rewrit)|rewrit[\\s\\S]*cache"
+    }
+  },
+  {
+    "id": "wait-peer-browser",
+    "prompt": "This is a read-only workflow question; do not run commands or edit files. In an interactive main session, another workspace is running prepare-browser for about 30 minutes. We share the build cache. I need to wait for it, then run my Playwright suite. Show how to find and wait on that exact job, and how to ensure the browser suite tests my tree. The default port may be occupied and commands run through scripts/dev-shell.sh. Can I rely on the peer's result to validate my tree?",
+    "checks": {
+      "discovers peer jobs": "agent-job list --all",
+      "checks the peer commit": "commit|HEAD",
+      "uses a job waiter": "agent-job wait",
+      "interactive waiter has no expiry": "--timeout 0",
+      "sets a distinct browser port": "KANDELO_PLAYWRIGHT_PORT",
+      "sets environment inside dev shell": "bash -c[\\s\\S]*export|export[\\s\\S]*bash -c"
+    }
+  },
+  {
     "id": "port-autoconf-program",
     "prompt": "Plan a port of GNU hello 2.12.1 (a C program built with autoconf, no library dependencies) to Kandelo as a new package under packages/registry/hello/. This is read-only: do not edit files or run builds. Answer concisely:\n1. Which existing package would you copy the build-script shape from, and why?\n2. Which helper scripts and functions should the build script use?\n3. What exact command builds just this package locally?\n4. What kernel_abi value goes in package.toml, and where does it come from?\n5. What else must change so ./run.sh setup builds the package?\n6. If configure reports that a libc function exists but musl does not have it, what is happening and how do you fix it honestly?",
     "checks": {

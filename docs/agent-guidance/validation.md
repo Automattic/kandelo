@@ -300,13 +300,17 @@ and the rest ran outside the dev shell from the repo root. If a vitest job
 log's ` RUN  v… <path>` line names the repo root instead of `.../host`, the
 run used the wrong config and toolchain, and its results are invalid.
 
-- **Waiting:** repeat `agent-job wait <id>` in the foreground until it
-  returns the job's status. That is one turn per 9 minutes, never a
-  `sleep`/`tail` poll. If an agent client yields a running terminal session,
-  resume that session to collect the result. An interactive main session may
-  instead run `agent-job wait <id> --timeout 0` in the background and use a
-  completion notification. A headless session or subagent must not end its
-  turn while waiting: it stops there, and the result is lost.
+- **Waiting:** choose by session type. An interactive main session runs
+  `scripts/agent-job wait <id> --timeout 0` once with the Bash tool's
+  `run_in_background` and acts on its single completion notification.
+  Never write Monitor, `until`, or `sleep` loops over status files or
+  `agent-job list`; expiring waiters create re-arm turns. A headless
+  session or subagent repeats foreground `agent-job wait <id>` until it
+  returns the job's status (exit 124 means still running). It must not end
+  its turn while waiting: it stops there, and the result is lost. If an
+  agent client yields a running terminal session, resume that session to
+  collect the result. The discoverable decision guide is
+  `.agents/skills/waiting-on-kandelo-jobs/SKILL.md`.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache expires after 5 minutes, so every long blocking
   call rewrites its whole context. Build what a subagent needs before
