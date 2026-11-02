@@ -69,13 +69,31 @@
  *   invariance mismatch that ES 1.00 makes a link error still fails to link
  *   (a statically used fragment input then has no vertex output).
  * - GL_OES_standard_derivatives: see `standardDerivativesShaderSource`.
+ * - Cube maps are sampled per face, as ES 2.0 sections 3.7.5 and 3.7.7
+ *   specify, rather than seamlessly as WebGL 2 does: a cube map is a
+ *   six-layer 2D array texture (cube-storage.ts), so `samplerCube` becomes
+ *   `sampler2DArray` and textureCube/textureCubeLod become private
+ *   functions (`CUBE_HELPERS`) that select the face by ES 2.0 table 3.21
+ *   and sample its layer. A fragment lookup passes explicit gradients: the
+ *   derivatives of the face's (s, t), computed from the derivatives of the
+ *   direction in the selected face's frame, so the level of detail is ES
+ *   2.0's for that face (a lookup with implicit derivatives would
+ *   differentiate (s, t) across a face edge and select a far too small
+ *   level there); a bias scales them by 2^bias. A vertex lookup uses level
+ *   0, or the given level. A shader that uses samplerCube is always
+ *   compiled as this translation (`compileGuestShader`), since ESSL 1.00
+ *   has no sampler2DArray; reflection reports SAMPLER_CUBE for those
+ *   uniforms (`guestUniformType`).
  *
  * Known differences that remain (truthful gaps, see docs/architecture.md):
  * a fragment shader's `invariant gl_FragCoord` no longer requires the vertex
  * shader's gl_Position to be invariant; a dynamically indexed gl_FragData is
  * still rejected (ESSL 3.00 requires constant output indices); and a guest
  * ESSL 3.00 shader (which the host compiles as written) links with a
- * translated partner.
+ * translated partner. ESSL 3.00 indexes sampler arrays only with constant
+ * expressions, so a translated shader that indexes one with a loop index
+ * (ES 1.00 Appendix A allows it) fails to compile; every shader that
+ * samples a cube map is translated.
  */
 import { preprocessEssl100, type EsslToken } from "./essl-preprocessor.js";
 
@@ -181,7 +199,11 @@ export function compileGuestShader(gl: WebGL2RenderingContext, shader: WebGLShad
   if (!compiled && !onlyAppendixALimitations(gl.getShaderInfoLog(shader) ?? "")) return null;
   // Only a fragment shader's derivative declarations stand in for
   // built-ins; a vertex shader's validation source means what its source does.
-  if (compiled && (validation === null || !fragment)) return "essl100";
+  // A shader that samples a cube map needs the translation's per-face
+  // sampling (sampler2DArray exists only in ESSL 3.00); the text test keeps
+  // every other shader free of a preprocessing pass.
+  if (compiled && (validation === null || !fragment)
+      && !(source.includes("samplerCube") && translateEssl100(source, fragment).cube)) return "essl100";
   return compileEssl300(gl, shader, source, fragment) ? "essl300" : null;
 }
 
@@ -203,14 +225,21 @@ export function compileEssl300(gl: WebGL2RenderingContext, shader: WebGLShader, 
 
 // --- host state ---------------------------------------------------------------------
 
-type CompiledShader = { language: ShaderLanguage; source: string; fragment: boolean };
+type CompiledShader = { language: ShaderLanguage; source: string; fragment: boolean; cube?: boolean };
 const compiledShaders = new WeakMap<WebGLShader, CompiledShader>();
 
 /** After every CompileShader: the language the shader object now holds and
  * the ES 1.00 source it was compiled from; null for a failed compile. */
 export function recordShaderLanguage(shader: WebGLShader, language: ShaderLanguage | null, source: string, fragment: boolean): void {
-  if (language) compiledShaders.set(shader, { language, source, fragment });
+  if (language) compiledShaders.set(shader, { language, source, fragment,
+    cube: language === "essl300" && source.includes("samplerCube") && translateEssl100(source, fragment).cube });
   else compiledShaders.delete(shader);
+}
+
+/** The compiled shader samples cube maps through the per-face lookups (its
+ * samplerCube uniforms are sampler2DArray natively). */
+export function shaderSamplesCube(shader: WebGLShader): boolean {
+  return compiledShaders.get(shader)?.cube === true;
 }
 
 export function shaderLanguage(shader: WebGLShader): ShaderLanguage | undefined {
@@ -434,11 +463,11 @@ function builtinSignatures(name: string, fragment: boolean): Signature[] | null 
       ...(fragment ? [{ ret: "vec4", params: ["sampler2D", "vec2", "float"], call: "texture" }] : [])];
     case "texture2DProj": return ["vec3", "vec4"].flatMap(c => [{ ret: "vec4", params: ["sampler2D", c], call: "textureProj" },
       ...(fragment ? [{ ret: "vec4", params: ["sampler2D", c, "float"], call: "textureProj" }] : [])]);
-    case "textureCube": return [{ ret: "vec4", params: ["samplerCube", "vec3"], call: "texture" },
-      ...(fragment ? [{ ret: "vec4", params: ["samplerCube", "vec3", "float"], call: "texture" }] : [])];
+    case "textureCube": return [{ ret: "vec4", params: ["samplerCube", "vec3"], call: CUBE_LOOKUP },
+      ...(fragment ? [{ ret: "vec4", params: ["samplerCube", "vec3", "float"], call: CUBE_LOOKUP }] : [])];
     case "texture2DLod": return fragment ? null : [{ ret: "vec4", params: ["sampler2D", "vec2", "float"], call: "textureLod" }];
     case "texture2DProjLod": return fragment ? null : ["vec3", "vec4"].map(c => ({ ret: "vec4", params: ["sampler2D", c, "float"], call: "textureProjLod" }));
-    case "textureCubeLod": return fragment ? null : [{ ret: "vec4", params: ["samplerCube", "vec3", "float"], call: "textureLod" }];
+    case "textureCubeLod": return fragment ? null : [{ ret: "vec4", params: ["samplerCube", "vec3", "float"], call: CUBE_LOD_LOOKUP }];
     default: return null;
   }
 }
@@ -452,10 +481,75 @@ const precise = (type: string) => /^(float|vec\d|mat\d|ivec\d|int)$/.test(type) 
 
 function forwarders(name: string, signatures: Signature[]): string {
   return signatures.map(s => {
-    const params = s.params.map((type, i) => `${precise(type)} p${i}`).join(", ");
+    const params = s.params.map((type, i) => `${type === "samplerCube" ? "highp sampler2DArray" : precise(type)} p${i}`).join(", ");
     const args = s.params.map((_, i) => `p${i}`).join(", ");
     return `${precise(s.ret)} ${ESSL1_PREFIX}${name}(${params}) { return ${s.call ?? name}(${args}); }`;
   }).join("\n");
+}
+
+// --- cube maps -------------------------------------------------------------------
+
+const CUBE_LOOKUP = `${PRIVATE}textureCube`, CUBE_LOD_LOOKUP = `${PRIVATE}textureCubeLod`;
+
+/**
+ * Per-face cube-map sampling on the cube's six-layer 2D array storage
+ * (cube-storage.ts; layer i is face TEXTURE_CUBE_MAP_POSITIVE_X + i).
+ * `frame` selects the face of ES 2.0 table 3.21 by the major axis of r and
+ * returns its layer with the face's unit vectors: sc = dot(r, s),
+ * tc = dot(r, t), and the major axis ma = dot(r, m) > 0, so the face
+ * coordinates are (sc/ma + 1)/2 and (tc/ma + 1)/2. Ties go to z, then y
+ * (ES 2.0 leaves them to the implementation). `grad` is the derivative of
+ * those face coordinates along a direction derivative d, by the quotient
+ * rule in the same face's frame: ES 2.0 section 3.7.7 computes the level
+ * of detail from the selected face's u(x, y) and v(x, y), which this
+ * derivative is, while derivatives taken of the face coordinates
+ * themselves would jump where neighbouring fragments select different
+ * faces. Samplers are highp parameters: a lookup returns its sampler's
+ * precision, at least the guest sampler's.
+ */
+function cubeHelpers(fragment: boolean): string {
+  const lookup = (signature: string, body: string) => `highp vec4 ${signature} {
+  highp vec3 s, t, m; highp float layer = ${PRIVATE}cubeFrame(r, s, t, m);
+  highp vec3 c = ${PRIVATE}cubeCoord(r, s, t, m, layer);
+  ${body}
+}`;
+  return [
+    "precision lowp sampler2DArray;",
+    `highp float ${PRIVATE}cubeFrame(highp vec3 r, out highp vec3 s, out highp vec3 t, out highp vec3 m) {
+  highp vec3 a = abs(r);
+  if (a.z >= a.x && a.z >= a.y) {
+    highp float d = r.z >= 0.0 ? 1.0 : -1.0;
+    m = vec3(0.0, 0.0, d); s = vec3(d, 0.0, 0.0); t = vec3(0.0, -1.0, 0.0);
+    return d > 0.0 ? 4.0 : 5.0;
+  }
+  if (a.y >= a.x) {
+    highp float d = r.y >= 0.0 ? 1.0 : -1.0;
+    m = vec3(0.0, d, 0.0); s = vec3(1.0, 0.0, 0.0); t = vec3(0.0, 0.0, d);
+    return d > 0.0 ? 2.0 : 3.0;
+  }
+  highp float d = r.x >= 0.0 ? 1.0 : -1.0;
+  m = vec3(d, 0.0, 0.0); s = vec3(0.0, 0.0, -d); t = vec3(0.0, -1.0, 0.0);
+  return d > 0.0 ? 0.0 : 1.0;
+}`,
+    `highp vec3 ${PRIVATE}cubeCoord(highp vec3 r, highp vec3 s, highp vec3 t, highp vec3 m, highp float layer) {
+  highp float ma = dot(r, m);
+  return vec3(0.5 * dot(r, s) / ma + 0.5, 0.5 * dot(r, t) / ma + 0.5, layer);
+}`,
+    ...(fragment ? [
+      `highp vec2 ${PRIVATE}cubeGrad(highp vec3 r, highp vec3 d, highp vec3 s, highp vec3 t, highp vec3 m) {
+  highp float ma = dot(r, m), dm = dot(d, m);
+  return 0.5 * (vec2(dot(d, s), dot(d, t)) * ma - vec2(dot(r, s), dot(r, t)) * dm) / (ma * ma);
+}`,
+      lookup(`${CUBE_LOOKUP}(highp sampler2DArray x, highp vec3 r)`,
+        `return textureGrad(x, c, ${PRIVATE}cubeGrad(r, dFdx(r), s, t, m), ${PRIVATE}cubeGrad(r, dFdy(r), s, t, m));`),
+      lookup(`${CUBE_LOOKUP}(highp sampler2DArray x, highp vec3 r, highp float bias)`,
+        `highp float k = exp2(bias);
+  return textureGrad(x, c, ${PRIVATE}cubeGrad(r, dFdx(r), s, t, m) * k, ${PRIVATE}cubeGrad(r, dFdy(r), s, t, m) * k);`),
+    ] : [
+      lookup(`${CUBE_LOOKUP}(highp sampler2DArray x, highp vec3 r)`, "return textureLod(x, c, 0.0);"),
+      lookup(`${CUBE_LOD_LOOKUP}(highp sampler2DArray x, highp vec3 r, highp float lod)`, "return textureLod(x, c, lod);"),
+    ]),
+  ].join("\n");
 }
 
 // --- translation ----------------------------------------------------------------
@@ -465,7 +559,8 @@ const BASIC_TYPES = new Set(["void", "bool", "int", "float", "vec2", "vec3", "ve
 const PRECISIONS = new Set(["lowp", "mediump", "highp"]);
 const DECLARATION_QUALIFIERS = new Set(["const", "uniform", "attribute", "varying", "precision", "invariant", "struct"]);
 
-export type Essl3Translation = { text: string; error?: undefined } | { text: string; error: string };
+/** `cube`: the shader uses samplerCube, which the text samples per face. */
+export type Essl3Translation = { text: string; cube: boolean; error?: undefined } | { text: string; cube: boolean; error: string };
 
 /**
  * The ESSL 3.00 source with the meaning of an ESSL 1.00 source that the
@@ -571,7 +666,7 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
   if (usesColor && usesData) {
     const first = tokens.find(t => t.text === "gl_FragColor" || t.text === "gl_FragData")!;
     const message = "cannot use both gl_FragData and gl_FragColor";
-    return { text: `#version 300 es\n#line ${first.line}\n#error ${message}\n`, error: message };
+    return { text: `#version 300 es\n#line ${first.line}\n#error ${message}\n`, cube: false, error: message };
   }
 
   // Global initializers that are not constant expressions run in main().
@@ -618,11 +713,15 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
   }
 
   // Token rewrites.
+  const cube = text.includes("samplerCube");
   const out = text.slice();
   for (let i = 0; i < n; i++) {
     if (!id(i)) continue;
     const t = text[i], call = at(i + 1) === "(";
-    if (t === "attribute") out[i] = "in";
+    if (t === "samplerCube") out[i] = "sampler2DArray";
+    else if (call && cube && !overloaded.has(t) && !declared.has(t) && (t === "textureCube" || (t === "textureCubeLod" && !fragment)))
+      out[i] = t === "textureCube" ? CUBE_LOOKUP : CUBE_LOD_LOOKUP;
+    else if (t === "attribute") out[i] = "in";
     else if (t === "varying") out[i] = fragment ? "in" : "out";
     else if (t === "gl_FragColor") out[i] = `${PRIVATE}FragColor`;
     else if (t === "gl_FragData") out[i] = `${PRIVATE}FragData`;
@@ -639,6 +738,8 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
   if (!fragment && pragmas.some(invariantAll)) header.push("#pragma STDGL invariant(all)");
   if (usesColor) header.push(`layout(location = 0) out mediump vec4 ${PRIVATE}FragColor;`);
   if (usesData) header.push(`layout(location = 0) out mediump vec4 ${PRIVATE}FragData[1];`);
+  // samplerCube's default precision (lowp), then the per-face lookups.
+  if (cube || overloaded.has("textureCube") || overloaded.has("textureCubeLod")) header.push(cubeHelpers(fragment));
   for (const [name, signatures] of overloaded) header.push(forwarders(name, signatures));
   if (fragment) for (const f of DERIVATIVE_FUNCTIONS) if (text.includes(derivativeBuiltin(f)))
     header.push(GEN_TYPES.map(type => `highp ${type} ${derivativeBuiltin(f)}(highp ${type} p) { return ${f}(p); }`).join("\n"));
@@ -670,5 +771,5 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
     const assignments = deferred.map(d => `${out[d.from - 1]} = ${out.slice(d.from + 1, d.to).join(" ")};`).join(" ");
     body += `\nvoid main() { ${assignments} ${PRIVATE}main(); }`;
   }
-  return { text: `${header.join("\n")}\n${body}\n` };
+  return { text: `${header.join("\n")}\n${body}\n`, cube };
 }

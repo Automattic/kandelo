@@ -76,6 +76,8 @@ export type NativeCall =
   | ["bindRenderbuffer", number, WebGLRenderbuffer | null]
   | ["bindBuffer", number, WebGLBuffer | null]
   | ["framebufferTexture2D", number, number, number, WebGLTexture | null, number]
+  // target, attachment, texture, level, layer (cube faces, cube-storage.ts)
+  | ["framebufferTextureLayer", number, number, WebGLTexture | null, number, number]
   | ["framebufferRenderbuffer", number, number, number, WebGLRenderbuffer | null]
   | ["vertexAttribPointer", number, number, number, boolean, number, number]
   | ["vertexAttrib4f", number, number, number, number, number]
@@ -392,13 +394,14 @@ function retireInverseObject(inverse: NativeInverse, object: object): void {
   for (let i=inverse.groups.length-1;i>=0;i--) {
     const group = inverse.groups[i];
     if (group.some(call => call[0] === "bindFramebuffer" && call[2] === object)
-        && group.some(call => call[0] === "framebufferTexture2D" || call[0] === "framebufferRenderbuffer")) {
+        && group.some(call => call[0] === "framebufferTexture2D" || call[0] === "framebufferTextureLayer" || call[0] === "framebufferRenderbuffer")) {
       inverse.groups.copyWithin(i,i+1); inverse.groups.length--; continue;
     }
     for (const call of group) {
       if ((call[0] === "bindFramebuffer" || call[0] === "bindTexture" || call[0] === "bindRenderbuffer" || call[0] === "bindBuffer") && call[2] === object) call[2] = null;
       if (call[0] === "useProgram" && call[1] === object) call[1] = null;
       if ((call[0] === "framebufferTexture2D" || call[0] === "framebufferRenderbuffer") && call[4] === object) call[4] = null;
+      if (call[0] === "framebufferTextureLayer" && call[3] === object) call[3] = null;
     }
   }
 }

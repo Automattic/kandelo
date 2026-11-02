@@ -3,13 +3,17 @@ import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { exportImageStorage, prepareImageDraw, type GlImageExport } from "../src/webgl/image-storage.js";
+import { cubeImageTexture } from "../src/webgl/cube-storage.js";
 import * as O from "../src/webgl/ops.js";
 
 /* EGL 1.5 section 3.9 / KHR_gl_texture_2D_image, _cubemap_image and
  * _renderbuffer_image. A small renderer model tracks one value per texture
  * image and renderbuffer, framebuffer attachments, and copies/blits, so the
  * tests observe aliasing and orphaning rather than call sequences. */
-type Attachment = {tex: object; face: number; level: number} | {rbo: object};
+/** A cube map is a six-layer 2D array texture (cube-storage.ts): layer i of
+ * a level is keyed "L<i>" in place of a 2D image's target. */
+type Attachment = {tex: object; face: number | string; level: number} | {rbo: object};
+const layerKey = (face: number) => face >= 0x8515 && face <= 0x851a ? `L${face - 0x8515}` : face;
 class ValueGl {
   errors: number[] = [];
   images = new Map<object, Map<string, {v: number; w: number; h: number; f: number}>>();
@@ -25,6 +29,7 @@ class ValueGl {
     if (p === 0x84e0) return 0x84c0 + this.active;
     if (p === 0x8069) return this.binding(0x0de1);
     if (p === 0x8514) return this.binding(0x8513);
+    if (p === 0x8c1d) return this.binding(0x8c1a);
     if (p === 0x8ca6) return this.draw;
     if (p === 0x8caa) return this.read;
     if (p === 0x8ca7) return this.rbo;
@@ -54,7 +59,25 @@ class ValueGl {
     if (target !== 0x8ca8) this.draw = f;
     if (target !== 0x8ca9) this.read = f;
   }
-  private texFor(target: number) { return this.binding(target >= 0x8515 && target <= 0x851a ? 0x8513 : 0x0de1)!; }
+  private texFor(target: number) { return this.binding(target >= 0x8515 && target <= 0x851a ? 0x8513 : target === 0x8c1a ? 0x8c1a : 0x0de1)!; }
+  texImage3D(target: number, level: number, internal: number, w: number, h: number, depth: number) {
+    const images = this.images.get(this.texFor(target))!;
+    for (let layer = 0; layer < 6; layer++) images.delete(`L${layer}:${level}`);
+    for (let layer = 0; layer < depth; layer++) images.set(`L${layer}:${level}`, {v: 0, w, h, f: internal});
+  }
+  texSubImage3D(target: number, level: number, _x: number, _y: number, layer: number, _w: number, _h: number, _d: number,
+    _format: number, _type: number, data?: ArrayBufferView | null) {
+    if (!data || !data.byteLength) return;
+    this.images.get(this.texFor(target))!.get(`L${layer}:${level}`)!.v = new Uint8Array(data.buffer, data.byteOffset, 1)[0];
+  }
+  copyTexSubImage3D(target: number, level: number, _x: number, _y: number, layer: number) {
+    const src = this.attachmentImage(this.frames.get(this.read!)!.get(0x8ce0)!)!;
+    this.images.get(this.texFor(target))!.get(`L${layer}:${level}`)!.v = src.v;
+  }
+  framebufferTextureLayer(target: number, point: number, tex: object | null, level: number, layer: number) {
+    const frame = this.frames.get((target === 0x8ca8 ? this.read : this.draw)!)!;
+    if (tex) frame.set(point, {tex, face: `L${layer}`, level}); else frame.delete(point);
+  }
   texParameteri(target: number, pname: number, value: number) { this.params.get(this.binding(target)!)!.set(pname, value); }
   getTexParameter(target: number, pname: number) { return this.params.get(this.binding(target)!)?.get(pname) ?? 0; }
   texImage2D(target: number, level: number, internal: number, w: number, h: number, _border: number,
@@ -107,7 +130,7 @@ class ValueGl {
     const src = this.attachmentImage(this.frames.get(this.read!)!.get(0x8ce0)!)!;
     this.attachmentImage(this.frames.get(this.draw!)!.get(0x8ce0)!)!.v = src.v;
   }
-  value(tex: object, face = 0x0de1, level = 0) { return this.images.get(tex)?.get(`${face}:${level}`)?.v; }
+  value(tex: object, face = 0x0de1, level = 0) { return this.images.get(tex)?.get(`${layerKey(face)}:${level}`)?.v; }
 }
 
 function setup() {
@@ -282,10 +305,12 @@ it("writes a 2D sibling through to a cube-face image", () => {
   subImage(b, 0x0de1, 0, 44);
   expect(gl.value(cube, 0x8517)).toBe(44);
   expect([gl.value(cube, 0x8515), gl.scissor, gl.blits]).toEqual([1, true, 1]);
-  // Respecifying another face still orphans: the image keeps its face.
+  // Respecifying another face still orphans: the image keeps its face. The
+  // cube's other images move to new 2D array storage (cube-storage.ts).
   bind(b, 1, 0x8513, 7);
   image(b, 0x8515, 0, 9);
-  const fresh = b.textureViews.get(cube)!.native;
+  const fresh = cubeImageTexture(cube, 0x8515, 0)!;
+  expect(fresh).not.toBe(cube);
   expect([gl.value(fresh, 0x8515), gl.value(fresh, 0x8517), gl.value(cube, 0x8517)]).toEqual([9, 44, 44]);
   expect(query(b, O.QOP_BOUND_IMAGE_STATE, [1, 0x8513], 16)[1]).toBe(0);
   expect(b.errors).toEqual([]);

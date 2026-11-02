@@ -488,7 +488,8 @@ it("keeps cube and 2D texture bindings independent on the same unit", () => {
   const bind = vi.spyOn(gl, "bindTexture");
   new GlMuxer(gl).switchTo(b);
   expect(bind).toHaveBeenCalledWith(0x0de1, b.textures.get(11));
-  expect(bind).toHaveBeenCalledWith(0x8513, b.textures.get(12));
+  // A cube map is a native 2D array texture (cube-storage.ts).
+  expect(bind).toHaveBeenCalledWith(0x8c1a, b.textures.get(12));
 });
 
 it("restores dither and pixel-store state across a shared context switch", () => {

@@ -721,6 +721,263 @@ function essl3Translation(): void {
   record("essl3-translation.info-log-line", /\b0:7:/.test(log), log.trim().split("\n")[0]);
 }
 
+
+// ---------------------------------------------------------------------------
+// 7. Cube maps sampled per face (ES 2.0 sections 3.7.5 and 3.7.7) from the
+//    cube's six-layer 2D array storage (cube-storage.ts) by the translation's
+//    lookups (essl3-translation.ts). Each check compares with an ES 2.0
+//    reference computed here; the controls show what WebGL 2 does without
+//    the emulation (seamless filtering) or with a naive array lookup
+//    (implicit derivatives of the face coordinates).
+
+const FACE_COLORS = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255]];
+const LEVEL_COLORS = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0], [0, 255, 255], [255, 0, 255], [255, 255, 255], [128, 128, 128]];
+
+/** A 2D array (cube-storage.ts layout) or native cube map on `unit`, with
+ * `texel(face, level, x, y)` RGB bytes, `size` texels per side, `levels`
+ * levels. */
+function cubeTexture(unit: number, array: boolean, size: number, levels: number,
+    texel: (face: number, level: number, x: number, y: number) => number[], min: number, mag: number): WebGLTexture {
+  const texture = gl.createTexture()!;
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  const target = array ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_CUBE_MAP;
+  gl.bindTexture(target, texture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  for (let level = 0; level < levels; level++) {
+    const n = Math.max(1, size >> level);
+    if (array) gl.texImage3D(target, level, gl.RGBA8, n, n, 6, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    for (let face = 0; face < 6; face++) {
+      const pixels = new Uint8Array(n * n * 4);
+      for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) pixels.set([...texel(face, level, x, y), 255], (y * n + x) * 4);
+      if (array) gl.texSubImage3D(target, level, 0, 0, face, n, n, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      else gl.texImage2D(gl.TEXTURE_CUBE_MAP_POSITIVE_X + face, level, gl.RGBA8, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    }
+  }
+  for (const [pname, value] of [[gl.TEXTURE_MIN_FILTER, min], [gl.TEXTURE_MAG_FILTER, mag],
+    [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(target, pname, value);
+  if (!array) gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, levels - 1);
+  else gl.texParameteri(target, gl.TEXTURE_MAX_LEVEL, levels - 1);
+  gl.activeTexture(gl.TEXTURE0);
+  return texture;
+}
+
+/** ES 2.0 table 3.21: face index and (s, t) of direction r. */
+function cubeFaceCoords(r: number[]): { face: number; s: number; t: number; sc: number; tc: number; ma: number; axes: number[][] } {
+  const [x, y, z] = r, ax = Math.abs(x), ay = Math.abs(y), az = Math.abs(z);
+  let face: number, axes: number[][];
+  if (az >= ax && az >= ay) {
+    const d = z >= 0 ? 1 : -1; face = d > 0 ? 4 : 5; axes = [[d, 0, 0], [0, -1, 0], [0, 0, d]];
+  } else if (ay >= ax) {
+    const d = y >= 0 ? 1 : -1; face = d > 0 ? 2 : 3; axes = [[1, 0, 0], [0, 0, d], [0, d, 0]];
+  } else {
+    const d = x >= 0 ? 1 : -1; face = d > 0 ? 0 : 1; axes = [[0, 0, -d], [0, -1, 0], [d, 0, 0]];
+  }
+  const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const sc = dot(r, axes[0]), tc = dot(r, axes[1]), ma = dot(r, axes[2]);
+  return { face, s: 0.5 * sc / ma + 0.5, t: 0.5 * tc / ma + 0.5, sc, tc, ma, axes };
+}
+
+function pixels(width: number, height: number): Uint8Array {
+  const out = new Uint8Array(width * height * 4);
+  gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, out);
+  return out;
+}
+const rgbNear = (got: ArrayLike<number>, at: number, want: number[], tolerance = 2) =>
+  want.every((v, i) => Math.abs(got[at + i] - v) <= tolerance);
+
+/** A size x size RGBA8 target. */
+function bigTarget(size: number): void {
+  const fbo = gl.createFramebuffer()!;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  const color = gl.createTexture()!;
+  gl.bindTexture(gl.TEXTURE_2D, color);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, color, 0);
+  gl.viewport(0, 0, size, size);
+}
+
+const QUAD_VERTEX = "attribute vec2 p;\nvoid main() { gl_Position = vec4(p, 0.0, 1.0); }\n";
+function drawQuad(program: WebGLProgram): void {
+  const buffer = gl.createBuffer()!;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  gl.useProgram(program);
+  const at = gl.getAttribLocation(program, programNativeName(program, "p"));
+  gl.enableVertexAttribArray(at);
+  gl.vertexAttribPointer(at, 2, gl.FLOAT, false, 0, 0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  gl.disableVertexAttribArray(at);
+  gl.deleteBuffer(buffer);
+}
+
+function cubeSampling(): void {
+  // (a) Linear filtering at a face edge: per face, not seamless. 4x4 solid
+  // faces; just inside +X near +Y. The repro in
+  // .context/cts-fix-limits-texture-runs/cube-seam-repro without Kandelo.
+  target(false);
+  const solid = (face: number) => FACE_COLORS[face];
+  const LINEAR = gl.LINEAR, NEAREST = gl.NEAREST;
+  const edge = "vec3(1.0, 0.99, 0.0)";
+  const stages = [
+    { name: "fragment-textureCube", vertex: VARYING_VERTEX,
+      fragment: `precision mediump float;\nuniform samplerCube s;\nvoid main() { gl_FragColor = textureCube(s, ${edge}); }\n` },
+    { name: "vertex-textureCube",
+      vertex: `uniform samplerCube s;\nvarying mediump vec4 v;\nvoid main() { v = textureCube(s, ${edge}); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n`,
+      fragment: "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n" },
+    { name: "vertex-textureCubeLod",
+      vertex: `uniform samplerCube s;\nvarying mediump vec4 v;\nvoid main() { v = textureCubeLod(s, ${edge}, 0.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n`,
+      fragment: "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n" },
+  ];
+  for (const stage of stages) {
+    const array = cubeTexture(1, true, 4, 1, solid, LINEAR, LINEAR), native = cubeTexture(1, false, 4, 1, solid, LINEAR, LINEAR);
+    // Control: WebGL 2's own cube map filters across the edge (ES 3.0).
+    const control = build(stage.vertex, stage.fragment);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_CUBE_MAP, native); gl.activeTexture(gl.TEXTURE0);
+    let seamless = false;
+    if (control.program) {
+      gl.useProgram(control.program); gl.uniform1i(gl.getUniformLocation(control.program, "s"), 1);
+      gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1);
+      const got = pixel(); seamless = got[2] > 0.15;
+      record(`cube.${stage.name}.native-control`, seamless, `native cube ${fmt(got)} (blue from +Y means seamless)`);
+      gl.deleteProgram(control.program);
+    } else record(`cube.${stage.name}.native-control`, false, control.log);
+    const built = buildGuest(stage.vertex, stage.fragment);
+    if (!built.program) { record(`cube.${stage.name}`, false, `host path failed: ${built.log}`); continue; }
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, array); gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(built.program); gl.uniform1i(gl.getUniformLocation(built.program, "s"), 1);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1);
+    const got = pixel();
+    record(`cube.${stage.name}`, near(got, [1, 0, 0, 1]), `got ${fmt(got)} want +X red only [${built.languages.join(",")}]`);
+    gl.deleteProgram(built.program); gl.deleteTexture(array); gl.deleteTexture(native);
+  }
+
+  // (b) Face selection and orientation: every face's four quadrants agree
+  // with WebGL's native cube map (NEAREST at quadrant centres is the same
+  // seamless or not).
+  const quadrant = (face: number, _level: number, x: number, y: number) =>
+    [face * 40, x * 120 + 10, y * 120 + 10];
+  const array = cubeTexture(1, true, 2, 1, quadrant, NEAREST, NEAREST), native = cubeTexture(1, false, 2, 1, quadrant, NEAREST, NEAREST);
+  const pick = "precision mediump float;\nuniform samplerCube s;\nuniform vec3 d;\nvoid main() { gl_FragColor = textureCube(s, d); }\n";
+  const control = build(VARYING_VERTEX, pick), built = buildGuest(VARYING_VERTEX, pick);
+  if (!control.program || !built.program) record("cube.orientation", false, `${control.log} ${built.log}`);
+  else {
+    const mismatches: string[] = [];
+    for (let face = 0; face < 6; face++) for (const [s, t] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+      // Invert table 3.21 for a direction at (s, t) of `face`.
+      const sc = 2 * s - 1, tc = 2 * t - 1;
+      const d = [[1, -tc, -sc], [-1, -tc, sc], [sc, 1, tc], [sc, -1, -tc], [sc, -tc, 1], [-sc, -tc, -1]][face];
+      const reference = cubeFaceCoords(d);
+      const draw = (program: WebGLProgram, texture: WebGLTexture, cube: boolean) => {
+        gl.activeTexture(gl.TEXTURE1); gl.bindTexture(cube ? gl.TEXTURE_CUBE_MAP : gl.TEXTURE_2D_ARRAY, texture); gl.activeTexture(gl.TEXTURE0);
+        gl.useProgram(program); gl.uniform1i(gl.getUniformLocation(program, "s"), 1);
+        gl.uniform3fv(gl.getUniformLocation(program, "d"), d);
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1);
+        return pixel();
+      };
+      const want = draw(control.program, native, true), got = draw(built.program, array, false);
+      if (!near(got, want) || reference.face !== face) mismatches.push(`face ${face} (${s},${t}): got ${fmt(got)} native ${fmt(want)}`);
+    }
+    record("cube.orientation", mismatches.length === 0, mismatches.join("; ") || "24 face quadrants match the native cube map");
+  }
+  for (const p of [control.program, built.program]) if (p) gl.deleteProgram(p);
+  gl.deleteTexture(array); gl.deleteTexture(native);
+
+  // (c) Level of detail across face edges. A 32x32 quad whose direction
+  // (1, y, z) spans [-2, 2] in y and z crosses all four edges of +X; every
+  // level of the 64x64 cube has its own colour (NEAREST_MIPMAP_NEAREST).
+  // The ES 2.0 reference level: lambda from the derivatives of the selected
+  // face's (s, t) (section 3.7.7), computed analytically. A naive array
+  // lookup (implicit derivatives of the face coordinates) is the control:
+  // it picks far smaller levels along every edge.
+  const SIZE = 32, FACE = 64, LEVELS = 7;
+  bigTarget(SIZE);
+  const byLevel = (_face: number, level: number) => LEVEL_COLORS[level];
+  for (const bias of [0, 1.5]) {
+    const fragment = "precision highp float;\nuniform samplerCube s;\n" +
+      `void main() { vec3 r = vec3(1.0, (gl_FragCoord.y - ${SIZE / 2}.0) / ${SIZE / 4}.0, (gl_FragCoord.x - ${SIZE / 2}.0) / ${SIZE / 4}.0);\n` +
+      `gl_FragColor = ${bias ? `textureCube(s, r, ${bias.toFixed(1)})` : "textureCube(s, r)"}; }\n`;
+    const texture = cubeTexture(1, true, FACE, LEVELS, byLevel, gl.NEAREST_MIPMAP_NEAREST, NEAREST);
+    const guest = buildGuest(QUAD_VERTEX, fragment, [["p", 0]]);
+    if (!guest.program) { record(`cube.lod-across-edges.bias-${bias}`, false, `host path failed: ${guest.log}`); continue; }
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture); gl.activeTexture(gl.TEXTURE0);
+    gl.useProgram(guest.program); gl.uniform1i(gl.getUniformLocation(guest.program, "s"), 1);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); drawQuad(guest.program);
+    const got = pixels(SIZE, SIZE);
+    let bad = 0, first = "";
+    const levelOf = (at: number) => LEVEL_COLORS.findIndex(c => rgbNear(got, at, c));
+    for (let py = 0; py < SIZE; py++) for (let px = 0; px < SIZE; px++) {
+      const r = [1, (py + 0.5 - SIZE / 2) / (SIZE / 4), (px + 0.5 - SIZE / 2) / (SIZE / 4)];
+      const f = cubeFaceCoords(r);
+      const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const grad = (d: number[]) => [0.5 * (dot(d, f.axes[0]) * f.ma - f.sc * dot(d, f.axes[2])) / (f.ma * f.ma),
+        0.5 * (dot(d, f.axes[1]) * f.ma - f.tc * dot(d, f.axes[2])) / (f.ma * f.ma)];
+      const gx = grad([0, 0, 1 / (SIZE / 4)]), gy = grad([0, 1 / (SIZE / 4), 0]);
+      const rho = FACE * Math.max(Math.hypot(gx[0], gx[1]), Math.hypot(gy[0], gy[1]));
+      const lambda = Math.log2(rho) + bias;
+      const allowed = [Math.floor(lambda), Math.ceil(lambda)].map(l => Math.min(LEVELS - 1, Math.max(0, l)));
+      const level = levelOf((py * SIZE + px) * 4);
+      if (!allowed.includes(level)) { bad++; if (!first) first = `(${px},${py}) face ${f.face} level ${level}, lambda ${lambda.toFixed(2)}`; }
+    }
+    record(`cube.lod-across-edges.bias-${bias}`, bad === 0, bad ? `${bad} pixels off the ES 2.0 level, first ${first}` : `${SIZE * SIZE} pixels at the ES 2.0 level [${guest.languages.join(",")}]`);
+    gl.deleteProgram(guest.program);
+    if (bias === 0) {
+      // Control: the same face selection with texture()'s implicit derivatives.
+      const naive = translateEssl100(fragment, true).text
+        .replace(/return textureGrad\(x, c, [^;]*;/g, "return texture(x, c);");
+      const program = build(translateEssl100(QUAD_VERTEX, false).text, naive);
+      if (program.program) {
+        gl.useProgram(program.program); gl.uniform1i(gl.getUniformLocation(program.program, "s"), 1);
+        gl.clear(gl.COLOR_BUFFER_BIT); drawQuad(program.program);
+        const naiveGot = pixels(SIZE, SIZE);
+        let deep = 0;
+        for (let i = 0; i < SIZE * SIZE; i++) if (LEVEL_COLORS.findIndex(c => rgbNear(naiveGot, i * 4, c)) >= 4) deep++;
+        record("cube.lod-across-edges.naive-control", deep > 0, `${deep} pixels at level 4 or smaller with implicit derivatives`);
+        gl.deleteProgram(program.program);
+      } else record("cube.lod-across-edges.naive-control", false, program.log);
+    }
+    gl.deleteTexture(texture);
+  }
+
+  // (d) Guest declarations: sampler precisions, function parameters, arrays,
+  // a guest overload of textureCube, and a 1.00 partner shader.
+  target(false);
+  const texture = cubeTexture(1, true, 4, 1, solid, NEAREST, NEAREST);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture); gl.activeTexture(gl.TEXTURE0);
+  const declarations: [string, string][] = [
+    ["precisions", "uniform lowp samplerCube a;\nuniform mediump samplerCube b;\nuniform highp samplerCube c;\n" +
+      "vec4 look() { return (textureCube(a, vec3(0.0, 1.0, 0.0)) + textureCube(b, vec3(0.0, 1.0, 0.0)) + textureCube(c, vec3(0.0, 1.0, 0.0))) / 3.0; }"],
+    ["parameter", "uniform samplerCube a;\nvec4 sampleIt(samplerCube x, vec3 d) { return textureCube(x, d); }\nvec4 look() { return sampleIt(a, vec3(0.0, 1.0, 0.0)); }"],
+    ["array", "uniform samplerCube a[2];\nvec4 look() { return textureCube(a[1], vec3(0.0, 1.0, 0.0)); }"],
+    ["struct", "struct S { samplerCube m; float k; };\nuniform S a;\nvec4 look() { return textureCube(a.m, vec3(0.0, 1.0, 0.0)) * a.k; }"],
+    ["overload", "uniform samplerCube a;\nvec4 textureCube(samplerCube x, vec3 d, int k) { return textureCube(x, d) * float(k); }\n" +
+      "vec4 look() { return textureCube(a, vec3(0.0, 1.0, 0.0), 1); }"],
+    ["precision-statement", "precision highp samplerCube;\nuniform samplerCube a;\nvec4 look() { return textureCube(a, vec3(0.0, 1.0, 0.0)); }"],
+  ];
+  for (const [name, body] of declarations) {
+    const fragment = `precision mediump float;\n${body}\nvoid main() { gl_FragColor = look(); }\n`;
+    const guest = buildGuest(VARYING_VERTEX, fragment);
+    if (!guest.program) { record(`cube.declarations.${name}`, false, `host path failed: ${guest.log}`); continue; }
+    gl.useProgram(guest.program);
+    const count = Number(gl.getProgramParameter(guest.program, gl.ACTIVE_UNIFORMS));
+    for (let i = 0; i < count; i++) {
+      const info = gl.getActiveUniform(guest.program, i)!;
+      const base = info.name.replace(/\[0\]$/, "");
+      for (let e = 0; e < info.size; e++) {
+        const location = gl.getUniformLocation(guest.program, info.size > 1 ? `${base}[${e}]` : base);
+        if (info.type === gl.SAMPLER_2D_ARRAY) gl.uniform1i(location, 1); else gl.uniform1f(location, 1);
+      }
+    }
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS, 0, 1);
+    const got = pixel();
+    // The fragment shader samples a cube, so it compiles as ESSL 3.00 (its
+    // 1.00 partner is recompiled as 3.00 at link).
+    record(`cube.declarations.${name}`, near(got, [0, 0, 1, 1]) && guest.languages[1] === "essl300",
+      `got ${fmt(got)} want +Y blue [${guest.languages.join(",")}]`);
+    gl.deleteProgram(guest.program);
+  }
+  gl.deleteTexture(texture);
+}
+
 // ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
@@ -728,7 +985,7 @@ function essl3Translation(): void {
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

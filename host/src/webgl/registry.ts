@@ -1,3 +1,4 @@
+import { cubeExtraTextures } from "./cube-storage.js";
 import type { GlObjectCapture } from "./object-capture.js";
 import type { GlCompressedUpload } from "./compressed-upload.js";
 import type { GlReadbackCapture } from "./readback-capture.js";
@@ -240,7 +241,11 @@ function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | nu
   for (const object of b.fbos.values()) add(["deleteFramebuffer",object]);
   add(["deleteFramebuffer",b.undefinedDefaultFbo]);
   add(["deleteBuffer",b.clientArrayStream]);
-  for (const object of b.shadow.defaultTextures.values()) add(["deleteTexture",object]);
+  for (const object of b.shadow.defaultTextures.values()) {
+    add(["deleteTexture",object]);
+    // Texture zero of TEXTURE_CUBE_MAP may own more 2D array storage (cube-storage.ts).
+    for (const storage of cubeExtraTextures(object)) add(["deleteTexture",storage]);
+  }
   return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
 }
 

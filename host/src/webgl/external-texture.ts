@@ -46,11 +46,12 @@ import { samplerWriteGeneration } from "./depth-sampling.js";
 import { refreshTextureView, textureNative } from "./image-storage.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
-import { programGuestName } from "./essl3-translation.js";
+import { programGuestName, shaderSamplesCube } from "./essl3-translation.js";
+import { cubeSamplingTexture, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 
 export const TEXTURE_EXTERNAL_OES = 0x8d65;
 export const SAMPLER_EXTERNAL_OES = 0x8d66;
-const TEX = 0x0de1, SAMPLER_2D = 0x8b5e;
+const TEX = 0x0de1, CUBE = 0x8513, SAMPLER_2D = 0x8b5e, SAMPLER_CUBE = 0x8b60, SAMPLER_2D_ARRAY = 0x8dc1;
 const EXTENSION = "GL_OES_EGL_image_external";
 const GUEST_TYPE = "samplerExternalOES";
 const NATIVE_TYPE = "kandelo_samplerExternalOES";
@@ -378,7 +379,12 @@ function samplerFlowEdits(list: GlslToken[]): Edit[] {
 // --- shaders and programs ------------------------------------------------------
 
 const compiledSamplers = new WeakMap<WebGLShader, readonly string[]>();
-const programSamplers = new WeakMap<WebGLProgram, ReadonlySet<string>>();
+/** A linked program's samplers a draw must bind for itself: external
+ * sampler paths, and whether it samples cube maps through the ESSL 3.00
+ * per-face lookups (essl3-translation.ts, cube-storage.ts). Absent for
+ * every other program, whose draws pay this one lookup. */
+type ProgramSamplers = { paths: ReadonlySet<string>; cube: boolean };
+const programSamplers = new WeakMap<WebGLProgram, ProgramSamplers>();
 
 /** GLES links the shaders' compiled state, not their current sources. */
 export function recordCompiledExternalSamplers(shader: WebGLShader, samplers: readonly string[] | undefined): void {
@@ -391,8 +397,12 @@ export function recordLinkedExternalSamplers(program: WebGLProgram, linked: bool
   programSamplers.delete(program);
   if (!linked) return;
   const paths = new Set<string>();
-  for (const shader of shaders) for (const path of compiledSamplers.get(shader) ?? []) paths.add(path);
-  if (paths.size) programSamplers.set(program, paths);
+  let cube = false;
+  for (const shader of shaders) {
+    for (const path of compiledSamplers.get(shader) ?? []) paths.add(path);
+    cube ||= shaderSamplesCube(shader);
+  }
+  if (paths.size || cube) programSamplers.set(program, { paths, cube });
 }
 
 /** A private executable that replaces `program` samples the same textures. */
@@ -404,12 +414,15 @@ export function copyExternalSamplers(from: WebGLProgram, to: WebGLProgram): void
 const pathOf = (name: string) => name.replace(/\[\d+\]/g, "");
 
 /** The GLES type of an active uniform: SAMPLER_EXTERNAL_OES for a sampler
- * the guest declared samplerExternalOES. */
+ * the guest declared samplerExternalOES, and SAMPLER_CUBE for a samplerCube
+ * that the translation samples as sampler2DArray (ES 2.0 has no 2D array
+ * textures, so no other uniform of a translated program has that type). */
 export function guestUniformType(program: WebGLProgram, name: string, type: number): number {
-  return type === SAMPLER_2D && programSamplers.get(program)?.has(pathOf(name)) ? SAMPLER_EXTERNAL_OES : type;
+  if (type === SAMPLER_2D_ARRAY && programSamplers.get(program)?.cube) return SAMPLER_CUBE;
+  return type === SAMPLER_2D && programSamplers.get(program)?.paths.has(pathOf(name)) ? SAMPLER_EXTERNAL_OES : type;
 }
 
-type SamplerUnits = { link: number; writes: number; external: number[]; conflict: boolean };
+type SamplerUnits = { link: number; writes: number; external: number[]; cube: number[]; conflict: boolean };
 const unitCaches = new WeakMap<WebGLProgram, SamplerUnits>();
 
 /** The units the program's external samplers read, and whether one of them
@@ -419,21 +432,22 @@ function samplerUnits(b: GlBinding, program: WebGLProgram, paths: ReadonlySet<st
   const link = programLinkGeneration(b, program).value, writes = samplerWriteGeneration(program);
   const cached = unitCaches.get(program);
   if (cached && cached.link === link && cached.writes === writes) return cached;
-  const gl = b.gl!, external = new Set<number>(), plain = new Set<number>();
+  const gl = b.gl!, external = new Set<number>(), plain = new Set<number>(), cube = new Set<number>();
   if (!checkedGlCall(b, () => {
     const count = Number(gl.getProgramParameter(program, 0x8b86));
     for (let i = 0; i < count; i++) {
       const info = gl.getActiveUniform(program, i);
-      if (!info || info.type !== SAMPLER_2D) continue;
+      if (!info || (info.type !== SAMPLER_2D && info.type !== SAMPLER_2D_ARRAY)) continue;
       const array = info.name.endsWith("[0]"), base = array ? info.name.slice(0, -3) : info.name;
-      const units = paths.has(pathOf(programGuestName(program, info.name))) ? external : plain;
+      const units = info.type === SAMPLER_2D_ARRAY ? cube
+        : paths.has(pathOf(programGuestName(program, info.name))) ? external : plain;
       for (let element = 0; element < info.size; element++) {
         const location = gl.getUniformLocation(program, array ? `${base}[${element}]` : base);
         if (location) units.add(Number(gl.getUniform(program, location)));
       }
     }
   })) return null;
-  const result = { link, writes, external: [...external], conflict: [...external].some(unit => plain.has(unit)) };
+  const result = { link, writes, external: [...external], cube: [...cube], conflict: [...external].some(unit => plain.has(unit)) };
   unitCaches.set(program, result);
   return result;
 }
@@ -442,8 +456,8 @@ function samplerUnits(b: GlBinding, program: WebGLProgram, paths: ReadonlySet<st
 const validationFailures = new WeakSet<WebGLProgram>();
 export function validateExternalSamplers(b: GlBinding, program: WebGLProgram): void {
   validationFailures.delete(program);
-  const paths = programSamplers.get(program);
-  if (!paths) return;
+  const paths = programSamplers.get(program)?.paths;
+  if (!paths?.size) return;
   const units = samplerUnits(b, program, paths);
   if (units?.conflict) validationFailures.add(program);
 }
@@ -451,25 +465,37 @@ export function externalValidationFailed(program: WebGLProgram): boolean {
   return validationFailures.has(program);
 }
 
-export type ExternalDrawUnit = { unit: number; native: WebGLTexture | null };
+/** A texture a draw binds for itself: `native` on the unit's `target`
+ * (TEXTURE_2D for an external texture, TEXTURE_2D_ARRAY for a cube map),
+ * whose guest binding `guest` the draw restores. */
+export type ExternalDrawUnit = { unit: number; target: number; native: WebGLTexture | null; guest: WebGLTexture | null };
 const NO_UNITS: readonly ExternalDrawUnit[] = Object.freeze([]);
 
-/** The external textures a draw of the installed executable samples, each
- * with the native texture to bind to its unit's TEXTURE_2D, after copying
- * any sibling view whose image was written (image-writes.ts). Null when the
- * draw is refused (error recorded). */
+/** The textures a draw of the installed executable binds for itself. An
+ * external texture's native texture goes to its unit's TEXTURE_2D, after
+ * copying any sibling view whose image was written (image-writes.ts). A
+ * cube map sampled through the per-face lookups needs its sampled storage
+ * on its unit's TEXTURE_2D_ARRAY (cube-storage.ts); that is listed only
+ * where it differs from the unit's guest binding (an incomplete cube, which
+ * samples no texture, or images in other storage), so a complete cube costs
+ * a cached comparison. Null when the draw is refused (error recorded). */
 export function externalDrawUnits(b: GlBinding): readonly ExternalDrawUnit[] | null {
   const program = b.currentProgram;
-  const paths = program ? programSamplers.get(program) : undefined;
-  if (!program || !paths) return NO_UNITS;
-  const units = samplerUnits(b, program, paths);
+  const record = program ? programSamplers.get(program) : undefined;
+  if (!program || !record) return NO_UNITS;
+  const units = samplerUnits(b, program, record.paths);
   if (!units) return null;
   if (units.conflict) { recordGlError(b, 0x502); return null; }
   const s = b.shadow, draw: ExternalDrawUnit[] = [];
   for (const unit of units.external) {
     const object = s.externalTextureUnits[unit] ?? s.defaultTextures.get(TEXTURE_EXTERNAL_OES) ?? null;
     if (object && !refreshTextureView(b, object)) return null;
-    draw.push({ unit, native: object ? textureNative(b, object) : null });
+    draw.push({ unit, target: TEX, native: object ? textureNative(b, object) : null, guest: guestTextureBinding(b, unit) });
+  }
+  for (const unit of units.cube) {
+    const object = s.cubeTextureUnits[unit] ?? s.defaultTextures.get(CUBE) ?? null;
+    const native = cubeSamplingTexture(object), guest = nativeTextureBinding(s, CUBE, unit, b.textureViews);
+    if (native !== guest) draw.push({ unit, target: TEXTURE_2D_ARRAY, native, guest });
   }
   return draw;
 }

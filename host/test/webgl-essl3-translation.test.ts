@@ -65,7 +65,9 @@ describe("ESSL 3.00 translation", () => {
     const fragment = translateEssl100("precision mediump float;\nvarying vec2 v;\nuniform sampler2D s;\nuniform samplerCube c;\n" +
       "void main() { gl_FragColor = texture2D(s, v) + texture2DProj(s, vec3(v, 1.0), 0.5) + textureCube(c, vec3(v, 1.0)); }\n", true).text;
     expect(fragment).toContain("layout(location = 0) out mediump vec4 kandelo_essl3_FragColor;");
-    expect(fragment).toContain("kandelo_essl3_FragColor = texture ( s , v ) + textureProj ( s , vec3 ( v , 1.0 ) , 0.5 ) + texture ( c ,");
+    // A cube map is sampled per face from its 2D array storage (cube-storage.ts).
+    expect(fragment).toContain("kandelo_essl3_FragColor = texture ( s , v ) + textureProj ( s , vec3 ( v , 1.0 ) , 0.5 ) + kandelo_essl3_textureCube ( c ,");
+    expect(fragment).toContain("uniform sampler2DArray c ;");
     expect(fragment).toContain("in vec2 v ;");
     const data = translateEssl100("precision mediump float;\nvoid main() { gl_FragData[0] = vec4(1.0); }\n", true).text;
     expect(data).toContain("layout(location = 0) out mediump vec4 kandelo_essl3_FragData[1];");

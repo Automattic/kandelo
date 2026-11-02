@@ -1,9 +1,10 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
-import { imageTextureOperation, type GlTextureView } from "./image-storage.js";
+import { imageTextureOperation, prepareCubeRespecification, type GlTextureView } from "./image-storage.js";
+import { cubeImagesChanged, cubeSpecifyImage, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { prepareTextureOperation } from "./texture-bindings.js";
-import { recordTextureLevel } from "./texture-levels.js";
+import { isCubeFace, recordTextureLevel } from "./texture-levels.js";
 import * as O from "./ops.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 
@@ -95,15 +96,28 @@ export function runCompressedUpload(b: GlBinding, input: Uint8Array, out: Uint8A
     if (upload.cursor!==upload.bytes.byteLength) return invalid();
     const [target,level,format,x,y,width,height,border]=upload.metadata;
     const image=upload.op===O.OP_COMPRESSED_TEX_IMAGE_2D;
-    const accepted=imageTextureOperation(b,target,image,()=>{
-      if (image) b.gl!.compressedTexImage2D(target,level,format,width,height,border,upload.bytes);
-      else b.gl!.compressedTexSubImage2D(target,level,x,y,width,height,format,upload.bytes);
-    },level!==0,image ? level : undefined);
+    // A cube face is a layer of the cube's 2D array storage (cube-storage.ts).
+    const cube=isCubeFace(target);
+    if (cube && image && (width!==height || !prepareCubeRespecification(b))) {
+      if (width!==height) recordGlError(b,0x501);
+      return -5;
+    }
+    const accepted=cube
+      ? image
+        ? cubeSpecifyImage(b,target,level,{size:width,internalFormat:format,format,type:0,compressed:true},
+          layer=>b.gl!.compressedTexSubImage3D(TEXTURE_2D_ARRAY,level,0,0,layer,width,height,1,format,upload.bytes),
+          {inPlace:true,compressedBytes:upload.bytes.byteLength})
+        : cubeUpdateImage(b,target,level,layer=>b.gl!.compressedTexSubImage3D(TEXTURE_2D_ARRAY,level,x,y,layer,width,height,1,format,upload.bytes))
+      : imageTextureOperation(b,target,image,()=>{
+        if (image) b.gl!.compressedTexImage2D(target,level,format,width,height,border,upload.bytes);
+        else b.gl!.compressedTexSubImage2D(target,level,x,y,width,height,format,upload.bytes);
+      },level!==0,image ? level : undefined);
     // ES 2.0 section 4.4.5: compressed formats are not color-renderable.
     if (accepted && image)
       recordTextureLevel(upload.object,target,level,
         {width,height,internalFormat:format,format,type:0,compressed:true,
           gles:{internalFormat:format,format,type:0,expanded:false,colorRenderable:false,depth:false,stencil:false}});
+    if (accepted && image && cube) cubeImagesChanged(b);
     return accepted ? reply() : -5;
   });
 }

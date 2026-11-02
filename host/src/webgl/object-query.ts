@@ -1,3 +1,4 @@
+import { cubeTexParameterValue } from "./cube-storage.js";
 import { externalTexParameterValue, guestUniformType, TEXTURE_EXTERNAL_OES } from "./external-texture.js";
 import { glesExtensionAdvertised } from "./capabilities.js";
 import { renderbufferFloat } from "./es2-formats.js";
@@ -153,8 +154,11 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         }
         if ((name !== 0x0de1 && name !== 0x8513) || !validGlesTextureParameter(arg)) return fail(b,0x500);
         if (!prepareTextureOperation(b,name)) return -5;
-        let value = 0;
-        if (!checkedGlCall(b, () => { value = Number(gl.getTexParameter(name,arg)); })) return -5;
+        let value: number | null = 0;
+        // A cube map's parameters live on its 2D array storage (cube-storage.ts).
+        if (name === 0x8513) value = cubeTexParameterValue(b,arg);
+        else if (!checkedGlCall(b, () => { value = Number(gl.getTexParameter(name,arg)); })) return -5;
+        if (value === null) return -5;
         result.setInt32(0,value,true); return 4;
       }
       default: return -22;

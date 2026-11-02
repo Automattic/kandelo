@@ -140,6 +140,10 @@ class RecordingGl {
   bindFramebuffer(t: number, f: unknown) { this.log.push(["bindFramebuffer", [t, f]]); }
   deleteFramebuffer(f: unknown) { this.log.push(["deleteFramebuffer", [f]]); }
   framebufferTexture2D(...a: unknown[]) { this.log.push(["framebufferTexture2D", a]); }
+  framebufferTextureLayer(...a: unknown[]) { this.log.push(["framebufferTextureLayer", a]); }
+  texImage3D(...a: unknown[]) { this.log.push(["texImage3D", a]); }
+  texSubImage3D(...a: unknown[]) { this.log.push(["texSubImage3D", a]); }
+  copyTexSubImage3D(...a: unknown[]) { this.log.push(["copyTexSubImage3D", a]); }
   bindRenderbuffer(t: number, r: unknown) { this.log.push(["bindRenderbuffer", [t, r]]); }
   deleteRenderbuffer(r: unknown) { this.log.push(["deleteRenderbuffer", [r]]); }
   renderbufferStorage(...a: number[]) { this.log.push(["renderbufferStorage", a]); }
@@ -1578,6 +1582,8 @@ describe("query handler", () => {
       const object = {};
       names.set(73, object);
       gl.getParameter = () => object as any;
+      // A cube binding is the guest's (cube maps are 2D array textures natively).
+      if (pname === 0x8514) b.shadow.cubeTextureUnits[b.shadow.activeTexture] = object as WebGLTexture;
       const request = new Uint8Array(4);
       new DataView(request.buffer).setUint32(0, pname, true);
       const reply = new Uint8Array(4);

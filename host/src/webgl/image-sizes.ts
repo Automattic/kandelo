@@ -22,7 +22,7 @@ import type { GlBinding } from "./registry.js";
 import type { GlImageAttachment } from "./image-references.js";
 import { isDefaultFramebuffer } from "./framebuffer.js";
 import { recordGlError } from "./errors.js";
-import { textureLevel } from "./texture-levels.js";
+import { isCubeFace, textureLevel } from "./texture-levels.js";
 import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuffer-revision.js";
 
 type Size = readonly [number, number];
@@ -65,10 +65,15 @@ function attachmentImage(image: GlImageAttachment): Image | undefined {
 
 /** Section 4.4.5: an attachment of a user framebuffer is not color-, depth-
  * or stencil-renderable (by attachment point) under ES 2.0 plus the
- * advertised extensions. */
+ * advertised extensions, or is a cube-map face image that was never
+ * specified. A cube face is a layer of 2D array storage that allocates all
+ * six layers of a level (cube-storage.ts), so native completeness would
+ * accept it; every cube face image is the guest's, so its record is the
+ * whole truth. */
 export function framebufferAttachmentUnrenderable(b: GlBinding, framebuffer: WebGLFramebuffer | null): boolean {
   if (!framebuffer || isDefaultFramebuffer(b, framebuffer)) return false;
   for (const [point, image] of b.framebufferAttachments.get(framebuffer) ?? []) {
+    if (image.kind === "texture" && isCubeFace(image.target) && !textureLevel(image.object, image.target, image.level)) return true;
     const recorded = attachmentImage(image);
     const renderable = point === 0x8d00 ? recorded?.depthRenderable
       : point === 0x8d20 ? recorded?.stencilRenderable : recorded?.colorRenderable;

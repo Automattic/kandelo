@@ -4,6 +4,7 @@ import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { setTextureUnit } from "./depth-sampling.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 import { bindExternalTexture, isExternalTexture, TEXTURE_EXTERNAL_OES } from "./external-texture.js";
+import { registerCubeTexture, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 
 /** Native textures whose target an accepted bind has fixed. */
 const boundTargets = new WeakMap<WebGLTexture, number>();
@@ -32,16 +33,23 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
       catch (caught) { gl.deleteTexture(texture); rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
     }
     const native = texture ? textureNative(b,texture) : null;
+    // A cube map's storage is a native 2D array texture (cube-storage.ts);
+    // its first bind there fixes the native target, so a 2D texture bound
+    // as a cube, or a cube bound as 2D, fails natively as ES 2.0 requires.
+    const nativeTarget = target === 0x8513 ? TEXTURE_2D_ARRAY : target;
     // A texture's target is fixed by its first successful bind, and binding
     // it to another target is the only way this bind can fail (the target is
     // validated above). A repeat bind to its own target, or of zero, cannot
     // fail, so it skips the checked call's two getError round trips; a
     // compositor binds a texture for every quad.
-    if (native === null || boundTargets.get(native) === target) gl.bindTexture(target,native);
-    else if (!checkedGlCall(b, () => gl.bindTexture(target,native))) {
+    if (native === null || boundTargets.get(native) === nativeTarget) gl.bindTexture(nativeTarget,native);
+    else if (!checkedGlCall(b, () => gl.bindTexture(nativeTarget,native))) {
       if (allocate && texture) { b.textures.delete(name); gl.deleteTexture(texture); }
       return false;
-    } else boundTargets.set(native,target);
+    } else {
+      boundTargets.set(native,nativeTarget);
+      if (target === 0x8513 && texture) registerCubeTexture(texture,native);
+    }
     const units = target === 0x0de1 ? b.shadow.textureUnits : b.shadow.cubeTextureUnits;
     const unit = b.shadow.activeTexture;
     if (unit >= 0 && unit < units.length) setTextureUnit(b, target !== 0x0de1, unit, name ? texture : null);

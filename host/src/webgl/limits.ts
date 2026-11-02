@@ -7,26 +7,42 @@ import { glslTokens } from "./attribute-aliasing.js";
  * browser context. Do not cache null results from a lost context. */
 const textureLimits = new WeakMap<WebGL2RenderingContext, number>();
 const viewportLimits = new WeakMap<WebGL2RenderingContext, readonly [number, number]>();
+/** Native texture size limits by pname. */
 const textureImageLevels = new WeakMap<WebGL2RenderingContext, Map<number, number>>();
 
 /** Texture level bounds are native-context capabilities, not texture storage
  * dimensions. Undefined destination storage cannot override their GLES errors. */
 export function maxTextureImageLevel(owner: CheckedGlOwner, cube: boolean): number | null {
+  const size = cube ? maxCubeMapTextureSize(owner) : nativeTextureLimit(owner, 0x0d33);
+  return size === null ? null : Math.floor(Math.log2(size));
+}
+
+/** One native size limit (MAX_TEXTURE_SIZE, MAX_CUBE_MAP_TEXTURE_SIZE,
+ * MAX_ARRAY_TEXTURE_LAYERS), cached per renderer. */
+function nativeTextureLimit(owner: CheckedGlOwner, pname: number): number | null {
   const gl = owner.gl;
   if (!gl) return null;
-  const pname = cube ? 0x851c : 0x0d33;
-  let level = textureImageLevels.get(gl)?.get(pname);
+  let value = textureImageLevels.get(gl)?.get(pname);
   let size: unknown;
-  if (!checkedGlCall(owner, () => { if (level === undefined) size=gl.getParameter(pname); })) return null;
-  if (level !== undefined) return level;
+  if (!checkedGlCall(owner, () => { if (value === undefined) size=gl.getParameter(pname); })) return null;
+  if (value !== undefined) return value;
   if (typeof size !== "number" || !Number.isInteger(size) || size <= 0 || size > 0x7fff_ffff) {
     recordGlError(owner,0x502); return null;
   }
-  level=Math.floor(Math.log2(size));
   let limits=textureImageLevels.get(gl);
   if (!limits) { limits=new Map(); textureImageLevels.set(gl,limits); }
-  limits.set(pname,level);
-  return level;
+  limits.set(pname,size);
+  return size;
+}
+
+/** MAX_CUBE_MAP_TEXTURE_SIZE as advertised to the guest. A cube map is a
+ * six-layer 2D array texture (cube-storage.ts), whose layers are limited by
+ * MAX_TEXTURE_SIZE rather than the native cube limit, so the advertised
+ * size is the smaller of the two (WebGL 2 guarantees at least 256 array
+ * layers; six are used). */
+export function maxCubeMapTextureSize(owner: CheckedGlOwner): number | null {
+  const cube = nativeTextureLimit(owner, 0x851c), layer = nativeTextureLimit(owner, 0x0d33);
+  return cube === null || layer === null ? null : Math.min(cube, layer);
 }
 
 /** Remains available after a retiring owner has discarded its shadow. A

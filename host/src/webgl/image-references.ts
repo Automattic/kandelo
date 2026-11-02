@@ -5,6 +5,7 @@ import { applyNativeChanges, nativeOwner, nativeInverse, rethrowNativeGlFault, t
 import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFramebufferTarget } from "./framebuffer.js";
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { setTextureUnit } from "./depth-sampling.js";
+import { TEXTURE_2D_ARRAY } from "./cube-storage.js";
 export type GlImageAttachment = {
   kind: "texture";
   object: WebGLTexture;
@@ -197,14 +198,16 @@ export function deleteTextureName(b: GlBinding, name: number): boolean {
     for (const [target, bindings] of [[0x0de1, b.shadow.textureUnits], [0x8513, b.shadow.cubeTextureUnits]] as const) {
       for (let unit = 0; unit < bindings.length; unit++)
         if (bindings[unit] === texture) {
+          // Cube maps are 2D array textures natively (cube-storage.ts).
+          const nativeTarget = target === 0x8513 ? TEXTURE_2D_ARRAY : target;
           const bind = (native: WebGLTexture | null) => {
             if (!checkedGlCall(owner, () => gl.activeTexture(0x84c0 + unit)))
               return false;
-            const accepted = checkedGlCall(owner, () => gl.bindTexture(target, native));
+            const accepted = checkedGlCall(owner, () => gl.bindTexture(nativeTarget, native));
             const restored = checkedGlCall(owner, () => gl.activeTexture(0x84c0 + active));
             return accepted && restored;
           };
-          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",target,oldNative]], [["activeTexture",0x84c0+active]]) });
+          changes.push({ apply: () => bind(b.shadow.defaultTextures.get(target) ?? null), restore: nativeInverse(owner, [["activeTexture",0x84c0+unit],["bindTexture",nativeTarget,oldNative]], [["activeTexture",0x84c0+active]]) });
           units.push({ cube: target === 0x8513, unit });
         }
     }

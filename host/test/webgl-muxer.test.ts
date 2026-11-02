@@ -272,7 +272,8 @@ describe("GlMuxer.switchTo", () => {
     const activeCalls = gl.callsOf("activeTexture").map((c) => (c as number[])[0]);
     expect(activeCalls).toEqual([...Array.from({length: 32}, (_, i) => GL_TEXTURE0 + i), GL_TEXTURE0 + 5]);
     expect(gl.callsOf("bindTexture")).toEqual(t.shadow.textureUnits.flatMap((tex, unit) => [
-      [GL_TEXTURE_2D, tex], [0x8513, t.shadow.cubeTextureUnits[unit]],
+      // A cube map is a native 2D array texture (cube-storage.ts).
+      [GL_TEXTURE_2D, tex], [0x8c1a, t.shadow.cubeTextureUnits[unit]],
     ]));
   });
 

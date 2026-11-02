@@ -419,14 +419,18 @@ it.each([TEX,0x8515,0x8516,0x8517,0x8518,0x8519,0x851a])(
     expect(query(O.QOP_IMAGE_STORAGE,[O.OP_TEX_SUB_IMAGE_2D,target,limit+1,0,0,0,0,0x1908,0x1401,0])).toEqual([1,0]);
     queued(O.OP_COPY_TEX_SUB_IMAGE_2D,[target,limit+1,0,0,0,0,0,0]);
     expect(updates).toBe(0);
-    expect(lookups).toEqual([target === TEX ? 0x0d33 : 0x851c]);
+    // A cube face is a 2D array layer (cube-storage.ts): the advertised cube
+    // limit is the smaller of the native cube and 2D (layer) limits.
+    expect(lookups).toEqual(target === TEX ? [0x0d33] : [0x851c,0x0d33]);
     expect(b.errors).toEqual([0x501]);
     // The exact maximum is admitted; missing destination storage then retains
-    // the distinct native INVALID_OPERATION rather than a fabricated limit.
+    // the distinct INVALID_OPERATION rather than a fabricated limit (the
+    // native call's for 2D; a cube face image with no storage, ES 2.0
+    // section 3.7.2, is reported before any native call).
     expect(query(O.QOP_IMAGE_STORAGE,[O.OP_TEX_SUB_IMAGE_2D,target,limit,0,0,0,0,0x1908,0x1401,0])).toEqual([1,0]);
-    expect(updates).toBe(1);
+    expect(updates).toBe(target === TEX ? 1 : 0);
     expect(b.errors).toEqual([0x501,0x502]);
-    expect(lookups).toHaveLength(1);
+    expect(lookups).toHaveLength(target === TEX ? 1 : 2);
   });
 it("refuses unavailable or rejected image limits without caching or invoking a dependent update", () => {
   const { b, gl, query } = setup();

@@ -32,7 +32,7 @@ import { drawVariantExecutable, synchronizeReversedDepthTwin } from "./reversed-
 import type { GlStencilFaceState } from "./shadow.js";
 import { prepareDrawTarget } from "./opaque-alpha.js";
 import { robustVertexDraw } from "./robust-access.js";
-import { externalDrawUnits, guestTextureBinding, type ExternalDrawUnit } from "./external-texture.js";
+import { externalDrawUnits, type ExternalDrawUnit } from "./external-texture.js";
 
 const NO_EXTERNAL_UNITS: readonly ExternalDrawUnit[] = Object.freeze([]);
 
@@ -180,13 +180,15 @@ export function issueGlesDraw(b: GlBinding, draw: GlesDraw): boolean {
     finalizer.push([["useProgram", b.currentProgram]]);
   }
   if (external.length) {
-    // The external texture occupies its unit's TEXTURE_2D for this draw;
-    // the unit's guest 2D binding comes back afterwards.
-    changes.push({ apply: () => external.every(({ unit, native }) =>
-      checkedGlCall(b, () => { gl.activeTexture(0x84c0 + unit); gl.bindTexture(0x0de1, native); })),
+    // An external texture occupies its unit's TEXTURE_2D, and a cube map's
+    // sampled storage (or no texture, for an incomplete cube) its unit's
+    // TEXTURE_2D_ARRAY, for this draw; the unit's guest binding comes back
+    // afterwards.
+    changes.push({ apply: () => external.every(({ unit, target, native }) =>
+      checkedGlCall(b, () => { gl.activeTexture(0x84c0 + unit); gl.bindTexture(target, native); })),
       restore: nativeInverse(b) });
-    finalizer.push(...external.map(({ unit }): NativeCall[] =>
-      [["activeTexture", 0x84c0 + unit], ["bindTexture", 0x0de1, guestTextureBinding(b, unit)]]),
+    finalizer.push(...external.map(({ unit, target, guest }): NativeCall[] =>
+      [["activeTexture", 0x84c0 + unit], ["bindTexture", target, guest]]),
       [["activeTexture", 0x84c0 + b.shadow.activeTexture]]);
   }
   if (stencil.kind !== "none") finalizer.push(...stencilRestore(b));

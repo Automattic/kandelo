@@ -24,7 +24,8 @@ import { publishedUniformLocation } from "./object-group.js";
 import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
 import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
 import { acceptedUniformCount } from "./uniform-setters.js";
-import { imageTextureOperation, imageRenderbufferStorage, prepareImageDraw, renderbufferNative } from "./image-storage.js";
+import { imageTextureOperation, imageRenderbufferStorage, prepareCubeRespecification, prepareImageDraw, renderbufferNative } from "./image-storage.js";
+import { cubeGenerateMipmap, cubeImagesChanged, cubeSpecifyImage, cubeTexParameter, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
 import { repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
@@ -55,7 +56,7 @@ import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData
 import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
-import { combinedTextureUnits, knownVertexAttributeLimit, maxViewport } from "./limits.js";
+import { combinedTextureUnits, knownVertexAttributeLimit, maxCubeMapTextureSize, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { withMultisampleRead } from "./multisample.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
@@ -541,6 +542,30 @@ export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boo
   return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true), true) === true;
 }
 
+/** ES 2.0 section 3.7.1 sizes of a cube-map face image: square, within
+ * MAX_CUBE_MAP_TEXTURE_SIZE at its level, border 0 (INVALID_VALUE). Native
+ * cube targets checked this; the face's 2D array storage
+ * (cube-storage.ts) would accept a non-square layer. */
+function cubeImageSizeValid(b: GlBinding, level: number, width: number, height: number, border: number): boolean {
+  const maximum = maxCubeMapTextureSize(b);
+  if (maximum === null) return false;
+  if (width < 0 || height < 0 || width !== height || width > maximum >> level || border !== 0) {
+    recordGlError(b, 0x501); return false;
+  }
+  return true;
+}
+
+/** Compressed formats are those the native renderer lists, as for 2D
+ * images (compressed-upload.ts); any other is INVALID_ENUM. */
+function compressedFormatListed(b: GlBinding, format: number): boolean {
+  let formats: unknown = null;
+  if (!checkedGlCall(b, () => { formats = b.gl!.getParameter(0x86a3); })) return false;
+  if (!(ArrayBuffer.isView(formats) || Array.isArray(formats)) || !Array.from(formats as ArrayLike<number>).includes(format)) {
+    recordGlError(b, 0x500); return false;
+  }
+  return true;
+}
+
 function dispatch(
   gl: WebGL2RenderingContext,
   b: GlBinding,
@@ -922,15 +947,23 @@ function dispatch(
       }
       const native = expanded ? expandedNative(type)
         : { internal: normalizeTextureInternalFormat(internalFormat, format, type), format };
-      const accepted = imageTextureOperation(b,target,true,()=>gl.texImage2D(
-        target, level, native.internal, width, height, border, native.format, type, data,
-      ),level!==0,level);
+      // A cube face is a layer of the cube's 2D array storage (cube-storage.ts).
+      const cube = isCubeFace(target);
+      if (cube && (!cubeImageSizeValid(b, level, width, height, border) || !prepareCubeRespecification(b))) return false;
+      const accepted = cube
+        ? cubeSpecifyImage(b, target, level, { size: width, internalFormat: native.internal, format: native.format, type, compressed: false },
+          data === null ? null : layer => gl.texSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, width, height, 1, native.format, type, data),
+          { inPlace: true })
+        : imageTextureOperation(b,target,true,()=>gl.texImage2D(
+          target, level, native.internal, width, height, border, native.format, type, data,
+        ),level!==0,level);
       if (accepted) {
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat:native.internal,format:native.format,type,compressed:false,
             gles:{internalFormat,format,type,expanded,
               colorRenderable:textureColorRenderable(internalFormat,format,type,glesExtensionAdvertised(gl,"GL_EXT_color_buffer_half_float")),
               depth:depthTextureFormat(format),stencil:format===0x84f9}});
+        if (cube) cubeImagesChanged(b);
       }
       return accepted;
     }
@@ -984,12 +1017,23 @@ function dispatch(
         }
         let unpackBuffer: WebGLBuffer | null = null;
         if (!checkedGlCall(b,()=>{ unpackBuffer=gl.getParameter(0x88ef); })) return false;
+        if (isCubeFace(target)) return cubeUpdateImage(b,target,level,layer=>{
+          if (unpackBuffer) gl.texSubImage3D(TEXTURE_2D_ARRAY,level,endX,endY,layer,0,0,1,nativeFormat,nativeType,0);
+          else gl.texSubImage3D(TEXTURE_2D_ARRAY,level,endX,endY,layer,0,0,1,nativeFormat,nativeType,data);
+        });
         return imageTextureOperation(b,target,false,()=>{
           // WebGL2 requires the offset overload exactly when a real unpack
           // buffer is bound. Neither branch changes that binding or reads data.
           if (unpackBuffer) gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,0);
           else gl.texSubImage2D(target,level,endX,endY,0,0,nativeFormat,nativeType,data);
         });
+      }
+      if (isCubeFace(target)) {
+        // Negative values are INVALID_VALUE before an undefined image's
+        // INVALID_OPERATION, as for the native call.
+        if (xoff < 0 || yoff < 0 || width < 0 || height < 0) { recordGlError(b,0x501); return false; }
+        return cubeUpdateImage(b,target,level,layer=>gl.texSubImage3D(
+          TEXTURE_2D_ARRAY, level, xoff, yoff, layer, width, height, 1, nativeFormat, nativeType, data));
       }
       return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
         target, level, xoff, yoff, width, height, nativeFormat, nativeType, data,
@@ -998,6 +1042,10 @@ function dispatch(
     case O.OP_TEX_PARAMETERI:
       if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
         externalTexParameter(b, v.getUint32(p + 4, true), v.getInt32(p + 8, true));
+        return;
+      }
+      if (v.getUint32(p, true) === 0x8513) {
+        cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameteri(target, v.getUint32(p + 4, true), v.getInt32(p + 8, true)));
         return;
       }
       gl.texParameteri(
@@ -1011,6 +1059,10 @@ function dispatch(
       // after conversion to the nearest integer (ES 2.0 section 2.3.1).
       if (v.getUint32(p, true) === TEXTURE_EXTERNAL_OES) {
         externalTexParameter(b, v.getUint32(p + 4, true), Math.round(v.getFloat32(p + 8, true)));
+        return;
+      }
+      if (v.getUint32(p, true) === 0x8513) {
+        cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameterf(target, v.getUint32(p + 4, true), v.getFloat32(p + 8, true)));
         return;
       }
       gl.texParameterf(
@@ -1040,6 +1092,13 @@ function dispatch(
       if (target === 0x0de1 && textureLevel(boundTextureObject(b,target)!,target,0)?.gles?.depth) {
         recordGlError(b,0x502); return;
       }
+      if (target === 0x8513) {
+        if (prepareCubeRespecification(b) && cubeGenerateMipmap(b)) {
+          recordGeneratedMipmaps(boundTextureObject(b,target),target);
+          cubeImagesChanged(b);
+        }
+        return;
+      }
       if (imageTextureOperation(b,target,true,()=>gl.generateMipmap(target)))
         recordGeneratedMipmaps(boundTextureObject(b,target),target);
       return;
@@ -1050,7 +1109,13 @@ function dispatch(
       const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
       const internalFormat = v.getUint32(p + 8, true);
       const width = v.getInt32(p + 12, true), height = v.getInt32(p + 16, true);
-      if (imageTextureOperation(b,target,true,()=>gl.compressedTexImage2D(
+      const cube = isCubeFace(target);
+      if (cube && (!compressedFormatListed(b, internalFormat) || !cubeImageSizeValid(b, level, width, height, v.getInt32(p + 20, true))
+          || !prepareCubeRespecification(b))) return;
+      if (cube ? cubeSpecifyImage(b, target, level, { size: width, internalFormat, format: internalFormat, type: 0, compressed: true },
+          layer => gl.compressedTexSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, width, height, 1, internalFormat, data),
+          { inPlace: true, compressedBytes: dataLen })
+        : imageTextureOperation(b,target,true,()=>gl.compressedTexImage2D(
         target, level, internalFormat, width, height,
         v.getInt32(p + 20, true),
         data,
@@ -1059,12 +1124,20 @@ function dispatch(
         recordTextureLevel(boundTextureObject(b,target),target,level,
           {width,height,internalFormat,format:internalFormat,type:0,compressed:true,
             gles:{internalFormat,format:internalFormat,type:0,expanded:false,colorRenderable:false,depth:false,stencil:false}});
+        if (cube) cubeImagesChanged(b);
       }
       return;
     }
     case O.OP_COMPRESSED_TEX_SUB_IMAGE_2D: {
       const dataLen = v.getUint32(p + 28, true);
       const data = copyBytes(v, p + 32, dataLen);
+      if (isCubeFace(v.getUint32(p, true))) {
+        const level = v.getInt32(p + 4, true), format = v.getUint32(p + 24, true);
+        if (compressedFormatListed(b, format))
+          cubeUpdateImage(b, v.getUint32(p, true), level, layer => gl.compressedTexSubImage3D(TEXTURE_2D_ARRAY, level,
+            v.getInt32(p + 8, true), v.getInt32(p + 12, true), layer, v.getInt32(p + 16, true), v.getInt32(p + 20, true), 1, format, data));
+        return;
+      }
       imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.compressedTexSubImage2D(
         v.getUint32(p, true),
         v.getInt32(p + 4, true),
@@ -1082,9 +1155,19 @@ function dispatch(
       const target = v.getUint32(p, true), level = v.getInt32(p + 4, true);
       const internalFormat = v.getUint32(p + 8, true);
       const width = v.getInt32(p + 20, true), height = v.getInt32(p + 24, true);
+      // A cube face is a layer of the cube's 2D array storage
+      // (cube-storage.ts): the copied format (sized for RED and RG, which
+      // WebGL 2 has no unsized form of) is allocated, then copied into.
+      const cube = isCubeFace(target);
+      if (cube && (!cubeImageSizeValid(b, level, width, height, v.getInt32(p + 28, true)) || !prepareCubeRespecification(b))) return;
+      const nativeInternal = cube ? normalizeTextureInternalFormat(internalFormat, internalFormat, GL_UNSIGNED_BYTE) : internalFormat;
       // ES 2.0 copies take an unsized internal format from the framebuffer;
       // a multisampled default framebuffer supplies its resolved values.
-      if (withMultisampleRead(b,()=>imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
+      if (withMultisampleRead(b,()=>cube
+        ? cubeSpecifyImage(b, target, level, { size: width, internalFormat: nativeInternal, format: internalFormat, type: GL_UNSIGNED_BYTE, compressed: false },
+          layer => gl.copyTexSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, v.getInt32(p + 12, true), v.getInt32(p + 16, true), width, height),
+          { inPlace: false })
+        : imageTextureOperation(b,target,true,()=>gl.copyTexImage2D(
         target, level, internalFormat,
         v.getInt32(p + 12, true),
         v.getInt32(p + 16, true),
@@ -1092,9 +1175,10 @@ function dispatch(
         v.getInt32(p + 28, true),
       ),level!==0,level))) {
         recordTextureLevel(boundTextureObject(b,target),target,level,
-          {width,height,internalFormat,format:internalFormat,type:0x1401,compressed:false,
+          {width,height,internalFormat:nativeInternal,format:internalFormat,type:0x1401,compressed:false,
             gles:{internalFormat,format:internalFormat,type:0x1401,expanded:false,
               colorRenderable:copiedTextureColorRenderable(internalFormat),depth:false,stencil:false}});
+        if (cube) cubeImagesChanged(b);
       }
       return;
     }
@@ -1104,6 +1188,12 @@ function dispatch(
       // levels; the color read buffer has no components for them.
       if (textureLevel(boundTextureObject(b,v.getUint32(p,true))!,v.getUint32(p,true),v.getInt32(p+4,true))?.gles?.depth) {
         recordGlError(b,0x502); return;
+      }
+      if (isCubeFace(v.getUint32(p,true))) {
+        withMultisampleRead(b,()=>cubeUpdateImage(b,v.getUint32(p,true),v.getInt32(p+4,true),layer=>gl.copyTexSubImage3D(
+          TEXTURE_2D_ARRAY, v.getInt32(p+4,true), v.getInt32(p+8,true), v.getInt32(p+12,true), layer,
+          v.getInt32(p+16,true), v.getInt32(p+20,true), v.getInt32(p+24,true), v.getInt32(p+28,true))));
+        return;
       }
       withMultisampleRead(b,()=>imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.copyTexSubImage2D(
         v.getUint32(p, true),

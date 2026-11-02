@@ -59,7 +59,8 @@ export function revokeForeignBo(b: GlBinding, bo: number): boolean {
           restore:nativeInverse(b,[["bindFramebuffer",0x8ca9,framebuffer],before])});
       }
     }
-    for (const unit of physicalUnits) for (const [target,pname] of [[0x0de1,0x8069],[0x8513,0x8514]])
+    // Cube maps are 2D array textures natively (cube-storage.ts).
+    for (const unit of physicalUnits) for (const [target,pname] of [[0x0de1,0x8069],[0x8c1a,0x8c1d]])
       captures.push({unit,target,pname,previous:null});
   } catch (caught) { rethrowNativeGlFault(caught); recordGlError(b,0x505); return false; }
   if (changes.length || captures.length) {

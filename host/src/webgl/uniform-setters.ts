@@ -32,7 +32,9 @@ export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: n
     case O.OP_UNIFORM_MATRIX3FV: type=0x8b5b;break;
     case O.OP_UNIFORM_MATRIX4FV: type=0x8b5c;break;
   }
-  const sampler=(meta.type===0x8b5e || meta.type===0x8b60) && type===0x1404;
+  // A samplerCube of a translated program is a sampler2DArray natively
+  // (essl3-translation.ts); ES 2.0 has no other 2D array sampler.
+  const sampler=(meta.type===0x8b5e || meta.type===0x8b60 || meta.type===0x8dc1) && type===0x1404;
   if((meta.type!==type && meta.type!==boolean && !sampler) || (!meta.array && count>1)) return reject();
   return Math.min(count,meta.remaining);
 }

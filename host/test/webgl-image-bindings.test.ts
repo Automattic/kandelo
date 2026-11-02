@@ -96,7 +96,8 @@ it("rejects cross-target texture reuse without losing the old binding or consumi
   const {b,gl,query}=setup();query(1,0x0de1,17);query(1,0x8513,18);
   const cube=b.textures.get(18)!;b.errors.push(0x501);
   expect(query(1,0x8513,17)).toEqual([1,0]);expect(b.shadow.cubeTextureUnits[0]).toBe(cube);
-  expect(gl.bindings.get(0x8513)).toBe(cube);expect(gl.deleted).toEqual([]);expect(b.errors).toEqual([0x501,0x502]);
+  // A cube map is a native 2D array texture (cube-storage.ts).
+  expect(gl.bindings.get(0x8c1a)).toBe(cube);expect(gl.deleted).toEqual([]);expect(b.errors).toEqual([0x501,0x502]);
 });
 it("validates complete binding request/reply spans before any native mutation",()=>{
   const {b,gl,query}=setup();

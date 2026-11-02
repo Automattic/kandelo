@@ -9,6 +9,8 @@ import { framebufferInputsChanged, framebufferInputsRevision } from "./framebuff
 import { noteStorageWrite, storageWrites } from "./image-writes.js";
 import { effectiveInternalFormat } from "./es2-formats.js";
 import { CUBE_FACES, isCubeFace, replaceTextureLevels, textureComplete, textureFaces, textureLevel } from "./texture-levels.js";
+import { cubeExtraTextures, cubeImageLocation, cubeImageTexture, cubeMinFilter, forgetCubeTexture, isCubeTexture,
+  orphanCubeStorage, TEXTURE_2D_ARRAY, TEXTURE_BINDING_2D_ARRAY } from "./cube-storage.js";
 /** Private source handles never enter the public GLuint texture namespace. */
 export const WPK_IMAGE_SOURCE_TARGET = 0x57504b49;
 /** Size of shared::dri::WpkDrmExportImage, the EXPORT_IMAGE host record. */
@@ -29,6 +31,8 @@ export type GlImageStorage = {
   /** Texture image target (GL_TEXTURE_2D or a cube face); default 2D. */
   target?: number;
   level?: number;
+  /** A cube face's layer of its 2D array storage (cube-storage.ts). */
+  layer?: number;
   renderbuffer?: WebGLRenderbuffer | null;
   /** texImage2D triple for sibling views; default RGBA8. */
   internalFormat?: number;
@@ -71,6 +75,7 @@ export function registerImageSource(b: GlBinding, bo: number, texture: WebGLText
 /** Attach canonical storage at `point` of the framebuffer bound to `target`. */
 function sourceAttachment(source: GlImageSource, target: number, point: number, level = 0): NativeCall {
   if (source.renderbuffer) return ["framebufferRenderbuffer", target, point, RBO, source.renderbuffer];
+  if (source.layer !== undefined) return ["framebufferTextureLayer", target, point, source.texture, (source.level ?? 0) + level, source.layer];
   return ["framebufferTexture2D", target, point, source.target ?? TEX, source.texture, (source.level ?? 0) + level];
 }
 /** Sibling writes can bind the canonical texture as GL_TEXTURE_2D only when
@@ -102,10 +107,10 @@ function withImageState(b: GlBinding, call: () => boolean, cube = false): boolea
     () => { draw = gl.getParameter(0x8ca6); },
     () => { read = gl.getParameter(0x8caa); },
     () => { renderbuffer = gl.getParameter(0x8ca7); },
-    ...(cube ? [() => { cubeTexture = gl.getParameter(0x8514); }] : []),
+    ...(cube ? [() => { cubeTexture = gl.getParameter(TEXTURE_BINDING_2D_ARRAY); }] : []),
   ]) if (!checkedGlCall(b,capture)) return false;
   return applyNativeChanges(b,[{apply:call,restore:nativeInverse(b)}],{finalizer:nativeInverse(b,
-    [["activeTexture",active],["bindTexture",TEX,texture],...(cube ? [["bindTexture",CUBE,cubeTexture] as NativeCall] : [])],
+    [["activeTexture",active],["bindTexture",TEX,texture],...(cube ? [["bindTexture",TEXTURE_2D_ARRAY,cubeTexture] as NativeCall] : [])],
     [["bindRenderbuffer",RBO,renderbuffer]],
     [["bindFramebuffer",DRAW,draw]], [["bindFramebuffer",READ,read]])});
 }
@@ -196,6 +201,9 @@ export function imageAttachmentCall(b: GlBinding, target: number, point: number,
   if (view?.source)
     return sourceAttachment(view.source, target, point, image.kind === "texture" ? image.level : 0);
   if (image.kind === "texture") {
+    // A cube face is a layer of the 2D array storage holding it.
+    const cube = isCubeFace(image.target) ? cubeImageTexture(image.object, image.target, image.level) : undefined;
+    if (cube) return ["framebufferTextureLayer", target, point, cube, image.level, image.target - CUBE_FACES[0]];
     const native = (view?.native as WebGLTexture | undefined) ?? image.object;
     const imageTarget = image.target, level = image.level;
     return ["framebufferTexture2D", target, point, imageTarget, native, level];
@@ -207,6 +215,8 @@ export function imageAttachmentCall(b: GlBinding, target: number, point: number,
  * EGLImage storage for a sibling view (what imageAttachmentCall attaches),
  * otherwise the object's own native storage. */
 export function attachedNativeStorage(b: GlBinding, image: GlImageAttachment): object | null {
+  const cube = image.kind === "texture" && isCubeFace(image.target) ? cubeImageTexture(image.object, image.target, image.level) : undefined;
+  if (cube) return cube;
   const view = image.kind === "texture" ? b.textureViews.get(image.object) : b.renderbufferViews.get(image.object);
   if (view?.source) return view.source.renderbuffer ?? view.source.texture;
   return view?.native ?? image.object;
@@ -228,7 +238,7 @@ function retarget(b: GlBinding, kind: number, object: WebGLTexture | WebGLRender
         restore:nativeInverse(b, [["bindFramebuffer",DRAW,fbo],before])});
     }
   if (kind === 1) {
-    for (const [units, bindTarget] of [[b.shadow.textureUnits, TEX], [b.shadow.cubeTextureUnits, CUBE]] as const)
+    for (const [units, bindTarget] of [[b.shadow.textureUnits, TEX], [b.shadow.cubeTextureUnits, TEXTURE_2D_ARRAY]] as const)
       for (let unit=0;unit<units.length;unit++) if (units[unit] === object) {
         changes.push({apply: () => checkedGlCall(b, () => gl.activeTexture(0x84c0+unit)) &&
             checkedGlCall(b, () => gl.bindTexture(bindTarget,next.native as WebGLTexture)),
@@ -624,7 +634,13 @@ function imageRetirement(b: GlBinding, object: WebGLTexture|WebGLRenderbuffer, c
 export function destroyTextureView(b: GlBinding, object: WebGLTexture): boolean {
   const view = b.textureViews.get(object), native = view?.native ?? object;
   unlinkSource(object, null);
-  if (!imageRetirement(b,object,[["deleteTexture",b.externallyOwnedTextures.has(native) || exportOwned(native) ? null : native],["deleteFramebuffer",view?.read ?? null]])) return false;
+  // A cube map's other 2D array storages (cube-storage.ts) go with it,
+  // except one an exported image still uses.
+  const storages = cubeExtraTextures(object).map(texture =>
+    ["deleteTexture", exportOwned(texture) ? null : texture] as NativeDeletion);
+  if (!imageRetirement(b,object,[["deleteTexture",b.externallyOwnedTextures.has(native) || exportOwned(native) ? null : native],["deleteFramebuffer",view?.read ?? null],
+    ...storages])) return false;
+  forgetCubeTexture(object);
   b.textureViewOwners.delete(native);
   b.textureViews.delete(object);
   b.imageRevisions.delete(object);
@@ -692,6 +708,25 @@ function linkedToken(b: GlBinding, object: object): number {
   if (!record) return 0;
   for (const source of b.imageSources.values()) if (source.bo === record.bo) return source.token;
   return 0;
+}
+
+/** Before a cube image command that respecifies (TexImage2D,
+ * CopyTexImage2D, CompressedTexImage2D, GenerateMipmap): a cube whose face
+ * was exported as an EGLImage and still uses that image's storage orphans
+ * the image first (KHR_image_base), as respecifying a linked 2D texture
+ * does. The image keeps the 2D array storage holding it; the cube's other
+ * images there move to new storage (cube-storage.ts). False when that copy
+ * failed (OUT_OF_MEMORY recorded). */
+export function prepareCubeRespecification(b: GlBinding): boolean {
+  const object = b.shadow.cubeTextureUnits[b.shadow.activeTexture] ?? b.shadow.defaultTextures.get(CUBE);
+  const record = object ? linkedSource(object) : undefined;
+  if (!object || !record) return true;
+  const previous = b.imageRevisions.get(object) ?? 0;
+  if (previous === 0xffffffff) { recordGlError(b, 0x505); return false; }
+  if (!orphanCubeStorage(b, object, record.native as WebGLTexture)) return false;
+  unlinkSource(object, null);
+  b.imageRevisions.set(object, previous + 1);
+  return true;
 }
 
 /** Copy a sibling's updated view into canonical storage that cannot be bound
@@ -806,14 +841,17 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     effective = effectiveInternalFormat(logical, logical, 0x1401, internalFormat);
   } else {
     const cube = target !== TEX, faces = textureFaces(object);
-    if (cube ? faces.has(TEX) : CUBE_FACES.some(face => faces.has(face))) return -22;
+    if (cube ? faces.has(TEX) || !isCubeTexture(object) : CUBE_FACES.some(face => faces.has(face))) return -22;
     if (level > 31) return -34;
     native = textureNative(b, object);
     let minFilter = 0;
-    if (!withImageState(b, () => checkedGlCall(b, () => {
-      gl.bindTexture(cube ? CUBE : TEX, native);
-      minFilter = Number(gl.getTexParameter(cube ? CUBE : TEX, 0x2801));
-    }), cube)) return -5;
+    // A cube map's accepted MIN_FILTER is recorded with its 2D array
+    // storages (cube-storage.ts).
+    if (cube) minFilter = cubeMinFilter(object);
+    else if (!withImageState(b, () => checkedGlCall(b, () => {
+      gl.bindTexture(TEX, native);
+      minFilter = Number(gl.getTexParameter(TEX, 0x2801));
+    }))) return -5;
     if (!textureComplete(object, cube, minFilter)) {
       if (level !== 0) return -22;
       if (cube ? CUBE_FACES.some(face => !textureLevel(object, face, 0)) : !textureLevel(object, TEX, 0)) return -22;
@@ -821,7 +859,11 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
     const image = textureLevel(object, target, level);
     if (!image) return -34;
     width = image.width; height = image.height;
-    storage = { target, level, internalFormat: image.internalFormat, format: image.format, type: image.type };
+    const location = cube ? cubeImageLocation(object, target, level) : null;
+    if (cube && !location) return -34;
+    if (location) native = location.texture;
+    storage = { target, level, internalFormat: image.internalFormat, format: image.format, type: image.type,
+      ...(location ? { layer: location.layer } : {}) };
     const gles = image.gles;
     effective = gles ? effectiveInternalFormat(gles.internalFormat, gles.format, gles.type, image.internalFormat)
       : image.internalFormat;
@@ -881,7 +923,9 @@ export function exportedImageScanout(record: GlExportedImage): GpuScanoutStorage
       return checkedGlCall(owner, () => gl.bindFramebuffer(0x8ca8, fbo))
         && checkedGlCall(owner, () => record.renderbuffer
           ? gl.framebufferRenderbuffer(0x8ca8, 0x8ce0, RBO, record.native as WebGLRenderbuffer)
-          : gl.framebufferTexture2D(0x8ca8, 0x8ce0, target, record.native as WebGLTexture, level))
+          : record.storage.layer !== undefined
+            ? gl.framebufferTextureLayer(0x8ca8, 0x8ce0, record.native as WebGLTexture, level, record.storage.layer)
+            : gl.framebufferTexture2D(0x8ca8, 0x8ce0, target, record.native as WebGLTexture, level))
         && checkedGlCall(owner, () => { status = gl.checkFramebufferStatus(0x8ca8); }) && status === 0x8cd5;
     } }], { shared: true, finalizer: restore })) return null;
     record.scanout = { gl, fbo: fbo!, w: record.width, h: record.height, retirement, internalFormat: record.format };

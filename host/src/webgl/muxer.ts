@@ -1,4 +1,5 @@
 // Replay each GLES2 texture target independently on the shared context.
+import { TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from "./image-storage.js";
 import { reconcileClientArrayRestore, type GlClientArrayFields } from "./client-array.js";
 import { hasNativeRepair, repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
@@ -157,7 +158,8 @@ export class GlMuxer {
       for (let i = 0; i < units; i++) {
         gl.activeTexture(GL_TEXTURE0 + i);
         gl.bindTexture(GL_TEXTURE_2D, nativeTextureBinding(s,GL_TEXTURE_2D,i,target.textureViews));
-        gl.bindTexture(0x8513, nativeTextureBinding(s,0x8513,i,target.textureViews));
+        // Cube maps are 2D array textures natively (cube-storage.ts).
+        gl.bindTexture(TEXTURE_2D_ARRAY, nativeTextureBinding(s,0x8513,i,target.textureViews));
       }
       gl.activeTexture(GL_TEXTURE0 + s.activeTexture);
 

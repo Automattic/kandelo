@@ -17,7 +17,7 @@ import { repairNativeState } from "./native-recovery.js";
 import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities, validSurfaceCapabilitiesLength } from "./surface-capabilities.js";
 import { withMultisampleRead } from "./multisample.js";
-import { guestLimit } from "./limits.js";
+import { guestLimit, maxCubeMapTextureSize } from "./limits.js";
 import { finishRenderer } from "./finish.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
@@ -781,6 +781,13 @@ function queryParameter(b: GlBinding, pname: number): unknown {
     const object = b.shadow.externalTextureUnits[b.shadow.activeTexture] ?? null;
     return nameForObject(b.textures, object) || (object ? b.retiredTextures.get(object) : 0) || 0;
   }
+  // Cube maps are 2D array textures natively (cube-storage.ts): the
+  // binding is the guest's, and the size limit is what that storage holds.
+  if (pname === 0x8514) {
+    const object = b.shadow.cubeTextureUnits[b.shadow.activeTexture] ?? null;
+    return nameForObject(b.textures, object) || (object ? b.retiredTextures.get(object) : 0) || 0;
+  }
+  if (pname === 0x851c) return maxCubeMapTextureSize(b) ?? 0;
   const value = b.gl!.getParameter(pname);
   switch (pname) {
     case 0x8894: // ARRAY_BUFFER_BINDING
@@ -788,7 +795,6 @@ function queryParameter(b: GlBinding, pname: number): unknown {
       return value ? nameForObject(b.buffers, canonicalBuffer(b,value as WebGLBuffer))
         || b.retiredBuffers.get(canonicalBuffer(b,value as WebGLBuffer)) || 0 : 0;
     case 0x8069: // TEXTURE_BINDING_2D
-    case 0x8514: // TEXTURE_BINDING_CUBE_MAP
       return nameForObject(b.textures, value ? canonicalTexture(b,value as WebGLTexture) : null)
         || (value ? b.retiredTextures.get(canonicalTexture(b,value as WebGLTexture)) : 0) || 0;
     case 0x8ca6: // FRAMEBUFFER_BINDING

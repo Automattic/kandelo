@@ -3,6 +3,7 @@ import type { GlBinding } from "./registry.js";
 import type { GlShadowState } from "./shadow.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { combinedTextureUnits, maxTextureImageLevel } from "./limits.js";
+import { registerCubeTexture, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 
 export function validGlesTextureParameter(pname: number): boolean {
   return pname >= 0x2800 && pname <= 0x2803;
@@ -31,6 +32,8 @@ function createDefaultTexture(b: GlBinding, target: number): boolean {
     recordGlError(b,texture ? 0x502 : 0x505); return false;
   }
   const units = target === 0x0de1 ? s.textureUnits : s.cubeTextureUnits;
+  // Cube maps are stored as 2D array textures (cube-storage.ts).
+  const nativeTarget = target === 0x8513 ? TEXTURE_2D_ARRAY : target;
   const changed: number[] = [];
   let accepted = false;
   try {
@@ -38,15 +41,16 @@ function createDefaultTexture(b: GlBinding, target: number): boolean {
       if (units[unit]) continue;
       if (!checkedGlCall(b, () => gl.activeTexture(0x84c0+unit))) return false;
       changed.push(unit);
-      if (!checkedGlCall(b, () => gl.bindTexture(target,texture))) return false;
+      if (!checkedGlCall(b, () => gl.bindTexture(nativeTarget,texture))) return false;
     }
     if (!checkedGlCall(b, () => gl.activeTexture(0x84c0+s.activeTexture))) return false;
     s.defaultTextures.set(target,texture);
+    if (target === 0x8513) registerCubeTexture(texture,texture);
     accepted = true; return true;
   } finally {
     if (!accepted) {
       for (const unit of changed) {
-        if (checkedGlCall(b, () => gl.activeTexture(0x84c0+unit))) checkedGlCall(b, () => gl.bindTexture(target,null));
+        if (checkedGlCall(b, () => gl.activeTexture(0x84c0+unit))) checkedGlCall(b, () => gl.bindTexture(nativeTarget,null));
       }
       checkedGlCall(b, () => gl.activeTexture(0x84c0+s.activeTexture));
       gl.deleteTexture(texture);
