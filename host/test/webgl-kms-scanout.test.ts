@@ -7,6 +7,10 @@ import { createKernelScratchTestInstance } from "./support/kernel-scratch-instan
 import { OP_CLEAR, QOP_SURFACE_CAPABILITIES } from "../src/webgl/ops";
 import { KMS_CURSOR_FRAMEBUFFER_OFFSET, KMS_CURSOR_RECORD_BYTES } from "../src/dri/kms-cursor-protocol";
 import { hasNativeRepair, NativeGlFault, reserveNativeRetirement, setNativeGlFaultReporter } from "../src/webgl/native-recovery";
+import { noteStorageWrite, setImageWriteAudit, storageWrites } from "../src/webgl/image-writes";
+import { prepareDrawTarget } from "../src/webgl/opaque-alpha";
+import { imageTextureOperation, refreshTextureView } from "../src/webgl/image-storage";
+import type { GlBinding } from "../src/webgl/registry";
 
 // A refused native restoration or deletion on a live renderer is a fatal
 // NativeGlFault (native-recovery.ts): reported once, then thrown through
@@ -28,10 +32,19 @@ function renderer() {
     [0x0c23, [true, false, true, false]], [0x0c22, [0.25, 0.5, 0.75, 0.125]],
   ]);
   const initial = new Map(state), calls: unknown[][] = [];
-  let error = 0, rejectRead = false, rejectRestore = false, lost = false;
+  let error = 0, rejectRead = false, rejectRestore = false, lost = false, preserve = true;
   let content = [255, 0, 0, 255], afterRead = () => {};
+  // The renderer's canvas: loss events feed renderer-loss.ts's counter.
+  const lossListeners: (() => void)[] = [];
+  const canvas = { addEventListener: (type: string, listener: () => void) => {
+    if (type === "webglcontextlost") lossListeners.push(listener);
+  } };
   const gl = {
+    canvas,
     isContextLost: () => lost,
+    getContextAttributes: () => (lost ? null : { preserveDrawingBuffer: preserve }),
+    drawArrays() { calls.push(["drawArrays"]); },
+    texSubImage2D() { calls.push(["texSubImage2D"]); },
     createVertexArray: () => ({}),
     bindVertexArray() { calls.push(["select vertex array"]); },
     viewport() {}, scissor() {}, clearDepth() {}, clearStencil() {}, lineWidth() {},
@@ -94,6 +107,9 @@ function renderer() {
     setError: (value: number) => { error = value; },
     onRead: (work: () => void) => { afterRead = work; },
     loseContext: () => { lost = true; },
+    /** A loss event, then restoration of the same context object. */
+    loseAndRestoreContext: () => { lost = true; for (const listener of lossListeners) listener(); lost = false; },
+    discardDrawingBuffer: () => { preserve = false; },
     failRead: () => { rejectRead = true; },
     allowRead: () => { rejectRead = false; },
     failRestore: () => { rejectRestore = true; },
@@ -175,8 +191,10 @@ it("presents actual rendered GPU cursor bytes through the kernel's shared KMS re
   expect(Array.from(kernel.kms.cursorSnapshot().pixels!.slice(0, 4))).toEqual([255, 0, 0, 255]);
   expect(r.state).toEqual(r.initial);
   // Readback is RGBA, not CPU ARGB, and remains premultiplied until
-  // converted for the cursor canvas. Row zero stays the KMS top row.
+  // converted for the cursor canvas. Row zero stays the KMS top row. The
+  // render is a counted write to the BO's storage (image-writes.ts).
   r.setPixels([0, 64, 0, 128, 0, 0, 0, 0, 64, 0, 0, 128, 0, 0, 255, 255]);
+  noteStorageWrite(kernel.gl.gpuBo(42)!.tex);
   const updated = kernel.kms.cursorSnapshot();
   expect(Array.from(updated.pixels!)).toEqual([0, 128, 0, 128, 0, 0, 0, 0, 128, 0, 0, 128, 0, 0, 255, 255]);
   r.loseContext();
@@ -227,14 +245,14 @@ it("reuses an accepted cursor record's GPU sample while later observations see l
   expect(first.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([255, 0, 0, 255]));
   expect(() => kernel.kms.applyCursorRecord(record(1n,1,0))).toThrow("image identity");
   expect(reads()).toBe(1); // Refused before sampling native storage.
-  r.setPixels([0, 255, 0, 255]);
+  r.setPixels([0, 255, 0, 255]); noteStorageWrite(kernel.gl.gpuBo(42)!.tex);
   const moved = kernel.kms.applyCursorRecord(record(1n, 9)) ?? kernel.kms.cursorSnapshot();
   expect(reads()).toBe(2);
   expect(moved.x).toBe(9);
   expect(moved.pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 255, 0, 255]));
   expect(first.pixels![0]).toBe(255);
   // No new ioctl/record: observe the native BO again, including context loss.
-  r.setPixels([0, 0, 255, 255]);
+  r.setPixels([0, 0, 255, 255]); noteStorageWrite(kernel.gl.gpuBo(42)!.tex);
   expect(kernel.kms.cursorSnapshot().pixels!.slice(0, 4)).toEqual(new Uint8ClampedArray([0, 0, 255, 255]));
   expect(reads()).toBe(3);
   r.loseContext();
@@ -273,7 +291,7 @@ it("preserves the selected GL owner across successful live GPU cursor samples", 
   r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
   expect(r.owner.errors).toEqual([0x500]);
   for (const rgba of [[0, 255, 0, 255], [0, 0, 255, 255]]) {
-    r.setPixels(rgba);
+    r.setPixels(rgba); noteStorageWrite(r.kernel.gl.gpuBo(42)!.tex);
     expect([...r.kernel.kms.cursorSnapshot().pixels!.slice(0, 4)]).toEqual(rgba);
     expect(r.state).toEqual(r.selected);
     r.muxer.switchTo(r.owner);
@@ -968,4 +986,246 @@ it("does not present an exported image that is not normalized color", () => {
   r.kernel.kms.setMaster(100, 1n, 1n);
   r.kernel.kms.setCursor(100, 3, 44, 2, 2, 0, 0, 0, 0);
   expect(r.kernel.kms.cursorSnapshot().pixels).toBeNull();
+});
+
+// ---------------------------------------------------------------------------
+// Unchanged GPU content is not read back or re-presented every vblank.
+//
+// A cursor readback is reused while its storage's image write count
+// (image-writes.ts) is unchanged; a direct scanout is not redrawn while no
+// pixel-changing call was made on its context (context-writes.ts). Each test
+// below performs one kind of write and requires the next observation to see
+// it. The audit (on in this gate) would also read back on every reuse and
+// fault on a change behind an unchanged count; these tests turn it off to
+// observe that reuse issues no native call at all.
+
+function withoutAudit(work: () => void): void {
+  setImageWriteAudit(false);
+  try { work(); } finally { setImageWriteAudit(true); }
+}
+
+function cursorKernel() {
+  const r = selectedKernel();
+  r.kernel.kms.setMaster(100, 1n, 1n);
+  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  const gpu = r.kernel.gl.gpuBo(42)!;
+  let nativeCalls = 0;
+  for (const name of ["getError", "getParameter", "readPixels", "bindFramebuffer"] as const) {
+    const original = r.gl[name] as (...args: unknown[]) => unknown;
+    (r.gl as any)[name] = (...args: unknown[]) => { nativeCalls++; return Reflect.apply(original, r.gl, args); };
+  }
+  const reads = () => r.calls.filter(call => call[0] === "readPixels").length;
+  /** One vblank observation's cursor pixels (first four bytes). */
+  const observe = () => [...r.kernel.kms.cursorSnapshot().pixels!.slice(0, 4)];
+  return { ...r, gpu, reads, observe, nativeCalls: () => nativeCalls };
+}
+
+it("reuses an unchanged GPU cursor readback without any native call", () => withoutAudit(() => {
+  const r = cursorKernel();
+  expect(r.reads()).toBe(1);
+  const before = r.nativeCalls();
+  for (let tick = 0; tick < 5; tick++) expect(r.observe()).toEqual([255, 0, 0, 255]);
+  expect(r.reads()).toBe(1);
+  expect(r.nativeCalls()).toBe(before);
+  // The guest's selected GL state and error flags were not borrowed.
+  expect(r.state).toEqual(r.selected);
+}));
+
+function drawBinding(r: ReturnType<typeof cursorKernel>, fbo: WebGLFramebuffer) {
+  const shadow = defaultShadow();
+  shadow.fbo = fbo;
+  return { gl: r.gl, shadow, errors: [] as number[], framebufferAttachments: new Map(),
+    textureViews: new Map(), renderbufferViews: new Map() } as unknown as GlBinding;
+}
+
+it.each([
+  ["a draw or clear into the BO as its EGL surface's framebuffer", (r: ReturnType<typeof cursorKernel>) => {
+    // The bridge's draws and clears count their target through prepareDrawTarget.
+    prepareDrawTarget(drawBinding(r, r.gpu.fbo));
+  }],
+  ["a draw or clear into an FBO whose color attachment is an EGLImage sibling of the BO", (r: ReturnType<typeof cursorKernel>) => {
+    const sibling = {} as WebGLTexture, userFbo = {} as WebGLFramebuffer;
+    const b = drawBinding(r, userFbo);
+    b.framebufferAttachments.set(userFbo, new Map([[0x8ce0, { kind: "texture", object: sibling, target: 0x0de1, level: 0 }]]));
+    b.textureViews.set(sibling, { native: {} as WebGLTexture, read: null,
+      source: { token: 1, bo: 42, texture: r.gpu.tex, width: 2, height: 2 } });
+    prepareDrawTarget(b);
+  }],
+  ["TexSubImage/CopyTexSubImage through an EGLImage sibling texture", (r: ReturnType<typeof cursorKernel>) => {
+    const sibling = {} as WebGLTexture, b = drawBinding(r, null as unknown as WebGLFramebuffer);
+    b.shadow.textureUnits[0] = sibling;
+    b.textureViews.set(sibling, { native: {} as WebGLTexture, read: null,
+      source: { token: 1, bo: 42, texture: r.gpu.tex, width: 2, height: 2 } });
+    imageTextureOperation(b, 0x0de1, false, () => r.gl.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, null));
+  }],
+  ["a host copy or resolve into the BO's storage (GBM front copy, MSAA resolve, mirror upload)", (r: ReturnType<typeof cursorKernel>) => {
+    noteStorageWrite(r.gpu.tex);
+  }],
+] as const)("re-reads the GPU cursor after %s", (_kind, write) => withoutAudit(() => {
+  const r = cursorKernel();
+  expect(r.observe()).toEqual([255, 0, 0, 255]);
+  r.setPixels([10, 20, 30, 255]);
+  write(r);
+  expect(r.observe()).toEqual([10, 20, 30, 255]);
+  expect(r.reads()).toBe(2);
+  // And reuses the new bytes until the next write.
+  expect(r.observe()).toEqual([10, 20, 30, 255]);
+  expect(r.reads()).toBe(2);
+}));
+
+it("re-reads the GPU cursor after its renderer is lost and restored", () => withoutAudit(() => {
+  const r = cursorKernel();
+  r.setPixels([9, 9, 9, 255]);
+  r.loseAndRestoreContext();
+  expect(r.observe()).toEqual([9, 9, 9, 255]);
+  expect(r.reads()).toBe(2);
+}));
+
+it("shows no cursor while its renderer is lost and re-reads it afterwards", () => withoutAudit(() => {
+  const r = cursorKernel();
+  r.loseContext();
+  expect(r.kernel.kms.cursorSnapshot().pixels).toBeNull();
+  expect(r.reads()).toBe(1);
+}));
+
+it("re-reads the GPU cursor when its BO is replaced under the same id", () => withoutAudit(() => {
+  const r = cursorKernel();
+  const imports = r.kernel.testAuthority.buildImportObject(r.memory) as { env: Record<string, (...args: number[]) => number> };
+  imports.env.host_gbm_bo_destroy(100, 42);
+  expect(r.kernel.gl.createGpuBo(42, r.gl, 2, 2)).toBeGreaterThan(0);
+  // The new BO's storage is new: nothing about the old one's count applies.
+  r.setPixels([5, 6, 7, 255]);
+  r.kernel.kms.setCursor(100, 3, 42, 2, 2, 0, 0, 0, 0);
+  expect(r.observe()).toEqual([5, 6, 7, 255]);
+  expect(r.reads()).toBe(2);
+}));
+
+it("takes the full GPU cursor path while a native repair is pending", () => withoutAudit(() => {
+  const r = cursorKernel();
+  const retirement = reserveNativeRetirement({ gl: r.gl, errors: [] }, [["deleteTexture", {} as WebGLTexture]])!;
+  retirement.pending = true;
+  expect(hasNativeRepair(r.gl)).toBe(true);
+  r.observe();
+  expect(r.reads()).toBe(2);
+  expect(hasNativeRepair(r.gl)).toBe(false);
+}));
+
+it("faults under the write-count audit when cursor storage changed without a counted write", () => {
+  const r = cursorKernel();
+  r.setPixels([1, 1, 1, 1]);
+  expect(() => r.observe()).toThrow(/changed without a counted write/);
+});
+
+function directKernel() {
+  const r = selectedKernel();
+  const canvas = { width: 2, height: 2, getContext: () => r.gl };
+  const fb = { fb_id: 25, bo_id: 42, width: 2, height: 2, x: 0, y: 0 } as any;
+  const blits = () => r.calls.filter(call => call.length === 10 && call[8] === 0x4000).length;
+  const present = (frame = fb, commits = 1, target: unknown = canvas) =>
+    getKernelGraphicsAccess(r.kernel).gpuScanout(frame, target as any, true, 0, commits);
+  return { ...r, canvas, fb, blits, present };
+}
+
+it("does not redraw an unchanged direct GPU scanout", () => {
+  const r = directKernel();
+  expect(r.present()?.direct).toBe(true);
+  expect(r.blits()).toBe(1);
+  const before = r.calls.length;
+  for (let tick = 0; tick < 5; tick++) expect(r.present()?.direct).toBe(true);
+  expect(r.blits()).toBe(1);
+  expect(r.calls.length).toBe(before);
+  expect(r.state).toEqual(r.selected);
+});
+
+it.each([
+  ["a guest draw on the context", (r: ReturnType<typeof directKernel>) => { r.gl.drawArrays(4, 0, 3); }],
+  ["a texture upload on the context", (r: ReturnType<typeof directKernel>) => {
+    r.gl.texSubImage2D(0x0de1, 0, 0, 0, 1, 1, 0x1908, 0x1401, null);
+  }],
+  ["a clear of the canvas (a dark CRTC)", (r: ReturnType<typeof directKernel>) => {
+    getKernelGraphicsAccess(r.kernel).withGraphicsState(r.gl, () => {
+      r.gl.bindFramebuffer(0x8d40, null); r.gl.disable(0x0c11);
+      r.gl.colorMask(false, false, false, true); r.gl.clearColor(0, 0, 0, 1); r.gl.clear(0x4000);
+    });
+  }],
+  ["a call no classification names", (r: ReturnType<typeof directKernel>) => {
+    (r.gl as any).drawingBufferStorage(0x8058, 2, 2);
+  }],
+  ["a canvas resize", (r: ReturnType<typeof directKernel>) => { r.canvas.width = 3; }],
+  ["a lost and restored renderer", (r: ReturnType<typeof directKernel>) => { r.loseAndRestoreContext(); }],
+] as const)("redraws a direct GPU scanout after %s", (_kind, change) => {
+  const r = directKernel();
+  (r.gl as any).drawingBufferStorage = () => {};
+  r.present();
+  change(r);
+  r.present();
+  expect(r.blits()).toBe(2);
+  expect([r.canvas.width, r.canvas.height]).toEqual([2, 2]);
+  r.present();
+  expect(r.blits()).toBe(2);
+});
+
+it("counts every call of an extension obtained after tracking began as a write", () => {
+  const r = directKernel();
+  const extension = { multiDrawArraysWEBGL() {} };
+  (r.gl as any).getExtension = () => extension;
+  r.present();
+  (r.gl as any).getExtension("WEBGL_multi_draw").multiDrawArraysWEBGL();
+  r.present();
+  expect(r.blits()).toBe(2);
+});
+
+it.each([
+  ["another framebuffer", (fb: any) => ({ ...fb, fb_id: 26 }), 1],
+  ["a new commit of the same framebuffer", (fb: any) => fb, 2],
+  ["a panned viewport", (fb: any) => ({ ...fb, x: 1, width: 1 }), 1],
+] as const)("redraws a direct GPU scanout for %s", (_kind, next, commits) => {
+  const r = directKernel();
+  r.present();
+  r.present(next(r.fb), commits);
+  expect(r.blits()).toBe(2);
+});
+
+it("redraws a direct GPU scanout on another canvas, or when the context does not preserve its drawing buffer", () => {
+  const r = directKernel();
+  r.present();
+  r.present(r.fb, 1, { width: 2, height: 2, getContext: () => r.gl });
+  expect(r.blits()).toBe(2);
+  r.discardDrawingBuffer();
+  r.present(); r.present();
+  expect(r.blits()).toBe(4);
+});
+
+it("takes the full direct scanout path while a native repair is pending, and keeps no record of a failed one", () => {
+  const r = directKernel();
+  r.present();
+  const retirement = reserveNativeRetirement({ gl: r.gl, errors: [] }, [["deleteTexture", {} as WebGLTexture]])!;
+  retirement.pending = true;
+  r.present();
+  expect(r.blits()).toBe(2);
+  // A rejected blit throws and leaves nothing to reuse.
+  const blit = r.gl.blitFramebuffer;
+  r.gl.drawArrays(4, 0, 3);
+  (r.gl as any).blitFramebuffer = () => { r.setError(0x502); };
+  expect(() => r.present()).toThrow("GPU scanout blit failed");
+  (r.gl as any).blitFramebuffer = blit;
+  r.present();
+  expect(r.blits()).toBe(3);
+});
+
+it("counts a sibling view's refresh from its canonical image as a write of the view's own storage", () => {
+  // A GLES image exported from an EGLImage sibling texture is presented from
+  // the sibling's private copy, which a refresh rewrites.
+  const r = renderer();
+  (r.gl as any).copyTexSubImage2D = () => { r.calls.push(["copyTexSubImage2D"]); };
+  const canonical = {} as WebGLTexture, sibling = {} as WebGLTexture;
+  const view = { native: {} as WebGLTexture, read: {} as WebGLFramebuffer,
+    source: { token: 1, bo: 7, texture: canonical, width: 2, height: 2 } };
+  const b = { gl: r.gl, shadow: defaultShadow(), errors: [] as number[], textureViews: new Map([[sibling, view]]),
+    renderbufferViews: new Map(), framebufferAttachments: new Map() } as unknown as GlBinding;
+  const before = storageWrites(view.native).count;
+  expect(refreshTextureView(b, sibling)).toBe(true);
+  expect(r.calls.filter(call => call[0] === "copyTexSubImage2D")).toHaveLength(1);
+  expect(storageWrites(view.native).count).toBeGreaterThan(before);
+  expect(r.state).toEqual(r.initial);
 });

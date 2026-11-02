@@ -3990,11 +3990,43 @@ before pending native cleanup can change selectors. Resize invalidates before th
 dimension write. Failure
 or context loss also invalidates, and private device errors remain separate
 from the guest's pending flags. This is selector validity, not content
-immutability: cursor pixels are still sampled on every observation, including
-same-BO writes without another cursor request. Package-private immutable
+immutability. Package-private immutable
 graphics access exposes these native operations separately from raw kernel
 memory authority. Context loss stands GPU scanout down; complete restoration
 of lost resources remains an ordinary implementation gap.
+
+The vblank pump observes every GPU-tier CRTC and the cursor plane 60 times
+a second, idle or not. An observation that would return what the previous
+one returned is not repeated; anything that could change the result makes
+the next observation do the full native work. A GPU cursor readback is
+reused while the BO, its native storage, the renderer's loss count and that
+storage's image write count (`host/src/webgl/image-writes.ts`) are all
+unchanged and no native repair is pending. Every image write path advances
+that count: draws and clears into the BO or an EGLImage sibling of it, image
+commands through a sibling, a sibling view's refresh of its private copy
+(the storage of a GLES image exported from that sibling), GBM front copies,
+multisample resolves, mirror uploads and foreign-texture uploads. GPU-tier BOs have no CPU mapping, and
+CPU-tier cursors are still read from their mapping on every observation.
+Same-BO writes without another cursor request are therefore still observed.
+The graphics test gate turns on the write-count audit, under which every
+reuse reads back anyway and a change behind an unchanged count is fatal.
+A direct GPU scanout is not blitted again while the canvas provably still
+shows it: same storage, framebuffer, kernel commit count and viewport,
+the canvas at the framebuffer's size, the same color-stage LUT and cursor
+when a stage is in use, an unchanged loss count, no pending repair, a
+context created with `preserveDrawingBuffer`, and an unchanged write epoch
+of the native context (`host/src/webgl/context-writes.ts`). That epoch
+counts every call on the context except a fixed list of calls that cannot
+change any pixel (state, binds, queries, buffer data, object creation,
+program work, `readPixels`), so writes to the source storage and every
+other writer of the canvas (a GL session presenting to it, a dark CRTC's
+clear, any host utility) invalidate it without being enumerated. WHY: on
+an idle labwc or sway desktop in Chromium the pump otherwise issued about
+3,300 WebGL calls a second, half of them `getError`, to redraw and re-read
+unchanged pixels. A
+reused observation issues no native call, so it neither borrows device
+state nor reads the selected owner's error flags; the stats slots still
+report each presented vblank.
 
 `gbm_bo_create` treats SCANOUT as CPU-facing. Modifier-aware rendering
 allocators, including wlroots' SCANOUT|RENDERING allocations, request GPU

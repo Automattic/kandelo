@@ -124,6 +124,10 @@ function copySource(b: GlBinding, view: GlTextureView): boolean {
     gl.bindTexture(TEX, view.native);
     gl.copyTexSubImage2D(TEX, 0, 0, 0, 0, 0, source.width, source.height);
   }));
+  // The view's own storage was written. It is canonical storage for anyone
+  // who reads it directly: a GLES image exported from this sibling texture
+  // is presented from it (an exported image's native is the object's view).
+  noteStorageWrite(view.native);
   if (copied) view.synced = count;
   return copied;
 }

@@ -5,7 +5,8 @@ import { cpuImageKey, PLANAR_IMAGE_RECORD_BYTES, planarImageKey, planarImageReco
 import { drawGpuScanout, readGpuScanout, scanoutNeedsReduction, type GpuScanoutStorage } from "./webgl/kms-scanout.js";
 import { KmsColorStage } from "./webgl/kms-color-stage.js";
 import { captureNativeGlErrors } from "./webgl/errors.js";
-import { observeRendererLoss, rendererLost, RENDERER_LOST } from "./webgl/renderer-loss.js";
+import { observeRendererLoss, rendererLossCount, rendererLost, RENDERER_LOST } from "./webgl/renderer-loss.js";
+import { contextWriteEpoch } from "./webgl/context-writes.js";
 import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
@@ -86,7 +87,7 @@ import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, regist
 import { hasNativeRepair, NativeGlFault, nativeGlFault, repairNativeState, retireNativeRetirement, rethrowNativeGlFault, setNativeGlFaultReporter } from "./webgl/native-recovery";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
-import { noteStorageWrite } from "./webgl/image-writes";
+import { imageWriteAudit, noteStorageWrite, storageWrites } from "./webgl/image-writes";
 import {
   blitGpuScanout,
   blitPresentTarget,
@@ -119,8 +120,10 @@ interface WasmPosixKernelRuntimeAccess {
 
 interface KernelGraphicsAccess {
   readonly withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => T;
-  readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number) =>
-    { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null;
+  /** `commits`: the CRTC's kernel commit count, part of what a reused
+   *  direct presentation must match. */
+  readonly gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number,
+    commits?: number) => { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null;
   /** Re-present a GL-owned CRTC's last window frame if its color stage or
    *  the cursor it blends changed since that frame was shown. */
   readonly presentCrtcOutput: (crtcId: number) => void;
@@ -130,6 +133,12 @@ interface KernelGraphicsAccess {
   readonly blankCrtcOutput: (crtcId: number) => boolean;
 }
 const kernelGraphicsAccess = new WeakMap<WasmPosixKernel, KernelGraphicsAccess>();
+
+/** A CRTC's last accepted direct GPU presentation and what it depended on. */
+type DirectPresentation = {
+  canvas: OffscreenCanvas; storage: GpuScanoutStorage; bo: number; fbId: number; commits: number | undefined;
+  stage: string | null; x: number; y: number; width: number; height: number; loss: number; epoch: number;
+};
 
 /** Native graphics operations expose no Instance, Memory or kernel gate. */
 export function getKernelGraphicsAccess(kernel: WasmPosixKernel): KernelGraphicsAccess {
@@ -1213,21 +1222,64 @@ export class WasmPosixKernel {
     return this.withRestoredGraphicsState(source.gl, () => exportedImageScanout(source));
   }
 
+  /** The native storage whose image write count (image-writes.ts) covers
+   * every write to a GPU-tier scanout source: a GBM GPU bo's texture, or the
+   * canonical storage of an exported GLES image. */
+  #scanoutContent(bo: number): object | null {
+    const source = this.gl.scanoutSource(bo);
+    if (!source) return null;
+    return "native" in source ? source.native : source.tex;
+  }
+
+  /** The last accepted GPU cursor readback (at most 64x64 RGBA). WHY: the
+   * vblank pump observes the cursor plane 60 times a second, and a native
+   * readback costs a readPixels plus the device state borrow around it
+   * (dozens of synchronous GL calls). Every write to image storage advances
+   * its write count (image-writes.ts, the same contract CPU-tier mirrors and
+   * EGLImage siblings rely on), so while the bo, its native storage, the
+   * renderer's loss count and the storage's write count are all unchanged,
+   * a readback would return exactly these bytes. The bytes are an owned copy
+   * the registry only reads; no guest view or native object is retained
+   * beyond the identities compared here. */
+  #cursorReadback: {
+    bo: number; storage: GpuScanoutStorage; content: object; width: number; height: number;
+    writes: number; loss: number; pixels: Uint8Array<ArrayBuffer>;
+  } | null = null;
+
   private gpuCursor(bo: number, width: number, height: number): Uint8Array<ArrayBuffer> | null | undefined {
     const storage = this.scanoutStorage(bo);
-    if (!storage) return storage;
+    if (!storage) { this.#cursorReadback = null; return storage; }
     if (storage.gl.isContextLost()) {
+      this.#cursorReadback = null;
       this.glMuxerFor(storage.gl).invalidateCurrent();
       return null;
     }
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1
         || width > 64 || height > 64 || width > storage.w || height > storage.h)
       throw new Error("Invalid GPU cursor storage dimensions");
-    return this.withRestoredGraphicsState(storage.gl, () => {
+    const content = this.#scanoutContent(bo);
+    const last = this.#cursorReadback;
+    // A pending native repair keeps the full path, which performs it first.
+    const reusable = !!content && !!last && last.bo === bo && last.storage === storage && last.content === content
+      && last.width === width && last.height === height && last.writes === storageWrites(content).count
+      && last.loss === rendererLossCount(storage.gl) && !hasNativeRepair(storage.gl);
+    if (reusable && !imageWriteAudit()) return last.pixels;
+    this.#cursorReadback = null;
+    // Read before the readback: a write during it must not be reused as clean.
+    const writes = content ? storageWrites(content).count : 0;
+    const pixels = this.withRestoredGraphicsState(storage.gl, () => {
       const pixels = readGpuScanout(storage, width, height);
       if (!pixels) throw new Error("GPU cursor readback failed");
       return pixels;
     });
+    // The audit (image-writes.ts) reads back anyway: changed pixels behind
+    // an unchanged count are a write path that does not count its writes.
+    if (reusable && last.pixels.some((value, i) => value !== pixels[i]))
+      throw new Error(`GPU cursor storage of BO ${bo} changed without a counted write: an image write path ` +
+        "does not advance its storage's write count (image-writes.ts)");
+    if (content && storageWrites(content).count === writes)
+      this.#cursorReadback = { bo, storage, content, width, height, writes, loss: rendererLossCount(storage.gl), pixels };
+    return pixels;
   }
 
   /** The CRTC color stage on each GL-owned CRTC's canvas context while the
@@ -1375,13 +1427,53 @@ export class WasmPosixKernel {
     return true;
   }
 
-  private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number):
+  /** Each CRTC's last accepted direct presentation (see #presentedDirect). */
+  #directPresentations = new Map<number, DirectPresentation>();
+
+  /** Whether the canvas already shows exactly what presenting `fb` would
+   * draw. WHY: the vblank pump presents every GPU-tier CRTC 60 times a
+   * second, and each direct present borrows device state around a blit
+   * (dozens of synchronous GL calls) even on an idle desktop. The canvas
+   * keeps its last frame (preserveDrawingBuffer, checked on the context the
+   * frame was drawn with), so a present is redundant while: the same storage
+   * of the same bo is latched through the same framebuffer at the same
+   * commit and viewport, the canvas has the framebuffer's size, the color
+   * stage would show the same LUT and cursor, the renderer was not lost
+   * since, no native repair is pending, and no call that can change pixels
+   * has been made on the context since the presentation (context-writes.ts:
+   * this covers writes to the source storage and every other writer of the
+   * canvas, guest or host, without enumerating them). A canvas resize, even
+   * to the same size, only happens below and changes the epoch's premise. */
+  #presentedDirect(crtcId: number, fb: HostScanout, canvas: OffscreenCanvas, storage: GpuScanoutStorage,
+      stage: string | null, commits: number | undefined): boolean {
+    const last = this.#directPresentations.get(crtcId);
+    return !!last && last.canvas === canvas && last.storage === storage && last.bo === fb.bo_id
+      && last.fbId === fb.fb_id && last.commits === commits && last.stage === stage
+      && last.x === fb.x && last.y === fb.y && last.width === fb.width && last.height === fb.height
+      && canvas.width === fb.width && canvas.height === fb.height
+      && last.loss === rendererLossCount(storage.gl) && !hasNativeRepair(storage.gl)
+      && last.epoch === contextWriteEpoch(storage.gl);
+  }
+
+  /** Record an accepted direct presentation, taking the write epoch after it
+   * (its own blit counts). A context that does not preserve its drawing
+   * buffer is never recorded. */
+  #recordDirectPresentation(crtcId: number, fb: HostScanout, canvas: OffscreenCanvas, storage: GpuScanoutStorage,
+      stage: string | null, commits: number | undefined): void {
+    const gl = storage.gl;
+    if (gl.isContextLost() || gl.getContextAttributes?.()?.preserveDrawingBuffer !== true) return;
+    this.#directPresentations.set(crtcId, { canvas, storage, bo: fb.bo_id, fbId: fb.fb_id, commits, stage,
+      x: fb.x, y: fb.y, width: fb.width, height: fb.height, loss: rendererLossCount(gl), epoch: contextWriteEpoch(gl) });
+  }
+
+  private gpuScanout(fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number, commits?: number):
       { direct: true } | { direct: false; pixels: Uint8Array<ArrayBuffer> } | null {
     const storage = this.scanoutStorage(fb.bo_id);
-    if (!storage) return null;
+    if (!storage) { this.#directPresentations.delete(crtcId); return null; }
     // Context loss already reaches the guest through its EGL/GL failure
     // channel. A device tick must stand down rather than kill the machine.
     if (storage.gl.isContextLost()) {
+      this.#directPresentations.delete(crtcId);
       this.glMuxerFor(storage.gl).invalidateCurrent();
       return null;
     }
@@ -1391,17 +1483,23 @@ export class WasmPosixKernel {
     if (direct) this.#directScanoutGl.set(crtcId, storage.gl);
     // A LUT, or a 10-bit/half-float buffer reduced to the 8-bit output,
     // needs the CRTC output stage; any other buffer blits as it is.
-    if (direct && (this.kms.gamma(crtcId) || scanoutNeedsReduction(storage))) {
+    const staged = direct && (!!this.kms.gamma(crtcId) || scanoutNeedsReduction(storage));
+    const stage = staged ? KmsColorStage.key(this.kms.gamma(crtcId), this.kms.currentCursor()) : null;
+    if (direct && this.#presentedDirect(crtcId, fb, canvas, storage, stage, commits)) return { direct: true };
+    // Whatever happens below, the canvas no longer provably shows the record.
+    this.#directPresentations.delete(crtcId);
+    if (staged) {
       if (canvas.width !== fb.width || canvas.height !== fb.height) {
         canvas.width = fb.width; canvas.height = fb.height;
       }
       // KMS buffers hold the top row first; the primary plane is opaque.
       this.#presentThroughStage(crtcId, storage.gl, storage.fbo, fb.x, fb.y, fb.width, fb.height, true, true,
         storage.internalFormat);
+      this.#recordDirectPresentation(crtcId, fb, canvas, storage, stage, commits);
       return { direct: true };
     }
     if (direct) this.#releaseColorStage(crtcId);
-    return this.withRestoredGraphicsState(storage.gl, () => {
+    const frame = this.withRestoredGraphicsState(storage.gl, () => {
       if (direct) {
         if (canvas.width !== fb.width || canvas.height !== fb.height) {
           // A drawing-buffer resize is outside the helper's selector inverse.
@@ -1409,12 +1507,14 @@ export class WasmPosixKernel {
           canvas.width = fb.width; canvas.height = fb.height;
         }
         if (!drawGpuScanout(storage, fb.width, fb.height, fb.x, fb.y)) throw new Error("GPU scanout blit failed");
-        return { direct: true };
+        return { direct: true } as const;
       }
       const pixels = readGpuScanout(storage, fb.width, fb.height, fb.x, fb.y);
       if (!pixels) throw new Error("GPU scanout readback failed");
-      return { direct: false, pixels };
+      return { direct: false, pixels } as const;
     });
+    if (frame.direct) this.#recordDirectPresentation(crtcId, fb, canvas, storage, null, commits);
+    return frame;
   }
 
   /**
@@ -1765,8 +1865,8 @@ export class WasmPosixKernel {
     );
     intrinsicApply(intrinsicWeakMapSet, kernelGraphicsAccess, [this, intrinsicObjectFreeze({
       withGraphicsState: <T>(gl: WebGL2RenderingContext, work: () => T) => this.withGraphicsState(gl, work),
-      gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number) =>
-        this.gpuScanout(fb, canvas, allowDirect, crtcId),
+      gpuScanout: (fb: HostScanout, canvas: OffscreenCanvas, allowDirect: boolean, crtcId: number, commits?: number) =>
+        this.gpuScanout(fb, canvas, allowDirect, crtcId, commits),
       presentCrtcOutput: (crtcId: number) => this.presentCrtcOutput(crtcId),
       blankCrtcOutput: (crtcId: number) => this.blankCrtcOutput(crtcId),
     })]);

@@ -31427,7 +31427,8 @@ export class CentralizedKernelWorker {
             continue;
           }
           const frame = getKernelGraphicsAccess(this.#kernel).gpuScanout(
-            fb, canvas, this.kmsContextMode.get(crtcId) !== "2d", crtcId);
+            fb, canvas, this.kmsContextMode.get(crtcId) !== "2d", crtcId,
+            commitCountFn ? Number(commitCountFn(crtcId) & 0x7fffffffn) : undefined);
           if (frame) gpuFrames.set(crtcId, frame);
         }
         const glPresents: Array<{

@@ -190,6 +190,37 @@ describe("CRTC color stage in the host presentation paths", () => {
     }
   });
 
+  it("re-presents an unchanged staged GPU scanout only when its LUT, cursor or content changes", () => {
+    const bo = [10, 20, 30, 7, 40, 50, 60, 7, 70, 80, 90, 7, 100, 110, 120, 7];
+    const r = pixelGl(2, 2);
+    // The canvas keeps its frame (kernel contexts request preserveDrawingBuffer).
+    (r.gl as any).getContextAttributes = () => ({ preserveDrawingBuffer: true });
+    const { kernel, setGamma } = kernelHarness(r.gl, { width: 2, height: 2 });
+    vi.spyOn(kernel.gl, "gpuBo").mockReturnValue({ gl: r.gl, fbo: r.framebuffer(2, 2, bo), w: 2, h: 2 } as any);
+    setGamma(testLut());
+    const cursor = vi.spyOn(kernel.kms, "currentCursor").mockReturnValue(cursorAt(1, 0, [255, 255, 255, 255]));
+    const canvas = { width: 2, height: 2, getContext: () => r.gl } as any;
+    const fb = { fb_id: 3, bo_id: 42, width: 2, height: 2, x: 0, y: 0 } as any;
+    const present = () => expect(getKernelGraphicsAccess(kernel).gpuScanout(fb, canvas, true, 1, 1)).toEqual({ direct: true });
+    for (let tick = 0; tick < 3; tick++) present();
+    const presented = r.counts.draws, frame = [...r.screen.data];
+    expect(presented).toBeGreaterThan(0);
+    present(); present();
+    expect(r.counts.draws, "an unchanged stage is not drawn again").toBe(presented);
+    cursor.mockReturnValue(cursorAt(0, 0, [255, 255, 255, 255], 2));
+    present();
+    expect(r.counts.draws, "a moved cursor is blended again").toBeGreaterThan(presented);
+    expect([...r.screen.data]).not.toEqual(frame);
+    const moved = r.counts.draws;
+    setGamma(new Uint16Array(768).fill(0xffff));
+    present();
+    expect(r.counts.draws, "a new LUT is applied").toBeGreaterThan(moved);
+    expect([...r.screen.data]).toEqual([255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+    const relut = r.counts.draws;
+    present();
+    expect(r.counts.draws).toBe(relut);
+  });
+
   /** A KMS-master GL session presenting its EGL window on CRTC 1's canvas. */
   function windowSession(width = 2, height = 2) {
     const r = pixelGl(width, height);
