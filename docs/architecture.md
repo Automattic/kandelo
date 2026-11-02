@@ -3976,6 +3976,18 @@ target and no texture unit or uniform is taken from the advertised
 limits. Its sibling view copies the image only when the image's storage
 write count moved (`host/src/webgl/image-writes.ts`), as 2D siblings do.
 
+Targeting a texture at the image it is already a sibling of keeps its
+sibling view: `glEGLImageTargetTexture2DOES` then refreshes the view's
+copy if the image was written since, and advances the object's image
+revision, as any accepted respecification does. It allocates a new view
+only when the texture is not exactly that image's sibling (another image,
+other levels, or a respecified texture). WHY: wlroots makes a new
+`wlr_texture` over its cached EGLImage and GL texture name on every commit
+of a client dmabuf, and so targets the same image at the same texture once
+per client frame. Natively the texture keeps the image's storage; a new
+view each time cost a texture, a framebuffer, a full copy, a retarget of
+every container and two deletions per client frame.
+
 GLSL ES 1.00's built-in limit constants (`gl_MaxVertexAttribs` through
 `gl_MaxDrawBuffers`) must equal the values the guest queries, but WebGL's
 compiler gives them native WebGL 2 values. Those differ where the host

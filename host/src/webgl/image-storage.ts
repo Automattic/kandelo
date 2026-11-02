@@ -413,6 +413,9 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
     return false;
   }
   if (kind === 1) {
+    const current = b.textureViews.get(object as WebGLTexture);
+    if (current?.source === source && current.read && pureSibling(object as WebGLTexture, source))
+      return retargetSameImage(b, object as WebGLTexture);
     // A cube object cannot become a 2D EGLImage target.
     if (!withImageState(b, () => checkedGlCall(b, () => b.gl!.bindTexture(TEX, textureNative(b, object as WebGLTexture)))))
       return false;
@@ -438,6 +441,43 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
   }
   if (!replaceRenderbufferView(b, object as WebGLRenderbuffer, { native: renderbufferNative(b, object as WebGLRenderbuffer), source })) return false;
   recordRenderbufferSize(object as WebGLRenderbuffer, source.width, source.height);
+  return true;
+}
+/** Whether `object` is exactly what targeting `source` makes it: level 0 of
+ * the image and nothing else, with no GLES image exported from it. A view
+ * keeps its source only until the object is respecified (textureOperation
+ * clears it), so this re-checks the levels the host recorded rather than
+ * relying on that alone. */
+function pureSibling(object: WebGLTexture, source: GlImageSource): boolean {
+  if (exportedBySource.has(object)) return false;
+  const faces = textureFaces(object), levels = faces.get(TEX), base = levels?.get(0);
+  return faces.size === 1 && levels!.size === 1 && base !== undefined && !base.compressed
+    && base.width === source.width && base.height === source.height
+    && base.internalFormat === (source.internalFormat ?? 0x8058)
+    && base.format === (source.format ?? 0x1908) && base.type === (source.type ?? 0x1401);
+}
+/** glEGLImageTargetTexture2DOES with the image the texture is already a
+ * sibling of. wlroots does this on every commit of a client dmabuf: it makes
+ * a new wlr_texture over its cached EGLImage and GL texture name. Natively
+ * the texture keeps the image's storage. Here the result is the view the
+ * texture already has, brought up to date with the image, so this refreshes
+ * that copy instead of allocating, copying into and retargeting a new view
+ * and deleting the old one. The object's revision still advances, as for
+ * any accepted respecification (a pending compressed upload must not land). */
+function retargetSameImage(b: GlBinding, object: WebGLTexture): boolean {
+  const previousRevision = b.imageRevisions.get(object) ?? 0;
+  if (previousRevision === 0xffffffff) {
+    recordGlError(b, 0x505);
+    return false;
+  }
+  if (!refreshTextureView(b, object)) return false;
+  try {
+    b.imageRevisions.set(object, previousRevision + 1);
+  }
+  catch (caught) { rethrowNativeGlFault(caught);
+    recordGlError(b, 0x505);
+    return false;
+  }
   return true;
 }
 export function imageSourceToken(b: GlBinding, kind: number, name: number): number | null {

@@ -7,6 +7,7 @@ import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import * as O from "../src/webgl/ops.js";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
+import { noteStorageWrite } from "../src/webgl/image-writes.js";
 afterEach(() => setNativeGlFaultReporter(null));
 /** Decision D-29: the reporter latches a refused native deletion or
  * restoration as fatal, and query replies (checkedQueryReply) rethrow the
@@ -185,6 +186,9 @@ for (const kind of [1, 2]) {
     else
       b.shadow.renderbuffer = object;
     registerImageSource(b, 41, {} as WebGLTexture, 2, 2);
+    // A second image: retargeting a texture at the image it already samples
+    // allocates and retargets nothing (see the same-image test below).
+    registerImageSource(b, 42, {} as WebGLTexture, 2, 2);
     const target = kind === 1 ? 0x0de1 : 0x8d41;
     expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(0);
     const oldView = kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object);
@@ -204,7 +208,7 @@ for (const kind of [1, 2]) {
         reject = false;
         throw new Error("retarget rejected");
       } } });
-    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 1], 16)[0]).toBe(1);
+    expect(checked(b, O.QOP_BOUND_IMAGE_TARGET, [kind, target, 2], 16)[0]).toBe(1);
     expect(b.imageRevisions.get(object)).toBe(1);
     expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
     b.imageRevisions.set(object, 0xffffffff);
@@ -252,6 +256,32 @@ for (const kind of [1,2]) it(`faults when the live renderer refuses peer storage
   expect(rejected).toBe(true);
   expect(b.imageRevisions.get(object)).toBe(1);
   expect(kind === 1 ? b.textureViews.get(object) : b.renderbufferViews.get(object)).toBe(oldView);
+});
+
+it("retargets a texture at the image it already samples without a new view", () => {
+  const {b,object,first,gl,alive} = storageRepairSetup();
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  const view = b.textureViews.get(object)!, count = alive.size;
+  let creates = 0, copies = 0;
+  const create = gl.createTexture.bind(gl), createFrame = gl.createFramebuffer.bind(gl);
+  gl.createTexture = () => { creates++; return create(); };
+  gl.createFramebuffer = () => { creates++; return createFrame(); };
+  gl.copyTexSubImage2D = () => { copies++; };
+  // Unchanged image: nothing to copy.
+  expect([...checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)]).toEqual([0,1,2,0x47514c33]);
+  expect(copies).toBe(0);
+  // The image was written since the view's copy: the view is refreshed.
+  noteStorageWrite(first);
+  expect([...checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)]).toEqual([0,1,3,0x47514c33]);
+  expect(copies).toBe(1);
+  expect(creates).toBe(0); expect(alive.size).toBe(count);
+  expect(b.textureViews.get(object)).toBe(view);
+  expect(textureNative(b,object)).toBe(view.native);
+  // A respecified texture is no longer a sibling: targeting it allocates again.
+  expect(imageTextureOperation(b,0x0de1,true,()=>{},false)).toBe(true);
+  expect(checked(b,O.QOP_BOUND_IMAGE_TARGET,[1,0x0de1,1],16)[0]).toBe(0);
+  expect(creates).toBeGreaterThan(0);
+  expect(b.textureViews.get(object)!.source?.token).toBe(1);
 });
 
 it("faults when the live renderer refuses image utility selector restoration", () => {
