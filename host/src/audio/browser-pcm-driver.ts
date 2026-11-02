@@ -175,7 +175,14 @@ export class BrowserPcmDriver implements PcmOutputDriver {
     if (this.closing !== null || this.state === "closed") {
       return Promise.reject(new Error("PCM output is closed"));
     }
-    if (this.resuming !== null) return this.resuming;
+    if (this.resuming !== null) {
+      // Browsers hold resume() pending until the page has user activation,
+      // and only a resume() made after activation starts the context. A key
+      // such as Shift is not activation, so this call may be the first that
+      // counts: repeat it natively instead of only joining the pending one.
+      void this.context?.resume().catch(() => {});
+      return this.resuming;
+    }
     const operation = pendingAudioOperation();
     this.resuming = operation.promise.finally(() => {
       this.resuming = null;
