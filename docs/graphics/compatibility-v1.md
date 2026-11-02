@@ -160,6 +160,39 @@ All 17 dEQP `bind_aliasing` templates fail natively and link after rewriting.
 Deliberately broken rewrites fail the harness. This is focused mechanism
 evidence, not dEQP or desktop acceptance.
 
+**GLSL ES 1.00 beyond Appendix A, 2026-11-02 (maintainer decision:
+translate ESSL 1.00 to 3.00 in the host).** A shader that WebGL rejects
+only for GLSL ES 1.00 Appendix A now compiles as an ESSL 3.00 translation
+(`docs/architecture.md`). Full `dEQP-GLES2.functional.shaders` (10252
+cases) against the 2026-11-01 full runs: Chromium 151 9253 to 10245 Pass,
+Firefox 153 9247 to 10241, WebKit 26.5 9253 to 10245, with no case
+newly failing; the new passes are the dynamic-loop, dynamic-index and
+`indexing.tmp_array` groups that were NotSupported or Fail. Still not
+passing in any engine: `preprocessor.conditional_inclusion.basic_2`
+(ANGLE rejects a `defined` produced by macro expansion) and
+`scoping.valid.local_variable_hides_function_parameter` (ANGLE rejects
+this valid ES 1.00 scoping), both in either language;
+`fragdata.valid_dynamic_index`/`valid_uniform_index` (NotSupported: ESSL
+3.00 also requires constant output indices); and the pre-existing
+`texture_functions.vertex.texturecubelod`. Firefox also keeps its
+pre-existing `local_*_hides_struct_type` failures.
+`tests/graphics/essl3-translation-check/` compares native ES 1.00 with
+the host path over dEQP's declarative shader tests in all three engines;
+the host path regresses none. In Chromium, `performance.compiler`,
+`performance.shader` and `stress.long` (1252 cases) went from 415 to 472
+Pass with none newly failing. 772 `performance.shader.operator.*` cases
+went from Fail (compile) to InternalError ("Unable to get sensible
+measurements"): their shaders now compile and run, and their GPU time
+scales with the loop count when read back, but `glFinish` is
+`WebGLRenderingContext.finish()`, which returned in under 0.1 ms in
+headless Chromium for a draw that took 1.7 s of GPU time, so dEQP's frame
+timing never sees the workload grow and keeps doubling it; one chunk then
+hit its deadline and four of its cases saw a stale `INVALID_OPERATION`.
+That is a `glFinish` completion gap, not a shader one. The four
+`multiplication.1000_operations` compiler cases fail in either language
+(ANGLE: "Expression too complex"). Firefox and WebKit performance and
+stress groups were not rerun.
+
 **Runtime workaround.** Firefox reads the wrong vertex-stage `gl_DepthRange`
 when both stages read it and the program has another active uniform. A
 standalone self-judging reproduction confirms it on Firefox 155 only; it is
