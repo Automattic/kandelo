@@ -81,6 +81,51 @@ describe("ESSL 3.00 translation", () => {
     expect(own).toContain("= texture2DLod ( s ,");
   });
 
+  it("samples cube maps per face from sampler2DArray storage (cube-storage.ts)", () => {
+    const fragment = translateEssl100("precision mediump float;\nprecision highp samplerCube;\nuniform samplerCube c[2];\n" +
+      "struct S { samplerCube m; };\nuniform S u;\nvec4 f(samplerCube x, vec3 d) { return textureCube(x, d, 1.0); }\n" +
+      "void main() { gl_FragColor = textureCube(c[1], vec3(1.0)) + f(u.m, vec3(0.0, 1.0, 0.0)); }\n", true);
+    expect(fragment.cube).toBe(true);
+    // ESSL 1.00's default sampler precision, then the per-face lookups.
+    expect(fragment.text).toContain("precision lowp sampler2DArray;");
+    expect(fragment.text).toContain("highp vec4 kandelo_essl3_textureCube(highp sampler2DArray x, highp vec3 r, highp float bias)");
+    // Fragment lookups pass gradients in the selected face's frame.
+    expect(fragment.text).toContain("textureGrad(x, c, kandelo_essl3_cubeGrad(r, dFdx(r), s, t, m)");
+    const code = body(fragment.text);
+    expect(code).toContain("precision highp sampler2DArray ;");
+    expect(code).toContain("uniform sampler2DArray c [ 2 ] ;");
+    expect(code).toContain("struct S { sampler2DArray m ; } ;");
+    expect(code).toContain("vec4 f ( sampler2DArray x , vec3 d ) { return kandelo_essl3_textureCube ( x , d , 1.0 ) ; }");
+    expect(code).not.toMatch(/\bsamplerCube\b|(?<!_)\btextureCube \(/);
+    // A vertex lookup uses level 0, or the given level; no derivatives.
+    const vertex = translateEssl100("uniform samplerCube c;\nattribute vec3 p;\nvarying vec4 v;\n" +
+      "void main() { v = textureCube(c, p) + textureCubeLod(c, p, 2.0); gl_Position = vec4(p, 1.0); }\n", false).text;
+    expect(vertex).toContain("return textureLod(x, c, 0.0);");
+    expect(vertex).toContain("highp vec4 kandelo_essl3_textureCubeLod(highp sampler2DArray x, highp vec3 r, highp float lod)");
+    expect(vertex).not.toContain("dFdx");
+    expect(body(vertex)).toContain("kandelo_essl3_textureCube ( c , p ) + kandelo_essl3_textureCubeLod ( c , p , 2.0 )");
+    // A guest overload of textureCube forwards to the per-face lookup.
+    const overload = translateEssl100("precision mediump float;\nuniform samplerCube c;\n" +
+      "vec4 textureCube(samplerCube x, vec3 d, int k) { return textureCube(x, d) * float(k); }\n" +
+      "void main() { gl_FragColor = textureCube(c, vec3(1.0), 2); }\n", true).text;
+    expect(overload).toContain("highp vec4 kandelo_essl1_textureCube(highp sampler2DArray p0, highp vec3 p1) { return kandelo_essl3_textureCube(p0, p1); }");
+    // Only shaders whose code (after preprocessing) uses samplerCube.
+    expect(translateEssl100("precision mediump float;\n#if 0\nuniform samplerCube c;\n#endif\nvoid main() { gl_FragColor = vec4(1.0); }\n", true).cube).toBe(false);
+  });
+
+  it("compiles a shader that samples a cube map as ESSL 3.00 even when ES 1.00 accepts it", () => {
+    const gl = new TranslationGl(), context = gl as unknown as WebGL2RenderingContext;
+    const cube = gl.createShader(0x8b30), plain = gl.createShader(0x8b30);
+    const source = "precision mediump float;\nuniform samplerCube c;\nvoid main() { gl_FragColor = textureCube(c, vec3(1.0)); }\n";
+    expect(compileGuestShader(context, cube as unknown as WebGLShader, source, true)).toBe("essl300");
+    expect(cube.source.startsWith("#version 300 es")).toBe(true);
+    expect(cube.compiles).toBe(2);
+    // A shader that only mentions it in a comment stays ES 1.00 with one compile.
+    expect(compileGuestShader(context, plain as unknown as WebGLShader,
+      "precision mediump float;\n// samplerCube\nvoid main() { gl_FragColor = vec4(1.0); }\n", true)).toBe("essl100");
+    expect(plain.compiles).toBe(1);
+  });
+
   it("reports using both gl_FragColor and gl_FragData as ANGLE does for ES 1.00", () => {
     const result = translateEssl100("precision mediump float;\nvoid main() {\n gl_FragColor = vec4(1.0);\n gl_FragData[0] = vec4(1.0);\n}\n", true);
     expect(result.error).toBe("cannot use both gl_FragData and gl_FragColor");
