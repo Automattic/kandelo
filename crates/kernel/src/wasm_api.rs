@@ -1234,6 +1234,10 @@ impl HostIO for WasmHostIO {
     }
 
     fn proc_write_bytes(&mut self, pid: i32, addr: u64, src: &[u8]) -> i32 {
+        // Recorded whether or not the import succeeds: a failed write may
+        // still have stored bytes, and the record only ever makes a later
+        // boundary compare a mapping it could otherwise have skipped.
+        crate::memory::note_kernel_process_write(pid as u32, addr, src.len() as u64);
         unsafe { host_proc_write_bytes(pid, addr, src.as_ptr(), src.len() as u32) }
     }
 
@@ -1424,7 +1428,8 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         // SAFETY: snapshot names exactly len initialized bytes owned by the
         // current Rust allocation. The trusted synchronous host import only
         // reads that borrow, validates the full process range, and retains no
-        // view or capability. Equal is this observation, never a write epoch.
+        // view or capability. Equal is this observation; only the table's
+        // boundary proof (`BoundaryRecord`) ever carries it forward.
         let compared = unsafe {
             host_proc_compare_bytes(pid as i32, addr, snapshot.as_ptr(), host_len)
         };
@@ -8460,24 +8465,43 @@ pub extern "C" fn kernel_shared_mapping_process_count(pid: u32) -> i32 {
 /// process must become current even with no live peer: `fork`, the `exec`
 /// address-space preflight, and teardown. A forced sync also persists every
 /// dirty kernel-file page.
+///
+/// [`crate::memory::SHARED_MAPPING_SYNC_UNCHANGED`] is not a force: it is an
+/// ordinary boundary whose caller attests that, since the previous call for
+/// `pid` returned, no guest code of the process ran and the host wrote
+/// nothing into its memory (the completion of a syscall whose entry was that
+/// previous call, with every other thread of the process parked throughout
+/// and no output bytes). The kernel combines that with what it knows itself
+/// (no other mapping operation touched the process, and none of its own
+/// writes landed in a mapping) to skip comparisons that cannot find a change;
+/// see
+/// [`crate::memory::BoundaryRecord`]. It never skips a publication: every
+/// boundary that follows guest code still compares.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_shared_mapping_sync_process(pid: u32, force: i32) -> i32 {
     let _gkl = GklGuard::acquire();
+    let unchanged_claim = force == crate::memory::SHARED_MAPPING_SYNC_UNCHANGED;
+    let forced = force != 0 && !unchanged_claim;
     let table = unsafe { crate::memory::global_shared_mapping_table() };
     let has_files = table.mappings_for(pid).next().is_some();
     if table.sysv_mapping_count_for(pid) == 0 && !has_files {
+        table.forget_boundary(pid);
         return 0;
     }
     let mut io = WasmSharedMappingIo::for_table(table);
     let mut ok = true;
     if has_files {
-        if force != 0 {
+        if forced {
+            table.forget_boundary(pid);
             ok &= table.flush_mappings(pid, 0, u64::MAX, &mut io);
         } else {
-            ok &= table.sync_file_from_process(pid, false, &mut io).is_ok();
+            ok &= crate::memory::with_kernel_process_write_log(|log| {
+                table.sync_file_at_boundary(pid, unchanged_claim, log, &mut io)
+            })
+            .is_ok();
         }
     }
-    ok &= table.sync_sysv_from_process(pid, force != 0, &mut io);
+    ok &= table.sync_sysv_from_process(pid, forced, &mut io);
     if ok {
         0
     } else {
@@ -8543,6 +8567,7 @@ pub extern "C" fn kernel_shared_mapping_file_track(
         return -(Errno::EINVAL as i32);
     }
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if table.mapping(pid, addr).is_some() {
         return -(Errno::EEXIST as i32);
     }
@@ -8572,6 +8597,7 @@ pub extern "C" fn kernel_shared_mapping_file_track(
 pub extern "C" fn kernel_shared_mapping_flush(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if table.mappings_for(pid).next().is_none() {
         return 0;
     }
@@ -8615,6 +8641,7 @@ pub extern "C" fn kernel_report_host_mapping_writeback_error(
 pub extern "C" fn kernel_shared_mapping_unmap(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if table.mappings_for(pid).next().is_none() {
         return 0;
     }
@@ -8634,6 +8661,7 @@ pub extern "C" fn kernel_shared_mapping_remap(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if table.mapping(pid, old_addr).is_none() {
         return 0;
     }
@@ -8651,6 +8679,7 @@ pub extern "C" fn kernel_shared_mapping_remap(
 pub extern "C" fn kernel_shared_mapping_prepare_write(pid: u32, addr: u64, len: u64) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     shared_mapping_errno(table.prepare_file_mappings_for_write(pid, addr, len))
 }
 
@@ -8666,6 +8695,7 @@ pub extern "C" fn kernel_shared_mapping_protect(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     table.update_mapping_protection(pid, addr, len, writable != 0);
     0
 }
@@ -8689,6 +8719,7 @@ pub extern "C" fn kernel_shared_mapping_sysv_track(
         return -(Errno::EINVAL as i32);
     }
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if table.sysv_mapping(pid, addr as u64).is_some() {
         return -(Errno::EEXIST as i32);
     }
@@ -8752,6 +8783,7 @@ pub extern "C" fn kernel_shared_mapping_sysv_publish_mapping(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
@@ -8777,6 +8809,7 @@ pub extern "C" fn kernel_shared_mapping_sysv_drop_mapping(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     if !sysv_mirror_matches(table, pid, addr, expect_seg_id, expect_size) {
         return -(Errno::EIO as i32);
     }
@@ -8808,6 +8841,7 @@ pub extern "C" fn kernel_shared_mapping_release_process(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(pid);
     let mut io = WasmSharedMappingIo::for_table(table);
     if publish != 0 {
         table.sync_sysv_from_process(pid, true, &mut io);
@@ -8882,6 +8916,8 @@ pub extern "C" fn kernel_shared_mapping_inherit(
 ) -> i32 {
     let _gkl = GklGuard::acquire();
     let table = unsafe { crate::memory::global_shared_mapping_table() };
+    table.forget_boundary(parent_pid);
+    table.forget_boundary(child_pid);
     let mut io = WasmSharedMappingIo::for_table(table);
     io.set_process_memory_len(child_pid, child_memory_len);
     shared_mapping_errno(table.inherit_sysv_attachments(
