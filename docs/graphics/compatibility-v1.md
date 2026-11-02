@@ -111,7 +111,9 @@ GLSL that no real compiler has compiled yet. The blend-factor fold variant
 by a real compiler either. Per-face stencil splitting costs
 about one native draw per triangle when the faces differ; this is unmeasured.
 `OES_standard_derivatives` relies on WebGL 2 accepting `#extension` in GLSL ES
-1.00. The dEQP-EGL window cases run only with `--deqp-visibility=hidden`.
+1.00 (checked 2026-11-02: no engine accepts any ESSL 1.00 extension in WebGL 2,
+so `dFdx` was undeclared; the host now provides the extension through the ESSL
+3.00 translation described in `docs/architecture.md`). The dEQP-EGL window cases run only with `--deqp-visibility=hidden`.
 
 **Closed later on 2026-11-01** (same evidence standard): `OES_depth_texture`
 API rules (2D only, no copies, no mipmap generation, depth/stencil

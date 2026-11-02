@@ -32,6 +32,7 @@ import { headerEnd } from "./reversed-depth.js";
 import { depthLevelRevision, levelSamplesDepth, textureLevel } from "./texture-levels.js";
 import type { GlShadowState } from "./shadow.js";
 import { noteSourcedUnit, type GlTextureView } from "./image-storage.js";
+import { programGuestName } from "./essl3-translation.js";
 
 const LOOKUPS = new Set(["texture2D", "texture2DProj", "texture2DLod", "texture2DProjLod", "textureCube", "textureCubeLod"]);
 // samplerExternalOES compiles under a private macro name (external-texture.ts);
@@ -254,7 +255,8 @@ export function depthSamplersForDraw(b: GlBinding): readonly string[] | null {
         for (let element = 0; element < info.size; element++) {
           const name = array ? `${base}[${element}]` : base;
           const location = gl.getUniformLocation(program, name);
-          if (location) samplers.push({ name, cube: info.type === 0x8b60, unit: Number(gl.getUniform(program, location)) });
+          // Variants rewrite the ES 1.00 source, which has the guest's names.
+          if (location) samplers.push({ name: programGuestName(program, name), cube: info.type === 0x8b60, unit: Number(gl.getUniform(program, location)) });
         }
       }
     })) return null;

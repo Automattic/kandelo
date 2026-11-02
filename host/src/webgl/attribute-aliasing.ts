@@ -34,6 +34,7 @@
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall } from "./program-objects.js";
 import { compiledShaderSource, recordLinkedSources, renameIdentifiers } from "./reversed-depth.js";
+import { guestInterfaceName, nativeInterfaceName, recordProgramLanguage, shaderLanguage, translateEssl100 } from "./essl3-translation.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const ALIAS_PREFIX = "kandelo_alias_";
@@ -203,17 +204,25 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
   const rewrite = aliasedVertexShaderSource(vertex, bindings);
   if (!rewrite) return null;
   const { source: rewritten, aliased, slots, used, declarations, declared } = rewrite;
+  // The guest's fragment shader holds an ESSL 3.00 translation when the
+  // program was translated (essl3-translation.ts); the private vertex shader
+  // is then the translation of the ES 1.00 rewrite, and native attribute
+  // names are the translated ones.
+  const essl300 = shaderLanguage(fragmentShader) === "essl300";
+  const translation = essl300 ? translateEssl100(rewritten, false) : null;
+  if (translation?.error !== undefined) return null;
+  const nativeName = (guest: string) => essl300 ? nativeInterfaceName(guest) : guest;
 
   let shader: WebGLShader | null = null, program: WebGLProgram | null = null, linked = false;
   try {
     if (!checkedGlCall(b, () => { shader = gl.createShader(VERTEX_SHADER); program = gl.createProgram(); }) || !shader || !program) return null;
     const s = shader as WebGLShader, p = program as WebGLProgram;
     if (!checkedGlCall(b, () => {
-      gl.shaderSource(s, rewritten);
+      gl.shaderSource(s, translation ? translation.text : rewritten);
       gl.compileShader(s);
       gl.attachShader(p, s);
       gl.attachShader(p, fragmentShader!);
-      for (const [attribute, index] of bindings) if (!aliased.has(attribute)) gl.bindAttribLocation(p, index, attribute);
+      for (const [attribute, index] of bindings) if (!aliased.has(attribute)) gl.bindAttribLocation(p, index, nativeName(attribute));
       for (const l of slots) gl.bindAttribLocation(p, l, `${ALIAS_PREFIX}${l}`);
       gl.linkProgram(p);
       linked = !!gl.getProgramParameter(p, 0x8b82);
@@ -224,7 +233,8 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
       const count = Number(gl.getProgramParameter(p, 0x8b89));
       for (let i = 0; i < count; i++) {
         const info = gl.getActiveAttrib(p, i);
-        if (info && !info.name.startsWith(ALIAS_PREFIX)) attributes.push({ name: info.name, size: info.size, type: info.type });
+        if (info && !info.name.startsWith(ALIAS_PREFIX))
+          attributes.push({ name: essl300 ? guestInterfaceName(info.name) : info.name, size: info.size, type: info.type });
       }
     })) { linked = false; return null; }
     const locations = new Map<string, number>();
@@ -234,7 +244,8 @@ export function linkAliasedExecutable(b: GlBinding, name: number, attached: read
       if (used.has(n)) attributes.push({ name: n, size: 1, type: TYPES.get(d.type)!.type });
     }
     layouts.set(p, { attributes, locations });
-    recordLinkedSources(p, rewritten, fragment);
+    recordProgramLanguage(p, essl300);
+    recordLinkedSources(p, rewritten, fragment, essl300);
     return p;
   } finally {
     // The private vertex shader lives while attached to the executable.

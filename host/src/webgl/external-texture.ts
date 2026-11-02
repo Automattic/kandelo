@@ -46,6 +46,7 @@ import { samplerWriteGeneration } from "./depth-sampling.js";
 import { refreshTextureView, textureNative } from "./image-storage.js";
 import { nativeTextureBinding } from "./texture-bindings.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
+import { programGuestName } from "./essl3-translation.js";
 
 export const TEXTURE_EXTERNAL_OES = 0x8d65;
 export const SAMPLER_EXTERNAL_OES = 0x8d66;
@@ -425,7 +426,7 @@ function samplerUnits(b: GlBinding, program: WebGLProgram, paths: ReadonlySet<st
       const info = gl.getActiveUniform(program, i);
       if (!info || info.type !== SAMPLER_2D) continue;
       const array = info.name.endsWith("[0]"), base = array ? info.name.slice(0, -3) : info.name;
-      const units = paths.has(pathOf(info.name)) ? external : plain;
+      const units = paths.has(pathOf(programGuestName(program, info.name))) ? external : plain;
       for (let element = 0; element < info.size; element++) {
         const location = gl.getUniformLocation(program, array ? `${base}[${element}]` : base);
         if (location) units.add(Number(gl.getUniform(program, location)));

@@ -3886,6 +3886,98 @@ constant expression, not an l-value and not a macro, so other
 preprocessor directives still treat the name as the engine does.
 `glGetShaderSource` returns the guest's text.
 
+OpenGL ES 2.0 compiles all of GLSL ES 1.00, but WebGL holds ESSL 1.00
+shaders to the "minimum functionality" of GLSL ES 1.00 Appendix A: no
+`while` or `do`-`while` loops, `for` loops only with a constant-bounded,
+constant-stepped index, and temporary arrays indexed only by constants and
+loop indices. GLES 2 drivers accept more, and guest software (and
+dEQP-GLES2, e.g. `functional.shaders.indexing.tmp_array.*` and about 830
+performance and stress shaders) relies on it. WebGL does not apply
+Appendix A to ESSL 3.00, whose language is a superset of ESSL 1.00, so the
+host compiles such a shader as an ESSL 3.00 translation with the same
+meaning (`host/src/webgl/essl3-translation.ts`). The engine's own ESSL
+1.00 front end stays the judge of ES 1.00 validity: `glCompileShader`
+first compiles the guest's 1.00 source, and translates only when the
+compile fails with nothing but Appendix A errors. ANGLE (the front end of
+Chromium, Firefox and WebKit) runs its Appendix A pass only after a shader
+has parsed and type-checked without error, and each of its messages is
+unique to that pass, so such a shader is otherwise valid ES 1.00, while
+every other failure, its info log included, reaches the guest unchanged.
+Why: a translator that also had to reject everything ES 1.00 rejects but
+ESSL 3.00 accepts (bitwise and modulo operators, `switch`, `uint`, array
+constructors, `.length()`, `in`/`out` globals, ...) would need a complete
+ES 1.00 front end of its own; asking the engine needs none, and leaves
+every shader WebGL already compiled exactly as it was, at no extra cost.
+The one ES 1.00 rule ANGLE checks after Appendix A, that a fragment shader
+cannot use both `gl_FragColor` and `gl_FragData`, the translation reports
+itself. A translated shader costs the rejected 1.00 compile, the
+translation (about 0.1 to 0.8 ms for a 4 KB source in Chromium, Firefox
+and WebKit) and the 3.00 compile, once per `glCompileShader`; no draw pays
+anything. ES forbids linking shaders of different language versions, so
+`glLinkProgram` compiles a 1.00 partner of a translated shader as its own
+translation (its meaning, and `COMPILE_STATUS`, are unchanged; its info
+log is now the 3.00 compile's).
+
+The translation works on the shader after preprocessing
+(`host/src/webgl/essl-preprocessor.ts`, ES 1.00 rules for input ANGLE has
+already accepted), so each decision is about code the compiler parsed, not
+text in an inactive `#if` group or an unused macro, and it emits one
+output line per guest line with `#line`, so info logs and `__LINE__` keep
+the guest's numbering. `#version 300 es` comes first; `attribute` becomes
+`in`, `varying` becomes `out` or `in`; `gl_FragColor` and `gl_FragData`
+become declared mediump outputs (`gl_FragData` an array of one, ES 2.0
+having one draw buffer, so `gl_FragData[1]` stays an error); the ES 1.00
+lookups take their 3.00 names where that stage has them (`texture2D` to
+`texture`, `texture2DLod` to `textureLod`, ...). Identifiers that ESSL
+3.00 reserves or names but ES 1.00 does not (`sample`, `layout`, `uint`,
+`texture`, `round`, ...) are renamed `kandelo_essl1_<name>`, and guest
+identifiers beginning `kandelo_essl` are escaped the same way, so the
+renaming is injective. Uniform and attribute names are API-visible:
+reflection, location queries and `glBindAttribLocation` of a translated
+program translate them both ways, so the guest only ever sees its own
+names. ES 1.00 lets a shader overload a built-in function; ESSL 3.00 does
+not, so the name is renamed and private forwarders with the ES 1.00
+signatures call the built-in, except inside constant expressions, where
+the built-in is the only possible meaning. ANGLE accepts non-constant
+global initializers only for ES 1.00, so the translation runs them, in
+order, at the start of a new `main`. ESSL 3.00 fragment inputs cannot be
+invariant and `#pragma STDGL invariant(all)` is vertex-only, so the
+fragment qualifiers go and an invariant varying is renamed in both
+stages: an invariance mismatch, a link error in ES 1.00, then still fails
+to link. Draw-time variants (reversed depth, depth sampling, blend
+folding, attribute aliasing) rewrite the ES 1.00 source as before and are
+then translated the same way, so each of those rewrites stays ES
+1.00-only.
+
+`GL_OES_standard_derivatives` is advertised because WebGL 2 has the
+derivatives, but WebGL 2 enables no ESSL 1.00 extension, so `#extension
+GL_OES_standard_derivatives : require` failed and `dFdx` was undeclared.
+Every ES 1.00 source now gets the extension the way
+`GL_OES_EGL_image_external` is provided: uses of the macro name read a
+private macro defined as 1, each `dFdx`, `dFdy` and `fwidth` token is a
+macro that names the guest's own identifier until the shader's own
+`#extension` directive (rewritten on its line) makes it the built-in, so
+the functions exist exactly where the extension is enabled. The validity
+compile declares them with the extension's genType signatures, so calls
+type-check as against the real built-ins, and a fragment shader that
+enables them is compiled as ESSL 3.00, where they are the core functions.
+They do not exist in vertex shaders.
+
+Known gaps in translated programs: a fragment shader's `invariant
+gl_FragCoord` no longer requires an invariant `gl_Position` in the vertex
+shader (ES 1.00 makes that a link error); a dynamically indexed
+`gl_FragData` is still rejected, as ESSL 3.00 requires constant output
+indices; and a guest ESSL 3.00 shader, which the ES 2.0 host already
+compiles as written although ES 2.0 has no ESSL 3.00, links with a
+translated partner. Headless Chromium also loses the WebGL context when it
+links an ESSL 3.00 program that overloads a function by array size (a
+suspected engine defect, reproduced without Kandelo code; the ES 1.00
+form links), so such a shader that also needs the translation loses the
+context. ANGLE's own failures stay what they are in either language:
+"Expression too complex" for very long expressions, a `defined` produced
+by macro expansion in `#if`, and a local variable that hides a function
+parameter (valid ES 1.00, where the function body is a new scope).
+
 GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
 single-plane formats, each stored exactly: R8, GR88, RGB565, the four
 8888 orders, the four 2101010 orders, and ABGR/XBGR16161616F. A GPU-tier

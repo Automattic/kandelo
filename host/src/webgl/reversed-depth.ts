@@ -31,6 +31,7 @@ import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRan
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
+import { shaderLanguage, translateEssl100 } from "./essl3-translation.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -129,7 +130,11 @@ export function reversedDepthShaderSource(source: string, vertex: boolean): stri
 // GLES links the shaders' compiled state, not their current source strings.
 
 const compiledSources = new WeakMap<WebGLShader, string>();
-type LinkedSources = { vertex: string; fragment: string };
+/** ES 1.00 sources (shader-source.ts). `essl300`: the program's shaders were
+ * compiled as their ESSL 3.00 translations, so each variant stage is
+ * rewritten as ES 1.00 and then translated the same way
+ * (essl3-translation.ts), which keeps every rewrite here ES 1.00-only. */
+type LinkedSources = { vertex: string; fragment: string; essl300: boolean };
 const linkedSources = new WeakMap<WebGLProgram, LinkedSources>();
 
 export function recordCompiledShader(shader: WebGLShader, source: Uint8Array | string | undefined): void {
@@ -145,8 +150,8 @@ export function compiledShaderSource(shader: WebGLShader): string | undefined {
 
 /** A private executable built from rewritten sources (attribute aliasing)
  * records the sources its native link actually used. */
-export function recordLinkedSources(program: WebGLProgram, vertex: string, fragment: string): void {
-  linkedSources.set(program, { vertex, fragment });
+export function recordLinkedSources(program: WebGLProgram, vertex: string, fragment: string, essl300: boolean): void {
+  linkedSources.set(program, { vertex, fragment, essl300 });
 }
 
 /** Called after every native link attempt of `program`. A stale twin built
@@ -155,14 +160,15 @@ export function recordLinkedProgram(b: GlBinding, program: WebGLProgram, linked:
   releaseReversedDepthTwin(b, program);
   linkedSources.delete(program);
   if (!linked) return;
-  let vertex: string | undefined, fragment: string | undefined;
+  let vertex: string | undefined, fragment: string | undefined, essl300 = false;
   for (const shader of shaders) {
     let type = 0;
     if (!checkedGlCall(b, () => { type = Number(b.gl!.getShaderParameter(shader, 0x8b4f)); })) return;
     if (type === VERTEX_SHADER) vertex = compiledSources.get(shader);
     else if (type === FRAGMENT_SHADER) fragment = compiledSources.get(shader);
+    if (shaderLanguage(shader) === "essl300") essl300 = true;
   }
-  if (vertex !== undefined && fragment !== undefined) linkedSources.set(program, { vertex, fragment });
+  if (vertex !== undefined && fragment !== undefined) linkedSources.set(program, { vertex, fragment, essl300 });
 }
 
 // --- uniform write generations ------------------------------------------------
@@ -223,9 +229,14 @@ export function variantStageSource(source: string, vertex: boolean, options: Var
 }
 
 function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, options: VariantOptions): Twin | null {
-  const vertexSource = variantStageSource(sources.vertex, true, options);
-  const fragmentSource = variantStageSource(sources.fragment, false, options);
+  let vertexSource = variantStageSource(sources.vertex, true, options);
+  let fragmentSource = variantStageSource(sources.fragment, false, options);
   if (vertexSource === null || fragmentSource === null) return null;
+  if (sources.essl300) {
+    const vertex = translateEssl100(vertexSource, false), fragment = translateEssl100(fragmentSource, true);
+    if (vertex.error !== undefined || fragment.error !== undefined) return null;
+    vertexSource = vertex.text; fragmentSource = fragment.text;
+  }
   const gl = b.gl!;
   let vs: WebGLShader | null = null, fs: WebGLShader | null = null, program: WebGLProgram | null = null;
   let linked = false;

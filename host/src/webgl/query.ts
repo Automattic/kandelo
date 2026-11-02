@@ -1,5 +1,6 @@
 import { externalValidationFailed, guestUniformType } from "./external-texture.js";
 import { validationHadNoExecutable } from "./validate-status.js";
+import { programGuestName } from "./essl3-translation.js";
 import { runObjectCapture } from "./object-capture.js";
 import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upload.js";
 import { runReadbackCapture } from "./readback-capture.js";
@@ -574,7 +575,8 @@ export function runGlQuery(
           let max = 0;
           for (let i = 0; i < n; i++) {
             const info = attributes ? gl.getActiveAttrib(prog, i) : gl.getActiveUniform(prog, i);
-            if (info) max = Math.max(max, info.name.length + 1);
+            // Guest names: a translated program's native names are longer.
+            if (info) max = Math.max(max, programGuestName(prog, info.name).length + 1);
           }
           v = max;
         } else if (pname === 0x8b83 && externalValidationFailed(prog)) {
@@ -689,11 +691,12 @@ export function runGlQuery(
         outDv.setUint32(8, 0, true);
         return 12;
       }
-      const nameBytes = new TextEncoder().encode(info.name);
+      const guestName = programGuestName(prog!, info.name);
+      const nameBytes = new TextEncoder().encode(guestName);
       const nameLen = Math.min(nameBytes.byteLength, cap, out.byteLength - 12);
       outDv.setUint32(0, nameLen, true);
       outDv.setInt32(4, info.size, true);
-      outDv.setUint32(8, guestUniformType(prog!, info.name, info.type), true);
+      outDv.setUint32(8, guestUniformType(prog!, guestName, info.type), true);
       out.set(nameBytes.subarray(0, nameLen), 12);
       return 12 + nameLen;
     }

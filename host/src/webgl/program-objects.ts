@@ -9,6 +9,7 @@ import { nativeGlFault, NativeGlFault, rendererEverLost, reserveNativeRetirement
 export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
 import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable } from "./attribute-aliasing.js";
+import { nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage } from "./essl3-translation.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */
@@ -78,12 +79,13 @@ export function attributeLocation(b: GlBinding, program: WebGLProgram, text: str
     for (let index = 0; index < count && !found; index++) {
       let info: WebGLActiveInfo | null = null;
       if (!checkedGlCall(b, () => { info = gl.getActiveAttrib(program, index); })) return null;
-      found = (info as WebGLActiveInfo | null)?.name === text;
+      found = (info as WebGLActiveInfo | null)?.name === programNativeName(program, text);
     }
     if (!found) return -1;
   }
   let location = -1;
-  if (!checkedGlCall(b, () => { location = gl.getAttribLocation(program, text); })) return null;
+  // A translated program's attribute has its native name (essl3-translation.ts).
+  if (!checkedGlCall(b, () => { location = gl.getAttribLocation(program, programNativeName(program, text)); })) return null;
   return location;
 }
 
@@ -376,15 +378,26 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     }
     const generation = programLinkGeneration(b, program);
     if (generation.value >= Number.MAX_SAFE_INTEGER) { recordGlError(b, 0x505); return; }
-    if (!checkedGlCall(b, () => gl.linkProgram(program))) return;
-    generation.value++;
-    let linked = false;
-    const queried = checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); });
     const attached: WebGLShader[] = [];
     for (const shaderName of b.programShaders.get(name) ?? []) {
       const shader = b.shaders.get(shaderName);
       if (shader) attached.push(shader);
     }
+    // One language version per program (essl3-translation.ts). A translated
+    // program's attributes have native names; WebGL applies bindings at link.
+    let translated = false;
+    if (!checkedGlCall(b, () => {
+      translated = prepareLinkLanguages(gl, attached);
+      if (translated) for (const [attribute, index] of b.programAttributeBindings.get(name) ?? []) {
+        const native = nativeInterfaceName(attribute);
+        if (native !== attribute) gl.bindAttribLocation(program, index, native);
+      }
+      gl.linkProgram(program);
+    })) return;
+    generation.value++;
+    recordProgramLanguage(program, translated);
+    let linked = false;
+    const queried = checkedGlCall(b, () => { linked = !!gl.getProgramParameter(program, 0x8b82); });
     recordLinkedProgram(b, program, queried && linked, attached);
     recordLinkedExternalSamplers(program, queried && linked, attached);
     // ES 2.0 allows attribute aliasing that WebGL rejects at link time. The

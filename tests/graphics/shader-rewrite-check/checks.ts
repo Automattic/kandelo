@@ -6,7 +6,9 @@
  * aliasing (attribute-aliasing.ts), luminance sampling of depth textures
  * (depth-sampling.ts) and samplerExternalOES (external-texture.ts), and
  * rewrites the GLSL ES 1.00 built-in limit constants to the values the
- * guest queries (limits.ts). Unit tests only see the text. This page compiles and
+ * guest queries (limits.ts), and compiles ES 1.00 shaders that WebGL rejects
+ * only for GLSL ES 1.00 Appendix A as ESSL 3.00 (essl3-translation.ts).
+ * Unit tests only see the text. This page compiles and
  * links the rewritten shaders with the engine's real WebGL 2 compiler and
  * draws with them, reading back pixels to prove the ES 2.0 semantics.
  * It is bundled and driven by run.mjs; it is not the Kandelo runtime.
@@ -16,6 +18,8 @@ import { variantStageSource, type VariantOptions } from "../../../host/src/webgl
 import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues } from "../../../host/src/webgl/vertex-depth-range.js";
 import { externalShaderSource } from "../../../host/src/webgl/external-texture.js";
 import { builtinLimitShaderSource, guestBuiltinLimits } from "../../../host/src/webgl/limits.js";
+import { compileGuestShader, nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage,
+  recordShaderLanguage, standardDerivativesShaderSource, translateEssl100, type ShaderLanguage } from "../../../host/src/webgl/essl3-translation.js";
 
 /** "inconclusive": the engine fails the same check on unrewritten shaders
  * (a recorded "engine-defect" control), so it cannot judge the rewrite. */
@@ -530,6 +534,193 @@ function engineValue(name: string, stage: "vertex" | "fragment"): string {
   return String(low);
 }
 
+
+// ---------------------------------------------------------------------------
+// 6. ES 1.00 shaders beyond Appendix A, compiled as ESSL 3.00
+//    (essl3-translation.ts)
+
+type GuestBuilt = Built & { languages: (ShaderLanguage | null)[]; compileLog: string };
+/** The host's compile and link path (bridge.ts OP_COMPILE_SHADER and
+ * program-objects.ts linkProgramRetainingExecutable), with the guest's
+ * attribute bindings by guest name. */
+function buildGuest(vertex: string, fragment: string, bindings: Iterable<[string, number]> = []): GuestBuilt {
+  const shaders = ([[gl.VERTEX_SHADER, vertex, false], [gl.FRAGMENT_SHADER, fragment, true]] as const).map(([type, source, fragment]) => {
+    const shader = gl.createShader(type)!, text = standardDerivativesShaderSource(source);
+    const language = compileGuestShader(gl, shader, text, fragment);
+    recordShaderLanguage(shader, language, text, fragment);
+    return { shader, language };
+  });
+  const compileLog = shaders.map(s => gl.getShaderInfoLog(s.shader)).filter(Boolean).join(" | ");
+  const program = gl.createProgram()!;
+  for (const { shader } of shaders) gl.attachShader(program, shader);
+  const translated = prepareLinkLanguages(gl, shaders.map(s => s.shader));
+  recordProgramLanguage(program, translated);
+  for (const [name, at] of bindings) gl.bindAttribLocation(program, at, translated ? nativeInterfaceName(name) : name);
+  gl.linkProgram(program);
+  const ok = gl.getProgramParameter(program, gl.LINK_STATUS);
+  const log = [compileLog, gl.getProgramInfoLog(program)].filter(Boolean).join(" | ");
+  for (const { shader } of shaders) gl.deleteShader(shader);
+  const languages = shaders.map(s => s.language);
+  if (!ok) { gl.deleteProgram(program); return { program: null, log, languages, compileLog }; }
+  return { program, log, languages, compileLog };
+}
+
+/** The ES 1.00 compile WebGL performs without the host's path. */
+function nativeCompile(source: string, fragment: boolean): { ok: boolean; log: string } {
+  const shader = gl.createShader(fragment ? gl.FRAGMENT_SHADER : gl.VERTEX_SHADER)!;
+  gl.shaderSource(shader, source); gl.compileShader(shader);
+  const result = { ok: !!gl.getShaderParameter(shader, gl.COMPILE_STATUS), log: (gl.getShaderInfoLog(shader) ?? "").trim().split("\n")[0] };
+  gl.deleteShader(shader);
+  return result;
+}
+
+const GREEN = [0, 1, 0, 1];
+/** A fragment-stage check: green when `ok` (an ES 1.00 bool expression). */
+const okFragment = (declarations: string, body: string, ok: string) =>
+  `precision mediump float;\n${declarations}\nvoid main() {\n${body}\ngl_FragColor = (${ok}) ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n}\n`;
+const VARYING_VERTEX = "varying mediump vec4 v;\nvoid main() { v = vec4(0.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n";
+/** A loop whose bound is a uniform: Appendix A rejects it, ES 1.00 does not. */
+const DYNAMIC_LOOP = "uniform int n;\nfloat dynamicSum() { float s = 0.0; for (int i = 0; i < n; i++) s += 0.25; return s; }\n";
+
+type TranslationCase = { name: string; vertex: string; fragment: string; uniforms?: Record<string, number | number[]>;
+  ints?: Record<string, number>; bindings?: [string, number][]; attributes?: Record<number, number[]>; textures?: () => void;
+  /** Which stage WebGL's ES 1.00 compile rejects (the control)... */
+  rejected: ("vertex" | "fragment")[];
+  /** ...or the color the unmodified shaders draw instead. */
+  nativeDraws?: number[]; expected?: number[] };
+
+function essl3Translation(): void {
+  target(false);
+  const cases: TranslationCase[] = [
+    { name: "while-loop.fragment", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
+      fragment: okFragment("uniform int n;", "float s = 0.0; int i = 0;\nwhile (i < n) { s += 0.25; i++; }", "s == 1.0") },
+    { name: "do-while.vertex", rejected: ["vertex"], ints: { n: 3 },
+      vertex: "uniform int n;\nvarying mediump vec4 v;\nvoid main() { float s = 0.0; int i = 0;\n" +
+        "do { s += 1.0; i++; } while (i < n);\nv = s == 3.0 ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n" +
+        "gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n",
+      fragment: "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n" },
+    { name: "uniform-loop-bound", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
+      fragment: okFragment(DYNAMIC_LOOP, "", "dynamicSum() == 1.0") },
+    // dEQP-GLES2.functional.shaders.indexing.tmp_array.*: a temporary array
+    // indexed by a uniform.
+    { name: "tmp-array-dynamic-index", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { k: 2 },
+      fragment: okFragment("uniform int k;", "float a[4]; a[0] = 0.0; a[1] = 1.0; a[2] = 2.0; a[3] = 3.0;", "a[k] == 2.0") },
+    // ESSL 3.00 keywords and built-in names that are ES 1.00 identifiers,
+    // API-visible ones included: uniforms, attributes and varyings.
+    { name: "reserved-names", rejected: ["fragment"], ints: { n: 4 }, uniforms: { sample: 0.5 },
+      bindings: [["texture", 3]], attributes: { 3: [0.25, 0, 0, 1] },
+      vertex: "attribute vec4 texture;\nvarying mediump vec4 smooth;\n" +
+        "void main() { smooth = texture; gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n",
+      fragment: okFragment(DYNAMIC_LOOP + "uniform float sample;\nvarying vec4 smooth;\nfloat round(float layout) { return layout + 1.0; }",
+        "float filter = sample; int uint = 2; vec2 uvec2 = vec2(float(uint));",
+        "dynamicSum() == 1.0 && filter == 0.5 && round(1.0) == 2.0 && uvec2.y == 2.0 && smooth.x == 0.25") },
+    // ES 1.00 allows overloading a built-in; ESSL 3.00 does not.
+    { name: "builtin-overload", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
+      fragment: okFragment(DYNAMIC_LOOP + "float max(int a, int b) { return a > b ? float(a) : float(b); }\n" +
+        "vec4 texture2D(float x) { return vec4(x); }\nconst float k = max(1.0, 2.0);",
+        "", "dynamicSum() == 1.0 && max(3, 5) == 5.0 && max(0.5, 0.25) == 0.5 && k == 2.0 && texture2D(0.5).y == 0.5") },
+    // ANGLE accepts non-constant global initializers only in ES 1.00.
+    { name: "global-initializer", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 }, uniforms: { u: 0.5 },
+      fragment: okFragment(DYNAMIC_LOOP + "uniform float u;\nfloat g = u * 2.0, h = g + 1.0;\nconst float c = 3.0;\nfloat d = c;",
+        "", "dynamicSum() == 1.0 && g == 1.0 && h == 2.0 && d == 3.0") },
+    { name: "fragdata", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
+      fragment: "precision mediump float;\n" + DYNAMIC_LOOP +
+        "void main() { gl_FragData[0] = dynamicSum() == 1.0 ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0); }\n" },
+    { name: "texture-lookups", rejected: ["vertex", "fragment"], ints: { n: 4 }, uniforms: { t: 2 }, textures: () => colorTexture(2, [0.2, 0.4, 0.6, 0.8]),
+      vertex: "uniform mediump int n;\nuniform sampler2D t;\nvarying mediump vec4 v;\n" +
+        "void main() { float s = 0.0; for (int i = 0; i < n; i++) s += 1.0;\n" +
+        "v = texture2DLod(t, vec2(0.5), 0.0) * (s / 4.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n",
+      fragment: okFragment(DYNAMIC_LOOP + "uniform sampler2D t;\nvarying vec4 v;",
+        "vec4 a = texture2D(t, vec2(0.5)), b = texture2DProj(t, vec3(1.0, 1.0, 2.0)), c = texture2D(t, vec2(0.5), 0.0);",
+        "dynamicSum() == 1.0 && distance(a, vec4(0.2, 0.4, 0.6, 0.8)) < 0.01 && distance(a, b) < 0.01 && distance(a, c) < 0.01 && distance(a, v) < 0.01") },
+    // GL_OES_standard_derivatives: WebGL 2 has no ES 1.00 extensions.
+    // Natively the extension is absent: the shader compiles its #else (red).
+    { name: "standard-derivatives", vertex: VARYING_VERTEX, rejected: [], nativeDraws: [1, 0, 0, 1],
+      fragment: "#extension GL_OES_standard_derivatives : enable\nprecision mediump float;\n" +
+        "void main() {\n#if defined(GL_OES_standard_derivatives) && GL_OES_standard_derivatives == 1\n" +
+        "float w = fwidth(gl_FragCoord.x) + dFdx(gl_FragCoord.x) - abs(dFdy(gl_FragCoord.x));\n" +
+        "gl_FragColor = w == 2.0 ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);\n" +
+        "#else\ngl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n#endif\n}\n" },
+    { name: "predefined-macros", vertex: VARYING_VERTEX, rejected: ["fragment"], ints: { n: 4 },
+      fragment: okFragment(DYNAMIC_LOOP + "#define TWICE(x) ((x) + (x))\n#line 40\nconst int line = __LINE__;",
+        "", "dynamicSum() == 1.0 && __VERSION__ == 100 && line == 40 && TWICE(GL_ES) == 2 && GL_FRAGMENT_PRECISION_HIGH == 1") },
+    { name: "invariant-varyings", rejected: ["fragment"], ints: { n: 4 },
+      vertex: "invariant varying mediump vec4 v;\nvoid main() { v = vec4(0.0, 1.0, 0.0, 1.0); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n",
+      fragment: "precision mediump float;\ninvariant varying vec4 v;\n" + DYNAMIC_LOOP + "void main() { gl_FragColor = v * dynamicSum(); }\n" },
+  ];
+  for (const c of cases) {
+    const name = `essl3-translation.${c.name}`;
+    for (const stage of c.rejected) {
+      // Control: WebGL's ES 1.00 compile rejects the stage, so the check
+      // below passes only through the translation.
+      const native = nativeCompile(stage === "vertex" ? c.vertex : c.fragment, stage === "fragment");
+      record(`${name}.native-control.${stage}`, !native.ok, native.ok ? "WebGL compiled it as ES 1.00" : native.log);
+    }
+    c.textures?.();
+    if (c.nativeDraws) {
+      const native = build(c.vertex, c.fragment);
+      if (native.program) { gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); drawPoint(native.program); gl.deleteProgram(native.program); }
+      const got = pixel();
+      record(`${name}.native-control`, !!native.program && near(got, c.nativeDraws), `unrewritten ${native.program ? fmt(got) : native.log}`);
+    }
+    const built = buildGuest(c.vertex, c.fragment, c.bindings);
+    if (!built.program) { record(name, false, `host path failed: ${built.log}`); continue; }
+    gl.useProgram(built.program);
+    const at = (uniform: string) => gl.getUniformLocation(built.program!, programNativeName(built.program!, uniform));
+    for (const [uniform, value] of Object.entries(c.ints ?? {})) gl.uniform1i(at(uniform), value);
+    for (const [uniform, value] of Object.entries(c.uniforms ?? {}))
+      if (uniform === "t") gl.uniform1i(at(uniform), value as number); else gl.uniform1f(at(uniform), value as number);
+    for (const [index, value] of Object.entries(c.attributes ?? {})) gl.vertexAttrib4fv(Number(index), value);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS, 0, 1);
+    const got = pixel(), want = c.expected ?? GREEN;
+    record(name, near(got, want), `got ${fmt(got)} want ${fmt(want)} [${built.languages.join(",")}]`);
+    gl.deleteProgram(built.program);
+  }
+
+  // Shaders ES 1.00 rejects stay rejected: each also needs the translation
+  // (a uniform loop bound), so only the translated compile could accept it.
+  const invalid: { name: string; vertex?: string; fragment: string; link?: boolean }[] = [
+    { name: "fragcolor-and-fragdata", fragment: `precision mediump float;\n${DYNAMIC_LOOP}void main() { gl_FragColor = vec4(dynamicSum()); gl_FragData[0] = vec4(1.0); }\n` },
+    { name: "fragdata-index-1", fragment: `precision mediump float;\n${DYNAMIC_LOOP}void main() { gl_FragData[1] = vec4(dynamicSum()); }\n` },
+    { name: "modulo-operator", fragment: okFragment(DYNAMIC_LOOP, "int m = n % 2;", "m == 0") },
+    { name: "bitwise-operator", fragment: okFragment(DYNAMIC_LOOP, "int m = n & 1;", "m == 0") },
+    { name: "switch", fragment: okFragment(DYNAMIC_LOOP, "float s = 0.0; switch (n) { case 1: s = 1.0; break; default: s = 2.0; }", "s == 1.0") },
+    { name: "uint-type", fragment: okFragment(DYNAMIC_LOOP, "uint u = 1u;", "u == 1u") },
+    { name: "float-suffix", fragment: okFragment(DYNAMIC_LOOP, "float f = 1.0f;", "f == 1.0") },
+    { name: "array-constructor", fragment: okFragment(DYNAMIC_LOOP, "float a[2] = float[2](1.0, 2.0);", "a[1] == 2.0") },
+    { name: "array-length", fragment: okFragment(DYNAMIC_LOOP, "float a[2]; a[0] = 1.0;", "a.length() == 2") },
+    { name: "in-out-globals", fragment: `precision mediump float;\n${DYNAMIC_LOOP}out vec4 color;\nvoid main() { color = vec4(dynamicSum()); }\n` },
+    { name: "texture-function", fragment: `precision mediump float;\n${DYNAMIC_LOOP}uniform sampler2D t;\nvoid main() { gl_FragColor = texture(t, vec2(dynamicSum())); }\n` },
+    { name: "builtin-redefinition", fragment: okFragment(DYNAMIC_LOOP + "float sin(float x) { return x; }", "", "sin(1.0) == 1.0") },
+    { name: "derivatives-without-extension", fragment: okFragment(DYNAMIC_LOOP, "float d = dFdx(gl_FragCoord.x);", "d == 1.0") },
+    { name: "derivatives-disabled", fragment: "#extension GL_OES_standard_derivatives : disable\n" + okFragment(DYNAMIC_LOOP, "float d = dFdx(1.0);", "d == 0.0") },
+    { name: "derivatives-in-vertex", fragment: "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n",
+      vertex: "#extension GL_OES_standard_derivatives : enable\nvarying vec4 v;\nvoid main() { v = vec4(dFdx(1.0)); gl_Position = vec4(0.0); }\n" },
+    { name: "redefine-derivatives-macro", fragment: "#define GL_OES_standard_derivatives 1\nprecision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n" },
+    // ES 1.00 section 4.6.4: varying invariance must match (a link error).
+    { name: "invariance-mismatch", link: true,
+      vertex: "invariant varying mediump vec4 v;\nvoid main() { v = vec4(1.0); gl_Position = vec4(0.0); }\n",
+      fragment: `precision mediump float;\nvarying vec4 v;\n${DYNAMIC_LOOP}void main() { gl_FragColor = v * dynamicSum(); }\n` },
+  ];
+  for (const c of invalid) {
+    const built = buildGuest(c.vertex ?? VARYING_VERTEX, c.fragment);
+    const ok = !built.program && (c.link ? built.languages.every(Boolean) : built.languages.includes(null));
+    record(`essl3-translation.rejects.${c.name}`, ok, `${built.program ? "linked" : c.link ? "link failed" : "compile failed"} [${built.languages.join(",")}]: ${built.log.split("\n")[0]}`);
+    if (built.program) gl.deleteProgram(built.program);
+  }
+
+  // Info logs keep the guest's line numbers: the translated text of a
+  // shader whose line 7 is in error reports line 7.
+  const translated = translateEssl100("precision mediump float;\nuniform int n;\n\n\nvoid main() {\n  float s = 0.0;\n  s += undefinedName;\n" +
+    "  for (int i = 0; i < n; i++) s += 1.0;\n  gl_FragColor = vec4(s);\n}\n", true).text;
+  const shader = gl.createShader(gl.FRAGMENT_SHADER)!;
+  gl.shaderSource(shader, translated); gl.compileShader(shader);
+  const log = gl.getShaderInfoLog(shader) ?? "";
+  gl.deleteShader(shader);
+  record("essl3-translation.info-log-line", /\b0:7:/.test(log), log.trim().split("\n")[0]);
+}
+
 // ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
@@ -537,7 +728,7 @@ function engineValue(name: string, stage: "vertex" | "fragment"): string {
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

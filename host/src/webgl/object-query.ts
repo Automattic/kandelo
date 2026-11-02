@@ -12,6 +12,7 @@ import { boundFramebuffer, isDefaultFramebuffer } from "./framebuffer.js";
 import { prepareTextureOperation, validGlesTextureParameter } from "./texture-bindings.js";
 import * as O from "./ops.js";
 import { attributeAliasLayout, type GlReflectedAttribute } from "./attribute-aliasing.js";
+import { programGuestName } from "./essl3-translation.js";
 
 function fail(b: GlBinding, error: number): number { recordGlError(b,error); return -22; }
 
@@ -77,11 +78,14 @@ export function runObjectQuery(b: GlBinding, op: number, input: Uint8Array, out:
         if (arg >= count) return fail(b,0x501);
         if (!checkedGlCall(b, () => { info = aliased ? aliased[arg] : op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? gl.getActiveUniform(program,arg) : gl.getActiveAttrib(program,arg); })) return -5;
         if (!info) return fail(b,0x502);
-        const active = info as GlReflectedAttribute, bytes = new TextEncoder().encode(active.name);
+        // Aliasing layouts already hold guest names; a translated program's
+        // native names are mapped back (essl3-translation.ts).
+        const active = info as GlReflectedAttribute, guestName = aliased ? active.name : programGuestName(program,active.name);
+        const bytes = new TextEncoder().encode(guestName);
         const offset = v.getUint32(8,true), capacity = v.getUint32(12,true);
         if (offset > bytes.length) return fail(b,0x501);
         // samplerExternalOES compiles as sampler2D (external-texture.ts).
-        const type = op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? guestUniformType(program,active.name,active.type) : active.type;
+        const type = op === O.QOP_GET_ACTIVE_UNIFORM_INFO ? guestUniformType(program,guestName,active.type) : active.type;
         result.setUint32(0,bytes.length,true); result.setInt32(4,active.size,true); result.setUint32(8,type,true);
         payload.set(bytes.subarray(offset,offset+capacity),12);
         return payload.length;

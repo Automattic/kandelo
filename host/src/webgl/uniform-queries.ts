@@ -5,6 +5,7 @@ import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
+import { programNativeName } from "./essl3-translation.js";
 
 export class GlUniformLookup {
   cursor=0;
@@ -78,7 +79,8 @@ export function reserveUniformLocation(b: GlBinding, name: number, text: string,
   // GLSL names are identifiers plus field/array selectors. Inactive or
   // reserved names return -1 without importing WebGL-only name errors.
   if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*(?:\[\d+\]|\.[A-Za-z_][A-Za-z_0-9]*)*$/.test(text)) return new GlUniformLocationReservation(b.objects,-1,null);
-  const nativeText = text.replace(/\[0*(\d+)\]/g,"[$1]");
+  // A translated program's uniforms have native names (essl3-translation.ts).
+  const nativeText = programNativeName(program, text.replace(/\[0*(\d+)\]/g,"[$1]"));
   // WebGL limits lookup strings to 256 characters. A root absent from
   // actual reflection is certainly inactive, regardless of its length.
   // Active paths exceeding that limit still need shader-name translation.

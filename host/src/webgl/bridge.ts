@@ -39,6 +39,7 @@ import { copiedTextureColorRenderable, depthTextureFormat, nativeRenderbufferFor
   renderbufferDepthRenderable, renderbufferStencilRenderable, textureColorRenderable } from "./es2-formats.js";
 import { copyTexImageFormatError, renderbufferFormatError, texImageFormatError, texSubImageFormatError } from "./es2-formats.js";
 import { installShaderSource, nativeShaderSource } from "./shader-source.js";
+import { compileGuestShader, recordShaderLanguage, type ShaderLanguage } from "./essl3-translation.js";
 import { issueGlesDraw, sequentialVertices } from "./draw-state.js";
 import { nativeBlendFunc, updateBlendSourceFactor } from "./blend-constant.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
@@ -1144,11 +1145,19 @@ function dispatch(
     }
     case O.OP_COMPILE_SHADER: {
       const sh = requireShaderObject(b, v.getUint32(p, true));
-      // Twins and private executables rebuild from the source WebGL compiled.
-      if (sh && checkedGlCall(b, () => gl.compileShader(sh))) {
-        const native = nativeShaderSource(sh);
-        recordCompiledShader(sh, native ? native.text : b.shaderSources.get(sh));
+      if (!sh) return;
+      // The ES 1.00 compile judges the shader; one rejected only for GLSL ES
+      // 1.00 Appendix A limits compiles as ESSL 3.00 (essl3-translation.ts).
+      // Twins and private executables rebuild from the ES 1.00 source.
+      const native = nativeShaderSource(sh), source = native?.text ?? "";
+      let language: ShaderLanguage | null = null, fragment = false;
+      if (checkedGlCall(b, () => {
+        fragment = Number(gl.getShaderParameter(sh, 0x8b4f)) === 0x8b30;
+        language = compileGuestShader(gl, sh, source, fragment);
+      })) {
+        recordCompiledShader(sh, native ? source : undefined);
         recordCompiledExternalSamplers(sh, native?.samplers);
+        recordShaderLanguage(sh, language, source, fragment);
       }
       return;
     }
