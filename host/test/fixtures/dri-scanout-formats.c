@@ -43,7 +43,10 @@ int main(int argc, char **argv) {
         if (bad == 3) offsets[0] = UINT32_MAX;
         errno = 0;
         CHECK(drmModeAddFB2(fd, width, height, format, handles, pitches, offsets, &untouched, 0) < 0);
-        CHECK(errno == EINVAL && untouched == 0xa55abeef);
+        /* Linux framebuffer_check: a plane whose height * pitch + offset
+         * passes UINT_MAX is ERANGE; the other bad views fit 32 bits and
+         * fail the pitch or BO-size checks with EINVAL. */
+        CHECK(errno == (bad == 3 ? ERANGE : EINVAL) && untouched == 0xa55abeef);
     }
     struct drm_mode_map_dumb mapping = {.handle = dumb.handle};
     CHECK(ioctl(fd, DRM_IOCTL_MODE_MAP_DUMB, &mapping) == 0);
