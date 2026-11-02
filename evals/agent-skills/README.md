@@ -26,26 +26,6 @@ python3 evals/agent-skills/run.py --reps 1     # quick check
   a quick check instead of assuming a fixed session count or budget.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
-The waiting skill has four read-only scenarios, covering interactive and
-headless main sessions, subagent build requests, and peer workspaces:
-
-```bash
-python3 evals/agent-skills/run.py --reps 1 --tasks wait-interactive-build,wait-headless-suite,wait-subagent-build,wait-peer-browser
-```
-
-Review answers for early turn endings, Monitor/status polling, duplicate
-waiters and incorrect validation claims even when every regex matches.
-These are advice checks; they do not deliver interactive completion
-notifications. The transcript measures, checkpoint date and keep/revise/
-remove rule live in `evals/build-waiting/README.md`, tool 1a.
-
-Two adversarial retry scenarios cover finished jobs exiting 124 and peer
-selectors whose matches change between wait calls:
-
-```bash
-python3 evals/agent-skills/run.py --reps 1 --tasks wait-finished-124,wait-peer-retry
-```
-
 ## 2. Is it helping me? (`skill-impact.py`)
 
 ```bash
@@ -83,6 +63,15 @@ When a line says something was wrong or missing, fix the skill.
 people reading this feedback catch advice that is well formed and still wrong.
 
 ## What this has decided so far
+
+A waiting skill was tried and removed before landing. Advice checks cost
+more with it enabled and did not establish incremental waiting benefits
+over the shared guidance. Both arms saw the updated CLAUDE.md, and some
+skill-off sessions still read the skill file. The retained changes are
+the core waiting guidance, CLI hints and retry regression tests. The
+experiment and its limitations are recorded in
+`evals/build-waiting/README.md`, tool 1a. Its six scenarios were removed
+from this skill-on/off runner, since no waiting skill remains to toggle.
 
 A second skill for diagnosing build failures was tried and removed. Over 3
 runs per task it cost about 20% more than no skill ($0.11 versus $0.09 per

@@ -263,8 +263,11 @@ See [the window calibration](../measurements/2026-10-20-process-memory-rss-windo
 
 ## Waiting on long builds and suites
 
-`./run.sh setup`, `local-build`, full Vitest, and the conformance suites can
-run for more than 10 minutes. Full builds include compilation, fork
+`./run.sh setup`, `local-build`, `build-musl.sh`, `build-programs.sh`, and
+`xtask bootstrap` can run for more than 10 minutes, as can full Vitest,
+Playwright, dEQP/graphics CTS, POSIX/libc-test/Sortix suites and benchmarks.
+The same waiting rules apply to a peer workspace's build.
+Full builds include compilation, fork
 instrumentation, and artifact verification; their duration depends on
 package cache reuse. In August and September 2026, agents spent about 12%
 of their input tokens on poll turns and on cache rewrites after long blocking
@@ -312,8 +315,7 @@ run used the wrong config and toolchain, and its results are invalid.
   `FAILED (exit 124)` is a completed failure, not a retry. It must not end
   its turn while waiting: it stops there, and the result is lost. If an
   agent client yields a running terminal session, resume that session to
-  collect the result. The discoverable decision guide is
-  `.agents/skills/waiting-on-kandelo-jobs/SKILL.md`.
+  collect the result.
 - **Subagents** must not wait on whole-tree builds or full suites. A
   subagent's prompt cache expires after 5 minutes, so every long blocking
   call rewrites its whole context. Build what a subagent needs before
@@ -324,9 +326,28 @@ run used the wrong config and toolchain, and its results are invalid.
   `./run.sh …`, not under `scripts/dev-shell.sh`, which drops the events
   variable. `./run.sh local-build --plan` previews a build (cache hits,
   nodes to build, estimated time) before you start it.
+  Use `status` for a specific progress question, not as a periodic waiter.
 - **Locked runs:** `agent-job start` refuses a second locked run (vitest,
-  `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup, local-build) in the
-  same worktree while one is running. Those runs race each other.
+  prepare-browser, `run.sh test`, `ci-run-test-suite.sh`, `npm ci`, setup,
+  local-build) in the same worktree while one is running. In particular,
+  Vitest and prepare-browser race on program-index generation; serialize
+  them and respect the refusal.
+- **Stable inputs:** never mutate a tree while a job validates it. Mixed
+  inputs invalidate evidence and can break program-index publication.
+  Finish or stop the job before editing, then validate the final tree.
+- **Browser server:** always choose a free worktree-specific
+  `KANDELO_PLAYWRIGHT_PORT` for Playwright suites. `reuseExistingServer`
+  can otherwise silently attach to another tree's server on a shared port.
+- **Suite environment:** `scripts/dev-shell.sh` clears outer variables
+  outside its keep-list. Export suite variables inside `bash -c` when
+  they must reach a test. `KANDELO_PLAYWRIGHT_PORT` is explicitly kept;
+  exporting it inside is also safe:
+
+  ```bash
+  scripts/agent-job start -- scripts/dev-shell.sh bash -c 'export KANDELO_PLAYWRIGHT_PORT=5197; cd apps/browser-demos && npx playwright test'
+  ```
+
+  Choose a free port for this worktree; 5197 is only an example.
 - **Another workspace's build:** waiting on a build that another worktree
   (another Conductor workspace) is running is supported, and `agent-job` is
   the tool for it. Do not hand-roll a `kill -0 <pid>`, `pgrep`, or `sleep`
@@ -351,6 +372,8 @@ run used the wrong config and toolchain, and its results are invalid.
     on build inputs. Once a peer's build finishes, your own run reuses
     whatever it built from the same inputs, so the closer its commit is
     to yours, the more your run can reuse.
+    A peer's result alone does not validate your tree; run your own build
+    or suite through the normal path after it finishes.
   - **`--peer <text>` never guesses.** When no running job's command
     contains `<text>`, or more than one does, it lists the candidates on
     stderr and exits 2; then wait on one by id. A job that itself exits
@@ -366,10 +389,15 @@ run used the wrong config and toolchain, and its results are invalid.
   any program package whose artifact closure would fail to resolve with
   "Package artifact closure is incomplete". It takes about 3 s once warm, and
   saves the minutes a suite would spend reaching the same error.
+- **Results:** `agent-job result <id>` gives the final exit status, log
+  tail and `[suite-health]` lines. A LOST result means the run failed to
+  record completion; it is not a pass. Search the saved log around
+  relevant errors rather than reading it whole.
 - **Every Vitest run** ends with a `[suite-health]` line. When many files
   fail to load, it groups them by the missing thing, so one line replaces
   scrolling hundreds of failure blocks. `WARN` means part of the suite did
-  not run (a load error or zero tests).
+  not run (a load error or zero tests). Check discovered/run/skipped
+  counts: zero tests or load failures cannot support a passing-suite claim.
 - **Optional guard hook:** `.claude/hooks/wait-guard.py` denies the costly
   patterns as they happen. It blocks `sleep`-then-`tail` poll turns,
   `pgrep -f` waiters, and subagents running whole-tree builds or full

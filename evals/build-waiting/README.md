@@ -158,7 +158,43 @@ toward the "recorded exit status is wrong" harm signal (1 session so far).
   `./run.sh setup`, `./run.sh local-build`, `ci-run-test-suite.sh`, and
   dev-shell vitest runs.
 
-### 1a. Waiting skill and session-specific start hints (2026-11-02)
+### 1a. Session-specific waiting guidance and start hints (2026-11-02)
+
+**Final decision: remove the waiting skill before landing.** The advice
+checks below showed higher skill-on cost without demonstrating fewer
+waiting or re-arm turns. Both arms received the updated CLAUDE.md, and
+some skill-off sessions still read the skill file, so checklist gains
+did not isolate an incremental skill benefit. Remove the skill, mirror,
+discovery pointers, runner registration and its six skill-on/off tasks.
+Retain the clearer core guidance, CLI hints, retry corrections and three
+regression tests. Useful operational warnings now live in the validation
+guide. No skill retention decision remains pending.
+
+**Measure the retained guidance and hints:** use `wait-impact.py` and
+manual transcript review to count wait turns, re-arms, polling incidents
+and lost results for jobs expected to exceed ten minutes. Separate
+interactive main, headless main and subagent sessions. Compare similar
+commands and durations with the old guidance/hints; do not treat the
+historical skill-on/off scores as evidence for these retained changes.
+Review after five eligible sessions of each type, with a manual
+checkpoint on 2026-11-16 even if a group is still pending. This is a
+documented checkpoint, not scheduled automation.
+
+Keep the new hints if at least four of five interactive sessions use one
+background waiter per job, median re-arms are zero, no polling loop is
+written and no result is lost; headless sessions must collect final
+status and subagents must return whole-tree build needs. Any misleading
+hint or lost result caused by the advice means revise once, then judge
+the next five sessions of that type. Remove an extra hint that still
+fails. Claim cost savings only after a comparable real-session measure
+supports them. Revisit a smaller skill only if agents still miss the
+waiter and a clean experiment can test its incremental value.
+
+#### Original skill experiment (historical)
+
+The original proposal and checks are preserved below as evidence of the
+rejected experiment. Their skill-specific retention rules and pending
+skill judgments are superseded by the final decision above.
 
 Plan committed before writing `waiting-on-kandelo-jobs`. The mechanism
 already exists; this change tests whether a discoverable skill gets agents
@@ -236,9 +272,9 @@ All runs completed without runner errors.
 | Tracked skill | skill on | 0.833 | 0.115 | 1.50 |
 | Tracked skill | skill off | 0.729 | 0.090 | 1.00 |
 
-Scores above re-check the saved answers using the final matchers. Two
-matchers initially missed correct advice: `start` accepts an omitted
-`--`, and "when the build finishes, re-dispatch" means build first.
+Scores above re-check saved answers using the experiment's final
+matchers. Two matchers initially missed correct advice: `start` accepts
+an omitted `--`, and "when the build finishes, re-dispatch" means build first.
 A third was corrected between samples to accept "zero discovered tests".
 Raw answers, original scores and re-scored records remain locally under
 `.context/wait-skill-eval*`; no transcripts are checked in.
@@ -258,10 +294,10 @@ Reading every answer showed why these numbers are only a smoke check:
 - Skill-on answers cost more and took more turns. That bought more
   complete advice in these samples, not measured waiting-token savings.
 
-Keep the skill as an experiment pending the tool 1a real-session review,
-with the 2026-11-16 checkpoint unchanged. Neither notification delivery,
-re-arm reduction nor lost-result prevention was exercised by advice
-tasks. The new start hints have a separate executable regression test:
+At this stage the proposal was to keep the skill pending real-session
+review, with the 2026-11-16 checkpoint unchanged. Neither notification
+delivery, re-arm reduction nor lost-result prevention was exercised by
+advice tasks. The new start hints have a separate executable regression test:
 both printed commands return a failing job's actual exit status; the
 test fails on the old hint. The declared dev shell passed all 15
 agent-job tests, all 6 wait-guard tests, and the skill path/frontmatter/
@@ -272,8 +308,8 @@ these guidance and CLI-output changes.
 review reproduced two unsafe retry decisions: a completed job exiting
 124 could be mistaken for an unfinished job, and repeating a peer
 selector could switch to a replacement job. The skill, validation guide,
-CLAUDE.md and CLI help/hints now distinguish a still-running wait-window
-notice from a final `FAILED (exit 124)` result. Timeout output prints an
+CLAUDE.md and CLI help/hints were revised to distinguish a still-running
+wait-window notice from a final `FAILED (exit 124)` result. Timeout output prints an
 executable `resume with:` command pinned to the original id.
 
 The declared dev shell passed 17 agent-job tests and the 3-skill checks.
@@ -300,7 +336,8 @@ missed this error. Raw and re-scored records are local under
 `.context/wait-skill-retry-eval*`. The shared updated guidance is available
 to both arms, so this small advice sample verifies the corrected
 decisions without isolating the skill's effect or demonstrating savings.
-The real-session judgment and 2026-11-16 checkpoint remain pending.
+The real-session skill judgment remained pending at that stage; the
+final decision above subsequently removed the skill.
 
 ### 1b. Waiting on another workspace's build: `list --all`, commits, `wait --peer`
 

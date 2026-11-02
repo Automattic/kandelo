@@ -106,8 +106,7 @@ tests where possible and manually verify user-visible browser demo fixes with
 `./run.sh browser`.
 
 Runs under 10 minutes: one foreground Bash call with output to a log file.
-Longer runs: load `.agents/skills/waiting-on-kandelo-jobs/SKILL.md` and use
-`scripts/agent-job start`. Interactive main sessions: run
+Longer runs: use `scripts/agent-job start`. Interactive main sessions: run
 `scripts/agent-job wait <id> --timeout 0` once with Bash's
 `run_in_background`, then act on its single completion notification.
 Headless sessions and subagents repeat foreground `scripts/agent-job wait
