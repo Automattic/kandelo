@@ -123,25 +123,50 @@ test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
     const launcher = await painted(page);
     await test.info().attach("scummvm-wayland-launcher", { body: await canvas(page).screenshot(), contentType: "image/png" });
 
-    // The shipped highres landscape list layout puts About immediately
-    // above Quit at the bottom of its right button column. Click the actual
-    // painted button, avoiding guessed fixed coordinates or a shortcut that
-    // Search might consume. About's modal dims the orange launcher and draws
-    // its own large pale dialog; this repaint is much larger than a cursor.
-    expect(launcher.orange.width).toBeGreaterThan(launcher.orange.height);
-    const rightButtons = launcher.buttons.filter(r => r.width >= 40 && r.height <= 65
-      && r.x > launcher.orange.x + launcher.orange.width * 0.65).sort((a, b) => a.y - b.y);
-    expect(rightButtons.length).toBeGreaterThanOrEqual(3);
-    const about = rightButtons.at(-2)!;
+    // Click the actual painted About button, avoiding guessed fixed
+    // coordinates or a shortcut that Search might consume. The shipped
+    // highres_layout.stx declares two Launcher layouts and ScummVM picks
+    // one from its window's shape. Sway tiles the launcher beside Foot, so
+    // on a landscape output each tile, and with it ScummVM's window, is
+    // portrait. The landscape layout (`resolution = 'y<=x'`) puts About
+    // immediately above Quit at the bottom of its right button column. The
+    // portrait layout (`resolution = 'y>x'`) puts Quit, About, Global
+    // Options and Start in one row below the Load/Add/Edit/Remove row;
+    // with no games added, only Quit, About and Global Options are enabled
+    // (dark red) there, Add Game alone is enabled above, and Help sits alone
+    // below. The About dialog does not dim the launcher (the theme declares
+    // no shading for it) and its pale credits pane can sit over the pale
+    // game list, so require what only the dialog paints: its own dark-red
+    // Close button, a button the launcher did not have. A cursor, a hover
+    // highlight or a tooltip cannot add one.
+    const actionButtons = launcher.buttons.filter(r => r.width >= 40 && r.height <= 65);
+    let about: Rect;
+    if (launcher.orange.width > launcher.orange.height) {
+      const rightButtons = actionButtons.filter(r => r.x > launcher.orange.x + launcher.orange.width * 0.65)
+        .sort((a, b) => a.y - b.y);
+      expect(rightButtons.length).toBeGreaterThanOrEqual(3);
+      about = rightButtons.at(-2)!;
+    } else {
+      const rows: Rect[][] = [];
+      for (const button of [...actionButtons].sort((a, b) => a.y - b.y)) {
+        const row = rows.find(r => Math.abs(r[0].y - button.y) <= 4);
+        if (row) row.push(button); else rows.push([button]);
+      }
+      const quitRow = rows.filter(row => row.length >= 3).at(-1);
+      expect(quitRow, "portrait launcher row with Quit, About and Global Options").toBeDefined();
+      about = quitRow!.sort((a, b) => a.x - b.x)[1];
+    }
     const box = (await canvas(page).boundingBox())!;
     await canvas(page).click({ position: {
       x: (about.x + about.width / 2) * box.width / launcher.width,
       y: (about.y + about.height / 2) * box.height / launcher.height,
     } });
+    const near = (a: Rect, b: Rect) => Math.abs(a.x - b.x) <= 4 && Math.abs(a.y - b.y) <= 4
+      && Math.abs(a.width - b.width) <= 4 && Math.abs(a.height - b.height) <= 4;
     await expect.poll(async () => {
       const p = await painted(page);
-      return p.orangePixels < launcher.orangePixels * 0.6
-        && p.pale.some(r => r.width >= 250 && r.height >= 150);
+      return p.buttons.some(r => r.width >= 40 && r.height <= 65
+        && !launcher.buttons.some(old => near(old, r)));
     }, { timeout: 60_000, intervals: [500, 1_000] }).toBe(true);
     expect(await owner(page)).toBe(swayOwner);
     await test.info().attach("scummvm-wayland-about", { body: await canvas(page).screenshot(), contentType: "image/png" });
@@ -150,7 +175,16 @@ test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
 
     // DefaultEventManager's POSIX global keymap maps Ctrl+Q to EVENT_QUIT.
     // Cooperative application Quit, not a kill/interrupt/compositor close.
-    await page.keyboard.press("Control+KeyQ");
+    // Hold Control across the Q press as a person does: ScummVM's SDL event
+    // source reads modifiers from SDL_GetModState() when it polls, not from
+    // the key event (backends/events/sdl/sdl2-events.cpp handleKeyDown), so
+    // a chord whose Control release is already queued at that poll arrives
+    // as a plain Q. Playwright's "Control+KeyQ" sends all four transitions
+    // at once.
+    await page.keyboard.down("Control");
+    await page.waitForTimeout(300);
+    await page.keyboard.press("KeyQ", { delay: 300 });
+    await page.keyboard.up("Control");
     await expect.poll(async () => {
       const p = await painted(page); return p.footPixels / (p.width * p.height);
     }, { timeout: 90_000, intervals: [1_000] }).toBeGreaterThan(0.5);
