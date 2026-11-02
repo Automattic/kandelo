@@ -483,15 +483,41 @@ SDK, kernel, overrides, and runtime still come from the current worktree.
 Before blaming a suite failure on your change, confirm it actually is your
 change: a few package/demo tests (e.g. the Erlang `ring` benchmark) can fail for
 environment or artifact reasons unrelated to a given diff. Reproduce the failure
-on a pristine `origin/main` build of the same artifact before attributing it —
-rebuild just the kernel wasm (`cargo build --release -p kandelo -Z
-build-std=core,alloc && cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm
-local-binaries/kernel.wasm`) at `origin/main` and re-run the one test. Report a
-pre-existing failure as pre-existing, not as your regression.
+on a pristine `origin/main` build of the same artifact before attributing it,
+for example in a second worktree at `origin/main` provisioned with its own
+artifacts, and re-run the one test there. Report a pre-existing failure as
+pre-existing, not as your regression.
 
-After editing kernel Rust, rebuild the kernel wasm (`./run.sh setup`) before the
-Vitest/conformance suites — they load `local-binaries/kernel.wasm`, so a stale
-wasm silently runs your OLD kernel code. Setup also checks musl freshness;
+After editing kernel Rust, rebuild the kernel before the Vitest/conformance
+suites. They resolve `kernel.wasm` through the binary resolver, whose first
+tier is the SourceOnly projection, `local-binaries/source-only-v1/kernel.wasm`
+(not `local-binaries/kernel.wasm`), so a stale projection silently runs your
+OLD kernel code. The supported paths:
+
+- `./run.sh setup` rebuilds everything the change makes stale. This is the
+  path for a merge-candidate tree.
+- `./run.sh build kernel` rebuilds only the kernel package and re-pins it in
+  the projection (about four minutes). Kernel cache keys feed other packages'
+  keys, so it also drops every product built against the previous kernel
+  from the projection (`rootfs`, `shell`, the desktop and SDK images, and
+  the images built inside a Kandelo machine such as `nethack`, `lamp` and
+  `wordpress`; it lists each "dropping ... from the published projection").
+  Node Vitest and the conformance runners, which need only the kernel,
+  programs, test fixtures and `host/wasm/rootfs.vfs.zst`, run immediately;
+  browser specs and demos need `./run.sh prepare-browser` (or setup) first.
+  Pass `KANDELO_CACHE_GC_AUTO=0` if the shared cache must not be collected
+  during the build. If its musl freshness check rebuilds a sysroot, rerun
+  `scripts/build-dri-stubs.sh` (and with `--arch wasm64posix`) so `-lgbm`
+  and `-ldrm` resolve again.
+
+Copying a `cargo build` output over the projection's `kernel.wasm` does not
+re-pin it. Under `WASM_POSIX_RESOLUTION_POLICY=source-only-v1` (the browser
+and SourceOnly runs) the projection authority's size and digest check
+rejects the swapped file. The default Node policy resolves it without that
+check, which is enough for a diagnostic kernel (for example one built with a
+cargo feature) in a Node-only experiment; restore the pinned bytes
+afterwards and never use such a run as evidence for the browser or for the
+shipped kernel. Setup also checks musl freshness;
 after editing libc inputs, rebuild linked programs and fixtures through the
 normal setup/program paths. (`bash build.sh` still works as a deprecated
 delegator to `./run.sh setup`.)
