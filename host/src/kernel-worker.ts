@@ -3248,6 +3248,11 @@ export class CentralizedKernelWorker {
    */
   #memoryRunEpochs = new WeakMap<WebAssembly.Memory, number>();
   /**
+   * Source of `#memoryRunEpochs` values. One counter for every memory, so an
+   * epoch is never reused, even by a memory that replaces another (exec).
+   */
+  #memoryRunEpochCounter = 0;
+  /**
    * Channels whose pending completion comes from a path that writes no
    * process bytes except the completion's own `outputWrites`: the generic
    * kernel dispatch and the opaque-record path (whose results go only to the
@@ -3369,6 +3374,12 @@ export class CentralizedKernelWorker {
       // kernel returns EAGAIN and JS performs the host-side action.
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
         return this.processes.get(pid)?.memory;
+      },
+      getProcessQuiescentEpoch: (pid: number): bigint =>
+        this.#processQuiescentEpoch(pid),
+      onProcessMemoryChanged: (pid: number): void => {
+        const memory = this.processes.get(pid)?.memory;
+        if (memory) this.#noteGuestMayRun(memory);
       },
       onProcessMemoryTarget: (
         memory: WebAssembly.Memory,
@@ -14471,6 +14482,12 @@ export class CentralizedKernelWorker {
       processMem.set(write.bytes, write.ptr);
     }
     prepared.outputWrites = [];
+    // The completion's effects on process memory are final here: its output
+    // bytes, and anything a host-handled syscall stored directly into guest
+    // buffers. A stopped process keeps them while its completion stays
+    // parked, so the epoch changes now, not only when the completion is
+    // published (`CleanStamp` in crates/runtime-core/src/memory.rs).
+    this.#noteGuestMayRun(channel.memory);
 
     try {
       this.synchronizeSharedMemoryForBoundary(
@@ -24128,8 +24145,45 @@ export class CentralizedKernelWorker {
     });
   }
 
+  /**
+   * Change a process memory's mutation epoch: guest code may run on it, or
+   * the host wrote it. Called for every published completion, materialized
+   * completion, registered process, attached thread channel, kernel-published
+   * wait completion and `host_proc_write_bytes`.
+   */
   #noteGuestMayRun(memory: WebAssembly.Memory): void {
-    this.#memoryRunEpochs.set(memory, (this.#memoryRunEpochs.get(memory) ?? 0) + 1);
+    this.#memoryRunEpochs.set(memory, ++this.#memoryRunEpochCounter);
+  }
+
+  /**
+   * `host_proc_quiescent_epoch`: the mutation epoch of `pid`'s memory if no
+   * guest code of the process can be running, else -1.
+   *
+   * Every thread channel of the process must sit at `CH_PENDING`: a thread
+   * stores it (sequentially consistent, after all its other stores) right
+   * before it blocks, and only this worker's completion moves it on, so a
+   * parked thread runs nothing but the glue's wait loop, which stores only
+   * to a static outside every mapping. A thread that has not made its first
+   * syscall has an idle channel: thread pages are zeroed before the channel
+   * is attached, and the thread's Worker is created only after the attach.
+   * A process with no channel, or whose memory another registration (a
+   * vfork child) shares, is never quiescent. The kernel reads the bytes
+   * after this load, so it sees every store the guest made before parking.
+   * The proof built on this is `CleanStamp` in
+   * crates/runtime-core/src/memory.rs.
+   */
+  #processQuiescentEpoch(pid: number): bigint {
+    const registration = this.processes?.get(pid);
+    if (!registration || registration.channels.length === 0) return -1n;
+    for (const channel of registration.channels) {
+      if (Atomics.load(channel.i32View, CH_STATUS / 4) !== CH_PENDING) return -1n;
+    }
+    for (const other of this.processes.values()) {
+      if (other !== registration && other.memory === registration.memory) {
+        return -1n;
+      }
+    }
+    return BigInt(this.#memoryRunEpochs.get(registration.memory) ?? 0);
   }
 
   /**

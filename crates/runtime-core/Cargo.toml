@@ -23,3 +23,8 @@ sha2 = { version = "0.10", default-features = false }
 # the kernel ABI, so image builds and the kernel judge artifacts with one
 # reader rather than a second hand-rolled one.
 wasm-artifact = { path = "../wasm-artifact" }
+
+[features]
+# Diagnostic build: count the shared-mapping quiescence proofs a comparison
+# confirmed (memory.rs `CleanStamp`). Never enabled for a shipped kernel.
+shared-mapping-proof-verify = []

@@ -361,6 +361,14 @@ unsafe extern "C" {
     /// snapshot. 0 is equal, 1 differs, and a negative value is an errno.
     /// The host may read but never mutate or retain the snapshot allocation.
     fn host_proc_compare_bytes(pid: i32, addr: u64, snapshot_ptr: *const u8, len: u32) -> i32;
+    /// The mutation epoch of process `pid`'s memory if the process is
+    /// provably quiescent now, else -1. Quiescent: every thread channel of
+    /// the process sits at `CH_PENDING` and no other process (a vfork child)
+    /// borrows the memory. The host changes the epoch before any guest code
+    /// of the process can run again and at every host write into its memory
+    /// (a completion's output bytes, `host_proc_write_bytes`). See
+    /// `runtime_core::memory::CleanStamp`.
+    fn host_proc_quiescent_epoch(pid: i32) -> i64;
     fn host_kms_mode_info(connector_id: u32, out_ptr: *mut u8);
     /// Writes the connector's physical size, two u32s (width, height) in
     /// millimetres, to `out_ptr`; zeros when the display's size is unknown.
@@ -1320,12 +1328,18 @@ struct WasmSharedMappingIo {
     /// pid → committed linear-memory length, for the pids an entry point was
     /// handed a length for. See [`Self::process_memory_len`] for the rest.
     memory_lens: alloc::collections::BTreeMap<u32, u64>,
+    /// pid → quiescent epoch, as answered once during this kernel entry.
+    /// No guest code resumes and no host write lands while the kernel runs
+    /// an export, except the writes this environment itself asks for, which
+    /// drop the entry (see `write_process`).
+    epochs: alloc::collections::BTreeMap<u32, Option<u64>>,
 }
 
 impl WasmSharedMappingIo {
     fn new() -> Self {
         Self {
             memory_lens: alloc::collections::BTreeMap::new(),
+            epochs: alloc::collections::BTreeMap::new(),
         }
     }
 
@@ -1451,9 +1465,26 @@ impl crate::memory::SharedMappingIo for WasmSharedMappingIo {
         if src.is_empty() {
             return Ok(());
         }
+        // The host changes the process's epoch for this write.
+        self.epochs.remove(&pid);
         let len = checked_host_buffer_len(src.len())?;
         let result = unsafe { host_proc_write_bytes(pid as i32, addr, src.as_ptr(), len) };
         i32_to_result(result)
+    }
+
+    fn quiescent_epoch(&mut self, pid: u32) -> Option<u64> {
+        *self.epochs.entry(pid).or_insert_with(|| {
+            let epoch = unsafe { host_proc_quiescent_epoch(pid as i32) };
+            u64::try_from(epoch).ok()
+        })
+    }
+
+    fn kernel_write_position(&mut self) -> u64 {
+        crate::memory::with_kernel_process_write_log(|log| log.position())
+    }
+
+    fn kernel_wrote_since(&mut self, pid: u32, since: u64, addr: u64, len: u64) -> Option<bool> {
+        crate::memory::with_kernel_process_write_log(|log| log.wrote_since(pid, since, addr, len))
     }
 
     fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
@@ -8582,6 +8613,16 @@ pub extern "C" fn kernel_shared_mapping_process_count(pid: u32) -> i32 {
     let table = unsafe { crate::memory::global_shared_mapping_table() };
     let count = table.sysv_mapping_count_for(pid) + table.mappings_for(pid).count();
     i32::try_from(count).unwrap_or(i32::MAX)
+}
+
+/// Diagnostic export of a kernel built with the `shared-mapping-proof-verify`
+/// feature: how many pulls a quiescence proof covered and a comparison then
+/// confirmed (`runtime_core::memory::CleanStamp`). A proof a comparison
+/// contradicts traps the kernel instead. Absent from a shipped kernel.
+#[cfg(feature = "shared-mapping-proof-verify")]
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_shared_mapping_proofs_verified() -> i64 {
+    i64::try_from(runtime_core::memory::proofs_verified()).unwrap_or(i64::MAX)
 }
 
 /// Reconcile every kernel-owned shared mapping of one process at a syscall

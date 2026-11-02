@@ -2284,6 +2284,28 @@ the file differs from the bytes that process last published or imported
 could otherwise overwrite a store a sibling thread made, after the
 comparison read it, to bytes no peer had changed.
 
+Each pull also records *when* it saw a mapping's bytes, so a later pull
+can prove a comparison redundant (`CleanStamp` in
+`crates/runtime-core/src/memory.rs`). The host keeps a mutation epoch per
+process memory and changes it whenever guest code may run on that memory
+or the host writes it: a published or materialized syscall completion, a
+registered process, an attached thread channel, a kernel-published wait
+completion, and every `host_proc_write_bytes`. The required kernel-host
+import `host_proc_quiescent_epoch(pid) -> i64` answers that epoch only
+while every thread channel of the process sits at `CH_PENDING` and no
+vfork child borrows its memory, and -1 otherwise. A thread at `CH_PENDING`
+runs only the syscall glue's wait loop, which stores nothing inside a
+mapping, and a new thread's channel is zeroed (idle) and attached before
+its Worker is created, so a process that reports an epoch has no guest
+code running. A pull that read a mapping at epoch `e`, and finds the
+process quiescent at the same `e` with no kernel write into the range
+since (`KernelProcessWriteLog`), would read the same bytes again. At this
+stage the proof is only checked: the comparison still runs, and a proof
+the comparison contradicts is a fatal kernel fault, because it means an
+epoch event was missed. A kernel built with the
+`shared-mapping-proof-verify` cargo feature also counts confirmed proofs
+in the diagnostic export `kernel_shared_mapping_proofs_verified`.
+
 When a kernel-owned file refuses a mapping's bytes (for example a full
 tmpfs), the loss is real data the program believed it stored, so it is
 never quiet. The dirty pages stay on the backing for a later attempt, the

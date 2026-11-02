@@ -835,6 +835,20 @@ export interface KernelCallbacks {
    * process is gone" and turns the GL call into a silent no-op.
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
+  /**
+   * The mutation epoch of `pid`'s memory while the process is provably
+   * quiescent (every thread parked in a syscall, no vfork child borrowing
+   * the memory), or a negative value. Backs `host_proc_quiescent_epoch`;
+   * see `CleanStamp` in crates/runtime-core/src/memory.rs. Omitted, the
+   * kernel never treats a process as quiescent and compares every mapping.
+   */
+  getProcessQuiescentEpoch?: (pid: number) => bigint;
+  /**
+   * The host wrote `pid`'s memory on the kernel's behalf, or released guest
+   * code onto it outside the kernel worker's own completion path. The
+   * embedder must change the process's mutation epoch.
+   */
+  onProcessMemoryChanged?: (pid: number) => void;
   /** A host-runtime failure the guest cannot observe through a syscall,
    * delivered as a host_diagnostic message by the worker entry. */
   onHostDiagnostic?: (diagnostic: HostDiagnostic) => void;
@@ -3896,6 +3910,10 @@ export class WasmPosixKernel {
         ): number => {
           const procMem = this.callbacks.getProcessMemory?.(pid);
           if (!procMem) return -14;
+          // A host write into process memory is a mutation-epoch event, so a
+          // quiescence proof taken before it cannot cover the bytes it leaves
+          // (`CleanStamp` in crates/runtime-core/src/memory.rs).
+          this.callbacks.onProcessMemoryChanged?.(pid);
           try {
             // WHY allowAddressZero: byte 0 of a guest's linear memory is an
             // ordinary addressable byte, and the range proof against `procMem`
@@ -3941,6 +3959,8 @@ export class WasmPosixKernel {
         host_publish_wait_completion: (pid: number, channel: bigint, ret: bigint, errno: number): number => {
           const procMem = this.callbacks.getProcessMemory?.(pid);
           if (!procMem) return -3; // ESRCH: the kernel queues it for the worker instead
+          // Guest code may run once the task wakes: an epoch event.
+          this.callbacks.onProcessMemoryChanged?.(pid);
           try {
             const base = checkedWasmImportMemoryRange(procMem, channel, CH_ERRNO + 4, 8, "host_publish_wait_completion channel", true).pointer;
             const buffer = wasmMemoryBuffer(procMem), view = new IntrinsicDataView(buffer);
@@ -3964,6 +3984,9 @@ export class WasmPosixKernel {
           snapshot_ptr: KernelPointer,
           len: number,
         ): number => this.#compareProcessSnapshot(pid, addr, snapshot_ptr, len),
+        // -1 (never provably quiescent) unless the embedder tracks epochs.
+        host_proc_quiescent_epoch: (pid: number): bigint =>
+          this.callbacks.getProcessQuiescentEpoch?.(pid) ?? -1n,
         host_proc_read_bytes: (
           pid: number,
           addr: bigint,

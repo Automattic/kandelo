@@ -2440,6 +2440,24 @@ back to a host-mounted file, so the kernel records the loss and reports it
 as `EIO` once to every open description of the file (identified by its
 `host_fstat` device and inode), as it does for kernel-owned files.
 
+The same unpublished host3 contract adds the required import
+`host_proc_quiescent_epoch(pid: i32) -> i64`. It returns the mutation
+epoch of the process's memory while the process is provably quiescent
+(every thread channel at `CH_PENDING`, no vfork child sharing the
+memory) and -1 otherwise; the host changes the epoch before any guest
+code of the process can run again and at every host write into its
+memory, including each `host_proc_write_bytes`. The kernel uses it to
+prove a shared-mapping comparison redundant (`CleanStamp` in
+`crates/runtime-core/src/memory.rs`). A required import is an
+incompatible kernel-host change, so a host3 kernel or host from before
+it is not interchangeable with one after it; rebuild them together. The
+program digest is unchanged, so programs, packages and images stay
+valid. `scripts/check-abi-version.sh` classifies the change as
+incompatible against a base from inside this unpublished family (for
+example `ABI_CHECK_BASE_REF=07e8e10aec`) and as consistent against main,
+whose kernel-host version is 2; the decision to keep it within host 3
+follows the treatment of `host_proc_compare_bytes` above.
+
 The same contract drops the four optional kernel exports
 `kernel_gl_query_capture`, `kernel_gl_query_session`,
 `kernel_gl_query_advance` and `kernel_gl_query_release`, and the reserved

@@ -1730,6 +1730,30 @@ pub trait SharedMappingIo {
     /// `fsync`, `fdatasync` or `close` (Linux errseq semantics; see
     /// `crate::writeback_loss::note_file_writeback_error`).
     fn report_writeback_loss(&mut self, pid: u32, map_addr: u64, file_key: &str, reason: &str);
+
+    /// The process's *mutation epoch* if it is provably quiescent now, or
+    /// `None`. See [`CleanStamp`] for the contract.
+    ///
+    /// `Some(e)` promises: no guest code of `pid` (any thread, or a vfork
+    /// child borrowing its memory) is running, and `e` changes before any
+    /// of it can run again and whenever the host writes the process's
+    /// memory. The default never proves quiescence, so every pull compares.
+    fn quiescent_epoch(&mut self, _pid: u32) -> Option<u64> {
+        None
+    }
+
+    /// [`KernelProcessWriteLog::position`] of the kernel's own writes into
+    /// process memory, for [`CleanStamp::log_position`].
+    fn kernel_write_position(&mut self) -> u64 {
+        0
+    }
+
+    /// [`KernelProcessWriteLog::wrote_since`]: whether the kernel wrote any
+    /// byte of `[addr, addr + len)` of `pid` since `since`, `None` when
+    /// unknown.
+    fn kernel_wrote_since(&mut self, _pid: u32, _since: u64, _addr: u64, _len: u64) -> Option<bool> {
+        None
+    }
 }
 
 /// The backing key for a file object, or `None` when it has no stable
@@ -1845,6 +1869,75 @@ pub struct AnonymousBacking {
     pub version: u64,
 }
 
+/// When a mapping's process bytes were last seen equal to its snapshot
+/// while the process was provably quiescent.
+///
+/// # Why a pull may skip a comparison
+///
+/// Process bytes under a kernel-owned mapping can change in three ways:
+///
+/// 1. guest code of the process runs: one of its threads, a signal handler
+///    (which runs after a syscall completes), or a vfork child borrowing its
+///    memory;
+/// 2. the host writes them: a syscall's output bytes delivered at a
+///    completion, or a write the kernel asks for through
+///    `host_proc_write_bytes`. Every other host write (the syscall channel,
+///    host-owned shared mappings, DRI buffer bindings) targets a region the
+///    address space never lets overlap a kernel-owned mapping;
+/// 3. the kernel writes them through `HostIO::proc_write_bytes`, which
+///    [`KernelProcessWriteLog`] records.
+///
+/// The host keeps a *mutation epoch* per process memory and changes it at
+/// every event of kinds 1 and 2: a published syscall completion (the only
+/// way a parked thread resumes), a materialized completion (output bytes),
+/// a registered process or attached thread, a kernel-published wait
+/// completion, and every `host_proc_write_bytes`. It reports the epoch
+/// ([`SharedMappingIo::quiescent_epoch`]) only while every thread channel of
+/// the process sits at `CH_PENDING` (each thread is parked in a syscall; a
+/// thread that has not made its first syscall has an idle channel) and no
+/// other registration shares the memory. A parked thread runs only the
+/// syscall glue's wait loop, which stores nothing inside any mapping.
+///
+/// So if a pull read the mapping while the process was quiescent at epoch
+/// `e`, found it equal to the snapshot (or adopted what it read as the
+/// snapshot), and the process is again quiescent at the same `e` with no
+/// kernel write into the range since, the bytes still equal the snapshot.
+/// Comparing them again cannot find a change, and skipping is exactly the
+/// comparison's result.
+///
+/// The channel status is read with a sequentially consistent load before
+/// the comparison reads memory, and the guest's `CH_PENDING` store is
+/// sequentially consistent and follows every store it made, so a pull that
+/// sees the process parked also sees every byte it stored before parking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanStamp {
+    /// The process's mutation epoch at that observation.
+    pub epoch: u64,
+    /// [`KernelProcessWriteLog::position`] at that observation.
+    pub log_position: u64,
+}
+
+/// Whether a pull whose comparison a [`CleanStamp`] proves redundant may
+/// skip it.
+///
+/// While this is `false` the proof is only *checked*: the comparison runs
+/// anyway, and a proved-unchanged mapping found changed is a fatal kernel
+/// fault, because it means an epoch event was missed and skipping would
+/// lose a store. This shadow mode runs over every mapping test and a
+/// desktop session before skipping is enabled.
+const SKIP_PROVED_PULLS: bool = false;
+
+#[cfg(feature = "shared-mapping-proof-verify")]
+static PROOFS_VERIFIED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// How many pulls a quiescence proof covered and a comparison confirmed, in a
+/// kernel built with the `shared-mapping-proof-verify` feature (a
+/// diagnostic, never part of a shipped kernel).
+#[cfg(feature = "shared-mapping-proof-verify")]
+pub fn proofs_verified() -> u64 {
+    PROOFS_VERIFIED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// One tracked `MAP_SHARED` interval of one process.
 #[derive(Debug, Clone)]
 pub struct SharedMapping {
@@ -1877,6 +1970,11 @@ pub struct SharedMapping {
     /// fork parent or a previous image never equals the serial a later
     /// boundary proves against. See [`BoundaryRecord`] for the proof.
     pub clean_at: Option<u64>,
+    /// The last time a pull saw this mapping's bytes equal to `snapshot`
+    /// while its process was quiescent; see [`CleanStamp`]. Only a pull or
+    /// a refresh sets it. Every other change to the bytes or the snapshot
+    /// clears it, and a forked child starts without one.
+    pub clean: Option<CleanStamp>,
 }
 
 impl SharedMapping {
@@ -1894,6 +1992,7 @@ impl SharedMapping {
             seen_version: 0,
             writeback_error: false,
             clean_at: None,
+            clean: None,
         }
     }
 
@@ -1920,6 +2019,7 @@ impl SharedMapping {
             seen_version,
             writeback_error: false,
             clean_at: None,
+            clean: None,
         }
     }
 }
@@ -3458,12 +3558,18 @@ impl SharedMappingTable {
             for (start, end) in runs {
                 io.write_process(pid, map_addr + start as u64, &latest[start..end])?;
             }
+            // The writes above changed the process's epoch; a stamp taken
+            // now covers the bytes they left, which equal `latest`.
+            let observed = io
+                .quiescent_epoch(pid)
+                .map(|epoch| CleanStamp { epoch, log_position: io.kernel_write_position() });
             if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
                 mapping.snapshot = Some(latest);
                 mapping.seen_version = version;
                 // Bytes and snapshot agree again, but this boundary did not
                 // observe them by comparison; let the next one do so.
                 mapping.clean_at = None;
+                mapping.clean = observed;
             }
         }
         for key in &keys {
@@ -3624,10 +3730,33 @@ impl SharedMappingTable {
         let Some(snapshot) = mapping.snapshot.take() else {
             return Ok(PullOutcome::Unchanged);
         };
+        // Read the epoch before the comparison: whatever the comparison sees,
+        // a later change to the bytes changes the epoch first.
+        let epoch = io.quiescent_epoch(pid);
+        let log_position = io.kernel_write_position();
+        let proved = match (epoch, mapping.clean) {
+            (Some(epoch), Some(clean)) => {
+                clean.epoch == epoch
+                    && snapshot.len() == mapping.len
+                    && io.kernel_wrote_since(pid, clean.log_position, map_addr, mapping.len as u64)
+                        == Some(false)
+            }
+            _ => false,
+        };
+        if proved && SKIP_PROVED_PULLS {
+            mapping.snapshot = Some(snapshot);
+            return Ok(PullOutcome::Unchanged);
+        }
+        let observed = epoch.map(|epoch| CleanStamp { epoch, log_position });
         let current = match io.read_process_if_changed(pid, map_addr, mapping.len, &snapshot) {
             Ok(Some(current)) => current,
             Ok(None) => {
                 mapping.snapshot = Some(snapshot);
+                mapping.clean = observed;
+                #[cfg(feature = "shared-mapping-proof-verify")]
+                if proved {
+                    PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                }
                 // An ordinary boundary records that it saw the bytes equal.
                 if let Some(stamp) = stamp {
                     mapping.clean_at = Some(stamp.current);
@@ -3637,9 +3766,24 @@ impl SharedMappingTable {
             Err(err) => {
                 mapping.snapshot = Some(snapshot);
                 mapping.clean_at = None;
+                mapping.clean = None;
                 return Err(err);
             }
         };
+        if proved && (current.len() != snapshot.len() || range_differs_from_snapshot(&current, &snapshot)) {
+            // The host promised nothing could have changed these bytes since
+            // the stamp. A change means an epoch event was missed, and a
+            // skipped comparison would have lost this store silently.
+            crate::writeback_loss::shared_mapping_fault(format_args!(
+                "quiescence proof for pid {pid} mapping {map_addr:#x}+{} at epoch {:?} \
+                 missed a change",
+                mapping.len, epoch
+            ));
+        }
+        #[cfg(feature = "shared-mapping-proof-verify")]
+        if proved {
+            PROOFS_VERIFIED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        }
         let was_current = mapping.seen_version == backing.version;
         let mut changed = false;
         let mut failure = None;
@@ -3665,12 +3809,16 @@ impl SharedMappingTable {
             // already merged are merged again then, which is idempotent for
             // bytes no peer has changed since.
             mapping.snapshot = Some(snapshot);
+            mapping.clean = None;
             if changed {
                 backing.version += 1;
             }
             return Err(err);
         }
         mapping.snapshot = Some(current);
+        // What was read is now the snapshot, so the observation stands
+        // whether or not it found a change.
+        mapping.clean = observed;
         if !changed {
             // A backend without the in-place comparator answers with a full
             // copy even when nothing changed. Equal bytes are still an equal
@@ -4335,6 +4483,7 @@ impl SharedMappingTable {
                     .expect("checked above");
                 mapping.file_offset += trim as u64;
                 mapping.len = (map_end - overlap_end) as usize;
+                mapping.clean = None;
                 if let Some(snapshot) = mapping.snapshot.as_mut() {
                     let trim = trim.min(snapshot.len());
                     snapshot.drain(..trim);
@@ -4355,6 +4504,7 @@ impl SharedMappingTable {
                     .and_then(|m| m.get_mut(&map_addr))
                     .expect("checked above");
                 mapping.len = (overlap_start - map_addr) as usize;
+                mapping.clean = None;
                 if let Some(snapshot) = mapping.snapshot.as_mut() {
                     snapshot.truncate(mapping.len);
                 }
@@ -4378,6 +4528,8 @@ impl SharedMappingTable {
                     snapshot.drain(..skip);
                 }
                 mapping.len = left_len;
+                mapping.clean = None;
+                right.clean = None;
                 if let Some(snapshot) = mapping.snapshot.as_mut() {
                     snapshot.truncate(left_len);
                 }
@@ -4434,6 +4586,7 @@ impl SharedMappingTable {
                         io.write_process(pid, new_addr, &latest)?;
                         mapping.snapshot = Some(latest);
                         mapping.seen_version = version;
+                        mapping.clean = None;
                     }
                 }
                 Some(BackingKind::Anonymous) => {
@@ -4477,6 +4630,7 @@ impl SharedMappingTable {
             snapshot.truncate(new_len);
         }
         mapping.len = new_len;
+        mapping.clean = None;
         self.mappings.entry(pid).or_default().insert(new_addr, mapping);
         Ok(())
     }
@@ -4670,6 +4824,10 @@ impl SharedMappingTable {
             };
             let mut inherited = mapping.clone();
             inherited.seen_version = version;
+            // The child's bytes were just written and it has never been
+            // observed: no stamp, and no boundary proof, carries over.
+            inherited.clean = None;
+            inherited.clean_at = None;
             staged.push((map_addr, inherited, latest));
         }
 
@@ -4838,6 +4996,12 @@ mod shared_mapping_tests {
         /// A store another thread of `pid` makes right after the next read
         /// of its memory, standing in for a sibling running concurrently.
         store_after_read: Option<(u32, u64, Vec<u8>)>,
+        /// The host's mutation epoch per process (see `CleanStamp`).
+        epochs: BTreeMap<u32, u64>,
+        /// Processes every thread of which is parked in a syscall.
+        parked: BTreeSet<u32>,
+        /// The kernel's own writes into process memory.
+        kernel_log: KernelProcessWriteLog,
     }
 
     impl MockIo {
@@ -4856,7 +5020,29 @@ mod shared_mapping_tests {
                 fail_read_process_at: None,
                 process_reads: BTreeMap::new(),
                 store_after_read: None,
+                epochs: BTreeMap::new(),
+                parked: BTreeSet::new(),
+                kernel_log: KernelProcessWriteLog::new(),
             }
+        }
+
+        /// Every thread of `pid` parks in a syscall.
+        fn park(&mut self, pid: u32) {
+            self.parked.insert(pid);
+        }
+
+        /// A completion is published: guest code of `pid` may run.
+        fn resume(&mut self, pid: u32) {
+            self.parked.remove(&pid);
+            *self.epochs.entry(pid).or_insert(0) += 1;
+        }
+
+        /// A syscall output the kernel stores into process memory, as
+        /// `HostIO::proc_write_bytes` does: logged, and an epoch event.
+        fn kernel_store(&mut self, pid: u32, addr: u64, bytes: &[u8]) {
+            self.kernel_log.record(pid, addr, bytes.len() as u64);
+            *self.epochs.entry(pid).or_insert(0) += 1;
+            self.poke(pid, addr, bytes);
         }
 
         fn reads_of(&self, pid: u32) -> usize {
@@ -4959,7 +5145,23 @@ mod shared_mapping_tests {
                 return Err(Errno::EFAULT);
             }
             mem[at..at + src.len()].copy_from_slice(src);
+            // `host_proc_write_bytes` is an epoch event.
+            *self.epochs.entry(pid).or_insert(0) += 1;
             Ok(())
+        }
+
+        fn quiescent_epoch(&mut self, pid: u32) -> Option<u64> {
+            self.parked
+                .contains(&pid)
+                .then(|| self.epochs.get(&pid).copied().unwrap_or(0))
+        }
+
+        fn kernel_write_position(&mut self) -> u64 {
+            self.kernel_log.position()
+        }
+
+        fn kernel_wrote_since(&mut self, pid: u32, since: u64, addr: u64, len: u64) -> Option<bool> {
+            self.kernel_log.wrote_since(pid, since, addr, len)
         }
 
         fn process_memory_len(&mut self, pid: u32) -> Option<u64> {
@@ -6425,6 +6627,114 @@ mod shared_mapping_tests {
         assert_eq!(refresh_runs(&across, &snapshot), alloc::vec![(FILE_PAGE_SIZE - 2, FILE_PAGE_SIZE + 4)]);
         assert!(refresh_runs(&snapshot, &snapshot).is_empty());
         assert_eq!(refresh_runs(&latest, &snapshot[..10]), alloc::vec![(0, latest.len())]);
+    }
+
+    // -- quiescence proofs (`CleanStamp`) --------------------------------
+
+    /// A parked process pulled twice with nothing in between is covered by
+    /// the first pull's stamp; in shadow mode the comparison still runs and
+    /// confirms it.
+    #[test]
+    fn a_parked_process_pulled_twice_is_proved_unchanged() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        let stamp = table.mapping(2, 0).unwrap().clean;
+        assert!(stamp.is_some(), "a quiescent observation is stamped");
+        let reads = io.reads_of(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        let expected = if SKIP_PROVED_PULLS { reads } else { reads + 1 };
+        assert_eq!(io.reads_of(2), expected);
+        assert_eq!(table.mapping(2, 0).unwrap().clean, stamp);
+    }
+
+    #[test]
+    fn a_running_process_is_never_stamped() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert!(table.mapping(2, 0).unwrap().clean.is_none());
+    }
+
+    /// A store made after the process resumed is published: the resume
+    /// changed the epoch.
+    #[test]
+    fn a_resume_voids_the_proof() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        io.resume(2);
+        io.poke(2, 0, b"BB");
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert_eq!(io.files[&10], b"BB......".to_vec());
+    }
+
+    /// A syscall output the kernel stores into the mapping is published.
+    #[test]
+    fn a_kernel_write_voids_the_proof() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        io.kernel_store(2, 2, b"KK");
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert_eq!(io.files[&10], b"..KK....".to_vec());
+    }
+
+    /// The kernel's write log alone also voids the proof, for a write the
+    /// host's epoch did not see (a defense the two layers give each other).
+    #[test]
+    fn a_logged_kernel_write_voids_the_proof_without_an_epoch_change() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        io.kernel_log.record(2, 4, 2);
+        io.poke(2, 4, b"LL");
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        assert_eq!(io.files[&10], b"....LL..".to_vec());
+    }
+
+    /// A host that changed process bytes without an epoch event breaks the
+    /// proof's premise. Shadow mode turns that into a fatal fault rather than
+    /// a store a skipped comparison would have lost.
+    #[test]
+    #[should_panic(expected = "missed a change")]
+    fn a_missed_epoch_event_is_a_fatal_fault() {
+        let mut io = kernel_file_io();
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(2);
+        table.pull_backing(&key, Some(1), &mut io).unwrap();
+        io.poke(2, 0, b"?");
+        let _ = table.pull_backing(&key, Some(1), &mut io);
+    }
+
+    /// A refresh writes the process (an epoch event) and stamps what it left.
+    #[test]
+    fn a_refresh_stamps_the_bytes_it_wrote() {
+        let mut io = kernel_file_io();
+        let (mut table, _) = kernel_file_pair(&mut io);
+        io.poke(2, 0, b"....BBBB");
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        io.park(1);
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"....BBBB".to_vec());
+        let clean = table.mapping(1, 0).unwrap().clean.expect("stamped");
+        assert_eq!(Some(clean.epoch), io.quiescent_epoch(1), "from the epoch after the write");
+    }
+
+    #[test]
+    fn a_forked_child_starts_without_a_stamp() {
+        let mut io = kernel_file_io().with_process(3, 64);
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.park(1);
+        table.pull_backing(&key, None, &mut io).unwrap();
+        assert!(table.mapping(1, 0).unwrap().clean.is_some());
+        table.inherit_process_mappings(1, 3, &mut io).unwrap();
+        assert!(table.mapping(3, 0).unwrap().clean.is_none());
     }
 
     #[test]
