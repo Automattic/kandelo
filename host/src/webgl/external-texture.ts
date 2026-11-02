@@ -16,9 +16,15 @@
  *   pays for it). The type token is renamed to a private macro that the
  *   shader's own `#extension GL_OES_EGL_image_external` directive defines,
  *   so the type exists exactly where the extension is enabled, including
- *   under conditional compilation, and `GL_OES_EGL_image_external` is
- *   defined as 1 like every supported extension's macro. Reflection reports
- *   SAMPLER_EXTERNAL_OES for those samplers (`guestUniformType`).
+ *   under conditional compilation. The extension's macro must read as 1,
+ *   like every supported extension's macro, but GLSL ES 1.00 section 3.4
+ *   reserves `GL_` macro names and every engine rejects defining one
+ *   (Chromium: "predefined macro redefined"; Firefox, WebKit: "macro name
+ *   is reserved"). So the guest's uses of `GL_OES_EGL_image_external`
+ *   (`#ifdef`, `#if defined`, expressions) are renamed to a private macro
+ *   defined as 1. A guest `#define` or `#undef` of that name is left as
+ *   written, so the engine rejects it, as an ES compiler must. Reflection
+ *   reports SAMPLER_EXTERNAL_OES for those samplers (`guestUniformType`).
  * - A draw whose program samples external textures binds each such unit's
  *   external texture to that unit's native TEXTURE_2D for the draw and
  *   restores the unit's guest TEXTURE_2D binding afterwards (draw-state.ts).
@@ -47,6 +53,8 @@ const TEX = 0x0de1, SAMPLER_2D = 0x8b5e;
 const EXTENSION = "GL_OES_EGL_image_external";
 const GUEST_TYPE = "samplerExternalOES";
 const NATIVE_TYPE = "kandelo_samplerExternalOES";
+/** The private name of the extension's macro (see the file comment). */
+const NATIVE_MACRO = "kandelo_GL_OES_EGL_image_external";
 
 // --- shader source -----------------------------------------------------------
 
@@ -67,13 +75,20 @@ export function externalShaderSource(source: string): ExternalShaderSource {
   const list = glslTokens(source, true);
   const edits: Edit[] = [];
   const lineOf = (offset: number) => source.slice(0, offset).split("\n").length;
+  // Tokens of the extension's name that are not uses of its macro.
+  const keep = new Set<number>();
   for (let i = 0; i < list.length; i++) {
     const t = list[i];
+    if (t.text === EXTENSION && !keep.has(i)) edits.push({ at: t.start, end: t.end, text: NATIVE_MACRO });
     if (t.directive && t.text === "#") {
       const lineEnd = source.indexOf("\n", t.start) < 0 ? source.length : source.indexOf("\n", t.start);
       const directive: GlslToken[] = [];
       for (let j = i; j < list.length && list[j].start < lineEnd; j++) directive.push(list[j]);
       const [, keyword, name, colon, behavior] = directive.map(token => token.text);
+      // #extension names the extension, not its macro; #define and #undef
+      // of the reserved name stay for the engine to reject.
+      if (keyword === "extension") directive.forEach((_, k) => keep.add(i + k));
+      if ((keyword === "define" || keyword === "undef") && name === EXTENSION) keep.add(i + 2);
       if (keyword === "extension" && colon === ":" && directive.length === 5) {
         const define = behavior === "enable" || behavior === "require" || behavior === "warn"
           ? `#define ${NATIVE_TYPE} sampler2D` : behavior === "disable" ? `#undef ${NATIVE_TYPE}` : null;
@@ -90,12 +105,12 @@ export function externalShaderSource(source: string): ExternalShaderSource {
     }
     if (t.text === GUEST_TYPE) edits.push({ at: t.start, end: t.end, text: NATIVE_TYPE });
   }
-  // Define the extension's macro after #version (and any leading
-  // #extension lines), keeping the guest's line numbers.
+  // Define the extension's (private) macro after #version (and any
+  // leading #extension lines), keeping the guest's line numbers.
   const at = headerEnd(source);
   const lead = at > 0 && source[at - 1] !== "\n" ? "\n" : "";
   const line = source.slice(0, at).split("\n").length + (lead ? 1 : 0);
-  edits.push({ at, end: at, text: `${lead}#define ${EXTENSION} 1\n#line ${line}\n` });
+  edits.push({ at, end: at, text: `${lead}#define ${NATIVE_MACRO} 1\n#line ${line}\n` });
   edits.push(...samplerFlowEdits(list));
   edits.sort((a, b) => a.at - b.at || a.end - b.end);
   let text = "", from = 0;

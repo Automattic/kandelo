@@ -218,7 +218,7 @@ describe("samplerExternalOES shader sources", () => {
     expect(text).not.toMatch(/#extension GL_OES_EGL_image_external/);
     expect(samplers).toEqual(["uVideo"]);
     // The guest's line 3 is still line 3 after the macro definition.
-    expect(text.split("\n").filter(line => !/^#(define GL_OES_EGL_image_external 1|line)/.test(line)))
+    expect(text.split("\n").filter(line => !/^#(define kandelo_GL_OES_EGL_image_external 1|line)/.test(line)))
       .toEqual(externalFragment.split("\n").map(line =>
         line.replace("#extension GL_OES_EGL_image_external : require", "#define kandelo_samplerExternalOES sampler2D")
           .replace("samplerExternalOES uVideo", "kandelo_samplerExternalOES uVideo")));
@@ -226,9 +226,20 @@ describe("samplerExternalOES shader sources", () => {
     const disabled = await externalShaderSource(externalFragment.replace(": require", ": disable"));
     expect(disabled.text).toContain("#undef kandelo_samplerExternalOES\n");
     expect((await externalShaderSource("uniform samplerExternalOES s;\n")).text).not.toContain("sampler2D");
-    // The extension's macro is defined, after #version 100.
+    // The extension's macro reads as 1, after #version 100, through a
+    // private name: GLSL ES reserves GL_ macro names, so defining the real
+    // one fails to compile on every engine.
     const versioned = (await externalShaderSource("#version 100\n#ifdef GL_OES_EGL_image_external\n#endif\n")).text;
-    expect(versioned).toBe("#version 100\n#define GL_OES_EGL_image_external 1\n#line 2\n#ifdef GL_OES_EGL_image_external\n#endif\n");
+    expect(versioned).toBe("#version 100\n#define kandelo_GL_OES_EGL_image_external 1\n#line 2\n" +
+      "#ifdef kandelo_GL_OES_EGL_image_external\n#endif\n");
+    expect(versioned).not.toMatch(/#define GL_/);
+    const uses = (await externalShaderSource("#if defined(GL_OES_EGL_image_external) && GL_OES_EGL_image_external == 1\n" +
+      "int x = GL_OES_EGL_image_external;\n#endif\n")).text;
+    expect(uses).not.toMatch(/(?<!kandelo_)GL_OES_EGL_image_external/);
+    // A guest #define or #undef of the reserved name is left for the
+    // engine to reject, as an ES compiler must.
+    const redefined = (await externalShaderSource("#undef GL_OES_EGL_image_external\n#define GL_OES_EGL_image_external 2\n")).text;
+    expect(redefined).toContain("\n#undef GL_OES_EGL_image_external\n#define GL_OES_EGL_image_external 2\n");
     // Sources that never name the extension compile unchanged.
     expect((await externalShaderSource("void main() {}\n")).text).toBe("void main() {}\n");
   });

@@ -3,8 +3,8 @@
  *
  * The host rewrites guest GLSL ES 1.00 shaders for three ES 2.0 behaviours
  * WebGL 2 lacks: reversed depth ranges (reversed-depth.ts), attribute
- * aliasing (attribute-aliasing.ts) and luminance sampling of depth textures
- * (depth-sampling.ts). Unit tests only see the text. This page compiles and
+ * aliasing (attribute-aliasing.ts), luminance sampling of depth textures
+ * (depth-sampling.ts) and samplerExternalOES (external-texture.ts). Unit tests only see the text. This page compiles and
  * links the rewritten shaders with the engine's real WebGL 2 compiler and
  * draws with them, reading back pixels to prove the ES 2.0 semantics.
  * It is bundled and driven by run.mjs; it is not the Kandelo runtime.
@@ -12,6 +12,7 @@
 import { aliasedVertexShaderSource } from "../../../host/src/webgl/attribute-aliasing.js";
 import { variantStageSource, type VariantOptions } from "../../../host/src/webgl/reversed-depth.js";
 import { NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues } from "../../../host/src/webgl/vertex-depth-range.js";
+import { externalShaderSource } from "../../../host/src/webgl/external-texture.js";
 
 /** "inconclusive": the engine fails the same check on unrewritten shaders
  * (a recorded "engine-defect" control), so it cannot judge the rewrite. */
@@ -419,13 +420,63 @@ function depthSampling(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 4. samplerExternalOES and the GL_OES_EGL_image_external macro
+
+/** wlroots 0.20 render/gles2/shaders/tex_external.frag, verbatim. */
+const WLROOTS_TEX_EXTERNAL = "#extension GL_OES_EGL_image_external : require\n\n" +
+  "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n\n" +
+  "varying vec2 v_texcoord;\nuniform samplerExternalOES texture0;\nuniform float alpha;\n\n" +
+  "void main() {\n\tgl_FragColor = texture2D(texture0, v_texcoord) * alpha;\n}\n";
+const TEXCOORD_VERTEX = "varying vec2 v_texcoord;\n" +
+  "void main() { v_texcoord = vec2(0.5); gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n";
+
+function externalSampling(): void {
+  target(false);
+  const color = [0.2, 0.4, 0.6, 0.8];
+  colorTexture(2, color);
+  const green = [0, 1, 0, 1];
+  const cases: { name: string; vertex: string; fragment: string; expected: number[]; sampler?: string }[] = [
+    { name: "wlroots-tex-external", vertex: TEXCOORD_VERTEX, fragment: WLROOTS_TEX_EXTERNAL, expected: color, sampler: "texture0" },
+    { name: "macro-ifdef", vertex: POINT_VERTEX, expected: green,
+      fragment: "#extension GL_OES_EGL_image_external : enable\nprecision mediump float;\n" +
+        "void main() {\n#ifdef GL_OES_EGL_image_external\ngl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);\n" +
+        "#else\ngl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n#endif\n}\n" },
+    { name: "macro-value", vertex: POINT_VERTEX, expected: green,
+      fragment: "precision mediump float;\nvoid main() {\n" +
+        "#if defined(GL_OES_EGL_image_external) && GL_OES_EGL_image_external == 1\n" +
+        "gl_FragColor = vec4(0.0, float(GL_OES_EGL_image_external), 0.0, 1.0);\n" +
+        "#else\ngl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);\n#endif\n}\n" },
+  ];
+  for (const c of cases) {
+    const name = `external-sampler.${c.name}`;
+    const built = build(c.vertex, externalShaderSource(c.fragment).text);
+    if (!built.program) { record(name, false, `rewrite failed to compile/link: ${built.log}`); continue; }
+    gl.useProgram(built.program);
+    if (c.sampler) gl.uniform1i(gl.getUniformLocation(built.program, c.sampler), 2);
+    const alpha = gl.getUniformLocation(built.program, "alpha");
+    if (alpha) gl.uniform1f(alpha, 1);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.POINTS, 0, 1);
+    const got = pixel();
+    record(name, near(got, c.expected), `got ${fmt(got)}, expected ${fmt(c.expected)}`);
+    gl.deleteProgram(built.program);
+  }
+  // GLSL ES 1.00 section 3.4: a guest redefinition of the reserved macro
+  // name is a compile error, not something the rewrite absorbs.
+  const redefined = build(POINT_VERTEX, externalShaderSource("#define GL_OES_EGL_image_external 1\n" +
+    "precision mediump float;\nvoid main() { gl_FragColor = vec4(1.0); }\n").text);
+  record("external-sampler.guest-redefinition-rejected", !redefined.program, redefined.log || "compiled");
+  if (redefined.program) gl.deleteProgram(redefined.program);
+}
+
+// ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
   if (!gl) return { renderer: "no WebGL 2", results: [{ name: "webgl2", ok: false, status: "fail", detail: "getContext('webgl2') failed" }] };
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);
