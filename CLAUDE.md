@@ -1,5 +1,31 @@
 # Kandelo Agent Guidance
 
+## Execution scope
+
+Kandelo implements a POSIX-compatible operating-system environment
+for WebAssembly, with browser and Node.js hosts.
+
+Interpret runtime terminology in the component being changed.
+Guest processes, guest credentials, guest filesystems, and virtual
+network state are implemented by Kandelo. Distinguish these from
+the embedding host's processes, credentials, filesystem, and network.
+
+For each task, identify whether the affected behavior touches one or
+more of:
+
+- guest/kernel semantics;
+- the browser or Node.js host adapter;
+- a local development or conformance-test fixture; or
+- an external service or deployed system.
+
+Use the implementation and relevant architecture documentation to
+establish that boundary. Name actual host paths and network targets
+when they are involved.
+
+When a concern arises, identify the concrete operation, resource,
+and boundary at issue. Continue independent, permitted work and
+report the specific remaining blocker.
+
 This file is the loaded guidance for agents working in this repository. Treat
 it as a contract router: it names the platform contracts that must be preserved
 and points to the focused guidance and reference docs that carry the full
