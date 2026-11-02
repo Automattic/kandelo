@@ -19,6 +19,14 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinary } from "../host/src/binary-resolver";
+import {
+  KERNEL_WORKER_FLAG,
+  KERNEL_WORKER_FLAG_HELP,
+  benchmarkKernelWorkerPolicy,
+  describeBenchmarkKernelWorker,
+  finishBenchmarkKernelWorker,
+  prepareBenchmarkKernelWorker,
+} from "./host-worker-path";
 import { ensureSourceExtract } from "../images/vfs/scripts/source-extract-helper";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -183,6 +191,10 @@ function parseArgs(argv: string[]): Args {
         throw new Error("--engine must be Aria or InnoDB");
       }
       args.engine = engine;
+    } else if (arg === KERNEL_WORKER_FLAG) {
+      i++; // value read by benchmarkKernelWorkerPolicy
+    } else if (arg.startsWith(`${KERNEL_WORKER_FLAG}=`)) {
+      // read by benchmarkKernelWorkerPolicy
     } else if (arg === "--help" || arg === "-h") {
       console.log(`Usage: npx tsx benchmarks/php-mariadb-transport.ts [options]
 
@@ -192,6 +204,7 @@ Options:
   --connect-iters <n>     Connections per variant per round (default: 8)
   --query-iters <n>       Reused-connection SELECTs per round (default: 30)
   --engine Aria|InnoDB    MariaDB storage engine (default: Aria)
+${KERNEL_WORKER_FLAG_HELP}
 `);
       process.exit(0);
     }
@@ -472,6 +485,11 @@ function timeout(ms: number, message: string): Promise<never> {
 
 async function main() {
   const args = parseArgs(process.argv);
+  // Pin the kernel worker path before any NodeKernelHost starts.
+  const hostWorker = prepareBenchmarkKernelWorker(
+    benchmarkKernelWorkerPolicy(process.argv.slice(2)),
+  );
+  console.log(describeBenchmarkKernelWorker(hostWorker));
   const started = Date.now();
   const resultRoot = resolve(repoRoot, "benchmarks/results");
   const dataDir = resolve(resultRoot, `.php-mariadb-data-${process.pid}-${started}`);
@@ -497,6 +515,8 @@ async function main() {
       rounds.push(await runPhpRound(instance, scriptPath, args.connectIters, args.queryIters));
     }
     const summary = summarize(rounds);
+    const recordedHostWorker = finishBenchmarkKernelWorker(hostWorker);
+    console.log(describeBenchmarkKernelWorker(recordedHostWorker));
     const unix = summary.unix?.connect?.avg_ms_median;
     const tcp = summary.tcp?.connect?.avg_ms_median;
     const unixPersistent = summary.unix_persistent?.connect?.avg_ms_median;
@@ -509,6 +529,7 @@ async function main() {
       arch: os.arch(),
       nodeVersion: process.version,
       gitHead: runGit(["rev-parse", "HEAD"]),
+      hostWorker: recordedHostWorker,
       benchmark: {
         rounds: args.rounds,
         connectIters: args.connectIters,

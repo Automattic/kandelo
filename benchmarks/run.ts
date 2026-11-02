@@ -43,12 +43,23 @@ import {
   type BenchmarkRuntimeArtifactSelections,
 } from "./artifact-selection.js";
 import { assertRequiredBenchmarkArtifacts } from "./artifact-evidence.js";
-import { compiledWorkerEntryIsCurrent } from "../host/src/compiled-worker-entry.js";
+import {
+  KERNEL_WORKER_FLAG_HELP,
+  benchmarkKernelWorkerPolicy,
+  describeBenchmarkKernelWorker,
+  finishBenchmarkKernelWorker,
+  prepareBenchmarkKernelWorker,
+} from "./host-worker-path.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "..");
 
-function parseArgs(argv: string[]): { host: "node" | "browser"; suite?: string; rounds: number } {
+function parseArgs(argv: string[]): {
+  host: "node" | "browser";
+  suite?: string;
+  rounds: number;
+  kernelWorker: "bundled" | "tsx";
+} {
   let host: "node" | "browser" = "node";
   let suite: string | undefined;
   let rounds = 3;
@@ -93,12 +104,20 @@ Options:
   --host=node|browser   Execution host (default: node)
   --suite=<name>        Run a single suite
   --rounds=<n>          Number of rounds per suite (default: 3, reports median)
+${KERNEL_WORKER_FLAG_HELP}
 `);
       process.exit(0);
     }
   }
 
-  return { host, suite, rounds };
+  let kernelWorker: "bundled" | "tsx";
+  try {
+    kernelWorker = benchmarkKernelWorkerPolicy(args);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  }
+  return { host, suite, rounds, kernelWorker };
 }
 
 function median(values: number[]): number {
@@ -472,6 +491,8 @@ export async function collectBenchmarkArtifacts(options: {
   suiteFilter?: string;
   browserSelections?: Record<string, BrowserBenchmarkAssetSelection>;
   runtimeSelections?: BenchmarkRuntimeArtifactSelections;
+  /** Node kernel worker path being measured; the bundle is required only for `bundled`. */
+  kernelWorkerPath?: "bundled" | "tsx";
 }): Promise<BenchmarkArtifacts> {
   const gitHead = runGit(["rev-parse", "HEAD"]);
   const gitRef = runGit(["name-rev", "--name-only", "--refs=refs/remotes/origin/*", "HEAD"]);
@@ -500,28 +521,15 @@ export async function collectBenchmarkArtifacts(options: {
     [],
   );
   if (options.host === "node") {
-    const workerSource = resolve(
-      hostSourceRoot,
-      "node-kernel-worker-entry.ts",
-    );
-    const workerBundle = resolve(
-      repoRoot,
+    // Freshness is judged by the host's own entry selection (see
+    // host-worker-path.ts), which the runner calls before collecting
+    // artifacts; this records the bytes of the bundle that selection judged.
+    const bundled = (options.kernelWorkerPath ?? "bundled") === "bundled";
+    files["runtime.nodeWorkerBundle"] = fingerprintSelectedFile(
       "host/dist/node-kernel-worker-entry.js",
+      resolve(repoRoot, "host/dist/node-kernel-worker-entry.js"),
+      { required: bundled, used: bundled },
     );
-    const bundleEvidence = fingerprintSelectedFile(
-      "host/dist/node-kernel-worker-entry.js",
-      workerBundle,
-      { required: true, used: true },
-    );
-    if (
-      bundleEvidence.missing !== true
-      && !compiledWorkerEntryIsCurrent(workerSource, workerBundle)
-    ) {
-      bundleEvidence.missing = true;
-      bundleEvidence.error =
-        "worker bundle is older than at least one host/src TypeScript input";
-    }
-    files["runtime.nodeWorkerBundle"] = bundleEvidence;
   }
   const runtimeSelections = options.runtimeSelections ?? (
     options.host === "node"
@@ -694,9 +702,15 @@ async function runSuites(
 }
 
 async function main() {
-  const { host, suite: suiteFilter, rounds } = parseArgs(process.argv);
+  const { host, suite: suiteFilter, rounds, kernelWorker } = parseArgs(process.argv);
 
   if (host === "browser") {
+    if (process.argv.some((arg) => arg.startsWith("--kernel-worker"))) {
+      // The browser runner serves host sources through the Vite dev server;
+      // there is no bundled/tsx choice to pin there.
+      console.error("--kernel-worker applies only to --host=node.");
+      process.exit(1);
+    }
     // Browser execution via Playwright
     const {
       prepareBrowserBenchmarkAssets,
@@ -739,9 +753,16 @@ async function main() {
     return;
   }
 
-  // Node.js execution
-  const artifacts = await collectBenchmarkArtifacts({ host, suiteFilter });
+  // Node.js execution. Pin the kernel worker path before anything can start
+  // a NodeKernelHost; a stale bundle refuses here with the rebuild command.
+  const hostWorker = prepareBenchmarkKernelWorker(kernelWorker);
+  const artifacts = await collectBenchmarkArtifacts({
+    host,
+    suiteFilter,
+    kernelWorkerPath: hostWorker.path,
+  });
   logArtifacts(artifacts);
+  console.log(`  ${describeBenchmarkKernelWorker(hostWorker)}`);
   assertRequiredBenchmarkArtifacts(artifacts);
   const suites = await loadNodeSuites(suiteFilter);
   if (suites.length === 0) {
@@ -751,6 +772,8 @@ async function main() {
 
   console.log(`Running ${suites.length} suite(s), ${rounds} round(s) each (Node.js)`);
   const results = await runSuites(suites, rounds);
+  const recordedHostWorker = finishBenchmarkKernelWorker(hostWorker);
+  console.log(`\n${describeBenchmarkKernelWorker(recordedHostWorker)}`);
 
   const output: BenchmarkOutput = {
     timestamp: new Date().toISOString(),
@@ -760,6 +783,7 @@ async function main() {
     host: "node",
     rounds,
     artifacts,
+    hostWorker: recordedHostWorker,
     suites: results,
   };
 
