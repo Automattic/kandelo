@@ -1106,7 +1106,7 @@ export interface KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId?: number,
-    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" },
+    opts?: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; sizeElement?: Element },
   ): KmsDisplayHandle | null;
   // The one canvas a display pane mounts for a CRTC, kept for the kernel's
   // lifetime so a pane remount cannot strand a program's WebGL context on
@@ -1472,6 +1472,7 @@ export class LiveKernelHost implements KernelHost {
    *  the pane closes its handle, reconnected when the cached handle is
    *  reused (StrictMode's mount → cleanup → mount). */
   private kmsResizeObservers = new WeakMap<HTMLCanvasElement, ResizeObserver>();
+  private kmsSizeElements = new WeakMap<HTMLCanvasElement, Element>();
   private kmsObservedCanvases = new Set<HTMLCanvasElement>();
   private kmsDisplayScale: number | null = null;
   /**
@@ -3097,7 +3098,7 @@ export class LiveKernelHost implements KernelHost {
     for (const canvas of this.kmsObservedCanvases) {
       const observer = this.kmsResizeObservers.get(canvas)!;
       observer.disconnect();
-      observer.observe(canvas);
+      observer.observe(this.kmsSizeElements.get(canvas)!);
     }
   }
 
@@ -3202,10 +3203,15 @@ export class LiveKernelHost implements KernelHost {
   attachKmsDisplay(
     canvas: HTMLCanvasElement,
     crtcId: number = KMS_PRIMARY_CRTC,
-    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout" } = {},
+    opts: { mode?: "auto" | "2d" | "webgl2" | "webgl2-scanout"; sizeElement?: Element } = {},
   ): KmsDisplayHandle | null {
     if (!this.kernel?.kmsAttachCanvas) return null;
     if (typeof canvas.transferControlToOffscreen !== "function") return null;
+    // A canvas fitted to the scanout aspect reports a size of that aspect,
+    // and a client that takes the connector's mode then keeps it forever.
+    // The pane's viewport reports the space the display can fill.
+    const { sizeElement = canvas, ...attachOpts } = opts;
+    this.kmsSizeElements.set(canvas, sizeElement);
     // A remounted pane hits this method again on the same DOM canvas: React
     // 18 StrictMode double-invokes effects (mount → cleanup → mount), and a
     // pane using kmsDisplayCanvas gets the same element on every mount.
@@ -3217,16 +3223,16 @@ export class LiveKernelHost implements KernelHost {
       // The earlier close() disconnected the observer; the reused handle
       // must keep feeding display sizes.
       const observer = this.kmsResizeObservers.get(canvas);
-      if (observer) { observer.observe(canvas); this.kmsObservedCanvases.add(canvas); }
+      if (observer) { observer.observe(sizeElement); this.kmsObservedCanvases.add(canvas); }
       return cached;
     }
     // Reserve 64 bytes for bounded display counters and ownership metadata.
     const statsSab = new SharedArrayBuffer(64);
     const stats = new Int32Array(statsSab);
-    const mode = opts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
+    const mode = attachOpts.mode ?? this.kmsDisplayModeDefault ?? "webgl2";
     const offscreen = canvas.transferControlToOffscreen();
     this.kernel.kmsAttachCanvas(crtcId, offscreen, statsSab, {
-      ...opts,
+      ...attachOpts,
       mode,
       ...(globalThis.document ? {
         cursorCanvas: this.kmsCursorCanvas(crtcId).transferControlToOffscreen(),
@@ -3234,7 +3240,7 @@ export class LiveKernelHost implements KernelHost {
     });
     const kernel = this.kernel;
     // The webgl2-scanout presenter renders at display resolution: track
-    // the canvas element's device-pixel size and forward it so the pump
+    // the size element's device-pixel size and forward it so the pump
     // sizes its drawing buffer to the pixels the user actually sees.
     // `devicePixelContentBoxSize` gives exact device pixels where
     // supported; fall back to CSS size × devicePixelRatio.
@@ -3276,7 +3282,7 @@ export class LiveKernelHost implements KernelHost {
         kernel.kmsSetDisplaySize?.(crtcId, width, height, physicalMm);
         this.settleKmsDisplaySizeWaiters(crtcId, { width, height });
       });
-      resizeObserver.observe(canvas);
+      resizeObserver.observe(sizeElement);
       this.kmsResizeObservers.set(canvas, resizeObserver);
       this.kmsObservedCanvases.add(canvas);
     }
