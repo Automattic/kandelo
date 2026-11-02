@@ -729,7 +729,9 @@ function orphanLinkedTexture(b: GlBinding, object: WebGLTexture, bindTarget: num
     const pnames = [0x2800, 0x2801, 0x2802, 0x2803];
     const accepted = withImageState(b, () => {
       const params: number[] = [];
+      let callerRead: WebGLFramebuffer | null = null;
       if (!checkedGlCall(b, () => {
+        callerRead = gl.getParameter(0x8caa);
         gl.bindTexture(bindTarget, old);
         for (const pname of pnames) params.push(Number(gl.getTexParameter(bindTarget, pname)));
         fresh = gl.createTexture(); candidate.calls[0][1] = fresh;
@@ -753,7 +755,9 @@ function orphanLinkedTexture(b: GlBinding, object: WebGLTexture, bindTarget: num
         if (!complete) { recordGlError(b, 0x505); return false; }
         if (!checkedGlCall(b, () => gl.copyTexSubImage2D(face, level, 0, 0, 0, 0, image.width, image.height))) return false;
       }
-      return checkedGlCall(b, () => { gl.bindTexture(bindTarget, fresh); call(); });
+      // The scratch framebuffer only carried the retained images. The call
+      // itself (glCopyTexImage2D) reads the caller's read framebuffer.
+      return checkedGlCall(b, () => { gl.bindFramebuffer(READ, callerRead); gl.bindTexture(bindTarget, fresh); call(); });
     }, bindTarget === CUBE);
     if (!accepted || !fresh) return false;
     if (!replaceTextureView(b, object, { native: fresh, source: null, read: null })) return false;

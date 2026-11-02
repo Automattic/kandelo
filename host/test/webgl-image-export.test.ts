@@ -89,6 +89,14 @@ class ValueGl {
   attachmentImage(a: Attachment) {
     return "rbo" in a ? this.rbos.get(a.rbo) : this.images.get(a.tex)!.get(`${a.face}:${a.level}`);
   }
+  /** Reads the bound read framebuffer; without a color image it is
+   * GL_INVALID_FRAMEBUFFER_OPERATION, as on an incomplete framebuffer. */
+  copyTexImage2D(target: number, level: number, internal: number, _x: number, _y: number, w: number, h: number) {
+    const a = this.read ? this.frames.get(this.read)?.get(0x8ce0) : undefined;
+    const src = a && this.attachmentImage(a);
+    if (!src) { this.errors.push(0x506); return; }
+    this.images.get(this.texFor(target))!.set(`${target}:${level}`, {v: src.v, w, h, f: internal});
+  }
   copyTexSubImage2D(target: number, level: number) {
     const src = this.attachmentImage(this.frames.get(this.read!)!.get(0x8ce0)!)!;
     this.images.get(this.texFor(target))!.get(`${target}:${level}`)!.v = src.v;
@@ -184,6 +192,26 @@ it("orphans the image when the source is respecified, retaining its other levels
   expect(gl.value(canonical)).toBe(10);
   expect(registry.exportedImage(41)).toBe(result.record);
   expect(b.errors).toEqual([]);
+});
+
+it("orphans a source respecified by glCopyTexImage2D from the caller's read framebuffer", () => {
+  // dEQP-EGL.functional.sharing.gles2.multithread.*.images.copyteximage2d:
+  // the copy must read the bound read framebuffer (here the default
+  // framebuffer's native storage), not the scratch framebuffer that carried
+  // the retained levels into the new storage.
+  const {registry, b, gl} = setup();
+  const surface = gl.createFramebuffer(), color = gl.createTexture();
+  gl.bindTexture(0x0de1, color); gl.texImage2D(0x0de1, 0, 0x1908, 1, 1, 0, 0x1908, 0x1401, new Uint8Array([77, 0, 0, 0]));
+  gl.bindFramebuffer(0x8d40, surface); gl.framebufferTexture2D(0x8d40, 0x8ce0, 0x0de1, color, 0);
+  bind(b, 1, 0x0de1, 5); image(b, 0x0de1, 0, 10);
+  const canonical = b.textures.get(5)!;
+  exported(b, registry, 41, 0x0de1, 5);
+  submit(b, O.OP_COPY_TEX_IMAGE_2D, [0x0de1, 0, 0x1908, 0, 0, 1, 1, 0]);
+  expect(b.errors).toEqual([]);
+  const fresh = b.textureViews.get(canonical)!.native;
+  expect(fresh).not.toBe(canonical);
+  expect([gl.value(fresh), gl.value(canonical)]).toEqual([77, 10]);
+  expect([gl.read, gl.draw]).toEqual([surface, surface]);
 });
 
 it("keeps image storage past source deletion and frees it when the bo retires", () => {
