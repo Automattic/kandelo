@@ -292,6 +292,10 @@ before ScummVM activation. Its binary, events, screenshots and stack remain in
 normal Node guest cases and 9/10 upstream targets; a twenty-argument mixed libffi
 signature remains an ordinary gap. Neither those lower-level controls nor the
 newly available preview establish a working menu or ScummVM client rendering.
+On the 2026-11-02 preview (with the class-handler repair), clicking any leaf
+menu item still traps SFWBar: GTK's accessible menu-item `deselect` handler
+omits closure data. GTK revision 10 repairs it; see "GTK accessibility signal
+handlers" below. The rebuilt menu remains unverified.
 
 The latest normally built checkpoint is `c8d376bc456f`. All 19 original upstream
 color-clear rendering cases and strict fixture gates pass in headless Chromium,
@@ -19910,3 +19914,39 @@ After merging both mapping and CPU-allocation source changes, the two adjacent
 registry/final-render-node suites pass 112 controls. Typed general final-effects
 routing and lifecycle activation remain required; these source results do not
 establish rebuilt runtime or broad acceptance.
+
+
+### GTK accessibility signal handlers, 2026-11-02
+
+Clicking any leaf item in the normal Sway SFWBar Start menu (for example
+System Tools → Terminal) on the 5691 preview traps SFWBar with `function
+signature mismatch` in headless Chromium. Mapped through the served
+`sfwbar.wasm` export section, the stack is `gtk_menu_popdown` →
+`gtk_menu_shell_deselect` → `gtk_menu_item_deselect` → `g_signal_emit` →
+`g_closure_invoke` → `g_cclosure_marshal_VOID__VOID` → indirect call. The
+marshal is a plain connected closure, not a class handler. The binary's only
+`g_signal_connect_data` naming `deselect` is in GTK's accessibility layer: table
+entry 1370, a one-parameter `(i32) -> nil` function. The string's other uses are
+`g_signal_new`, the emission hook and `g_signal_emit_by_name`. `gtk_menu_item_accessible_initialize`
+connects it, and GTK creates that accessible object when a leaf item is
+selected and focus is reported at idle. GLib calls it as
+`handler (item, user_data)`, and Wasm traps on the missing argument. Hovering a
+category does not create it. Evidence is in `.context/sfwbar-leaf-crash-r1/`.
+
+This is a GTK source contract defect, the same class as earlier callback
+repairs: upstream `gtk-3-24` keeps the one-argument definitions. An audit of
+all 48 literal `gtk/a11y` registrations against their declaring
+`g_signal_new` finds nine mismatches in five files. They are menu-item
+`select`/`deselect`, submenu `insert`/`remove` (these also returned `gint` from
+void signals), check-menu-item and toggle-button `toggled`, combo-box
+`changed`, and entry `insert-text`/`delete-text`.
+`wasm-a11y-signal-contracts.patch` gives each its exact connected-handler
+signature. GTK revision 10 applies it. The focused control
+`packages/registry/gtk3/tests/check-a11y-signal-contracts.sh` requires the
+inventory to match the source and the original nine to mismatch, then runs
+extracted actual definitions through the marshaller call type. At `-O0` and
+`-O2` it gets 9/9 original traps and 9/9 repaired argument deliveries. The five
+patched translation units pass a wasm32 syntax check. Rebuilt GTK, SFWBar and
+the image, plus leaf-click launch acceptance, remain unrun. Actions after
+`deselect` (desktop-file launch) have not executed yet.
+

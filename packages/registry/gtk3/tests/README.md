@@ -49,3 +49,35 @@ sessions remain required after these focused CPU controls.
 
 The exact reviewed scope, typed parameters, registration flags and cleanup
 identities are recorded in [signal-contract-audit.md](signal-contract-audit.md).
+
+# GTK accessibility signal-handler control
+
+GTK creates accessible objects lazily, for example when a menu item is
+selected and focus is reported at idle. Their `initialize` methods connect
+handlers to ordinary widget signals. GLib's C marshallers call a connected
+handler as `handler (instance, params..., user_data)` with the signal's return
+type. Nine pinned a11y handlers omitted `user_data`. Two of them also returned
+`gint` from void signals. Native ABIs ignore that mismatch, but Wasm's typed
+`call_indirect` traps. In SFWBar, clicking a leaf menu item trapped in
+`deselect` during menu popdown. `wasm-a11y-signal-contracts.patch` gives
+each handler its exact connected-handler signature.
+
+```sh
+scripts/dev-shell.sh bash packages/registry/gtk3/tests/check-a11y-signal-contracts.sh \
+  /private/patched/gtk+-3.24.34 /private/before-a11y-patch/gtk+-3.24.34 /private/work
+```
+
+`a11y-signal-contracts.py` requires every literal `gtk/a11y` registration to
+match its reviewed inventory. It reads each signal's parameter count and return
+type from the actual `g_signal_new`/`g_signal_newv` in the declaring file, or
+from the listed GObject `notify` and ATK `children-changed` definitions. The
+repaired tree must have no mismatch. The original tree must mismatch for exactly
+the nine repaired handlers. Separate Wasm translation units then call the actual
+extracted definition headers through the marshaller's machine type at `-O0` and
+`-O2`. All nine originals must trap with a signature mismatch. All nine repaired
+handlers must receive every argument, including closure data, unchanged.
+
+The handler bodies are argument recorders, so this proves the call-type
+contract only. It does not run GTK, ATK or GObject. Rebuilt GTK, rebuilt
+consumers and real menu, toggle, combo-box and entry sessions remain required.
+

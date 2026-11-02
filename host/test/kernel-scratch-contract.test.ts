@@ -1344,6 +1344,12 @@ const auditAllowances: AuditAllowance[] = [
     why: "This standalone Node source-control runner instantiates the before/after GtkApplicationImpl default-vfunc fixture with an empty import object, so it receives no kernel or process Memory. check-application-default-vfuncs.sh extracts the pinned class/default definitions and links them with a separate sentinel-checking caller freestanding, with --no-entry and only run_case exported; it admits no unresolved imports. Each instance owns only private fixture storage and remains local to this runner.",
   },
   {
+    key: "packages/registry/gtk3/tests/run-a11y-signal-contracts.mjs::<module>::wasm-instance-authority::WebAssembly.instantiate(bytes, {})",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone Node source-control runner instantiates the before/after GTK accessibility handler fixture with an empty import object, so it receives no kernel or process Memory. check-a11y-signal-contracts.sh links the extracted handler-definition recorders with a separate marshaller-type caller freestanding, with --no-entry and only run_case/recorded_arg exported; it admits no unresolved imports. Each instance owns only private fixture storage and remains local to this runner.",
+  },
+  {
     key: 'host/src/kernel.ts::WasmPosixKernel.#createKernelMemory::wasm-memory-authority::new IntrinsicWasmMemory({ initial: 24n, maximum: intrinsicBigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
     disposition: "kernel-control",
     authorityOwner: "kernel",

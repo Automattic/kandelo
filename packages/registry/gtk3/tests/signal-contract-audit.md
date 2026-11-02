@@ -83,4 +83,4 @@ Before normal package execution, the final unified patch is applied with --fuzz=
 
 Outside the normal Wayland configuration: Win32 default-display notify; X11 status-icon notify/screen/size hooks; X11 GtkSocket notify; optional CloudProviders notify. These are source-confirmed omissions left outside this build, not repaired/validated features or hard platform boundaries. GdkKeymap direction callbacks, gtk_widget_destroyed callbacks, and three explicit notify C-casts already match their actual signal machine signatures.
 
-Unexamined dynamic signal names, nonliteral callback construction, other signal families and non-signal callback tables remain unproven. This repair makes no exhaustive GTK/GIO/GObject compatibility claim.
+Literal `gtk/a11y` registrations are audited separately by `check-a11y-signal-contracts.sh` (see README.md); its nine repairs are in `wasm-a11y-signal-contracts.patch`. Unexamined dynamic signal names, nonliteral callback construction, other signal families and non-signal callback tables remain unproven. This repair makes no exhaustive GTK/GIO/GObject compatibility claim.
