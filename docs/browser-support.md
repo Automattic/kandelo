@@ -740,7 +740,11 @@ capture, window blur, and input teardown, retaining the last absolute position.
   context is never resumed implicitly during teardown.
 - **A user gesture is required.** Preparing the PCM driver may leave its
   `AudioContext` suspended. The application must call the session audio-resume
-  path from a click, keypress, or other browser-recognized activation. If the
+  path from a click, keypress, or other browser-recognized activation. A bare
+  modifier key such as Shift is not activation in Chromium or Firefox. The
+  browser holds an early resume pending, so the driver repeats the native call
+  on every later resume request; the first one made after real activation
+  starts the context. If the
   context is suspended or interrupted, the consumer cursor intentionally
   stops: the queue fills, writers apply backpressure, and drain/close stays
   pending instead of pretending audio played. Resuming the context continues

@@ -155,6 +155,27 @@ describe("BrowserPcmDriver", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("retries native resume from an activation after an earlier resume stayed pending", async () => {
+    const mocks = browserAudioMocks();
+    let unblock!: () => void;
+    const blocked = new Promise<void>(resolve => { unblock = resolve; });
+    mocks.context.resume
+      .mockImplementationOnce(() => blocked)
+      .mockImplementationOnce(async () => {
+        mocks.context.state = "running";
+        mocks.context.onstatechange?.();
+        unblock();
+      });
+    const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
+      createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
+    driver.prepareContext();
+    const pending = driver.resume();
+    expect(driver.resume()).toBe(pending);
+    expect(mocks.context.resume).toHaveBeenCalledTimes(2);
+    await pending;
+    expect(driver.getState()).toBe("running");
+  });
+
   it("activates and closes a context without exposing a transport to a worklet", async () => {
     const mocks = browserAudioMocks();
     const createContext = vi.fn(() => mocks.context as unknown as AudioContext);
@@ -366,9 +387,10 @@ describe("BrowserPcmDriver", () => {
     try {
       const mocks = browserAudioMocks();
       let complete!: () => void;
-      mocks.context[operation].mockImplementationOnce(() => new Promise<void>(resolve => {
+      const pending = new Promise<void>(resolve => {
         complete = () => { mocks.context.state = operation === "resume" ? "running" : "suspended"; resolve(); };
-      }));
+      });
+      mocks.context[operation].mockImplementation(() => pending);
       const driver = new BrowserPcmDriver({ workletUrl: "/worklet.js",
         createContext: () => mocks.context as unknown as AudioContext, createNode: mocks.createNode });
       await driver.prepare(createPcmTransport());
