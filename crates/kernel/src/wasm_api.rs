@@ -3398,7 +3398,7 @@ pub extern "C" fn kernel_pick_tcp_listener_target(
 /// Writes `{ u32 cancel_alarm, u32 posix_count, u32 timer_ids[posix_count] }`
 /// into the caller's exact scratch capacity. The return value is
 /// `posix_count`. If the complete list does not fit, returns `ERANGE` without
-/// consuming any timer state.
+/// consuming any timer state. A reaped limbo group identity returns `ESRCH`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_take_process_timer_cleanup(
     pid: u32,
