@@ -1844,7 +1844,11 @@ resolves it under the lazy-asset directory the page passes
   (`apps/browser-demos/vite/dev-lazy-assets.ts`). The route passes the
   member path to the same binary resolver the Node host uses for lazy
   assets (the pinned SourceOnly store under `./run.sh browser`), and only
-  that exact answer is served.
+  that exact answer is served. Outside SourceOnly the route streams the
+  resolver's file itself, byte for byte. It does not hand the file to
+  Vite's `/@fs/` route, which runs a path with no extension (a shell
+  script such as sfwbar's `kandelo-sfwbar`) or a JavaScript or CSS
+  extension through Vite's module transform and changes its bytes.
 - An image that is not a product activation, such as a `?vfs=` URL image,
   resolves its lazy bodies under the deployment's own asset group, when
   there is one; the image's digests still decide whether bytes are

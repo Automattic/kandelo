@@ -43,7 +43,7 @@ import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
 import { devSignallingServer } from "./vite/dev-signalling";
-import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { batchedResolverFiles, devLazyAssets } from "./vite/dev-lazy-assets";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -1065,8 +1065,8 @@ export default defineConfig(() => {
       // store's middleware answers the pinned path this route rewrites a
       // lazy-asset request to, so this one must run first.
       devLazyAssets({
-        servePath: sourceOnlyViteAssets === null
-          ? batchedFsServePath({
+        serve: sourceOnlyViteAssets === null
+          ? batchedResolverFiles({
             projectionPath: path.resolve(
               repoRoot,
               "local-binaries/source-only-v1/.kandelo/source-only-program-projection-v1.json",
@@ -1088,7 +1088,10 @@ export default defineConfig(() => {
             resolveOne: tryResolveBinary,
             approve: (file) => binaryDevAccess.approve(file),
           })
-          : (relPath) => sourceOnlyViteAssets.servePath(relPath),
+          : (relPath) => {
+            const pinned = sourceOnlyViteAssets.servePath(relPath);
+            return pinned === null ? null : { kind: "path", path: pinned };
+          },
       }),
       ...(sourceOnlyViteAssets === null
         ? []

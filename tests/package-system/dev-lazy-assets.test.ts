@@ -1,14 +1,21 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  batchedFsServePath,
+  batchedResolverFiles,
   devLazyAssetRequest,
+  devLazyAssets,
+  type DevLazyAssetOptions,
 } from "../../apps/browser-demos/vite/dev-lazy-assets";
 
 /**
  * The dev server's lazy-asset route serves whatever package member a built
  * image references. The route chooses nothing itself: it validates the member
- * path and hands it to the binary resolver, whose exact answer alone is
- * approved for Vite's `/@fs/` transport.
+ * path and hands it to the binary resolver, whose exact, approved answer alone
+ * is streamed.
  */
 describe("dev lazy-asset route", () => {
   it("classifies member requests under the app's base", () => {
@@ -39,12 +46,12 @@ describe("dev lazy-asset route", () => {
     }
   });
 
-  it("serves only the resolver's approved file through /@fs/, resolving in batches", () => {
+  it("serves only the resolver's approved file, resolving in batches", () => {
     let identity: string | null = "v1";
     const batches: string[][] = [];
     const single: string[] = [];
     const approved: string[] = [];
-    const servePath = batchedFsServePath({
+    const serve = batchedResolverFiles({
       projectionPath: "/repo/projection.json",
       identity: () => identity,
       listMembers: () => ["programs/wasm32/tmux.wasm", "programs/wasm32/gone.wasm"],
@@ -63,37 +70,86 @@ describe("dev lazy-asset route", () => {
         return `/canonical${file}`;
       },
     });
-    expect(servePath("programs/wasm32/tmux.wasm", "/kandelo/"))
-      .toBe("/kandelo/@fs/canonical/repo/v1/tmux.wasm");
-    expect(servePath("programs/wasm32/tmux.wasm", "/")).toBe("/@fs/canonical/repo/v1/tmux.wasm");
+    const file = (path: string) => ({ kind: "file", file: path });
+    expect(serve("programs/wasm32/tmux.wasm", "/kandelo/"))
+      .toEqual(file("/canonical/repo/v1/tmux.wasm"));
+    expect(serve("programs/wasm32/tmux.wasm", "/")).toEqual(file("/canonical/repo/v1/tmux.wasm"));
     // A listed member nothing published stays absent; it is not re-resolved.
-    expect(servePath("programs/wasm32/gone.wasm", "/")).toBeNull();
+    expect(serve("programs/wasm32/gone.wasm", "/")).toBeNull();
     // A path the projection does not list is resolved alone.
-    expect(servePath("programs/wasm32/extra.wasm", "/")).toBe("/@fs/canonical/mirror/extra.wasm");
+    expect(serve("programs/wasm32/extra.wasm", "/")).toEqual(file("/canonical/mirror/extra.wasm"));
     // A path nothing serves is resolved once, not on every request.
-    expect(servePath("programs/wasm32/absent.wasm", "/")).toBeNull();
-    expect(servePath("programs/wasm32/absent.wasm", "/")).toBeNull();
-    expect(servePath("programs/wasm32/extra.wasm", "/")).toBe("/@fs/canonical/mirror/extra.wasm");
+    expect(serve("programs/wasm32/absent.wasm", "/")).toBeNull();
+    expect(serve("programs/wasm32/absent.wasm", "/")).toBeNull();
+    expect(serve("programs/wasm32/extra.wasm", "/")).toEqual(file("/canonical/mirror/extra.wasm"));
     expect(batches).toHaveLength(1);
     expect(single).toEqual(["programs/wasm32/extra.wasm", "programs/wasm32/absent.wasm"]);
     // A republished projection is resolved again.
     identity = "v2";
-    expect(servePath("programs/wasm32/tmux.wasm", "/")).toBe("/@fs/canonical/repo/v2/tmux.wasm");
+    expect(serve("programs/wasm32/tmux.wasm", "/")).toEqual(file("/canonical/repo/v2/tmux.wasm"));
     expect(batches).toHaveLength(2);
     expect(approved).toContain("/repo/v1/tmux.wasm");
   });
 
-  it("encodes the checkout path the way Vite's /@fs/ route decodes it", () => {
-    const servePath = batchedFsServePath({
-      projectionPath: "/p.json",
-      identity: () => "v1",
-      listMembers: () => ["programs/wasm32/tmux.wasm"],
-      resolveBatch: () => ["/Users/me/My Repo/100%/tmux.wasm"],
-      resolveOne: () => null,
-      approve: (file) => file,
+  it("streams a member's bytes exactly, whatever its name", async () => {
+    // An extensionless shell script is the case Vite's `/@fs/` route
+    // rewrote into a JavaScript module with an inline source map.
+    const root = mkdtempSync(join(tmpdir(), "dev-lazy-assets-"));
+    const script = "#!/bin/sh\nexec /usr/local/bin/sfwbar \"$@\"\n";
+    writeFileSync(join(root, "kandelo-sfwbar"), script);
+    writeFileSync(join(root, "My Tool.wasm"), new Uint8Array([0, 0x61, 0x73, 0x6d]));
+    const listen = (serve: DevLazyAssetOptions["serve"]) => {
+      const plugin = devLazyAssets({ serve });
+      let middleware!: (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
+      (plugin.configureServer as (server: unknown) => void)({
+        config: { base: "/" },
+        middlewares: { use: (handler: typeof middleware) => { middleware = handler; } },
+      });
+      const server = createServer((req, res) => middleware(req, res, () => {
+        res.statusCode = 418;
+        res.end("next");
+      }));
+      return new Promise<{ url: string; close: () => void }>((resolve) => {
+        server.listen(0, "127.0.0.1", () => resolve({
+          url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+          close: () => server.close(),
+        }));
+      });
+    };
+    const { url, close } = await listen((relPath) => {
+      if (relPath === "programs/wasm32/sfwbar/kandelo-sfwbar") {
+        return { kind: "file", file: join(root, "kandelo-sfwbar") };
+      }
+      if (relPath === "programs/wasm32/My Tool.wasm") {
+        return { kind: "file", file: join(root, "My Tool.wasm") };
+      }
+      if (relPath === "programs/wasm32/pinned.wasm") {
+        return { kind: "path", path: "/@source-only/abc/pinned.wasm" };
+      }
+      return null;
     });
-    const served = servePath("programs/wasm32/tmux.wasm", "/")!;
-    expect(served).toBe("/@fs/Users/me/My%20Repo/100%25/tmux.wasm");
-    expect(decodeURI(new URL(served, "http://x").pathname)).toBe("/@fs/Users/me/My Repo/100%/tmux.wasm");
+    try {
+      const shell = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/sfwbar/kandelo-sfwbar`);
+      expect(shell.status).toBe(200);
+      expect(shell.headers.get("content-type")).toBe("application/octet-stream");
+      expect(shell.headers.get("content-length")).toBe(String(script.length));
+      expect(await shell.text()).toBe(script);
+
+      const wasm = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/My%20Tool.wasm`);
+      expect(wasm.headers.get("content-type")).toBe("application/wasm");
+      expect(new Uint8Array(await wasm.arrayBuffer())).toEqual(new Uint8Array([0, 0x61, 0x73, 0x6d]));
+
+      const head = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/sfwbar/kandelo-sfwbar`, { method: "HEAD" });
+      expect(head.headers.get("content-length")).toBe(String(script.length));
+
+      // A pinned SourceOnly path is left to the store's middleware.
+      expect((await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/pinned.wasm`)).status).toBe(418);
+      expect((await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/missing.wasm`)).status).toBe(404);
+      const post = await fetch(`${url}/@kandelo-lazy/assets/programs/wasm32/sfwbar/kandelo-sfwbar`, { method: "POST" });
+      expect(post.status).toBe(405);
+    } finally {
+      close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
