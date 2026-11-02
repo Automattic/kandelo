@@ -1980,6 +1980,40 @@ pub fn merge_changed_byte_runs(
     changed
 }
 
+/// Equal bytes between two changed runs that a refresh writes anyway, to keep
+/// one host call per cluster of changes rather than one per changed byte.
+/// Pixels whose alpha byte did not change would otherwise split every pixel
+/// into its own run. A sibling thread's store into such a gap between our read
+/// and write would be lost, but those bytes border bytes a peer is changing
+/// at the same moment, which is a data race on that region anyway.
+const REFRESH_RUN_JOIN_GAP: usize = 32;
+
+/// The `[start, end)` runs a refresh must write so that process bytes equal
+/// to `snapshot` become `latest`: where the two differ, with runs separated
+/// by fewer than [`REFRESH_RUN_JOIN_GAP`] equal bytes joined. A length
+/// mismatch refreshes the whole range.
+fn refresh_runs(latest: &[u8], snapshot: &[u8]) -> Vec<(usize, usize)> {
+    if latest.len() != snapshot.len() {
+        return alloc::vec![(0, latest.len())];
+    }
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    for offset in (0..latest.len()).step_by(FILE_PAGE_SIZE) {
+        let end = (offset + FILE_PAGE_SIZE).min(latest.len());
+        let (src, snap) = (&latest[offset..end], &snapshot[offset..end]);
+        if !range_differs_from_snapshot(src, snap) {
+            continue;
+        }
+        for (start, stop) in changed_runs(src, snap) {
+            let (start, stop) = (offset + start, offset + stop);
+            match runs.last_mut() {
+                Some(last) if start - last.1 < REFRESH_RUN_JOIN_GAP => last.1 = stop,
+                _ => runs.push((start, stop)),
+            }
+        }
+    }
+    runs
+}
+
 /// Whether any byte of `source` differs from `snapshot`.
 pub fn range_differs_from_snapshot(source: &[u8], snapshot: &[u8]) -> bool {
     // Keep native and short-range comparisons on their existing slice path.
@@ -3135,7 +3169,9 @@ impl SharedMappingTable {
     /// process's `[map_addr, map_addr + len)` from the latest shared state.
     ///
     /// Every existing observer of the file publishes first, so the newcomer
-    /// starts from bytes no peer is still holding back. `writable` is the
+    /// starts from bytes no peer is still holding back. The observers are
+    /// pulled ([`Self::pull_backing`]), not refreshed: a refresh would write
+    /// into processes that may be running guest code. `writable` is the
     /// mapping's `PROT_WRITE`; `write_allowed` is whether the descriptor that
     /// created it was `O_RDWR`, which decides a later `mprotect` upgrade after
     /// the descriptor is gone. The backing itself is always writable: the
@@ -3165,8 +3201,8 @@ impl SharedMappingTable {
         }
         self.get_or_create_file_backing(key, &stat, true, io)?;
         let populated = self
-            .publish_file_backing_observers(key, io)
-            .and_then(|()| {
+            .pull_backing(key, None, io)
+            .and_then(|_| {
                 let backing = self.file_backings.get_mut(key).ok_or(Errno::EIO)?;
                 let version = backing.version;
                 let bytes = backing.read_range(file_offset, len, io);
@@ -3371,106 +3407,11 @@ impl SharedMappingTable {
             return Ok(());
         }
 
-        // Phase 1 — publish every alias.
-        for (map_addr, key) in &candidates {
-            let Self {
-                mappings,
-                file_backings,
-                ..
-            } = self;
-            let Some(mapping) = mappings.get_mut(&pid).and_then(|m| m.get_mut(map_addr)) else {
-                continue;
-            };
-            let Some(backing) = file_backings.get_mut(key) else {
-                continue;
-            };
-            if !mapping.writable {
-                continue;
-            }
-            if let Some(stamp) = stamp {
-                if stamp.proves_unchanged(pid, *map_addr, mapping, backing) {
-                    // The previous boundary found these bytes equal to the
-                    // snapshot and nothing could have written them since
-                    // (see `BoundaryRecord`), so the comparison would answer
-                    // "no change"; that is its result, carried forward.
-                    mapping.clean_at = Some(stamp.current);
-                    continue;
-                }
-            }
-            let Some(snapshot) = mapping.snapshot.take() else {
-                continue;
-            };
-            let current = match io.read_process_if_changed(pid, *map_addr, mapping.len, &snapshot) {
-                Ok(Some(current)) => current,
-                Ok(None) => {
-                    // No local publication in this observation. Keep the old
-                    // baseline so a later guest store remains detectable;
-                    // every candidate still reaches phase 2 refresh below.
-                    mapping.snapshot = Some(snapshot);
-                    // An ordinary boundary records that it saw the bytes
-                    // equal; a forced or peer-driven sync leaves the record
-                    // alone (it can neither extend nor break the proof).
-                    if let Some(stamp) = stamp {
-                        mapping.clean_at = Some(stamp.current);
-                    }
-                    continue;
-                }
-                Err(err) => {
-                    mapping.snapshot = Some(snapshot);
-                    mapping.clean_at = None;
-                    return Err(err);
-                }
-            };
-            // Until the pages are checked, assume the process changed these
-            // bytes: they would differ from the snapshot until the refresh
-            // below, whatever happens in between.
-            mapping.clean_at = None;
-            let mut differs = snapshot.len() != current.len();
-            let mut changed = false;
-            let mut failure = None;
-            for offset in (0..mapping.len).step_by(FILE_PAGE_SIZE) {
-                let chunk = FILE_PAGE_SIZE.min(mapping.len - offset);
-                let src = &current[offset..offset + chunk];
-                let snap = &snapshot[offset..offset + chunk];
-                if !range_differs_from_snapshot(src, snap) {
-                    continue;
-                }
-                differs = true;
-                match backing.merge_changed_runs(
-                    src,
-                    snap,
-                    mapping.file_offset + offset as u64,
-                    io,
-                ) {
-                    Ok(true) => changed = true,
-                    Ok(false) => {}
-                    Err(err) => {
-                        failure = Some(err);
-                        break;
-                    }
-                }
-            }
-            mapping.snapshot = Some(snapshot);
-            if changed {
-                backing.version += 1;
-            }
-            if let Some(err) = failure {
-                return Err(err);
-            }
-            // A backend without the in-place comparator answers with a full
-            // copy even when nothing changed (`read_process_if_changed`
-            // status 2). Equal bytes are still an equal observation.
-            if !differs {
-                if let Some(stamp) = stamp {
-                    mapping.clean_at = Some(stamp.current);
-                }
-            }
-            // A write-through backing persists the publication now, so a
-            // descriptor `read` sees what the mapping stored. The pages stay
-            // dirty, and reported, if the file refuses them.
-            if changed && backing.writes_through() && !backing.flush_all(io) {
-                let (addr, key) = (*map_addr, key.clone());
-                self.report_writeback_loss(pid, addr, &key, "write failed", io);
+        // Phase 1 — publish every alias. A pull adopts the bytes it read as
+        // the alias's snapshot, so phase 2 can tell peer changes from the
+        // process's own.
+        for (map_addr, _) in &candidates {
+            if self.pull_mapping(pid, *map_addr, stamp, io)? == PullOutcome::WritebackFailed {
                 return Err(Errno::EIO);
             }
         }
@@ -3496,9 +3437,27 @@ impl SharedMappingTable {
             refreshes.push((*map_addr, latest, backing.version));
         }
 
-        // Phase 2b — apply them.
+        // Phase 2b — apply them, writing only the runs a peer changed.
+        //
+        // After phase 1 a writable alias's snapshot is the process's own
+        // bytes, so `latest` differs from it exactly where peers (or
+        // descriptor writes) changed the file. Writing the whole range
+        // would also rewrite bytes nobody else changed, and could overwrite
+        // a store a sibling thread of this process made to them after phase
+        // 1 read them. See `refresh_runs`.
         for (map_addr, latest, version) in refreshes {
-            io.write_process(pid, map_addr, &latest)?;
+            let runs = match self
+                .mappings
+                .get(&pid)
+                .and_then(|m| m.get(&map_addr))
+                .and_then(|mapping| mapping.snapshot.as_deref())
+            {
+                Some(snapshot) => refresh_runs(&latest, snapshot),
+                None => alloc::vec![(0, latest.len())],
+            };
+            for (start, end) in runs {
+                io.write_process(pid, map_addr + start as u64, &latest[start..end])?;
+            }
             if let Some(mapping) = self.mappings.get_mut(&pid).and_then(|m| m.get_mut(&map_addr)) {
                 mapping.snapshot = Some(latest);
                 mapping.seen_version = version;
@@ -3535,11 +3494,11 @@ impl SharedMappingTable {
         if !self.file_backings.contains_key(key) {
             return Ok(true);
         }
-        self.publish_file_backing_observers(key, io)?;
+        let published = self.pull_backing(key, None, io)?;
         let Some(backing) = self.file_backings.get_mut(key) else {
-            return Ok(true);
+            return Ok(published);
         };
-        let flushed = backing.flush_all(io);
+        let flushed = backing.flush_all(io) && published;
         if flushed {
             self.discard_unreferenced_file_backing(key, io);
         }
@@ -3597,37 +3556,6 @@ impl SharedMappingTable {
         backing.version += 1;
     }
 
-    /// Force every current observer of a backing to publish, before another
-    /// mapping joins it or an ordinary file read observes it. Without this a
-    /// sole observer's deferred writes would be invisible to the newcomer.
-    pub fn publish_file_backing_observers(
-        &mut self,
-        key: &str,
-        io: &mut dyn SharedMappingIo,
-    ) -> Result<(), Errno> {
-        let Some(backing) = self.file_backings.get(key) else {
-            return Ok(());
-        };
-        if backing.ref_count == 0 {
-            return Ok(());
-        }
-        let observers: Vec<u32> = self
-            .mappings
-            .iter()
-            .filter(|(_, m)| {
-                m.values().any(|mapping| {
-                    mapping.backing_kind == Some(BackingKind::File)
-                        && mapping.backing_key.as_deref() == Some(key)
-                })
-            })
-            .map(|(pid, _)| *pid)
-            .collect();
-        for pid in observers {
-            self.sync_file_from_process(pid, true, io)?;
-        }
-        Ok(())
-    }
-
     // -- publish-only pulls and the descriptor fence ----------------------
     //
     // A *pull* compares one mapping's process bytes with its snapshot and
@@ -3645,10 +3573,18 @@ impl SharedMappingTable {
     /// same runs again over a peer's newer bytes. The mapping's
     /// `seen_version` advances only when it was current before its own merge,
     /// because only then does the backing range equal those bytes afterwards.
+    ///
+    /// `stamp` is set only by an ordinary boundary sync of `pid` itself; it
+    /// lets a comparison the previous boundary proved redundant be skipped
+    /// and records the boundaries that found the bytes equal (see
+    /// [`BoundaryRecord`]). A pull on behalf of another process passes
+    /// `None`: it can neither extend nor carry a proof, only void one by
+    /// finding a change.
     fn pull_mapping(
         &mut self,
         pid: u32,
         map_addr: u64,
+        stamp: Option<&BoundaryStamp<'_>>,
         io: &mut dyn SharedMappingIo,
     ) -> Result<PullOutcome, Errno> {
         let Some(mem_len) = io.process_memory_len(pid) else {
@@ -3675,6 +3611,16 @@ impl SharedMappingTable {
         if map_addr.saturating_add(mapping.len as u64) > mem_len {
             return Ok(PullOutcome::Unchanged);
         }
+        if let Some(stamp) = stamp {
+            if stamp.proves_unchanged(pid, map_addr, mapping, backing) {
+                // The previous boundary found these bytes equal to the
+                // snapshot and nothing could have written them since (see
+                // `BoundaryRecord`), so the comparison would answer "no
+                // change"; that is its result, carried forward.
+                mapping.clean_at = Some(stamp.current);
+                return Ok(PullOutcome::Unchanged);
+            }
+        }
         let Some(snapshot) = mapping.snapshot.take() else {
             return Ok(PullOutcome::Unchanged);
         };
@@ -3682,10 +3628,15 @@ impl SharedMappingTable {
             Ok(Some(current)) => current,
             Ok(None) => {
                 mapping.snapshot = Some(snapshot);
+                // An ordinary boundary records that it saw the bytes equal.
+                if let Some(stamp) = stamp {
+                    mapping.clean_at = Some(stamp.current);
+                }
                 return Ok(PullOutcome::Unchanged);
             }
             Err(err) => {
                 mapping.snapshot = Some(snapshot);
+                mapping.clean_at = None;
                 return Err(err);
             }
         };
@@ -3721,8 +3672,17 @@ impl SharedMappingTable {
         }
         mapping.snapshot = Some(current);
         if !changed {
+            // A backend without the in-place comparator answers with a full
+            // copy even when nothing changed. Equal bytes are still an equal
+            // observation.
+            if let Some(stamp) = stamp {
+                mapping.clean_at = Some(stamp.current);
+            }
             return Ok(PullOutcome::Unchanged);
         }
+        // The process changed these bytes since its snapshot: no earlier
+        // boundary's proof covers them any more.
+        mapping.clean_at = None;
         backing.version += 1;
         if was_current {
             mapping.seen_version = backing.version;
@@ -3774,7 +3734,7 @@ impl SharedMappingTable {
         let mut persisted = true;
         let mut result = Ok(());
         for (pid, addr) in targets {
-            match self.pull_mapping(pid, addr, io) {
+            match self.pull_mapping(pid, addr, None, io) {
                 Ok(PullOutcome::WritebackFailed) => persisted = false,
                 Ok(_) => {}
                 Err(err) => {
@@ -4875,6 +4835,9 @@ mod shared_mapping_tests {
         fail_read_process_at: Option<(u32, u64)>,
         /// pid -> process reads, i.e. snapshot comparisons and copies.
         process_reads: BTreeMap<u32, usize>,
+        /// A store another thread of `pid` makes right after the next read
+        /// of its memory, standing in for a sibling running concurrently.
+        store_after_read: Option<(u32, u64, Vec<u8>)>,
     }
 
     impl MockIo {
@@ -4892,6 +4855,7 @@ mod shared_mapping_tests {
                 fail_write_process_at: None,
                 fail_read_process_at: None,
                 process_reads: BTreeMap::new(),
+                store_after_read: None,
             }
         }
 
@@ -4978,6 +4942,10 @@ mod shared_mapping_tests {
                 return Err(Errno::EFAULT);
             }
             dst.copy_from_slice(&mem[at..at + dst.len()]);
+            if self.store_after_read.as_ref().is_some_and(|(p, _, _)| *p == pid) {
+                let (_, addr, bytes) = self.store_after_read.take().unwrap();
+                self.poke(pid, addr, &bytes);
+            }
             Ok(())
         }
 
@@ -6396,8 +6364,71 @@ mod shared_mapping_tests {
         }
     }
 
+    /// Hazard 1: a newcomer's join used to refresh every existing observer
+    /// in place, writing the whole mapping back into a process that may be
+    /// running. A store it made between that read and write was lost.
     #[test]
-    fn publishing_observers_forces_a_deferred_sole_writer_to_flush() {
+    fn a_join_never_writes_into_an_existing_observer() {
+        let mut io = kernel_file_io().with_process(3, 64);
+        let (mut table, key) = kernel_file_pair(&mut io);
+        io.poke(1, 0, b"AAAA");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        // Process 2 is now stale. A thread of it stores at a byte no peer
+        // touched, right after the join reads its memory.
+        io.store_after_read = Some((2, 7, b"Z".to_vec()));
+        table
+            .track_kernel_file_mapping(3, 0, 3, &key, 10, 0, 8, true, true, &mut io)
+            .unwrap();
+        assert_eq!(io.peek(2, 0, 8), b".......Z".to_vec(), "process 2's store survives");
+        assert_eq!(io.peek(3, 0, 8), b"AAAA....".to_vec(), "the newcomer starts current");
+        // Process 2 imports process 1's bytes at its own boundary, and its
+        // late store publishes there too.
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        assert_eq!(io.peek(2, 0, 8), b"AAAA...Z".to_vec());
+        assert_eq!(io.files[&10], b"AAAA...Z".to_vec());
+    }
+
+    /// Hazard 2: a refresh at a process's own boundary used to rewrite the
+    /// whole mapping, overwriting a sibling thread's store to bytes no peer
+    /// had changed. It now writes only the runs peers changed.
+    #[test]
+    fn a_refresh_writes_only_what_peers_changed() {
+        let mut io = kernel_file_io();
+        let (mut table, _) = kernel_file_pair(&mut io);
+        io.poke(2, 0, b"....BBBB");
+        table.sync_file_from_process(2, false, &mut io).unwrap();
+        io.store_after_read = Some((1, 0, b"Z".to_vec()));
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.peek(1, 0, 8), b"Z...BBBB".to_vec(), "the sibling's store survives");
+        table.sync_file_from_process(1, false, &mut io).unwrap();
+        assert_eq!(io.files[&10], b"Z...BBBB".to_vec(), "and publishes at the next boundary");
+    }
+
+    #[test]
+    fn refresh_runs_join_close_changes_and_split_distant_ones() {
+        let snapshot = vec![0u8; 3 * FILE_PAGE_SIZE];
+        let mut latest = snapshot.clone();
+        // Pixels whose alpha byte is unchanged: one run per page cluster.
+        for i in (0..64).step_by(4) {
+            latest[i..i + 3].copy_from_slice(&[1, 2, 3]);
+        }
+        latest[FILE_PAGE_SIZE - 1] = 9; // far from the cluster: its own run
+        latest[2 * FILE_PAGE_SIZE + 5] = 7;
+        assert_eq!(
+            refresh_runs(&latest, &snapshot),
+            alloc::vec![(0, 63), (FILE_PAGE_SIZE - 1, FILE_PAGE_SIZE), (2 * FILE_PAGE_SIZE + 5, 2 * FILE_PAGE_SIZE + 6)]
+        );
+        // Runs on either side of a page boundary closer than the gap join.
+        let mut across = snapshot.clone();
+        across[FILE_PAGE_SIZE - 2] = 1;
+        across[FILE_PAGE_SIZE + 3] = 1;
+        assert_eq!(refresh_runs(&across, &snapshot), alloc::vec![(FILE_PAGE_SIZE - 2, FILE_PAGE_SIZE + 4)]);
+        assert!(refresh_runs(&snapshot, &snapshot).is_empty());
+        assert_eq!(refresh_runs(&latest, &snapshot[..10]), alloc::vec![(0, latest.len())]);
+    }
+
+    #[test]
+    fn pulling_a_backing_publishes_a_deferred_sole_writer() {
         // Without this, a newcomer would map the file's persisted bytes and
         // never see the sole existing observer's deferred writes.
         let mut io = MockIo::new()
@@ -6428,7 +6459,7 @@ mod shared_mapping_tests {
         table.sync_file_from_process(1, false, &mut io).unwrap();
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 0);
 
-        table.publish_file_backing_observers(&key, &mut io).unwrap();
+        table.pull_backing(&key, None, &mut io).unwrap();
         assert_eq!(table.file_backing(&key).unwrap().dirty_page_count(), 1);
     }
 

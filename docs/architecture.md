@@ -2274,6 +2274,16 @@ the fence a sole writer's store was invisible to `read()` until `msync`,
 `munmap`, `exec` or exit, and a later `pwrite` or `ftruncate` could be
 overwritten by that store when it was finally published.
 
+Only the process whose syscall is being handled has its memory written,
+and then only where the file changed under it. A new mapping joining a
+file pulls the existing mappings (it used to publish *and* refresh each of
+them, writing the whole range back into processes that might be running),
+and a refresh at a process's own boundary writes only the byte runs where
+the file differs from the bytes that process last published or imported
+(runs closer than 32 bytes are joined into one write). A whole-range write
+could otherwise overwrite a store a sibling thread made, after the
+comparison read it, to bytes no peer had changed.
+
 When a kernel-owned file refuses a mapping's bytes (for example a full
 tmpfs), the loss is real data the program believed it stored, so it is
 never quiet. The dirty pages stay on the backing for a later attempt, the
