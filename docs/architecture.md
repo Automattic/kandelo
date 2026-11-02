@@ -5735,6 +5735,30 @@ pending flags than a per-call drain gave; ES 2.0 section 2.5 leaves that
 order to the implementation. A renderer whose flags never clear still fails
 loudly at the next capture, and context loss is still detected at every
 entry (`renderer-loss.ts`).
+
+The guest side of the same contract keeps `glGetError` off the transport
+when the answer is already known. Applications that check every call (a
+debug GL wrapper is `glGetError(); call; glGetError()`) otherwise pay a
+synchronous kernel-worker request for each check, most of them with
+nothing queued since the previous answer. `glGetError` sends the
+`QOP_GET_ERROR` drain form (`shared::gl::error_drain`): queued commands
+ride as the compound submit prefix, the encoder's unacknowledged client
+flags ride in the request mask, and the renderer captures native flags and
+moves every recorded flag, oldest first, into a checked reply that also
+says whether any flag was retained. libGLESv2 holds the moved flags in the
+context encoder beside its own client flags and returns one per call. When
+nothing was retained, the command buffer is still empty and no
+graphics-device request has been made since (libEGL counts every request
+from both libraries, process-wide; a fork child's count is advanced by a
+`pthread_atfork` handler), no command can have recorded a new flag, so
+`glGetError` answers from the guest with no request. Any request,
+including a state query, make-current, swap, fence operation or another
+thread's work, voids that knowledge, and the next `glGetError` drains
+again. This relies on the host recording a flag only into the context
+whose request produced it, as described above. Reset reporting is
+consulted before any local answer and is still learned from the next
+request's `ENODEV`. A malformed or failed drain reply is reported as one
+`GL_INVALID_OPERATION` and never establishes local knowledge.
 Host object groups now own shareable name maps, shader/program metadata,
 uniform-location allocation and imported textures. Each binding initially
 has its own group. An internal construction operation can join unused

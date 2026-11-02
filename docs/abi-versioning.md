@@ -2453,6 +2453,33 @@ from the merged source. All normal SDK, kernel, program, package and image
 artifacts require rebuilding for the combined program surface. Historical
 ABI 55 graphics results do not validate the newly combined implementation.
 
+### Additive glGetError drain within ABI 56 and operation table 17
+
+`QOP_GET_ERROR` gains an 8-byte input form: the existing ES2 client-flag
+mask followed by `shared::gl::error_drain::REQUEST` (`0x4744524e`). Its
+reply is exactly 44 bytes: count, retained, eight error slots and
+`QUERY_REPLY_MAGIC`. The renderer captures native flags, merges the mask,
+then moves up to eight recorded flags, oldest first, into the reply and
+removes them from the context; `retained` is 1 when flags remain. Unused
+slots are zero. The empty and 4-byte inputs keep their exact pop-one
+meaning and 4-byte reply, so existing binaries are unaffected. The kernel
+forwards query bytes without decoding them, so no ioctl, marshalled
+structure, snapshot section or program digest changes; Rust, C
+(`gl_abi.h`) and TypeScript (`ops.ts`) mirror the constants.
+
+The operation table stays 17 under the unpublished program 56 / host 3 /
+GL 17 / fork 21 family: like the multisampled surface configs below, this
+is a new accepted form of an existing value. A libGLESv2 built with it
+needs a renderer that decodes it; an older renderer rejects the 8-byte
+input with `EINVAL`, which libGLESv2 reports as `GL_INVALID_OPERATION`
+rather than misreading a reply. Packages linking libGLESv2 must be rebuilt
+to use the form; `libc/glue` is a global package input, so the normal
+build re-keys them.
+
+The guest semantics that depend on it (answering later `glGetError` calls
+locally until the next device request) are described in
+`docs/architecture.md` with the host error-flag contract.
+
 ### Additive multisampled surface configs within ABI 56
 
 Two existing values gain new accepted forms; no layout, operation number

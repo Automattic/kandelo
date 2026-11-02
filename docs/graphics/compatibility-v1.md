@@ -20046,3 +20046,86 @@ patched translation units pass a wasm32 syntax check. Rebuilt GTK, SFWBar and
 the image, plus leaf-click launch acceptance, remain unrun. Actions after
 `deselect` (desktop-file launch) have not executed yet.
 
+
+
+### glGetError answered locally after a complete error drain, 2026-11-02
+
+ScummVM 2026.3.0 builds with `OPENGL_DEBUG` on every non-Emscripten target
+(`graphics/opengl/debug.h`), so every `GL_CALL` is `glGetError` (clear), the
+call, `glGetError` (check). Each `glGetError` was one synchronous request to
+the kernel worker. In the desktop ScummVM launcher a frame made 88 standalone
+queries and 40 submit+query requests, 112 of them `QOP_GET_ERROR`, and ran at
+11–14 frames per second with a sluggish self-drawn cursor
+(`.context/desktop-perf-r7/svmA`, `svmB`). Most of those requests followed no
+new command: the clear after a check had nothing to report that the check had
+not already reported.
+
+ES 2.0 section 2.5 records errors only through commands and lets `GetError`
+return any one recorded flag. The new `QOP_GET_ERROR` drain form
+(`shared::gl::error_drain`, see `docs/abi-versioning.md`) moves every recorded
+flag into one checked reply and says whether any was retained. libGLESv2 keeps
+the moved flags with the context encoder beside its own client flags. While
+the last drain retained nothing, the command buffer is empty and no device
+request has been made since, `glGetError` answers locally: one flag per call,
+each exactly once, `NO_ERROR` when none. The check after a command still
+makes one request (the queued commands are its compound prefix and the client
+flags ride in its mask); the next clear is local. Any device request from
+libEGL or libGLESv2, on any thread of the process, voids the knowledge, and a
+fork child starts without it. Reset reporting, `NativeGlFault`, robustness
+status, shared contexts and fences are unchanged; malformed or lost drain
+replies report one `GL_INVALID_OPERATION` and keep the next call asking.
+
+Validation on source `c6d70d7519` (recorded by the runs as `4bb09b73a5`,
+the same tree before a message edit; sysroot and the `graphics-cts` and
+`scummvm` packages rebuilt with their re-keyed dependencies; kernel unchanged):
+
+| Check | Result | Evidence |
+|---|---|---|
+| Native libc graphics cohort | 409/409 pass, including five new drain cases (local answers, merge/duplicate, retention, malformed/lost replies, invalidation by queries, make-current, another thread and fork) | `.context/gl-geterror-runs/libc-unit-2.log` |
+| Host graphics Vitest gate | 77 files, 1857/1857 pass (drain ordering, in-place owner mutation, retention, malformed requests) | `.context/gl-geterror-runs/vitest-graphics-1.log` |
+| dEQP-GLES2 negative_api, state_query, fbo; texture.specification (chunks 5–7 of functional.texture), Chromium | 1198 Pass, 154 NotSupported, 1 QualityWarning; 300 Pass. Same status as the `graphics-validation-r2` baseline for every case | `.context/gl-geterror-runs/gles2-core-r1`, `gles2-texspec-r1` |
+| dEQP-EGL negative_api, sharing, image, robustness, Chromium | 1396 Pass, 186 NotSupported; no case that passed in the baseline fails. The baseline's 7 Fail and 111 Missing now pass; that baseline predates `07e8e10aec`, so those changes are not attributed to this work | `.context/gl-geterror-runs/egl-r1` |
+| ABI check against `07e8e10aec` | snapshot and generated bindings unchanged | `ABI_CHECK_BASE_REF=07e8e10aec scripts/check-abi-version.sh` |
+
+ScummVM measurement, Chromium, sway desktop, pointer sweeping the ScummVM
+launcher for 10 s, alternating arms on one host. Both arms boot the same
+image and replace `/usr/bin/scummvm` through the kernel-owned rootfs write
+before launch; arm A writes the previous build, arm B the rebuilt one. The
+machine was loaded (load average 9.6–11.4 throughout), so absolute times are
+indicative; the request counts are exact.
+
+| Arm | Frames | Standalone queries / frame | Submit+query / frame | `GET_ERROR` host queries / frame | ScummVM syscall ms / frame | Frame interval p50/p90 ms | Input→ScummVM swap p50/p90 ms |
+|---|---|---|---|---|---|---|---|
+| A1 (before) | 136 | 88.0 | 40.0 | 112 | 32.5 | 69.6/91.0 | 29.9/55.4 |
+| B1 (after) | 153 | 33.0 | 40.0 | 57 | 27.1 | 61.9/83.6 | 20.6/42.1 |
+| A2 (before) | 134 | 88.0 | 40.0 | 112 | 32.8 | 71.8/93.9 | 30.0/54.9 |
+| B2 (after) | 167 | 33.0 | 40.0 | 57 | 25.2 | 57.7/71.7 | 20.5/40.6 |
+
+The remaining 33 standalone requests per frame are 16 checked binds
+(`QOP_BIND_BUFFER` 13, `QOP_BIND_IMAGE_OBJECT` 3), the 16 drains after them
+and one drain after the swap. Native `getError` calls in the kernel worker
+were about 4.2 s of each 10 s window in both arms (all processes); they come
+mostly from host-side checks, not guest `glGetError`, and are unchanged here.
+Results are in `.context/gl-geterror-runs/kperf/{A1,B1,A2,B2}`. The
+measurement instrumentation is diagnostic only and is not part of the source.
+
+Candidates not implemented, each only if exactly correct:
+
+- Let checked mutation replies (`QOP_BIND_BUFFER`, `QOP_BIND_IMAGE_OBJECT`,
+  `QOP_BIND_FRAMEBUFFER`) carry the drain in an opt-in larger reply, so the
+  check after a bind is local: 16 of ScummVM's 33 remaining requests.
+- Answer `GL_UNPACK_ALIGNMENT` and `GL_PACK_ALIGNMENT` from the encoder,
+  which already records them for upload layout, once its validation is shown
+  to match the renderer's acceptance exactly.
+- Binding queries the encoder already tracks (`GL_ARRAY_BUFFER_BINDING`,
+  `GL_ELEMENT_ARRAY_BUFFER_BINDING`, `GL_ACTIVE_TEXTURE`, texture and
+  renderbuffer bindings) need a proof that checked binds, deletion by this
+  context and peer deletion leave the encoder's record identical to the
+  renderer's before they could be answered locally.
+- Reduce host native `getError` captures, the largest remaining
+  kernel-worker cost in this scenario.
+
+Programs must be rebuilt to use the drain: `libc/glue` is a global package
+input, so the normal build re-keys every package. Programs built before it
+keep the legacy one-flag `QOP_GET_ERROR` form, which this host still serves
+unchanged.
