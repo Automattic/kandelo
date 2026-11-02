@@ -321,9 +321,14 @@ struct shm_buffer {
     void *map_data;
     uint32_t *pixels;       /* shared mapping of the client's bytes */
     uint32_t map_stride_px;
-    /* linux-dmabuf Y_INVERT: row 0 is the bottom of the image. A GL
-     * producer (libwayland-egl) renders into a framebuffer, whose rows are
-     * stored bottom-up; CPU-drawn buffers are top-down. */
+    /* The buffer arrived through zwp_linux_dmabuf_v1 rather than wl_shm.
+     * That is how EGL's Wayland platform (libwayland-egl) publishes each
+     * GL-rendered frame; wl_shm buffers are drawn by the CPU. */
+    int dmabuf;
+    /* linux-dmabuf Y_INVERT: row 0 is the bottom of the image. A producer
+     * that publishes a GL framebuffer's rows unconverted sets it.
+     * libwayland-egl normalizes its fronts to top-down rows and sends no
+     * flags (wlroots rejects nonzero ones), so it is not a GL marker. */
     int y_invert;
     /* GPU path: the bo imported on the EGL fd + its texture. gl_dirty is
      * set on every commit of this buffer so the next GL repaint rebinds
@@ -1134,11 +1139,14 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
         /* A GL client's buffer size, reported when it changes: it is how a
          * gate sees that the client really reallocated for the size it was
          * configured to (a tiled GL client that keeps its first buffer draws
-         * cropped, and no other marker changes). Only buffers rendered by GL
-         * -- the ones libwayland-egl marks Y_INVERT -- are reported: shm
-         * clients resize on every retile, and one line per window per theme
-         * switch would scroll the markers other gates read off the screen. */
-        if (s->xdg_toplevel && b->y_invert &&
+         * cropped, and no other marker changes). Only GL-rendered buffers --
+         * the linux-dmabuf buffers libwayland-egl publishes -- are reported:
+         * shm clients resize on every retile, and one line per window per
+         * theme switch would scroll the markers other gates read off the
+         * screen. (This once keyed on Y_INVERT, which libwayland-egl stopped
+         * sending when its fronts became top-down, and the marker went
+         * silent for every GL client.) */
+        if (s->xdg_toplevel && b->dmabuf &&
             (b->width != s->reported_bw || b->height != s->reported_bh)) {
             s->reported_bw = b->width;
             s->reported_bh = b->height;
@@ -1656,6 +1664,7 @@ static struct shm_buffer *dmabuf_make_buffer(struct wl_client *c,
     b->height = height;
     b->stride = p->stride;
     b->format = format;
+    b->dmabuf = 1;
     p->fd = -1;   /* the pool owns the fd now */
     return b;
 }
