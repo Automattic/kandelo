@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { GlContextRegistry } from "../src/webgl/registry.js";
-import { ensurePresentTarget } from "../src/webgl/present-target.js";
+import { blitPresentTarget, ensurePresentTarget } from "../src/webgl/present-target.js";
 
 function makeGl() {
   const texture = {}, framebuffer = {}, depthStencil = {}, previousRenderbuffer = {};
@@ -17,6 +17,8 @@ function makeGl() {
     renderbufferStorage: vi.fn(), framebufferRenderbuffer: vi.fn(),
     checkFramebufferStatus: vi.fn(() => 0x8cd5),
     deleteTexture: vi.fn(), deleteFramebuffer: vi.fn(), deleteRenderbuffer: vi.fn(),
+    SCISSOR_TEST: 0x0c11, COLOR_BUFFER_BIT: 0x4000, NEAREST: 0x2600,
+    enable: vi.fn(), disable: vi.fn(), blitFramebuffer: vi.fn(),
   };
   return {gl, texture, framebuffer, depthStencil, previousRenderbuffer};
 }
@@ -66,4 +68,21 @@ it("clears deleted framebuffer references after a failed resize and can retry", 
   expect(gl.deleteRenderbuffer).toHaveBeenCalledWith(depthStencil);
   expect(ensurePresentTarget(binding)).toBe(true);
   expect(gl.createFramebuffer).toHaveBeenCalledTimes(2);
+});
+
+it("sizes the target to the surface and the canvas at the flip", () => {
+  const {gl} = makeGl();
+  const registry = new GlContextRegistry();
+  registry.bind({ pid: 1, cmdbufAddr: 0, cmdbufLen: 0 });
+  const binding = registry.get(1)!;
+  binding.gl = gl as unknown as WebGL2RenderingContext;
+  const canvas = { width: 640, height: 480 };
+  binding.canvas = canvas as HTMLCanvasElement;
+  binding.surfaceSize = { width: 1280, height: 720 };
+  gl.blitFramebuffer.mockImplementation(() => expect(canvas).toEqual({ width: 1280, height: 720 }));
+  expect(ensurePresentTarget(binding)).toBe(true);
+  expect(gl.renderbufferStorage).toHaveBeenLastCalledWith(0x8d41, 0x88f0, 1280, 720);
+  expect(canvas).toEqual({ width: 640, height: 480 });
+  blitPresentTarget(binding);
+  expect(gl.blitFramebuffer).toHaveBeenCalledExactlyOnceWith(0, 0, 1280, 720, 0, 0, 1280, 720, 0x4000, 0x2600);
 });

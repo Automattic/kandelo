@@ -26,9 +26,9 @@ const GL_READ_FRAMEBUFFER_BINDING = 0x8caa;
 const GL_DRAW_FRAMEBUFFER_BINDING = 0x8ca6;
 
 /** Point `b.renderTargetFbo` at an offscreen color buffer matching the
- *  canvas, creating or resizing it as needed. No-op for a session that
- *  already renders into a GPU bo, or one without a canvas. Returns true
- *  when the binding has a usable present target. */
+ *  window surface (else the canvas), creating or resizing it as needed.
+ *  No-op for a session that already renders into a GPU bo, or one without
+ *  a canvas. Returns true when the binding has a usable present target. */
 export function ensurePresentTarget(b: GlBinding): boolean {
   const gl = b.gl;
   const canvas = b.canvas;
@@ -36,8 +36,10 @@ export function ensurePresentTarget(b: GlBinding): boolean {
   // A GPU-tier producer owns its render target; never displace it.
   if (b.renderTargetFbo && !b.presentTarget) return false;
 
-  const w = canvas.width;
-  const h = canvas.height;
+  // A mode change recreates the surface at its new size while the canvas
+  // still shows the last whole frame at the old one.
+  const w = b.surfaceSize?.width ?? canvas.width;
+  const h = b.surfaceSize?.height ?? canvas.height;
   if (!(w >= 1) || !(h >= 1)) return false;
 
   const existing = b.presentTarget;
@@ -106,11 +108,20 @@ export function ensurePresentTarget(b: GlBinding): boolean {
 }
 
 /** Blit the present target onto the real default framebuffer. This is the
- *  buffer flip: the first composite after it shows a whole frame. */
+ *  buffer flip: the first composite after it shows a whole frame.
+ *
+ *  Resizing a canvas clears it, and the browser composites the cleared
+ *  canvas at the end of the task. The canvas therefore takes the target's
+ *  size here, in the same task as the blit that fills it. */
 export function blitPresentTarget(b: GlBinding): void {
   const gl = b.gl;
   const target = b.presentTarget;
   if (!gl || !target) return;
+  const canvas = b.canvas;
+  if (canvas && (canvas.width !== target.w || canvas.height !== target.h)) {
+    canvas.width = target.w;
+    canvas.height = target.h;
+  }
 
   const prevRead = gl.getParameter(GL_READ_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
   const prevDraw = gl.getParameter(GL_DRAW_FRAMEBUFFER_BINDING) as WebGLFramebuffer | null;
