@@ -75,20 +75,24 @@ normal, focused and hovered states. This follows upstream's button reset;
 the GTK theme otherwise paints a light image above a dark background color.
 The normal image rebuild and rendered contrast checks remain required.
 
-With the pinned GTK layer-shell API, the bar requests on-demand keyboard
-focus before mapping and keeps that eligibility when the pointer leaves.
-On-demand focus lets the compositor focus the bar on a click without
-reserving the keyboard. Requesting it only on pointer entry races the
-compositor's click-time focus decision: the click can arrive before the
-request and its surface commit. The old boolean API retains upstream's
-hover policy because it has no on-demand mode. A real menu keyboard,
-application refocus and cooperative-exit check remain required for the
-rebuilt panel; the captured late request alone does not prove the cause
-of every input failure.
+The bar keeps upstream's keyboard policy unpatched: it maps with no
+keyboard interactivity, requests on-demand focus when the pointer enters
+it and drops back to none when the pointer leaves. Revision 6 removes a
+Kandelo patch that requested on-demand focus before mapping. The pinned
+Labwc 0.20.2 `layers.c` gives keyboard focus to any on-demand TOP or
+OVERLAY surface when it maps, so with that patch the panel took the
+keyboard from the first terminal as soon as it appeared. A protocol trace
+of the stock Labwc session showed `set_keyboard_interactivity(2)` before
+the bar's first configure, `wl_keyboard.leave` on Foot and
+`wl_keyboard.enter` on the bar at its map, no pointer event on the bar,
+and every later key delivered to SFWBar. Sway focuses on-demand layers
+only on click, so it did not show the symptom.
 
-Compositors choose when to focus an on-demand layer. The pinned Labwc
-also focuses eligible top-layer surfaces on map, so the bar can receive
-initial or remap focus. Its ordinary sensor autohide swaps child widgets
-without remapping the bar. Initial application typing after a click,
-menu dismissal and application refocus need real session checks; this
-policy is not a promise of unchanged initial focus.
+Under the upstream policy a click on the bar focuses it only if the
+bar's on-demand request was committed before the button reached the
+compositor. A person hovers before clicking; automated input must too.
+By source review, Labwc also focuses a layer popup that requests a grab,
+so its menus should receive keys either way; Sway has no such rule. The
+rebuilt panel's menu keyboard checks have not run yet. `apps/browser-demos/test/kandelo-labwc.spec.ts`
+waits for the painted panel before its first keystroke and requires that
+input to reach Foot.

@@ -311,6 +311,22 @@ menu item still traps SFWBar: GTK's accessible menu-item `deselect` handler
 omits closure data. GTK revision 10 repairs it; see "GTK accessibility signal
 handlers" below. The rebuilt menu remains unverified.
 
+The stock Labwc session lost its first terminal's keyboard to SFWBar. A
+`WAYLAND_DEBUG=client` and `labwc -d` trace of that session shows SFWBar
+requesting on-demand keyboard interactivity before its first configure,
+Labwc logging `interactive-on-demand` when the bar maps, `wl_keyboard.leave`
+on Foot and `wl_keyboard.enter` on the bar, and no pointer event on the bar.
+SFWBar received all 70 key events of the typed command and exit chord;
+Foot received none. After a click on Foot, Foot received all 72 and the
+command ran, so Kandelo's input path follows the compositor's focus. Labwc0.20.2 focuses on-demand
+TOP/OVERLAY layers on map by design; the eligibility-before-map request came
+from SFWBar5's Kandelo patch. SFWBar6 drops that patch and returns to
+upstream's hover policy, and the Labwc acceptance now waits for the painted
+panel before its first unclicked keystrokes. Against the SFWBar5 image that
+check fails with no typed character in Foot. SFWBar6, its shell image and
+the menu click/keyboard checks still need a normal rebuild and run. The
+traces are in `.context/labwc-focus-runs/`.
+
 The latest normally built checkpoint is `c8d376bc456f`. All 19 original upstream
 color-clear rendering cases and strict fixture gates pass in headless Chromium,
 Firefox and WebKit, replacing the earlier first-case readback OUT_OF_MEMORY

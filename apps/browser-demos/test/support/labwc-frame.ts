@@ -60,6 +60,47 @@ export async function footFrame(page: Page): Promise<Frame> {
   }, png.toString("base64"));
 }
 
+/** The painted Start button of the shipped SFWBar panel, or null before the
+ * panel maps. It is a connected #40516b (sfwbar.config `#startmenu`) fill at
+ * the output's bottom-left; a cursor or terminal text cannot satisfy it.
+ */
+export async function panelStart(page: Page): Promise<Rect | null> {
+  const png = await canvas(page).screenshot();
+  return page.evaluate(async base64 => {
+    const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const { width, height, data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    bitmap.close();
+    const mask = new Uint8Array(width * height);
+    for (let p = 0; p < mask.length; p++) {
+      const at = p * 4;
+      mask[p] = Math.abs(data[at] - 64) <= 2 && Math.abs(data[at + 1] - 81) <= 2
+        && Math.abs(data[at + 2] - 107) <= 2 ? 1 : 0;
+    }
+    const queue = new Int32Array(mask.length);
+    for (let seed = 0; seed < mask.length; seed++) {
+      if (!mask[seed]) continue;
+      mask[seed] = 0; queue[0] = seed;
+      let tail = 1, left = width, top = height, right = 0, bottom = 0;
+      for (let head = 0; head < tail; head++) {
+        const current = queue[head], x = current % width, y = Math.floor(current / width);
+        left = Math.min(left, x); right = Math.max(right, x); top = Math.min(top, y); bottom = Math.max(bottom, y);
+        for (const next of [x > 0 ? current - 1 : -1, x + 1 < width ? current + 1 : -1,
+          y > 0 ? current - width : -1, y + 1 < height ? current + width : -1]) {
+          if (next < 0 || !mask[next]) continue;
+          mask[next] = 0; queue[tail++] = next;
+        }
+      }
+      const rect = { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+      if (rect.x < 80 && rect.y > height - 90 && rect.width >= 45 && rect.width < 150
+        && rect.height >= 25 && rect.height < 75 && tail > rect.width * rect.height * 0.6) return rect;
+    }
+    return null;
+  }, png.toString("base64"));
+}
+
 /** A newly painted menu must contain a large connected changed rectangle.
  * A cursor or blinking terminal cell cannot satisfy this area/fill gate.
  * Baseline and current captures use the same pointer position.

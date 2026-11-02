@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { gotoMachine } from "./support/kandelo-machine";
 import { typePhysicalText } from "./support/physical-typing";
-import { footFrame, menuChange, type Frame } from "./support/labwc-frame";
+import { footFrame, menuChange, panelStart, type Frame } from "./support/labwc-frame";
 
 // These real-rendering checks must never claim the user's desktop focus.
 test.use({ headless: true });
@@ -78,6 +78,15 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
     first = await footFrame(page);
     return first.foot !== null;
   }, { timeout: 180_000, intervals: [1_000] }).toBe(true);
+  // The session starts SFWBar beside the first Foot. Labwc focuses an
+  // on-demand TOP/OVERLAY layer surface when it maps, so a panel that
+  // requests on-demand focus before mapping takes the keyboard from Foot.
+  // Upstream SFWBar maps with no keyboard interactivity. Wait for the
+  // painted panel before the browser pointer has entered the display, so
+  // the first keystrokes prove that the panel's map left Foot focused. No
+  // click may establish that focus.
+  await expect.poll(async () => (await panelStart(page)) !== null,
+    { timeout: 180_000, intervals: [1_000] }).toBe(true);
   // The initial prompt is short. Require executed, rendered output instead
   // of assuming it occupies an arbitrary number of white pixels.
   await typePhysicalText(page, "printf '\\033[48;2;220;30;30mLABWC_RENDERED_READY\\033[0m\\n'\n", { delay: 40 });
