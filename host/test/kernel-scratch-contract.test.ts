@@ -878,6 +878,15 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.fdSupportsMmapWriteback::kernel-export-direct-use::supports(pid, fd)",
   ),
+  // GL fence export completion: the fence id and a status code.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#runHostFencePassWithinKernelEntry::kernel-export-direct-use::signal(id, status === true ? 0 : -EIO)",
+  ),
+  // Host file-mapping writeback error: pid, the guest's own mapping
+  // address, the file's dev/ino and an fd number. No kernel memory.
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.reportHostWritebackError::kernel-export-direct-use::reportError(report.pid ?? 0, BigInt(report.mapAddr ?? 0), backing.dev ?? 0n, backing.ino ?? 0n, report.toldFd ?? -1)",
+  ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.finalizeExitedProcessBeforeLifecycleNotification::kernel-export-direct-use::getState(pid)",
   ),
