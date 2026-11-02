@@ -73,6 +73,31 @@ test("a crash loses only the crashed case; the chunk resumes after it", async ()
   assert.deepEqual(result.crashed, { attempt: 1, case: "b", reason: "exit 139" });
 });
 
+test("an abnormal end after a finished case resumes after it; one without progress does not", async () => {
+  const session = body => `#beginSession\n${body}\n#endSession\n`;
+  // dEQP ends its session after a ResourceError (terminateAfter) with exit 1.
+  const early = accountAttempt(["a", "b", "c"], session(done("a") + done("b", "ResourceError")), { kind: "exit", code: 1 });
+  assert.deepEqual([early.abnormal, early.attributed, early.resume], [true, null, ["c"]]);
+  // A threaded case that fails can abort the program from deinit (exit 134)
+  // after its record is complete.
+  const calls = [];
+  const chunk = await runChunk({ id: "f#000", family: "f", cases: ["a", "b", "c", "d"] }, async remaining => {
+    calls.push(remaining);
+    if (remaining[0] === "a") return { qpa: done("a") + done("b", "Fail"), outcome: { kind: "exit", code: 134 } };
+    return { qpa: session(remaining.map(name => done(name)).join("")), outcome: exit0 };
+  });
+  assert.deepEqual(calls, [["a", "b", "c", "d"], ["c", "d"]]);
+  assert.deepEqual(chunk.rows.map(r => [r.path, r.status, r.attempt]),
+    [["a", "Pass", 1], ["b", "Fail", 1], ["c", "Pass", 2], ["d", "Pass", 2]]);
+  assert.deepEqual(chunk.crashed, { attempt: 1, case: null, reason: "exit 134" });
+  // A case dEQP skipped before the last finished one is not retried.
+  const skipped = accountAttempt(["a", "b", "c"], done("b"), { kind: "exit", code: 134 });
+  assert.deepEqual([skipped.left, skipped.resume], [["a", "c"], ["c"]]);
+  // A clean exit never resumes, and an attempt that finished nothing does not either.
+  assert.deepEqual(accountAttempt(["a", "b"], done("a"), exit0).resume, []);
+  assert.deepEqual(accountAttempt(["a", "b"], "", { kind: "exit", code: 134 }).resume, []);
+});
+
 test("no progress, lost runners and the resume limit leave Missing cases", async () => {
   const chunk = { id: "f#000", family: "f", cases: ["a", "b"] };
   const stalled = await runChunk(chunk, async () => ({ qpa: "", outcome: { kind: "error", message: "boom" } }));

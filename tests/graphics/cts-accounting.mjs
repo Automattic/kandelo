@@ -92,15 +92,22 @@ export function accountAttempt(remaining, qpa, outcome, attempt = 1) {
   for (const path of malformed) rows.push({ path, status: "Missing", detail: "malformed result record", attempt });
   const accounted = new Set(rows.map(row => row.path));
   const left = remaining.filter(path => !accounted.has(path));
-  // Resume only past an attributed case: other cases were never begun, so a
-  // retry without progress would only repeat the same failure.
-  const resume = attributed !== null ? left.filter(path => remaining.indexOf(path) > remaining.indexOf(attributed)) : [];
+  // Resume past the last case this attempt finished or had attributed, the
+  // way upstream harnesses relaunch dEQP: past an attributed Crash/Timeout,
+  // or past a complete record when dEQP itself ended the session early
+  // (a ResourceError sets terminateAfter in tcuTestSessionExecutor.cpp; a
+  // failed threaded case aborts from deinit). An attempt that finished no
+  // case made no progress, and a retry would only repeat the same failure.
+  let last = attributed !== null ? remaining.indexOf(attributed) : -1;
+  if (abnormal) for (const row of rows) if (row.status !== "Missing") last = Math.max(last, remaining.indexOf(row.path));
+  const resume = last >= 0 ? left.filter(path => remaining.indexOf(path) > last) : [];
   return { rows, left, resume, unexpected, duplicates, abnormal, attributed };
 }
 
 /**
  * Run one chunk through `runAttempt(cases) -> { qpa, outcome, ... }`,
- * resuming after each attributed Crash/Timeout, at most `maxAttempts` times.
+ * resuming after each abnormal end that made progress (an attributed
+ * Crash/Timeout or a finished case), at most `maxAttempts` times.
  * A thrown runAttempt (page or host lost) ends the chunk. Every case not
  * accounted for is Missing.
  */

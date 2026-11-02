@@ -89,12 +89,19 @@ than the default limit: dEQP-EGL
 `performance.gles2_shared_render.*_small_call` issues 1.2 million draw calls
 per case, and `egl_image.1_thread_1_context_small_call` passed in 35.6
 minutes in headless Chromium, so running that family to completion needs
-`KANDELO_CTS_CASE_MS=2700000`. If the guest exits abnormally or that deadline expires while
-a case's `#beginTestCaseResult` is open, that case is Crash or Timeout, the
-attempt records the deadline evidence (cases entered, last case, time since
-it began), and the chunk resumes after it in a fresh kernel
-(`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
-nothing can be attributed, so the remaining cases are Missing. A lost page
+`KANDELO_CTS_CASE_MS=2700000`. If the guest exits abnormally or that
+deadline expires while a case's `#beginTestCaseResult` is open, that case is
+Crash or Timeout, the attempt records the deadline evidence (cases entered,
+last case, time since it began), and the chunk resumes after it in a fresh
+kernel (`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
+nothing can be attributed. dEQP can still end a session early after
+finishing a case: a ResourceError sets `terminateAfter`
+(`tcuTestSessionExecutor.cpp`), and a failed threaded case can abort the
+program from its deinit. An abnormal attempt that finished at least one case
+resumes after the last finished case, as upstream harnesses relaunch dEQP;
+the finished rows keep their verdicts and the chunk stays in
+`crashedChunks`. An attempt that finished nothing leaves the remaining cases
+Missing, since a retry would only repeat it. A lost page
 or host loses only that chunk. Exit status 1 is not abnormal when dEQP's
 own evidence explains it: upstream `tcuMain.cpp` exits with `EXIT_FAILURE`
 after a completed session in which any case failed, so an attempt whose QPA
