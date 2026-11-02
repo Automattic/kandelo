@@ -634,12 +634,15 @@ host build checks all32 fixed generated variants against their WAT template
 and generator using the declared WABT tools. Regenerate with
 `scripts/dev-shell.sh npm --prefix host run generate:snapshot-comparator`;
 `check:snapshot-comparator` verifies without updating the checked-in bytes.
-This comparison is one observation, not a persistent no-writer epoch:
-every mapping still participates in the authoritative backing-refresh
-phase, including stale readers, descriptor writes and earlier aliases of
-a later publisher. A later guest store remains detectable against the
-retained baseline. Changed mappings pay an additional comparison; desktop
-and benchmark validation of this tradeoff is still pending.
+Each comparison is one observation: every mapping still participates
+in the authoritative backing-refresh phase, including stale readers,
+descriptor writes and earlier aliases of a later publisher, and a later
+guest store remains detectable against the retained baseline. Changed
+mappings pay an additional comparison. The one place an observation is
+carried forward is the completion boundary of a syscall, described under
+[Shared mapping coherence](#shared-mapping-coherence): there a comparison
+the entry boundary already made is skipped when the kernel can prove it
+would find the same answer.
 Process memory,
 framebuffers, and explicit shared-memory mappings keep their own ownership
 models. A TypeScript-compiler-backed JavaScript/TypeScript repository audit
@@ -2248,6 +2251,54 @@ successful direct writes, truncation, allocation, splice, and copy operations
 invalidate or refresh mapped cache pages. `msync`, replacement, unmap, exec,
 and process teardown persist dirty pages through the stable handle, including
 after the original guest fd is closed or its pathname is unlinked or renamed.
+
+A kernel-owned file mapping is compared at both boundaries of every
+syscall of a process that holds it with a live peer, and the comparison
+reads the whole mapping. A Wayland compositor maps each client's
+`wl_shm` pool `PROT_READ|PROT_WRITE`, so with one 4 MiB SFWBar pool,
+labwc and sway compared about 3,000 times a second during pointer motion,
+every comparison equal, for 2.6-2.8 s of kernel-worker time per 10 s.
+The completion comparison is usually redundant: bytes under a mapping
+change only when guest code of the process runs, when the host delivers a
+syscall's output bytes into it, or when the kernel writes it. So the
+completion boundary of a syscall may skip a mapping when all of these
+hold (`BoundaryRecord` in `crates/runtime-core/src/memory.rs`):
+
+- the host attests that the previous sync of the process was this
+  syscall's own entry boundary and that the completion delivers no output
+  bytes. Only the generic kernel dispatch and the opaque-record path qualify;
+  every other completion path compares as before. The host passes
+  `force = 2` (`SHARED_MAPPING_SYNC_UNCHANGED`) to
+  `kernel_shared_mapping_sync_process`, which an older kernel reads as a
+  forced sync;
+- the host also attests that no other guest code ran on the process's
+  memory meanwhile: at both boundaries every other thread channel of the
+  process sits at `CH_PENDING` (its thread is blocked in a syscall), no
+  other process (a vfork child) borrows the memory, and no completion was
+  published, process registered or thread channel attached on that memory
+  in between. Both desktop compositors and SFWBar are multithreaded, so a
+  sole-thread rule would have skipped nothing; a sibling that resumes
+  always passes through a published completion. Kernel-direct wait
+  completions are never used for a process with a shared mapping;
+- no other shared-mapping operation touched the process in between, the
+  entry boundary compared the mapping and found it equal, and no write the
+  kernel made through `HostIO::proc_write_bytes` since then overlaps it
+  (a fixed ring of recent kernel writes; if it overflowed, the boundary
+  compares);
+- the backing has not advanced since, so the mapping is not about to be
+  refreshed. This last condition is defense in depth: even a mistaken
+  claim could then only delay a publication to the next boundary, never let
+  a refresh overwrite unpublished bytes.
+
+Under those conditions the mapping still equals its snapshot, so skipping
+the comparison is exactly its result. Host writes outside a completion
+(DRI buffer copies, host-owned shared mappings, the syscall channel)
+target memory the address space never lets overlap a kernel-owned mapping.
+The entry boundary is never skipped, so a store still publishes at the
+writer's next syscall, and every way a peer can learn of a store through a
+later syscall of the writer still finds it published. Host-owned mappings
+(anonymous `MAP_SHARED`, host-mounted files) and SysV attachments keep
+comparing at both boundaries.
 
 This is syscall-boundary coherence, not shared physical memory. A process that
 only performs direct loads/stores does not publish or import peer changes until
