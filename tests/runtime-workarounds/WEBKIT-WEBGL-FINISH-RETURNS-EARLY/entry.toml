@@ -1,0 +1,22 @@
+id = "WEBKIT-WEBGL-FINISH-RETURNS-EARLY"
+kind = "bug"
+status = "confirmed"
+runtimes = ["webkit"]
+summary = "WebGL finish() returns while earlier draws are still executing"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["webkit"]
+self_judging = true
+timeout_seconds = 120
+
+[[observed]]
+runtime = "webkit"
+version = "26.6"
+os = "macos"
+reproduced = true
+date = 2026-11-02
+source = "suite"
+released = false

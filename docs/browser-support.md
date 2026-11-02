@@ -3375,6 +3375,35 @@ The image-view path avoids copying a base image that the next command
 replaces. Stable Chrome and other backends have not been established as
 affected; the default Playwright headless shell did not reproduce it.
 
+### Chromium and WebKit WebGL finish() returns early
+
+WebGL defines `finish()` by OpenGL ES 2.0 section 5.1, which does not let
+it return until every earlier command has taken effect. On Playwright
+Chromium 153.0.8010.12 and WebKit 26.6 on macOS, `finish()` returns in
+under 0.1 ms while 150-340 ms of earlier draws are still executing, on a
+page canvas and on an `OffscreenCanvas` in a worker. Chromium's `finish()`
+is deliberately a flush (`WebGLRenderingContextBase::finish`), and WebKit
+sends its `Finish` message to the GPU process without waiting for the
+reply. Firefox 155.0 waits. Standalone, self-judging reproductions are
+recorded as
+[`CHROMIUM-WEBGL-FINISH-RETURNS-EARLY`](../tests/runtime-workarounds/CHROMIUM-WEBGL-FINISH-RETURNS-EARLY/entry.md)
+and
+[`WEBKIT-WEBGL-FINISH-RETURNS-EARLY`](../tests/runtime-workarounds/WEBKIT-WEBGL-FINISH-RETURNS-EARLY/entry.md).
+
+A guest `glFinish`, `eglWaitClient` or `eglWaitGL` therefore also waits on
+a 4-byte copy between two private buffers, read back with
+`getBufferSubData` (`host/src/webgl/finish.ts`), on engines whose user agent
+contains `AppleWebKit/` (Blink and WebKit). That read blocks until the copy,
+issued after all of the guest's commands, has completed; both engines
+complete one context's commands in order, so the guest's work is complete
+too. This ordering was measured on macOS, not guaranteed by WebGL. With
+no work outstanding, a host completion measured 0.9-1.0 ms on Chromium and
+0.35 ms on WebKit, against 0.1 ms and 0.02 ms for `finish()` alone; most of
+it is the host's checked restoration of the two copy bindings. WebGL fences
+cannot be used: a sync object becomes signaled only between tasks, and the
+kernel worker answers `glFinish` inside one task. A released Chrome or
+Safari, Linux and Windows have not been checked.
+
 ### Firefox vertex-stage gl_DepthRange
 
 On Playwright Firefox 155.0 and 153.0 on macOS, when both shaders of a WebGL 2

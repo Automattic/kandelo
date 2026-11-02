@@ -18,6 +18,7 @@ import { reconcileClientArrayRestore } from "./client-array.js";
 import { querySurfaceCapabilities, validSurfaceCapabilitiesLength } from "./surface-capabilities.js";
 import { withMultisampleRead } from "./multisample.js";
 import { guestLimit } from "./limits.js";
+import { finishRenderer } from "./finish.js";
 /**
  * Synchronous GL query handler invoked by `host_gl_query`.
  *
@@ -641,8 +642,8 @@ export function runGlQuery(
       return 12;
     }
 
-    // glFinish. The query is answered after the host has decoded every
-    // earlier command, so finishing the context here completes them all.
+    // glFlush and glFinish. Each query is answered after the host has
+    // decoded every earlier command; finish.ts waits for their completion.
     case O.QOP_FLUSH:
       return checkedGlCall(b, () => {
         if (gl.isContextLost()) throw new Error("Cannot flush a lost renderer");
@@ -650,11 +651,7 @@ export function runGlQuery(
         if (gl.isContextLost()) throw new Error("Renderer lost during flush");
       }) ? 0 : -5;
     case O.QOP_FINISH:
-      return checkedGlCall(b, () => {
-        if (gl.isContextLost()) throw new Error("Cannot finish a lost renderer");
-        gl.finish();
-        if (gl.isContextLost()) throw new Error("Renderer lost during completion");
-      }) ? 0 : -5;
+      return finishRenderer(b) ? 0 : -5;
 
     // in: u32 target; out: u32 status
     case O.QOP_CHECK_FB_STATUS: {

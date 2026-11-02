@@ -507,6 +507,7 @@ host/test/webgl-external-texture.test.ts	source-only
 host/test/webgl-fence-export.test.ts	source-only
 host/test/webgl-fence-query.test.ts	source-only
 host/test/webgl-fences.test.ts	source-only
+host/test/webgl-finish.test.ts	source-only
 host/test/webgl-foreign-texture.test.ts	source-only
 host/test/webgl-framebuffer-dimensions.test.ts	source-only
 host/test/webgl-framebuffer-names.test.ts	source-only

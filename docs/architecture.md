@@ -5159,7 +5159,11 @@ transport completion remain in the compatibility inventory.
 EGL client/GL waits flush pending commands and require successful native
 finish through the existing empty QOP_FINISH query. The host preserves earlier
 GL errors and rejects failed completion or renderer loss, and acknowledges only
-after acceptance. The C wait keeps current ownership
+after acceptance. Chromium's and WebKit's WebGL `finish()` return before
+earlier draws complete, so on those engines the host also waits on a private
+buffer copy read back with `getBufferSubData` before acknowledging
+(`host/src/webgl/finish.ts`; see "Chromium and WebKit WebGL finish() returns
+early" in `docs/browser-support.md`). The C wait keeps current ownership
 and reports failure without holding the EGL metadata mutex during completion.
 GLES glFinish also exposes failed completion instead of discarding it. Swap
 interval validates display/context/draw ownership; every request clamps to the

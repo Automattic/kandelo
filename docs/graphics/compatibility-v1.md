@@ -182,13 +182,22 @@ the host path regresses none. In Chromium, `performance.compiler`,
 `performance.shader` and `stress.long` (1252 cases) went from 415 to 472
 Pass with none newly failing. 772 `performance.shader.operator.*` cases
 went from Fail (compile) to InternalError ("Unable to get sensible
-measurements"): their shaders now compile and run, and their GPU time
-scales with the loop count when read back, but `glFinish` is
-`WebGLRenderingContext.finish()`, which returned in under 0.1 ms in
-headless Chromium for a draw that took 1.7 s of GPU time, so dEQP's frame
-timing never sees the workload grow and keeps doubling it; one chunk then
-hit its deadline and four of its cases saw a stale `INVALID_OPERATION`.
-That is a `glFinish` completion gap, not a shader one. The four
+measurements"): their shaders now compile and run. This was first
+attributed to `glFinish`, but these cases time each frame with a 1x1
+`glReadPixels` (`OperatorPerformanceCase::render`), not `glFinish`, and
+with `glFinish` completion fixed (below) a 20-case sample is still
+InternalError on all three engines. The likely cause, from reading the
+test and not yet confirmed by a trace: while searching for a high
+workload for its second program, the test sets `u_numLoopIterations`
+through `prepareWorkload(0, ...)` (`es2pShaderOperatorTests.cpp:775`),
+that is with the first program's uniform location while the second
+program is current. Kandelo's uniform locations are unique across
+programs, so the call is `INVALID_OPERATION` and the second program's
+loop count never grows ("Even workload size 536870912 doesn't give high
+enough frame time for program 1"); a native driver that numbers both
+programs' identical uniforms alike hides the mistake. A leftover
+`INVALID_OPERATION` would also explain the four cases that report it at
+`glGenBuffers` (line 699). The four
 `multiplication.1000_operations` compiler cases fail in either language
 (ANGLE: "Expression too complex"). Firefox and WebKit performance and
 stress groups were not rerun.
@@ -198,6 +207,28 @@ when both stages read it and the program has another active uniform. A
 standalone self-judging reproduction confirms it on Firefox 155 only; it is
 registered as `FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM` with a Firefox-scoped,
 tagged substitution of a private uniform.
+
+**glFinish completion (2026-11-02).** `glFinish`, `eglWaitClient` and
+`eglWaitGL` returned before earlier draws completed on Chromium, because
+Chromium's WebGL `finish()` is a flush and WebKit's sends an asynchronous
+message. Standalone reproductions confirm both (registry entries
+`CHROMIUM-WEBGL-FINISH-RETURNS-EARLY`, `WEBKIT-WEBGL-FINISH-RETURNS-EARLY`;
+Firefox's `finish()` waits). On engines whose user agent contains
+`AppleWebKit/`, `QOP_FINISH` now also waits on a private 4-byte buffer copy
+read back with `getBufferSubData` (`host/src/webgl/finish.ts`). In
+`dEQP-GLES2.functional.flush_finish.finish` on Chromium, the time
+`glFinish` takes per draw call went from 0.17 to 19.5 us and the time of
+the read after it from 18.9 to 0.30 us (before: the full-suite run at
+540b2fd5e2): the work now completes inside `glFinish`. On WebKit the old
+path already waited (9.0 us/call before, 13.6 after), because the host's `getError` after `finish()` is a
+synchronous GPU-process round trip queued behind the asynchronous Finish;
+the explicit completion no longer depends on that. The five `flush_finish`
+cases keep their results on all three engines (`finish`, `finish_wait` and
+`flush` CompatibilityWarning, `wait` Pass), and `flush_wait`, which hit
+the chunk deadline in the full run, passed. The CompatibilityWarnings
+remain because dEQP compares the per-call wait with its calibrated
+per-call frame time, about 3 ms here, dominated by command submission
+rather than GPU time.
 
 **Firefox-only dEQP-GLES2 failures (2026-11-02).** Each Firefox-only
 failure of the full runs traced to a Firefox WebGL 2 defect that a
