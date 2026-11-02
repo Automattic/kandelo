@@ -3205,7 +3205,7 @@ export class WasmPosixKernel {
             }
             const result = prepareSurfaceCreation(b, creation, this.gl.gpuBo(creation.targetBoId) ?? undefined, canvas, gl => {
               this.gl_muxers.get(gl)?.captureCurrentErrors();
-            });
+            }, () => this.#sharedGlContext());
             const prepared = result.prepared;
             if (!prepared) return result.rc;
             try {

@@ -22,9 +22,13 @@ export function validSurfaceCreation(v: GlSurfaceCreation): boolean {
     && (v.kind === 1 || v.targetBoId === 0);
 }
 
-/** Allocate privately. Commit/cancel in this synchronous renderer turn. */
+/** Allocate privately. Commit/cancel in this synchronous renderer turn.
+ * `deviceRenderer` is the renderer a context of this session would adopt
+ * when the session has neither a renderer nor a canvas; only a pbuffer,
+ * which needs storage but no presentation, may allocate on it. */
 export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
-  target?: GlSurfaceTarget, canvas = b.canvas, captureErrors?: (gl: WebGL2RenderingContext) => void): { rc: number; prepared?: {
+  target?: GlSurfaceTarget, canvas = b.canvas, captureErrors?: (gl: WebGL2RenderingContext) => void,
+  deviceRenderer?: () => WebGL2RenderingContext | null): { rc: number; prepared?: {
     width: number; height: number; commit(): void; cancel(): void;
   } } {
   if (!validSurfaceCreation(v)) return { rc: -22 };
@@ -64,9 +68,14 @@ export function prepareSurfaceCreation(b: GlBinding, v: GlSurfaceCreation,
         candidate.multisample = multisample; candidate.renderTargetFbo = multisample.fbo;
       }
     } else {
-      const gl = b.gl ?? canvas?.getContext("webgl2", {
+      // EGL 1.5 section 3.5.2: a pbuffer is created from a display and a
+      // config alone; no context need exist. Before this session creates a
+      // context it has no renderer of its own, so the pbuffer is allocated on
+      // the device renderer its context will adopt (host_gl_create_context).
+      // A window surface still requires its canvas or target BO.
+      const gl = b.gl ?? (canvas ? canvas.getContext("webgl2", {
         antialias: false, premultipliedAlpha: false, depth: true, stencil: true, preserveDrawingBuffer: true,
-      }) as WebGL2RenderingContext | null;
+      }) as WebGL2RenderingContext | null : v.kind === 2 ? deviceRenderer?.() ?? null : null);
       if (!gl || gl.isContextLost()) return { rc: -19 };
       captureErrors?.(gl);
       if (!supported(gl)) { retireSurface(candidate); return { rc: -22 }; }

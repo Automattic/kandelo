@@ -580,6 +580,49 @@ it("does not turn a previously created master-process pbuffer into a KMS scanout
   expect([canvas.width,canvas.height]).toEqual([11,7]); expect(blits).toBe(0); expect(claims).toEqual([]);
 });
 
+it("creates a pbuffer before any context on the device renderer that context adopts", () => {
+  // EGL 1.5 section 3.5.2: eglCreatePbufferSurface needs a display and a
+  // config, not a context. dEQP (create_surface, render, multicontext,
+  // multithread, negative_api) creates the pbuffer first.
+  const claims:string[] = []; let blits = 0;
+  const gl = new Proxy({isContextLost:()=>false,getError:()=>0,getExtension:()=>null,
+    getParameter:(p:number)=>p === 0x84e0 ? 0x84c0 : null,
+    createTexture:()=>({}),createFramebuffer:()=>({}),createRenderbuffer:()=>({}),
+    checkFramebufferStatus:()=>0x8cd5,blitFramebuffer:()=>{blits++;},
+  },{get:(target,key)=>Reflect.get(target,key)??(()=>null)}) as unknown as WebGL2RenderingContext;
+  const canvas = {width:11,height:7,getContext:()=>gl} as unknown as OffscreenCanvas;
+  const {kernel,imports,memory} = harness({getKmsCrtcIds:()=>[1],getKmsCanvas:()=>canvas,
+    markKmsCanvasGlOwned:()=>claims.push("owned"),onKmsGlPresented:()=>claims.push("presented")});
+  imports.host_gl_bind(7,128,0,11,1n);
+  const b = kernel.gl.get(7,11)!, original = b.surface;
+  const attrs = new Uint32Array(memory.buffer,64,9);
+  // A window surface still needs its canvas or target BO.
+  attrs.set([1,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,70,64,36,11)).toBe(-19);
+  expect(b.surface).toBe(original); expect(b.surfaceId).toBeNull();
+  attrs.set([2,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(0);
+  expect([...attrs]).toEqual([2,4,3,1,0,0,0,0,0]);
+  expect(b.surfaceId).toBe(71); expect(b.surface.gl).toBe(gl);
+  expect(b.gl).toBeNull(); expect(b.contextId).toBeNull(); expect(b.canvas).toBeNull();
+  expect(imports.host_gl_create_context(7,21,0,0,11)).toBe(0);
+  expect(b.gl).toBe(gl);
+  expect(imports.host_gl_make_current(7,21,71,71,11)).toBe(0);
+  expect(b.shadow.viewport).toEqual([0,0,4,3]);
+  expect(imports.host_gl_present(7,11)).toBe(0);
+  imports.host_gl_make_current(7,0,0,0,11); imports.host_gl_unbind(7,11);
+  expect([canvas.width,canvas.height]).toEqual([11,7]); expect(blits).toBe(0); expect(claims).toEqual([]);
+});
+
+it("fails a pbuffer with ENODEV when the host has no renderer at all", () => {
+  const {kernel,imports,memory} = harness();
+  imports.host_gl_bind(7,128,0,11,1n);
+  const b = kernel.gl.get(7,11)!;
+  new Uint32Array(memory.buffer,64,9).set([2,4,3,1,0,0,0,0,0]);
+  expect(imports.host_gl_create_surface(7,71,64,36,11)).toBe(-19);
+  expect(b.surfaceId).toBeNull(); expect(b.gl).toBeNull();
+});
+
 it("attaches master scanout by display file identity across process aliases", () => {
   const { gl } = foreignTextureGl();
   // The storage stand-in does not otherwise model context availability.
