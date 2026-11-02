@@ -202,6 +202,11 @@ function createRetryHarness(
     kernel_dequeue_signal: () => 0,
     kernel_get_fd_accept_wake_idx: vi.fn(() => -1),
     kernel_get_fd_pipe_idx: vi.fn(() => -1),
+    // Process registration binds to the Rust image generation (b746c31c64).
+    kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+      new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+      return 8;
+    },
     kernel_get_process_exit_signal: () => -1,
     kernel_get_process_state: () => 0,
     kernel_get_socket_timeout_ms: vi.fn(() => 0n),

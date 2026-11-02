@@ -1217,13 +1217,27 @@ kernel operations that reuse scratch. The same generated ABI surface owns the
 `poll` and `epoll` event bits and `fd_set` sizing used by host-side readiness
 marshalling, so the host does not restate those values.
 
-For pipe-readable and pipe-writable records, the host first retries ordinary
-`poll()` and `ppoll()` channels whose captured kernel pipe index matches the
-event. A signal-mask-swapping `ppoll()` remains parked for the existing
-signal-safe grace period, and the broad fallback still covers wait classes
-without an exact pipe identity, including `select()` and `pselect6()`.
-Host-originated pipe bridge notifications use the same target-before-fallback
-order in the shared Node.js/browser runtime.
+For pipe-readable and pipe-writable records, the host first retries `poll()`
+and `ppoll()` channels whose captured kernel pipe index matches the event,
+with or without a temporary signal mask. The broad fallback, which runs on
+the next worker turn, covers wait classes without an exact pipe identity,
+including `select()` and `pselect6()`. Host-originated pipe bridge
+notifications use the same target-before-fallback order in the shared
+Node.js/browser runtime.
+
+No readiness wake is delayed because the waiter swapped its signal mask.
+POSIX requires `pselect()` and `ppoll()` to install the mask and wait as one
+atomic step, so a signal the mask unblocks that is pending or generated while
+the call is blocked interrupts it with `EINTR`. It does not require a signal
+generated after a descriptor became ready to win over that descriptor: the
+call may return the ready descriptor and restore the caller's mask, and the
+signal then stays pending until the caller unblocks it. The kernel keeps the
+temporary mask installed for as long as the wait is parked, and generating a
+signal retries parked waits immediately, so no signal can be lost between the
+swap and the wait. The host used to hold masked waits back for 50 ms after
+each readiness event so that a peer's "write, then kill" would be observed as
+`EINTR`; that ordering is unspecified, and the delay cost an interactive shell
+waiting in a masked `pselect6()` up to 50 ms per keystroke.
 
 Finite `poll()`/`ppoll()` and `select()`/`pselect6()` waits retain one absolute
 deadline from their first attempt. Targeted readiness events, broad wakeups,
@@ -1608,10 +1622,10 @@ kernel retains it, avoiding an extra export call on syscalls with no waiter.
 The shared host drains it alongside the packed wake stream
 and reschedules blocked read, poll, select, and epoll retries. PTY queues have
 no pipe slot identity, so this notification uses the existing broad readiness
-retry path without impersonating a pipe event. Ordinary waiters retry as soon
-as the entry scope is revoked, even if an unrelated signal-masked wait is
-parked. Signal-mask wait deferral and finite deadlines remain owned by the
-normal retry implementation. Host PTY
+retry path without impersonating a pipe event. Every parked waiter, including
+a `ppoll()` or `pselect()` with a temporary signal mask, retries as soon as the
+entry scope is revoked. Finite deadlines remain owned by the normal retry
+implementation. Host PTY
 input schedules its reader wake independently of output callback attachment.
 
 Terminal resize storage and signal routing belong to the shared process table.

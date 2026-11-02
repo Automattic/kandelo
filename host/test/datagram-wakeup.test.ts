@@ -66,7 +66,7 @@ afterEach(() => {
 });
 
 describe("datagram send-state wakeups", () => {
-  it("retries blocked writes immediately without bypassing signal-safe poll deferral", async () => {
+  it("retries blocked writes synchronously and parked polls on the next turn", async () => {
     vi.useFakeTimers();
     const { handleChannel, worker } = createWorkerHarness();
     const processMemory = createSharedMemory();
@@ -108,7 +108,6 @@ describe("datagram send-state wakeups", () => {
       timer: null,
       channel: pollChannel,
       pipeIndices: [],
-      needsSignalSafeWake: true,
     });
 
     worker.drainAndProcessWakeupEvents();
@@ -120,10 +119,12 @@ describe("datagram send-state wakeups", () => {
     expect(Number(channelView.getBigInt64(CH_RETURN, true))).toBe(42);
     expect(channelView.getUint32(CH_ERRNO, true)).toBe(0);
     expect(worker.pendingPollRetries.has(channel)).toBe(false);
+    // The poll has no datagram identity, so the broad wake reaches it. That
+    // wake runs on the next immediate, never after a grace period.
     expect(worker.pendingPollRetries.has(pollChannel)).toBe(true);
 
-    vi.advanceTimersByTime(49);
-    expect(worker.pendingPollRetries.has(pollChannel)).toBe(true);
+    vi.advanceTimersByTime(0);
+    expect(worker.pendingPollRetries.has(pollChannel)).toBe(false);
     expect(fallback).not.toHaveBeenCalled();
   });
 });

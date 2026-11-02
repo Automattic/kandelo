@@ -908,76 +908,6 @@ const SYS_EPOLL_WAIT = ABI_SYSCALLS.EpollWait;
 const SYS_SCHED_GETAFFINITY = ABI_SYSCALLS.SchedGetaffinity;
 const SYS_PRCTL = ABI_SYSCALLS.Prctl;
 
-/**
- * Grace period for signal-mask-swapping ppoll/pselect wakeups after a pipe
- * event.
- *
- * READ THIS BEFORE TRUSTING THE CONSTANT: its justification has expired, and
- * it is retained pending a decision, not because it is known to be needed.
- *
- * WHAT IT DOES. When a broad wake coincides with a parked `ppoll`/`pselect`
- * that entered its wait with an atomic sigmask swap, the wake is postponed by
- * this long, so a signal arriving just after the descriptor event still has a
- * chance to be OBSERVED before the call completes and restores the caller's
- * mask. It is upstream of delivery: it buys the signal a chance to be seen,
- * not a chance to be handled. It does not fire for pipe reader/writer wakes or
- * non-signal-safe poll wakes, which run synchronously through
- * `scheduleWakeBlockedRetries`.
- *
- * It is a DURATION, not a switch: even at 0 the wake goes through a timer
- * callback, so 0 shortens the grace period to one timer turn rather than
- * removing it.
- *
- * WHY THE JUSTIFICATION EXPIRED. The only conformance case that ever
- * exercised it is `signal/ppoll-block-sleep-write-raise`, and that case was
- * racy only because `scripts/run-sortix-tests.sh` compiled the suite with
- * `-D__sortix__`, asserting this platform lacks SIGSTOP/SIGCONT. It does not.
- * Upstream makes the test deterministic by stopping the parent, writing the
- * pipe, signalling, then continuing; the macro selected a fallback whose own
- * comment reads "Sortix does not implement SIGSTOP yet, so just race
- * instead". With the macro scoped to the suite whose capability claim is
- * actually true, the test takes upstream's deterministic path.
- *
- * MEASURED, same test, same harness, before and after that fix:
- *
- *   before   0 ms: 7 failures in 40      50 ms: 0 in 40
- *   after    0 ms: 0 failures in 190     50 ms: 0 in 190
- *
- * The post-fix runs bound the 0 ms failure rate at <= 1.56% (95%, zero
- * failures in 190); the pre-fix rate was 17.5%. P(all 7 failures landing in
- * the pre-fix arm by chance) = 3e-6.
- *
- * WHAT THAT DOES AND DOES NOT SETTLE. It settles that no conformance test now
- * motivates this constant. It does NOT settle that no program needs it: the
- * underlying race is unchanged. The wake is a host-scheduled task, and it can
- * still complete before a signal that the writing process has not yet sent.
- * What the fix removed is the test that was forced to exercise it.
- *
- * The reason that is tolerable is a specification point rather than a
- * measurement: POSIX does not require the signal to win that race. In the
- * failing shape the signal is GENERATED after the writer's `write()` has
- * already returned, so the descriptor is ready first; `pselect`'s atomicity
- * guarantee is that a signal arriving in the mask-swap window cannot be lost
- * BETWEEN the swap and the wait, not that a waiter must prefer a
- * not-yet-generated signal over a ready descriptor. (`ppoll` is not in POSIX
- * at all; `pselect` is.) A program depending on the other order depends on
- * unspecified behaviour.
- *
- * The case POSIX DOES require -- a signal already pending when the mask
- * change unblocks it must be delivered before the call returns -- is a
- * different property, is implemented, and is not at risk here: all three
- * `raise`-before-wait tests (`ppoll-block-raise`, `ppoll-block-raise-write`,
- * `ppoll-block-close-raise`) passed at every delay tested including 0.
- *
- * SO: this is a hardware-dependent mitigation for unspecified behaviour, not
- * a tuned parameter and not a correctness guarantee. Its value cannot be
- * defended on hardware nobody has measured -- our own loads varied by an
- * order of magnitude across one afternoon and moved the failure rate with
- * them. Removing it is the likely right answer and is awaiting a maintainer
- * decision; until then it stays at its shipped value rather than being
- * lowered to a number that would carry the same problem in smaller type.
- */
-const SIGNAL_SAFE_POLL_WAKE_DELAY_MS = 50;
 
 /** Syscall numbers for signals */
 const SYS_KILL = ABI_SYSCALLS.Kill;
@@ -3118,21 +3048,6 @@ export class CentralizedKernelWorker {
     channel: ChannelInfo;
     pipeIndices: number[];
     acceptIndices?: number[];
-    /** True if this retry was entered via ppoll with an atomic sigmask swap.
-     *  Broad wakes triggered by cross-process pipe events must be deferred
-     *  a few ms for these retries so follow-up cross-process signals have
-     *  time to land before ppoll observes "pipe ready, no signal" and
-     *  restores its mask. See scheduleWakeBlockedRetriesDeferred and
-     *  tests/sortix/os-test/signal/ppoll-block-sleep-write-raise. */
-    needsSignalSafeWake?: boolean;
-    /**
-     * Monotonic-ms bound for sizing this entry's safety timer, or -1.
-     *
-     * Not the authoritative deadline -- the kernel holds that. This exists so
-     * a deferred re-park does not overshoot the caller's timeout, and is
-     * monotonic so a system clock step cannot stretch or collapse it.
-     */
-    deadlineHintMs?: number;
     /** Generic write-like fallback that has no targetable pipe token. */
     isWriteRetry?: boolean;
   }>();
@@ -3163,11 +3078,6 @@ export class CentralizedKernelWorker {
     timer: any;  // setTimeout or setImmediate handle
     channel: ChannelInfo;
     origArgs: number[];
-    /** Monotonic-ms bound for safety-timer sizing, -1 for infinite. Not the
-     *  authoritative deadline; the kernel holds that. */
-    deadlineHintMs: number;
-    /** True if this pselect6 retry has an atomic sigmask swap. */
-    needsSignalSafeWake?: boolean;
     /** SYS_SELECT (103) or SYS_PSELECT6 (252). Determines retry-dispatch
      *  target when a wake fires; the two have different time-struct shapes. */
     syscallNr?: number;
@@ -7936,7 +7846,7 @@ export class CentralizedKernelWorker {
       (entry) => {
         if (wakeSlaveReader) {
           entry.deferProtocolEffect(() => {
-            this.wakeAllBlockedRetries(true);
+            this.wakeAllBlockedRetries();
             this.scheduleWakeBlockedRetries();
           });
         }
@@ -15817,15 +15727,13 @@ export class CentralizedKernelWorker {
   private wakeBlockedPollRetriesForPipe(
     pipeIdx: number,
     pidFilter?: number,
-    options: { deferSignalSafe?: boolean } = {},
-  ): boolean {
+  ): void {
     // retrySyscall runs handleSyscall synchronously, which can re-insert
     // the same key via pendingPollRetries.set when the kernel returns
     // EAGAIN. JS Map iterators are not snapshots — re-inserted entries
     // appear at the new tail and the iterator yields them, livelocking
     // wakeup-event / poll / poll-register inside one tick. Mirror
     // wakeAllBlockedRetries' snapshot-and-skip-if-replaced pattern.
-    let deferredSignalSafeWake = false;
     const matches = Array.from(this.pendingPollRetries.entries()).filter(
       ([, entry]) =>
         (pidFilter === undefined || entry.channel.pid === pidFilter)
@@ -15833,10 +15741,6 @@ export class CentralizedKernelWorker {
     );
     for (const [key, entry] of matches) {
       if (this.pendingPollRetries.get(key) !== entry) continue;
-      if (options.deferSignalSafe && entry.needsSignalSafeWake) {
-        deferredSignalSafeWake = true;
-        continue;
-      }
       if (entry.timer !== null) {
         this.#cancelRegisteredTimeout(entry.timer);
       }
@@ -15845,7 +15749,6 @@ export class CentralizedKernelWorker {
         this.retrySyscall(entry.channel);
       }
     }
-    return deferredSignalSafeWake;
   }
 
   /**
@@ -16116,11 +16019,10 @@ export class CentralizedKernelWorker {
       ptyReadinessChanged = takePtyReadiness?.() === 1;
     }
     if (ptyReadinessChanged) {
-      // Ordinary PTY waits must not sit behind an already scheduled broad
-      // wake or another process's signal grace period. Retry them after this
-      // scope is revoked; masked waits stay on the deferred path below.
+      // PTY waits must not sit behind an already scheduled broad wake. Retry
+      // them as soon as this scope is revoked.
       entry.deferProtocolEffect(() => {
-        this.wakeAllBlockedRetries(true);
+        this.wakeAllBlockedRetries();
       });
     }
     // Kandelo exchange: only while the host has exchange activity, so idle
@@ -16193,7 +16095,6 @@ export class CentralizedKernelWorker {
 
     let needBroadWake = false;
     let needDatagramWriterWake = false;
-    let needSignalSafeDeferredWake = false;
     let needWaitCompletionDrain = false;
     let needHostFencePass = false;
 
@@ -16277,15 +16178,7 @@ export class CentralizedKernelWorker {
         wakeType
         & (WAKEUP_EVENT_TYPES.readable | WAKEUP_EVENT_TYPES.writable)
       ) {
-        if (
-          this.wakeBlockedPollRetriesForPipe(
-            wakeIdx,
-            undefined,
-            { deferSignalSafe: true },
-          )
-        ) {
-          needSignalSafeDeferredWake = true;
-        }
+        this.wakeBlockedPollRetriesForPipe(wakeIdx);
       }
 
       if (wakeType & WAKEUP_EVENT_TYPES.accept) {
@@ -16296,9 +16189,8 @@ export class CentralizedKernelWorker {
         // Datagram queues have no pipe token that identifies every blocked
         // sender. Retry generic blocked writes synchronously so a short
         // SO_SNDTIMEO cannot win after the send has become ready or acquired
-        // an immediate error. Poll, select, and epoll still use the broad path
-        // below so ppoll/pselect's deliberate signal-safe wake deferral
-        // remains intact.
+        // an immediate error. Poll, select, and epoll use the broad path
+        // below.
         needDatagramWriterWake = true;
       }
 
@@ -16313,29 +16205,26 @@ export class CentralizedKernelWorker {
       }
     }
 
-    // Any kernel readiness event may affect poll/select retries.
+    // Any kernel readiness event may affect poll/select retries. Every one
+    // of them retries through the ordinary path, including a ppoll/pselect6
+    // that installed a temporary signal mask.
     //
-    // If any of those retries is a signal-mask-swapping ppoll/pselect6,
-    // defer the wake a few ms. A pipe write from process X is often
-    // immediately followed by a cross-process signal (kill) from X —
-    // e.g. "write to pipe, then kill parent" — where the writer expects
-    // a blocked ppoll in the reader to observe BOTH events atomically.
-    // On a real kernel that works because X's two syscalls execute
-    // before the scheduler runs the reader. In our retry-based
-    // shared kernel, the pipe wakeup can fire a ppoll retry BEFORE
-    // X's follow-up kill is even sent by X's worker (Atomics.notify →
-    // uv_async round-trip takes 1–5ms). If the retry fires first, ppoll
-    // returns POLLIN and restores its sigmask; the late signal is then
-    // blocked and the handler never fires. See
-    // tests/sortix/os-test/signal/ppoll-block-sleep-write-raise.
-    //
-    // Deferring the broad wake a few ms gives X's follow-up syscalls
-    // time to land. Kill-triggered wakes (line ~2050) always use the
-    // immediate setImmediate path — by the time kill has been processed
-    // the signal is already queued, so there's no race. Pipe
-    // reader/writer and non-signal-safe poll wakes above run synchronously
-    // (not via this deferred path). Only matching signal-safe ppoll entries
-    // remain parked for the grace period.
+    // WHY masked waits are not held back: they used to be, by 50 ms, so that
+    // a signal a peer sent just AFTER its write ("write, then kill") would
+    // land before the wait returned readiness. POSIX does not ask for that
+    // order. pselect() and ppoll() must install the mask and wait as one
+    // atomic step, so a signal that the mask unblocks and that is pending or
+    // generated while the call is blocked interrupts it (EINTR). Once a
+    // descriptor is ready the call may complete instead, restoring the
+    // caller's mask; a signal generated afterwards stays pending until the
+    // caller unblocks it (XSH 2.4.1). Nothing can be lost here: the kernel
+    // keeps the temporary mask installed for as long as the wait is parked,
+    // and generating a signal retries parked waits at once (the
+    // kill/tkill/rt_sigqueueinfo branch of syscall completion, and
+    // sendSignalToProcess for host-originated signals). The delay fixed no
+    // conformance case once the Sortix runners stopped claiming Kandelo
+    // lacks SIGSTOP, and it cost every shell at a prompt -- bash waits for
+    // input in a masked pselect6 -- up to 50 ms per keystroke.
     if (needHostFencePass && this.#runHostFencePassWithinKernelEntry(entry)) {
       needBroadWake = true;
     }
@@ -16345,15 +16234,8 @@ export class CentralizedKernelWorker {
     if (needDatagramWriterWake) {
       this.wakeBlockedFallbackWriters();
     }
-    if (needBroadWake || ptyReadinessChanged) {
-      if (
-        needSignalSafeDeferredWake
-        || this.anyPendingRetryNeedsSignalSafeWake()
-      ) {
-        this.scheduleWakeBlockedRetriesDeferred(entry);
-      } else if (needBroadWake) {
-        this.scheduleWakeBlockedRetries(entry);
-      }
+    if (needBroadWake) {
+      this.scheduleWakeBlockedRetries(entry);
     }
   }
 
@@ -16468,89 +16350,10 @@ export class CentralizedKernelWorker {
     }
   }
 
-  private anyPendingRetryNeedsSignalSafeWake(): boolean {
-    for (const entry of this.pendingPollRetries.values()) {
-      if (entry.needsSignalSafeWake) return true;
-    }
-    for (const entry of this.pendingSelectRetries.values()) {
-      if (entry.needsSignalSafeWake) return true;
-    }
-    return false;
-  }
-
   /** Key for the blocked-retry maps. Scoped by pid because channelOffset
    *  values repeat across processes (same layout in each process memory). */
   private retryKey(channel: ChannelInfo): string {
     return `${channel.pid}:${channel.channelOffset}`;
-  }
-
-  /** Same as scheduleWakeBlockedRetries but delays by a few ms to allow
-   *  follow-up cross-process syscalls from the event source to land. */
-  private scheduleWakeBlockedRetriesDeferred(
-    entry?: KernelWorkerEntryContext,
-  ): void {
-    const schedule = (): undefined => {
-      if (this.pendingPollRetries.size === 0 && this.pendingSelectRetries.size === 0 && this.pendingPipeReaders.size === 0 && this.pendingPipeWriters.size === 0) return undefined;
-      this.postponeSignalSafePollRetries(SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
-      this.postponeSignalSafeSelectRetries(SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
-      if (this.wakeScheduled) return undefined;
-      this.wakeScheduled = true;
-      this.#registerTimeout(() => {
-        this.wakeScheduled = false;
-        this.wakeAllBlockedRetries();
-      }, SIGNAL_SAFE_POLL_WAKE_DELAY_MS);
-      return undefined;
-    };
-    if (entry) entry.deferProtocolEffect(schedule);
-    else schedule();
-  }
-
-  private postponeSignalSafePollRetries(delayMs: number): void {
-    const now = this.#monotonicNowMs();
-    for (const [key, entry] of this.pendingPollRetries) {
-      if (!entry.needsSignalSafeWake) continue;
-      if (entry.timer !== null) {
-        this.#cancelRegisteredTimeout(entry.timer);
-      }
-
-      const remainingMs = entry.deadlineHintMs && entry.deadlineHintMs > 0
-        ? Math.max(1, entry.deadlineHintMs - now)
-        : delayMs;
-      const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
-      entry.timer = this.#registerTimeout(() => {
-        if (this.pendingPollRetries.get(key) !== entry) return;
-        this.pendingPollRetries.delete(key);
-        if (this.isRegisteredChannel(entry.channel)) {
-          this.retrySyscall(entry.channel);
-        }
-      }, retryMs);
-    }
-  }
-
-  /** Keep pselect's fallback timer from bypassing the signal-safe wake grace. */
-  private postponeSignalSafeSelectRetries(delayMs: number): void {
-    const now = this.#monotonicNowMs();
-    for (const [key, entry] of this.pendingSelectRetries) {
-      if (!entry.needsSignalSafeWake) continue;
-      if (entry.timer !== null) {
-        this.#cancelRegisteredTimeout(entry.timer);
-        this.#cancelRegisteredImmediate(entry.timer);
-      }
-
-      const remainingMs = entry.deadlineHintMs > 0
-        ? Math.max(1, entry.deadlineHintMs - now)
-        : delayMs;
-      const retryMs = Math.max(1, Math.min(delayMs, remainingMs));
-      entry.timer = this.#registerTimeout(() => {
-        if (this.pendingSelectRetries.get(key) !== entry) return;
-        this.pendingSelectRetries.delete(key);
-        if (!this.isRegisteredChannel(entry.channel)) return;
-        // WHY: the timer owns no kernel authority. The ordinary retry root
-        // re-reads the still-pending mailbox and dispatches the correct select
-        // shape under a fresh exact entry scope.
-        this.retrySyscall(entry.channel);
-      }, retryMs);
-    }
   }
 
   /**
@@ -16595,19 +16398,12 @@ export class CentralizedKernelWorker {
    * Wake all blocked poll/pselect6 retries by cancelling their setImmediate
    * timers and immediately re-executing the syscalls.
    */
-  private wakeAllBlockedRetries(preserveSignalSafeWaits = false): void {
+  private wakeAllBlockedRetries(): void {
     // Snapshot and clear — retries may re-add themselves if still not ready
-    let pollEntries = Array.from(this.pendingPollRetries.entries());
-    let selectEntries = Array.from(this.pendingSelectRetries.entries());
-    if (preserveSignalSafeWaits) {
-      pollEntries = pollEntries.filter(([, retry]) => !retry.needsSignalSafeWake);
-      selectEntries = selectEntries.filter(([, retry]) => !retry.needsSignalSafeWake);
-      for (const [key] of pollEntries) this.pendingPollRetries.delete(key);
-      for (const [key] of selectEntries) this.pendingSelectRetries.delete(key);
-    } else {
-      this.pendingPollRetries.clear();
-      this.pendingSelectRetries.clear();
-    }
+    const pollEntries = Array.from(this.pendingPollRetries.entries());
+    const selectEntries = Array.from(this.pendingSelectRetries.entries());
+    this.pendingPollRetries.clear();
+    this.pendingSelectRetries.clear();
 
     for (const [_key, entry] of pollEntries) {
       if (!this.isRegisteredChannel(entry.channel)) continue;
@@ -16691,18 +16487,6 @@ export class CentralizedKernelWorker {
       this.#cancelRegisteredTimeout(timer);
       this.socketTimeoutTimers.delete(channel);
     }
-  }
-
-  /**
-   * A monotonic millisecond clock for host retry-timer sizing.
-   *
-   * Timers are relative, so this never needs to agree with the kernel's
-   * deadline; it only needs not to jump. `performance.now()` is monotonic on
-   * both hosts -- Node backs it with `process.hrtime`, browsers with the
-   * document timeline -- where `Date.now()` follows the system clock.
-   */
-  #monotonicNowMs(): number {
-    return performance.now();
   }
 
   /**
@@ -16791,13 +16575,6 @@ export class CentralizedKernelWorker {
     // Round up: a sub-millisecond remainder is still time left to wait, and
     // rounding it to zero would report a timeout that has not happened.
     return Math.max(1, Math.ceil(Number(ns) / 1_000_000));
-  }
-
-  /** Absolute monotonic-ms deadline for sizing a host retry timer, or -1. */
-  private waitDeadlineHintMs(remainingMs: number): number {
-    return remainingMs === WAIT_REMAINING_INFINITE
-      ? -1
-      : this.#monotonicNowMs() + remainingMs;
   }
 
   /** Retire this channel's kernel-owned wait deadline, if it has one. */
@@ -17943,13 +17720,6 @@ export class CentralizedKernelWorker {
         this.completeChannelRawAndRelisten(channel, -1, EIO, entry);
         return;
       }
-      // PPOLL with a non-null sigmask pointer swaps the signal mask for the
-      // duration of the wait. Broad wakes from cross-process pipe writes
-      // need a short grace period for such callers so follow-up signals
-      // from the writer land before ppoll returns with fds ready.
-      const needsSignalSafeWake =
-        syscallNr === SYS_PPOLL
-        && Number(retainedGenericSnapshot.dispatch.adjustedArgs[3] ?? 0) !== 0;
       if (timeoutMs === 0) {
         if (
           syscallNr === SYS_PPOLL
@@ -18070,8 +17840,6 @@ export class CentralizedKernelWorker {
           channel,
           pipeIndices,
           acceptIndices,
-          needsSignalSafeWake,
-          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
         });
         return;
       }
@@ -18110,8 +17878,6 @@ export class CentralizedKernelWorker {
         channel,
         pipeIndices,
         acceptIndices,
-        needsSignalSafeWake,
-        deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
       });
       return;
     }
@@ -18526,7 +18292,6 @@ export class CentralizedKernelWorker {
     read: Uint8Array | null;
     write: Uint8Array | null;
     except: Uint8Array | null;
-    usedMask: boolean;
   } {
     const scratch = this.#requireMainScratchRegion();
 
@@ -18639,7 +18404,6 @@ export class CentralizedKernelWorker {
         except: retVal >= 0 && exceptBytes !== null
           ? lease.copyOut(fdSetOffset(2), SELECT_FD_SET_BYTES)
           : null,
-        usedMask: maskBytes !== null,
       };
     });
   }
@@ -18884,8 +18648,6 @@ export class CentralizedKernelWorker {
             timer,
             channel,
             origArgs,
-            deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
-            needsSignalSafeWake: false,
             syscallNr: SYS_SELECT,
           });
         });
@@ -18895,8 +18657,6 @@ export class CentralizedKernelWorker {
           timer: null as any,
           channel,
           origArgs,
-          deadlineHintMs: -1,
-          needsSignalSafeWake: false,
           syscallNr: SYS_SELECT,
         });
       }
@@ -19001,8 +18761,6 @@ export class CentralizedKernelWorker {
           timer,
           channel,
           origArgs,
-          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
-          needsSignalSafeWake: false,
           syscallNr: SYS_SELECT,
         });
       });
@@ -19165,10 +18923,6 @@ export class CentralizedKernelWorker {
         )
       ) return;
 
-      // pselect6 with a non-null sigmask pointer has the same late-signal
-      // race as ppoll. See scheduleWakeBlockedRetriesDeferred.
-      const needsSignalSafeWake = attempt.usedMask;
-
       // nfds=0: pure sleep/sigsuspend-like behavior.
       // With finite timeout: sleep for that duration.
       // With infinite timeout: block until signal (wakeAllBlockedRetries).
@@ -19186,9 +18940,7 @@ export class CentralizedKernelWorker {
             }, sleepMs);
             this.pendingSelectRetries.set(channel, {
               ...this.#cancellationPointIdentity(channel),
-              timer, channel, origArgs,
-              deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
-              needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+              timer, channel, origArgs, syscallNr: SYS_PSELECT6,
             });
           });
         } else {
@@ -19196,8 +18948,7 @@ export class CentralizedKernelWorker {
           // No timer — wakeAllBlockedRetries will trigger the retry.
           this.pendingSelectRetries.set(channel, {
             ...this.#cancellationPointIdentity(channel),
-            timer: null as any, channel, origArgs, deadlineHintMs: -1,
-            needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+            timer: null as any, channel, origArgs, syscallNr: SYS_PSELECT6,
           });
         }
         return;
@@ -19217,9 +18968,7 @@ export class CentralizedKernelWorker {
         }, Math.min(retryMs, 50));
         this.pendingSelectRetries.set(channel, {
           ...this.#cancellationPointIdentity(channel),
-          timer, channel, origArgs,
-          deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
-          needsSignalSafeWake, syscallNr: SYS_PSELECT6,
+          timer, channel, origArgs, syscallNr: SYS_PSELECT6,
         });
       });
       return;
@@ -19537,7 +19286,6 @@ export class CentralizedKernelWorker {
         channel,
         pipeIndices,
         acceptIndices,
-        deadlineHintMs: this.waitDeadlineHintMs(remainingMs),
       };
       const arm = (remaining: number): void => {
         const delay = remaining === WAIT_REMAINING_INFINITE
@@ -19603,7 +19351,6 @@ export class CentralizedKernelWorker {
                   // effects ran. Never put that old invocation back in a map.
                   if (this.pendingPollRetries.get(channel) !== pending
                     || pending.timer !== timer) return;
-                  pending.deadlineHintMs = this.waitDeadlineHintMs(nextRemaining);
                   arm(nextRemaining);
                 });
               } else {

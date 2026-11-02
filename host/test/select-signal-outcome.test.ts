@@ -124,6 +124,11 @@ function createHarness(options: {
     kernel_dequeue_signal: dequeueSignal,
     kernel_drain_wakeup_events: vi.fn(() => 0),
     kernel_get_parent_pid: vi.fn(() => 0),
+    // Process registration binds to the Rust image generation (b746c31c64).
+    kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+      new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+      return 8;
+    },
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     kernel_handle_channel: handleChannel,
     kernel_set_current_tid: setCurrentTid,
@@ -144,6 +149,7 @@ function createHarness(options: {
         "kernel_dequeue_signal",
         "kernel_drain_wakeup_events",
         "kernel_get_parent_pid",
+        "kernel_get_process_exec_generation",
         "kernel_get_process_exit_signal",
         "kernel_handle_channel",
         "kernel_set_current_tid",

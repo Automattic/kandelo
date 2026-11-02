@@ -60,13 +60,8 @@ interface ReadinessState {
   }>;
   readonly hostReaped: Set<number>;
   readonly pendingCancels: Set<TestChannel>;
-  readonly pendingPollRetries: Map<TestChannel, {
-    readonly deadlineHintMs: number;
-  }>;
-  readonly pendingSelectRetries: Map<TestChannel, {
-    readonly deadlineHintMs: number;
-    readonly needsSignalSafeWake: boolean;
-  }>;
+  readonly pendingPollRetries: Map<TestChannel, unknown>;
+  readonly pendingSelectRetries: Map<TestChannel, unknown>;
 }
 
 interface KernelResult {
@@ -204,6 +199,11 @@ function createHarness(
     kernel_dequeue_signal: dequeueSignal,
     kernel_drain_wakeup_events: drainWakeupEvents,
     kernel_get_parent_pid: vi.fn(() => 0),
+    // Process registration binds to the Rust image generation (b746c31c64).
+    kernel_get_process_exec_generation: (_pid: number, pointer: number | bigint) => {
+      new DataView(kernelMemory.buffer).setBigUint64(Number(pointer), 1n, true);
+      return 8;
+    },
     kernel_get_process_exit_signal: vi.fn(() => exitSignal),
     kernel_get_fd_pipe_idx: vi.fn((_pid: number, fd: number) =>
       fd === 7 ? 99 : -1
@@ -230,6 +230,7 @@ function createHarness(
         "kernel_dequeue_signal",
         "kernel_drain_wakeup_events",
         "kernel_get_parent_pid",
+        "kernel_get_process_exec_generation",
         "kernel_get_process_exit_signal",
         "kernel_get_fd_pipe_idx",
         ...(epollRetryState ? ["kernel_epoll_wait_retry_state"] : []),
@@ -445,12 +446,9 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(0, 0, 30);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    // The absolute deadline is kernel state; the host keeps a monotonic hint
-    // for sizing its safety timer. Either way the point is that a broad wake
-    // must not push the expiry out, so assert the value does not move.
-    const hint = harness.state.pendingPollRetries
-      .get(harness.channel)?.deadlineHintMs;
-    expect(hint).toBeTypeOf("number");
+    // The absolute deadline is kernel state, named by the wait handle. A
+    // broad wake must not push the expiry out, so the handle must not move.
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBeTypeOf("bigint");
     const waitHandle = harness.channel.waitHandle;
 
@@ -458,16 +456,14 @@ describe("finite readiness deadlines", () => {
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBe(hint);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(7);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
     await vi.advanceTimersByTimeAsync(0);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBe(hint);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBe(waitHandle);
 
     await vi.advanceTimersByTimeAsync(17);
@@ -503,8 +499,7 @@ describe("finite readiness deadlines", () => {
     const args = syscallArgs(pollPointer, 1, 40);
 
     dispatchSyscall(harness, ABI_SYSCALLS.Poll, args);
-    expect(harness.state.pendingPollRetries.get(harness.channel)?.deadlineHintMs)
-      .toBeTypeOf("number");
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
     expect(harness.channel.waitHandle).toBeTypeOf("bigint");
 
     await vi.advanceTimersByTimeAsync(7);
@@ -593,17 +588,58 @@ describe("finite readiness deadlines", () => {
     expect(retainedSnapshot?.dispatch.readinessTimeoutMs).toBe(10);
   });
 
-  it("postpones a signal-safe pselect fallback until the deferred wake", async () => {
+  // A ppoll/pselect6 that installs a temporary signal mask is woken by
+  // readiness exactly like an unmasked wait. These used to be held back
+  // 50 ms after every readiness event; POSIX asks only that the mask swap
+  // and the wait be atomic, which the kernel's per-task wait context keeps.
+  // Neither test advances a timer before the retry, so a grace period of any
+  // length fails them.
+  it("retries a masked ppoll as soon as its pipe becomes readable", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(2_000);
 
-    const harness = createHarness(() => ({
-      retVal: -1,
-      errVal: EAGAIN,
-    }));
-    const retrySyscall = vi.fn();
-    harness.worker.testAuthority.configureScratchBoundaryHooksForTest({
-      retrySyscall,
+    let attempts = 0;
+    const harness = createHarness((syscallNr) => {
+      expect(syscallNr).toBe(ABI_SYSCALLS.Ppoll);
+      attempts++;
+      return attempts === 1
+        ? { retVal: -1, errVal: EAGAIN }
+        : { retVal: 1, errVal: 0 };
+    });
+    const pollPointer = 1024;
+    const maskPointer = 3072;
+    const processView = new DataView(harness.processMemory.buffer);
+    processView.setInt32(pollPointer, 7, true);
+    processView.setInt16(pollPointer + 4, 0x001, true);
+    processView.setBigUint64(maskPointer, 0n, true);
+    // No timeout: only a wake or the safety timer can retry this wait.
+    const args = syscallArgs(pollPointer, 1, 0, maskPointer, SIGNAL_MASK_BYTES);
+
+    dispatchSyscall(harness, ABI_SYSCALLS.Ppoll, args);
+    expect(attempts).toBe(1);
+    expect(harness.state.pendingPollRetries.has(harness.channel)).toBe(true);
+
+    harness.queueReadableWake();
+    harness.worker.testAuthority.drainWakeupEventsForTest();
+    await Promise.resolve();
+
+    expect(attempts).toBe(2);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]!.slice(4, 6)).toEqual([1, 0]);
+    expect(harness.state.pendingPollRetries.size).toBe(0);
+  });
+
+  it("retries a masked pselect on the next turn after readiness", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(2_000);
+
+    let attempts = 0;
+    const harness = createHarness((syscallNr) => {
+      expect(syscallNr).toBe(ABI_SYSCALLS.Pselect6);
+      attempts++;
+      return attempts === 1
+        ? { retVal: -1, errVal: EAGAIN }
+        : { retVal: 1, errVal: 0 };
     });
     const readfdsPointer = 1024;
     const timespecPointer = 2048;
@@ -629,33 +665,21 @@ describe("finite readiness deadlines", () => {
     );
 
     dispatchSyscall(harness, ABI_SYSCALLS.Pselect6, args);
+    expect(attempts).toBe(1);
+    expect(harness.state.pendingSelectRetries.has(harness.channel)).toBe(true);
 
-    const initialEntry = harness.state.pendingSelectRetries.get(
-      harness.channel,
-    );
-    expect(initialEntry).toMatchObject({ needsSignalSafeWake: true });
-    expect(initialEntry?.deadlineHintMs).toBeTypeOf("number");
-    const initialHint = initialEntry?.deadlineHintMs;
     await vi.advanceTimersByTimeAsync(20);
+    expect(attempts).toBe(1);
     harness.queueReadableWake();
     harness.worker.testAuthority.drainWakeupEventsForTest();
+    // select has no pipe identity to target, so readiness reaches it through
+    // the broad wake, which runs on the next immediate -- not after a delay.
+    await vi.advanceTimersByTimeAsync(0);
 
-    expect(
-      harness.state.pendingSelectRetries.get(harness.channel),
-    ).toBe(initialEntry);
-    expect(initialEntry?.deadlineHintMs).toBe(initialHint);
-    await vi.advanceTimersByTimeAsync(30);
-    expect(retrySyscall).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(19);
-    expect(retrySyscall).not.toHaveBeenCalled();
-
-    await vi.advanceTimersByTimeAsync(1);
-    expect(retrySyscall).toHaveBeenCalledOnce();
-    expect(retrySyscall).toHaveBeenCalledWith(harness.channel);
+    expect(attempts).toBe(2);
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0]!.slice(4, 6)).toEqual([1, 0]);
     expect(harness.state.pendingSelectRetries.has(harness.channel)).toBe(false);
-    expect(harness.handleChannel).toHaveBeenCalledOnce();
-    expect(harness.drainWakeupEvents).toHaveBeenCalledOnce();
   });
 
 });
