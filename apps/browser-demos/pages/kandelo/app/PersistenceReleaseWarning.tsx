@@ -1,11 +1,11 @@
 import * as React from "react";
 import { useDialogDismiss } from "./use-dialog-dismiss";
 
-export const PERSISTENCE_RELEASE_WARNING = "Saved computers from this release will not work in the next release. Export important files before updating Kandelo.";
+export const PERSISTENCE_RELEASE_WARNING = "Software updates keep your files, posts and media, but programs you built yourself may need rebuilding. Computers saved by earlier preview releases cannot be updated. Browser storage is not a backup, so export anything important.";
 
 export const PersistenceReleaseWarning: React.FC = () => (
   <aside className="kpersistence-release-warning" role="note" aria-label="Release compatibility warning">
-    <strong>Experimental persistence — not upgradeable</strong>
+    <strong>Experimental persistence</strong>
     <span>{PERSISTENCE_RELEASE_WARNING}</span>
   </aside>
 );

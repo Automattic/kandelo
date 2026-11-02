@@ -1,9 +1,12 @@
 # Persistent package upgrades
 
+This feature is experimental. It has passed rehearsals but has not yet carried
+a computer through a real Kandelo release.
+
 ## Implementation status
 
-The isolated release-stability branch contains a Rust upgrade coordinator,
-native inventory-authoring primitive and bounded kernel/host transport.
+This work adds a Rust upgrade coordinator, native inventory-authoring primitive
+and bounded kernel/host transport.
 Producer-owned fixture sets upgrade and roll back through Node and all
 three browser engines, including reload recovery and new lazy-file reads.
 The app selects verified current bundles and owns maintenance/recovery through
@@ -11,13 +14,16 @@ More → Software updates. A real earlier-to-current WordPress-family recipe
 upgrade passes in Chromium, Firefox and WebKit, including page interruption,
 resumed staging, rollback, unchanged posts and exact uploaded PNG bytes.
 Guest file hashes prove the actual software revision changed and rolled back.
-Both deployments use the same current trusted runtime and program ABI 55.
-This does not establish upgrades across program-contract changes. Keep the
-first-release compatibility warning until that broader path is proven.
+Both deployments of that test use the same current trusted runtime and program
+ABI 55.
 
-A separate acceptance test crosses a real program contract change. Two
-deployments with different kernels, program contracts (ABI 55 and 56) and
-package sets share one origin. A WordPress and MariaDB computer is created on
+A separate acceptance test crosses a program contract change between two
+builds made for the test. Neither is a published release: `main` is at ABI 55,
+persistence has not shipped there, and ABI 56 exists only as a throwaway build
+of this branch that raises the version number and rebuilds every program. It
+rehearses the first contract change after persistence ships. Two deployments
+with different kernels, program contracts and package sets share one origin. A
+WordPress and MariaDB computer is created on
 the first with a post and an upload, then reloaded onto the second, where it
 boots blocked. It updates through a page interruption, runs on the new contract,
 reopens, rolls back and is refused a start, then reapplies and runs, keeping
@@ -36,8 +42,8 @@ reopens and rolls back a complete 14,487-path pristine WordPress software-set
 comparison without increasing memory budgets. Reopen checks the complete
 inventory and unmanaged user data. This is filesystem/package evidence, not
 an executing WordPress upgrade demo. The later running app result above is
-separate evidence. Actual results and limitations are in the
-[persistence plan](persistence-plan.md).
+separate evidence. Storage guarantees and coverage limits are described in the
+[durability contract](persistence-durability.md#release-acceptance-map).
 
 Rust owns package inventories, conflict checks, staging, activation,
 recovery selection and rollback. Hosts supply bounded byte transport; the
@@ -87,7 +93,8 @@ before launch, whatever the inventory says, and boot configuration comes from
 records guests cannot reach.
 
 This is an experimental source candidate. See the
-[persistence plan](persistence-plan.md) for what has actually been validated.
+[durability contract](persistence-durability.md#release-acceptance-map) for
+storage coverage and its limits.
 The storage contract is in
 [the durability contract](persistence-durability.md), and version boundaries are
 in [persistent program compatibility](persistent-program-compatibility.md).
@@ -566,14 +573,14 @@ old versus new state.
   Rollback may restore an old set the current runtime cannot execute, and
   leaving maintenance then refuses it. No privileged old runtime is retained
   or loaded.
-- A running application crossing a real program-contract change and final
-  complete conformance/memory gates remain release work. Guest network and
-  retirement-time memory/thread diagnostics remain under investigation.
-  Database migrations stay explicit.
+- Guest network diagnostics remain under investigation. Database migrations
+  stay explicit. User-built programs do not survive a program contract change:
+  they are preserved and refused until rebuilt.
 
 Native tests are development evidence, not proof that browser computers
-can upgrade. The [persistence plan](persistence-plan.md) records actual
-cohorts and remaining delivery gates.
+can upgrade. The [durability contract](persistence-durability.md#release-acceptance-map)
+describes storage coverage and its limits; upgrade acceptance needs its own
+current-source run.
 
 The WordPress + MariaDB acceptance scenario updates Kandelo's compatible
 packaged software set in a saved computer and checks its posts/media after

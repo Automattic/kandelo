@@ -6,6 +6,8 @@ programs the current kernel can execute. These are separate admission checks.
 Do not fix an executable mismatch by rebinding a journal to another base,
 discarding the journal, selecting an older generation, or removing ABI checks.
 
+**Experimental:** nothing here is a stability promise yet.
+
 **Preview boundary:** saved computers can cross a program contract change
 through a software update, keeping files, posts and media. This covers computers
 whose image carries a software inventory. Computers saved by earlier previews
@@ -793,6 +795,5 @@ writing. Supported directory setgid and sticky special-file modes remain
 available. Rebuilt Node/browser acceptance and the remaining filesystem
 limitations are not implied by native permission support.
 
-The first release requires explicit compatibility warnings and integrated
-persistence validation. Transactional package/lazy-reference upgrades remain
-follow-up work. Persistent images are not advertised as permanently compatible.
+Releases require explicit compatibility warnings and integrated persistence
+validation. Persistent images are not advertised as permanently compatible.

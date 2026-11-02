@@ -87,4 +87,4 @@ never touched, and database migrations stay separate.
 | How do updates and rollback work, and what do they not do? | [Package upgrades](package-upgrades.md) |
 | Which versions exist, and what makes a program compatible? | [Persistent program compatibility](persistent-program-compatibility.md) |
 | How do I use saved computers in the browser? | [Browser support](browser-support.md#computer-library-and-retention) |
-| What has actually been validated, and when? | [Persistence plan](persistence-plan.md) |
+| Which storage behavior has coverage, and what does it prove? | [Durability acceptance map](persistence-durability.md#release-acceptance-map) |

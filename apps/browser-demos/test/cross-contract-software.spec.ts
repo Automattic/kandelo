@@ -6,6 +6,7 @@ import { gotoInPreview, machineAppPrefix, previewFrame } from "./support/kandelo
 import { loginToWordPress } from "./support/wordpress-login";
 import { publishWordPressPost } from "./support/wordpress-editor";
 import { expectWordPressUpload, uploadWordPressPng } from "./support/wordpress-media";
+import { confirmKeepComputer } from "./support/computer-library";
 
 // Needs two real deployments on one origin, each with its own kernel and
 // programs built for a different program contract. See docs/package-upgrades.md.
@@ -36,7 +37,8 @@ test("a saved WordPress computer crosses a program contract change and keeps its
     Worker.prototype.postMessage = function (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) {
       const request = message as { type?: string; moduleBytes?: Uint8Array; directory?: string; path?: unknown } | null;
       if (request?.type === "open" && request.moduleBytes instanceof Uint8Array && typeof request.directory === "string") sources.add(this);
-      if (state.interruptPackageSourceRead && sources.has(this) && request?.type === "read" && typeof request.path === "string") {
+      // Boot configuration under /etc is read before native staging starts.
+      if (state.interruptPackageSourceRead && sources.has(this) && request?.type === "read" && typeof request.path === "string" && !request.path.startsWith("/etc/")) {
         state.interruptPackageSourceRead = false;
         state.interruptedPackageRead = true;
         return;
@@ -52,6 +54,7 @@ test("a saved WordPress computer crosses a program contract change and keeps its
   await expect(frame.locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 360_000 });
   const keep = page.getByRole("button", { name: "Keep this temporary computer", exact: true });
   await keep.click();
+  await confirmKeepComputer(page);
   await expect(keep).toBeHidden();
   const computer = new URL(page.url()).searchParams.get("computer");
   expect(computer).not.toBeNull();
@@ -119,4 +122,15 @@ test("a saved WordPress computer crosses a program contract change and keeps its
   await finished("active");
   await start();
   await expectSiteRetained();
+});
+
+test("a new WordPress computer works on the later contract", async ({ page }) => {
+  const url = process.env.KANDELO_TEST_CROSS_CONTRACT_CONTROL_URL;
+  test.skip(fixture === undefined || url === undefined, "requires the later deployment's image URL");
+  test.setTimeout(420_000);
+  page.on("console", message => { if (message.type() === "error") console.error(message.text()); });
+  writeFileSync(fixture!.selector, "after\n");
+  await page.goto(url!, { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".kdock-status-text")).toHaveAttribute("data-status", "running", { timeout: 360_000 });
+  await expect(previewFrame(page, "WordPress MariaDB").locator("body")).toContainText(/WordPress on Kandelo|Hello world/i, { timeout: 240_000 });
 });

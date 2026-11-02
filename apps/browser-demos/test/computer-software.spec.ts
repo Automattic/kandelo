@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { test } from "./support/persistent-page";
 import { clickDockTool } from "./support/dock";
-import { configureNewComputer } from "./support/computer-library";
+import { confirmKeepComputer, configureNewComputer } from "./support/computer-library";
 import { gotoInPreview, machineAppPrefix, machineUrl, previewFrame, vfsImageUrlForProduct } from "./support/kandelo-machine";
 import { loginToWordPress } from "./support/wordpress-login";
 import { publishWordPressPost } from "./support/wordpress-editor";
@@ -49,7 +49,8 @@ test(activateSoftware ? "WordPress family package activation and rollback preser
     Worker.prototype.postMessage = function (message: unknown, transfer?: Transferable[] | StructuredSerializeOptions) {
       const request = message as { type?: string; moduleBytes?: Uint8Array; directory?: string; path?: unknown; offset?: number; length?: number } | null;
       if (request?.type === "open" && request.moduleBytes instanceof Uint8Array && typeof request.directory === "string") sources.add(this);
-      if (state.interruptPackageSourceRead && sources.has(this) && request?.type === "read" && typeof request.path === "string") {
+      // Boot configuration under /etc is read before native staging starts.
+      if (state.interruptPackageSourceRead && sources.has(this) && request?.type === "read" && typeof request.path === "string" && !request.path.startsWith("/etc/")) {
         state.interruptPackageSourceRead = false;
         state.interruptedPackageRead = { path: request.path, offset: request.offset!, length: request.length! };
         return;
@@ -68,6 +69,7 @@ test(activateSoftware ? "WordPress family package activation and rollback preser
   if (activateSoftware) {
     const keep = page.getByRole("button", { name: "Keep this temporary computer", exact: true });
     await keep.click();
+    await confirmKeepComputer(page);
     await expect(keep).toBeHidden();
   }
   const computer = new URL(page.url()).searchParams.get("computer");

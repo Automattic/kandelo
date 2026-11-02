@@ -84,7 +84,7 @@ test("bare entry defaults to temporary, reload preserves its disk, and keeping i
   expect((await currentComputerMetadata(page)).retention).toBe("temporary");
   await entry.getByRole("button", { name: "Keep this computer", exact: true }).click();
   await expect(await keepComputerDialog(page)).toContainText(`Keep “${computer.title}” on this device?`);
-  await expect(keepPrompt).toContainText("Saved computers from this release will not work in the next release.");
+  await expect(keepPrompt).toContainText("Software updates keep your files, posts and media");
   await confirmKeepComputer(page);
   await expect(entry.getByText("Saved on this device", { exact: true })).toBeVisible();
   expect(await currentComputerMetadata(page)).toMatchObject({ retention: "saved", expiresAt: null });
@@ -98,7 +98,7 @@ test("bare entry defaults to temporary, reload preserves its disk, and keeping i
   if (savedViewport) await page.setViewportSize(savedViewport);
   await warningTag.click();
   const savedWarning = page.getByRole("dialog", { name: `“${computer.title}” is saved on this device`, exact: true });
-  await expect(savedWarning.getByRole("note", { name: "Release compatibility warning" })).toContainText("will not work in the next release");
+  await expect(savedWarning.getByRole("note", { name: "Release compatibility warning" })).toContainText("Software updates keep your files, posts and media");
   await savedWarning.getByRole("button", { name: "Close", exact: true }).last().click();
   await expect(savedWarning).toBeHidden();
   await entry.getByRole("button", { name: `Show warning for ${computer.title}`, exact: true }).click();

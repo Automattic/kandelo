@@ -30,6 +30,7 @@ export const SoftwarePanel: React.FC<{ controller: ComputerSoftwareController; s
   const progress = state.progress;
   return <dialog ref={dialog} className="kopen-website kservices" aria-labelledby="ksoftware-title" {...dismiss}>
     <header className="kpopin-heading"><h2 id="ksoftware-title">Software updates</h2><button type="button" className="kshare-x" aria-label="Close Software updates" disabled={state.busy} onClick={close}>×</button></header>
+    <p className="knetwork-note"><strong>Experimental.</strong> Software updates are new and have not yet carried a computer through a real Kandelo release. Export anything important first.</p>
     <p>Update packaged programs together while this computer is stopped. User files, posts and media stay in place. Changes to packaged files can prevent an update.</p>
     <p className="knetwork-note">Database migrations are separate. Software rollback cannot undo a database migration. Save your work before stopping programs.</p>
     <p className="knetwork-note">User-built programs that use fork may need rebuilding when the instrumentation contract changes. Their files are preserved, not automatically upgraded.</p>

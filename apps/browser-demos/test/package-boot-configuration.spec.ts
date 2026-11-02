@@ -25,7 +25,7 @@ test("boot configuration follows the installed software through update and rollb
     staging: module(`${host}/opfs-source-image.ts`),
     boot: module("apps/browser-demos/lib/kernel-owned-boot.ts"),
     configuration: module(`${host}/package-boot-configuration.ts`),
-    checkpoint: module(`${host}/persistent-image-checkpoint.ts`),
+    bootMetadata: module(`${host}/persistent-image-boot-metadata.ts`),
     kernel: new URL("/boot-configuration-kernel.wasm", baseURL).href,
     base: new URL("/boot-configuration-base.vfs", baseURL).href,
     target: new URL("/boot-configuration-target.vfs", baseURL).href,
@@ -41,7 +41,7 @@ test("boot configuration follows the installed software through update and rollb
     const { stageRawVfsSourceImage } = await import(urls.staging);
     const { loadPositionedImageWriterModuleBytes } = await import(urls.boot);
     const { readBootConfigurations, recordBootConfiguration, selectBootComposition } = await import(urls.configuration);
-    const { assertPersistentImageBootMetadata } = await import(urls.checkpoint);
+    const { assertPersistentImageBootMetadata } = await import(urls.bootMetadata);
     const name = `boot-configuration-${crypto.randomUUID()}`;
     const computerId = crypto.randomUUID();
     await (await import(urls.storage)).browserComputerDirectory(computerId, true);
