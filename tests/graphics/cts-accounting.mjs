@@ -11,6 +11,13 @@
  *   watchdog terminated it as Timeout);
  * - Missing: no completed record exists for the case.
  * NotSupported and Missing are never converted to Pass.
+ *
+ * dEQP's own main (framework/platform/tcuMain.cpp) exits with EXIT_FAILURE
+ * after a session that ran to completion when any case failed. That exit is
+ * the upstream verdict on finished cases, already recorded verbatim, not an
+ * abnormal end: an attempt is a normal completion when it exits 0, or exits 1
+ * with its session closed (`#endSession`), every case accounted by a complete
+ * record and at least one of them a status dEQP counts as failed.
  */
 
 export const STATUS_ORDER = ["Pass", "Fail", "NotSupported", "QualityWarning", "CompatibilityWarning",
@@ -20,6 +27,11 @@ export const STATUS_ORDER = ["Pass", "Fail", "NotSupported", "QualityWarning", "
  * upstream ResourceError/InternalError and unknown codes, fails it. */
 export const STRICT_ACCEPTED = new Set(["Pass", "NotSupported", "QualityWarning", "CompatibilityWarning",
   "CapabilityWarning"]);
+
+/** Results dEQP does not count in `numFailed`
+ * (framework/common/tcuTestSessionExecutor.cpp); any other status is failed. */
+const DEQP_NOT_FAILED = new Set(["Pass", "NotSupported", "QualityWarning", "CompatibilityWarning",
+  "CapabilityWarning", "Waiver"]);
 
 const oneLine = text => String(text ?? "").replace(/[\t\r\n]+/g, " ").trim().slice(0, 400);
 
@@ -62,7 +74,10 @@ export function accountAttempt(remaining, qpa, outcome, attempt = 1) {
     else if (record.state === "open") open = record.path;
     else malformed.push(record.path);
   }
-  const abnormal = outcome.kind !== "exit" || outcome.code !== 0;
+  const complete = !open && malformed.length === 0 && rows.length === remaining.length;
+  const failedSession = outcome.kind === "exit" && outcome.code === 1 && complete
+    && /\n#endSession\s*$/.test(String(qpa ?? "")) && rows.some(row => !DEQP_NOT_FAILED.has(row.status));
+  const abnormal = !(outcome.kind === "exit" && outcome.code === 0) && !failedSession;
   let attributed = null;
   if (open && abnormal) {
     const status = outcome.kind === "timeout" ? "Timeout" : "Crash";

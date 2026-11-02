@@ -81,7 +81,14 @@ case, default 60 s + 10 s) expires while a case's `#beginTestCaseResult` is
 open, that case is Crash or Timeout and the chunk resumes after it in a fresh
 kernel (`KANDELO_CTS_MAX_ATTEMPTS`, default 8). Without such an open case
 nothing can be attributed, so the remaining cases are Missing. A lost page
-or host loses only that chunk.
+or host loses only that chunk. Exit status 1 is not abnormal when dEQP's
+own evidence explains it: upstream `tcuMain.cpp` exits with `EXIT_FAILURE`
+after a completed session in which any case failed, so an attempt whose QPA
+ends in `#endSession`, accounts every case with a complete record and
+contains a failed status (anything but Pass, NotSupported, QualityWarning,
+CompatibilityWarning, CapabilityWarning or Waiver) is a normal completion,
+and its Fail rows already carry the verdict. Any other nonzero exit,
+including exit 1 without that evidence, stays abnormal.
 
 Each run writes, under `KANDELO_CTS_OUT` (default
 `.context/graphics-cts-runs/<suite>-<host>-<time>/`):

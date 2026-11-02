@@ -34,6 +34,26 @@ test("attributes an abnormal end to the open case only", () => {
   assert.deepEqual([clean.abnormal, clean.left, clean.resume], [false, ["b"], []]);
 });
 
+test("dEQP's exit 1 after a complete session with failures is a normal completion", async () => {
+  const session = body => `#beginSession\n${body}\n#endSession\n`;
+  const exit1 = { kind: "exit", code: 1 };
+  const failed = accountAttempt(["a", "b"], session(done("a") + done("b", "Fail")), exit1);
+  assert.deepEqual([failed.abnormal, failed.attributed, failed.left], [false, null, []]);
+  assert.deepEqual(failed.rows.map(r => r.status), ["Pass", "Fail"]);
+  const chunk = await runChunk({ id: "f#000", family: "f", cases: ["a", "b"] },
+    async () => ({ qpa: session(done("a", "ResourceError") + done("b")), outcome: exit1 }));
+  assert.equal(chunk.crashed, null);
+  assert.deepEqual(chunk.attempts.map(a => a.outcome), [exit1]);
+  // Exit 1 is abnormal without dEQP's own evidence for it: no failed case,
+  // an unclosed session, an open record or a case dEQP never reported.
+  assert.equal(accountAttempt(["a"], session(done("a")), exit1).abnormal, true);
+  assert.equal(accountAttempt(["a"], done("a", "Fail"), exit1).abnormal, true);
+  const open = accountAttempt(["a", "b"], session(done("a", "Fail") + begun("b")), exit1);
+  assert.deepEqual([open.abnormal, open.attributed], [true, "b"]);
+  assert.equal(accountAttempt(["a", "b"], session(done("a", "Fail")), exit1).abnormal, true);
+  assert.equal(accountAttempt(["a"], session(done("a", "Fail")), { kind: "exit", code: 134 }).abnormal, true);
+});
+
 test("records unexpected and duplicate cases", () => {
   const result = accountAttempt(["a"], done("a") + done("a") + done("x"), exit0);
   assert.deepEqual([result.unexpected, result.duplicates], [["x"], ["a"]]);
