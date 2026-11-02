@@ -1,0 +1,52 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -227,10 +227,10 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.js-sys]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))'.dependencies.js-sys]
+ version = "0.3.64"
+ 
+-[target.'cfg(all(target_arch = "wasm32", not(target_os = "wasi")))'.dependencies.web-time]
++[target.'cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))'.dependencies.web-time]
+ version = "1.0.0"
+ 
+ [target.'cfg(not(target_os = "windows"))'.dev-dependencies.pprof]
+--- a/src/layer.rs
++++ b/src/layer.rs
+@@ -8,7 +8,7 @@
+ };
+ use std::cell::RefCell;
+ use std::thread;
+-#[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
++#[cfg(not(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo")))))]
+ use std::time::Instant;
+ use std::{any::TypeId, borrow::Cow};
+ use std::{fmt, vec};
+@@ -21,7 +21,7 @@
+ use tracing_subscriber::layer::Filter;
+ use tracing_subscriber::registry::{ExtensionsMut, LookupSpan};
+ use tracing_subscriber::Layer;
+-#[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
++#[cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))]
+ use web_time::Instant;
+ 
+ mod filtered;
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -200,12 +200,12 @@
+ pub(crate) mod time {
+     use std::time::SystemTime;
+ 
+-    #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
++    #[cfg(not(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo")))))]
+     pub(crate) fn now() -> SystemTime {
+         SystemTime::now()
+     }
+ 
+-    #[cfg(all(target_arch = "wasm32", not(target_os = "wasi")))]
++    #[cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo"))))]
+     pub(crate) fn now() -> SystemTime {
+         SystemTime::UNIX_EPOCH + std::time::Duration::from_millis(js_sys::Date::now() as u64)
+     }

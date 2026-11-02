@@ -1,0 +1,98 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -205,7 +205,7 @@
+ [target."cfg(__ui_tests)".dev-dependencies.trybuild]
+ version = "1.0.102"
+ 
+-[target.'cfg(all(target_family = "wasm", not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies.js-sys]
++[target.'cfg(all(target_family = "wasm", not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo"))))'.dependencies.js-sys]
+ version = "0.3.58"
+ optional = true
+ 
+--- a/src/interop/mod.rs
++++ b/src/interop/mod.rs
+@@ -11,13 +11,13 @@
+ 
+ #[cfg(all(
+     target_family = "wasm",
+-    not(any(target_os = "emscripten", target_os = "wasi")),
++    not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+     feature = "wasm-bindgen"
+ ))]
+ mod js_sys_date_offsetdatetime;
+ #[cfg(all(
+     target_family = "wasm",
+-    not(any(target_os = "emscripten", target_os = "wasi")),
++    not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+     feature = "wasm-bindgen"
+ ))]
+ mod js_sys_date_utcdatetime;
+--- a/src/offset_date_time.rs
++++ b/src/offset_date_time.rs
+@@ -102,7 +102,7 @@
+     pub fn now_utc() -> Self {
+         #[cfg(all(
+             target_family = "wasm",
+-            not(any(target_os = "emscripten", target_os = "wasi")),
++            not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+             feature = "wasm-bindgen"
+         ))]
+         {
+@@ -111,7 +111,7 @@
+ 
+         #[cfg(not(all(
+             target_family = "wasm",
+-            not(any(target_os = "emscripten", target_os = "wasi")),
++            not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+             feature = "wasm-bindgen"
+         )))]
+         std::time::SystemTime::now().into()
+--- a/src/sys/local_offset_at/mod.rs
++++ b/src/sys/local_offset_at/mod.rs
+@@ -10,7 +10,7 @@
+ #[cfg_attr(
+     all(
+         target_family = "wasm",
+-        not(any(target_os = "emscripten", target_os = "wasi")),
++        not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+         feature = "wasm-bindgen"
+     ),
+     path = "wasm_js.rs"
+--- a/src/sys/local_offset_at/unix.rs
++++ b/src/sys/local_offset_at/unix.rs
+@@ -33,6 +33,7 @@
+ #[cfg(any(
+     target_os = "redox",
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "l4re",
+     target_os = "android",
+     target_os = "emscripten",
+@@ -60,6 +61,7 @@
+ #[cfg(not(any(
+     target_os = "redox",
+     target_os = "linux",
++    target_os = "kandelo",
+     target_os = "l4re",
+     target_os = "android",
+     target_os = "emscripten",
+--- a/src/utc_date_time.rs
++++ b/src/utc_date_time.rs
+@@ -116,7 +116,7 @@
+     pub fn now() -> Self {
+         #[cfg(all(
+             target_family = "wasm",
+-            not(any(target_os = "emscripten", target_os = "wasi")),
++            not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+             feature = "wasm-bindgen"
+         ))]
+         {
+@@ -125,7 +125,7 @@
+ 
+         #[cfg(not(all(
+             target_family = "wasm",
+-            not(any(target_os = "emscripten", target_os = "wasi")),
++            not(any(target_os = "emscripten", target_os = "wasi", target_os = "kandelo")),
+             feature = "wasm-bindgen"
+         )))]
+         std::time::SystemTime::now().into()

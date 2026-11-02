@@ -551,6 +551,51 @@ describe("browser binary dependencies", () => {
     }
   });
 
+  it("reads a root-relative HTML module source against the app root, as Vite does", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-html-root-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const pages = join(browserRoot, "pages", "viewer");
+      mkdirSync(pages, { recursive: true });
+      writeFileSync(join(fixtureRoot, "outside.ts"), "export default 1;\n");
+      writeFileSync(
+        join(pages, "viewer.ts"),
+        'import value from "@binaries/programs/viewer.wasm?url";\nvoid value;\n',
+      );
+      const html = join(pages, "viewer.html");
+      // A page served at other URLs (the viewer shell answers
+      // `computer/<name>/…`) names its module from the app root; Vite
+      // rewrites such a source with the deployment base.
+      writeFileSync(
+        html,
+        '<script type="module" src="/pages/viewer/viewer.ts?v=1"></script>\n',
+      );
+      expect(browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["pages/viewer/viewer.html"],
+      }).imports).toEqual(["programs/wasm32/viewer.wasm"]);
+
+      for (const source of [
+        "//cdn.example/viewer.ts",
+        "https://cdn.example/viewer.ts",
+        "/",
+      ]) {
+        writeFileSync(html, `<script type="module" src="${source}"></script>\n`);
+        expect(() => browserRequiredInputs(fixtureRoot, {
+          htmlEntryFiles: ["pages/viewer/viewer.html"],
+        }), source).toThrow(/not app-relative/);
+      }
+      writeFileSync(
+        html,
+        '<script type="module" src="/../../outside.ts"></script>\n',
+      );
+      expect(() => browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["pages/viewer/viewer.html"],
+      })).toThrow(/HTML module escapes the app/);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reports virtual artifact modules as separately bound capabilities", () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-capability-"));
     try {

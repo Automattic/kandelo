@@ -164,6 +164,7 @@ import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth
 import { noteProcessMemoryInstance } from "./wasm-instance-retention";
 import {
   registerWasmModuleReflection,
+  registerWasmModuleReflectionData,
   wasmModuleExports,
   wasmModuleImports,
 } from "./wasm-module-reflection";
@@ -4451,7 +4452,7 @@ const EXPORT_NAME_DECODER = new TextDecoder();
  * We find this function by looking at the export wrapper's call target.
  * Returns the i32.const value, or -1 if detection fails.
  */
-function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
+export function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
   const src = new Uint8Array(programBytes);
   if (src.length < 8) return -1;
 
@@ -4652,6 +4653,7 @@ function setupChannelBase(
   channelOffset: number,
   programBytes?: ArrayBuffer,
   ptrWidth: 4 | 8 = 4,
+  preparedTlsOffset?: number,
 ): void {
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
@@ -4673,8 +4675,8 @@ function setupChannelBase(
   const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
-    let detectedOffset = -1;
-    if (programBytes) {
+    let detectedOffset = preparedTlsOffset ?? -1;
+    if (preparedTlsOffset === undefined && programBytes) {
       detectedOffset = detectChannelBaseTlsOffset(programBytes);
     }
     const addr = tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0);
@@ -5335,17 +5337,25 @@ export async function centralizedThreadWorkerMain(
     // Strip the start section AND neuter the constructor function body to prevent
     // constructors from re-running. Thread instances share memory with the main
     // thread; re-running constructors would clobber global state.
+    const preparedProgram = initData.preparedProgram;
+    if (preparedProgram && !initData.programModule) {
+      throw new Error("Prepared pthread metadata requires its compiled module");
+    }
+    if (!preparedProgram && !initData.programBytes) {
+      throw new Error("Pthread startup requires exact program bytes or prepared metadata");
+    }
     let programBytes: ArrayBuffer | null = null;
     if (!initData.programModule) {
-      programBytes = patchWasmForThread(initData.programBytes);
+      programBytes = patchWasmForThread(initData.programBytes!);
     }
     const module = initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
-    registerWasmModuleReflection(
-      module,
-      programBytes ?? initData.programBytes,
-    );
+    if (preparedProgram) {
+      registerWasmModuleReflectionData(module, preparedProgram.reflection);
+    } else {
+      registerWasmModuleReflection(module, programBytes ?? initData.programBytes!);
+    }
 
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     if (hasForkInstrumentation) {
@@ -5404,7 +5414,8 @@ export async function centralizedThreadWorkerMain(
         )
       : null;
     const threadTemplateId = hasForkInstrumentation
-      ? await computeForkModuleTemplateId(initData.programBytes)
+      ? preparedProgram?.moduleTemplateId
+        ?? await computeForkModuleTemplateId(initData.programBytes!)
       : null;
     const newThreadModuleStateArena = (): ForkModuleStateArena =>
       new ForkModuleStateArena(
@@ -5823,10 +5834,11 @@ export async function centralizedThreadWorkerMain(
       threadForkEnvImports,
     );
     const routedThreadImportObject = threadHostImportRuntime
-      ? threadHostImportRuntime.routeImportObject(
-          initData.programBytes,
-          importObject,
-        )
+      ? preparedProgram
+        ? threadHostImportRuntime.routePreparedImportObject(
+            preparedProgram.functionImports, importObject,
+          )
+        : threadHostImportRuntime.routeImportObject(initData.programBytes!, importObject)
       : importObject;
     const threadMainImportedState =
       threadImportedStateCapture?.prepareActivation(
@@ -5943,6 +5955,7 @@ export async function centralizedThreadWorkerMain(
       channelOffset,
       initData.programBytes,
       ptrWidth,
+      preparedProgram?.channelBaseTlsOffset,
     );
 
     // Call the thread function via indirect function table

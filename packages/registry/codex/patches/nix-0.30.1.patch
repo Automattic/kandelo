@@ -1,0 +1,708 @@
+--- a/src/errno.rs
++++ b/src/errno.rs
+@@ -28,7 +28,7 @@
+         unsafe fn errno_location() -> *mut c_int {
+             unsafe { libc::__errno() }
+         }
+-    } else if #[cfg(any(target_os = "linux",
++    } else if #[cfg(any(any(target_os = "linux", target_os = "kandelo"),
+                         target_os = "redox",
+                         target_os = "dragonfly",
+                         target_os = "fuchsia",
+@@ -275,7 +275,7 @@
+         EHOSTUNREACH => "No route to host",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -285,7 +285,7 @@
+         ECHRNG => "Channel number out of range",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -295,7 +295,7 @@
+         EL2NSYNC => "Level 2 not synchronized",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -305,7 +305,7 @@
+         EL3HLT => "Level 3 halted",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -315,7 +315,7 @@
+         EL3RST => "Level 3 reset",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -325,7 +325,7 @@
+         ELNRNG => "Link number out of range",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -335,7 +335,7 @@
+         EUNATCH => "Protocol driver not attached",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -345,7 +345,7 @@
+         ENOCSI => "No CSI structure available",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -355,7 +355,7 @@
+         EL2HLT => "Level 2 halted",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -364,7 +364,7 @@
+         EBADE => "Invalid exchange",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -373,7 +373,7 @@
+         EBADR => "Invalid request descriptor",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -382,7 +382,7 @@
+         EXFULL => "Exchange full",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -391,7 +391,7 @@
+         ENOANO => "No anode",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -400,7 +400,7 @@
+         EBADRQC => "Invalid request code",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -409,7 +409,7 @@
+         EBADSLT => "Invalid slot",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -418,7 +418,7 @@
+         EBFONT => "Bad font file format",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -428,7 +428,7 @@
+         ENOSTR => "Device not a stream",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -438,7 +438,7 @@
+         ENODATA => "No data available",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -448,7 +448,7 @@
+         ETIME => "Timer expired",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -458,7 +458,7 @@
+         ENOSR => "Out of streams resources",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -467,7 +467,7 @@
+         ENONET => "Machine is not on the network",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -476,7 +476,7 @@
+         ENOPKG => "Package not installed",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -486,7 +486,7 @@
+         EREMOTE => "Object is remote",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -495,7 +495,7 @@
+         ENOLINK => "Link has been severed",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -504,7 +504,7 @@
+         EADV => "Advertise error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -513,7 +513,7 @@
+         ESRMNT => "Srmount error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -522,7 +522,7 @@
+         ECOMM => "Communication error on send",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -532,7 +532,7 @@
+         EPROTO => "Protocol error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -541,7 +541,7 @@
+         EMULTIHOP => "Multihop attempted",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+             target_os = "cygwin",
+@@ -549,7 +549,7 @@
+         EDOTDOT => "RFS specific error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "aix",
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -561,7 +561,7 @@
+         EBADMSG => "Trying to read unreadable message",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "aix",
+             target_os = "fuchsia",
+             target_os = "haiku",
+@@ -572,7 +572,7 @@
+         EOVERFLOW => "Value too large for defined data type",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -581,7 +581,7 @@
+         ENOTUNIQ => "Name not unique on network",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -590,7 +590,7 @@
+         EBADFD => "File descriptor in bad state",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -599,7 +599,7 @@
+         EREMCHG => "Remote address changed",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -608,7 +608,7 @@
+         ELIBACC => "Can not access a needed shared library",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -617,7 +617,7 @@
+         ELIBBAD => "Accessing a corrupted shared library",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -626,7 +626,7 @@
+         ELIBSCN => ".lib section in a.out corrupted",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -635,7 +635,7 @@
+         ELIBMAX => "Attempting to link in too many shared libraries",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -645,7 +645,7 @@
+         ELIBEXEC => "Cannot exec a shared library directly",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -656,7 +656,7 @@
+         EILSEQ => "Illegal byte sequence",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "aix",
+             target_os = "fuchsia",
+@@ -665,7 +665,7 @@
+         ERESTART => "Interrupted system call should be restarted",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -674,7 +674,7 @@
+         ESTRPIPE => "Streams pipe error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -683,7 +683,7 @@
+         EUSERS => "Too many users",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "netbsd",
+             target_os = "redox",
+@@ -693,7 +693,7 @@
+         EOPNOTSUPP => "Operation not supported on transport endpoint",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "hurd",
+             target_os = "emscripten",
+@@ -702,42 +702,42 @@
+         ESTALE => "Stale file handle",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EUCLEAN => "Structure needs cleaning",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         ENOTNAM => "Not a XENIX named type file",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         ENAVAIL => "No XENIX semaphores available",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EISNAM => "Is a named type file",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EREMOTEIO => "Remote I/O error",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+             target_os = "cygwin",
+@@ -745,7 +745,7 @@
+         EDQUOT => "Quota exceeded",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "openbsd",
+             target_os = "dragonfly",
+@@ -755,7 +755,7 @@
+         ENOMEDIUM => "No medium found",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "openbsd",
+             target_os = "emscripten",
+@@ -763,7 +763,7 @@
+         EMEDIUMTYPE => "Wrong medium type",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             solarish,
+             target_os = "fuchsia",
+             target_os = "haiku",
+@@ -773,35 +773,35 @@
+         ECANCELED => "Operation canceled",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         ENOKEY => "Required key not available",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EKEYEXPIRED => "Key has expired",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EKEYREVOKED => "Key has been revoked",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         EKEYREJECTED => "Key was rejected by service",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "aix",
+             target_os = "fuchsia",
+             target_os = "hurd",
+@@ -814,7 +814,7 @@
+         EOWNERDEAD => "Process died with lock",
+ 
+         #[cfg(any(
+-            linux_android,
++            any(linux_android, target_os = "kandelo"),
+             target_os = "aix",
+             target_os = "fuchsia",
+             target_os = "emscripten",
+@@ -826,14 +826,14 @@
+         ENOTRECOVERABLE => "Lock is not recoverable",
+ 
+         #[cfg(any(
+-            all(target_os = "linux", not(target_arch = "mips")),
++            all(any(target_os = "linux", target_os = "kandelo"), not(target_arch = "mips")),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+         ERFKILL => "Operation not possible due to RF-kill",
+ 
+         #[cfg(any(
+-            all(target_os = "linux", not(target_arch = "mips")),
++            all(any(target_os = "linux", target_os = "kandelo"), not(target_arch = "mips")),
+             target_os = "fuchsia",
+             target_os = "emscripten",
+         ))]
+@@ -1087,7 +1087,7 @@
+     }
+ }
+ 
+-#[cfg(any(linux_android, target_os = "fuchsia", target_os = "emscripten"))]
++#[cfg(any(any(linux_android, target_os = "kandelo"), target_os = "fuchsia", target_os = "emscripten"))]
+ mod consts {
+     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+     #[repr(i32)]
+--- a/src/sys/signal.rs
++++ b/src/sys/signal.rs
+@@ -61,7 +61,7 @@
+         /// Software termination signal from kill
+         SIGTERM,
+         /// Stack fault (obsolete)
+-        #[cfg(all(any(linux_android, target_os = "emscripten",
++        #[cfg(all(any(any(linux_android, target_os = "kandelo"), target_os = "emscripten",
+                       target_os = "fuchsia"),
+                   not(any(target_arch = "mips",
+                           target_arch = "mips32r6",
+@@ -97,18 +97,18 @@
+         /// Input/output possible signal
+         #[cfg(not(target_os = "haiku"))]
+         SIGIO,
+-        #[cfg(any(linux_android, target_os = "emscripten",
++        #[cfg(any(any(linux_android, target_os = "kandelo"), target_os = "emscripten",
+                   target_os = "fuchsia", target_os = "aix"))]
+         /// Power failure imminent.
+         SIGPWR,
+         /// Bad system call
+         SIGSYS,
+-        #[cfg(not(any(linux_android, target_os = "emscripten",
++        #[cfg(not(any(any(linux_android, target_os = "kandelo"), target_os = "emscripten",
+                       target_os = "fuchsia",
+                       target_os = "redox", target_os = "haiku")))]
+         /// Emulator trap
+         SIGEMT,
+-        #[cfg(not(any(linux_android, target_os = "emscripten",
++        #[cfg(not(any(any(linux_android, target_os = "kandelo"), target_os = "emscripten",
+                       target_os = "fuchsia", target_os = "redox",
+                       target_os = "haiku", target_os = "aix",
+                       target_os = "solaris", target_os = "cygwin")))]
+@@ -140,7 +140,7 @@
+             "SIGTERM" => Signal::SIGTERM,
+             #[cfg(all(
+                 any(
+-                    linux_android,
++                    any(linux_android, target_os = "kandelo"),
+                     target_os = "emscripten",
+                     target_os = "fuchsia",
+                 ),
+@@ -169,14 +169,14 @@
+             #[cfg(not(target_os = "haiku"))]
+             "SIGIO" => Signal::SIGIO,
+             #[cfg(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+             ))]
+             "SIGPWR" => Signal::SIGPWR,
+             "SIGSYS" => Signal::SIGSYS,
+             #[cfg(not(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+                 target_os = "redox",
+@@ -184,7 +184,7 @@
+             )))]
+             "SIGEMT" => Signal::SIGEMT,
+             #[cfg(not(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+                 target_os = "redox",
+@@ -225,7 +225,7 @@
+             Signal::SIGTERM => "SIGTERM",
+             #[cfg(all(
+                 any(
+-                    linux_android,
++                    any(linux_android, target_os = "kandelo"),
+                     target_os = "emscripten",
+                     target_os = "fuchsia",
+                 ),
+@@ -254,7 +254,7 @@
+             #[cfg(not(target_os = "haiku"))]
+             Signal::SIGIO => "SIGIO",
+             #[cfg(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+                 target_os = "aix",
+@@ -262,7 +262,7 @@
+             Signal::SIGPWR => "SIGPWR",
+             Signal::SIGSYS => "SIGSYS",
+             #[cfg(not(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+                 target_os = "redox",
+@@ -270,7 +270,7 @@
+             )))]
+             Signal::SIGEMT => "SIGEMT",
+             #[cfg(not(any(
+-                linux_android,
++                any(linux_android, target_os = "kandelo"),
+                 target_os = "emscripten",
+                 target_os = "fuchsia",
+                 target_os = "redox",
+@@ -318,7 +318,7 @@
+     SIGPROF, SIGWINCH, SIGSYS,
+ ];
+ #[cfg(all(
+-    any(linux_android, target_os = "emscripten", target_os = "fuchsia"),
++    any(any(linux_android, target_os = "kandelo"), target_os = "emscripten", target_os = "fuchsia"),
+     not(any(
+         target_arch = "mips",
+         target_arch = "mips32r6",
+@@ -336,7 +336,7 @@
+     SIGVTALRM, SIGPROF, SIGWINCH, SIGIO, SIGPWR, SIGSYS,
+ ];
+ #[cfg(all(
+-    any(linux_android, target_os = "emscripten", target_os = "fuchsia"),
++    any(any(linux_android, target_os = "kandelo"), target_os = "emscripten", target_os = "fuchsia"),
+     any(
+         target_arch = "mips",
+         target_arch = "mips32r6",
+@@ -370,7 +370,7 @@
+     SIGPROF, SIGWINCH, SIGIO, SIGSYS, SIGEMT,
+ ];
+ #[cfg(not(any(
+-    linux_android,
++    any(linux_android, target_os = "kandelo"),
+     target_os = "fuchsia",
+     target_os = "emscripten",
+     target_os = "aix",
+@@ -607,7 +607,7 @@
+     /// [`sigsuspend(2)`](https://pubs.opengroup.org/onlinepubs/9699919799/functions/sigsuspend.html).
+     #[cfg(any(
+         bsd,
+-        linux_android,
++        any(linux_android, target_os = "kandelo"),
+         solarish,
+         target_os = "haiku",
+         target_os = "hurd",

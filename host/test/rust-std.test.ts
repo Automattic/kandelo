@@ -59,7 +59,11 @@ beforeAll(() => {
   for (const fixture of FIXTURES) {
     const targetDir = join(buildRoot, fixture);
     // The first build compiles std into the private Rust sysroot.
-    execFileSync("bash", [CARGO_WRAPPER, "build", "--release"], {
+    // Exercise prebuilt std with the LTO used by large release applications.
+    const ltoArgs = fixture === "std-hello"
+      ? ["--config", 'profile.release.lto="thin"']
+      : [];
+    execFileSync("bash", [CARGO_WRAPPER, "build", "--release", ...ltoArgs], {
       cwd: join(RUST_PROGRAMS, fixture),
       env: { ...process.env, CARGO_TARGET_DIR: targetDir },
       stdio: "pipe",

@@ -1,0 +1,22 @@
+--- a/src/backtrace/mod.rs
++++ b/src/backtrace/mod.rs
+@@ -175,6 +175,8 @@
+             all(
+                 unix,
+                 not(target_os = "emscripten"),
++                // Wasm call frames are not exposed to Kandelo guest code.
++                not(target_os = "kandelo"),
+                 not(all(target_os = "ios", target_arch = "arm")),
+             ),
+             all(
+--- a/src/symbolize/mod.rs
++++ b/src/symbolize/mod.rs
+@@ -441,6 +441,8 @@
+         any(unix, all(windows, target_env = "gnu")),
+         not(target_vendor = "uwp"),
+         not(target_os = "emscripten"),
++        // Guest linear-memory addresses cannot identify engine code frames.
++        not(target_os = "kandelo"),
+         any(not(backtrace_in_libstd), feature = "backtrace"),
+     ))] {
+         mod gimli;

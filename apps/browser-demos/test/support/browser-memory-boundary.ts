@@ -15,7 +15,9 @@ export function persistentRealmMemoryFailures(
       failures.push(`${path}: whole WebAssembly.Memory reached browser main`);
       return;
     }
-    if (value instanceof SharedArrayBuffer) {
+    // A realm that is not cross-origin isolated has no SharedArrayBuffer.
+    const Shared = typeof SharedArrayBuffer === "undefined" ? null : SharedArrayBuffer;
+    if (Shared !== null && value instanceof Shared) {
       // The sole shared worker→main payload is an independent pixel mirror.
       // Checking length alone cannot prove provenance; mirror unit tests also
       // assert that this allocation is independent of the guest's buffer.
@@ -27,7 +29,7 @@ export function persistentRealmMemoryFailures(
       return;
     }
     if (ArrayBuffer.isView(value)) {
-      if (value.buffer instanceof SharedArrayBuffer) {
+      if (Shared !== null && value.buffer instanceof Shared) {
         failures.push(`${path}: shared view retains its entire backing memory`);
       }
       return;
@@ -63,6 +65,19 @@ declare global {
 
 export async function installBrowserMemoryBoundaryProbe(page: Page): Promise<void> {
   function install(inspect: typeof persistentRealmMemoryFailures): void {
+    // Watch every Kandelo realm: the top-level document and any same-origin,
+    // cross-origin-isolated frame it embeds. Skip only realms that are not
+    // Kandelo's: guest web pages run in cross-origin preview frames (in
+    // Chromium not even cross-origin isolated), and the relay is one too.
+    if (window.top !== window) {
+      let kandeloRealm = false;
+      try {
+        kandeloRealm = window.top!.location.origin === location.origin && crossOriginIsolated;
+      } catch {
+        kandeloRealm = false;
+      }
+      if (!kandeloRealm) return;
+    }
     const failures: string[] = window.__browserMemoryBoundaryFailures = [];
     window.__browserMemoryBoundaryRealmId = crypto.randomUUID();
     const NativeMemory = WebAssembly.Memory;

@@ -1,0 +1,11 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -30,7 +30,7 @@
+ }
+ 
+ cfg_net! {
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(all(target_arch = "wasm32", not(target_os = "kandelo"))))]
+     pub mod udp;
+     pub mod net;
+ }

@@ -21,5 +21,5 @@ export {
 // Shell binary metadata
 export { COREUTILS_NAMES } from "./shell-binaries";
 
-// Service worker bridge
-export { initServiceWorkerBridge } from "./service-worker-bridge";
+// Service worker readiness (cross-origin isolation, CORS proxy, lazy VFS)
+export { ensureServiceWorkerReady } from "./service-worker-bridge";

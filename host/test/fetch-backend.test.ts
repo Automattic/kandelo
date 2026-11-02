@@ -1,6 +1,11 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { FetchNetworkBackend, EagainError } from "../src/networking/fetch-backend";
-import { TlsNetworkBackend, type TlsMitmConnection } from "../src/networking/tls-network-backend";
+import {
+  newTlsRecordWriters,
+  recordCiphertextWriter,
+  TlsNetworkBackend,
+  type TlsMitmConnection,
+} from "../src/networking/tls-network-backend";
 import { NET_READINESS } from "../src/generated/abi";
 
 // These tests observe the guest's header occurrences as the backends project
@@ -944,5 +949,117 @@ describe("TlsNetworkBackend TLS MITM path", () => {
     expect(Array.from((fetchMock.mock.calls[0][1] as RequestInit).headers as Headers)).toEqual([
       ["x-allowed", "first, second"],
     ]);
+  });
+});
+
+describe("credentials on cleartext connections", () => {
+  // Grant destinations are HTTPS origins. A request the guest wrote in
+  // cleartext was never protected by TLS, so it never carries credentials,
+  // even when its upstream URL is HTTPS (port 443 on the fetch backend, or an
+  // HTTPS alias), and with or without a CORS proxy. Nothing is fetched.
+  const corsProxy = {
+    url: "https://proxy.example/?",
+    allowedRequestHeaderNames: ["content-type"],
+    allowAnonymousGetHeaderOmission: true,
+  };
+  const request =
+    "POST /backend-api/codex/responses HTTP/1.1\r\n" +
+    "Host: chatgpt.com\r\n" +
+    "Authorization: Bearer secret\r\n" +
+    "Content-Type: application/json\r\n" +
+    "Content-Length: 2\r\n\r\n{}";
+
+  it.each([["with", corsProxy], ["without", undefined]])(
+    "refuses credentials on the fetch backend's port 443 %s a CORS proxy",
+    async (_label, proxy) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("must not run"));
+      vi.stubGlobal("fetch", fetchMock);
+      const backend = new FetchNetworkBackend({ corsProxy: proxy });
+      backend.connect(1, backend.getaddrinfo("chatgpt.com"), 443);
+      backend.send(1, encoder.encode(request), 0);
+
+      await expect(recvWhenReady(backend, 1)).rejects.toThrow(
+        "credential request headers: authorization",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([["with", corsProxy], ["without", undefined]])(
+    "refuses credentials over plain HTTP to an HTTPS alias %s a CORS proxy",
+    async (_label, proxy) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response("must not run"));
+      vi.stubGlobal("fetch", fetchMock);
+      const credentialGrantFor = vi.fn(() => ({ token: "must-not-be-used" }));
+      const backend = new TlsNetworkBackend({
+        corsProxy: proxy,
+        dnsAliases: { "chatgpt.com": "https://chatgpt.com" },
+        currentPid: () => 41,
+        peekCredentialGrantId: () => 1,
+        credentialGrantFor,
+      });
+      backend.connect(1, backend.getaddrinfo("chatgpt.com"), 80);
+      backend.send(1, encoder.encode(request), 0);
+
+      await expect(recvWhenReady(backend, 1)).rejects.toThrow(
+        "credential request headers: authorization",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(credentialGrantFor).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe("TLS record attribution", () => {
+  const A = { pid: 41, grantId: 7 };
+  const B = { pid: 42, grantId: 0 };
+
+  function record(type: number, payloadLength: number): Uint8Array {
+    const bytes = new Uint8Array(5 + payloadLength);
+    bytes.set([type, 3, 3, payloadLength >> 8, payloadLength & 0xff]);
+    return bytes;
+  }
+
+  it("follows a record header split across two sends", () => {
+    const records = newTlsRecordWriters();
+    const appData = record(23, 4);
+    recordCiphertextWriter(records, appData.subarray(0, 3), A);
+    expect(records.applicationData).toEqual([]);
+    recordCiphertextWriter(records, appData.subarray(3), A);
+    expect(records.applicationData).toEqual([A]);
+  });
+
+  it("queues one writer per application-data record in a send carrying several", () => {
+    const records = newTlsRecordWriters();
+    const handshake = record(22, 3);
+    const first = record(23, 2);
+    const empty = record(23, 0);
+    const last = record(23, 5);
+    const all = new Uint8Array(
+      handshake.length + first.length + empty.length + last.length,
+    );
+    all.set(handshake);
+    all.set(first, handshake.length);
+    all.set(empty, handshake.length + first.length);
+    all.set(last, handshake.length + first.length + empty.length);
+    recordCiphertextWriter(records, all, A);
+    expect(records.applicationData).toEqual([A, A, A]);
+  });
+
+  it("marks a record two writers each sent part of as mixed", () => {
+    const records = newTlsRecordWriters();
+    const appData = record(23, 6);
+    recordCiphertextWriter(records, appData.subarray(0, 8), A);
+    recordCiphertextWriter(records, appData.subarray(8), B);
+    expect(records.applicationData).toHaveLength(1);
+    expect(records.applicationData[0]!.pid).toBeLessThanOrEqual(0);
+  });
+
+  it("treats one pid writing under two grant ids as two writers", () => {
+    const records = newTlsRecordWriters();
+    const appData = record(23, 6);
+    recordCiphertextWriter(records, appData.subarray(0, 8), A);
+    recordCiphertextWriter(records, appData.subarray(8), { pid: A.pid, grantId: 8 });
+    expect(records.applicationData[0]!.pid).toBeLessThanOrEqual(0);
   });
 });

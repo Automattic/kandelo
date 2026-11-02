@@ -65,12 +65,14 @@ export function useMachineSurfaceController(): MachineSurfaceController {
   const availability = React.useMemo<SurfaceAvailability>(() => ({
     ...rawAvailability,
     kms: rawAvailability.kms && kmsOwnerPid !== null,
-    // Keep the web surface mounted while a machine is offline/reconnecting so
-    // its pane can show that state instead of the view falling back elsewhere.
+    // Keep the web surface mounted while a machine is offline/reconnecting,
+    // or its preview failed, so its pane can show that state instead of the
+    // view falling back elsewhere.
     web: rawAvailability.web &&
       (webPreview?.status === "running" ||
         webPreview?.status === "offline" ||
-        webPreview?.status === "reconnecting"),
+        webPreview?.status === "reconnecting" ||
+        webPreview?.status === "error"),
   }), [rawAvailability, kmsOwnerPid, webPreview?.status]);
   const [activePrimary, setActivePrimary] = React.useState<PrimarySurface>(presentation.bootPrimary);
   const [requestedDemo, setRequestedDemo] = React.useState(false);

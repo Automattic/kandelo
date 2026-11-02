@@ -1,37 +1,53 @@
 import { expect, test } from "@playwright/test";
-import { attachBridgeToKernel } from "../lib/init/sw-bridge-fetch";
-import { HttpBridgeHost, type HttpResponse } from "../lib/http-bridge";
+import { PreviewBridgeHost, type KernelHttpResponse } from "../lib/preview/preview-bridge";
+import { PREVIEW_PROTOCOL_VERSION } from "../lib/preview/protocol";
 
-test("service-worker fetch bridge reports pending request counts", async () => {
-  const bridge = new HttpBridgeHost();
-  let resolveFetch: ((response: HttpResponse) => void) | null = null;
-  const kernel = {
-    fetchInKernel: () => new Promise<HttpResponse>((resolve) => {
-      resolveFetch = resolve;
-    }),
-  };
+// The preview service worker's requests reach the owning tab's
+// PreviewBridgeHost, which reports how many are waiting on the kernel so the
+// URL bar can show the preview is loading.
+test("preview bridge reports pending request counts", async () => {
+  let resolveFetch: ((response: KernelHttpResponse) => void) | null = null;
   const counts: number[] = [];
+  let workerPort: MessagePort | null = null;
 
-  attachBridgeToKernel(
-    bridge,
-    kernel as Parameters<typeof attachBridgeToKernel>[1],
-    8080,
-    { onPendingRequests: (count) => counts.push(count) },
-  );
+  const bridge = await PreviewBridgeHost.open({
+    relay: {
+      bind: async (_name, _secret, port) => {
+        workerPort = port;
+      },
+      closing: () => {},
+      onNeedBridge: () => () => {},
+      onWorkerChanged: () => () => {},
+    },
+    previewOrigin: "http://127.0.0.1:5402",
+    scope: "/",
+    appOrigin: "http://127.0.0.1:5401",
+    port: 8080,
+    kernel: {
+      fetchInKernel: () => new Promise<KernelHttpResponse>((resolve) => {
+        resolveFetch = resolve;
+      }),
+    },
+    onPendingRequests: (count) => counts.push(count),
+  });
 
-  const swPort = bridge.getSwPort();
   const replies: unknown[] = [];
-  swPort.onmessage = (event) => {
+  const port = workerPort!;
+  port.onmessage = (event) => {
     replies.push(event.data);
   };
-  swPort.start?.();
-  swPort.postMessage({
+  port.start?.();
+  port.postMessage({
     type: "http-request",
-    requestId: 7,
+    v: PREVIEW_PROTOCOL_VERSION,
+    id: 7,
     method: "GET",
-    url: "/app/",
-    headers: {},
+    url: "/",
+    headers: [],
     body: null,
+    mode: "navigate",
+    destination: "iframe",
+    navigation: true,
   });
 
   await expect.poll(() => counts).toEqual([1]);
@@ -47,10 +63,12 @@ test("service-worker fetch bridge reports pending request counts", async () => {
   expect(replies).toEqual([
     expect.objectContaining({
       type: "http-response",
-      requestId: 7,
+      v: PREVIEW_PROTOCOL_VERSION,
+      id: 7,
       status: 200,
     }),
   ]);
 
-  swPort.close();
+  bridge.dispose();
+  port.close();
 });

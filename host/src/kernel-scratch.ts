@@ -136,8 +136,8 @@ const typedArrayByteLength = intrinsicObjectGetOwnPropertyDescriptor(
  * active task binding;
  * `kernel_process_metadata_stage` copies one complete entry into a token-owned
  * Rust vector before returning; both executable-target prepare exports copy
- * the path before returning. `kernel_exec_target_admit` and
- * `kernel_process_metadata_read` only write their record into the lease. The transfer execute export names no raw pointer,
+ * the path before returning. `kernel_exec_target_admit`, `kernel_get_exe_stat`
+ * and `kernel_process_metadata_read` only write their record into the lease. The transfer execute export names no raw pointer,
  * but its token authorizes Rust to borrow the allocation represented by this
  * exact lease. Adding a name requires the same lifetime review and a pointer-
  * position update below.
@@ -168,6 +168,8 @@ export const KERNEL_SCRATCH_EXPORT_NAMES = intrinsicObjectFreeze([
   "kernel_exec_target_read",
   "kernel_get_cwd",
   "kernel_get_dirfd_path",
+  "kernel_get_exe_path",
+  "kernel_get_exe_stat",
   "kernel_get_fd_path",
   "kernel_getrusage",
   "kernel_getsockopt",
@@ -317,6 +319,8 @@ export function kernelScratchRequiredPointerArguments(
     case "kernel_rootfs_lazy_resource_limits":
       return REQUIRED_POINTER_1;
     case "kernel_get_cwd":
+    case "kernel_get_exe_path":
+    case "kernel_get_exe_stat":
     case "kernel_getrusage":
     case "kernel_pipe2":
     case "kernel_process_attach_exe_path":
@@ -420,6 +424,8 @@ function isKernelScratchExportName(
     case "kernel_exec_target_read":
     case "kernel_get_cwd":
     case "kernel_get_dirfd_path":
+    case "kernel_get_exe_path":
+    case "kernel_get_exe_stat":
     case "kernel_get_fd_path":
     case "kernel_getrusage":
     case "kernel_getsockopt":

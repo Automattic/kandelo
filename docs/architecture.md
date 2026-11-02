@@ -741,7 +741,11 @@ and OFD byte-range records. Process locks are not inherited by `fork`; they
 survive `exec` under the same PID, except that closing a `FD_CLOEXEC`
 descriptor applies the normal close rule. A close removes all process locks
 held by that PID on the file; an OFD lock remains until the last machine-wide
-reference to its open file description closes. Range
+reference to its open file description closes. Tmpfs and rootfs backing
+handles identify inodes, so independent opens can share a backing handle
+while owning different descriptions. Their fork/spawn and ancillary ownership
+counts are keyed separately by `OfdId`; the inode's total open count governs
+file storage, not the lifetime of any one description's locks. Range
 normalization, replacement, splitting, coalescing, conflict selection, and
 capacity checks all happen in Rust. Conflicts are reported as `EAGAIN` before
 capacity is considered; a mutation that would exceed the record limit or
@@ -1890,6 +1894,160 @@ after those fences; other terminals remain separate. Raw terminal input is
 not a process-control API, so graphical games are cancelled through ownership
 rather than simulated Ctrl+C input. No guest ABI or syscall changed.
 
+### Credential grants
+
+A credential grant is the user's permission for one running image of one
+process to send account credentials, as credential request fields
+(`Authorization`, `ChatGPT-Account-ID`) on Kandelo's proxy path, to the
+fixed HTTPS origins its package declared in
+`/etc/kandelo/credential-requests.d/*.json`
+(`host/src/credential-requests.ts`). The kernel's process table is the
+authority: `Process::credential_grant` holds the grant id the host issued,
+read and written through `kernel_get_credential_grant` and
+`kernel_set_credential_grant`. The kernel ends a grant when the process
+execs (any exec, even of the same path) or exits, and a fork child never
+inherits one. There is no expiry; a grant lasts until exit, exec,
+revocation, or machine teardown.
+
+Both kernel workers run the same policy (`host/src/credential-grants.ts`):
+
+1. At boot, after the kernel owns `/`, the worker reads every declaration
+   once through the kernel-owned filesystem and freezes the result. Guest
+   writes to the directory later change nothing. A missing directory means
+   no declarations; any other entry that is not a regular `*.json` file, or
+   a malformed file, fails the boot. It also records each declared
+   program's file identity then (device, inode, size, modification and
+   change times, from the kernel's inspection stat,
+   `CentralizedKernelWorker.rootfsFileIdentity`), or that it did not
+   exist.
+2. Every path that commits an image, the host's root spawn, a guest
+   `posix_spawn` and exec, then asks the kernel which file the image runs
+   (`kernel_get_exe_path`, what `/proc/<pid>/exe` reads, symlinks
+   resolved). A `/bin/codex` symlink and `/usr/bin/codex` are therefore the
+   same program, and the host never resolves a guest path itself. A `#!`
+   script's image is its interpreter, as on Linux. Fork commits no image and
+   never asks. In the same synchronous step it reads the identity of the
+   file the image was executed from (`kernel_get_exe_stat`, the metadata
+   of the description the kernel keeps for the image's executable), so a
+   file moved back to the declared path after another file was executed
+   under that name does not pass as the one recorded at boot.
+3. For a declared program, the worker posts `credential_request` (pid,
+   title, program, argv, parent chain, destinations, the embedder's
+   description of where the image came from, whether the executed file's
+   identity differs from the one recorded at boot,
+   `programChangedSinceBoot`, and what the answer controls on this host,
+   `enforcement`: `"proxy-gate"` in the browser, `"none"` on Node, and
+   which intermediary each destination's credentials would pass through,
+   `transport`, computed from the host's own proxy and relay
+   configuration by `host/src/credential-transport.ts`: the CORS proxy
+   or development credential relay by origin and path in the browser,
+   `"none"` for a browser kernel with no proxy, `"direct"` on Node) to
+   the main thread, whose `onCredentialRequest` handler answers with
+   `credential_answer`. No handler, or one that throws, rejects or
+   resolves anything but `true`, denies. At most eight questions are
+   open per kernel worker (`MAX_OPEN_CREDENTIAL_QUESTIONS`); a launch
+   beyond that is denied without asking and reported, so a guest that
+   starts declared programs in a loop cannot queue questions without
+   bound.
+4. With `launch = "wait"` the launch awaits the answer before the process
+   worker starts, so the image runs no instruction first. With
+   `"continue"` it starts at once, and an allow is applied only if the
+   process still runs that same image. A decline never stops the program;
+   it runs without a grant. A held process can be stopped or killed while
+   the question is open, so every launch path, root spawn included, starts
+   its Worker through the kernel-checked start gate
+   (`startProcessWorkerWhenRunnable`): a stopped process starts on
+   `SIGCONT`, and a killed one runs nothing and reports the kill as its
+   exit status. A held process is already a live process: every launch
+   path registers it with the kernel worker before asking, so a signal (an
+   owned job's cancellation included) reaches it, and a rootfs export sees
+   it and is refused as for any live process rather than waiting. The
+   host's root spawn leaves the rootfs snapshot gate once the program is
+   attached and its stdin set up, before it asks, so other launches and
+   VFS mutations do not wait on the user either. What does wait is the
+   launch itself: `spawn` resolves only once the held program starts or
+   dies, a parent blocked in `posix_spawn` waits for the answer about its
+   child, and a vfork parent whose child execs a declared program stays
+   suspended until the answer, as it would until any exec completes.
+5. On allow, the worker issues a nonzero grant id and a token of 32 random
+   bytes (base64url), records the id in the kernel, and caches the token
+   and destinations. `CredentialGrants.grantFor(pid)` returns the cached
+   grant only while the kernel still reports that id, so a kernel-side clear
+   the host missed still ends it. Exit, exec, `revokeCredentialGrant`, and
+   teardown drop the host entry; an exit or exec also withdraws an open
+   question (`credential_request_cancel`), and teardown denies every open
+   question so no launch waits forever.
+
+**Which process a request belongs to.** The browser's guest network
+backend (`host/src/networking/request-attribution.ts`) attributes each
+outgoing HTTPS request to the process whose system call wrote its bytes,
+and to the grant that process held at that moment: when `host_net_send`
+hands bytes to the backend, it reads the pid the kernel worker is
+serving (`CentralizedKernelWorker.servingPid`) and the id of the grant
+the host holds for it (`CredentialGrants.peekGrantId`, a host-side read
+that does not enter the kernel). It is not the process that opened the
+connection, so a socket a granted parent opened and a child inherited
+does not carry the parent's grant. It is not whatever grant the pid
+holds at dispatch either: exec keeps the pid, so bytes a process wrote
+before exec'ing a declared program must not leave under the new image's
+grant. On a TLS connection the backend follows the guest's TLS record
+framing, so each decrypted application-data record keeps the writers of
+the ciphertext that carried it, and the TLS handshake's writer never
+counts. That framing holds only for TLS 1.2 (TLS 1.3 also carries
+encrypted handshake messages in application-data records), so the
+backend reads the negotiated version from the engine's ServerHello and
+attributes no request on a connection whose version is anything else or
+cannot be read. A request whose bytes more than one (process, grant)
+wrote, or whose writer is unknown, belongs to no one and is never
+granted.
+
+**When a request is granted.** The backend decides when it dispatches
+the finished request, not when the bytes arrive: dispatch runs on the
+TLS engine's decrypt continuation, outside any kernel entry, and
+`CredentialGrants.tagFor(pid, grantId, origin)` enters the kernel to
+confirm the grant (retried if another entry holds the gate). A request
+is granted only when exactly one process wrote it over TLS, holding a
+grant, and that same grant id is still the one the kernel reports and
+names the request's exact origin. Grant ids are never reused, so a grant
+issued after the write never matches. Only a request that carries
+`Authorization` or `ChatGPT-Account-ID` asks at all. A credentialed
+request the guest wrote in cleartext (even to an HTTPS DNS alias, or on
+the plain fetch backend's port 443), or sent over TLS with no CORS proxy
+configured, is refused before any fetch. What a granted request sends is
+described in [browser
+support](browser-support.md#per-process-credential-grants).
+
+**The service-worker gate.** In the browser app, the service worker
+checks credentialed requests to the CORS proxy and to the development
+credential relay a second time, independently of the kernel worker, and
+removes the grant's tag before a request leaves the browser. To verify a
+tag it asks over a same-origin `BroadcastChannel`; the kernel worker
+that holds the tag answers with
+`CredentialGrants.verify(token, origin)`, which enters the kernel
+(`host/src/credential-gate.ts`, run outside any kernel entry and retried
+while the gate is busy). It answers by a fetch whose client id the
+browser vouches for, and the service worker accepts a tag and an answer
+only from a worker running exactly the kernel worker's entry script,
+whose URL the build injects. Any script the app's origin runs can still
+start a genuine kernel worker and answer its prompt, so the app's origin
+remains a trusted boundary; it runs only Kandelo's own code, because
+guest web previews run on a separate preview origin. `CredentialGrants`
+reports every grant it drops, so the kernel worker can tell the service
+worker to forget it. The protocol, cache rule and engine evidence are in
+[browser support](browser-support.md#per-process-credential-grants).
+
+On Node, programs open real sockets and TLS sessions themselves, so there
+is no proxy or request path to gate: credentials flow as on any Unix
+machine, and the prompt and grant exist there for host parity. A Node
+embedder's answer changes the kernel's grant record and nothing else,
+which each question states (`enforcement: "none"`). This is a documented
+host boundary, not a Node-side gate.
+
+A grant governs credential request fields on Kandelo's proxy path, not
+data: a token in a guest file or a request body is ordinary data any
+process of the same user can send. See [what a credential grant does not
+protect](browser-support.md#per-process-credential-grants).
+
 ### clone() (threads)
 
 1. User calls `clone(CLONE_VM | CLONE_THREAD, ...)` → kernel returns clone request
@@ -1933,6 +2091,16 @@ exec and can never run a module compiled from older contents. The thread
 variant is keyed on the *program's* digest; `patchWasmForThread` is a pure
 function of those bytes. When the patch leaves the bytes unchanged (a module
 without a start section), the thread module is the program module itself.
+
+Pthread initialization also reuses compact artifact facts prepared once by the
+process owner (`host/src/thread-program.ts`): import/export descriptors, exact
+function import signatures, the original module template digest, and the legacy
+channel TLS offset. Normal Node and browser thread messages carry these facts
+and the compiled module, rather than cloning the complete executable into every
+thread and hashing it again. Preparation is keyed by the immutable admitted
+program snapshot, so an exec replacement cannot reuse the old image's facts.
+The existing generation/liveness fence runs after asynchronous preparation.
+Direct test harnesses may still initialize a thread from exact program bytes.
 
 **Admission is never skipped.** The cache replaces only the compile step.
 The ABI marker and artifact-policy checks still run on every launch's bytes
@@ -2776,7 +2944,7 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    connection and may reuse it independently. Node's direct TCP backend is
    unaffected.
 
-3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
+3. **Guest web preview bridge**: Guest web pages (nginx, WordPress, any in-machine server) are served from a separate preview origin, never Kandelo's, so guest scripts cannot reach the Kandelo page. That origin's service worker (`apps/browser-demos/preview-origin/preview-service-worker.js`) forwards each request for `<scope>computer/<name>/…` over a `MessagePort` to the Kandelo tab that owns the machine; the tab's `PreviewBridgeHost` (`apps/browser-demos/lib/preview/`) answers it with `fetchInKernel`, which injects the request as a TCP connection to the server's listening socket. The tab owns the machine's cookie jar, the forwarded headers and URL rewriting. See [browser support](browser-support.md#guest-web-previews-run-on-their-own-origin).
 
 The preview also supports HTTP servers on the computer's connected Kandelo
 network. Both Node and browser `fetchInKernel(port, request, { hostname })`
@@ -2786,8 +2954,9 @@ Kandelo subnet, uses a separate host handle range above the guest i32 ABI,
 and closes pending requests on session leave or machine teardown. The shared
 client handles short writes, EAGAIN, response limits and a bounded deadline.
 Omitting `hostname` preserves the existing local injected-listener path.
-The preview service-worker bridge is retired when its destination or machine
-is replaced; its ports and event listeners do not retain a retired kernel.
+The preview bridge is retired when its destination or machine is replaced:
+the tab tells the preview worker the machine is closing, and its ports and
+event listeners do not retain a retired kernel.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.
 
@@ -3887,7 +4056,7 @@ The remaining methods (`pipeRead`/`pipeWrite`, `injectConnection`, stdin/PTY rou
 
 **dinit service supervisor** (`packages/registry/dinit/`): Service-supervised demos boot dinit v0.19.4 (cross-compiled to wasm32) as the first user process via `kernel.boot({ argv: ["/sbin/dinit", "--container", ...] })`. It receives the first kernel-allocated user PID (100); PID 1 remains the kernel's synthetic init reservation. The service tree is baked into `/etc/dinit.d/*` at image-build time via `addDinitInit()` in `dinit-image-helpers.ts`. Service types in use: `process` (long-running daemons), `scripted` (one-shot bootstraps that exit cleanly), and `internal` (dependency-only nodes used to express "boot the whole tree" or "pick this engine"). dinit reaps its directly supervised children. A service that daemonizes by double fork leaves its grandchild to synthetic init, which the kernel reaps (see "Orphan adoption"); dinit is not a subreaper here because it requests `PR_SET_CHILD_SUBREAPER` only under `__linux__`. dinit disables restarts by default and enforces inter-service `depends-on` ordering.
 
-**Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, handles HTTP bridge routing).
+**Service Worker** (`apps/browser-demos/public/service-worker.js`): Dual-mode file that acts as both a page bootstrap script (registers itself, enables cross-origin isolation) and a service worker (adds COOP/COEP headers, gates and routes CORS-proxy traffic, caches lazy VFS assets, and serves the viewer shell for `computer/<name>/` addresses). It serves no guest page; the preview origin's own worker does (`apps/browser-demos/preview-origin/`).
 
 ### Linux-compatible graphics devices
 

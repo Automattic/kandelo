@@ -1,0 +1,24 @@
+id = "FIREFOX-KEEPALIVE-FETCH-BYPASSES-SERVICE-WORKER"
+kind = "bug"
+status = "confirmed"
+runtimes = ["firefox"]
+summary = "fetch() with keepalive: true from a service-worker-controlled document goes to the network instead of the controlling service worker"
+reports = "human-only"
+
+[[repro]]
+kind = "browser-page"
+entry = "repro.html"
+targets = ["firefox", "chromium", "webkit"]
+self_judging = true
+timeout_seconds = 120
+
+# Observed only on Playwright's Firefox 155.0 build (released = false);
+# no released Firefox has been checked.
+[[observed]]
+runtime = "firefox"
+version = "155.0"
+os = "macos"
+reproduced = true
+date = 2026-10-29
+source = "suite"
+released = false

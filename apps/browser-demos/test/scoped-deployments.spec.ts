@@ -1,5 +1,5 @@
 import { expect, test, type BrowserContext, type Page } from "@playwright/test";
-import { cp, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,15 +9,13 @@ import { tmpdir } from "node:os";
 import { buildLocalVfsAssetGroup } from "../../../scripts/build-local-vfs-asset-group";
 import { loadVfsProductDeploymentMap } from "../../../scripts/vfs-product-deployment";
 import { runTerminalCommand } from "./support/terminal-command";
+import { PREVIEW_PROTOCOL_VERSION } from "../lib/preview/protocol";
 import { startScopedStaticServer, type ScopedStaticServer } from "./support/scoped-static-server";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const sourceOnlyRoot = process.env.KANDELO_SCOPED_DEPLOYMENT_SOURCE_ONLY_ROOT;
-const CACHE_A = "kandelo-sw:%2Fa%2F:bridge-v2";
-const CACHE_B = "kandelo-sw:%2Fcandidate-b%2F:bridge-v2";
 const STORAGE_B_PREFIX = "kandelo:%2Fcandidate-b%2F:";
-const SESSION_B = "22222222-2222-4222-8222-222222222222";
 
 interface CacheEntrySnapshot {
   request: {
@@ -56,12 +54,6 @@ interface NamedCacheSnapshot {
   name: string;
 }
 
-interface BridgeReady {
-  type: "bridge-ready";
-  name: string;
-  appPrefix: string;
-}
-
 let fixtureRoot: string;
 let server: ScopedStaticServer;
 let vimArchiveIdentity: { bytes: number; sha256: string };
@@ -84,6 +76,13 @@ test.describe.serial("real scoped production deployments", () => {
     );
     const group = join(fixtureRoot, "vfs-group");
     const map = join(fixtureRoot, "pages-vfs-products.private.json");
+    // The server comes first: each build names its guest preview origin and
+    // its own app origin, so both must be listening addresses already.
+    for (const name of ["a", "candidate-b"]) await mkdir(join(fixtureRoot, name));
+    server = await startScopedStaticServer({
+      aRoot: join(fixtureRoot, "a"),
+      candidateBRoot: join(fixtureRoot, "candidate-b"),
+    });
     await withSourceOnlyEnvironment(async () => {
       await buildLocalVfsAssetGroup({
         assetGroupDirectory: group,
@@ -102,9 +101,11 @@ test.describe.serial("real scoped production deployments", () => {
       const relocatedGroup = join(fixtureRoot, "relocated-group");
       const relocatedMap = join(fixtureRoot, "relocated.private.json");
       await cp(group, relocatedGroup, { recursive: true, dereference: true });
-      await writeRelocatedMap(map, relocatedMap, "nested/release-2/manifest.json");
+      // A deployment may nest its group deeper; the directory must still be
+      // the manifest's content address.
+      await writeRelocatedMap(map, relocatedMap, `nested/sha256-${assetGroupSha256}/manifest.json`);
       await buildVite("/a/", join(fixtureRoot, "a-relocated"), relocatedMap, relocatedGroup);
-      await writeRelocatedMap(map, join(fixtureRoot, "outside.private.json"), "../outside/manifest.json");
+      await writeRelocatedMap(map, join(fixtureRoot, "outside.private.json"), `../sha256-${assetGroupSha256}/manifest.json`);
       await expect(
         buildVite("/a/", join(fixtureRoot, "a-outside"), join(fixtureRoot, "outside.private.json"), relocatedGroup),
       ).rejects.toThrow();
@@ -115,10 +116,6 @@ test.describe.serial("real scoped production deployments", () => {
       outsideSymlinkTarget,
       join(fixtureRoot, "a", "outside-symlink.txt"),
     );
-    server = await startScopedStaticServer({
-      aRoot: join(fixtureRoot, "a"),
-      candidateBRoot: join(fixtureRoot, "candidate-b"),
-    });
     for (const path of ["/a/%2e%2e/package.json", "/a/%2Fetc/passwd"]) {
       expect((await fetch(`${server.origin}${path}`)).status).toBe(404);
     }
@@ -168,12 +165,14 @@ test.describe.serial("real scoped production deployments", () => {
 
       server.clearRequests(); await runVimVersion(pageA); assertOnlyGroupRequests(server, "/a/");
       server.clearRequests(); await runVimVersion(pageB); assertOnlyGroupRequests(server, "/candidate-b/");
-      await expect(cacheNames(pageA)).resolves.toEqual(expect.arrayContaining([
-        CACHE_A, CACHE_B, lazyCacheA, lazyCacheB, "unrelated-site-cache",
+      // The service worker writes each lazy cache entry while the page
+      // reads the download, so an entry can land just after the page is done.
+      await expect.poll(() => cacheNames(pageA)).toEqual(expect.arrayContaining([
+        lazyCacheA, lazyCacheB, "unrelated-site-cache",
       ]));
-      expect(await cachePaths(pageA, lazyCacheA)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\/vfs-groups\//)]));
+      await expect.poll(() => cachePaths(pageA, lazyCacheA)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\/vfs-groups\//)]));
       expect(await cachePaths(pageA, lazyCacheA)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\//)]));
-      expect(await cachePaths(pageB, lazyCacheB)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\/vfs-groups\//)]));
+      await expect.poll(() => cachePaths(pageB, lazyCacheB)).toEqual(expect.arrayContaining([expect.stringMatching(/^\/candidate-b\/vfs-groups\//)]));
       expect(await cachePaths(pageB, lazyCacheB)).not.toEqual(expect.arrayContaining([expect.stringMatching(/^\/a\//)]));
       const corrupted = await corruptCachedVimArchive(pageA);
       expect(corrupted.original).toEqual(vimArchiveIdentity);
@@ -207,12 +206,39 @@ test.describe.serial("real scoped production deployments", () => {
         request.pathname.endsWith("/vim.zip")
       )).toEqual([]);
 
-      const bridge = await installBridgeAuthority(pageB);
-      expect(bridge).toEqual({
-        type: "bridge-ready",
-        name: expect.stringMatching(/^[a-z]+-[a-z]+-[a-z]+$/),
-        appPrefix: `/candidate-b/computer/${bridge.name}/`,
-      });
+      // Each deployment's guest preview bundle is served by the preview
+      // origin at that deployment's own scope, and accepts only the app.
+      for (const scope of ["/a/", "/candidate-b/"]) {
+        const relay = await fetch(`${server.previewOrigin}${scope}__kandelo_preview/relay.js`);
+        expect(relay.status).toBe(200);
+        expect(relay.headers.get("cross-origin-resource-policy")).toBe("cross-origin");
+        expect(await relay.text()).toContain(`"kandeloOrigins":["${server.origin}"]`);
+        const worker = await fetch(`${server.previewOrigin}${scope}preview-service-worker.js`);
+        expect(worker.status).toBe(200);
+      }
+      // A computer/ address on the app origin is the viewer shell. Its relay
+      // registers the preview worker at this deployment's scope; with no
+      // owning tab, the machine reports offline instead of loading anything.
+      const viewer = await context.newPage();
+      await viewer.goto(`${server.origin}/candidate-b/computer/able-amber-acorn-lfd5pqz5pa7zjm5uyguw/`, { waitUntil: "domcontentloaded" });
+      await expect(viewer.locator(".kviewer-status")).toContainText("no longer running", { timeout: 60_000 });
+      expect(viewer.frames().map((frame) => frame.url())).toContain(
+        `${server.previewOrigin}/candidate-b/__kandelo_preview/relay.html`,
+      );
+      await viewer.close();
+
+      // Sibling scopes share the preview origin but not their machines: a
+      // machine bound through /a/'s relay lives in /a/'s preview worker.
+      // The same name under /candidate-b/ is a different, unknown machine,
+      // and no request for it reaches /a/'s owner.
+      // The name commits to this secret (lib/preview/protocol.ts).
+      const machine = "quiet-sage-heron-jotivkdwppphf2ghtdxi";
+      await bindDeployedMachine(pageA, server.previewOrigin, "/a/", machine, "fedcba9876543210fedcba9876543210");
+      const ownFrame = await openPreviewFrame(pageA, `${server.previewOrigin}/a/computer/${machine}/`);
+      expect(await ownFrame.locator("body").textContent()).toBe(`a:GET:/`);
+      const siblingFrame = await openPreviewFrame(pageB, `${server.previewOrigin}/candidate-b/computer/${machine}/`);
+      await expect(siblingFrame.locator("body")).toContainText("This Kandelo computer is offline", { timeout: 30_000 });
+      expect(await pageA.evaluate(() => (window as any).__scopedMachineRequests)).toEqual(["GET /"]);
       const missingCache = "scoped-deployment-observation-must-not-create";
       await expect(readCacheSnapshot(pageB, missingCache, false)).rejects.toThrow(
         `cache ${missingCache} does not exist`,
@@ -224,7 +250,6 @@ test.describe.serial("real scoped production deployments", () => {
           controller: `${server.origin}/candidate-b/service-worker.js`,
           registration: `${server.origin}/candidate-b/`,
         },
-        bridgeCache: { name: CACHE_B, entries: expect.any(Array) },
         lazyCache: { name: lazyCacheB, entries: expect.any(Array) },
         retrySessionKeys: expect.any(Array),
         unrelatedCache: {
@@ -232,8 +257,6 @@ test.describe.serial("real scoped production deployments", () => {
           entries: expect.any(Array),
         },
       });
-      expect(candidateBeforeRestart.bridgeCache.entries).toHaveLength(1);
-      assertBridgeAuthority(candidateBeforeRestart.bridgeCache, server.origin, bridge);
       expect(candidateBeforeRestart.lazyCache.entries.length).toBeGreaterThan(0);
       expect(candidateBeforeRestart.lazyCache.entries.some((entry) =>
         new URL(entry.request.url).pathname.endsWith("/vim.zip")
@@ -281,13 +304,78 @@ test.describe.serial("real scoped production deployments", () => {
       await runVimVersion(relocated);
       expect(server.requests().filter((request) => request.pathname.includes("manifest.json") || request.pathname.includes("vim.zip")))
         .toEqual(expect.arrayContaining([
-          expect.objectContaining({ pathname: expect.stringMatching(/^\/a\/nested\/release-2\//) }),
+          expect.objectContaining({ pathname: expect.stringMatching(/^\/a\/nested\/sha256-[0-9a-f]{64}\//) }),
         ]));
     } finally {
       await context.close();
     }
   });
 });
+
+/**
+ * Bind `name` in the preview worker of the deployment at `scope`, through
+ * that deployment's real relay, from its real Kandelo page. The machine
+ * answers `a:<method>:<path>`.
+ */
+async function bindDeployedMachine(
+  page: Page,
+  previewOrigin: string,
+  scope: string,
+  name: string,
+  secret: string,
+): Promise<void> {
+  const result = await page.evaluate(async ({ previewOrigin, scope, name, secret, v }) => {
+    const relay = document.createElement("iframe");
+    relay.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    relay.referrerPolicy = "origin";
+    relay.hidden = true;
+    relay.src = `${previewOrigin}${scope}__kandelo_preview/relay.html`;
+    const requests: string[] = [];
+    (window as any).__scopedMachineRequests = requests;
+    const channel = new MessageChannel();
+    (window as any).__scopedMachinePort = channel.port1;
+    channel.port1.onmessage = (event) => {
+      const request = event.data;
+      if (request.type !== "http-request") return;
+      requests.push(`${request.method} ${request.url}`);
+      const body = new TextEncoder().encode(`a:${request.method}:${request.url}`).buffer;
+      channel.port1.postMessage({
+        type: "http-response", v, id: request.id, status: 200,
+        headers: [["content-type", "text/plain"]], body,
+      }, [body]);
+    };
+    return new Promise<string>((resolve) => {
+      const timer = setTimeout(() => resolve("no answer"), 30_000);
+      window.addEventListener("message", (event) => {
+        if (event.source !== relay.contentWindow) return;
+        const message = event.data;
+        if (message.type === "preview-relay-ready") {
+          relay.contentWindow!.postMessage({ type: "preview-bridge", v, name, secret, seq: 1 }, previewOrigin, [channel.port2]);
+        } else if ((message.type === "preview-bridge-ready" || message.type === "preview-bridge-refused") && message.name === name) {
+          clearTimeout(timer);
+          resolve(message.type === "preview-bridge-ready" ? "ready" : message.code);
+        }
+      });
+      document.body.append(relay);
+    });
+  }, { previewOrigin, scope, name, secret, v: PREVIEW_PROTOCOL_VERSION });
+  expect(result).toBe("ready");
+}
+
+async function openPreviewFrame(page: Page, url: string) {
+  const frameName = `scoped-preview-${Math.random().toString(16).slice(2)}`;
+  await page.evaluate(({ url, frameName }) => new Promise<void>((resolve) => {
+    const frame = document.createElement("iframe");
+    frame.name = frameName;
+    frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+    frame.onload = () => resolve();
+    frame.src = url;
+    document.body.append(frame);
+  }), { url, frameName });
+  const frame = page.frames().find((candidate) => candidate.name() === frameName);
+  if (!frame) throw new Error(`no preview frame for ${url}`);
+  return frame;
+}
 
 async function withSourceOnlyEnvironment(action: () => Promise<void>): Promise<void> {
   const previousPolicy = process.env.WASM_POSIX_RESOLUTION_POLICY;
@@ -305,7 +393,8 @@ async function withSourceOnlyEnvironment(action: () => Promise<void>): Promise<v
 async function buildVite(base: string, outDir: string, map: string, group: string): Promise<void> {
   await execFileAsync("npm", ["--prefix", "apps/browser-demos", "run", "build", "--", "--outDir", outDir], {
     cwd: repoRoot,
-    env: { ...process.env, KANDELO_PAGES_PRODUCT_MAP: map, KANDELO_PAGES_VFS_ASSET_GROUP_DIR: group, VITE_BASE: base, WASM_POSIX_RESOLUTION_POLICY: "source-only-v1", WASM_POSIX_SOURCE_ONLY_BINARY_ROOT: sourceOnlyRoot! },
+    env: { ...process.env, KANDELO_PAGES_PRODUCT_MAP: map, KANDELO_PAGES_VFS_ASSET_GROUP_DIR: group, VITE_BASE: base, WASM_POSIX_RESOLUTION_POLICY: "source-only-v1", WASM_POSIX_SOURCE_ONLY_BINARY_ROOT: sourceOnlyRoot!,
+      KANDELO_PREVIEW_ORIGIN: server.previewOrigin, KANDELO_APP_ORIGIN: server.origin },
   });
 }
 
@@ -452,48 +541,14 @@ async function seedUnrelatedCache(page: Page): Promise<void> {
   await page.evaluate(async () => (await caches.open("unrelated-site-cache")).put("seed", new Response("seed")));
 }
 
-async function installBridgeAuthority(page: Page): Promise<BridgeReady> {
-  return page.evaluate(async (sessionId) => {
-    const controller = navigator.serviceWorker.controller;
-    if (controller === null) {
-      throw new Error("service worker does not control candidate deployment");
-    }
-    const keepAlive = window as typeof window & {
-      __scopedDeploymentBridgePorts?: MessagePort[];
-    };
-    keepAlive.__scopedDeploymentBridgePorts ??= [];
-    const bridge = new MessageChannel();
-    bridge.port1.start();
-    const reply = new MessageChannel();
-    const acknowledged = new Promise<BridgeReady>((resolveReply, reject) => {
-      const timeout = window.setTimeout(
-        () => reject(new Error("timed out installing candidate bridge")),
-        5_000,
-      );
-      reply.port1.onmessage = (event) => {
-        window.clearTimeout(timeout);
-        resolveReply(event.data);
-      };
-      reply.port1.start();
-    });
-    keepAlive.__scopedDeploymentBridgePorts.push(bridge.port1, reply.port1);
-    controller.postMessage(
-      { type: "init-bridge", sessionId },
-      [bridge.port2, reply.port2],
-    );
-    return acknowledged;
-  }, SESSION_B);
-}
-
 async function cacheNames(page: Page): Promise<string[]> { return page.evaluate(() => caches.keys()); }
 async function cachePaths(page: Page, name: string): Promise<string[]> {
   return page.evaluate(async (cacheName) => (await (await caches.open(cacheName)).keys()).map((request) => new URL(request.url).pathname), name);
 }
 async function durableSnapshot(page: Page) {
-  const [serviceWorker, bridgeCache, lazyCache, retrySessionKeys, unrelatedCache] =
+  const [serviceWorker, lazyCache, retrySessionKeys, unrelatedCache] =
     await Promise.all([
       scopes(page),
-      readCacheSnapshot(page, CACHE_B, true),
       readCacheSnapshot(page, lazyCacheB, false),
       page.evaluate((prefix) => {
         const entries: Array<{
@@ -520,83 +575,11 @@ async function durableSnapshot(page: Page) {
       readCacheSnapshot(page, "unrelated-site-cache", true),
     ]);
   return {
-    bridgeCache,
     lazyCache,
     retrySessionKeys,
     serviceWorker,
     unrelatedCache,
   };
-}
-
-function assertBridgeAuthority(
-  snapshot: NamedCacheSnapshot,
-  origin: string,
-  bridge: BridgeReady,
-): void {
-  expect(snapshot.name).toBe(CACHE_B);
-  expect(snapshot.entries).toHaveLength(1);
-  const entry = snapshot.entries[0]!;
-  expect(entry.request).toMatchObject({
-    body: null,
-    method: "GET",
-    url: `${origin}/candidate-b/bridge-authority-v1/${bridge.name}`,
-  });
-  expect(entry.response).toMatchObject({
-    headers: expect.arrayContaining([["content-type", "application/json"]]),
-    ok: true,
-    status: 200,
-  });
-  const exactBytes = entry.response.body.exactBytes;
-  expect(exactBytes).toBeDefined();
-  const authority = JSON.parse(
-    new TextDecoder().decode(Uint8Array.from(exactBytes!)),
-  ) as Record<string, unknown>;
-  expect(Object.keys(authority).sort()).toEqual([
-    "appPrefix",
-    "cookies",
-    "revision",
-    "sessionId",
-    "version",
-  ]);
-  expect(authority.version).toBe(1);
-  expect(
-    typeof authority.revision === "number" &&
-      Number.isSafeInteger(authority.revision) && authority.revision >= 1,
-  ).toBe(true);
-  expect(typeof authority.sessionId).toBe("string");
-  expect(authority.sessionId).toBe(SESSION_B);
-  expect(authority.sessionId).toMatch(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-  );
-  expect(authority.appPrefix).toBe(bridge.appPrefix);
-  expect(Array.isArray(authority.cookies)).toBe(true);
-  for (const value of authority.cookies as unknown[]) {
-    expect(value !== null && typeof value === "object").toBe(true);
-    const cookie = value as Record<string, unknown>;
-    expect(Object.keys(cookie).sort()).toEqual(
-      cookie.expires === undefined
-        ? ["name", "path", "value"]
-        : ["expires", "name", "path", "value"],
-    );
-    expect(typeof cookie.name).toBe("string");
-    expect(cookie.name).toMatch(/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
-    expect(new TextEncoder().encode(String(cookie.name)).byteLength)
-      .toBeLessThanOrEqual(256);
-    expect(typeof cookie.value).toBe("string");
-    expect(String(cookie.value)).not.toMatch(/[\u0000-\u001f\u007f;]/);
-    expect(new TextEncoder().encode(String(cookie.value)).byteLength)
-      .toBeLessThanOrEqual(4_096);
-    expect(typeof cookie.path).toBe("string");
-    expect(String(cookie.path).startsWith(bridge.appPrefix)).toBe(true);
-    expect(String(cookie.path)).not.toMatch(/[\u0000-\u001f\u007f;]/);
-    expect(new TextEncoder().encode(String(cookie.path)).byteLength)
-      .toBeLessThanOrEqual(4_096);
-    if (cookie.expires !== undefined) {
-      expect(
-        typeof cookie.expires === "number" && Number.isFinite(cookie.expires),
-      ).toBe(true);
-    }
-  }
 }
 
 async function readCacheSnapshot(

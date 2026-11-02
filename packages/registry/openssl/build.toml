@@ -1,4 +1,4 @@
 script_path = "packages/registry/openssl/build-openssl.sh"
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 4
+revision    = 5

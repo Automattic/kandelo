@@ -51,6 +51,11 @@ kandelo_package_stage_primary_source openssl "$SRC_DIR" "$WORK_DIR"
 
 cd "$SRC_DIR"
 echo "==> Configuring OpenSSL for $TARGET_ARCH..."
+# Keep OpenSSL's default pthread support. Kandelo provides POSIX threads, and
+# consumers such as multi-threaded TLS clients call libcrypto from several
+# threads at once. `no-threads` turns CRYPTO_THREAD_* locks, run-once and
+# thread-local storage into single-thread stubs, so concurrent use corrupts
+# shared library state (see test/threads.test.ts).
 CC="$CC" AR="$AR" RANLIB="$RANLIB" \
 CFLAGS="-O2" \
 perl Configure "$CONFIGURE_TARGET" \
@@ -59,7 +64,6 @@ perl Configure "$CONFIGURE_TARGET" \
     -DOPENSSL_NO_UI_CONSOLE=1 \
     -DNO_SYSLOG=1 \
     no-asm \
-    no-threads \
     no-dso \
     no-shared \
     no-async \

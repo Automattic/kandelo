@@ -8,6 +8,9 @@ publish = false
 name = "rust-calls-c"
 path = "src/main.rs"
 
+[dependencies]
+libc = "=0.2.186"
+
 [profile.release]
 panic = "abort"
 

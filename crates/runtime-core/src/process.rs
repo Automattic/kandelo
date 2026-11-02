@@ -1220,6 +1220,23 @@ pub struct Process {
     /// Used as a regression guardrail by the spawn test suite to confirm
     /// non-forking spawn doesn't sneak through the fork path.
     pub fork_count: u64,
+    /// The user's permission for THIS image of THIS process to send
+    /// credentials, as the grant id the host issued; `None` while the process
+    /// holds no grant.
+    ///
+    /// WHY THE KERNEL HOLDS IT. Which process may send credentials is a fact
+    /// about a process, and the process table is where the platform records
+    /// what a process is. A host-side map keyed by pid would have to be kept
+    /// in step with fork, exec, exit and pid reuse by hand; here the same
+    /// transitions that end a process or replace its image end the grant.
+    ///
+    /// LIFETIME. A grant has no expiry: it lasts until the host clears it
+    /// (`kernel_set_credential_grant(pid, 0)`), the image is replaced by any
+    /// exec (even of the same path, since that is a new image the user never
+    /// vetted), or the process exits. A fork child never inherits it: the
+    /// child is a new process the user did not grant. It is not fork or exec
+    /// state, so it is never serialized.
+    pub credential_grant: Option<u32>,
 }
 
 impl Deref for Process {
@@ -1492,6 +1509,7 @@ impl Process {
             dri_bindings: Vec::new(),
             shm_mappings: Vec::new(),
             fork_count: 0,
+            credential_grant: None,
         }
     }
 
@@ -1677,6 +1695,8 @@ impl Process {
         }
         let status = status & 0xff;
         self.state = ProcessState::Exited;
+        // The image that was granted is gone; a zombie holds no grant.
+        self.credential_grant = None;
         // The image is gone; no parked thread of it may ever be completed.
         crate::wait_park::retire_process(self.pid);
         self.exit_status = status;
@@ -1699,6 +1719,7 @@ impl Process {
         }
         let signum = signum & 0x7f;
         self.state = ProcessState::Exited;
+        self.credential_grant = None;
         crate::wait_park::retire_process(self.pid);
         self.exit_status = 0;
         self.exit_signal = signum;

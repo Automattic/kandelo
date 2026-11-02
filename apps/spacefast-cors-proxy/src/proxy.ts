@@ -10,8 +10,37 @@ import { hasApprovedReferer, parseApprovedRefererOrigins } from "./request-polic
 export const MAX_REQUEST_BYTES = 1024 * 1024;
 export const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 const METHODS = "GET, HEAD, POST, OPTIONS";
-const REQUEST_HEADERS = "Accept, Authorization, Content-Type, git-protocol, Range, wp_blog, wp_install, X-Cors-Proxy-Allowed-Request-Headers, X-Cors-Proxy-Content-Type, X-Cors-Proxy-Range, X-Kandelo-Proxy-Session";
-const EXPOSE_HEADERS = "X-Playground-Cors-Proxy, Content-Range, Accept-Ranges, ETag, Content-Length, Last-Modified, Date, Retry-After, X-Kandelo-Proxy-Session";
+// Playground's fields, then the ordinary fields signed-in Codex sends (see
+// the README). Listed by name, never `*`: a wildcard would also admit
+// X-Kandelo-Credential-Grant, which Kandelo's service worker must remove
+// before a request leaves the browser, so a request that skipped that gate
+// fails its preflight instead of reaching this proxy.
+const REQUEST_HEADERS = [
+  "Accept", "Authorization", "Content-Type", "git-protocol", "Range", "wp_blog", "wp_install",
+  "X-Cors-Proxy-Allowed-Request-Headers", "X-Cors-Proxy-Content-Type", "X-Cors-Proxy-Range", "X-Kandelo-Proxy-Session",
+  "Cache-Control", "ChatGPT-Account-ID", "Content-Encoding", "OAI-Product-Sku", "OpenAI-Beta", "originator",
+  "session-id", "thread-id", "version", "x-client-request-id", "x-codex-beta-features",
+  "x-codex-parent-thread-id", "x-codex-routing-hint", "x-codex-turn-metadata", "x-codex-turn-state",
+  "x-codex-window-id", "x-openai-account-routing-override", "x-openai-fedramp",
+  "x-openai-internal-codex-responses-lite", "x-openai-product-sku", "x-openai-subagent",
+].join(", ");
+// `*` exposes every relayed field to a fetch whose credentials mode is not
+// "include", as Kandelo's are; that covers rate-limit families Codex reads
+// whose names cannot be listed in advance. A credentialed fetch reads `*` as
+// a literal name and gets the listed fields: Playground's, then Codex's.
+// Set-Cookie is never exposed, and RESPONSE_DENY already drops authority
+// fields before they reach the client.
+const EXPOSE_HEADERS = [
+  "*", "X-Playground-Cors-Proxy", "Content-Range", "Accept-Ranges", "ETag", "Content-Length", "Last-Modified",
+  "Date", "Retry-After", "X-Kandelo-Proxy-Session",
+  "x-codex-turn-state", "openai-model", "x-models-etag", "x-reasoning-included",
+  "x-codex-primary-used-percent", "x-codex-primary-window-minutes", "x-codex-primary-reset-at",
+  "x-codex-secondary-used-percent", "x-codex-secondary-window-minutes", "x-codex-secondary-reset-at",
+  "x-codex-limit-name", "x-codex-credits-has-credits", "x-codex-credits-unlimited", "x-codex-credits-balance",
+  "x-codex-promo-message", "x-codex-rate-limit-reached-type", "x-codex-active-limit",
+  "x-codex-safety-buffering-enabled", "x-codex-safety-buffering-faster-model",
+  "x-request-id", "x-oai-request-id", "cf-ray", "x-openai-authorization-error", "x-error-json",
+].join(", ");
 
 export type OriginRule =
   | { type: "match-exact"; origin: string }
@@ -88,7 +117,10 @@ function configuredOrigins(value: string): OriginRule[] {
 const HOP_HEADERS = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailer", "transfer-encoding", "upgrade"];
 const REQUEST_DENY = new Set([...HOP_HEADERS, "host", "cookie", "cookie2", "content-length",
-  "x-cors-proxy-allowed-request-headers", "x-cors-proxy-content-type", "x-cors-proxy-range", "x-kandelo-proxy-session"]);
+  "x-cors-proxy-allowed-request-headers", "x-cors-proxy-content-type", "x-cors-proxy-range", "x-kandelo-proxy-session",
+  // Kandelo-internal; the preflight already blocks it for browsers, and
+  // this drops it for any other caller.
+  "x-kandelo-credential-grant"]);
 const RESPONSE_DENY = new Set([...HOP_HEADERS, "set-cookie", "set-cookie2", "authorization",
   "www-authenticate", "cache-control", "strict-transport-security", "upgrade-insecure-requests",
   "clear-site-data", "content-security-policy", "content-security-policy-report-only",

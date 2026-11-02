@@ -88,6 +88,10 @@ declare global {
         dnsAliases?: Record<string, string>;
         /** Read the kernel worker's module cache counters before teardown. */
         wasmModuleCacheStats?: boolean;
+        /** How this runner answers a declared program's credential request
+         *  (the app's dialog is not part of this page). Unset: no handler,
+         *  so every request is denied, as for any embedder without one. */
+        credentialRequests?: "allow" | "deny";
       },
     ) => Promise<{
       exitCode: number;
@@ -96,6 +100,8 @@ declare global {
       combined: string;
       hostDiagnostics: HostDiagnostic[];
       wasmModuleCacheStats?: WasmModuleCacheStats;
+      /** The credential requests the kernel asked this runner to answer. */
+      credentialRequests: Array<{ pid: number; program: string; destinations: readonly string[] }>;
     }>;
     __testCount: number;
     /**
@@ -360,12 +366,15 @@ async function init() {
       corsProxy?: BrowserCorsProxyConfig | null;
       dnsAliases?: Record<string, string>;
       wasmModuleCacheStats?: boolean;
+      credentialRequests?: "allow" | "deny";
     },
   ) => {
     let stdout = "";
     let stderr = "";
     let combined = "";
     const hostDiagnostics: HostDiagnostic[] = [];
+    const credentialRequests: Array<{ pid: number; program: string; destinations: readonly string[] }> = [];
+    const credentialAnswer = options?.credentialRequests;
 
     // Assemble the test image (exec binaries + /etc + any data files) in a
     // transient build FS, then hand ownership to the kernel worker so the main
@@ -409,6 +418,14 @@ async function init() {
       // must preserve rather than treating them as unwrapped guest traffic.
       corsProxy: options?.corsProxy === null ? undefined : options?.corsProxy ?? corsProxy,
       dnsAliases: options?.dnsAliases,
+      onCredentialRequest: credentialAnswer === undefined ? undefined : async (request) => {
+        credentialRequests.push({
+          pid: request.pid,
+          program: request.program,
+          destinations: request.destinations,
+        });
+        return credentialAnswer === "allow";
+      },
       onStdout: (data: Uint8Array) => {
         const text = new TextDecoder().decode(data);
         stdout += text;
@@ -484,9 +501,10 @@ async function init() {
           combined,
           hostDiagnostics,
           wasmModuleCacheStats: await kernel.getWasmModuleCacheStats(),
+          credentialRequests,
         };
       }
-      return { exitCode, stdout, stderr, combined, hostDiagnostics };
+      return { exitCode, stdout, stderr, combined, hostDiagnostics, credentialRequests };
     } finally {
       // Clean up to free memory for the next test
       await kernel.destroy();

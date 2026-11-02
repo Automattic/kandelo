@@ -167,6 +167,12 @@ export function loadVfsProductDeploymentMap(options: {
           `private VFS product deployment product ${entry.id} has an invalid asset group identity`,
         );
       }
+      if (!isVfsAssetGroupContentAddress(assetGroupPath, entry.asset_group.sha256)) {
+        throw new Error(
+          `private VFS product deployment product ${entry.id} asset group ${assetGroupPath} ` +
+            `lacks its content address (a directory named sha256-<manifest digest>)`,
+        );
+      }
       assetGroup = Object.freeze({ ...entry.asset_group, path: assetGroupPath });
     }
     const expectedPath = vfsProductDeploymentPath(entry.id, entry.sha256, ABI_VERSION);
@@ -743,6 +749,38 @@ function groupedProductImagePaths(
     paths.set(entry.id, `${groupDirectory}${product.image.path}`);
   }
   return paths;
+}
+
+/**
+ * Where a build publishes a VFS asset group: a directory named by its
+ * manifest's digest. The manifest names every image and lazy asset by digest,
+ * so this one address fixes every byte under it.
+ *
+ * WHY content addressing: a page and the service worker answering it can
+ * belong to different deployments (the first navigation after a deploy is
+ * served by the outgoing worker), and an edge may keep an old copy. Under a
+ * fixed address such as the former `vfs-groups/release-1/`, either can hand
+ * the new page the previous group's bytes. Under this address, whoever
+ * answers, the bytes are the ones the URL names. See docs/browser-support.md,
+ * "Deployment updates".
+ */
+export function vfsAssetGroupManifestPath(manifestSha256: string): string {
+  if (!SHA256.test(manifestSha256)) {
+    throw new Error("VFS asset group manifest digest must be lowercase SHA-256");
+  }
+  return `vfs-groups/sha256-${manifestSha256}/manifest.json`;
+}
+
+/**
+ * Whether a deployment-relative manifest path is content-addressed: its file
+ * is `manifest.json` inside a directory named `sha256-<manifestSha256>`. A
+ * deployment may nest that directory deeper (`nested/sha256-<digest>/`).
+ */
+export function isVfsAssetGroupContentAddress(path: string, manifestSha256: string): boolean {
+  const segments = path.split("/");
+  return segments.length >= 2 &&
+    segments[segments.length - 1] === "manifest.json" &&
+    segments[segments.length - 2] === `sha256-${manifestSha256}`;
 }
 
 export function vfsProductDeploymentPath(

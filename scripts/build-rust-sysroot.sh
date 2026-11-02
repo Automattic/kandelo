@@ -34,7 +34,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # rust-lang/libc submodule; our kandelo delta is a single patch. The fork
 # is assembled at build time (submodule + patch), mirroring how
 # build-musl.sh overlays libc/musl-overlay onto the libc/musl submodule.
-LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # rust-lang/libc, pinned to the version std uses
+LIBC_UPSTREAM="$REPO_ROOT/sdk/rust/libc-upstream"      # pinned rust-lang/libc source for both std and guests
 LIBC_PATCH="$REPO_ROOT/sdk/rust/libc-kandelo.patch"    # kandelo delta only
 STD_OVERLAY="$REPO_ROOT/sdk/rust/std-overlay"
 
@@ -149,6 +149,25 @@ open(manifest, "w").write("\n".join(out) + "\n")
 print("   libc patch inserted")
 PY
 
+# Cargo retains rust-src's locked registry libc when a newer path patch also
+# satisfies std's dependency range. Refresh that one lock entry explicitly:
+# std and guest crates must use the same Kandelo bindings, never the upstream
+# crate that has no Kandelo platform definitions.
+FORK_LIBC_VERSION="$(python3 - "$FORK_LIBC/Cargo.toml" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as source:
+    print(tomllib.load(source)["package"]["version"])
+PY
+)"
+cargo update --manifest-path "$LIB_MANIFEST" -p libc --precise "$FORK_LIBC_VERSION"
+python3 - "$(dirname "$LIB_MANIFEST")/Cargo.lock" "$FORK_LIBC_VERSION" <<'PY'
+import sys, tomllib
+with open(sys.argv[1], "rb") as source:
+    entries = [p for p in tomllib.load(source)["package"] if p["name"] == "libc"]
+if len(entries) != 1 or entries[0]["version"] != sys.argv[2] or "source" in entries[0]:
+    raise SystemExit("std must resolve the SDK's patched libc, not a registry libc")
+PY
+
 if [ -d "$STD_OVERLAY" ]; then
   echo "==> Applying std overlay from $STD_OVERLAY"
   # Overlay files are laid out mirroring library/ (e.g.
@@ -201,7 +220,10 @@ TOML
 # from STD_BUILD.
 (
   cd "$STD_BUILD"
+  # Cargo normally omits bitcode for a non-LTO build. Installed std must
+  # retain it so downstream release profiles can enable thin or fat LTO.
   RUSTC="$WRAP" RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1 \
+    RUSTFLAGS="${RUSTFLAGS:-} -Cembed-bitcode=yes" \
     cargo build --release --quiet \
       -Z build-std=std,panic_abort \
       --target "$TARGET" \

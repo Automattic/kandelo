@@ -31,7 +31,7 @@ RUST_DIR="${KANDELO_RUST_DIR:-$HOME/.kandelo/rust}"
 KANDELO_RUST_DIR="$RUST_DIR" bash "$REPO_ROOT/scripts/build-rust-sysroot.sh" >&2
 export RUSTC="$RUST_DIR/rustc-kandelo"
 export RUST_LIBC_UNSTABLE_MUSL_V1_2_3=1
-# The fixtures have no crates.io dependencies.
+# The libc dependency below resolves to the assembled SDK fork.
 export CARGO_NET_OFFLINE=true
 
 # libc++ comes from the resolved libcxx package; the shared worktree sysroot
@@ -73,6 +73,7 @@ wasm32posix-c++ -O2 -fwasm-exceptions -I"$HERE" "$HERE/main.cpp" \
 # --- Rust calling C ------------------------------------------------------
 cargo build --release --quiet \
     --manifest-path "$HERE/rustbin/Cargo.toml" \
+    --config "patch.crates-io.libc.path=\"$RUST_DIR/libc-kandelo\"" \
     --target "$TARGET" --target-dir "$OUT/target"
 cp "$OUT/target/$TARGET/release/rust-calls-c.wasm" "$OUT/"
 

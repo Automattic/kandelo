@@ -17,7 +17,9 @@ link against musl → syscall channel → kernel).
   REQUIRES fork instrumentation (see the fixture header).
 - `std-boundaries/` — std's failure paths (errno through `io::Error`,
   refused connections, missing programs), `Backtrace` reporting
-  `Unsupported`, and abort on panic.
+  `Unsupported`, descriptor cloning (shared offset, close-on-exec, and
+  independent ownership), shared/exclusive file-lock contention and release,
+  and abort on panic.
 - `c-interop/` — Rust and C/C++ in one program: a std-using Rust static
   library (installed with cargo-c) linked into a C and a C++ program, and
   a C and a C++ static library each linked into a Rust program.
@@ -25,6 +27,8 @@ link against musl → syscall channel → kernel).
   and runs them.
 
 `host/test/rust-std.test.ts` builds the std fixtures with
-`wasm32posix-cargo` and runs them. Build/run: see `sdk/rust/README.md`. Run with
+`wasm32posix-cargo` and runs them. `std-hello` uses thin link-time optimization
+against the installed sysroot to check that its standard library retains
+bitcode. Build/run: see `sdk/rust/README.md`. Run with
 `npx tsx examples/run-wasm.ts <fixture>/<name>.wasm` (a self-contained
 runner that skips builtin-program discovery).

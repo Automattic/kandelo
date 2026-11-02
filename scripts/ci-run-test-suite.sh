@@ -503,6 +503,7 @@ run_pages_shaped_browser_build() {
         for output in \
             index.html \
             pages/kandelo/index.html \
+            pages/kandelo/viewer.html \
             pages/network/index.html \
             service-worker.js
         do

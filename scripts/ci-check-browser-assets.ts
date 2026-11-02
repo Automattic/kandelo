@@ -32,6 +32,7 @@ export function browserAssetImportsForPolicy(
       htmlEntryFiles: [
         "index.html",
         "pages/kandelo/index.html",
+        "pages/kandelo/viewer.html",
         "pages/network/index.html",
       ],
     }).imports

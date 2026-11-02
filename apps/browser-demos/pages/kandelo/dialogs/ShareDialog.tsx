@@ -228,7 +228,11 @@ export const SharePanel: React.FC<SharePanelProps> = ({
           <div style={{ flex: 1 }} />
           <button
             className="kshare-btn"
-            onClick={() => url && window.open(url, "_blank")}
+            // noopener: a Kandelo tab must never hold a handle to another.
+            // Guest pages can read `top.opener` across origins and reach
+            // the other tab's preview relay frame through it, and that
+            // frame carries the other tab's machine secrets.
+            onClick={() => url && window.open(url, "_blank", "noopener")}
             disabled={!url}
           >
             <svg width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="currentColor" strokeWidth="1.5">

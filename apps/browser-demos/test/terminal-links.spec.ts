@@ -30,11 +30,13 @@ const fixturePageUrl = "/test/fixtures/terminal-links-fixture.html";
 const EXTERNAL_URL = "https://link-probe.example/external";
 const BRIDGED_PORT = 8080;
 /**
- * The shape the service worker mints for a machine's web surface:
+ * The shape the owning tab mints for a machine's web surface:
  * `<scope>computer/<name>/`. The exact name is per-machine, so the
  * fixture names one rather than guessing what a live boot would pick.
  */
-const MACHINE_PREFIX = "/computer/test-machine/";
+const MACHINE_PREFIX = "/computer/able-amber-acorn-lfd5pqz5pa7zjm5uyguw/";
+/** Guest pages run on the preview origin; links must not open it directly. */
+const PREVIEW_ORIGIN = "http://127.0.0.1:59998";
 
 interface RowRect {
   x: number;
@@ -67,7 +69,7 @@ async function installRefererProbe(context: BrowserContext, origin: string): Pro
  */
 async function printLines(page: Page, lines: string[]): Promise<(RowRect | null)[]> {
   return page.evaluate(
-    async ({ moduleUrl, lines, bridgedPort, machinePrefix }) => {
+    async ({ moduleUrl, lines, bridgedPort, machinePrefix, previewOrigin }) => {
       const { mountLinkShell } = await import(/* @vite-ignore */ moduleUrl);
       const root = document.createElement("div");
       root.style.width = "900px";
@@ -75,7 +77,8 @@ async function printLines(page: Page, lines: string[]): Promise<(RowRect | null)
       document.body.append(root);
       const fixture = mountLinkShell(root, {
         label: "Web",
-        url: machinePrefix,
+        url: `${previewOrigin}${machinePrefix}`,
+        viewerUrl: `${location.origin}${machinePrefix}`,
         status: "running",
         port: bridgedPort,
       });
@@ -87,6 +90,7 @@ async function printLines(page: Page, lines: string[]): Promise<(RowRect | null)
       lines,
       bridgedPort: BRIDGED_PORT,
       machinePrefix: MACHINE_PREFIX,
+      previewOrigin: PREVIEW_ORIGIN,
     },
   );
 }
@@ -209,9 +213,12 @@ test.describe("terminal links", () => {
     expect(rects[0]).not.toBeNull();
 
     const opened = await openedBy(context, page, rects[0]!);
-    // The machine's port 8080 is reachable only through the service worker's
-    // app prefix, so that is where the link goes.
+    // The machine's port 8080 is reachable only through its preview bridge.
+    // The link opens Kandelo's viewer shell for the machine, never the
+    // preview origin itself (a top-level preview tab may not reach the
+    // owning tab's bridge).
     expect(opened.url()).toBe(`${origin}${MACHINE_PREFIX}wp-admin/?x=1`);
+    expect(opened.url()).not.toContain(PREVIEW_ORIGIN);
     // Same-origin destination: this is the machine, so it may see the
     // referrer. That is the half of the policy the third-party test cannot
     // prove — a handler that always set rel="noreferrer" would pass that one.

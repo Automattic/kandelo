@@ -22,6 +22,7 @@
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/lazy-download-event";
 import type { RemoteSegmentPeer } from "./networking/remote-segment-port";
+import type { CredentialRequest } from "./credential-grants";
 
 export type { HttpRequest, HttpResponse };
 
@@ -330,4 +331,42 @@ export interface RemoteNetworkJoinMessage {
 export interface RemoteNetworkLeaveMessage {
   type: "remote_network_leave";
   requestId: number;
+}
+
+// Credential grants (credential-grants.ts). The kernel worker asks the
+// main thread's `onCredentialRequest` handler and awaits its answer; a
+// request id is minted by the kernel worker, not the main thread.
+
+/** Kernel worker → main thread: ask the embedder's handler. */
+export interface CredentialRequestMessage {
+  type: "credential_request";
+  requestId: number;
+  request: CredentialRequest;
+}
+
+/** Kernel worker → main thread: the question no longer applies. */
+export interface CredentialRequestCancelMessage {
+  type: "credential_request_cancel";
+  requestId: number;
+}
+
+/** Main thread → kernel worker: the user's answer. */
+export interface CredentialAnswerMessage {
+  type: "credential_answer";
+  requestId: number;
+  allow: boolean;
+}
+
+/** Main thread → kernel worker: the grant id the kernel records for `pid`. */
+export interface GetCredentialGrantMessage {
+  type: "get_credential_grant";
+  requestId: number;
+  pid: number;
+}
+
+/** Main thread → kernel worker: end `pid`'s grant now. */
+export interface RevokeCredentialGrantMessage {
+  type: "revoke_credential_grant";
+  requestId: number;
+  pid: number;
 }

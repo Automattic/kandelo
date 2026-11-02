@@ -1,0 +1,481 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -242,20 +242,20 @@
+ features = ["limit"]
+ default-features = false
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.js-sys]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dependencies.js-sys]
+ version = "0.3.77"
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen]
+ version = "0.2.89"
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen-futures]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-bindgen-futures]
+ version = "0.4.18"
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-streams]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dependencies.wasm-streams]
+ version = "0.5"
+ optional = true
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dependencies.web-sys]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dependencies.web-sys]
+ version = "0.3.28"
+ features = [
+     "AbortController",
+@@ -276,61 +276,61 @@
+     "RequestCache",
+ ]
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dev-dependencies.wasm-bindgen]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dev-dependencies.wasm-bindgen]
+ version = "0.2.89"
+ features = ["serde-serialize"]
+ 
+-[target.'cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))'.dev-dependencies.wasm-bindgen-test]
++[target.'cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))'.dev-dependencies.wasm-bindgen-test]
+ version = "0.3"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.cookie_crate]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.cookie_crate]
+ version = "0.18.0"
+ optional = true
+ package = "cookie"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.cookie_store]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.cookie_store]
+ version = "0.22.0"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.encoding_rs]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.encoding_rs]
+ version = "0.8"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.futures-channel]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.futures-channel]
+ version = "0.3"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.h2]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.h2]
+ version = "0.4"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.h3]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.h3]
+ version = "0.0.8"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.h3-quinn]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.h3-quinn]
+ version = "0.0.10"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.hickory-resolver]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.hickory-resolver]
+ version = "0.26"
+ features = ["tokio"]
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.http-body]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.http-body]
+ version = "1"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.http-body-util]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.http-body-util]
+ version = "0.1.2"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper]
+ version = "1.1"
+ features = [
+     "http1",
+     "client",
+ ]
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-rustls]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-rustls]
+ version = "0.27.0"
+ features = [
+     "http1",
+@@ -339,11 +339,11 @@
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-tls]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-tls]
+ version = "0.6"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-util]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.hyper-util]
+ version = "0.1.12"
+ features = [
+     "http1",
+@@ -353,35 +353,35 @@
+     "tokio",
+ ]
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.log]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.log]
+ version = "0.4.17"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.mime]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.mime]
+ version = "0.3.16"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.native-tls-crate]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.native-tls-crate]
+ version = "0.2.16"
+ optional = true
+ package = "native-tls"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.once_cell]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.once_cell]
+ version = "1.18"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.percent-encoding]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.percent-encoding]
+ version = "2.3"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.pin-project-lite]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.pin-project-lite]
+ version = "0.2.11"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.quinn]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.quinn]
+ version = "0.11.1"
+ features = ["runtime-tokio"]
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls]
+ version = "0.23.4"
+ features = [
+     "std",
+@@ -390,16 +390,16 @@
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls-pki-types]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls-pki-types]
+ version = "1.9.0"
+ features = ["std"]
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls-platform-verifier]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.rustls-platform-verifier]
+ version = ">=0.6.0, <0.8.0"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio]
+ version = "1.0"
+ features = [
+     "net",
+@@ -407,23 +407,23 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-native-tls]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-native-tls]
+ version = "0.3.0"
+ optional = true
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-rustls]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-rustls]
+ version = "0.26"
+ features = ["tls12"]
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-util]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tokio-util]
+ version = "0.7.9"
+ features = ["io"]
+ optional = true
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tower]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tower]
+ version = "0.5.2"
+ features = [
+     "retry",
+@@ -432,28 +432,28 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tower-http]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tower-http]
+ version = "0.6.8"
+ features = ["follow-redirect"]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dependencies.tower-service]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dependencies.tower-service]
+ version = "0.3"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.brotli_crate]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.brotli_crate]
+ version = "8"
+ package = "brotli"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.doc-comment]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.doc-comment]
+ version = "0.3"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.env_logger]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.env_logger]
+ version = "0.10"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.flate2]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.flate2]
+ version = "1.0.13"
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.futures-util]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.futures-util]
+ version = "0.3.28"
+ features = [
+     "std",
+@@ -461,7 +461,7 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.hyper]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.hyper]
+ version = "1.1.0"
+ features = [
+     "http1",
+@@ -471,7 +471,7 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.hyper-util]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.hyper-util]
+ version = "0.1.12"
+ features = [
+     "http1",
+@@ -483,11 +483,11 @@
+     "tokio",
+ ]
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.serde]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.serde]
+ version = "1.0"
+ features = ["derive"]
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.tokio]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.tokio]
+ version = "1.0"
+ features = [
+     "macros",
+@@ -495,7 +495,7 @@
+ ]
+ default-features = false
+ 
+-[target.'cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.zstd_crate]
++[target.'cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))'.dev-dependencies.zstd_crate]
+ version = "0.13"
+ package = "zstd"
+ 
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -1,5 +1,5 @@
+ #![cfg_attr(
+-    all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")),
++    all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")),
+     allow(unused)
+ )]
+ use std::error::Error as StdError;
+@@ -105,11 +105,11 @@
+ 
+     /// Returns true if the error is from `Response::error_for_status`.
+     pub fn is_status(&self) -> bool {
+-        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++        #[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+         {
+             matches!(self.inner.kind, Kind::Status(_, _))
+         }
+-        #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++        #[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+         {
+             matches!(self.inner.kind, Kind::Status(_))
+         }
+@@ -124,7 +124,7 @@
+                 return true;
+             }
+             #[cfg(not(all(
+-                target_arch = "wasm32",
++                all(target_arch = "wasm32", not(target_os = "kandelo")),
+                 any(target_os = "unknown", target_os = "none")
+             )))]
+             if let Some(hyper_err) = err.downcast_ref::<hyper::Error>() {
+@@ -148,7 +148,7 @@
+         matches!(self.inner.kind, Kind::Request)
+     }
+ 
+-    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++    #[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+     /// Returns true if the error is related to connect
+     pub fn is_connect(&self) -> bool {
+         let mut source = self.source();
+@@ -179,10 +179,10 @@
+     /// Returns the status code, if the error was generated from a response.
+     pub fn status(&self) -> Option<StatusCode> {
+         match self.inner.kind {
+-            #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++            #[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+             Kind::Status(code) => Some(code),
+             #[cfg(not(all(
+-                target_arch = "wasm32",
++                all(target_arch = "wasm32", not(target_os = "kandelo")),
+                 any(target_os = "unknown", target_os = "none")
+             )))]
+             Kind::Status(code, _) => Some(code),
+@@ -207,7 +207,7 @@
+ /// internal equivalents.
+ ///
+ /// Currently only is used for `tower::timeout::error::Elapsed`.
+-#[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++#[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+ pub(crate) fn cast_to_internal_error(error: BoxError) -> BoxError {
+     if error.is::<tower::timeout::error::Elapsed>() {
+         Box::new(crate::error::TimedOut) as BoxError
+@@ -242,7 +242,7 @@
+             Kind::Decode => f.write_str("error decoding response body")?,
+             Kind::Redirect => f.write_str("error following redirect")?,
+             Kind::Upgrade => f.write_str("error upgrading connection")?,
+-            #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++            #[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+             Kind::Status(ref code) => {
+                 let prefix = if code.is_client_error() {
+                     "HTTP status client error"
+@@ -253,7 +253,7 @@
+                 write!(f, "{prefix} ({code})")?;
+             }
+             #[cfg(not(all(
+-                target_arch = "wasm32",
++                all(target_arch = "wasm32", not(target_os = "kandelo")),
+                 any(target_os = "unknown", target_os = "none")
+             )))]
+             Kind::Status(ref code, ref reason) => {
+@@ -290,14 +290,14 @@
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+ impl From<crate::error::Error> for wasm_bindgen::JsValue {
+     fn from(err: Error) -> wasm_bindgen::JsValue {
+         js_sys::Error::from(err).into()
+     }
+ }
+ 
+-#[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++#[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+ impl From<crate::error::Error> for js_sys::Error {
+     fn from(err: Error) -> js_sys::Error {
+         js_sys::Error::new(&format!("{err}"))
+@@ -309,9 +309,9 @@
+     Builder,
+     Request,
+     Redirect,
+-    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++    #[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+     Status(StatusCode, Option<hyper::ext::ReasonPhrase>),
+-    #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++    #[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+     Status(StatusCode),
+     Body,
+     Decode,
+@@ -343,13 +343,13 @@
+ pub(crate) fn status_code(
+     url: Url,
+     status: StatusCode,
+-    #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))] reason: Option<hyper::ext::ReasonPhrase>,
++    #[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))] reason: Option<hyper::ext::ReasonPhrase>,
+ ) -> Error {
+     Error::new(
+         Kind::Status(
+             status,
+             #[cfg(not(all(
+-                target_arch = "wasm32",
++                all(target_arch = "wasm32", not(target_os = "kandelo")),
+                 any(target_os = "unknown", target_os = "none")
+             )))]
+             reason,
+--- a/src/into_url.rs
++++ b/src/into_url.rs
+@@ -23,7 +23,7 @@
+     fn into_url(self) -> crate::Result<Url> {
+         // With blob url the `self.has_host()` check is always false, so we
+         // remove the `blob:` scheme and check again if the url is valid.
+-        #[cfg(target_arch = "wasm32")]
++        #[cfg(all(target_arch = "wasm32", not(target_os = "kandelo")))]
+         if self.scheme() == "blob"
+             && self.path().starts_with("http") // Check if the path starts with http or https to avoid validating a `blob:blob:...` url.
+             && self.as_str()[5..].into_url().is_ok()
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -264,14 +264,14 @@
+ 
+ macro_rules! if_wasm {
+     ($($item:item)*) => {$(
+-        #[cfg(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none")))]
++        #[cfg(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none")))]
+         $item
+     )*}
+ }
+ 
+ macro_rules! if_hyper {
+     ($($item:item)*) => {$(
+-        #[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++        #[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+         $item
+     )*}
+ }
+@@ -338,7 +338,7 @@
+     assert_send::<Request>();
+     assert_send::<RequestBuilder>();
+ 
+-    #[cfg(not(target_arch = "wasm32"))]
++    #[cfg(not(all(target_arch = "wasm32", not(target_os = "kandelo"))))]
+     {
+         assert_send::<Response>();
+     }
+--- a/src/util.rs
++++ b/src/util.rs
+@@ -24,7 +24,7 @@
+     header
+ }
+ 
+-#[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++#[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+ pub(crate) fn fast_random() -> u64 {
+     use std::cell::Cell;
+     use std::collections::hash_map::RandomState;
+@@ -77,7 +77,7 @@
+ }
+ 
+ #[cfg(feature = "cookies")]
+-#[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++#[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+ pub(crate) fn add_cookie_header(
+     headers: &mut HeaderMap,
+     cookie_store: &dyn crate::cookie::CookieStore,
+@@ -90,7 +90,7 @@
+ 
+ pub(crate) struct Escape<'a>(&'a [u8]);
+ 
+-#[cfg(not(all(target_arch = "wasm32", any(target_os = "unknown", target_os = "none"))))]
++#[cfg(not(all(all(target_arch = "wasm32", not(target_os = "kandelo")), any(target_os = "unknown", target_os = "none"))))]
+ impl<'a> Escape<'a> {
+     pub(crate) fn new(bytes: &'a [u8]) -> Self {
+         Escape(bytes)

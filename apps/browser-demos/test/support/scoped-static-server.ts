@@ -15,10 +15,24 @@ export interface ScopedStaticRequest {
 
 export interface ScopedStaticServer {
   readonly origin: string;
+  /**
+   * The deployments' guest preview origin. It serves `<root>-preview` (the
+   * bundle `vite build` writes beside each app build when
+   * `KANDELO_PREVIEW_ORIGIN` is set) at the same scope, and redirects a
+   * top-level `computer/*` visit to the app's viewer shell.
+   */
+  readonly previewOrigin: string;
   clearRequests(): void;
   close(): Promise<void>;
   replaceRoot(deployment: ScopedDeployment, root: string): Promise<void>;
   requests(): readonly ScopedStaticRequest[];
+  /**
+   * Delay the browser's own service-worker update fetches (requests carrying
+   * `Service-Worker: script`) by `ms`, modelling the network time to an
+   * edge. Page requests, including the bootstrap `<script>` load of the same
+   * file, are not delayed.
+   */
+  setServiceWorkerUpdateDelay(ms: number): void;
   setSymlinkRejection(enabled: boolean): void;
 }
 
@@ -32,6 +46,7 @@ export async function startScopedStaticServer(options: {
   };
   const requests: ScopedStaticRequest[] = [];
   let rejectSymlinks = true;
+  let serviceWorkerUpdateDelayMs = 0;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const record: ScopedStaticRequest = {
@@ -47,6 +62,9 @@ export async function startScopedStaticServer(options: {
         return send(response, record, 405);
       }
       if (record.deployment === null) return send(response, record, 404);
+      if (serviceWorkerUpdateDelayMs > 0 && request.headers["service-worker"] === "script") {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, serviceWorkerUpdateDelayMs));
+      }
       const file = await requestedFile(
         roots[record.deployment],
         url.pathname,
@@ -67,6 +85,53 @@ export async function startScopedStaticServer(options: {
       requests.push(record);
     }
   });
+  const port = await listen(server);
+  const origin = `http://127.0.0.1:${port}`;
+  const preview = createServer(async (request, response) => {
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
+    const deployment = deploymentFor(url.pathname);
+    for (const [name, value] of Object.entries(PREVIEW_HEADERS)) response.setHeader(name, value);
+    try {
+      if (deployment === null) throw new RequestPathError();
+      const relative = url.pathname.slice(`/${deployment}/`.length);
+      if (relative === "computer" || relative.startsWith("computer/")) {
+        response.writeHead(302, { Location: `${origin}${url.pathname}${url.search}` });
+        response.end();
+        return;
+      }
+      if (request.method !== "GET" && request.method !== "HEAD") throw new RequestPathError();
+      const file = await requestedFile(`${roots[deployment]}-preview`, url.pathname, deployment, true);
+      const metadata = await stat(file);
+      if (!metadata.isFile()) throw new RequestPathError();
+      response.writeHead(200, { "Content-Type": contentType(file), "Content-Length": String(metadata.size) });
+      if (request.method === "HEAD") response.end();
+      else response.end(await readFile(file));
+    } catch {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+  const previewPort = await listen(preview);
+  return {
+    origin,
+    previewOrigin: `http://127.0.0.1:${previewPort}`,
+    clearRequests: () => { requests.length = 0; },
+    close: async () => { await Promise.all([close(server), close(preview)]); },
+    replaceRoot: (deployment, root) => replaceRoot(roots, deployment, root),
+    requests: () => requests.slice(),
+    setServiceWorkerUpdateDelay: (ms) => { serviceWorkerUpdateDelayMs = ms; },
+    setSymlinkRejection: (enabled) => { rejectSymlinks = enabled; },
+  };
+}
+
+const PREVIEW_HEADERS = {
+  "Cache-Control": "no-store",
+  "Cross-Origin-Embedder-Policy": "require-corp",
+  "Cross-Origin-Resource-Policy": "cross-origin",
+  "Origin-Agent-Cluster": "?1",
+};
+
+async function listen(server: Server): Promise<number> {
   await new Promise<void>((resolveListen, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -76,14 +141,7 @@ export async function startScopedStaticServer(options: {
   });
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("scoped server has no TCP address");
-  return {
-    origin: `http://127.0.0.1:${address.port}`,
-    clearRequests: () => { requests.length = 0; },
-    close: () => close(server),
-    replaceRoot: (deployment, root) => replaceRoot(roots, deployment, root),
-    requests: () => requests.slice(),
-    setSymlinkRejection: (enabled) => { rejectSymlinks = enabled; },
-  };
+  return address.port;
 }
 
 async function replaceRoot(roots: Record<ScopedDeployment, string>, deployment: ScopedDeployment, root: string): Promise<void> {

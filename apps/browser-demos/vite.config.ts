@@ -39,11 +39,24 @@ import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
-import { DEFAULT_BROWSER_CORS_PROXY_CONFIG } from "./lib/browser-cors-proxy";
+import { DEFAULT_BROWSER_CORS_PROXY_CONFIG, DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS } from "./lib/browser-cors-proxy";
 import { createProxySessionTransport } from "../../host/src/networking/cors-proxy-session";
 import { handleDevCorsProxyRequest } from "./vite/dev-cors-proxy";
-import { devSignallingServer } from "./vite/dev-signalling";
+import { devSignallingServer, findSignallingPhp } from "./vite/dev-signalling";
 import { batchedFsServePath, devLazyAssets } from "./vite/dev-lazy-assets";
+import { createCredentialRelayHandler } from "./vite/credential-relay";
+import {
+  bundleIncludesModule,
+  kernelWorkerScriptPathsForServiceWorker,
+} from "./vite/kernel-worker-scripts";
+import { previewOriginPlugin } from "./vite/preview-origin";
+import { restartConvergencePlugin } from "./vite/restart-convergence";
+import {
+  buildIdPlugin,
+  builtWorkerBuildId,
+  injectWorkerBuildId,
+} from "./vite/build-id";
+import type { CredentialRelayConfig } from "../../host/src/networking/credential-relay";
 import { normalizeDeploymentBase } from "../../web-libs/kandelo-session/src/deployment-scope";
 import {
   createVfsProductDeploymentPlugin,
@@ -267,15 +280,21 @@ const crossOriginIsolationHeaders = {
   // page. Mark every dev/preview response same-origin so that cached worker
   // responses remain admissible under COEP, including a 304 revalidation.
   "Cross-Origin-Resource-Policy": "same-origin",
+  // Only Kandelo may frame Kandelo: a guest page on the preview origin must
+  // not be able to frame the app (for example to clickjack the credential
+  // prompt of a machine it embeds).
+  "Content-Security-Policy": "frame-ancestors 'self'",
+  "Origin-Agent-Cluster": "?1",
 };
 
 function configuredCorsProxyUrl(): string | undefined {
   return process.env.VITE_CORS_PROXY_URL?.trim() || undefined;
 }
 
-function browserCorsProxyConfig(url: string) {
+function browserCorsProxyConfig(url: string, credentialRelay?: CredentialRelayConfig) {
   return {
     ...DEFAULT_BROWSER_CORS_PROXY_CONFIG,
+    ...(credentialRelay ? { credentialRelay } : {}),
     allowedRequestHeaderNames: [
       ...DEFAULT_BROWSER_CORS_PROXY_CONFIG.allowedRequestHeaderNames,
     ],
@@ -301,39 +320,63 @@ function devCorsProxyFetchUrlForBase(base: string): string {
   return `${devCorsProxyPathForBase(base)}?url=`;
 }
 
+// The kernel worker's entry module. The service worker's credential gate
+// accepts a grant tag only from a dedicated worker running exactly this
+// script, so it is told the script's URL path at build time (see
+// kernelWorkerScriptPaths below and isCredentialGateClient in
+// public/service-worker.js).
+const kernelWorkerEntryPath = normalizePath(
+  fs.realpathSync(path.resolve(repoRoot, "host/src/browser-kernel-worker-entry.ts")),
+);
+// The module that starts the kernel worker. A production build that bundles
+// it must have emitted the worker's chunk (see kernel-worker-scripts.ts).
+const kernelHostPath = normalizePath(
+  fs.realpathSync(path.resolve(repoRoot, "host/src/browser-kernel-host.ts")),
+);
+
+/**
+ * Development: Vite serves `browser-kernel-worker-entry.ts?worker&url` from
+ * outside the app root as `<base>@fs<absolute path>?worker_file&type=module`.
+ */
+function devKernelWorkerScriptPath(base: string): string {
+  return `${normalizeDeploymentBase(base)}@fs${kernelWorkerEntryPath}`;
+}
+
+/**
+ * Worker build plugin: remember the file the kernel worker's entry chunk is
+ * emitted as (`assets/browser-kernel-worker-entry-<hash>.js`), for the
+ * production service worker.
+ */
+function recordKernelWorkerChunk(fileNames: Set<string>): Plugin {
+  return {
+    name: "record-kernel-worker-chunk",
+    generateBundle(_options, bundle) {
+      for (const output of Object.values(bundle)) {
+        if (
+          output.type === "chunk" && output.isEntry &&
+          output.facadeModuleId !== null &&
+          normalizePath(output.facadeModuleId.replace(/[?#].*$/, "")) ===
+            kernelWorkerEntryPath
+        ) {
+          fileNames.add(output.fileName);
+        }
+      }
+    },
+  };
+}
+
+const kernelWorkerChunkFileNames = new Set<string>();
+
 function injectCorsProxyConfigPlaceholder(
   content: string,
   corsProxyConfig: ReturnType<typeof browserCorsProxyConfig>,
+  kernelWorkerScriptPaths: readonly string[],
 ): string {
   return content.replace(
     '"__CORS_PROXY_CONFIG__"',
     JSON.stringify(corsProxyConfig),
-  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`);
-}
-
-const blobIframeInterceptorPath = path.resolve(
-  __dirname,
-  "public",
-  "blob-iframe-interceptor.js",
-);
-
-/**
- * Inline the reusable blob-iframe interceptor (public/blob-iframe-interceptor.js)
- * into the service worker in place of the `"__BLOB_IFRAME_INTERCEPTOR__"`
- * placeholder. The service worker injects this source into every bridged HTML
- * document so app-created `blob:` iframes become service-worker-controlled
- * `about:srcdoc` documents. Kept as a separate file so it stays independently
- * readable and testable.
- */
-function injectBlobIframeInterceptorPlaceholder(content: string): string {
-  if (!content.includes('"__BLOB_IFRAME_INTERCEPTOR__"')) {
-    return content;
-  }
-  const interceptor = fs.readFileSync(blobIframeInterceptorPath, "utf-8");
-  return content.replace(
-    '"__BLOB_IFRAME_INTERCEPTOR__"',
-    JSON.stringify(interceptor),
-  );
+  ).replace('"__CORS_PROXY_SESSION_TRANSPORT__"', `(${createProxySessionTransport.toString()})`)
+    .replace('"__KERNEL_WORKER_SCRIPT_PATHS__"', JSON.stringify(kernelWorkerScriptPaths));
 }
 
 /**
@@ -905,19 +948,35 @@ function injectCorsProxyConfig(): Plugin {
   let outputCorsProxyConfig = buildCorsProxyConfig();
   let outputRoot = path.resolve(__dirname, "dist");
   let base = "/";
+  let assetsDir = "assets";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
-  function serviceWorkerSource(): string {
-    return injectBlobIframeInterceptorPlaceholder(
-      injectCorsProxyConfigPlaceholder(
-        fs.readFileSync(sourceSwPath, "utf-8"),
-        servedCorsProxyConfig,
-      ),
+  // `vite preview` serves the built kernel worker; read its emitted name.
+  function builtKernelWorkerScriptPaths(): string[] {
+    const directory = path.resolve(outputRoot, assetsDir);
+    if (!fs.existsSync(directory)) return [];
+    return fs.readdirSync(directory)
+      .filter((name) => /^browser-kernel-worker-entry-[\w-]+\.js$/.test(name))
+      .sort()
+      .map((name) => `${normalizeDeploymentBase(base)}${assetsDir}/${name}`);
+  }
+
+  function serviceWorkerSource(
+    kernelWorkerScriptPaths: readonly string[],
+    buildId: string | null,
+  ): string {
+    const source = injectCorsProxyConfigPlaceholder(
+      fs.readFileSync(sourceSwPath, "utf-8"),
+      servedCorsProxyConfig,
+      kernelWorkerScriptPaths,
     );
+    return buildId === null ? source : injectWorkerBuildId(source, buildId);
   }
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+    kernelWorkerScriptPaths: () => readonly string[],
+    buildId: () => string | null = () => null,
   ): void {
     const serviceWorkerPath = serviceWorkerPathForBase(base);
     middlewares.use((req, res, next) => {
@@ -933,7 +992,7 @@ function injectCorsProxyConfig(): Plugin {
       res.statusCode = 200;
       res.setHeader("Content-Type", "application/javascript; charset=utf-8");
       res.setHeader("Cache-Control", "no-store");
-      res.end(serviceWorkerSource());
+      res.end(serviceWorkerSource(kernelWorkerScriptPaths(), buildId()));
     });
   }
 
@@ -942,27 +1001,54 @@ function injectCorsProxyConfig(): Plugin {
     configResolved(config) {
       base = config.base;
       outputRoot = path.resolve(config.root, config.build.outDir);
+      assetsDir = config.build.assetsDir;
       servedCorsProxyConfig = browserCorsProxyConfig(
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
+        { url: `${normalizeDeploymentBase(base)}__kandelo_credential_relay`,
+          allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS },
       );
       outputCorsProxyConfig = buildCorsProxyConfig();
     },
     configureServer(server) {
-      attachMiddleware(server.middlewares);
+      attachMiddleware(server.middlewares, () => [devKernelWorkerScriptPath(base)]);
     },
     configurePreviewServer(server) {
-      attachMiddleware(server.middlewares);
+      // `vite preview` runs the development CORS proxy but not the
+      // credential relay (devCorsProxyMiddleware), so its service worker
+      // must not route to one.
+      servedCorsProxyConfig = browserCorsProxyConfig(
+        configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base),
+      );
+      // The built pages carry the build's id; the worker served here must
+      // report the same one (vite/build-id.ts).
+      attachMiddleware(
+        server.middlewares,
+        builtKernelWorkerScriptPaths,
+        () => builtWorkerBuildId(outputRoot),
+      );
     },
-    writeBundle() {
+    writeBundle(_options, bundle) {
       // service-worker.js is in public/ and Vite copies it to the resolved outDir.
       const swPath = path.resolve(outputRoot, "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
+        let kernelWorkerScriptPaths: string[];
+        try {
+          kernelWorkerScriptPaths = kernelWorkerScriptPathsForServiceWorker(
+            kernelWorkerChunkFileNames,
+            normalizeDeploymentBase(base),
+            bundleIncludesModule(bundle, kernelHostPath),
+          );
+        } catch (error) {
+          // Fails the build: a service worker that names no kernel worker
+          // refuses every credential grant of the kernel this build ships.
+          this.error(error instanceof Error ? error.message : String(error));
+        }
         content = injectCorsProxyConfigPlaceholder(
           content,
           outputCorsProxyConfig,
+          kernelWorkerScriptPaths,
         );
-        content = injectBlobIframeInterceptorPlaceholder(content);
         fs.writeFileSync(swPath, content);
       }
     },
@@ -971,12 +1057,20 @@ function injectCorsProxyConfig(): Plugin {
 
 function devCorsProxyMiddleware(): Plugin {
   let base = "/";
+  // The development credential relay. A per-process credential grant is its
+  // only permission: it carries a credential only with the opt-in the
+  // service worker's gate writes (see vite/credential-relay.ts).
+  const handleCredentials = createCredentialRelayHandler({
+    allowedOrigins: DEVELOPMENT_CREDENTIAL_RELAY_ORIGINS,
+  });
 
   function attachMiddleware(
     middlewares: ViteDevServer["middlewares"] | PreviewServer["middlewares"],
+    credentials = false,
   ): void {
     const proxyPath = devCorsProxyPathForBase(base);
     middlewares.use(async (req, res, next) => {
+      if (credentials && await handleCredentials(req, res, `${normalizeDeploymentBase(base)}__kandelo_credential_relay`)) return;
       if (!(await handleDevCorsProxyRequest(req, res, proxyPath))) next();
     });
   }
@@ -987,7 +1081,7 @@ function devCorsProxyMiddleware(): Plugin {
       base = config.base;
     },
     configureServer(server) {
-      attachMiddleware(server.middlewares);
+      attachMiddleware(server.middlewares, true);
     },
     configurePreviewServer(server) {
       attachMiddleware(server.middlewares);
@@ -998,6 +1092,8 @@ function devCorsProxyMiddleware(): Plugin {
 const defaultDemoInputs = {
   main: path.resolve(__dirname, "index.html"),
   kandelo: path.resolve(__dirname, "pages/kandelo/index.html"),
+  // The viewer shell `<base>computer/<name>/` opens (vite/preview-origin.ts).
+  "kandelo-viewer": path.resolve(__dirname, "pages/kandelo/viewer.html"),
   network: path.resolve(__dirname, "pages/network/index.html"),
 };
 
@@ -1021,7 +1117,7 @@ function sourceOnlyDemoInputs<T extends Record<string, string>>(
   );
   if (unsupported.length > 0) {
     throw new Error(
-      "SourceOnly browser builds admit only the root main, kandelo, network, and peer-network inputs; " +
+      "SourceOnly browser builds admit only the root main, kandelo, kandelo-viewer, network, and peer-network inputs; " +
         `these inputs still depend on ambient build outputs: ${unsupported.join(", ")}`,
     );
   }
@@ -1037,6 +1133,11 @@ function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
   }
 
   const selected: Record<string, string> = {};
+  // Every app that can open a web preview needs the viewer shell its shared
+  // preview addresses open.
+  if (requested.includes("main") || requested.includes("kandelo")) {
+    selected["kandelo-viewer"] = demoInputs["kandelo-viewer"];
+  }
   for (const name of requested) {
     if (!(name in demoInputs)) {
       throw new Error(`Unknown KANDELO_BROWSER_DEMO_INPUTS entry: ${name}`);
@@ -1058,6 +1159,9 @@ export default defineConfig(() => {
       alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
+      // A config change made while Vite restarts must not leave the server on
+      // the configuration it was loading (vite/restart-convergence.ts).
+      restartConvergencePlugin(),
       vfsProductsPlugin(base),
       react(),
       muteBrowserTestAudio(),
@@ -1102,6 +1206,11 @@ export default defineConfig(() => {
       injectCorsProxyConfig(),
       devCorsProxyMiddleware(),
       devSignallingServer(repoRoot),
+      // The same PHP as the development signalling server.
+      previewOriginPlugin({ findPhp: () => findSignallingPhp(repoRoot) }),
+      // Last: the id covers the emitted service worker after the plugins
+      // above rewrote it.
+      buildIdPlugin(),
     ],
     server: {
       host: "127.0.0.1",
@@ -1152,6 +1261,7 @@ export default defineConfig(() => {
         resolveKernelArtifactsAlias(binaryDevAccess),
         resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
         dropWorkerEntryExports(),
+        recordKernelWorkerChunk(kernelWorkerChunkFileNames),
       ],
     },
     assetsInclude: [

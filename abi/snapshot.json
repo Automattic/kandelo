@@ -1397,7 +1397,7 @@
       "manifest_size": 40,
       "manifest_version": 1,
       "optional_kernel_features": 0,
-      "required_host_adapter_version": 2,
+      "required_host_adapter_version": 3,
       "required_worker_features": 7
     },
     "manifest_fields": [
@@ -1509,8 +1509,11 @@
       "kernel_exec_target_read",
       "kernel_exec_target_size",
       "kernel_fork_process",
+      "kernel_get_credential_grant",
       "kernel_get_cwd",
       "kernel_get_dirfd_path",
+      "kernel_get_exe_path",
+      "kernel_get_exe_stat",
       "kernel_get_fd_path",
       "kernel_get_parent_pid",
       "kernel_get_process_exit_signal",
@@ -1557,6 +1560,7 @@
       "kernel_reap_exited_child",
       "kernel_remove_process",
       "kernel_reset_tcp_connection",
+      "kernel_set_credential_grant",
       "kernel_set_current_tid",
       "kernel_set_cwd",
       "kernel_set_main_channel_addr",
@@ -1577,7 +1581,7 @@
       "kernel_wait_next_timeout_ns"
     ],
     "required_worker_features": 7,
-    "version": 2,
+    "version": 3,
     "worker_features": [
       {
         "bit": 2,
@@ -2885,6 +2889,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_get_credential_grant",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_cwd",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -2892,6 +2901,16 @@
       "kind": "func",
       "name": "kernel_get_dirfd_path",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_exe_path",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_exe_stat",
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -3466,6 +3485,11 @@
     {
       "kind": "func",
       "name": "kernel_set_brk_limit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_set_credential_grant",
       "signature": "(i32,i32) -> (i32)"
     },
     {

@@ -7,10 +7,17 @@
  *
  * 2. Service Worker (when registered):
  *    - Adds COOP/COEP/CORP headers to ALL fetch responses → enables SharedArrayBuffer
- *    - Handles HTTP bridge for nginx/wordpress/lamp demos (MessagePort from page)
- *    - Includes cookie jar for WordPress sessions
+ *    - Routes cross-origin reads through the CORS proxy, behind the
+ *      credential gate
+ *    - Caches lazy VFS assets
  *    - Revalidates navigation requests to ensure fresh HTML (cache busting)
- *    - Auto-restores bridge after browser terminates and restarts the SW
+ *    - Serves the viewer shell for `<scope>computer/<name>/…` navigations
+ *
+ * It serves no guest web page. Guest pages come from the deployment's
+ * separate preview origin and its own service worker
+ * (apps/browser-demos/preview-origin/), so guest scripts never run on this
+ * origin. See docs/browser-support.md, "Guest web previews run on their own
+ * origin".
  */
 
 // ============================================================
@@ -95,9 +102,16 @@ if (typeof window !== "undefined") {
         })
         .then(waitForBootstrapController)
         .then(function (registration) {
-          if (window.crossOriginIsolated) {
-            return registration.update();
-          }
+          // A controlled, isolated page needs nothing more here. The browser
+          // checks for a new service-worker.js on every navigation, and a
+          // page that boots Kandelo asks for an update itself when its build
+          // and its worker's differ (lib/init/service-worker-bridge.ts).
+          // WHY no update() here: a second update request racing the
+          // navigation's own left the new worker "installed" and never
+          // activating in Chromium for as long as the page stayed open, so
+          // the first reload after a deploy never booted (suspected engine
+          // behaviour; no standalone reproduction).
+          if (window.crossOriginIsolated) return registration;
           window.location.reload();
         })
         .catch(function (err) {
@@ -170,18 +184,6 @@ if (typeof window !== "undefined") {
 
   var SCOPE_PATH = registrationScopePath();
   var CACHE_NAMESPACE = "kandelo-sw:" + encodeURIComponent(SCOPE_PATH) + ":";
-  var BRIDGE_CACHE = CACHE_NAMESPACE + "bridge-v2";
-  var BRIDGE_AUTHORITY_KEY = "bridge-authority-v1";
-  var BRIDGE_AUTHORITY_VERSION = 1;
-  var BRIDGE_AUTHORITY_MAX_BYTES = 64 * 1024;
-  var BRIDGE_AUTHORITY_MAX_COOKIES = 32;
-  var BRIDGE_APP_PREFIX_MAX_BYTES = 4096;
-  var BRIDGE_COOKIE_NAME_MAX_BYTES = 256;
-  var BRIDGE_COOKIE_VALUE_MAX_BYTES = 4096;
-  var BRIDGE_COOKIE_PATH_MAX_BYTES = 4096;
-  var BRIDGE_REVISION_LIMIT = Number.MAX_SAFE_INTEGER;
-  var COOKIE_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
-  var INVALID_COOKIE_FIELD_PATTERN = /[\u0000-\u001f\u007f;]/;
   // Grouped builds replace this authenticated manifest digest. Ungrouped
   // deployments retain the established cache name.
   var LAZY_ASSET_CACHE_VERSION = null /*__KANDELO_VFS_LAZY_CACHE_VERSION__*/;
@@ -189,669 +191,24 @@ if (typeof window !== "undefined") {
     (LAZY_ASSET_CACHE_VERSION === null
       ? "lazy-assets-v1"
       : "lazy-assets-v1:" + LAZY_ASSET_CACHE_VERSION);
-  var SESSION_ID_PATTERN =
-    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  // Keep equal to MACHINE_NAME_PATTERN and LEGACY_MACHINE_NAME_PATTERN in
+  // lib/preview/protocol.ts (preview-bridge.test.ts checks). Old three-word
+  // names still open the viewer shell, which explains they no longer work.
+  var MACHINE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}-[a-z2-7]{20}$/;
+  var LEGACY_MACHINE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/;
 
-  // --- SW-minted machine names ---
-  // The service worker owns machine naming. On init-bridge it mints a
-  // three-word name (adjective-color-noun), so every live machine has a
-  // stable, shareable /computer/<name>/ URL. The word lists are embedded here as
-  // static data (not build-injected): the classic worker cannot import a
-  // module, minting must always work — including in the Playwright harness
-  // that serves near-raw worker source — and the lists have no deployment
-  // variance. Three lists of >=128 distinct words give >=128^3 (~2M)
-  // combinations, so live collisions are negligible; mintInstanceName still
-  // regenerates on the rare hit. Keep each list alphabetized, deduplicated,
-  // lowercase [a-z], and within the 2-12 length bound the validator enforces.
-  var INSTANCE_ADJECTIVES = [
-    "able", "active", "agile", "alert", "amused", "ardent", "artful", "awake",
-    "balmy", "blithe", "bold", "bonny", "brave", "bright", "brisk", "bubbly",
-    "busy", "calm", "canny", "cheery", "chipper", "civil", "classy", "clean",
-    "clear", "clever", "cozy", "crafty", "crisp", "curious", "cute", "dapper",
-    "daring", "dashing", "deft", "dreamy", "driven", "eager", "early",
-    "earnest", "easy", "elated", "epic", "fair", "fancy", "festive", "fiery",
-    "fleet", "fond", "frank", "free", "fresh", "frisky", "funny", "fuzzy",
-    "gallant", "game", "genial", "gentle", "giddy", "gifted", "glad", "glossy",
-    "golden", "good", "graceful", "grand", "grateful", "groovy", "handy",
-    "happy", "hardy", "hearty", "helpful", "heroic", "honest", "hopeful",
-    "humble", "ideal", "jaunty", "jazzy", "jolly", "jovial", "joyful",
-    "joyous", "keen", "kind", "kindly", "lavish", "lean", "limber", "lithe",
-    "lively", "lofty", "loyal", "lucid", "lucky", "lush", "magic", "mellow",
-    "merry", "mighty", "mild", "mindful", "modest", "neat", "nice", "nimble",
-    "noble", "plucky", "poised", "polite", "prime", "prompt", "proud", "pure",
-    "quaint", "quick", "quiet", "quirky", "rapid", "ready", "regal", "robust",
-    "rosy", "ruddy", "sage", "saucy", "savvy", "serene", "sharp", "shiny",
-    "silky", "sleek", "smart", "snappy", "snazzy", "spry", "stable", "steady",
-    "sturdy", "suave", "sunny", "super", "sweet", "swift", "tame", "tender",
-    "tidy", "trusty", "upbeat", "urbane", "valiant", "vibrant", "vital",
-    "vivid", "warm", "wily", "winning", "wise", "witty", "zany", "zesty",
-  ];
-  var INSTANCE_COLORS = [
-    "amber", "amethyst", "apricot", "aqua", "ash", "auburn", "azure", "beige",
-    "beryl", "black", "blond", "blue", "blush", "brass", "bronze", "brown",
-    "buff", "burgundy", "canary", "caramel", "cardinal", "carmine", "celadon", "cerise",
-    "cerulean", "charcoal", "cherry", "chestnut", "chocolate", "cinnamon", "citrine", "claret",
-    "cobalt", "coffee", "copper", "coral", "cornflower", "cream", "crimson", "cyan",
-    "denim", "ebony", "ecru", "emerald", "fawn", "flax", "fuchsia", "garnet",
-    "ginger", "gold", "golden", "gray", "green", "heather", "henna", "honey",
-    "indigo", "ivory", "jade", "jasmine", "jet", "khaki", "lavender", "lemon",
-    "lilac", "lime", "magenta", "mahogany", "maize", "maroon", "mauve", "mint",
-    "mocha", "mulberry", "mustard", "navy", "ochre", "olive", "onyx", "opal",
-    "orange", "orchid", "peach", "pearl", "periwinkle", "pewter", "pine", "pink",
-    "plum", "puce", "pumpkin", "purple", "quartz", "raisin", "red", "rose",
-    "ruby", "russet", "rust", "saffron", "salmon", "sand", "sapphire", "scarlet",
-    "sepia", "sienna", "silver", "slate", "snow", "steel", "straw", "sunset",
-    "tan", "tangerine", "taupe", "teal", "terra", "topaz", "turquoise", "umber",
-    "verdant", "vermilion", "violet", "viridian", "wheat", "white", "wine", "wisteria",
-    "yellow",
-  ];
-  var INSTANCE_NOUNS = [
-    "acorn", "alder", "almond", "antler", "arbor", "aspen", "badger", "bamboo",
-    "basil", "beacon", "beaver", "birch", "bison", "bloom", "bluff", "bramble",
-    "branch", "breeze", "brook", "buck", "cactus", "canyon", "cedar", "cliff",
-    "clover", "comet", "cove", "crane", "creek", "crocus", "crow", "daisy",
-    "dale", "dawn", "delta", "dingo", "dolphin", "dove", "dune", "dusk",
-    "eagle", "egret", "elk", "ember", "falcon", "fawn", "fern", "finch",
-    "fjord", "forest", "fox", "frost", "garden", "glacier", "glade", "grove",
-    "gull", "harbor", "hare", "hawk", "hazel", "heath", "heron", "hollow",
-    "holly", "ibis", "inlet", "iris", "island", "jay", "juniper", "kelp",
-    "kestrel", "koala", "lagoon", "lake", "lark", "laurel", "leaf", "ledge",
-    "lily", "linden", "lotus", "lynx", "magpie", "mallard", "maple", "marsh",
-    "meadow", "mesa", "mist", "moose", "moss", "moth", "nectar", "nettle",
-    "oak", "oasis", "ocean", "orchard", "osprey", "otter", "owl", "palm",
-    "panther", "peak", "pebble", "petal", "pigeon", "plateau", "pond", "poppy",
-    "prairie", "quail", "rabbit", "raven", "reed", "reef", "ridge", "river",
-    "robin", "rowan", "sable", "sequoia", "shore", "sparrow", "spruce", "star",
-    "stone", "storm", "stream", "summit", "swan", "teak", "thistle", "thorn",
-    "thrush", "tiger", "timber", "tulip", "tundra", "valley", "vine", "vireo",
-    "walnut", "warbler", "wave", "willow", "wolf", "wombat", "wren", "yarrow",
-    "yew", "zephyr",
-  ];
-  var INSTANCE_NAME_PATTERN = /^[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}$/;
+  // The build this worker belongs to. A production build replaces the
+  // placeholder with the id it also writes into every page
+  // (vite/build-id.ts); development keeps the placeholder on both sides.
+  var KANDELO_BUILD_ID = "__KANDELO_BUILD_ID__";
 
-  function pickWord(list) {
-    // crypto is available in a service worker global scope.
-    var idx = crypto.getRandomValues(new Uint32Array(1))[0] % list.length;
-    return list[idx];
-  }
-
-  function generateInstanceName() {
-    return pickWord(INSTANCE_ADJECTIVES) + "-" +
-      pickWord(INSTANCE_COLORS) + "-" + pickWord(INSTANCE_NOUNS);
-  }
-
-  function mintInstanceName() {
-    for (var attempt = 0; attempt < 50; attempt++) {
-      var candidate = generateInstanceName();
-      if (!instances.has(candidate)) return candidate;
-    }
-    throw new Error("service worker could not mint a unique instance name");
-  }
-
-  function isValidInstanceName(name) {
-    return typeof name === "string" && INSTANCE_NAME_PATTERN.test(name);
-  }
-
-  function appPrefixForName(name) {
-    return SCOPE_PATH + "computer/" + name + "/";
-  }
-
-  function utf8ByteLength(value) {
-    return new TextEncoder().encode(value).byteLength;
-  }
-
-  function isValidAppPrefix(value) {
-    if (
-      typeof value !== "string" ||
-      utf8ByteLength(value) > BRIDGE_APP_PREFIX_MAX_BYTES
-    ) {
-      return false;
-    }
-    try {
-      var normalized = normalizeScopePath(value);
-      return normalized !== SCOPE_PATH && normalized.startsWith(SCOPE_PATH);
-    } catch (_error) {
-      return false;
-    }
-  }
-
-  function isValidSessionId(value) {
-    return typeof value === "string" && SESSION_ID_PATTERN.test(value);
-  }
-
-  function isBridgeMessagePort(value) {
-    return value && typeof value.postMessage === "function";
-  }
-
-  function postInvalidScopeConfig(target) {
-    if (!isBridgeMessagePort(target)) return;
-    target.postMessage({
-      type: "bridge-error",
-      code: "invalid-scope-config",
-    });
-  }
-
-  // --- Bridge registry (per-machine, keyed by SW-minted name) ---
-  // Replaces the former single-instance globals. Each browser tab that boots a
-  // kernel gets its own InstanceRecord keyed by a minted name; the fetch
-  // handler picks the record per request so two tabs under one scope never
-  // clobber each other's routing.
-  var instances = new Map(); // name -> InstanceRecord
-  var clientToInstance = new Map(); // clientId -> name (viewing map)
-  // Request correlation stays global: request ids are unique across instances.
-  var pendingRequests = new Map(); // requestId -> {resolve, reject}
-  var nextRequestId = 0;
-
-  function makeInstanceRecord(name, sessionId, owningClientId) {
-    return {
-      name: name,
-      appPrefix: appPrefixForName(name),
-      owningClientId: owningClientId || null,
-      bridgePort: null,
-      sessionId: sessionId,
-      cookieJar: new Map(),
-      liveBridgeEpoch: 0,
-      durableAuthority: null,
-      viewerClientIds: new Set(),
-      status: "live",
-      // Task 2: per-record durable-write serialization and a single in-flight
-      // need-bridge restore promise. Every authoritative Cache Storage write for
-      // this machine chains on stateMutationQueue so an obsolete cookie commit
-      // can never race a newer one; bridgeRestorePromise coalesces concurrent
-      // fetches that all discover a null bridgePort after a worker restart.
-      stateMutationQueue: Promise.resolve(),
-      bridgeRestorePromise: null,
-    };
-  }
-
-  // Per-instance durable restore. A restarted worker re-evaluates this module
-  // with an empty registry, so before it can serve any named machine it scans
-  // Cache Storage for every per-name durable-authority entry and pre-creates a
-  // reconnecting InstanceRecord (bridgePort = null) for each. The live bridge
-  // ports are re-supplied on demand by the need-bridge handshake; until then a
-  // named fetch resolves to a reconnecting record that drives that handshake.
-  // The fetch handler awaits this promise before any per-machine dispatch so a
-  // request that arrives during the scan sees the restored registry, not an
-  // empty one, and lazy-VFS classification stays ordered behind it.
-  var appPrefixReady = restoreInstancesFromDurableAuthority().catch(function () {
-    // A failed scan leaves the registry empty rather than half-populated: a
-    // named machine then reports unavailable (truthful) instead of routing to a
-    // record built from unread bytes.
-  });
-
-  function restoreInstancesFromDurableAuthority() {
-    return caches.open(BRIDGE_CACHE).then(function (cache) {
-      return cache.keys().then(function (requests) {
-        return Promise.all(requests.map(function (request) {
-          var name = authorityNameFromCacheUrl(request.url);
-          if (!name || instances.has(name)) return null;
-          return cache.match(request).then(function (response) {
-            if (!response) return null;
-            return response.text().then(function (text) {
-              var authority = bridgeAuthorityFromJson(text, name);
-              // A present-but-invalid entry is quarantined, never used to
-              // manufacture a partial record.
-              if (!authority) return null;
-              var record = makeInstanceRecord(name, authority.sessionId, null);
-              record.durableAuthority = authority;
-              record.status = "reconnecting";
-              instances.set(name, record);
-              return null;
-            });
-          });
-        }));
-      });
-    });
-  }
-
-  // --- Cookie jar ---
-  // (Set-Cookie on synthetic SW responses is ignored by the browser, so the SW
-  // stores cookies per instance and injects them into outgoing requests.)
-  //
-  // Keyed by name AND path: cookies are identified by (name, domain, path) per
-  // RFC 6265. WordPress sets the same auth cookie name for both /wp-admin
-  // (ADMIN_COOKIE_PATH) and /wp-content/plugins (PLUGINS_COOKIE_PATH); keying by
-  // name alone would drop one, breaking auth for that subtree. Domain is always
-  // this origin, so name + path is a sufficient key. Each InstanceRecord owns
-  // its own jar (record.cookieJar); jars are never shared between machines.
-
-  function cookieKey(cookie) {
-    return cookie.name + "\n" + cookie.path;
-  }
-
-  function isValidCookieRecord(cookie) {
-    return Boolean(cookie) &&
-      typeof cookie.name === "string" &&
-      COOKIE_NAME_PATTERN.test(cookie.name) &&
-      utf8ByteLength(cookie.name) <= BRIDGE_COOKIE_NAME_MAX_BYTES &&
-      typeof cookie.value === "string" &&
-      !INVALID_COOKIE_FIELD_PATTERN.test(cookie.value) &&
-      utf8ByteLength(cookie.value) <= BRIDGE_COOKIE_VALUE_MAX_BYTES &&
-      typeof cookie.path === "string" && cookie.path.startsWith(SCOPE_PATH) &&
-      !INVALID_COOKIE_FIELD_PATTERN.test(cookie.path) &&
-      utf8ByteLength(cookie.path) <= BRIDGE_COOKIE_PATH_MAX_BYTES &&
-      (cookie.expires === undefined || (
-        typeof cookie.expires === "number" && isFinite(cookie.expires)
-      ));
-  }
-
-  function parseSetCookie(header) {
-    var parts = header.split(";").map(function (s) {
-      return s.trim();
-    });
-    if (parts.length === 0) return null;
-    var eqIdx = parts[0].indexOf("=");
-    if (eqIdx < 0) return null;
-    var name = parts[0].slice(0, eqIdx);
-    var value = parts[0].slice(eqIdx + 1);
-    var path = "/";
-    var expires;
-    for (var i = 1; i < parts.length; i++) {
-      var lower = parts[i].toLowerCase();
-      if (lower.startsWith("path=")) {
-        path = parts[i].slice(5);
-      } else if (lower.startsWith("expires=")) {
-        var d = new Date(parts[i].slice(8));
-        if (!isNaN(d.getTime())) expires = d.getTime();
-      } else if (lower.startsWith("max-age=")) {
-        var seconds = parseInt(parts[i].slice(8));
-        if (!isNaN(seconds)) expires = Date.now() + seconds * 1000;
-      }
-    }
-    return { name: name, value: value, path: path, expires: expires };
-  }
-
-  // Returns true if the jar was mutated, so callers can persist it.
-  function storeCookies(targetJar, targetAppPrefix, setCookieValues) {
-    var mutated = false;
-    for (var j = 0; j < setCookieValues.length; j++) {
-      var cookie = parseSetCookie(setCookieValues[j]);
-      if (!cookie) continue;
-      // Prepend app prefix to cookie path so it matches browser-side URLs.
-      // WordPress sets paths like "/" or "/wp-admin/" but the browser sees
-      // "/computer/" or "/computer/wp-admin/".
-      var prefix = targetAppPrefix.slice(0, -1); // "/app" (or "/base/app")
-      if (!cookie.path.startsWith(prefix)) {
-        cookie.path = prefix + cookie.path;
-      }
-      if (!isValidCookieRecord(cookie)) continue;
-      // Identify by name + path so same-name cookies on different paths coexist.
-      var key = cookieKey(cookie);
-      if (cookie.expires !== undefined && cookie.expires < Date.now()) {
-        if (targetJar.delete(key)) mutated = true;
-      } else {
-        var existing = targetJar.get(key);
-        if (!existing && targetJar.size >= BRIDGE_AUTHORITY_MAX_COOKIES) {
-          continue;
-        }
-        if (
-          !existing || existing.value !== cookie.value ||
-          existing.expires !== cookie.expires
-        ) {
-          targetJar.set(key, cookie);
-          mutated = true;
-        }
-      }
-    }
-    return mutated;
-  }
-
-  function getCookiesForPath(record, path) {
-    var matches = [];
-    var expiredKeys = [];
-    record.cookieJar.forEach(function (cookie, key) {
-      if (cookie.expires !== undefined && cookie.expires < Date.now()) {
-        expiredKeys.push(key);
-        return;
-      }
-      if (path.startsWith(cookie.path)) {
-        matches.push(cookie);
-      }
-    });
-    // Task 1 keeps jars in memory, so expiration is a direct prune of the
-    // record's own jar (no durable write to schedule).
-    expiredKeys.forEach(function (key) {
-      record.cookieJar.delete(key);
-    });
-    // RFC 6265: when several cookies match, list longer paths first.
-    matches.sort(function (a, b) {
-      return b.path.length - a.path.length;
-    });
-    return matches
-      .map(function (cookie) {
-        return cookie.name + "=" + cookie.value;
-      })
-      .join("; ");
-  }
-
-  // --- Per-instance durable authority (survives SW termination/restart) ---
-  // Each machine persists a self-contained authority record under a name-keyed
-  // Cache Storage entry so a reincarnated worker can pre-create the machine and
-  // replay its cookie jar once the hosting tab re-supplies a bridge port.
-  //
-  // The key is BRIDGE_AUTHORITY_KEY + "/" + name, not the brief's
-  // BRIDGE_AUTHORITY_KEY + ":" + name: Cache Storage resolves an entry key as a
-  // URL against the worker script, and "bridge-authority-v1:able-blue-oak"
-  // parses as a "bridge-authority-v1:" scheme, which Cache.put rejects because
-  // the scheme is neither http nor https. A "/" separator keeps the entry a
-  // same-origin http(s) URL — the same reason the removed single-instance key
-  // avoided ":" — while still giving each machine its own name-keyed record.
-  function bridgeAuthorityKeyFor(name) {
-    return BRIDGE_AUTHORITY_KEY + "/" + name;
-  }
-
-  // Resolve the "computer/"-style authority base once so restart scanning can map a
-  // cache entry URL back to the machine name it belongs to.
-  var authorityBasePathname = new URL(
-    BRIDGE_AUTHORITY_KEY + "/",
-    self.location.href,
-  ).pathname;
-
-  function authorityNameFromCacheUrl(entryUrl) {
-    var pathname;
-    try {
-      pathname = new URL(entryUrl).pathname;
-    } catch (_error) {
-      return null;
-    }
-    if (pathname.indexOf(authorityBasePathname) !== 0) return null;
-    var name = pathname.slice(authorityBasePathname.length);
-    return isValidInstanceName(name) ? name : null;
-  }
-
-  function cookieRecordsFromJar(jar) {
-    var records = [];
-    jar.forEach(function (cookie) {
-      records.push({
-        name: cookie.name,
-        value: cookie.value,
-        path: cookie.path,
-        expires: cookie.expires,
-      });
-    });
-    return records;
-  }
-
-  function cookieJarFromRecords(records) {
-    if (
-      !Array.isArray(records) || records.length > BRIDGE_AUTHORITY_MAX_COOKIES
-    ) {
-      return null;
-    }
-    var restored = new Map();
-    var now = Date.now();
-    for (var i = 0; i < records.length; i++) {
-      var cookie = records[i];
-      if (!isValidCookieRecord(cookie)) return null;
-      if (cookie.expires !== undefined && cookie.expires < now) continue;
-      restored.set(cookieKey(cookie), cookie);
-    }
-    return restored;
-  }
-
-  function cloneCookieJar(jar) {
-    var clone = new Map();
-    jar.forEach(function (cookie, key) {
-      clone.set(key, {
-        name: cookie.name,
-        value: cookie.value,
-        path: cookie.path,
-        expires: cookie.expires,
-      });
-    });
-    return clone;
-  }
-
-  // Parse and fully validate a persisted authority for `name`. The prefix must
-  // be well-formed AND equal the deterministic app prefix that this exact name
-  // owns, so an entry whose name and prefix disagree can never restore a
-  // machine under a foreign prefix. Returns the in-memory authority (jar as a
-  // Map) or null; a null result quarantines the bytes.
-  function bridgeAuthorityFromJson(text, name) {
-    if (!text || utf8ByteLength(text) > BRIDGE_AUTHORITY_MAX_BYTES) return null;
-    try {
-      var record = JSON.parse(text);
-      if (
-        !record || record.version !== BRIDGE_AUTHORITY_VERSION ||
-        !Number.isSafeInteger(record.revision) || record.revision < 0 ||
-        record.revision >= BRIDGE_REVISION_LIMIT ||
-        !isValidAppPrefix(record.appPrefix) ||
-        record.appPrefix !== appPrefixForName(name) ||
-        !isValidSessionId(record.sessionId)
-      ) {
-        return null;
-      }
-      var restoredJar = cookieJarFromRecords(record.cookies);
-      if (!restoredJar) return null;
-      return {
-        version: BRIDGE_AUTHORITY_VERSION,
-        revision: record.revision,
-        appPrefix: record.appPrefix,
-        sessionId: record.sessionId,
-        cookieJar: restoredJar,
-      };
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  function nextBridgeAuthority(record, nextSessionId, nextCookieJar) {
-    var nextRevision = record.durableAuthority
-      ? record.durableAuthority.revision + 1
-      : 1;
-    if (
-      !Number.isSafeInteger(nextRevision) || nextRevision < 0 ||
-      nextRevision >= BRIDGE_REVISION_LIMIT
-    ) {
-      throw new Error("service worker bridge revision limit reached");
-    }
-    return {
-      version: BRIDGE_AUTHORITY_VERSION,
-      revision: nextRevision,
-      appPrefix: record.appPrefix,
-      sessionId: nextSessionId,
-      cookieJar: nextCookieJar,
-    };
-  }
-
-  function bridgeAuthorityResponse(name, authority) {
-    var text = JSON.stringify({
-      version: authority.version,
-      revision: authority.revision,
-      appPrefix: authority.appPrefix,
-      sessionId: authority.sessionId,
-      cookies: cookieRecordsFromJar(authority.cookieJar),
-    });
-    // Round-trip through the exact restart validator so a write that could not
-    // be restored (e.g. an oversized live Set-Cookie) fails loudly here instead
-    // of persisting restart-invalid bytes.
-    if (!bridgeAuthorityFromJson(text, name)) {
-      throw new Error("service worker bridge authority is outside its bounds");
-    }
-    return new Response(text, {
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  function writeBridgeAuthority(record, authority) {
-    // Materialize and validate all bytes before Cache Storage is touched.
-    var response = bridgeAuthorityResponse(record.name, authority);
-    return caches.open(BRIDGE_CACHE).then(function (cache) {
-      // This put is the sole durable linearization point for the machine.
-      return cache.put(bridgeAuthorityKeyFor(record.name), response);
-    });
-  }
-
-  // Serialize every authoritative write for one machine so a slower obsolete
-  // commit can never overwrite a newer one.
-  function enqueueRecordMutation(record, operation) {
-    var mutation = record.stateMutationQueue.then(operation);
-    record.stateMutationQueue = mutation.catch(function () {});
-    return mutation;
-  }
-
-  // Persist the machine's current in-memory jar as a new authority revision,
-  // but only while the request's bridge epoch and session still match the live
-  // record — an in-flight response from a superseded port must not repopulate
-  // the successor's durable jar.
-  function persistBridgeAuthority(record, bridgeEpoch, sessionId) {
-    return enqueueRecordMutation(record, function () {
-      if (
-        bridgeEpoch !== record.liveBridgeEpoch || sessionId !== record.sessionId ||
-        !record.durableAuthority || record.durableAuthority.sessionId !== sessionId
-      ) {
-        return false;
-      }
-      var authority = nextBridgeAuthority(
-        record,
-        sessionId,
-        cloneCookieJar(record.cookieJar),
-      );
-      return writeBridgeAuthority(record, authority).then(function () {
-        record.durableAuthority = authority;
-        return true;
-      });
-    });
-  }
-
-  // Prune every instance whose owning client (host tab) has gone away. Task 1
-  // does not persist instances, so teardown is a pure in-memory prune; Task 3
-  // adds proactive offline notification to viewers.
-  function teardownInstancesOwnedBy(clientId) {
-    if (!clientId) return;
-    instances.forEach(function (record, name) {
-      if (record.owningClientId === clientId) instances.delete(name);
-    });
-    clientToInstance.forEach(function (name, cid) {
-      if (!instances.has(name)) clientToInstance.delete(cid);
-    });
-  }
-
-  // --- Offline lifecycle (Task 3) ---
-  // Push a machine-lifecycle signal to every tab that is viewing this machine.
-  // A dead client id simply resolves to no client and is skipped.
-  function notifyViewers(record, type) {
-    record.viewerClientIds.forEach(function (id) {
-      self.clients.get(id).then(function (client) {
-        if (client) client.postMessage({ type: type, name: record.name });
-      }).catch(function () {});
-    });
-  }
-
-  // Terminal offline: the owning tab is gone for good. Retire the machine from
-  // the live registry, tell viewers, and garbage-collect its per-name durable
-  // authority so a terminated machine does not leak a persisted entry across
-  // reloads. Dropping durableAuthority first turns any in-flight persist for
-  // this record into a no-op (persistBridgeAuthority requires a matching
-  // durableAuthority), and the GC delete is serialized behind the record's
-  // pending mutations so a slower authority write cannot land after the delete.
-  function markInstanceOffline(record) {
-    record.status = "offline";
-    record.bridgePort = null;
-    record.durableAuthority = null;
-    notifyViewers(record, "machine-offline");
-    instances.delete(record.name);
-    clientToInstance.forEach(function (name, cid) {
-      if (name === record.name) clientToInstance.delete(cid);
-    });
-    // Use the same "/" key separator writeBridgeAuthority uses (see
-    // bridgeAuthorityKeyFor); the brief's ":" form is not a valid Cache Storage
-    // URL and would never match the persisted entry.
-    enqueueRecordMutation(record, function () {
-      return caches.open(BRIDGE_CACHE).then(function (cache) {
-        return cache.delete(bridgeAuthorityKeyFor(record.name));
-      });
-    }).catch(function () {});
-  }
-
-  // Lazy crash detection: a host tab that crashes never sends instance-closing,
-  // so on the next request compare each record's owning client against the live
-  // window clients. An owner that was known (owningClientId set) but is no
-  // longer a window client is terminally gone. A durable-restored record
-  // (owningClientId null) is never terminated here — its owner is unknown, not
-  // proven gone, so it stays reconnecting/offline-reachable until a future
-  // close GCs it. Concurrent requests share one matchAll via the coalesced
-  // promise so a subresource burst does not fan out into many matchAll calls.
-  var reconcileOwnersPromise = null;
-  function reconcileOwners() {
-    if (reconcileOwnersPromise) return reconcileOwnersPromise;
-    reconcileOwnersPromise = self.clients.matchAll({ type: "window" }).then(
-      function (wins) {
-        var live = new Set(wins.map(function (w) { return w.id; }));
-        instances.forEach(function (record) {
-          if (record.owningClientId && !live.has(record.owningClientId)) {
-            markInstanceOffline(record);
-          }
-        });
-      },
-    ).catch(function () {}).then(function () {
-      reconcileOwnersPromise = null;
-    });
-    return reconcileOwnersPromise;
-  }
-
-  // Classify a failed bridge restore: the need-bridge handshake produced no
-  // live port. If the machine's known owner is gone, the machine is terminally
-  // offline; otherwise the owner (or an unknown durable-restored owner) may
-  // still return, so keep it reconnecting and tell viewers it is reconnecting.
-  function classifyFailedRestore(record) {
-    return self.clients.matchAll({ type: "window" }).then(function (wins) {
-      var ownerGone = record.owningClientId &&
-        !wins.some(function (w) { return w.id === record.owningClientId; });
-      if (ownerGone) {
-        markInstanceOffline(record);
-      } else {
-        record.status = "reconnecting";
-        notifyViewers(record, "machine-reconnecting");
-      }
-    });
-  }
-
-  // --- Bridge port setup (per instance) ---
-  // http-response/http-error resolve the global pendingRequests map; the owning
-  // record just records which port is live. (Task 2 wraps this in a durable
-  // authority commit; for Task 1 minting is in-memory only.)
-  function initBridgePortFor(record, port) {
-    port.onmessage = function (event) {
-      var m = event.data;
-      if (m && m.type === "http-response") {
-        var pending = pendingRequests.get(m.requestId);
-        if (pending) {
-          pendingRequests.delete(m.requestId);
-          pending.resolve({
-            status: m.status,
-            headers: m.headers,
-            body: m.body,
-          });
-        }
-      } else if (m && m.type === "http-error") {
-        var pending2 = pendingRequests.get(m.requestId);
-        if (pending2) {
-          pendingRequests.delete(m.requestId);
-          pending2.reject(new Error(m.error || "Bridge request failed"));
-        }
-      }
-    };
-    record.bridgePort = port;
-  }
-
-  function bridgeFetch(record, request) {
-    if (!record.bridgePort) {
-      return Promise.reject(new Error("Bridge port not initialized"));
-    }
-    var requestId = nextRequestId++;
-    return new Promise(function (resolve, reject) {
-      pendingRequests.set(requestId, { resolve: resolve, reject: reject });
-      record.bridgePort.postMessage({
-        type: "http-request",
-        requestId: requestId,
-        method: request.method,
-        url: request.url,
-        headers: request.headers,
-        body: request.body,
-      });
-    });
-  }
+  // A page asks which build answers its requests before it boots, so it
+  // never starts its workers under another deployment's worker (see
+  // lib/init/service-worker-bridge.ts). It asks with a fetch, which reaches
+  // exactly the worker that controls it; without a worker the request
+  // reaches the server, which has no such file. The answer names the build
+  // only.
+  var BUILD_ID_PATH = SCOPE_PATH + "__kandelo_build_id";
 
   // --- Lifecycle ---
   self.addEventListener("install", function () {
@@ -865,8 +222,10 @@ if (typeof window !== "undefined") {
       caches.keys().then(function (names) {
         return Promise.all(
           names.filter(function (name) {
+            // Includes the retired "bridge-v2" cookie-jar cache: guest
+            // cookies no longer live on this origin.
             return name.startsWith(CACHE_NAMESPACE) &&
-              name !== BRIDGE_CACHE && name !== LAZY_ASSET_CACHE;
+              name !== LAZY_ASSET_CACHE;
           }).map(function (name) {
             return caches.delete(name);
           }),
@@ -877,142 +236,29 @@ if (typeof window !== "undefined") {
     );
   });
 
-  // --- Configuration via postMessage ---
-  self.addEventListener("message", function (event) {
-    var msg = event.data;
-    if (msg && msg.type === "init-bridge") {
-      var port = event.ports[0];
-      var replyPort = event.ports[1];
-      // The SW mints the name; the page no longer supplies an appPrefix. Only
-      // the session id and the transferred ports are page-supplied and must be
-      // validated before any registry mutation.
-      if (
-        !isValidSessionId(msg.sessionId) ||
-        !isBridgeMessagePort(port) || !isBridgeMessagePort(replyPort)
-      ) {
-        postInvalidScopeConfig(replyPort);
-        return;
-      }
-      // Mint and persist behind the startup scan so a fresh name never
-      // collides with a machine the restart is still restoring, and so the
-      // initial durable write is the machine's first linearized mutation.
-      var record = null;
-      event.waitUntil(
-        appPrefixReady.then(function () {
-          var name = mintInstanceName();
-          record = makeInstanceRecord(
-            name,
-            msg.sessionId,
-            event.source && event.source.id,
-          );
-          // The owning/shell client is deliberately NOT added to the viewing
-          // map here. The shell (top-level demo page) is a different client
-          // from the web-preview iframe; mapping it would make the shell's own
-          // nameless same-origin GETs get redirected into the guest app and 404
-          // against the kernel. The actual viewer (the iframe) is registered via
-          // markViewer when it navigates to /computer/<name>/. teardownInstancesOwnedBy
-          // and reconcileOwners key off record.owningClientId, not the viewing
-          // map, so owner attribution is unaffected.
-          instances.set(name, record);
-          // Persist the machine's initial authority before acknowledging so a
-          // fresh login survives a worker restart. The durable write is the
-          // linearization point; the live bridge commits only after it lands.
-          return enqueueRecordMutation(record, function () {
-            var authority = nextBridgeAuthority(record, record.sessionId, new Map());
-            return writeBridgeAuthority(record, authority).then(function () {
-              record.durableAuthority = authority;
-              initBridgePortFor(record, port);
-              record.status = "live";
-              record.liveBridgeEpoch += 1;
-              replyPort.postMessage({
-                type: "bridge-ready",
-                name: name,
-                appPrefix: record.appPrefix,
-              });
-            });
-          });
-        }).catch(function () {
-          if (record) {
-            instances.delete(record.name);
-          }
-          replyPort.postMessage({
-            type: "bridge-error",
-            code: "bridge-init-failed",
-          });
-        }),
-      );
-    } else if (msg && msg.type === "instance-closing") {
-      // A host tab announces (via pagehide) that it is going away. Only the tab
-      // that owns a machine may retire it: postMessage is untrusted input, so a
-      // viewer's forged instance-closing must not be able to take down another
-      // tab's machine. Validate the name shape, then require the sender to be
-      // the recorded owning client before marking the machine offline.
-      if (isValidInstanceName(msg.name)) {
-        var closing = instances.get(msg.name);
-        var senderId = event.source && event.source.id;
-        if (closing && senderId && closing.owningClientId === senderId) {
-          markInstanceOffline(closing);
-        }
-      }
-    }
-  });
-
-  // --- Blob-URL iframe interceptor (injected at build time) ---
-  // Source of the reusable DOM patch in public/blob-iframe-interceptor.js.
-  // We inline it into every bridged HTML document (see
-  // injectBlobIframeInterceptor) so that apps which mount iframes from
-  // `blob:` URLs — e.g. the WordPress block/site editor canvas — render
-  // those iframes as service-worker-controlled `about:srcdoc` documents
-  // instead. Without this, a blob: document is not SW-controlled, so its
-  // subresource requests (load-scripts.php/load-styles.php, block assets)
-  // escape the bridge and 404 against the static origin.
-  var BLOB_IFRAME_INTERCEPTOR_SRC = "__BLOB_IFRAME_INTERCEPTOR__";
-
-  // Whether a Content-Security-Policy header value (one or more
-  // comma-separated policies) sets the policy for inline <script> elements:
-  // script-src-elem, script-src, or the default-src they fall back to. A
-  // policy without them, such as WordPress admin's
-  // `frame-ancestors 'self'`, leaves inline scripts allowed, so the helper
-  // can run there without touching the policy.
-  function cspGovernsScripts(value) {
-    if (!value) return false;
-    return value.split(",").some(function (policy) {
-      return policy.split(";").some(function (directive) {
-        var name = directive.trim().split(/\s+/)[0].toLowerCase();
-        return name === "script-src-elem" || name === "script-src" || name === "default-src";
-      });
-    });
-  }
-
-  // Insert the interceptor as the first <head> child so it runs before any
-  // app script creates a blob iframe. Idempotent and HTML-only.
-  function injectBlobIframeInterceptor(html) {
-    if (
-      !BLOB_IFRAME_INTERCEPTOR_SRC ||
-      BLOB_IFRAME_INTERCEPTOR_SRC.indexOf("__BLOB_IFRAME") === 0 ||
-      html.indexOf("__kandeloBlobIframePatched") !== -1
-    ) {
-      return html;
-    }
-    var tag = "<script>" + BLOB_IFRAME_INTERCEPTOR_SRC + "</script>";
-    var headMatch = html.match(/<head[^>]*>/i);
-    if (headMatch) {
-      var at = headMatch.index + headMatch[0].length;
-      return html.slice(0, at) + tag + html.slice(at);
-    }
-    var htmlMatch = html.match(/<html[^>]*>/i);
-    if (htmlMatch) {
-      var htmlAt = htmlMatch.index + htmlMatch[0].length;
-      return html.slice(0, htmlAt) + tag + html.slice(htmlAt);
-    }
-    return tag + html;
-  }
-
   // --- Complete CORS proxy profile (injected at build time) ---
   var CORS_PROXY_CONFIG = "__CORS_PROXY_CONFIG__";
   var proxySessionFactory = "__CORS_PROXY_SESSION_TRANSPORT__";
   var proxySessionFetch = typeof proxySessionFactory === "function" ? proxySessionFactory() : null;
   var corsProxyWarningKeys = new Set();
+
+  // Mirror of the credential field set (ANONYMOUS_OMISSION_EXCLUDED_NAMES,
+  // exported as CREDENTIAL_REQUEST_HEADER_NAMES) in
+  // host/src/networking/browser-cors-proxy.ts. Only a request whose tag the
+  // owning kernel worker vouches for may carry one to the proxy.
+  var CREDENTIAL_REQUEST_HEADER_NAMES = new Set([
+    "authorization", "chatgpt-account-id", "cookie", "cookie2",
+    "proxy-authorization",
+  ]);
+  // Mirror of GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES there: the fields a
+  // verified grant lets through. Cookies and proxy credentials never pass.
+  var GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES = new Set([
+    "authorization", "chatgpt-account-id",
+  ]);
+  // Mirror of CREDENTIAL_GRANT_REQUEST_HEADER and
+  // CORS_PROXY_ALLOWED_REQUEST_HEADERS_HEADER there, lowercased.
+  var CREDENTIAL_GRANT_HEADER = "x-kandelo-credential-grant";
+  var CREDENTIAL_OPT_IN_HEADER = "x-cors-proxy-allowed-request-headers";
 
   function normalizedCorsProxyConfig() {
     if (!CORS_PROXY_CONFIG || typeof CORS_PROXY_CONFIG !== "object") return null;
@@ -1031,6 +277,44 @@ if (typeof window !== "undefined") {
   function normalizedCorsProxyUrl() {
     var config = normalizedCorsProxyConfig();
     return config ? new URL(config.url, self.location.href).href : "";
+  }
+
+  // The development credential relay (loopback development servers only):
+  // it carries its HTTPS destinations' requests in the proxy's place, with
+  // the same projection, so a credential reaches it only with a verified
+  // grant and the opt-in this worker re-derives. Mirror of
+  // host/src/networking/credential-relay.ts.
+  function credentialRelayConfig() {
+    var config = normalizedCorsProxyConfig();
+    var relay = config && config.credentialRelay;
+    if (!relay || typeof relay.url !== "string" || !Array.isArray(relay.allowedOrigins)) {
+      return null;
+    }
+    return relay;
+  }
+
+  // Mirror of credentialRelayCarries().
+  function credentialRelayFor(targetUrl) {
+    var relay = credentialRelayConfig();
+    if (!relay) return null;
+    try {
+      return relay.allowedOrigins.indexOf(new URL(targetUrl).origin) >= 0 ? relay : null;
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  // Mirror of credentialRelayFetchUrl().
+  function credentialRelayFetchUrl(relay, targetUrl) {
+    return new URL(relay.url, self.location.href).href + "?url=" +
+      encodeURIComponent(targetUrl);
+  }
+
+  function isCredentialRelayUrl(url) {
+    var relay = credentialRelayConfig();
+    if (!relay) return false;
+    var endpoint = new URL(relay.url, self.location.href);
+    return url.origin === endpoint.origin && url.pathname === endpoint.pathname;
   }
 
   function isCorsProxyFetchUrl(targetUrl) {
@@ -1115,18 +399,39 @@ if (typeof window !== "undefined") {
     );
   }
 
-  function projectCorsProxyRequest(request, outgoingUrl, targetUrl) {
+  // `grant` is credentialGate()'s finding that the owning kernel worker
+  // vouched for this request's tag (null otherwise). Only then do the fields
+  // a grant covers pass, with the proxy's opt-in re-derived here. The tag
+  // itself never leaves the browser, granted or not.
+  function projectCorsProxyRequest(request, outgoingUrl, targetUrl, grant) {
     var config = normalizedCorsProxyConfig();
     if (!config) return Promise.resolve(request);
     var allowed = proxyAllowedHeaderNames(config);
     var headers = new Headers();
     var unsupported = [];
     var credential = false;
+    var grantedAuthorization = false;
     request.headers.forEach(function (value, name) {
       var lower = name.toLowerCase();
       if (lower === "x-kandelo-proxy-session") {
         // Reprojection owns quota metadata, just as it owns the range alias.
         // The session transport reads its own persisted, verified credential.
+        // It authenticates this app to the proxy's quota service, never a
+        // guest to a destination, so it is not a credential field here.
+      } else if (lower === CREDENTIAL_GRANT_HEADER) {
+        // Consumed by credentialGate(); upstream never sees it.
+      } else if (lower === CREDENTIAL_OPT_IN_HEADER) {
+        // Re-derived below from what a verified grant actually carries.
+      } else if (grant && GRANTED_CREDENTIAL_REQUEST_HEADER_NAMES.has(lower)) {
+        headers.append(name, value);
+        if (lower === "authorization") grantedAuthorization = true;
+        credential = true;
+      } else if (CREDENTIAL_REQUEST_HEADER_NAMES.has(lower)) {
+        // Credentials are never silently dropped, even though some match the
+        // browser-managed prefixes below — surface them so the request fails
+        // loudly instead of going out unauthenticated.
+        unsupported.push(lower);
+        credential = true;
       } else if (allowed.has(lower)) {
         headers.append(name, value);
       } else if (lower === "if-range") {
@@ -1138,15 +443,6 @@ if (typeof window !== "undefined") {
         // never relayed. Kandelo's own kernel worker sends it when its guest
         // traffic reaches the proxy URL through this worker already
         // projected; that is not an unsupported field.
-      } else if (
-        lower === "authorization" || lower === "cookie" ||
-        lower === "cookie2" || lower === "proxy-authorization"
-      ) {
-        // Credentials are never silently dropped, even though some match the
-        // browser-managed prefixes below — surface them so the request fails
-        // loudly instead of going out unauthenticated.
-        unsupported.push(lower);
-        credential = true;
       } else if (isBrowserManagedRequestHeader(lower)) {
         // Fetch adds these fields independently of the Headers supplied by
         // callers. Do not copy them into the proxy request or classify them as
@@ -1166,6 +462,11 @@ if (typeof window !== "undefined") {
     var range = headers.get("range");
     if (config.rangeRequestHeaderAlias && range !== null) {
       headers.set(config.rangeRequestHeaderAlias, range);
+    }
+    if (grantedAuthorization) {
+      // Mirrors BrowserCorsProxy.project(): the proxy relays Authorization
+      // only when the request opts in to it by name.
+      headers.set(CREDENTIAL_OPT_IN_HEADER, "Authorization");
     }
     var diagnosticNames = Array.from(new Set(unsupported)).sort();
     if (diagnosticNames.length > 0) {
@@ -1245,14 +546,21 @@ if (typeof window !== "undefined") {
   // If-Range condition is false would send (RFC 9110 section 13.1.5). The
   // cost of doubt is one extra full request, never a slice of a changed
   // resource. Several If-Range fields reach here joined, which never match.
-  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl) {
+  function fetchThroughCorsProxy(request, outgoingUrl, targetUrl, grant) {
     var config = normalizedCorsProxyConfig();
+    // The development relay's destinations go to the relay instead, projected
+    // exactly as for the proxy (mirrors BrowserCorsProxy.fetch).
+    var relay = credentialRelayFor(targetUrl);
+    if (relay) outgoingUrl = credentialRelayFetchUrl(relay, targetUrl);
     var ifRange = config && !proxyAllowedHeaderNames(config).has("if-range")
       ? request.headers.get("if-range")
       : null;
-    return projectCorsProxyRequest(request, outgoingUrl, targetUrl).then(function (projected) {
+    return projectCorsProxyRequest(request, outgoingUrl, targetUrl, grant || null).then(function (projected) {
       if (projected instanceof Response) return projected;
       function send(projected) {
+        // Same-origin, so say so: the browser's own cookies are not the
+        // guest's. The relay has no proxy session protocol.
+        if (relay) return fetch(new Request(projected, { credentials: "omit" }));
         if (!proxySessionFetch) return fetch(projected);
         // Firefox can retain POST bytes internally while Request.body is null.
         // Read by method instead of using that getter to decide body presence.
@@ -1291,6 +599,277 @@ if (typeof window !== "undefined") {
     return url.origin !== self.location.origin;
   }
 
+  // --- Credential gate ---
+  // The kernel worker adds credentials, the proxy's credential opt-in, and a
+  // grant's tag only to requests a process the user granted wrote (see
+  // host/src/credential-grants.ts). This is a second, independent gate at the
+  // browser's network edge. What it guarantees: only Kandelo's kernel-worker
+  // script can present a grant tag and vouch for it, so a page script, a
+  // guest preview, or a worker started from any other script cannot send
+  // credentials through the proxy.
+  // - A proxy request that carries a credential field or the opt-in without
+  //   a tag is refused.
+  // - A tag is accepted only on a request to the configured proxy, from a
+  //   dedicated worker running exactly the kernel worker's entry script
+  //   (KERNEL_WORKER_SCRIPT_PATHS, injected at build time), and only once
+  //   that worker has vouched for it: it holds a live grant with that token
+  //   whose destinations include the target origin.
+  // - The tag is removed before the request leaves the browser.
+  // What it does not guarantee: any script the app's origin runs can still
+  // start a genuine kernel worker and answer that kernel's credential prompt
+  // itself. Guest web previews run on a separate preview origin, so the
+  // app's origin runs only Kandelo's own code.
+  // The answer is cached in memory only, keyed by token and bound to the
+  // client that presented it; another client presenting the same tag is
+  // refused without asking. An entry ends when the kernel worker announces
+  // the grant ended, when a later verification finds its client gone, when
+  // the bounded cache evicts it, or when this worker's state resets (an
+  // update or an idle restart), after which the next request asks again.
+  // There is no expiry: the kernel worker itself attaches a tag only after
+  // the kernel confirms the grant for that request.
+  //
+  // WHY a BroadcastChannel question and a fetch answer: Chromium delivers no
+  // Client.postMessage() to a dedicated worker (it has no
+  // navigator.serviceWorker in workers; measured 2026-10-29), while every
+  // engine delivers BroadcastChannel messages to workers. The browser stamps
+  // the answering fetch with its sender's client id, which no script can
+  // forge, and that client must be the kernel worker that presented the tag.
+  // The broadcast carries the token's hash, never the token.
+  // Mirror of CREDENTIAL_GATE_CHANNEL in host/src/credential-gate.ts.
+  var CREDENTIAL_GATE_CHANNEL = "kandelo-credential-grants";
+  var CREDENTIAL_GATE_REPLY_PATH = "__kandelo_credential_grant_reply";
+  var CREDENTIAL_GATE_TIMEOUT_MS = 5000;
+  var CREDENTIAL_GATE_CACHE_LIMIT = 256;
+  var CREDENTIAL_GATE_REPLY_URL = new URL(
+    CREDENTIAL_GATE_REPLY_PATH, self.registration.scope,
+  ).href;
+  // URL paths of the kernel worker's entry script, injected at build time by
+  // apps/browser-demos/vite.config.ts. Not injected (a raw copy of this
+  // file): no client can present a tag.
+  var KERNEL_WORKER_SCRIPT_PATHS = "__KERNEL_WORKER_SCRIPT_PATHS__";
+  var kernelWorkerScriptPaths = new Set(
+    Array.isArray(KERNEL_WORKER_SCRIPT_PATHS) ? KERNEL_WORKER_SCRIPT_PATHS : [],
+  );
+  var credentialGrantCache = new Map(); // token -> { clientId, tokenHash, origins }
+  var pendingCredentialVerifications = new Map(); // id -> { clientId, settle }
+  var credentialGateChannel = typeof BroadcastChannel === "function"
+    ? new BroadcastChannel(CREDENTIAL_GATE_CHANNEL) : null;
+  if (credentialGateChannel) {
+    credentialGateChannel.onmessage = function (event) {
+      var message = event.data;
+      if (
+        !message || message.type !== "credential-grant-ended" ||
+        typeof message.tokenHash !== "string"
+      ) return;
+      credentialGrantCache.forEach(function (entry, token) {
+        if (entry.tokenHash === message.tokenHash) credentialGrantCache.delete(token);
+      });
+    };
+  }
+
+  function isCredentialGateReply(url) {
+    return url.origin + url.pathname === CREDENTIAL_GATE_REPLY_URL;
+  }
+
+  function credentialRefusal(reason) {
+    return new Response("Kandelo refused this request: " + reason + "\n", {
+      status: 403,
+      headers: { "Content-Type": "text/plain; charset=utf-8" },
+    });
+  }
+
+  function carriesCredentialFields(request) {
+    if (request.headers.has(CREDENTIAL_OPT_IN_HEADER)) return true;
+    var found = false;
+    CREDENTIAL_REQUEST_HEADER_NAMES.forEach(function (name) {
+      if (request.headers.has(name)) found = true;
+    });
+    return found;
+  }
+
+  // Mirror of credentialTokenHash() in host/src/credential-gate.ts.
+  function credentialTokenHash(token) {
+    return crypto.subtle.digest("SHA-256", new TextEncoder().encode(token))
+      .then(function (digest) {
+        var binary = "";
+        new Uint8Array(digest).forEach(function (byte) {
+          binary += String.fromCharCode(byte);
+        });
+        return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_")
+          .replace(/=+$/, "");
+      });
+  }
+
+  // Only Kandelo's kernel worker presents a grant tag: a dedicated worker on
+  // this origin whose script is exactly the kernel worker's entry (origin
+  // and path; the query Vite adds in development is ignored). Windows
+  // (pages, frames, guest previews) and workers started from any other
+  // script, including a blob: or data: URL or a proxied third-party body,
+  // never do.
+  function isCredentialGateClient(client) {
+    if (!client || client.type !== "worker") return false;
+    var clientUrl;
+    try {
+      clientUrl = new URL(client.url);
+    } catch (_error) {
+      return false;
+    }
+    if (clientUrl.protocol !== "http:" && clientUrl.protocol !== "https:") return false;
+    if (clientUrl.origin !== self.location.origin) return false;
+    return kernelWorkerScriptPaths.has(clientUrl.pathname);
+  }
+
+  function answerCredentialGateReply(event) {
+    if (event.request.method !== "POST") {
+      return Promise.resolve(new Response(null, { status: 405 }));
+    }
+    return event.request.text().then(function (text) {
+      var reply = null;
+      try {
+        reply = JSON.parse(text);
+      } catch (_error) {
+        reply = null;
+      }
+      var pending = reply && typeof reply.id === "string"
+        ? pendingCredentialVerifications.get(reply.id) : undefined;
+      if (
+        !pending || pending.clientId !== event.clientId ||
+        reply.type !== "credential-grant-verified" ||
+        typeof reply.valid !== "boolean"
+      ) {
+        return new Response(null, { status: 403 });
+      }
+      pending.settle(reply.valid);
+      return new Response(null, { status: 204 });
+    });
+  }
+
+  function askKernelWorker(clientId, token, origin) {
+    return credentialTokenHash(token).then(function (tokenHash) {
+      return new Promise(function (resolve) {
+        var id = crypto.randomUUID();
+        var timer = setTimeout(function () { settle(false); }, CREDENTIAL_GATE_TIMEOUT_MS);
+        function settle(valid) {
+          clearTimeout(timer);
+          pendingCredentialVerifications.delete(id);
+          resolve({ valid: valid, tokenHash: tokenHash });
+        }
+        pendingCredentialVerifications.set(id, { clientId: clientId, settle: settle });
+        credentialGateChannel.postMessage({
+          type: "credential-grant-verify",
+          id: id,
+          tokenHash: tokenHash,
+          origin: origin,
+          replyUrl: CREDENTIAL_GATE_REPLY_URL,
+        });
+      });
+    });
+  }
+
+  function pruneCredentialGrantCache() {
+    credentialGrantCache.forEach(function (entry, token) {
+      self.clients.get(entry.clientId).then(function (client) {
+        if (!client) credentialGrantCache.delete(token);
+      }).catch(function () {});
+    });
+  }
+
+  // Bounded: a grant evicted here is simply asked about again.
+  function rememberCredentialGrant(token, entry) {
+    credentialGrantCache.set(token, entry);
+    while (credentialGrantCache.size > CREDENTIAL_GATE_CACHE_LIMIT) {
+      credentialGrantCache.delete(credentialGrantCache.keys().next().value);
+    }
+  }
+
+  // Resolves to null (nothing to gate), { token } (a verified grant), or a
+  // 403 Response. `targetUrl` is where the proxy would send the request, or
+  // null when the request is not going to the configured proxy.
+  function credentialGate(event, targetUrl) {
+    var request = event.request;
+    var tag = request.headers.get(CREDENTIAL_GRANT_HEADER);
+    if (tag === null) {
+      return Promise.resolve(carriesCredentialFields(request)
+        ? credentialRefusal(
+          "it carries credentials, or the CORS proxy's credential opt-in, " +
+            "without a Kandelo credential grant.",
+        )
+        : null);
+    }
+    var target = null;
+    try {
+      target = targetUrl ? new URL(targetUrl) : null;
+    } catch (_error) {
+      target = null;
+    }
+    if (!target || target.protocol !== "https:") {
+      return Promise.resolve(credentialRefusal(
+        "a credential grant tag is accepted only on HTTPS requests through " +
+          "the configured CORS proxy.",
+      ));
+    }
+    var origin = target.origin;
+    var clientId = event.clientId;
+    var cached = credentialGrantCache.get(tag);
+    if (cached && cached.clientId !== clientId) {
+      return Promise.resolve(credentialRefusal(
+        "its credential grant tag belongs to another client.",
+      ));
+    }
+    if (cached && cached.origins.has(origin)) {
+      return Promise.resolve({ token: tag });
+    }
+    var refused = credentialRefusal(
+      "no Kandelo process holds a credential grant for this request.",
+    );
+    if (!clientId || !credentialGateChannel) return Promise.resolve(refused);
+    return self.clients.get(clientId).then(function (client) {
+      if (!isCredentialGateClient(client)) return refused;
+      return askKernelWorker(clientId, tag, origin).then(function (answer) {
+        pruneCredentialGrantCache();
+        if (!answer.valid) return refused;
+        // Another client may have presented the tag while this one waited.
+        var entry = credentialGrantCache.get(tag);
+        if (entry && entry.clientId !== clientId) return refused;
+        if (!entry) {
+          entry = { clientId: clientId, tokenHash: answer.tokenHash, origins: new Set() };
+          rememberCredentialGrant(tag, entry);
+        }
+        entry.origins.add(origin);
+        return { token: tag };
+      });
+    });
+  }
+
+  function isCorsProxyRequestUrl(href) {
+    return isCorsProxyFetchUrl(href) && !isCorsProxySessionUrl(href);
+  }
+
+  // Mirror of devCorsProxyPathForBase() in apps/browser-demos/vite.config.ts:
+  // the development relay's path, which exists only on a Vite server and may
+  // not be the configured proxy (VITE_CORS_PROXY_URL).
+  function isDevCorsProxyUrl(url) {
+    return !isCrossOrigin(url) && url.pathname === SCOPE_PATH + "__kandelo_cors_proxy";
+  }
+
+  // A proxy answers with a third party's bytes. Only fetch() (destination
+  // "") may read them. As a document, frame, script, worker or style they
+  // would render or run, and from a same-origin proxy they would run with
+  // this origin's authority: a worker started from a proxied body could, for
+  // one, pose as Kandelo code.
+  function proxyDestinationRefusal(request, url) {
+    if (request.destination === "") return null;
+    if (
+      !isCorsProxyRequestUrl(url.href) && !isDevCorsProxyUrl(url) &&
+      !isCredentialRelayUrl(url)
+    ) return null;
+    return new Response(
+      "Kandelo refused this request: the CORS proxy's answers are data for " +
+        "fetch(), not for a load as " + request.destination + ".\n",
+      { status: 403, headers: { "Content-Type": "text/plain; charset=utf-8" } },
+    );
+  }
+
   function isCanonicalPagesVfsRequest(request, url) {
     if (
       request.method !== "GET" || request.mode === "navigate" ||
@@ -1310,29 +889,56 @@ if (typeof window !== "undefined") {
     return request.method === "GET" &&
       request.mode !== "navigate" &&
       !isCrossOrigin(url) &&
-      instanceNameFromPath(url.pathname) === null &&
       url.search === "" &&
       url.hash === "" &&
       url.pathname.startsWith(SCOPE_PATH + "vfs-groups/");
   }
 
+  // Cache a lazy group asset while the page reads it. The page gets the
+  // native response at once, so its download progress counts bytes as they
+  // arrive; waiting for the whole body first made a 177 MB program show no
+  // progress until it had finished. The cache gets a clone of that response,
+  // never a rebuilt one: rebuilding would remove the authenticated
+  // Content-Length the lazy VFS integrity check consumes.
+  //
+  // Only a complete body becomes an entry. cache.put() reads the clone to its
+  // end before it stores anything, and rejects if the body errors, so a
+  // download the network drops leaves no entry. The rejection needs no
+  // report: the page sees the same failure on its own copy of the stream.
+  // A page that aborts ends only its own copy. Chromium, Firefox and WebKit
+  // keep this worker's fetch running (as they did when the worker held the
+  // response), so the download still completes into the cache.
+  //
+  // Memory: the clone tees the body, and a tee holds each chunk until both
+  // copies have read it. Whichever copy reads slower (the page, if it stalls
+  // while the cache keeps writing) leaves its unread bytes queued in this
+  // worker, up to the whole body. Holding the response until the cache was
+  // done held all of it, twice, every time.
   function cacheCompleteLazyVfsResponse(request, response) {
     if (response.status !== 200 || response.type !== "basic" || response.body === null) {
-      return Promise.resolve(response);
+      return Promise.resolve();
     }
-    // Keep the native response intact: rebuilding it would remove the
-    // authenticated Content-Length the lazy VFS integrity check consumes.
-    return response.clone().arrayBuffer().then(function () {
-      return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
-        return cache.put(request, response.clone());
-      });
-    }).then(function () {
-      return response;
+    var copy = response.clone();
+    return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
+      return cache.put(request, copy);
+    }).catch(function () {
+      if (copy.bodyUsed) return;
+      // The cache never started reading; release the tee so it does not
+      // hold the page's bytes for a reader that will never come.
+      return copy.body.cancel().catch(function () {});
     });
   }
 
-  function fetchScopedLazyVfsRequest(request) {
-    return caches.keys().then(function (cacheNames) {
+  function fetchScopedLazyVfsRequest(event) {
+    var request = event.request;
+    // Keep the worker alive until the cache write finishes, which is after
+    // the page already has its response. Register the promise now, while
+    // the event is dispatching, where every engine accepts waitUntil().
+    var finishCacheWrite;
+    event.waitUntil(new Promise(function (resolve) {
+      finishCacheWrite = resolve;
+    }));
+    var answer = caches.keys().then(function (cacheNames) {
       if (cacheNames.indexOf(LAZY_ASSET_CACHE) === -1) return null;
       return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
         return cache.match(request);
@@ -1340,148 +946,14 @@ if (typeof window !== "undefined") {
     }).then(function (cached) {
       if (cached) return cached;
       return fetch(request).then(function (response) {
-        return cacheCompleteLazyVfsResponse(request, response);
+        finishCacheWrite(cacheCompleteLazyVfsResponse(request, response));
+        return response;
       });
     });
-  }
-
-  // Return the machine name if `pathname` addresses SCOPE_PATH + "computer/<name>"
-  // or "computer/<name>/..." with a validly-formatted (untrusted) name, else
-  // null. The strict format check runs before any registry use.
-  function instanceNameFromPath(pathname) {
-    var base = SCOPE_PATH + "computer/";
-    if (pathname.indexOf(base) !== 0) return null;
-    var rest = pathname.slice(base.length); // "<name>" or "<name>/..."
-    var seg = rest.split("/")[0];
-    return isValidInstanceName(seg) ? seg : null;
-  }
-
-  function appRootPathFor(record) {
-    return record.appPrefix.slice(0, -1); // "/a/computer/<name>"
-  }
-
-  function stripAppPathFor(record, pathname) {
-    var root = appRootPathFor(record);
-    if (pathname === root) return "/";
-    return pathname.slice(root.length);
-  }
-
-  // Record that `event`'s client(s) are viewing this machine, so nameless
-  // root-relative subresources they emit can be attributed back to it. This
-  // generalizes the former single-instance appClientIds set.
-  //
-  // This maps clientId -> name unconditionally for any resolved record,
-  // including the outer shell's own client. That is safe because the shell tab
-  // never issues a named app fetch (app/<name>/...) from its own client — its
-  // only role is to host the bridge and answer need-bridge; the app documents
-  // that do issue named fetches live in the iframe/viewer clients. Task 1
-  // dropped the old shell readiness-probe guard on this assumption, so if a
-  // future shell ever fetched a named URL from its own client it would be
-  // recorded as a viewer of that machine (and receive offline pushes for it).
-  function isNavigationRequest(request) {
-    return request.mode === "navigate" || request.destination === "document";
-  }
-
-  // The referer is the fetch-owned source of truth in a service worker; keep a
-  // header fallback for engines that expose it. Returns the same-origin referer
-  // pathname, or null when there is no usable same-origin referer.
-  function sameOriginRefererPath(request) {
-    var referer = request.referrer ||
-      (request.headers && typeof request.headers.get === "function"
-        ? request.headers.get("referer")
-        : "") || "";
-    if (!referer) return null;
-    try {
-      var refererUrl = new URL(referer);
-      if (refererUrl.origin !== self.location.origin) return null;
-      return refererUrl.pathname;
-    } catch (_error) {
-      return null;
-    }
-  }
-
-  // True only when the request originates from within some machine's app
-  // document (its referer is an /computer/<name>/ path).
-  function requestIsFromAppDocument(request) {
-    var path = sameOriginRefererPath(request);
-    return path !== null && instanceNameFromPath(path) !== null;
-  }
-
-  // Register a client as a viewer of `record` ONLY when the request genuinely
-  // comes from within an app document: a navigation INTO the app (its resulting
-  // document) or a subresource whose referer is an app path. This deliberately
-  // excludes host-page requests to /computer/<name>/ — the web-readiness probe and
-  // the boot's kernel.wasm / VFS fetches all run on the host client, which lives
-  // at "/" (or "/?demo="). Registering the host would put it in clientToInstance
-  // and then redirect its later nameless boot fetches into a machine's app
-  // prefix — fatally, into a PRIOR machine's now-dead prefix after an in-place
-  // switch — which deadlocks every host fetch. The host is never a viewer.
-  function markViewer(record, event, request) {
-    if (isNavigationRequest(request)) {
-      if (event.resultingClientId) {
-        clientToInstance.set(event.resultingClientId, record.name);
-        record.viewerClientIds.add(event.resultingClientId);
-      }
-      return;
-    }
-    if (event.clientId && requestIsFromAppDocument(request)) {
-      clientToInstance.set(event.clientId, record.name);
-      record.viewerClientIds.add(event.clientId);
-    }
-  }
-
-  // Resolve the machine a fetch belongs to: a name in the path addresses one
-  // directly (unknown but well-formed -> null, never a fallback to another
-  // machine); otherwise attribute by the client's viewing map.
-  function resolveInstanceForEvent(event, url) {
-    var name = instanceNameFromPath(url.pathname);
-    if (name) return instances.get(name) || null;
-    var viewed = event.clientId ? clientToInstance.get(event.clientId) : null;
-    return viewed ? (instances.get(viewed) || null) : null;
-  }
-
-  // Map a nameless root-relative path into a machine's app prefix. Strips the
-  // deployment scope prefix (if present) before composing the app root, so a
-  // "/base/foo" request from a "/base/" deployment becomes
-  // "/base/computer/<name>/foo".
-  function pathInsideApp(pathname) {
-    var scopeRoot = SCOPE_PATH === "/" ? "" : SCOPE_PATH.slice(0, -1);
-    if (scopeRoot && pathname === scopeRoot) return "/";
-    if (scopeRoot && pathname.indexOf(scopeRoot + "/") === 0) {
-      return pathname.slice(scopeRoot.length);
-    }
-    return pathname;
-  }
-
-  function urlInsideApp(record, url) {
-    var redirectUrl = new URL(url.href);
-    redirectUrl.pathname = appRootPathFor(record) + pathInsideApp(url.pathname);
-    return redirectUrl;
-  }
-
-  function redirectIntoApp(record, url) {
-    var redirectUrl = urlInsideApp(record, url);
-    return new Response(null, {
-      status: 307,
-      headers: appRedirectHeaders(redirectUrl.href),
-    });
-  }
-
-  function appRedirectHeaders(location) {
-    var headers = new Headers();
-    headers.set("Location", location);
-    addAppIsolationHeaders(headers);
-    return headers;
-  }
-
-  function addAppIsolationHeaders(headers) {
-    if (!headers.has("Cross-Origin-Embedder-Policy")) {
-      headers.set("Cross-Origin-Embedder-Policy", "require-corp");
-    }
-    if (!headers.has("Cross-Origin-Resource-Policy")) {
-      headers.set("Cross-Origin-Resource-Policy", "same-origin");
-    }
-    return headers;
+    // A cache hit or a failed fetch has no cache write to wait for. (A
+    // second resolve() after the one above changes nothing.)
+    answer.then(function () { finishCacheWrite(); }, function () { finishCacheWrite(); });
+    return answer;
   }
 
   /**
@@ -1546,7 +1018,43 @@ if (typeof window !== "undefined") {
     });
   }
 
-  function fetchCrossOrigin(request) {
+  // Gate, then relay through the proxy. The refusal gets the same CORS and
+  // embedder-policy headers as a relayed answer so the caller can read it.
+  function fetchGatedThroughCorsProxy(event, outgoingUrl, targetUrl, gateTargetUrl) {
+    var request = event.request;
+    return credentialGate(event, gateTargetUrl).then(function (gate) {
+      if (gate instanceof Response) return gate;
+      return fetchThroughCorsProxy(request, outgoingUrl, targetUrl, gate);
+    }).then(function (response) {
+      var headers = corsSafeResponseHeaders(response);
+      return responseWithHeaders(response, headers);
+    });
+  }
+
+  // A request to the development credential relay (the kernel worker's, or
+  // any script's) passes the same gate as one to the proxy, then goes on
+  // projected: credentials and the re-derived opt-in only with a verified
+  // grant, never the tag. The relay's own answer, already limited to inert
+  // fields, comes back unchanged.
+  function fetchGatedThroughCredentialRelay(event, url) {
+    var targetUrl = null;
+    try {
+      targetUrl = new URL(url.searchParams.get("url")).href;
+    } catch (_error) {
+      targetUrl = null;
+    }
+    var relayable = targetUrl !== null && credentialRelayFor(targetUrl) !== null;
+    return credentialGate(event, relayable ? targetUrl : null).then(function (gate) {
+      if (gate instanceof Response) return gate;
+      // Nothing to relay (the relay answers 404, 400 or 403 itself), and
+      // nothing credentialed to forward.
+      if (!relayable) return fetch(event.request);
+      return fetchThroughCorsProxy(event.request, url.href, targetUrl, gate);
+    });
+  }
+
+  function fetchCrossOrigin(event) {
+    var request = event.request;
     var targetUrl = request.url;
 
     // This fixed endpoint belongs to the configured proxy's quota protocol.
@@ -1556,11 +1064,10 @@ if (typeof window !== "undefined") {
     // The page and worker runtime may already be deliberately fetching the
     // configured CORS proxy. Do not wrap that request in the same proxy again.
     if (isCorsProxyFetchUrl(targetUrl)) {
-      var proxiedTargetUrl = corsProxyTargetUrl(targetUrl) || targetUrl;
-      return fetchThroughCorsProxy(request, targetUrl, proxiedTargetUrl).then(function (response) {
-        var headers = corsSafeResponseHeaders(response);
-        return responseWithHeaders(response, headers);
-      });
+      var proxiedTargetUrl = corsProxyTargetUrl(targetUrl);
+      return fetchGatedThroughCorsProxy(
+        event, targetUrl, proxiedTargetUrl || targetUrl, proxiedTargetUrl,
+      );
     }
 
     // If we have a CORS proxy, route reads through it. The proxy exists to
@@ -1574,10 +1081,9 @@ if (typeof window !== "undefined") {
       (request.method === "GET" || request.method === "HEAD")
     ) {
       var proxyUrl = corsProxyFetchUrl(targetUrl);
-      return fetchThroughCorsProxy(request, proxyUrl, targetUrl).then(function (response) {
-        var headers = corsSafeResponseHeaders(response);
-        return responseWithHeaders(response, headers);
-      });
+      // A tag is meaningful only on the kernel worker's own proxy requests,
+      // so gate as for a request that is not going to the proxy.
+      return fetchGatedThroughCorsProxy(event, proxyUrl, targetUrl, null);
     }
 
     // No proxy: try a normal CORS fetch. Policy headers are useful only after
@@ -1589,6 +1095,22 @@ if (typeof window !== "undefined") {
       var headers = corsSafeResponseHeaders(response);
       return responseWithHeaders(response, headers);
     });
+  }
+
+  // Only Kandelo may frame a Kandelo document: a guest page on the preview
+  // origin must not frame the app (for example to clickjack the credential
+  // prompt of a machine it embeds). Hosts that cannot send headers get them
+  // here; a deployment's own frame-ancestors policy is kept.
+  function addDocumentHeaders(headers) {
+    var policy = headers.get("Content-Security-Policy");
+    if (!policy || !/(?:^|;)\s*frame-ancestors\s/i.test(policy)) {
+      headers.set(
+        "Content-Security-Policy",
+        policy ? policy + "; frame-ancestors 'self'" : "frame-ancestors 'self'",
+      );
+    }
+    if (!headers.has("Origin-Agent-Cluster")) headers.set("Origin-Agent-Cluster", "?1");
+    return headers;
   }
 
   /**
@@ -1622,6 +1144,7 @@ if (typeof window !== "undefined") {
       if (!headers.has("Cross-Origin-Resource-Policy")) {
         headers.set("Cross-Origin-Resource-Policy", "same-origin");
       }
+      if (request.mode === "navigate") addDocumentHeaders(headers);
       // fetch() auto-decompresses the body, so the stream is already decoded.
       // When the original response had Content-Encoding, remove it along with
       // Content-Length (which reflects the compressed size, not the decoded body).
@@ -1637,203 +1160,47 @@ if (typeof window !== "undefined") {
     });
   }
 
-  function escapeHtml(value) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
+  // --- Kandelo's own computer/ addresses ---
+  // `<scope>computer/<name>/<path>` is the address users share and terminal
+  // links open. On this origin it is only ever the viewer shell, a Kandelo
+  // page that embeds the guest page from the preview origin. Anything else
+  // under computer/ is refused: guest bytes never come from this origin.
+  var COMPUTER_ROOT = SCOPE_PATH + "computer";
+  var VIEWER_SHELL_URL = SCOPE_PATH + "pages/kandelo/viewer.html";
 
-  // A well-formed but unknown or offline machine resolves to no live instance.
-  // Both cases are the same real boundary to a viewer — the machine is not
-  // running here — so both get one 503 HTML page naming the machine. 503 (not
-  // 404) keeps this consistent with the rest of the bridge: the name is a valid
-  // route, the machine behind it is just unavailable. The isolation headers let
-  // the page render inside the cross-origin-isolated app frame. `name` is always
-  // a validated instance name ([a-z-]), but it is escaped anyway so this stays
-  // safe if a future caller passes untrusted text.
-  function offlineOrUnknownResponse(name) {
-    var safeName = escapeHtml(name);
-    var html = "<!doctype html>\n" +
-      "<html lang=\"en\">\n" +
-      "<head>\n" +
-      "<meta charset=\"utf-8\">\n" +
-      "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n" +
-      "<title>Kandelo computer offline</title>\n" +
-      "<style>\n" +
-      "  :root { color-scheme: light dark; }\n" +
-      "  body { margin: 0; min-height: 100vh; display: grid; place-items: center;\n" +
-      "    font: 16px/1.5 system-ui, sans-serif; background: Canvas; color: CanvasText; }\n" +
-      "  main { max-width: 32rem; padding: 2rem; text-align: center; }\n" +
-      "  h1 { font-size: 1.4rem; margin: 0 0 0.5rem; }\n" +
-      "  code { background: color-mix(in srgb, CanvasText 12%, transparent);\n" +
-      "    padding: 0.1rem 0.35rem; border-radius: 0.25rem; }\n" +
-      "  p { margin: 0.5rem 0 0; }\n" +
-      "</style>\n" +
-      "</head>\n" +
-      "<body>\n" +
-      "<main>\n" +
-      "<h1>This Kandelo computer is offline</h1>\n" +
-      "<p>The computer <code>" + safeName + "</code> is not running here.</p>\n" +
-      "<p>Its hosting tab has closed. Open the computer again to start a new one.</p>\n" +
-      "</main>\n" +
-      "</body>\n" +
-      "</html>\n";
-    return new Response(html, {
-      status: 503,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cross-Origin-Embedder-Policy": "require-corp",
-        "Cross-Origin-Resource-Policy": "same-origin",
+  function computerRefusal() {
+    return new Response(
+      "Guest web pages are served from this deployment's preview origin.\n",
+      {
+        status: 404,
+        headers: {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cross-Origin-Embedder-Policy": "require-corp",
+          "Cross-Origin-Resource-Policy": "same-origin",
+        },
       },
-    });
+    );
   }
 
-  // --- Per-instance bridge restoration ---
-  // When the browser terminates and restarts this worker, every record's live
-  // MessagePort is lost. These functions ask the hosting tab to re-establish the
-  // bridge for one specific machine, matched strictly by its SW-minted name.
-
-  // Resolve true once the machine has a live bridge port. Concurrent fetches for
-  // the same machine share a single in-flight need-bridge attempt.
-  function ensureBridge(record) {
-    if (record.bridgePort) return Promise.resolve(true);
-    if (record.bridgeRestorePromise) return record.bridgeRestorePromise;
-    record.bridgeRestorePromise = requestBridgeFromClient(record).then(
-      function (result) {
-        record.bridgeRestorePromise = null;
-        if (result && record.bridgePort) return true;
-        // No live port arrived: decide terminal offline vs transient
-        // reconnecting from the owner's presence before reporting failure.
-        return classifyFailedRestore(record).then(function () { return false; });
-      },
-    ).catch(function () {
-      record.bridgeRestorePromise = null;
-      return false;
-    });
-    return record.bridgeRestorePromise;
-  }
-
-  // Broadcast need-bridge to every window client and accept the first
-  // bridge-restored whose name matches this machine and whose appPrefix and
-  // sessionId match its durable authority. Responses for other machines, or
-  // malformed responses, are dropped without touching this record.
-  function requestBridgeFromClient(record) {
-    return self.clients.matchAll({ type: "window" }).then(function (allClients) {
-      if (allClients.length === 0) return false;
-      return new Promise(function (resolve) {
-        var settled = false;
-        var responsePorts = [];
-        var timeout;
-
-        function cleanup() {
-          responsePorts.forEach(function (port) {
-            port.onmessage = null;
-            port.close();
-          });
-          responsePorts = [];
-        }
-
-        function finish(result) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timeout);
-          cleanup();
-          resolve(result);
-        }
-
-        timeout = setTimeout(function () {
-          finish(false);
-        }, 5000);
-
-        allClients.forEach(function (client) {
-          var ch = new MessageChannel();
-          responsePorts.push(ch.port1);
-          ch.port1.onmessage = function (event) {
-            var data = event.data;
-            var candidatePort = event.ports[0];
-            if (settled) {
-              if (candidatePort && typeof candidatePort.close === "function") {
-                candidatePort.close();
-              }
-              return;
-            }
-            if (!data || data.type !== "bridge-restored") return;
-            var matchesName = data.name === record.name;
-            if (
-              !matchesName ||
-              !record.durableAuthority ||
-              data.appPrefix !== record.durableAuthority.appPrefix ||
-              data.sessionId !== record.durableAuthority.sessionId ||
-              !isBridgeMessagePort(candidatePort)
-            ) {
-              // A same-name response whose prefix/session/port is wrong is a
-              // real scope-config error for the answering tab; a different-name
-              // response simply belongs to another machine.
-              if (matchesName) postInvalidScopeConfig(event.source);
-              if (candidatePort && typeof candidatePort.close === "function") {
-                candidatePort.close();
-              }
-              return;
-            }
-            scheduleBridgeRestoration(record, candidatePort, client.id).then(
-              function (satisfied) {
-                if (satisfied) finish(true);
-              },
-            ).catch(function () {
-              /* the scheduler already closed the rejected port */
-            });
-          };
-          try {
-            client.postMessage({ type: "need-bridge", name: record.name }, [ch.port2]);
-          } catch (_error) {
-            ch.port1.close();
-          }
-        });
+  function serveComputerAddress(request, url) {
+    var name = url.pathname.slice(COMPUTER_ROOT.length + 1).split("/")[0];
+    if (
+      request.mode !== "navigate" ||
+      (request.method !== "GET" && request.method !== "HEAD") ||
+      !(MACHINE_NAME_PATTERN.test(name) || LEGACY_MACHINE_NAME_PATTERN.test(name))
+    ) {
+      return Promise.resolve(computerRefusal());
+    }
+    return fetchWithCoiHeaders(
+      new Request(VIEWER_SHELL_URL, { cache: "no-cache", credentials: "same-origin" }),
+    ).then(function (response) {
+      if (!response.ok) return computerRefusal();
+      var headers = new Headers(response.headers);
+      addDocumentHeaders(headers);
+      return new Response(request.method === "HEAD" ? null : response.body, {
+        status: 200,
+        headers: headers,
       });
-    });
-  }
-
-  // Install a restored port as the machine's live bridge, loading the jar from
-  // its durable authority. The authority revision is unchanged: restoration
-  // re-supplies a lost port, it does not create new durable state. clientId is
-  // the window client that answered need-bridge; recording it as the record's
-  // owningClientId is what lets a restarted-then-closed machine ever go
-  // terminally offline (instance-closing, reconcileOwners, and
-  // classifyFailedRestore all require a known owner). Without it a durable-
-  // restored machine (owningClientId null) is stuck reconnecting forever and
-  // its durable authority never gets garbage-collected.
-  function scheduleBridgeRestoration(record, port, clientId) {
-    return enqueueRecordMutation(record, function () {
-      if (record.bridgePort) {
-        // A concurrent candidate already restored this machine.
-        if (typeof port.close === "function") port.close();
-        return true;
-      }
-      if (!record.durableAuthority) {
-        if (typeof port.close === "function") port.close();
-        return false;
-      }
-      record.cookieJar = cloneCookieJar(record.durableAuthority.cookieJar);
-      record.sessionId = record.durableAuthority.sessionId;
-      initBridgePortFor(record, port);
-      record.owningClientId = clientId || null;
-      record.status = "live";
-      record.liveBridgeEpoch += 1;
-      return true;
-    });
-  }
-
-  // A restarted worker serves a named machine whose live port was lost by
-  // driving the need-bridge handshake; on success the request is served over
-  // the restored bridge, otherwise the machine reports unavailable.
-  function fetchRestoredAppRequest(record, request, url) {
-    return ensureBridge(record).then(function (restored) {
-      if (restored && record.bridgePort) {
-        return handleAppRequest(record, request, url);
-      }
-      return offlineOrUnknownResponse(record.name);
     });
   }
 
@@ -1841,31 +1208,83 @@ if (typeof window !== "undefined") {
   self.addEventListener("fetch", function (event) {
     var url = new URL(event.request.url);
 
-    // Host navigate-away is handled by the page's pagehide -> instance-closing
-    // message (see sw-bridge-fetch.ts), which offlines the machines the tab
-    // owns and notifies viewers. There is no navigation-branch teardown here:
-    // event.clientId is the empty string for a navigation request, so keying a
-    // teardown off it never matched an owning client.
+    if (
+      !isCrossOrigin(url) && url.pathname === BUILD_ID_PATH &&
+      event.request.method === "GET"
+    ) {
+      event.respondWith(new Response(
+        JSON.stringify({ type: "kandelo-build-id", buildId: KANDELO_BUILD_ID }),
+        {
+          headers: {
+            "Cache-Control": "no-store",
+            "Content-Type": "application/json",
+            "Cross-Origin-Resource-Policy": "same-origin",
+          },
+        },
+      ));
+      return;
+    }
 
-    // Group assets have an immutable deployment-local identity. Cache only
-    // their complete native responses before bridge/proxy/header rewriting.
-    if (isScopedLazyVfsRequest(event.request, url)) {
-      // appPrefixReady is a no-op in Task 1; the await keeps the ordering a
-      // Task 2 durable restore will reinstate.
-      event.respondWith(appPrefixReady.then(function () {
-        if (isScopedLazyVfsRequest(event.request, url)) {
-          return fetchScopedLazyVfsRequest(event.request);
-        }
-        return fetchWithCoiHeaders(event.request);
+    // A kernel worker's answer to the credential gate (see credentialGate).
+    if (!isCrossOrigin(url) && isCredentialGateReply(url)) {
+      event.respondWith(answerCredentialGateReply(event));
+      return;
+    }
+
+    var proxyRefusal = proxyDestinationRefusal(event.request, url);
+    if (proxyRefusal) {
+      event.respondWith(proxyRefusal);
+      return;
+    }
+
+    if (!isCrossOrigin(url) && isCredentialRelayUrl(url)) {
+      event.respondWith(fetchGatedThroughCredentialRelay(event, url));
+      return;
+    }
+
+    // A grant's tag is meaningful only on the way to the configured proxy
+    // (or the development relay, above); anywhere else it is refused rather
+    // than sent on.
+    if (
+      event.request.headers.has(CREDENTIAL_GRANT_HEADER) &&
+      !isCorsProxyRequestUrl(url.href)
+    ) {
+      event.respondWith(credentialGate(event, null).then(function (refusal) {
+        return isCrossOrigin(url)
+          ? responseWithHeaders(refusal, corsSafeResponseHeaders(refusal))
+          : refusal;
       }));
       return;
     }
 
-    // Cross-origin requests — route through CORS proxy if available. This runs
-    // before the per-machine dispatch so a cross-origin fetch from an app
-    // viewer is never mistaken for a nameless in-app subresource.
+    // Group assets live at content addresses (vfs-groups/sha256-<manifest
+    // digest>/...), so a cached entry is the bytes its URL names whichever
+    // deployment's page asks for it. Cache only complete native responses,
+    // before bridge/proxy/header rewriting.
+    if (isScopedLazyVfsRequest(event.request, url)) {
+      event.respondWith(fetchScopedLazyVfsRequest(event));
+      return;
+    }
+
+    // Cross-origin requests — route through CORS proxy if available.
     if (isCrossOrigin(url)) {
-      event.respondWith(fetchCrossOrigin(event.request));
+      event.respondWith(fetchCrossOrigin(event));
+      return;
+    }
+
+    // A same-origin proxy (the development relay) is gated like any other;
+    // ordinary traffic to it passes untouched.
+    if (
+      isCorsProxyRequestUrl(url.href) &&
+      (event.request.headers.has(CREDENTIAL_GRANT_HEADER) ||
+        carriesCredentialFields(event.request))
+    ) {
+      event.respondWith(credentialGate(event, corsProxyTargetUrl(url.href)).then(function (gate) {
+        if (gate instanceof Response) return gate;
+        var headers = new Headers(event.request.headers);
+        headers.delete(CREDENTIAL_GRANT_HEADER);
+        return fetchWithCoiHeaders(new Request(event.request, { headers: headers }));
+      }));
       return;
     }
 
@@ -1878,358 +1297,14 @@ if (typeof window !== "undefined") {
       return;
     }
 
-    // Per-machine bridge dispatch. A name in the path addresses a machine
-    // directly; a nameless request from a client already viewing a machine is
-    // attributed to it so the generic bridge can serve it without
-    // app-specific path allowlists.
-    // A name in the path addresses a machine directly. Await the startup scan
-    // so a request that arrives while a restarted worker is still repopulating
-    // its registry sees the restored (reconnecting) record rather than an empty
-    // map. A well-formed but unknown machine never falls back to another.
-    var namedInPath = instanceNameFromPath(url.pathname);
-    if (namedInPath) {
-      event.respondWith(dispatchAppRequest(event, namedInPath, url));
-      return;
-    }
-
-    // A nameless request from a client already viewing a machine is attributed
-    // to it. This fast path uses only this worker's in-memory viewing map.
-    if (event.clientId && clientToInstance.has(event.clientId)) {
-      var record = resolveInstanceForEvent(event, url);
-      if (record) {
-        markViewer(record, event, event.request);
-        event.respondWith(serveViewerRequest(record, event, url));
-        return;
-      }
-    }
-
-    // Defense in depth: any /computer/-namespaced request that reached here
-    // resolved to no live machine — a bare /computer/, an invalid name, or a
-    // stale prefix from a superseded boot. The app shell never lives under
-    // /computer/, so never serve it here: doing so mounts the whole Kandelo app
-    // inside a machine's web-preview iframe, which boots another machine and
-    // another /computer/ iframe, recursing the app into itself (stacked docks).
-    // Return the truthful 503.
-    var appNamespaceBase = SCOPE_PATH + "computer";
     if (
-      url.pathname === appNamespaceBase ||
-      url.pathname === appNamespaceBase + "/" ||
-      url.pathname.indexOf(appNamespaceBase + "/") === 0
+      url.pathname === COMPUTER_ROOT ||
+      url.pathname.indexOf(COMPUTER_ROOT + "/") === 0
     ) {
-      event.respondWith(offlineOrUnknownResponse(namedInPath || ""));
+      event.respondWith(serveComputerAddress(event.request, url));
       return;
     }
 
-    // Browser idle termination loses the viewing map while the document stays
-    // open. Recover from the actual WindowClient URL, never a caller-supplied
-    // referrer. Host-page requests therefore cannot become machine viewers.
-    event.respondWith(serveUnmappedClientRequest(event, url));
+    event.respondWith(fetchWithCoiHeaders(event.request));
   });
-
-  function serveViewerRequest(record, event, url) {
-    if (event.request.method === "GET" || event.request.method === "HEAD") {
-      return redirectIntoApp(record, url);
-    }
-    // WebKit drops request bytes when replaying a synthetic SW 307.
-    // Dispatch writes once, retaining the original unread Request and the
-    // same canonical app path, cookies, and owner reconciliation.
-    return dispatchAppRequest(event, record.name, urlInsideApp(record, url));
-  }
-
-  async function serveUnmappedClientRequest(event, url) {
-    if (event.clientId) {
-      // Looking up a loading WorkerClient can wait for its module imports,
-      // which are themselves waiting on this fetch handler in Firefox.
-      // Only actual windows can recover viewer routing; exclude workers
-      // before lookup so their imports retain the ordinary network path.
-      var windows = await self.clients.matchAll({ type: "window" });
-      var client = windows.find(function (candidate) {
-        return candidate.id === event.clientId;
-      });
-      if (client && client.type === "window") {
-        var clientUrl = new URL(client.url);
-        var name = clientUrl.origin === self.location.origin
-          ? instanceNameFromPath(clientUrl.pathname) : null;
-        if (name) {
-          await appPrefixReady;
-          var record = instances.get(name) || null;
-          if (!record) return offlineOrUnknownResponse(name);
-          clientToInstance.set(event.clientId, name);
-          record.viewerClientIds.add(event.clientId);
-          return serveViewerRequest(record, event, url);
-        }
-      }
-    }
-    return fetchWithCoiHeaders(event.request);
-  }
-
-  function dispatchAppRequest(event, name, url) {
-    return appPrefixReady.then(function () {
-      // Retire crashed owners before either named or client-attributed requests.
-      return reconcileOwners();
-    }).then(function () {
-      var record = instances.get(name) || null;
-      if (!record) return offlineOrUnknownResponse(name);
-      markViewer(record, event, event.request);
-      if (record.bridgePort) return handleAppRequest(record, event.request, url);
-      return fetchRestoredAppRequest(record, event.request, url);
-    });
-  }
-
-  function handleAppRequest(record, request, url) {
-    return (async function () {
-      try {
-        // The session/epoch this request belongs to. If the record's live
-        // bridge switches while the request is in flight (page reload / new
-        // port), we must not inject or store this request's cookies.
-        var reqSessionId = record.sessionId;
-        var reqBridgeEpoch = record.liveBridgeEpoch;
-        // Strip the machine's app prefix so the app server sees the original
-        // path. handleAppRequest is only reached for named-in-path requests, so
-        // the prefix is present, but keep the guard explicit.
-        var hasAppPrefix = url.pathname === appRootPathFor(record) ||
-          url.pathname.indexOf(record.appPrefix) === 0;
-        var appPath = hasAppPrefix
-          ? stripAppPathFor(record, url.pathname)
-          : url.pathname;
-
-        var headers = {};
-        request.headers.forEach(function (value, key) {
-          headers[key] = value;
-        });
-        headers["host"] = url.host;
-        headers["x-forwarded-host"] = url.host;
-        headers["x-forwarded-prefix"] = appRootPathFor(record);
-        headers["x-forwarded-proto"] = url.protocol.replace(":", "");
-        headers["x-forwarded-uri"] = url.pathname + url.search;
-
-        // Inject cookies from this machine's jar. Skip if the record's live
-        // bridge changed out from under this request.
-        var cookiePath = hasAppPrefix
-          ? url.pathname
-          : record.appPrefix.slice(0, -1) + url.pathname;
-        var jarCookies =
-          reqSessionId === record.sessionId &&
-            reqBridgeEpoch === record.liveBridgeEpoch
-            ? getCookiesForPath(record, cookiePath)
-            : "";
-        if (jarCookies) {
-          var existing = headers["cookie"];
-          headers["cookie"] = existing
-            ? existing + "; " + jarCookies
-            : jarCookies;
-        }
-
-        var body = null;
-        if (request.method !== "GET" && request.method !== "HEAD") {
-          var ab = await request.arrayBuffer();
-          if (ab.byteLength > 0) {
-            body = new Uint8Array(ab);
-          }
-        }
-
-        var bridgeResp = await bridgeFetch(record, {
-          method: request.method,
-          url: appPath + url.search,
-          headers: headers,
-          body: body,
-        });
-
-
-        // Store cookies from bridge response into this machine's jar. Only if
-        // the request still belongs to the record's live bridge — an in-flight
-        // response from a superseded port must not pollute the new jar. When the
-        // jar actually changes, persist a new durable authority revision so the
-        // login survives a worker restart; the persist re-checks the epoch and
-        // session at commit time so a superseded write cannot repopulate the
-        // successor's durable jar.
-        var rawSetCookie =
-          bridgeResp.headers["Set-Cookie"] ||
-          bridgeResp.headers["set-cookie"];
-        if (
-          rawSetCookie && reqSessionId === record.sessionId &&
-          reqBridgeEpoch === record.liveBridgeEpoch
-        ) {
-          var jarMutated = storeCookies(
-            record.cookieJar,
-            record.appPrefix,
-            rawSetCookie.split("\n"),
-          );
-          if (jarMutated) {
-            persistBridgeAuthority(record, reqBridgeEpoch, reqSessionId).catch(
-              function () {},
-            );
-          }
-        }
-
-        // Build Response
-        var respHeaders = new Headers();
-        for (var key in bridgeResp.headers) {
-          var lower = key.toLowerCase();
-          if (
-            lower === "transfer-encoding" ||
-            lower === "connection" ||
-            lower === "keep-alive" ||
-            // Never hand Set-Cookie back to the browser. The SW cookie jar
-            // (captured above via storeCookies) is the authoritative store and
-            // replays cookies on outgoing requests. Forwarding Set-Cookie would
-            // let the browser persist Kandelo cookies in its own cookie store,
-            // where they would accumulate across sessions and outlive the
-            // machine instance they belong to.
-            lower === "set-cookie"
-          ) {
-            continue;
-          }
-          respHeaders.set(key, bridgeResp.headers[key]);
-        }
-
-        // Rewrite redirect Location: match protocol to request (avoid mixed
-        // content on HTTPS) and add app prefix if missing.
-        if (bridgeResp.status >= 300 && bridgeResp.status < 400) {
-          var location =
-            bridgeResp.headers["Location"] || bridgeResp.headers["location"];
-          if (location) {
-            try {
-              var locUrl = new URL(location, url.origin);
-              if (locUrl.hostname === url.hostname) {
-                locUrl.protocol = url.protocol;
-                if (!locUrl.pathname.startsWith(record.appPrefix)) {
-                  locUrl.pathname = record.appPrefix.slice(0, -1) +
-                    locUrl.pathname;
-                }
-              }
-              var redirectStatus = bridgeResp.status;
-              if (
-                (redirectStatus === 301 || redirectStatus === 302) &&
-                request.method !== "GET" &&
-                request.method !== "HEAD"
-              ) {
-                redirectStatus = 303;
-              }
-              respHeaders.set("Location", locUrl.toString());
-              addAppIsolationHeaders(respHeaders);
-              return new Response(null, {
-                status: redirectStatus,
-                headers: respHeaders,
-              });
-            } catch (e) {
-              /* leave as-is */
-            }
-          }
-        }
-        rewriteAppUrlHeader(record, respHeaders, "Link", url);
-
-        // COEP/CORP for cross-origin isolation
-        addAppIsolationHeaders(respHeaders);
-
-        var body = bridgeResp.body;
-        if (shouldRewriteAppResponseBody(respHeaders)) {
-          var text = new TextDecoder().decode(body);
-          var rewritten = rewriteSameHostAppUrls(record, text, url);
-          // Inject the blob-iframe interceptor into HTML documents so that
-          // app-created `blob:` iframes (e.g. the WordPress editor canvas)
-          // render as SW-controlled about:srcdoc documents and their
-          // subresource requests stay on the bridge instead of escaping to
-          // the static origin. See injectBlobIframeInterceptor.
-          var contentType = (respHeaders.get("Content-Type") || "").toLowerCase();
-          // An application's CSP owns its script policy. Do not insert an
-          // undeclared inline helper or loosen that policy to accommodate it.
-          if (contentType.indexOf("text/html") === 0 &&
-              !cspGovernsScripts(respHeaders.get("Content-Security-Policy"))) {
-            rewritten = injectBlobIframeInterceptor(rewritten);
-          }
-          if (rewritten !== text) {
-            body = new TextEncoder().encode(rewritten);
-            respHeaders.delete("Content-Length");
-          }
-        }
-
-        return new Response(responseBodyForStatus(bridgeResp.status, body), {
-          status: bridgeResp.status,
-          headers: respHeaders,
-        });
-      } catch (err) {
-        return new Response("Bridge error: " + err, {
-          status: 502,
-          headers: {
-            "Cross-Origin-Embedder-Policy": "require-corp",
-            "Cross-Origin-Resource-Policy": "same-origin",
-          },
-        });
-      }
-    })();
-  }
-
-  function shouldRewriteAppResponseBody(headers) {
-    if (headers.has("Content-Encoding")) return false;
-    var contentType = (headers.get("Content-Type") || "").toLowerCase();
-    return (
-      contentType.indexOf("text/html") === 0 ||
-      contentType.indexOf("text/css") === 0 ||
-      contentType.indexOf("text/javascript") === 0 ||
-      contentType.indexOf("application/javascript") === 0 ||
-      contentType.indexOf("application/x-javascript") === 0 ||
-      contentType.indexOf("application/json") === 0 ||
-      contentType.indexOf("+json") !== -1 ||
-      contentType.indexOf("application/xml") === 0 ||
-      contentType.indexOf("text/xml") === 0 ||
-      contentType.indexOf("+xml") !== -1 ||
-      contentType.indexOf("image/svg+xml") === 0
-    );
-  }
-
-  function rewriteAppUrlHeader(record, headers, name, requestUrl) {
-    var value = headers.get(name);
-    if (!value) return;
-    var rewritten = rewriteSameHostAppUrls(record, value, requestUrl);
-    if (rewritten !== value) {
-      headers.set(name, rewritten);
-    }
-  }
-
-  function rewriteSameHostAppUrls(record, text, requestUrl) {
-    var rootPath = appRootPathFor(record);
-    var publicOrigin = requestUrl.protocol + "//" + requestUrl.host + "/";
-    var publicBase = requestUrl.protocol + "//" + requestUrl.host + rootPath + "/";
-    var hostPattern = escapeRegExp(requestUrl.host);
-    var appPathPattern = escapeRegExp(rootPath.slice(1));
-    // A URL is already under the machine prefix when the prefix is followed by
-    // more path (its slash form), a delimiter that ends the URL token, or end
-    // of text. Matching only "/" or end-of-text re-prefixed a bare prefix like
-    // ".../computer/<name>" (no trailing slash) followed by a quote — which is
-    // exactly WordPress's WP_HOME link — doubling it into
-    // ".../computer/<name>/computer/<name>".
-    var urlEnd = "[?#\"'\\s<>)]";
-    var plain = new RegExp(
-      "http://" + hostPattern + "/(?!" + appPathPattern + "(?:/|$|" + urlEnd + "))",
-      "g",
-    );
-    var escapedAppPathPattern = appPathPattern.replace(/\//g, "\\\\/");
-    var escaped = new RegExp(
-      "http:\\\\/\\\\/" + hostPattern + "\\\\/(?!" + escapedAppPathPattern + "(?:\\\\/|$|" + urlEnd + "))",
-      "g",
-    );
-    var encodedAppPathPattern = appPathPattern.replace(/\//g, "%2F");
-    var encoded = new RegExp(
-      "http%3A%2F%2F" + hostPattern + "%2F(?!" + encodedAppPathPattern + "(?:%2F|$|" + urlEnd + "))",
-      "gi",
-    );
-    return text
-      .replace(plain, publicBase)
-      .replace(escaped, publicBase.replace(/\//g, "\\/"))
-      .replace(encoded, encodeURIComponent(publicBase))
-      .replace(new RegExp("http://" + hostPattern + "/", "g"), publicOrigin)
-      .replace(
-        new RegExp("http:\\\\/\\\\/" + hostPattern + "\\\\/", "g"),
-        publicOrigin.replace(/\//g, "\\/"),
-      )
-      .replace(
-        new RegExp("http%3A%2F%2F" + hostPattern + "%2F", "gi"),
-        encodeURIComponent(publicOrigin),
-      );
-  }
-
-  function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  }
 }

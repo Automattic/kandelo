@@ -50,6 +50,14 @@ policy uses exact origins, not all Spacefast subdomains. The generated bundle
 and temporary static output live under unique gitignored `.context` paths.
 Never publish the repository, tests, keys, `.env` files or `.spacefast` state.
 
+Guest web previews need a second, public Space: pass `--preview-space` with
+its canonical origin. The script builds the app and the preview bundle for
+each other, publishes the preview Space first, and never approves it for the
+proxy. Without it the deployed app refuses to open web previews; never work
+around that by serving guests from the app Space. See the service README's
+[guest preview Space](../../apps/spacefast-cors-proxy/README.md#guest-preview-space)
+section, including the platform behaviors a first deployment must verify.
+
 For a standalone proxy, use the service README's
 [separate-proxy recipe](../../apps/spacefast-cors-proxy/README.md#separate-proxy-site).
 Its existing packager requires explicit approved client origins. Publish its

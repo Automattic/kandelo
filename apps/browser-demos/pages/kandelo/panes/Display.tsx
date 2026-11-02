@@ -1,4 +1,7 @@
-import { beginPreviewNavigation, previewDocumentLoaded, previewRendered } from "./preview-progress";
+import { beginPreviewNavigation, getPreviewProgress, previewDocumentLoaded, previewRendered } from "./preview-progress";
+import { subscribePreviewNavigation } from "./preview-navigation";
+import { PREVIEW_FRAME_ALLOW, PREVIEW_FRAME_SANDBOX } from "../../../lib/preview/protocol";
+import type { PreviewNavigation } from "../../../lib/preview/preview-bridge";
 import { buildPreviewUrl, normalizePreviewPath, relativePathFromHref } from "./preview-url";
 import * as React from "react";
 import { useKernelHost, useWebPreview } from "../kernel-host/react";
@@ -56,13 +59,32 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
   const ready = preview.status === "running";
   const pendingRequests = preview.pendingRequests ?? 0;
   const iframeRef = React.useRef<HTMLIFrameElement | null>(null);
+  // The guest frame is on the preview origin, so its location and document
+  // are unreadable here. Track its URL from the src this pane sets and from
+  // every document navigation the machine's bridge serves.
+  const frameUrlRef = React.useRef(iframeSrc);
+  // A browsing-context name, so a form in this page can POST into the frame.
+  const frameName = `kandelo-preview${React.useId().replace(/[^A-Za-z0-9_-]/g, "")}`;
 
   React.useEffect(() => {
     beginPreviewNavigation(host, preview.initialPath ?? "/");
     setLoading(true);
     setPath(preview.initialPath ?? "/");
-    setIframeSrc(buildPreviewUrl(preview.url, preview.initialPath ?? "/"));
+    const src = buildPreviewUrl(preview.url, preview.initialPath ?? "/");
+    frameUrlRef.current = src;
+    setIframeSrc(src);
   }, [host, preview.url]);
+
+  // Navigation requests name the machine, not this frame: a nested guest
+  // frame or another tab viewing the same machine reports them too. The
+  // frame's own document is the first non-redirect navigation served since
+  // its previous load (a document is requested before its subresources and
+  // nested frames), so that is what its next load event adopts.
+  const navigationsSinceLoad = React.useRef<PreviewNavigation[]>([]);
+  React.useEffect(() => subscribePreviewNavigation(host, (navigation) => {
+    const pending = navigationsSinceLoad.current;
+    if (pending.length < 32) pending.push(navigation);
+  }), [host]);
 
   React.useEffect(() => {
     if (!autoFocus || !ready) return;
@@ -72,35 +94,33 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
     return () => window.cancelAnimationFrame(handle);
   }, [autoFocus, iframeSrc, ready]);
 
-  // Keep the iframe's browsing context alive. Internal navigations are synced
-  // in onLoad, while parent-initiated navigations target the existing frame.
+  // Keep the iframe's browsing context alive: navigations re-target the
+  // existing frame. Assigning `src` navigates even to the same URL (a reload).
   const navigateFrame = React.useCallback((target: string) => {
     const progress = beginPreviewNavigation(host, relativePathFromHref(preview.url, target) ?? "/");
     setLoading(true);
     const frame = iframeRef.current;
-    if (frame?.contentWindow) {
-      try {
-        const current = frame.contentWindow.location.href;
-        if (current === target) {
-          frame.contentWindow.location.reload();
-          return;
-        }
-        if (current.split("#")[0] === target.split("#")[0] && frame.contentDocument?.readyState === "complete") {
-          // Fragment-only navigation reuses the document and has no load event.
-          frame.contentWindow.location.assign(target);
-          progress.http = { state: "not_requested", status: null };
-          progress.documentLoaded = true;
-          setLoading(false);
-          window.requestAnimationFrame(() => window.requestAnimationFrame(() => previewRendered(host, progress)));
-          return;
-        }
-        frame.contentWindow.location.assign(target);
-        return;
-      } catch {
-        // Fall back to updating src for unusual cross-origin or detached cases.
-      }
+    const current = frameUrlRef.current;
+    frameUrlRef.current = target;
+    navigationsSinceLoad.current = [];
+    if (!frame) {
+      setIframeSrc(target);
+      return;
     }
-    setIframeSrc(target);
+    if (target === current && target.includes("#")) {
+      // Assigning the same URL with a fragment only scrolls; reload the
+      // document itself.
+      frame.src = target.split("#")[0]!;
+      return;
+    }
+    frame.src = target;
+    if (target !== current && target.includes("#") && current.split("#")[0] === target.split("#")[0]) {
+      // Fragment-only navigation reuses the document and has no load event.
+      progress.http = { state: "not_requested", status: null };
+      progress.documentLoaded = true;
+      setLoading(false);
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => previewRendered(host, progress)));
+    }
   }, [host, preview.url]);
 
   const [navigationError, setNavigationError] = React.useState<string | null>(null);
@@ -120,46 +140,26 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
     navigateFrame(buildPreviewUrl(preview.url, next));
   }, [host, navigateFrame, preview.url]);
 
-  const navigateAndWait = React.useCallback(async (
-    raw: string,
-    predicate: (document: Document) => boolean,
-    timeoutMs = 120_000,
-  ) => {
-    const next = normalizePreviewPath(raw, preview.url);
-    setPath(next);
-    navigateFrame(buildPreviewUrl(preview.url, next));
-    await waitForFrameDocument(iframeRef, predicate, timeoutMs);
-  }, [navigateFrame, preview.url]);
-
   const reloadPreview = React.useCallback(() => {
-    beginPreviewNavigation(host, path);
-    setLoading(true);
-    const frame = iframeRef.current;
-    if (frame?.contentWindow) {
-      try {
-        frame.contentWindow.location.reload();
-        return;
-      } catch {
-        // Fall through to a best-effort navigation to the synced path.
-      }
-    }
-    navigateFrame(buildPreviewUrl(preview.url, path));
-  }, [host, navigateFrame, path, preview.url]);
+    navigateFrame(frameUrlRef.current);
+  }, [navigateFrame]);
 
-  const syncFromFrame = React.useCallback(() => {
-    const frame = iframeRef.current;
-    if (!frame) return;
-    try {
-      const href = frame.contentWindow?.location.href;
-      if (!href) return;
-      const next = relativePathFromHref(preview.url, href);
-      if (!next) return;
-      setPath(next);
-    } catch {
-      // Cross-origin navigations are not expected for the service bridge,
-      // but ignore them so the preview itself keeps working.
-    }
-  }, [preview.url]);
+  /** The next served navigation that `match` accepts, or a timeout. */
+  const nextNavigation = React.useCallback((
+    match: (navigation: PreviewNavigation) => boolean,
+    timeoutMs = 120_000,
+  ): Promise<PreviewNavigation> => new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      unsubscribe();
+      reject(new Error("Timed out waiting for the web preview"));
+    }, timeoutMs);
+    const unsubscribe = subscribePreviewNavigation(host, (navigation) => {
+      if (!match(navigation)) return;
+      window.clearTimeout(timer);
+      unsubscribe();
+      resolve(navigation);
+    });
+  }), [host]);
 
   const dockControls = React.useMemo(() => (
     <WebPreviewDockControls
@@ -184,34 +184,61 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
     navigate,
     async loginToWordPress(options) {
       if (!ready) throw new Error("Web preview is not ready");
-      const loginPath = options.loginPath ?? "/wp-login.php";
-      const adminPath = options.adminPath ?? "/wp-admin/";
+      const loginPath = normalizePreviewPath(options.loginPath ?? "/wp-login.php", preview.url);
+      const adminPath = normalizePreviewPath(options.adminPath ?? "/wp-admin/", preview.url);
 
-      await navigateAndWait(
-        loginPath,
-        (doc) => isWordPressLoginVisible(doc) || isWordPressAdminVisible(doc),
-      );
-      let doc = frameDocument(iframeRef);
-      if (!doc) throw new Error("WordPress preview is unavailable");
-      if (!isWordPressAdminVisible(doc)) {
-        const userInput = doc.querySelector<HTMLInputElement>("#user_login");
-        const passwordInput = doc.querySelector<HTMLInputElement>("#user_pass");
-        const submit = doc.querySelector<HTMLElement>("#wp-submit");
-        if (!userInput || !passwordInput || !submit) {
-          throw new Error("WordPress login form is not available");
-        }
-        setInputValue(userInput, options.username);
-        setInputValue(passwordInput, options.password);
-        submit.click();
-        await waitForFrameDocument(iframeRef, isWordPressAdminVisible);
+      // Load the login page first: WordPress sets its test cookie there, and
+      // the machine's cookie jar must hold it before the form is posted.
+      const loginPage = nextNavigation((n) => samePath(n.path, loginPath));
+      navigate(loginPath);
+      const loaded = await loginPage;
+      if (loaded.status === null || loaded.status >= 500) {
+        throw new Error(`WordPress login page failed (HTTP ${loaded.status ?? "error"})`);
       }
 
-      doc = frameDocument(iframeRef);
-      if (!doc || !isWordPressAdminVisible(doc)) {
-        await navigateAndWait(adminPath, isWordPressAdminVisible);
+      // The frame is cross-origin, so the page cannot fill its form. It posts
+      // the same fields into the frame by name, as a browser form would.
+      const outcome = nextNavigation((n) =>
+        (samePath(n.path, adminPath) && n.method === "GET") ||
+        (samePath(n.path, loginPath) && n.method === "POST")
+      );
+      setLoading(true);
+      beginPreviewNavigation(host, adminPath);
+      // The post starts a new frame navigation, possibly before the login
+      // page's own load event; the next load belongs to it.
+      navigationsSinceLoad.current = [];
+      const form = document.createElement("form");
+      form.method = "post";
+      form.action = buildPreviewUrl(preview.url, loginPath);
+      form.target = frameName;
+      form.hidden = true;
+      for (const [name, value] of Object.entries({
+        log: options.username,
+        pwd: options.password,
+        "wp-submit": "Log In",
+        redirect_to: buildPreviewUrl(preview.url, adminPath),
+        testcookie: "1",
+      })) {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = name;
+        input.value = value;
+        form.append(input);
+      }
+      document.body.append(form);
+      try {
+        form.submit();
+      } finally {
+        form.remove();
+      }
+      const result = await outcome;
+      // A POST answered in place (200) is WordPress re-rendering the login
+      // form with an error; success redirects to the admin path.
+      if (!samePath(result.path, adminPath) || result.status === null || result.status >= 400) {
+        throw new Error(`WordPress did not accept the login (HTTP ${result.status ?? "error"})`);
       }
     },
-  }), [navigate, navigateAndWait, ready]);
+  }), [frameName, host, navigate, nextNavigation, preview.url, ready]);
 
   return (
     <div className="kdisplay-surface">
@@ -220,22 +247,39 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
         <iframe
           ref={iframeRef}
           className="kweb-frame"
+          name={frameName}
           src={iframeSrc}
           title={preview.label}
+          sandbox={PREVIEW_FRAME_SANDBOX}
+          allow={PREVIEW_FRAME_ALLOW}
+          /* The preview worker lets a navigation whose referrer is a Kandelo
+             page re-target this frame to another machine (this pane opening
+             a new destination); guest pages cannot. */
+          referrerPolicy="origin"
           onLoad={() => {
             setLoading(false);
-            syncFromFrame();
-            const frame = iframeRef.current;
-            try {
-              const href = frame?.contentWindow?.location.href;
-              const loadedPath = href && relativePathFromHref(preview.url, href);
-              if (loadedPath && frame?.contentDocument?.readyState === "complete") {
-                const state = previewDocumentLoaded(host, loadedPath);
-                // Two animation frames allow the newly loaded document a paint
-                // opportunity. This is not application-specific hydration readiness.
-                if (state) window.requestAnimationFrame(() => window.requestAnimationFrame(() => previewRendered(host, state)));
-              }
-            } catch { /* An inaccessible document cannot prove rendered readiness. */ }
+            const served = navigationsSinceLoad.current.find((navigation) =>
+              navigation.status !== null && (navigation.status < 300 || navigation.status >= 400));
+            navigationsSinceLoad.current = [];
+            if (served) {
+              // The bridge sees no fragment; keep the one this pane asked for.
+              const asked = relativePathFromHref(preview.url, frameUrlRef.current);
+              const next = asked && asked.split("#")[0] === served.path ? asked : served.path;
+              setPath(next);
+              frameUrlRef.current = buildPreviewUrl(preview.url, next);
+            }
+            const loadedPath = relativePathFromHref(preview.url, frameUrlRef.current);
+            const progress = getPreviewProgress(host);
+            if (loadedPath && progress) {
+              // The bridge reports paths without the fragment the URL bar asked for.
+              const requested = progress.requestedPath.split("#")[0] === loadedPath.split("#")[0]
+                ? progress.requestedPath
+                : loadedPath;
+              const state = previewDocumentLoaded(host, requested);
+              // Two animation frames allow the newly loaded document a paint
+              // opportunity. This is not application-specific hydration readiness.
+              if (state) window.requestAnimationFrame(() => window.requestAnimationFrame(() => previewRendered(host, state)));
+            }
             if (autoFocus) iframeRef.current?.focus();
           }}
         />
@@ -252,7 +296,9 @@ const WebPreviewPane = React.forwardRef<DisplayHandle, FramebufferProps & {
               ? "web-preview-offline"
               : preview.status === "reconnecting"
                 ? "web-preview-reconnecting"
-                : undefined
+                : preview.status === "error"
+                  ? "web-preview-error"
+                  : undefined
           }
         >
           {preview.message ?? "Starting service"}
@@ -334,52 +380,6 @@ const WebPreviewDockControls: React.FC<{
   );
 };
 
-function frameDocument(ref: React.RefObject<HTMLIFrameElement | null>): Document | null {
-  try {
-    return ref.current?.contentDocument ?? ref.current?.contentWindow?.document ?? null;
-  } catch {
-    return null;
-  }
-}
-
-async function waitForFrameDocument(
-  ref: React.RefObject<HTMLIFrameElement | null>,
-  predicate: (document: Document) => boolean,
-  timeoutMs = 120_000,
-): Promise<void> {
-  const started = performance.now();
-  let lastError = "";
-  while (performance.now() - started < timeoutMs) {
-    const doc = frameDocument(ref);
-    if (doc) {
-      try {
-        if (predicate(doc)) return;
-      } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
-      }
-    }
-    await sleep(100);
-  }
-  throw new Error(lastError || "Timed out waiting for the web preview");
-}
-
-function isWordPressLoginVisible(document: Document): boolean {
-  return document.querySelector("#loginform #user_login") !== null &&
-    document.querySelector("#loginform #user_pass") !== null;
-}
-
-function isWordPressAdminVisible(document: Document): boolean {
-  return document.querySelector("#wpadminbar, #adminmenu") !== null ||
-    document.body?.classList.contains("wp-admin") === true;
-}
-
-function setInputValue(input: HTMLInputElement, value: string): void {
-  input.focus();
-  input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-  input.dispatchEvent(new Event("change", { bubbles: true }));
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
+function samePath(a: string, b: string): boolean {
+  return a.split(/[?#]/)[0] === b.split(/[?#]/)[0];
 }

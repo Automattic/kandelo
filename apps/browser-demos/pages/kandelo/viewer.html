@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kandelo computer</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body { margin: 0; height: 100%; }
+    body { display: flex; flex-direction: column; font: 14px/1.4 system-ui, sans-serif; background: Canvas; color: CanvasText; }
+    .kviewer-bar { display: flex; gap: 0.75rem; align-items: center; padding: 0.4rem 0.75rem; border-bottom: 1px solid color-mix(in srgb, CanvasText 18%, transparent); }
+    .kviewer-bar strong { font-weight: 600; }
+    .kviewer-status { margin-left: auto; color: color-mix(in srgb, CanvasText 65%, transparent); }
+    .kviewer-status.is-error { color: #c0392b; }
+    .kviewer-frame { flex: 1; width: 100%; border: 0; }
+  </style>
+</head>
+<body>
+  <header class="kviewer-bar">
+    <strong>Kandelo</strong>
+    <span class="kviewer-name"></span>
+    <span class="kviewer-status" role="status">Connecting…</span>
+  </header>
+  <script type="module" src="/pages/kandelo/viewer.ts"></script>
+</body>
+</html>

@@ -26,8 +26,20 @@ import {
   BrowserCorsProxy,
   type BrowserCorsProxyConfig,
   type HttpHeaderOccurrence,
+  requestCarriesGrantableCredential,
   validateBrowserCorsProxyConfig,
 } from "./browser-cors-proxy";
+import {
+  CLEARTEXT_CREDENTIAL_REASON,
+  type CredentialAttributionOptions,
+  credentialGrantForRequest,
+  currentWriter,
+  mergeRequestWriter,
+  PROXYLESS_CREDENTIAL_REASON,
+  refuseCredentialRequest,
+  type RequestWriter,
+  UNATTRIBUTED_WRITER,
+} from "./request-attribution";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
@@ -77,6 +89,204 @@ interface TlsConnectionState {
   handshakeDone: boolean;
   /** Error from handshake or fetch */
   error: Error | null;
+  /** Attribution of the guest's ciphertext to the processes that wrote it. */
+  records: TlsRecordWriters;
+  /** The protocol version the engine's ServerHello chose. */
+  serverHello: TlsServerHelloObserver;
+  /** Who wrote each run of `plaintextBuf`, in order, covering all of it. */
+  plaintextWriters: Array<{ bytes: number; writer: RequestWriter }>;
+}
+
+/**
+ * Tracks TLS record framing on the guest's ciphertext so each decrypted
+ * application-data record can be attributed to the processes whose `send`
+ * calls carried it. The engine decrypts records in order and hands the
+ * server side exactly one plaintext chunk per application-data record
+ * (`pollForClientMessages` in packages/registry/openssl/src/tls/1_2), so the
+ * n-th chunk it emits belongs to the n-th application-data record here.
+ */
+export interface TlsRecordWriters {
+  header: Uint8Array;
+  headerBytes: number;
+  /** Payload bytes of the current record still to arrive. */
+  remaining: number;
+  /** Writer of the current record so far. */
+  writer: RequestWriter | undefined;
+  /** Writers of complete application-data records not yet decrypted. */
+  applicationData: RequestWriter[];
+}
+
+const TLS_RECORD_HEADER_BYTES = 5;
+const TLS_APPLICATION_DATA = 23;
+
+/** Exported for tests. */
+export function newTlsRecordWriters(): TlsRecordWriters {
+  return {
+    header: new Uint8Array(TLS_RECORD_HEADER_BYTES),
+    headerBytes: 0,
+    remaining: 0,
+    writer: undefined,
+    applicationData: [],
+  };
+}
+
+/**
+ * The protocol version the engine negotiated, read from the ServerHello it
+ * sends the guest. Record attribution (`TlsRecordWriters`) relies on TLS 1.2
+ * framing: in TLS 1.3 the encrypted handshake also travels in outer
+ * application-data records, so writers would shift by a record. A
+ * connection whose engine chose anything but TLS 1.2, or whose ServerHello
+ * cannot be read, has no attributed requests (fail closed).
+ */
+export interface TlsServerHelloObserver {
+  /** Engine output not yet split into records. */
+  pending: Uint8Array;
+  /** Handshake-record payload so far. */
+  handshake: Uint8Array;
+  /**
+   * The negotiated version (0x0303 is TLS 1.2); undefined until the whole
+   * ServerHello has arrived; null when the output is not a readable one.
+   */
+  version: number | null | undefined;
+}
+
+export const TLS_VERSION_1_2 = 0x0303;
+const TLS_HANDSHAKE = 22;
+const TLS_SERVER_HELLO = 2;
+const TLS_EXTENSION_SUPPORTED_VERSIONS = 0x002b;
+
+/** Exported for tests. */
+export function newTlsServerHelloObserver(): TlsServerHelloObserver {
+  return { pending: new Uint8Array(0), handshake: new Uint8Array(0), version: undefined };
+}
+
+/**
+ * Read the engine's output to the guest until its ServerHello is complete.
+ * Only the first flight is read: what follows the ServerHello is ignored,
+ * and so is anything after the version is known. Exported for tests.
+ */
+export function observeServerRecords(
+  observer: TlsServerHelloObserver,
+  data: Uint8Array,
+): void {
+  if (observer.version !== undefined) return;
+  observer.pending = concatBuffers(observer.pending, data);
+  while (observer.pending.length >= TLS_RECORD_HEADER_BYTES) {
+    const end = TLS_RECORD_HEADER_BYTES +
+      ((observer.pending[3] << 8) | observer.pending[4]);
+    if (observer.pending.length < end) return;
+    if (observer.pending[0] !== TLS_HANDSHAKE) {
+      observer.version = null;
+      break;
+    }
+    observer.handshake = concatBuffers(
+      observer.handshake,
+      observer.pending.subarray(TLS_RECORD_HEADER_BYTES, end),
+    );
+    observer.pending = observer.pending.subarray(end);
+    if (observer.handshake.length < 4) continue;
+    if (observer.handshake[0] !== TLS_SERVER_HELLO) {
+      observer.version = null;
+      break;
+    }
+    const length = (observer.handshake[1] << 16) |
+      (observer.handshake[2] << 8) | observer.handshake[3];
+    if (observer.handshake.length < 4 + length) continue;
+    observer.version = serverHelloVersion(observer.handshake.subarray(4, 4 + length));
+    break;
+  }
+  if (observer.version !== undefined) {
+    observer.pending = new Uint8Array(0);
+    observer.handshake = new Uint8Array(0);
+  }
+}
+
+/**
+ * The version a ServerHello body selects: its supported_versions extension
+ * if present (TLS 1.3, RFC 8446 section 4.2.1), else its legacy version.
+ * Null when the body is malformed.
+ */
+function serverHelloVersion(body: Uint8Array): number | null {
+  // legacy_version, random, session id length.
+  if (body.length < 2 + 32 + 1) return null;
+  const legacyVersion = (body[0] << 8) | body[1];
+  // Session id, cipher suite, compression method.
+  let at = 2 + 32 + 1 + body[2 + 32] + 2 + 1;
+  if (at > body.length) return null;
+  if (at === body.length) return legacyVersion;
+  if (at + 2 > body.length) return null;
+  const end = at + 2 + ((body[at] << 8) | body[at + 1]);
+  if (end !== body.length) return null;
+  at += 2;
+  let version = legacyVersion;
+  while (at < end) {
+    if (at + 4 > end) return null;
+    const type = (body[at] << 8) | body[at + 1];
+    const length = (body[at + 2] << 8) | body[at + 3];
+    at += 4;
+    if (at + length > end) return null;
+    if (type === TLS_EXTENSION_SUPPORTED_VERSIONS) {
+      if (length !== 2) return null;
+      version = (body[at] << 8) | body[at + 1];
+    }
+    at += length;
+  }
+  return version;
+}
+
+/** Attribute `data`, which `writer` wrote, to the records it carries.
+ *  Exported for tests. */
+export function recordCiphertextWriter(
+  records: TlsRecordWriters,
+  data: Uint8Array,
+  writer: RequestWriter,
+): void {
+  let offset = 0;
+  while (offset < data.length) {
+    records.writer = mergeRequestWriter(records.writer, writer);
+    if (records.headerBytes < TLS_RECORD_HEADER_BYTES) {
+      const take = Math.min(
+        TLS_RECORD_HEADER_BYTES - records.headerBytes,
+        data.length - offset,
+      );
+      records.header.set(data.subarray(offset, offset + take), records.headerBytes);
+      records.headerBytes += take;
+      offset += take;
+      if (records.headerBytes < TLS_RECORD_HEADER_BYTES) return;
+      records.remaining = (records.header[3] << 8) | records.header[4];
+    } else {
+      const take = Math.min(records.remaining, data.length - offset);
+      records.remaining -= take;
+      offset += take;
+    }
+    if (records.remaining === 0) {
+      if (records.header[0] === TLS_APPLICATION_DATA) {
+        records.applicationData.push(records.writer);
+      }
+      records.headerBytes = 0;
+      records.writer = undefined;
+    }
+  }
+}
+
+/** Remove the first `length` plaintext bytes' writers and merge them. */
+function takePlaintextWriter(
+  conn: TlsConnectionState,
+  length: number,
+): RequestWriter | undefined {
+  let writer: RequestWriter | undefined;
+  let left = length;
+  while (left > 0 && conn.plaintextWriters.length > 0) {
+    const run = conn.plaintextWriters[0];
+    writer = mergeRequestWriter(writer, run.writer);
+    const take = Math.min(run.bytes, left);
+    run.bytes -= take;
+    left -= take;
+    if (run.bytes === 0) conn.plaintextWriters.shift();
+  }
+  // Record attribution holds only under TLS 1.2 framing.
+  if (conn.serverHello.version !== TLS_VERSION_1_2) return UNATTRIBUTED_WRITER;
+  return left > 0 ? UNATTRIBUTED_WRITER : writer;
 }
 
 type ConnectionState = HttpConnectionState | TlsConnectionState;
@@ -200,18 +410,19 @@ function concatChunks(parts: readonly Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** Decode a `Content-Encoding`-compressed request body to plaintext so the
- *  re-issued fetch() carries an identity-encoded body. git gzip-compresses the
- *  `git-upload-pack` (fetch command) request and sets `Content-Encoding: gzip`;
- *  the browser CORS proxy allow-list does not carry `content-encoding`, so the
- *  faithful pass-through of the compressed body is refused. Decoding here lets
- *  the request traverse the proxy today. Returns null for an identity or
- *  unrecognized encoding, leaving the body and header untouched.
+/** Decode a gzip or deflate request body to plaintext so the re-issued
+ *  fetch() carries an identity-encoded body. Returns null for any other
+ *  encoding, leaving the body and its `Content-Encoding` untouched: those are
+ *  relayed verbatim, as Codex's zstd model turns are (browsers have no zstd
+ *  decoder, and Kandelo never re-encodes a body).
  *
- *  A more faithful alternative — forwarding `Content-Encoding` and the
- *  compressed body verbatim — is the more complete long-term behavior but
- *  requires the dev relay and the upstream CORS proxy to allow-list
- *  `content-encoding` (as they did `git-protocol`). Tracked as future work. */
+ *  WORKAROUND at the WordPress Playground CORS proxy's boundary: git
+ *  gzip-compresses the `git-upload-pack` (fetch command) request and sets
+ *  `Content-Encoding: gzip`, and the Playground proxy, Kandelo's default,
+ *  does not yet allow `Content-Encoding` in its CORS preflight, so relaying
+ *  that request verbatim would fail there. Decoding keeps git working through
+ *  it. Remove this, and relay every encoding verbatim, once the Playground
+ *  proxy allows `Content-Encoding`. */
 async function decodeContentEncodingBody(
   body: Uint8Array,
   encoding: string,
@@ -404,7 +615,7 @@ export interface TlsMitmConnection {
   close(): Promise<void>;
 }
 
-export interface TlsNetworkBackendOptions {
+export interface TlsNetworkBackendOptions extends CredentialAttributionOptions {
   corsProxy?: BrowserCorsProxyConfig;
   onCorsProxyDiagnostic?: (message: string) => void;
   /** Map of in-VFS hostnames → upstream URL. */
@@ -422,6 +633,7 @@ export class TlsNetworkBackend implements NetworkIO {
   private corsProxy: BrowserCorsProxy | undefined;
   private dnsAliases: Record<string, string>;
   private createTlsConnection: () => TlsMitmConnection;
+  private readonly attribution: CredentialAttributionOptions;
 
   // MITM CA state
   private caKeyPair: CryptoKeyPair | null = null;
@@ -436,6 +648,11 @@ export class TlsNetworkBackend implements NetworkIO {
       : new BrowserCorsProxy(corsProxyConfig, options?.onCorsProxyDiagnostic);
     this.dnsAliases = options?.dnsAliases ?? {};
     this.createTlsConnection = options?.createTlsConnection ?? (() => new TLS_1_2_Connection());
+    this.attribution = {
+      currentPid: options?.currentPid,
+      peekCredentialGrantId: options?.peekCredentialGrantId,
+      credentialGrantFor: options?.credentialGrantFor,
+    };
   }
 
   /**
@@ -519,8 +736,11 @@ export class TlsNetworkBackend implements NetworkIO {
     if (!conn) throw new Error("ENOTCONN");
 
     if (conn.kind === "tls") {
-      return this.tlsSend(conn, data);
+      // The kernel is serving the writing process's system call right now;
+      // record it with the grant it holds at this moment.
+      return this.tlsSend(conn, data, currentWriter(this.attribution));
     }
+    // Cleartext is never granted, so its writer does not matter.
     return this.httpSend(conn, data);
   }
 
@@ -570,6 +790,9 @@ export class TlsNetworkBackend implements NetworkIO {
       httpResponsePending: false,
       closed: false,
       error: null,
+      records: newTlsRecordWriters(),
+      serverHello: newTlsServerHelloObserver(),
+      plaintextWriters: [],
     };
     this.connections.set(handle, conn);
 
@@ -581,6 +804,7 @@ export class TlsNetworkBackend implements NetworkIO {
           const { value, done } = await downstreamReader.read();
           if (done) break;
           if (value && value.length > 0) {
+            observeServerRecords(conn.serverHello, value);
             conn.clientDownstreamBuf = concatBuffers(conn.clientDownstreamBuf, value);
             if (value.length) notifyReadiness(conn, 0);
           }
@@ -604,8 +828,12 @@ export class TlsNetworkBackend implements NetworkIO {
         while (true) {
           const { value, done } = await upstreamReader.read();
           if (done) break;
+          // One chunk per application-data record, empty ones included, so
+          // every chunk consumes its record's writer.
+          const writer = conn.records.applicationData.shift() ?? UNATTRIBUTED_WRITER;
           if (value && value.length > 0) {
             conn.plaintextBuf = concatBuffers(conn.plaintextBuf, value);
+            conn.plaintextWriters.push({ bytes: value.length, writer });
             this.tryProcessHttpRequest(conn);
           }
         }
@@ -655,7 +883,7 @@ export class TlsNetworkBackend implements NetworkIO {
     });
   }
 
-  private tlsSend(conn: TlsConnectionState, data: Uint8Array): number {
+  private tlsSend(conn: TlsConnectionState, data: Uint8Array, writer: RequestWriter): number {
     if (conn.closed && !conn.error) {
       // Connection closed cleanly (e.g. SSL_shutdown) — silently accept
       return data.length;
@@ -663,6 +891,9 @@ export class TlsNetworkBackend implements NetworkIO {
     if (conn.error) {
       throw conn.error;
     }
+
+    // Attribute before the engine can see the bytes: it decrypts later.
+    recordCiphertextWriter(conn.records, data, writer);
 
     // Write encrypted data from program into TLS engine's client upstream.
     // The write is queued in the stream's internal buffer and processed
@@ -739,6 +970,7 @@ export class TlsNetworkBackend implements NetworkIO {
 
     // Consume exactly this request from the plaintext buffer.
     conn.plaintextBuf = conn.plaintextBuf.subarray(totalRequestLen);
+    const writer = takePlaintextWriter(conn, totalRequestLen);
 
     const host = lastHeaderValue(headers, "host") || conn.hostname;
     const upstreamUrl = `https://${host}${path}`;
@@ -754,8 +986,9 @@ export class TlsNetworkBackend implements NetworkIO {
     (async () => {
       let responseStarted = false;
       try {
-        // Decode a compressed request body to identity so it can traverse the
-        // proxy, and drop the now-inaccurate Content-Encoding from the headers.
+        // Decode a gzip/deflate request body to identity (see
+        // decodeContentEncodingBody) and drop the now-inaccurate
+        // Content-Encoding. Any other encoding goes out byte-for-byte.
         let outgoingBody = fetchBody;
         let outgoingHeaders = browserHeaders;
         if (fetchBody && contentEncoding !== undefined) {
@@ -770,6 +1003,17 @@ export class TlsNetworkBackend implements NetworkIO {
         const requestBody = method !== "GET" && method !== "HEAD"
           ? outgoingBody
           : undefined;
+        // Without a proxy there is nothing to carry the grant's opt-in and
+        // tag, so credentials are refused here rather than sent directly.
+        if (!this.corsProxy) {
+          refuseCredentialRequest(method, upstreamUrl, outgoingHeaders, PROXYLESS_CREDENTIAL_REASON);
+        }
+        // Decided now, at dispatch, outside any kernel entry: this runs on
+        // the engine's decrypt continuation, never inside host_net_send.
+        // Only a request that carries a grantable credential asks.
+        const grant = this.corsProxy && requestCarriesGrantableCredential(outgoingHeaders)
+          ? await credentialGrantForRequest(this.attribution, writer, upstreamUrl)
+          : null;
         const response = this.corsProxy
           ? await this.corsProxy.fetch({
             method,
@@ -779,7 +1023,7 @@ export class TlsNetworkBackend implements NetworkIO {
             // judges the request the guest actually made.
             bodyPresent: outgoingBody !== undefined,
             targetUrl: upstreamUrl,
-          })
+          }, undefined, grant ?? undefined)
           : await fetch(url, {
             method,
             headers: headersFromOccurrences(outgoingHeaders),
@@ -882,6 +1126,10 @@ export class TlsNetworkBackend implements NetworkIO {
     const generation = ++conn.requestGeneration;
     const doFetch = async () => {
       try {
+        // The guest wrote this request in cleartext, so no grant covers it,
+        // even when an HTTPS alias makes the upstream URL HTTPS: credentials
+        // are refused with or without a proxy.
+        refuseCredentialRequest(method, upstreamUrl, browserHeaders, CLEARTEXT_CREDENTIAL_REASON);
         const response = this.corsProxy
           ? await this.corsProxy.fetch({
             method,

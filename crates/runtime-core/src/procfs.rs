@@ -836,7 +836,12 @@ pub fn validate_entry(proc: &Process, entry: &ProcfsEntry) -> Result<(), Errno> 
 /// asking a host (the in-kernel filesystems), and a host-supplied program --
 /// which never had a name in the namespace -- carries it from the moment it is
 /// attached. `ENOENT` for a process with no executable attached.
-fn exe_link_target(proc: &Process) -> Result<Vec<u8>, Errno> {
+/// The target `/proc/<pid>/exe` reads: the path the image was executed
+/// through, as the exec or attach resolved it (symlinks followed), with
+/// ` (deleted)` when the file has no names left. ENOENT when no executable is
+/// attached. The host reads it through `kernel_get_exe_path` to learn which
+/// program a process runs without resolving a guest path itself.
+pub fn exe_link_target(proc: &Process) -> Result<Vec<u8>, Errno> {
     let exe = proc.exe.ok_or(Errno::ENOENT)?;
     let ofd = proc.ofd_table.get(exe.0).ok_or(Errno::ENOENT)?;
     let mut target = ofd.path.clone();
@@ -1960,5 +1965,39 @@ mod tests {
             WRITEBACK_LOSS_RECORD_CAPACITY,
             "the report must list exactly the records it says it kept"
         );
+    }
+
+    /// `kernel_get_exe_path` (crates/kernel/src/wasm_api.rs) answers a live
+    /// process with `exe_link_target` copied by `copy_complete_bytes`. Pin
+    /// both halves of that answer: `ENOENT` when nothing is attached, the
+    /// resolved path when something is, and the zero-capacity length query
+    /// and complete-or-`ERANGE` copy.
+    #[test]
+    fn exe_path_is_enoent_unattached_and_copies_completely_or_erange() {
+        let mut table = crate::process_table::ProcessTable::new();
+        let pid = table.create_process().unwrap();
+        let proc = table.get_mut(pid).unwrap();
+        assert_eq!(exe_link_target(proc), Err(Errno::ENOENT));
+        // An exe reference whose description is gone is not an attached image.
+        proc.exe = Some(crate::fd::OpenFileDescRef(9_999));
+        assert_eq!(exe_link_target(proc), Err(Errno::ENOENT));
+
+        let path = b"/usr/bin/credprog";
+        let idx = proc
+            .ofd_table
+            .create(crate::ofd::FileType::Regular, 0, -1, path.to_vec());
+        proc.exe = Some(crate::fd::OpenFileDescRef(idx));
+        let target = exe_link_target(proc).unwrap();
+        assert_eq!(target, path);
+
+        let copy = |buf: &mut [u8], len: u32| unsafe {
+            crate::complete_copy::copy_complete_bytes(&target, buf.as_mut_ptr(), len)
+        };
+        let mut buf = [0xAAu8; 32];
+        assert_eq!(copy(&mut buf, 0), path.len() as i32);
+        assert_eq!(copy(&mut buf, path.len() as u32 - 1), -(Errno::ERANGE as i32));
+        assert_eq!(buf, [0xAAu8; 32], "a refused copy writes nothing");
+        assert_eq!(copy(&mut buf, path.len() as u32), path.len() as i32);
+        assert_eq!(&buf[..path.len()], path);
     }
 }

@@ -1,0 +1,40 @@
+kind = "program"
+name = "codex"
+version = "0.163.0"
+kernel_abi = 55
+arches = ["wasm32"]
+depends_on = ["openssl@3.3.2"]
+
+[source]
+url = "https://github.com/openai/codex/archive/refs/tags/rust-v0.163.0.tar.gz"
+sha256 = "5990ddb133184ce5e470c741d14f1eeb24a0b6cd36685ef78fb772cf83cab7fc"
+provider = "archive"
+
+[license]
+spdx = "Apache-2.0"
+url = "https://github.com/openai/codex/blob/rust-v0.163.0/LICENSE"
+
+[build]
+script_path = "packages/registry/codex/build-codex.sh"
+
+[[outputs]]
+name = "codex"
+wasm = "codex.wasm"
+
+[[runtime_files]]
+artifact = "config.toml"
+guest_path = "/etc/codex/config.toml"
+
+[[runtime_files]]
+artifact = "credential-requests.json"
+guest_path = "/etc/kandelo/credential-requests.d/codex.json"
+
+[[host_tools]]
+name = "cargo"
+version_constraint = ">=1.95.0"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "llvm-strip"
+version_constraint = ">=21.1.7"
+install_hints = { darwin = "enter scripts/dev-shell.sh", linux = "enter scripts/dev-shell.sh" }

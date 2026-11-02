@@ -5,7 +5,7 @@ import {
   readWasmImportDescriptors,
 } from "./constants";
 
-interface RegisteredModuleReflection {
+export interface RegisteredModuleReflection {
   readonly imports: readonly DecodedWasmImportDescriptor[];
   readonly exports: readonly DecodedWasmExportDescriptor[];
 }
@@ -35,14 +35,25 @@ export function registerWasmModuleReflection(
         bytes.byteOffset + bytes.byteLength,
       ) as ArrayBuffer
     : bytes;
+  registerWasmModuleReflectionData(module, {
+    imports: readWasmImportDescriptors(exactBytes),
+    exports: readWasmExportDescriptors(exactBytes),
+  });
+}
+
+/** Register exact descriptors prepared by the process owner for a pthread. */
+export function registerWasmModuleReflectionData(
+  module: WebAssembly.Module,
+  reflection: RegisteredModuleReflection,
+): void {
   registeredReflection.set(module, {
     imports: Object.freeze(
-      readWasmImportDescriptors(exactBytes).map((descriptor) =>
+      reflection.imports.map((descriptor) =>
         Object.freeze({ ...descriptor })
       ),
     ),
     exports: Object.freeze(
-      readWasmExportDescriptors(exactBytes).map((descriptor) =>
+      reflection.exports.map((descriptor) =>
         Object.freeze({ ...descriptor })
       ),
     ),

@@ -44,11 +44,15 @@ const FORBIDDEN_WORKER_MEMBERS = new Set([
 // public ingress: `configureRootfsOverlayFromImage` calls
 // `configureRootfsOverlay`, `readRootfsFileWithRetry` calls
 // `rootfsReadFile`, and `readNamespaceFileWithRetry` calls
-// `rootfsInspectFile` through the same entry-gated retry path. The last test
-// below pins the declarations, so a helper cannot join this list without
-// living where both entries share it.
+// `rootfsInspectFile` through the same entry-gated retry path.
+// `createCredentialLaunchPolicy` reads declarations through
+// `rootfsReadDirectory` and `readNamespaceFileWithRetry`, and the policy it
+// returns calls only the public grant, executable-path, executable-identity
+// and process-table queries. The last test below pins the declarations, so
+// a helper cannot join this list without living where both entries share it.
 const REVIEWED_KERNEL_WORKER_HELPERS = new Set([
   "configureRootfsOverlayFromImage",
+  "createCredentialLaunchPolicy",
   "readRootfsFileWithRetry",
   "readNamespaceFileWithRetry",
 ]);

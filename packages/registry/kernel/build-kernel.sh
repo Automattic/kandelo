@@ -73,8 +73,11 @@ wasm_require_exports "$OUT" \
     kernel_exec_target_read \
     kernel_exec_target_size \
     kernel_fork_process \
+    kernel_get_credential_grant \
     kernel_get_cwd \
     kernel_get_dirfd_path \
+    kernel_get_exe_path \
+    kernel_get_exe_stat \
     kernel_get_fd_path \
     kernel_get_parent_pid \
     kernel_get_process_exit_signal \
@@ -121,6 +124,7 @@ wasm_require_exports "$OUT" \
     kernel_reap_exited_child \
     kernel_remove_process \
     kernel_reset_tcp_connection \
+    kernel_set_credential_grant \
     kernel_set_current_tid \
     kernel_set_cwd \
     kernel_set_main_channel_addr \

@@ -1,7 +1,7 @@
 import type { BrowserKernel } from "@host/browser-kernel-host";
 import type { LiveKernelHost, WebPreviewState, WebPreviewTarget } from "../../../../../web-libs/kandelo-session/src/kernel-host";
-import { setupServiceWorkerFetchBridge } from "../../../lib/init/sw-bridge-fetch";
-import { observePreviewRequest } from "../panes/preview-progress";
+import type { PreviewBridgeHost } from "../../../lib/preview/preview-bridge";
+import { openMachinePreview } from "./machine-preview";
 
 /** A boot-scoped preview connection; changing destinations retires its bridge. */
 export class WebPreviewConnection {
@@ -11,7 +11,7 @@ export class WebPreviewConnection {
   private network = false;
   private pendingNetwork = false;
   constructor(private host: LiveKernelHost, private kernel: BrowserKernel,
-    private swUrl: string, private scope: string, private isCurrent: () => boolean) {}
+    private isCurrent: () => boolean) {}
 
   async open(target: WebPreviewTarget): Promise<void> {
     const hostname = target.hostname;
@@ -23,7 +23,7 @@ export class WebPreviewConnection {
     const current = ++this.sequence;
     this.pendingNetwork = !local;
     const active = () => this.isCurrent() && this.sequence === current;
-    let preparedBridge: Awaited<ReturnType<typeof setupServiceWorkerFetchBridge>> | undefined;
+    let preparedBridge: PreviewBridgeHost | undefined;
     try {
       // Keep the working page until the next destination has answered.
       const response = await this.kernel.fetchInKernel(target.port, {
@@ -31,18 +31,19 @@ export class WebPreviewConnection {
       }, { hostname: local ? undefined : hostname, timeoutMs: 90_000, maxResponseBytes: 64 * 1024 * 1024 });
       if (!active()) throw new Error("Web preview connection was replaced");
       if (response.status >= 500) throw new Error(`Web server returned HTTP ${response.status}`);
-      preparedBridge = await setupServiceWorkerFetchBridge(this.swUrl, this.scope, this.kernel, target.port, crypto.randomUUID(), {
+      preparedBridge = await openMachinePreview(this.host, this.kernel, {
+        port: target.port,
         hostname: local ? undefined : hostname,
         timeoutMs: 90_000,
-        onRequestStart: request => active() ? observePreviewRequest(this.host, request.url) : undefined,
-        onPendingRequests: count => { if (active()) this.host.setWebPreviewPendingRequests(count); },
+        isCurrent: active,
       });
       if (!active()) throw new Error("Web preview connection was replaced");
       if (this.original === undefined) this.original = this.host.getWebPreview();
       this.disposeBridge?.();
-      this.disposeBridge = preparedBridge.dispose;
+      const bridge = preparedBridge;
+      this.disposeBridge = () => bridge.dispose();
       this.network = !local;
-      this.host.setWebPreview({ label: target.label ?? `${hostname}:${target.port}`, url: preparedBridge.appPrefix,
+      this.host.setWebPreview({ label: target.label ?? `${hostname}:${target.port}`, url: bridge.url, viewerUrl: bridge.viewerUrl,
         destination: { hostname, port: target.port }, initialPath: path, port: local ? target.port : undefined, status: "running" });
       preparedBridge = undefined;
     } finally {

@@ -1,0 +1,285 @@
+# Codex port
+
+This recipe builds OpenAI's Codex CLI 0.163.0 for Kandelo's full-`std`
+Rust target. The upstream source archive and Cargo dependencies are
+pinned. The SDK retains standard-library bitcode for the upstream
+release profile's link-time optimization. Packaging removes DWARF debug
+sections before fork instrumentation, retaining the compiler metadata
+and function names that stage needs. The normal post-instrumentation
+optimization removes function names from the final artifact; named
+diagnostic builds require the instrumenter's `--keep-names`. Rust build
+scripts use the SDK's target pkg-config wrapper. The locked `lzma-sys`
+and `bzip2-sys` crates compile their bundled C sources, rather than
+selecting native host libraries through pkg-config. It uses the SDK's
+libc 0.2.186 fork and the locked `nix` versions; it does not downgrade
+dependencies or change the target's identity to Linux.
+
+The full CLI builds through the package resolver, fork instrumentation,
+and ABI admission. `--help`, `--version`, and unauthenticated login
+status have run on the Node host. A real Codex exec session has also
+completed a model/tool round trip against a guest-local HTTP fixture:
+Codex executed a shell command, returned its actual output, and
+processed the next model response. In the canonical browser shell, Codex
+is a lazy program: the first execution fetches it. `--help`,
+`--version`, and the interactive terminal interface started with
+`codex --no-daemon` run in Chromium, Firefox, and WebKit; the interface
+reaches upstream's sign-in screen and accepts keyboard input.
+A ChatGPT account signed in with device-code login and completed turns
+that ran shell tools through the local development server on
+2026-10-30. The shared runtime
+prepares compact pthread artifact metadata once per process image,
+avoiding another full executable copy and hash in every thread.
+
+Codex calls OpenSSL from several tokio worker threads. Kandelo's OpenSSL
+package therefore keeps OpenSSL's pthread support; a `no-threads` build
+replaced its locks with single-thread stubs, and the interactive
+interface corrupted the heap while decoding keys concurrently. The
+OpenSSL package test `test/threads.test.ts` covers that use.
+
+## System defaults
+
+The package installs `/etc/codex/config.toml` (`system-config.toml`),
+which is upstream's system configuration layer. A user's
+`~/.codex/config.toml`, profiles, and command-line options override it.
+It sets two defaults, both because this build has no
+`codex-code-mode-host`, a JavaScript host built on Rust bindings to
+native V8, which does not target WebAssembly:
+
+- `features.daemon_auto_start = false`. Upstream's shared background
+  server installs a complete managed Codex package
+  (`codex-package.json`, `codex-code-mode-host`, and a bundled `rg`
+  under `codex-path/`), which this recipe does not produce. Without this
+  default, plain `codex` reports upstream's error, "this CLI has no
+  complete local package", and advises `--no-daemon`. The setting
+  selects the same in-process server.
+- `features.code_mode.direct_only_tool_namespaces = ["functions"]`.
+  With a ChatGPT account, the server's model catalog replaces the one
+  bundled with Codex and rejects gpt-5.5 ("not supported when using
+  Codex with a ChatGPT account"). Every model it accepts is
+  `code_mode_only`: by default every tool call, including shell
+  commands, runs as JavaScript in the code-mode host and fails closed
+  without it (`failed to spawn code-mode host`). This upstream setting
+  keeps the built-in tool namespace (shell commands, `exec`,
+  `apply_patch`) direct for those models, so they run on Kandelo. A
+  signed-in ChatGPT turn with gpt-6.1-sol ran shell tools this way on
+  2026-10-30. Code that a model routes through other namespaces still
+  needs the code-mode host and reports its absence.
+
+The package does not supply a substitute code-mode host, fake the
+managed package files, or patch Codex's selection logic.
+
+The SDK fixes apply to Rust programs generally: descriptor cloning uses
+`F_DUPFD_CLOEXEC`, file locking selects the existing Unix `flock`
+backend, and signal/pthread/semaphore structures match Kandelo’s
+installed C headers. Lock ownership is released when the final
+descriptor for an open file description closes. These fixes belong to
+the SDK/kernel, rather than Codex dependency patches. See [Rust target
+support](../../../docs/rust-target.md).
+
+## Portability patches
+
+The patches add Kandelo to platform selectors in existing Rust backends:
+
+| Crates | Platform contract |
+| --- | --- |
+| `getrandom`, `ring`, `errno`, `nix` | musl errno definitions and Kandelo's `getrandom` function |
+| `mio` | epoll, eventfd, and Unix file descriptors |
+| `tokio`, `tokio-util` | Unix threads, sockets, signals, and peer credentials on a Wasm target |
+| `reqwest`, `opentelemetry-http` | socket-based HTTP and blocking requests rather than browser JavaScript imports |
+| `chrono`, `time`, `age`, `opentelemetry`, `tracing-opentelemetry`, `jsonwebtoken` | Unix/system clocks rather than browser JavaScript clocks |
+| `whoami` | Unix passwd, hostname, and uname APIs, with Kandelo reported as its own platform |
+| `webbrowser` | Unix executable discovery and launch; no wasm-bindgen window imports |
+| `dirs` | the existing Unix/XDG directory backend rather than browser-only directory discovery |
+| `socket2` | musl message-header field types and TCP socket-option bindings |
+| `parking_lot_core` | field assignment for the padded wasm32 musl time64 `timespec` |
+| `rustix` | libc-backed epoll/eventfd, musl ioctl argument type, and exclusion of an unavailable non-Linux fallocate flag |
+| `wayland-backend` | the existing epoll backend for Unix sockets |
+| `backtrace` | the upstream unsupported backend, matching the SDK's documented Wasm stack-introspection boundary |
+
+These selectors do not add kernel features. Unsupported operations
+retain the platform's actual errors. Mio uses the generic Unix address
+path; the SDK does not expose Rust's Linux-specific abstract-address
+extension. Rustix's epoll and eventfd support calls libc directly; it
+does not select the Linux raw-syscall backend. Kandelo's epoll record is
+16 bytes on both architectures, with eight-byte-aligned event data.
+
+The Codex source patch enables its POSIX process hardening on Kandelo:
+disable core dumps with `setrlimit` and remove loader-injection
+environment variables. It also makes that Unix helper's failure exit
+code available under the same `unix` condition as the helper itself. It
+does not bypass hardening or pretend Kandelo implements Linux `prctl` or
+`ptrace`. The core crate also uses a compiler recursion limit of 256,
+matching the existing TUI limit, to compile nested async tool-handler
+layouts on wasm32.
+
+## Platform gaps
+
+Guest stack backtraces are unavailable: WebAssembly does not expose its
+engine call frames to guest code. The standalone `backtrace` crate
+selects its upstream unsupported backend, just as the SDK's
+standard-library overlay does; it captures no frames or symbols. This
+does not introduce libunwind stubs. See [Rust target
+boundaries](../../../docs/rust-target.md#documented-boundaries).
+
+Kandelo currently returns `ENOSYS` for inotify. The locked `notify`
+crate selects its upstream `PollWatcher` on Kandelo, so filesystem
+monitoring uses polling. Implementing kernel filesystem notifications
+and exposing them through libc would allow an event-driven watcher
+without changing Codex itself.
+
+Upstream Codex selects its command-policy sandbox only on Linux, macOS,
+or Windows. It has no Kandelo sandbox backend. Per-command filesystem
+and network restrictions inside a Kandelo machine would need a platform
+policy interface and a corresponding Codex backend; this port does not
+claim those restrictions or select another OS's sandbox.
+
+## Credential request declaration
+
+The package also installs
+`/etc/kandelo/credential-requests.d/codex.json`
+(`credential-requests.json`, mode 0644). It declares that
+`/usr/bin/codex`, titled "Codex", sends account credentials to exactly
+three HTTPS origins, `https://auth.openai.com`, `https://chatgpt.com`,
+and `https://api.openai.com`, and that its launch waits for the user's
+answer (`"launch": "wait"`). It is the declaration the platform's
+credential prompt reads; a program that declares nothing is never
+offered credentials. The path is the real file, not the `/bin/codex`
+symlink.
+
+The declaration only names who may receive credentials; it grants
+nothing by itself. The shell image builder validates it with
+`parseCredentialRequests` (`host/src/credential-requests.ts`), so a
+malformed declaration fails the image build, and each kernel worker
+reads it once at boot (a malformed one fails the boot). When a process
+starts `/usr/bin/codex`, through the symlink or not, the host asks its
+`onCredentialRequest` handler whether that one process may send
+credentials, and holds Codex's first instruction until the answer. A
+declined request, or a host with no handler, still starts Codex, without
+a grant. The browser app asks in its own dialog, "Codex wants to use
+your sign-in credentials", listing the three origins, the CORS proxy
+or development credential relay their requests pass through (whose
+operator can read the credentials), `/usr/bin/codex`, and where the
+machine's image came from, with a warning when
+`/usr/bin/codex` changed after the machine started; the choices are
+"Allow for this process" and "Don't allow" (see [the
+prompt](../../../docs/browser-support.md#per-process-credential-grants)).
+Every Codex process asks again; no allow is remembered (the only
+remembered answer is "Don't allow, and stop asking for this machine",
+for the machine's life, in memory). With a grant, the
+browser's guest network backend lets that one Codex process's
+`Authorization` and `ChatGPT-Account-ID` through to the three declared
+origins, tagged for the service worker; any other process, including a
+child Codex starts or one writing to a socket Codex opened, is refused.
+See [credential
+grants](../../../docs/architecture.md#credential-grants). The
+development credential relay's origin list is configured separately and
+is not derived from this file.
+
+## Networking boundaries
+
+The browser host's existing TLS/fetch bridge transports HTTP(S), rather
+than providing arbitrary external TCP or WebSocket forwarding. HTTP(S)
+requests in the default browser app use its configured CORS relay.
+Account traffic depends on that relay's behavior and trust model. TCP
+keepalive options are represented by the kernel but do not currently
+send keepalive probes. Neither behavior is changed or hidden by this
+package.
+
+The default proxy profile is anonymous: it rejects credential fields
+such as `Authorization` and rejects unsupported application headers on
+body-bearing requests. It lists Codex's non-credential request headers,
+and a granted Codex process's credentials are routed with the proxy's
+opt-in and a grant tag (see [per-process credential
+grants](../../../docs/browser-support.md#per-process-credential-grants)).
+The app's service worker verifies that tag with the kernel worker and
+removes it before the request leaves the browser.
+
+Through the default Playground proxy, browser model requests still fail
+even after "Allow for this process": its preflight does not allow
+Codex's headers yet. The Spacefast proxy (`apps/spacefast-cors-proxy`)
+allows them and relays the response fields Codex reads, and Codex's
+device-code sign-in completes through a deployed one, but `chatgpt.com`
+refuses that proxy's outgoing connections (a Cloudflare address), so
+Codex then stops at "workspace routing discovery failed". The
+Playground proxy's outgoing addresses reach `chatgpt.com`. Both proxies
+also have hosting boundaries that cut a long streamed model turn; they
+belong to the hosting platforms, not the proxy code:
+
+- Spacefast Functions stop a request 30 seconds after dispatching it,
+  and the limit bounds the whole streamed response, so a model turn that
+  streams longer is cut, and Codex's retry meets the same limit (read
+  from Spacefast's runtime source, not measured live).
+- The Playground proxy on WP Cloud buffered responses in a 2026-10-27
+  probe: a streamed response arrived only when it completed, and a
+  150-second response got `504` at 120 seconds.
+
+On a loopback development server (`./run.sh browser`), requests to the
+three origins go to a local [development credential
+relay](../../../docs/browser-support.md#development-credential-relay)
+instead of the public proxy. It has no approval page of its own: the
+per-process grant is its only permission. The relay carries a credential
+only for a request that passed the service worker's grant check, and
+forwards only to the three OpenAI HTTPS origins. A process that was not
+granted is refused before its request reaches the relay. A real ChatGPT
+subscription has signed in and run turns this way (2026-10-30); the
+same flow through a deployed CORS proxy has not been verified yet.
+
+What Codex 0.163.0 sends, and how the browser bridge answers, was
+measured against local mock servers in ChatGPT sign-in mode (no real
+account):
+
+- **WebSocket first, HTTPS after.** Codex's built-in OpenAI provider
+  opens a WebSocket to `.../backend-api/codex/responses` before its
+  first model request in every session, and no setting turns that off in
+  sign-in mode. The browser bridge carries HTTP requests only, so
+  Kandelo answers the handshake with `502 Bad Gateway`, the truthful
+  answer: the bridge cannot open that connection. Codex treats any
+  answer other than `426 Upgrade Required` as a failure worth retrying,
+  retries five times with backoff, and then uses HTTPS with server-sent
+  events for the rest of the session. Against a mock that refused the
+  handshake, that cost about 9.4 seconds once per session, and Codex
+  showed `Reconnecting... n/5` messages and
+  `Falling back from WebSockets to HTTPS transport.` Each attempt
+  carries `Authorization`, so each is refused before it leaves the
+  browser unless the process holds a grant, and refused with `502`
+  either way.
+- **Compressed model requests.** Codex compresses every signed-in model
+  turn with zstd (`Content-Encoding: zstd`; its
+  `enable_request_compression` feature is on by default). Kandelo relays
+  the compressed bytes and the field unchanged; it never decodes or
+  re-encodes them, and the proxy must relay them the same way. The
+  largest body in ten tool turns, up to 100 KB of tool output each, was
+  118 KB compressed (253 KB decoded), well under the proxies' 1 MiB
+  request limit. The body carries the whole conversation every time, so
+  it grows with the session.
+- **Credentials in request bodies.** The device-code, code-exchange and
+  token-refresh requests to `auth.openai.com` carry the authorization
+  code or refresh token in their bodies and send no credential field. A
+  body is ordinary data, relayed like any other request's: the
+  credential grant governs only the credential request fields
+  (`Authorization`, `ChatGPT-Account-ID`), so these requests need no
+  grant.
+- **One non-turn call is refused.** Codex's user-settings request
+  (`GET .../wham/settings/user`) sends `Cache-Control`, which the
+  browser profile does not relay (relaying it would break ordinary GETs
+  through the default proxy). It fails visibly, naming the field; model
+  turns do not need it.
+
+To sign in from a local development server, run
+`codex login --device-auth` in the browser machine. The app asks "Codex
+wants to use your sign-in credentials"; choose "Allow for this process".
+Then complete the displayed URL and code in a host browser; Codex
+finishes signing in on its own. Every later `codex` process asks again.
+Declining still starts Codex, but every request it sends with
+credentials fails. Device-code login must be enabled for the user's
+account or workspace. Codex's browser sign-in redirects to
+`http://127.0.0.1:1455/auth/callback`, a port of the user's computer
+that a browser machine cannot listen on, so it does not complete in a
+browser machine.
+
+Signing in does not copy host credentials. See [OpenAI
+authentication](https://learn.chatgpt.com/docs/auth). This recipe does
+not remove Codex headers or weaken the default proxy profile. Opening a
+login URL uses the Unix browser launcher: a guest browser executable or
+an explicit platform URL-opening interface is needed to open it on the
+host; the Wasm process cannot call the host window.

@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, type FrameLocator, type Page } from "@playwright/test";
+import { expect, test, type Frame, type FrameLocator, type Page } from "@playwright/test";
 import { parseGalleryRoster } from "../../../../web-libs/kandelo-session/src/gallery-roster";
 import { readLocalSupportedSet } from "../../../../scripts/local-supported-set.mjs";
 
@@ -238,14 +238,14 @@ export function previewFrame(page: Page, title: string): FrameLocator {
 
 /**
  * The URL path prefix this machine's web preview is served under, read from
- * the iframe the app rendered.
+ * the iframe the app rendered: `<scope>computer/<name>/`.
  *
- * WHY THIS IS READ, NOT WRITTEN AS A CONSTANT: the service worker MINTS the
- * prefix per machine — `appPrefixForName()` in `public/service-worker.js`
- * returns `<scope>computer/<name>/` — so no literal is correct for more than
- * one machine. A literal is exactly what went stale when per-machine routing
- * moved the preview off the old shared `/app/` prefix and left six specs
- * waiting on an iframe that would never appear.
+ * WHY THIS IS READ, NOT WRITTEN AS A CONSTANT: the owning tab MINTS the
+ * name per machine (`lib/preview/machine-names.ts`), so no literal is correct
+ * for more than one machine. The frame's `src` follows navigations the app
+ * makes, so only its machine root is kept. The same path names the machine
+ * on the preview origin (guest pages) and on Kandelo's origin (the viewer
+ * shell).
  *
  * Always ends in `/`, so `${prefix}wp-login.php` is a complete app path.
  */
@@ -262,7 +262,52 @@ export async function machineAppPrefix(
     throw new Error(`web preview for ${title} has no src yet: ${src}`);
   }
   const { pathname } = new URL(src, page.url());
-  return pathname.endsWith("/") ? pathname : `${pathname}/`;
+  const root = /^(.*?\/computer\/[a-z]{2,12}-[a-z]{2,12}-[a-z]{2,12}-[a-z2-7]{20}\/)/.exec(
+    pathname.endsWith("/") ? pathname : `${pathname}/`,
+  );
+  if (root === null) throw new Error(`web preview for ${title} has no machine root: ${src}`);
+  return root[1]!;
+}
+
+/** The preview origin a machine's web preview frame is served from. */
+export async function machinePreviewOrigin(
+  page: Page,
+  title: string,
+  timeout = 180_000,
+): Promise<string> {
+  const iframe = await page.waitForSelector(previewFrameSelector(title), {
+    timeout,
+  });
+  return new URL((await iframe.getAttribute("src")) ?? "", page.url()).origin;
+}
+
+/**
+ * The Playwright `Frame` that shows a machine's web preview: the child of the
+ * page whose URL is under the machine root the `title` iframe names.
+ *
+ * WHY NOT `previewFrame()`: a `FrameLocator` finds its frame through the
+ * iframe element, and Playwright's Firefox backend (Juggler) resolves that
+ * with `Page.describeNode`, which visits every frame of the page. Once a
+ * guest document holds a nested iframe that its own COEP blocks (Adminer's
+ * hidden `https://www.adminer.org/version/` check, which sends no CORP),
+ * Juggler keeps that dead frame and `describeNode` throws for every element.
+ * The `FrameLocator` then retries until the test times out, though the page
+ * and the preview are fine. A `Frame` taken from `page.frames()` never calls
+ * `describeNode`. Measured with Playwright 1.63.0 (Firefox 155); Chromium is
+ * unaffected. Use this for a machine whose pages embed such a frame.
+ */
+export async function machinePreviewDocument(
+  page: Page,
+  title: string,
+  timeout = 180_000,
+): Promise<Frame> {
+  const root = `${await machinePreviewOrigin(page, title, timeout)}${
+    await machineAppPrefix(page, title, timeout)
+  }`;
+  const find = () => page.frames().find((frame) =>
+    frame.parentFrame() === page.mainFrame() && frame.url().startsWith(root));
+  await expect.poll(() => find() !== undefined, { timeout }).toBe(true);
+  return find()!;
 }
 
 /** Navigate inside a machine's web preview to one of its own app paths. */

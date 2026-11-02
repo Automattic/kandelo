@@ -64,6 +64,8 @@ import {
 } from "./clipboard";
 import { BrowserPcmDriver } from "./audio/browser-pcm-driver";
 import type { PcmOutputState } from "./audio/pcm-driver";
+import type { CredentialRequestHandler } from "./credential-grants";
+import { CredentialRequestRelay } from "./credential-request-relay";
 
 // Allow the worker to drain exec retirement (5s), blocked guests (1.5s),
 // framebuffer acknowledgements and PCM (2s each) before terminating its realm.
@@ -78,6 +80,21 @@ const defaultPcmWorkletUrl = new URL(
 );
 
 export interface BrowserKernelOptions {
+  /**
+   * Ask the user before a declared program may send credentials. Called when
+   * a process starts an image its package declared in
+   * `/etc/kandelo/credential-requests.d`; resolve `true` only for "Allow for
+   * this process". Absent, or a throw/rejection, denies. A program declared
+   * `launch = "wait"` does not run its first instruction until this settles.
+   * Mirrors `NodeKernelHostOptions.onCredentialRequest`.
+   */
+  onCredentialRequest?: CredentialRequestHandler;
+  /**
+   * Where this machine's VFS image came from, shown in the prompt. The
+   * embedder states it; it is never derived from the image. Default
+   * "unknown".
+   */
+  credentialImageSource?: string;
   /**
    * Kandelo exchange: whether the platform may start the image's agent
    * (`/usr/libexec/kandelo/exchange-agent`) when a batch needs a consumer.
@@ -364,8 +381,14 @@ export class BrowserKernel {
   private pcmDriver: BrowserPcmDriver | null = null;
   private audioActivity = false;
   private audioActivityListeners = new Set<(active: boolean) => void>();
+  private credentialRequests: CredentialRequestRelay;
 
   constructor(options: BrowserKernelOptions = {}) {
+    this.credentialRequests = new CredentialRequestRelay(
+      options.onCredentialRequest,
+      (message) => this.sendToKernel(message),
+      (error) => console.error("[BrowserKernel] onCredentialRequest failed; denied:", error),
+    );
     // Resolve the reservation budget before anything sizes an address space.
     // On WebKit a declared ceiling is charged whether or not it is used, so
     // this is a real allocation decision, not presentation.
@@ -664,6 +687,7 @@ export class BrowserKernel {
             ? undefined
             : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           workerEntryUrl,
+          credentialImageSource: this.options.credentialImageSource,
           config: {
             maxWorkers: this.options.maxWorkers,
             maxMemoryPages: this.maxPages,
@@ -900,6 +924,34 @@ export class BrowserKernel {
       pid,
     });
     return typeof result === "bigint" ? result : BigInt(result as number);
+  }
+
+  /**
+   * The credential grant id the kernel records for `pid`: 0 when it holds
+   * none, null when the process is absent or has exited. Mirrors
+   * `NodeKernelHost.getCredentialGrant`.
+   */
+  async getCredentialGrant(pid: number): Promise<number | null> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, {
+      type: "get_credential_grant",
+      requestId,
+      pid,
+    }) as number | null;
+  }
+
+  /**
+   * End `pid`'s credential grant now, in the kernel and the host. Resolves
+   * with the kernel's grant id afterwards (0, or null for a gone process).
+   * Mirrors `NodeKernelHost.revokeCredentialGrant`.
+   */
+  async revokeCredentialGrant(pid: number): Promise<number | null> {
+    const requestId = this.nextRequestId++;
+    return await this.request(requestId, {
+      type: "revoke_credential_grant",
+      requestId,
+      pid,
+    }) as number | null;
   }
 
   /**
@@ -1752,6 +1804,7 @@ export class BrowserKernel {
         (error instanceof Error ? error.message : String(error));
     }
     this.workerStarted = false;
+    this.credentialRequests.close();
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
@@ -1860,6 +1913,7 @@ export class BrowserKernel {
   private failKernelHost(error: Error): void {
     if (this.kernelFatalError !== null) return;
     this.kernelFatalError = error;
+    this.credentialRequests.close();
     for (const { reject } of this.pendingRequests.values()) reject(error);
     this.pendingRequests.clear();
     for (const { reject } of this.exitResolvers.values()) reject(error);
@@ -1889,6 +1943,12 @@ export class BrowserKernel {
         break;
       case "exchange_notifications":
         this.exchange.handleNotifications(msg.notifications);
+        break;
+      case "credential_request":
+        this.credentialRequests.request(msg);
+        break;
+      case "credential_request_cancel":
+        this.credentialRequests.cancel(msg.requestId);
         break;
       case "ready": {
         if (msg.pcmPort) {

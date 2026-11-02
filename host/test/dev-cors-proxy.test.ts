@@ -147,6 +147,45 @@ describe("development CORS proxy", () => {
     });
   });
 
+  it("serves only fetch(), and marks every answer as inert data", async () => {
+    const upstream = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/javascript" });
+      response.end("self.postMessage('ran as this origin');");
+    });
+    const upstreamRoot = await listen(upstream);
+    const relay = relayServer();
+    const relayRoot = await listen(relay);
+    try {
+      for (const destination of ["script", "worker", "sharedworker", "document", "iframe", "style"]) {
+        const refused = await sendRequest({
+          url: proxyUrl(relayRoot, `${upstreamRoot}/w.js`),
+          method: "GET",
+          headers: { "Sec-Fetch-Dest": destination },
+        });
+        expect(refused.status, destination).toBe(403);
+        expect(refused.body.toString()).not.toContain("postMessage");
+        expect(refused.headers["content-security-policy"]).toBe("sandbox");
+        expect(refused.headers["x-content-type-options"]).toBe("nosniff");
+      }
+      for (const headers of [{ "Sec-Fetch-Dest": "empty" }, {}]) {
+        const relayed = await sendRequest({
+          url: proxyUrl(relayRoot, `${upstreamRoot}/w.js`),
+          method: "GET",
+          headers,
+        });
+        expect(relayed.status).toBe(200);
+        expect(relayed.headers["content-security-policy"]).toBe("sandbox");
+        expect(relayed.headers["x-content-type-options"]).toBe("nosniff");
+      }
+      const missing = await sendRequest({ url: `${relayRoot}/__kandelo_cors_proxy`, method: "GET" });
+      expect(missing.status).toBe(400);
+      expect(missing.headers["content-security-policy"]).toBe("sandbox");
+    } finally {
+      await close(relay);
+      await close(upstream);
+    }
+  });
+
   it("leaves content negotiation to Fetch when no range is requested", () => {
     const projected = devCorsProxyRequestHeaders({
       accept: "text/plain",

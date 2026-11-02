@@ -1,0 +1,43 @@
+--- a/codex-rs/core/src/lib.rs
++++ b/codex-rs/core/src/lib.rs
+@@ -1,4 +1,7 @@
+ //! Root of the `codex-core` library.
++
++// Nested async tool handlers exceed the default layout-query depth on wasm32.
++#![recursion_limit = "256"]
+ 
+ // Prevent accidental direct writes to stdout/stderr in library code. All
+ // user-visible output must go through the appropriate abstraction (e.g.,
+--- a/codex-rs/process-hardening/src/lib.rs
++++ b/codex-rs/process-hardening/src/lib.rs
+@@ -20,6 +20,14 @@
+     #[cfg(any(target_os = "freebsd", target_os = "openbsd"))]
+     pre_main_hardening_bsd();
+ 
++    #[cfg(target_os = "kandelo")]
++    {
++        // Kandelo provides POSIX resource limits and its own dynamic loader.
++        // Guest ptrace is unavailable, so there is no Linux prctl path here.
++        set_core_file_size_limit_to_zero();
++        remove_env_vars_with_prefix(b"LD_");
++    }
++
+     #[cfg(windows)]
+     pre_main_hardening_windows();
+ }
+@@ -30,14 +38,7 @@
+ #[cfg(target_os = "macos")]
+ const PTRACE_DENY_ATTACH_FAILED_EXIT_CODE: i32 = 6;
+ 
+-#[cfg(any(
+-    target_os = "linux",
+-    target_os = "android",
+-    target_os = "macos",
+-    target_os = "freebsd",
+-    target_os = "netbsd",
+-    target_os = "openbsd"
+-))]
++#[cfg(unix)]
+ const SET_RLIMIT_CORE_FAILED_EXIT_CODE: i32 = 7;
+ 
+ #[cfg(any(target_os = "linux", target_os = "android"))]

@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { prepareThreadProgram } from "../src/thread-program";
+import { computeForkModuleTemplateId } from "../src/fork-module-state";
+import { registerWasmModuleReflectionData, wasmModuleExports } from "../src/wasm-module-reflection";
 import { patchWasmForThread } from "../src/worker-main";
 
 function uleb(value: number): number[] {
@@ -160,5 +163,43 @@ describe("patchWasmForThread", () => {
     expect(() => patchWasmForThread(original)).toThrow(
       /must have type \(\) -> \(\).*1 result/,
     );
+  });
+});
+
+
+describe("prepared pthread artifact facts", () => {
+  it("sends compact exact facts instead of a module-sized copy to each thread", async () => {
+    const base = new Uint8Array(moduleBytes({
+      types: [VOID], functionTypes: [0], bodies: [[]],
+      exports: [{ name: "entry", index: 0 }],
+    }));
+    const paddingSize = 8 * 1024 * 1024;
+    const sectionHeader = new Uint8Array([0, ...uleb(paddingSize + 2), 1, 112]);
+    const bytes = new Uint8Array(base.length + sectionHeader.length + paddingSize);
+    bytes.set(base);
+    bytes.set(sectionHeader, base.length);
+    const first = prepareThreadProgram(bytes.buffer);
+    expect(prepareThreadProgram(bytes.buffer)).toBe(first);
+    const facts = await first;
+    expect(facts.moduleTemplateId).toEqual(await computeForkModuleTemplateId(bytes));
+    expect(JSON.stringify(facts).length).toBeLessThan(16 * 1024);
+    expect(facts).not.toHaveProperty("programBytes");
+    const cloned = structuredClone(facts);
+    expect(cloned).toEqual(facts);
+    const module = await WebAssembly.compile(bytes);
+    const exports = vi.spyOn(WebAssembly.Module, "exports").mockImplementation(() => {
+      throw new TypeError("engine reflection unavailable");
+    });
+    try {
+      registerWasmModuleReflectionData(module, cloned.reflection);
+      expect(wasmModuleExports(module)).toEqual([{ name: "entry", kind: "function" }]);
+    } finally {
+      exports.mockRestore();
+    }
+    // An exec image is a new immutable snapshot, even when its size is equal.
+    const replacement = bytes.slice();
+    replacement[replacement.length - 1] = 1;
+    const other = await prepareThreadProgram(replacement.buffer);
+    expect(other.moduleTemplateId).not.toEqual(facts.moduleTemplateId);
   });
 });

@@ -452,8 +452,16 @@ export class ForkHostImportWorkerRuntime {
     programBytes: ArrayBuffer,
     imports: WebAssembly.Imports,
   ): WebAssembly.Imports {
+    return this.routePreparedImportObject(readWasmFunctionImports(programBytes), imports);
+  }
+
+  /** Route exact function signatures prepared by the admitted process owner. */
+  routePreparedImportObject(
+    functionImports: readonly WasmFunctionImportType[],
+    imports: WebAssembly.Imports,
+  ): WebAssembly.Imports {
     const grouped = new Map<string, WasmFunctionImportType[]>();
-    for (const imported of readWasmFunctionImports(programBytes)) {
+    for (const imported of functionImports) {
       const key = importKey(imported.module, imported.name);
       const entries = grouped.get(key) ?? [];
       entries.push(imported);

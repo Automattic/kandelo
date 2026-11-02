@@ -50,6 +50,11 @@ host/test/concurrent-launch.test.ts	prepared-product
 host/test/connect-pending-retry.test.ts	source-only
 host/test/cors-proxy-session.test.ts	source-only
 host/test/cpp-throw-test.test.ts	prepared-product
+host/test/credential-gate.test.ts	source-only
+host/test/credential-grants.test.ts	prepared-product
+host/test/credential-relay.test.ts	source-only
+host/test/credential-requests.test.ts	source-only
+host/test/credential-transport.test.ts	source-only
 host/test/cxx-runtime-guest.test.ts	prepared-product
 host/test/datagram-wakeup.test.ts	source-only
 host/test/dbus-smoke.test.ts	prepared-product
@@ -94,6 +99,7 @@ host/test/exchange-controller.test.ts	source-only
 host/test/exchange-host.test.ts	source-only
 host/test/exchange-node.test.ts	prepared-product
 host/test/exec-brk-base.test.ts	prepared-product
+host/test/exec-kill-race.test.ts	prepared-product
 host/test/exec-lazy-archive-binary.test.ts	prepared-product
 host/test/exec-retirement-marker.test.ts	source-only
 host/test/exec-state-tracking.test.ts	source-only
@@ -526,6 +532,7 @@ packages/registry/mandoc/test/mandoc-smoke.test.ts	prepared-product
 packages/registry/nginx/test/nginx.test.ts	prepared-product
 packages/registry/openssl/test/certificates.test.ts	prepared-product
 packages/registry/openssl/test/ssl-basic.test.ts	prepared-product
+packages/registry/openssl/test/threads.test.ts	prepared-product
 packages/registry/php/test/php-concurrent-sqlite.test.ts	prepared-product
 packages/registry/php/test/php-curl.test.ts	prepared-product
 packages/registry/php/test/php-hello.test.ts	prepared-product
@@ -585,6 +592,7 @@ tests/package-system/vitest-evidence-classes.test.ts	source-only
 tests/package-system/wasm-artifact-guards.test.ts	prepared-product
 web-libs/kandelo-session/test/boot-descriptor.test.ts	source-only
 web-libs/kandelo-session/test/boot-inputs.test.ts	source-only
+web-libs/kandelo-session/test/credential-request-queue.test.ts	source-only
 web-libs/kandelo-session/test/demo-config.test.ts	prepared-product
 web-libs/kandelo-session/test/demo-dock-action.test.ts	source-only
 web-libs/kandelo-session/test/deployment-scope.test.ts	source-only

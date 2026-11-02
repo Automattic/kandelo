@@ -29,7 +29,13 @@ import type { VfsChangeEvent } from "./vfs/types";
  * explanatory only and generated-file drift tests cover the live values.
  */
 import { ERRNO } from "./generated/abi";
-import { decodeInspectionDirectory, decodeInspectionStat, decodeInspectionResourceLimits } from "./vfs/rootfs-inspection";
+import {
+  decodeInspectionDirectory,
+  decodeInspectionIdentity,
+  decodeInspectionStat,
+  decodeInspectionResourceLimits,
+  type VfsFileIdentity,
+} from "./vfs/rootfs-inspection";
 import type { VfsDirEntrySnapshot, VfsPathStat } from "./vfs/vfs";
 
 
@@ -440,6 +446,26 @@ class KernelTaskBindingError extends Error {
   ) {
     super(detail ?? `Kernel rejected tid ${tid} for process ${pid}: errno ${errno}`);
     this.name = "KernelTaskBindingError";
+  }
+}
+
+/**
+ * Exec re-registration found that the process is no longer runnable: a
+ * signal ended it after the exec committed, and its parent may already have
+ * reaped it, before the host installed the replacement image. Registration
+ * waits for the kernel entry gate, so another process's kill() and waitpid()
+ * can run in between. This is a lifecycle outcome rather than a host/kernel
+ * identity failure: the caller finalizes the death through the kernel
+ * instead of reporting a crash for a process the kernel has already retired.
+ */
+export class KernelProcessEndedError extends Error {
+  constructor(
+    readonly pid: number,
+    readonly state: "exited" | "reaped",
+    detail: string,
+  ) {
+    super(detail);
+    this.name = "KernelProcessEndedError";
   }
 }
 
@@ -2952,6 +2978,15 @@ export class CentralizedKernelWorker {
   private threadForkContexts = new Map<string, { fnPtr: number; argPtr: number }>();
   /** Tracks the pid currently being serviced by kernel_handle_channel */
   private currentHandlePid = 0;
+  /**
+   * The pid whose system call the kernel is serving now, or 0 outside one.
+   * Network backends read it while `host_net_send` hands them a process's
+   * bytes, to attribute outgoing requests to the process that wrote them
+   * (networking/request-attribution.ts).
+   */
+  get servingPid(): number {
+    return this.currentHandlePid;
+  }
   /**
    * Bind the kernel's view of "which thread is executing this syscall" to the
    * already-selected channel. The channel offset is the transport identity; TID
@@ -5635,6 +5670,23 @@ export class CentralizedKernelWorker {
 
   /** Inspect the authoritative namespace, including kernel scratch mounts. */
   rootfsStat(path: string): VfsPathStat {
+    const statBytes = this.#rootfsInspectStat(path);
+    return decodeInspectionStat(new DataView(statBytes.buffer, statBytes.byteOffset, statBytes.byteLength));
+  }
+
+  /**
+   * The identity of the file at `path` (symlinks followed): its device,
+   * inode, size, and modification and change times, from the same
+   * privileged inspection as `rootfsStat`. Two equal identities name the
+   * same, unmodified file. Throws `KernelScratchError` (POSIX errno) when
+   * the path does not resolve.
+   */
+  rootfsFileIdentity(path: string): VfsFileIdentity {
+    const statBytes = this.#rootfsInspectStat(path);
+    return decodeInspectionIdentity(new DataView(statBytes.buffer, statBytes.byteOffset, statBytes.byteLength));
+  }
+
+  #rootfsInspectStat(path: string): Uint8Array {
     if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
     const encoded = new TextEncoder().encode(path);
     if (encoded.length >= POSIX_PATH_MAX_BYTES) {
@@ -5661,7 +5713,7 @@ export class CentralizedKernelWorker {
     });
     // Routine errno must leave the ingress before becoming a host exception.
     if (failErrno !== 0) throw new KernelScratchError("Filesystem stat failed", failErrno);
-    return decodeInspectionStat(new DataView(statBytes!.buffer, statBytes!.byteOffset, statBytes!.byteLength));
+    return statBytes!;
   }
 
   #vfsChangeListeners = new Map<string, Set<(event: VfsChangeEvent) => void>>();
@@ -6006,12 +6058,16 @@ export class CentralizedKernelWorker {
     fd: number | null,
     entry: KernelWorkerEntryContext,
     directoryOnly = false,
+    processPathExport: "kernel_get_cwd" | "kernel_get_exe_path" = "kernel_get_cwd",
   ): SharedMmapHostResult<Uint8Array> {
     if (fd === null && directoryOnly) {
       return { kind: "error", errno: EINVAL };
     }
+    // A null fd names a per-process path rather than a descriptor's: the CWD,
+    // or the executable the image runs (`/proc/<pid>/exe`). Both getters share
+    // the same (pid, buf, len) complete-or-ERANGE contract.
     const exportName = fd === null
-      ? "kernel_get_cwd"
+      ? processPathExport
       : directoryOnly
         ? "kernel_get_dirfd_path"
         : "kernel_get_fd_path";
@@ -7096,18 +7152,26 @@ export class CentralizedKernelWorker {
           ((pid: number) => number) | undefined;
         const processState = getProcessState?.(pid);
         if (processState === undefined || processState < 0) {
-          registrationPreconditionError = new Error(
-            `Cannot register unknown kernel process ${pid}`,
-          );
+          registrationPreconditionError = replacingExecImage && processState !== undefined
+            ? new KernelProcessEndedError(
+              pid,
+              "reaped",
+              `Cannot register unknown kernel process ${pid}`,
+            )
+            : new Error(`Cannot register unknown kernel process ${pid}`);
           return undefined;
         }
         if (
           processState !== PROCESS_STATE_RUNNING
           && processState !== PROCESS_STATE_STOPPED
         ) {
-          registrationPreconditionError = new Error(
-            `Cannot register inactive kernel process ${pid}`,
-          );
+          registrationPreconditionError = replacingExecImage
+            ? new KernelProcessEndedError(
+              pid,
+              "exited",
+              `Cannot register inactive kernel process ${pid}`,
+            )
+            : new Error(`Cannot register inactive kernel process ${pid}`);
           return undefined;
         }
 
@@ -27162,6 +27226,163 @@ export class CentralizedKernelWorker {
       );
     }
     return count;
+  }
+
+  /**
+   * Record the user's credential grant for `pid` in the kernel's process
+   * table (`kernel_set_credential_grant`): `grant` is a nonzero host-issued
+   * grant id, or 0 to clear. The kernel itself ends the grant on exec and
+   * exit, and a fork child never inherits it.
+   *
+   * Returns false when the kernel answers ESRCH: the process is absent or has
+   * already exited, so there is no image left to grant. That is an ordinary
+   * race with the process's own lifetime, not a fault, so it is a typed
+   * result rather than an exception. Any other refusal is unexpected and
+   * throws. Throws `KernelReentrantEntryError` while the entry gate is busy.
+   */
+  setCredentialGrant(pid: number, grant: number): boolean {
+    if (!Number.isSafeInteger(grant) || grant < 0 || grant > 0xffff_ffff) {
+      throw new RangeError(`credential grant id must be a u32, got ${grant}`);
+    }
+    const label = `credential grant set pid=${pid}`;
+    this.#beginImmediateProcessQuery(label);
+    let result: number | undefined;
+    const deferred = this.#runOrDeferKernelEntry(label, (entry) => {
+      const set = this.#kernelInstanceForEntry(entry).exports
+        .kernel_set_credential_grant as
+        ((pid: number, grant: number) => number) | undefined;
+      if (typeof set !== "function") {
+        throw new Error("kernel_set_credential_grant export is unavailable");
+      }
+      // The export takes a u32; pass the bit pattern of ids above 2^31.
+      result = Number(set(pid, grant | 0));
+      return undefined;
+    });
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError(label);
+    }
+    if (result === 0) return true;
+    if (result === -ESRCH) return false;
+    throw new Error(`kernel_set_credential_grant rejected pid=${pid}: ${result}`);
+  }
+
+  /**
+   * The credential grant id `pid` holds in the kernel's process table
+   * (`kernel_get_credential_grant`): 0 when it holds none, or null when the
+   * kernel answers ESRCH (absent or exited; a zombie holds no grant). Throws
+   * `KernelReentrantEntryError` while the entry gate is busy.
+   */
+  getCredentialGrant(pid: number): number | null {
+    const label = `credential grant query pid=${pid}`;
+    this.#beginImmediateProcessQuery(label);
+    let result: number | undefined;
+    const deferred = this.#runOrDeferKernelEntry(label, (entry) => {
+      const get = this.#kernelInstanceForEntry(entry).exports
+        .kernel_get_credential_grant as
+        ((pid: number) => bigint | number) | undefined;
+      if (typeof get !== "function") {
+        throw new Error("kernel_get_credential_grant export is unavailable");
+      }
+      result = Number(get(pid));
+      return undefined;
+    });
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError(label);
+    }
+    if (result >= 0 && result <= 0xffff_ffff) return result;
+    if (result === -ESRCH) return null;
+    throw new Error(`kernel_get_credential_grant rejected pid=${pid}: ${result}`);
+  }
+
+  /**
+   * The path of the executable `pid` runs, exactly as `/proc/<pid>/exe`
+   * reads (`kernel_get_exe_path`): the file the kernel resolved when it
+   * committed the image, symlinks followed, with ` (deleted)` when it has no
+   * names left. Null when the process is absent or exited (ESRCH) or has no
+   * executable attached (ENOENT). The host matches images by this path so it
+   * never resolves a guest path itself. Throws `KernelReentrantEntryError`
+   * while the entry gate is busy.
+   */
+  getExePath(pid: number): string | null {
+    const label = `executable path query pid=${pid}`;
+    this.#beginImmediateProcessQuery(label);
+    let output: SharedMmapHostResult<Uint8Array> | undefined;
+    const deferred = this.#runOrDeferKernelEntry(label, (entry) => {
+      output = this.#readKernelOwnedPath(
+        pid,
+        null,
+        entry,
+        false,
+        "kernel_get_exe_path",
+      );
+      return undefined;
+    });
+    if (deferred || output === undefined) {
+      throw new KernelReentrantEntryError(`executable path query pid=${pid}`);
+    }
+    if (output.kind === "error") {
+      if (output.errno === ESRCH || output.errno === ENOENT) return null;
+      throw new KernelScratchError(
+        `kernel_get_exe_path failed for pid=${pid}`,
+        output.errno,
+      );
+    }
+    return new TextDecoder("utf-8", { fatal: false }).decode(output.value);
+  }
+
+  /**
+   * The identity of the file `pid`'s image was executed from
+   * (`kernel_get_exe_stat`): the description the kernel kept when it
+   * committed the image, so it names the file that runs even after its path
+   * was renamed away or now names another file. Null when the process is
+   * absent or exited (ESRCH) or has no executable attached (ENOENT). Throws
+   * `KernelReentrantEntryError` while the entry gate is busy.
+   */
+  getExeIdentity(pid: number): VfsFileIdentity | null {
+    const label = `executable identity query pid=${pid}`;
+    this.#beginImmediateProcessQuery(label);
+    let result: number | undefined;
+    let statBytes: Uint8Array | undefined;
+    const deferred = this.#runOrDeferKernelEntry(label, (entry) => {
+      this.#requireMainScratchRegion().withLease((lease) => {
+        result = this.#invokeEntryScratchExport(entry, lease, "kernel_get_exe_stat", [
+          pid,
+          lease.exportPointer(0, STRUCT_SIZE_WASM_STAT),
+          STRUCT_SIZE_WASM_STAT,
+        ]);
+        if (result === 0) statBytes = lease.copyOut(0, STRUCT_SIZE_WASM_STAT);
+      });
+      return undefined;
+    });
+    if (deferred || result === undefined) {
+      throw new KernelReentrantEntryError(label);
+    }
+    if (result === -ESRCH || result === -ENOENT) return null;
+    if (result !== 0 || statBytes === undefined) {
+      throw new KernelScratchError(
+        `kernel_get_exe_stat failed for pid=${pid}`,
+        Number.isSafeInteger(result) && result < 0 ? -result : EIO,
+      );
+    }
+    return decodeInspectionIdentity(
+      new DataView(statBytes.buffer, statBytes.byteOffset, statBytes.byteLength),
+    );
+  }
+
+  /**
+   * Preconditions for one synchronous per-process query (credential grant,
+   * executable path or identity). The caller then runs it in its own kernel entry, so
+   * the entry argument stays lexical, and throws `KernelReentrantEntryError`
+   * without queueing it when the gate is busy.
+   */
+  #beginImmediateProcessQuery(label: string): void {
+    if (this.#kernelFatalError !== null) throw this.#kernelFatalError;
+    if (this.#kernelInstance === null) {
+      throw new Error(`${label}: the kernel is not initialized`);
+    }
+    if (this.#kernelEntryGate.shouldDeferVoidIngress) {
+      throw new KernelReentrantEntryError(label);
+    }
   }
 
   /** Kernel-owned sticky secure-execution state for one exact image. */

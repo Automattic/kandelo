@@ -110,7 +110,7 @@ $kandelo_is_forwarded = isset($_SERVER['HTTP_X_FORWARDED_HOST'])
 $kandelo_proto = $kandelo_is_forwarded ? '@@PROTO@@'
     : ((!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http');
 // The service worker forwards this machine's public prefix
-// (e.g. /computer/humble-chestnut-cove) on every bridged request via
+// (e.g. /computer/humble-chestnut-cove-lfd5pqz5pa7zjm5uyguw) on every bridged request via
 // X-Forwarded-Prefix. Build WP_HOME/WP_SITEURL from it so WordPress emits links
 // under the machine’s own prefix. Configured path/protocol fallbacks apply
 // to forwarded requests. A direct client uses the server root and its actual

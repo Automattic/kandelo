@@ -1,0 +1,29 @@
+--- a/src/native/scrypt.rs
++++ b/src/native/scrypt.rs
+@@ -36,7 +36,7 @@
+ fn target_scrypt_work_factor() -> u8 {
+     let measure_duration = |log_n| {
+         // Platforms that have a functional SystemTime::now():
+-        #[cfg(not(all(target_arch = "wasm32", not(target_os = "wasi"))))]
++        #[cfg(not(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo")))))]
+         {
+             use std::time::SystemTime;
+             let start = SystemTime::now();
+@@ -45,7 +45,7 @@
+         }
+ 
+         // Platforms that can use Performance timer
+-        #[cfg(all(target_arch = "wasm32", not(target_os = "wasi"), feature = "web-sys"))]
++        #[cfg(all(target_arch = "wasm32", not(any(target_os = "wasi", target_os = "kandelo")), feature = "web-sys"))]
+         {
+             web_sys::window().and_then(|window| {
+                 { window.performance() }.map(|performance| {
+@@ -59,7 +59,7 @@
+         // Platforms where SystemTime::now() panics:
+         #[cfg(all(
+             target_arch = "wasm32",
+-            not(target_os = "wasi"),
++            not(any(target_os = "wasi", target_os = "kandelo")),
+             not(feature = "web-sys")
+         ))]
+         {

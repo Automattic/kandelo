@@ -1,9 +1,20 @@
+import { prepareThreadProgram } from "./thread-program";
 import { BrowserPcmMirror } from "./audio/browser-pcm-mirror";
 import { BrowserFramebufferMirrors } from "./framebuffer/browser-mirror";
 import { AudioActivityLatch } from "./audio/audio-activity-latch";
 import { markPcmFatalError, pcmControlWords, snapshotPcmTransport } from "./audio/pcm-transport";
 import { RemoteSegmentRuntime, handleRemoteNetworkMessage } from "./networking/remote-segment-runtime";
 import { OwnedJobs } from "./owned-jobs";
+import {
+  dispatchCredentialMainMessage,
+  isCredentialMainMessage,
+  type CredentialLaunchPolicy,
+} from "./credential-grants";
+import {
+  CREDENTIAL_GATE_CHANNEL,
+  CredentialGateResponder,
+} from "./credential-gate";
+import { browserCredentialTransport } from "./credential-transport";
 /**
  * Kernel Worker Entry Point — Dedicated web worker that hosts the
  * CentralizedKernelWorker and manages all process lifecycle.
@@ -25,6 +36,7 @@ import {
   CAPTURED_STDIO,
   CentralizedKernelWorker,
   isCurrentProcessGeneration,
+  KernelProcessEndedError,
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import {
@@ -149,6 +161,7 @@ import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
 import {
   configureRootfsOverlayFromImage,
+  createCredentialLaunchPolicy,
   createProcessLifecycle,
   handleThreadExit,
   isMissingPathError,
@@ -179,6 +192,10 @@ let defaultEnv: string[] = [];
 const ENOEXEC = 8;
 
 let initReady = false;
+/** Asks before a declared program may use credentials; built at boot. */
+let credentialPolicy: CredentialLaunchPolicy | null = null;
+/** Answers the app service worker's credential gate; built with the policy. */
+let credentialGate: CredentialGateResponder | null = null;
 let initFailure: string | null = null;
 let kernelFatalReported = false;
 const rootfsSnapshotGate = new RootfsSnapshotGate();
@@ -591,6 +608,32 @@ const ownedJobs = new OwnedJobs(pid => {
   terminatePoisonedKernelWorker(error instanceof Error ? error : new Error(String(error)));
 });
 
+/**
+ * Let the service worker's credential gate ask this kernel worker about its
+ * grants (`credential-gate.ts`). `verify` enters the kernel, so it runs from
+ * the channel's own task, retried while another entry holds the gate.
+ */
+function startCredentialGate(
+  policy: CredentialLaunchPolicy,
+): CredentialGateResponder | null {
+  if (typeof BroadcastChannel !== "function") return null;
+  return new CredentialGateResponder({
+    grants: policy.grants,
+    verify: (token, origin) =>
+      retryKernelEntryResult(() => policy.grants.verify(token, origin)),
+    origin: self.location.origin,
+    channel: new BroadcastChannel(CREDENTIAL_GATE_CHANNEL),
+    fetch: (url, init) => fetch(url, init),
+  });
+}
+
+function requireCredentialPolicy(): CredentialLaunchPolicy {
+  if (!credentialPolicy) {
+    throw new Error("credential launch policy is not initialized");
+  }
+  return credentialPolicy;
+}
+
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   if (msg.type === "stdout" || msg.type === "stderr") ownedJobs.output(msg.pid, msg.type, msg.data);
   if (msg.type === "exit") ownedJobs.exited(msg.pid, msg.status);
@@ -868,6 +911,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // WHY: structured cloning strips the host-side freeze. Revalidate into one
   // worker-owned immutable copy before either browser network path sees it.
   const {
+    corsProxy,
     lazyFetcher: corsProxyLazyFetcher,
     tlsBackend,
   } = initializeBrowserCorsProxyForWorker(msg.config.corsProxy, {
@@ -876,6 +920,16 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     createTlsBackend: (options) => new TlsNetworkBackend({
       dnsAliases: msg.config.dnsAliases,
       ...options,
+      // A request belongs to the process the kernel was serving when its
+      // bytes were sent, and to the grant it held then (a host-side peek,
+      // no kernel entry). Whether that same grant still covers the request
+      // is decided when the backend dispatches it, outside any kernel
+      // entry, so contention with another entry is only waited out.
+      currentPid: () => kernelWorker?.servingPid ?? 0,
+      peekCredentialGrantId: (pid) => credentialPolicy?.grants.peekGrantId(pid) ?? 0,
+      credentialGrantFor: (pid, grantId, origin) => retryKernelEntryResult(() =>
+        credentialPolicy?.grants.tagFor(pid, grantId, origin) ?? null
+      ),
     }),
     reportHostDiagnostic,
   });
@@ -1277,6 +1331,25 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     resetBridgePendingRequests();
   }
 
+  // Declarations are read once, now, from the kernel-owned `/`; a malformed
+  // one rejects and fails the boot (init_error) rather than being ignored.
+  credentialPolicy = await createCredentialLaunchPolicy(kernelWorker, {
+    hasRootfs: rootImage.has(),
+    imageSource: msg.credentialImageSource,
+    // Only a granted process's requests may carry credential fields
+    // through the CORS proxy or the credential relay (request-attribution.ts,
+    // credential-gate.ts).
+    enforcement: "proxy-gate",
+    // Named from the same validated configuration the network backends
+    // send through, so the prompt names the proxy or relay that would
+    // actually receive the credentials.
+    transport: browserCredentialTransport(corsProxy),
+    post: (message) => post(message),
+    report: (message) => console.error(message),
+    onGrantEnded: (grant) => credentialGate?.grantEnded(grant.token),
+  });
+  credentialGate = startCredentialGate(credentialPolicy);
+
   initReady = true;
 
   const pcmTransport = kernelWorker.claimPcmTransport(true);
@@ -1443,7 +1516,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
 
     const externrefGeneration = externrefProcessOwner.startGeneration(pid);
     createdExternrefGeneration = externrefGeneration;
-    let worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
+    let worker: DeferredWorkerHandle;
     const forkHostImports = forkHostImportOwnerRuntime.createWorker({
       pid,
       generationId: externrefGeneration.id,
@@ -1477,8 +1550,15 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       kernelAbiContractDigest: kernelWorker.getKernelAbiContractDigest() ?? undefined,
     };
 
-    workerCreationAttempted = true;
-    worker = workerAdapter.createWorker(initData);
+    // The Worker is constructed only by the start gate below, as for exec and
+    // posix_spawn: the launch may have waited on a credential answer, during
+    // which the process can be stopped or killed, and a stopped or dead
+    // process must run no instruction.
+    worker = new DeferredWorkerHandle(() => {
+      workerCreationAttempted = true;
+      return workerAdapter.createWorker(initData);
+    });
+    const deferredWorker = worker;
     createdWorker = worker;
     bindForkHostImports(worker, forkHostImports);
     createdGeneration = {
@@ -1500,15 +1580,83 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       threadAllocator,
       externrefGeneration,
     };
+    // Registered before the question below, as for exec and posix_spawn:
+    // while the launch is held the process is live, so a signal (an owned
+    // job's cancellation included) reaches it and a rootfs export sees it.
     processes.set(pid, createdGeneration);
 
     installProcessWorkerListeners(worker, pid);
+    // The program is attached and its stdin set up: nothing below touches
+    // the rootfs, and a rootfs export or another launch must not wait on
+    // the user's answer.
+    releaseMutation();
+    releaseMutation = undefined;
+    // The image is attached; ask before its first instruction if it is a
+    // declared program (`launch = "wait"` holds the launch until answered).
+    await requireCredentialPolicy().imageCommitted(pid, msg.argv);
+    let launchSettled = false;
+    let launchStartError: unknown;
+    const startDisposition = await retryKernelEntryResult(() =>
+      kernelWorker.startProcessWorkerWhenRunnable(
+        pid,
+        memory,
+        () => {
+          if (!deferredWorker.start()) {
+            throw new Error(`Spawned Worker for pid ${pid} was cancelled`);
+          }
+        },
+        () => {
+          forkHostImports.close();
+          void deferredWorker.terminate();
+        },
+        (error) => {
+          // During the launch, a failed constructor fails the spawn request
+          // and rolls back, as it did before the start gate. A start deferred
+          // by SIGSTOP that fails later is a death of a running process.
+          if (!launchSettled) {
+            launchStartError = error;
+            return true;
+          }
+          reportHostDiagnostic({
+            pid,
+            status: signalExitStatus(SIGSEGV),
+            source: "spawn worker start",
+            message: `[spawn] deferred Worker start failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          });
+          handleExit(pid, signalExitStatus(SIGSEGV), SIGSEGV, deferredWorker, "trap");
+          return true;
+        },
+      ),
+    );
+    launchSettled = true;
+    if (launchStartError !== undefined) throw launchStartError;
+    if (startDisposition === "stale") {
+      throw new Error(`Spawned pid ${pid} changed generation before Worker launch`);
+    }
     createdMemoryLease = undefined;
     createdPid = undefined;
     createdExternrefGeneration = undefined;
     createdForkHostImports = undefined;
 
     respond(msg.requestId, pid);
+    if (startDisposition === "dead") {
+      // Killed before its first instruction (e.g. while held on a credential
+      // answer). The spawn happened; report the death the kernel recorded.
+      forkHostImports.close();
+      await terminateTrackedWorker(deferredWorker);
+      processes.get(pid)?.workerQuiescence.settle();
+      const signal = await retryKernelEntryResult(
+        () => kernelWorker.finalizePendingChildTermination(pid),
+      );
+      await awaitFinalizedProcessTeardown(
+        pid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        deferredWorker,
+        signal > 0 ? signal : undefined,
+      );
+    }
   } catch (e) {
     createdForkHostImports?.close();
     if (createdExternrefGeneration) {
@@ -2775,18 +2923,49 @@ async function handleExec(
         return workerAdapter.createWorker(execInitData);
       });
       // See the launch-continuation retry note on the root spawn path.
-      await retryKernelEntryResult(() =>
-        kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
-          preserveProcessState: true,
-          ptrWidth,
-          metadataPtrWidth: initiatingInfo.ptrWidth,
-          brkBase: newLayout.brkBase,
-          mmapBase: newLayout.mmapBase,
-          maxAddr: newLayout.maxAddr,
-          // Refresh kernel-owned argv/environment for procfs and kernel APIs.
-          argv: launchArgv,
-          env: envp,
-        }));
+      let endedBeforeRegistration = false;
+      try {
+        await retryKernelEntryResult(() =>
+          kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
+            preserveProcessState: true,
+            ptrWidth,
+            metadataPtrWidth: initiatingInfo.ptrWidth,
+            brkBase: newLayout.brkBase,
+            mmapBase: newLayout.mmapBase,
+            maxAddr: newLayout.maxAddr,
+            // Refresh kernel-owned argv/environment for procfs and kernel APIs.
+            argv: launchArgv,
+            env: envp,
+          }));
+      } catch (error) {
+        if (!(error instanceof KernelProcessEndedError)) throw error;
+        endedBeforeRegistration = true;
+      }
+      if (endedBeforeRegistration) {
+        // WHY: registration waits for the kernel entry gate, so a kill() and
+        // even the parent's waitpid() can run after the handoff check above.
+        // The kernel already ended this process; finish its death exactly as
+        // the handoff branch does instead of reporting a crash for a pid the
+        // kernel has retired (that report would fail the whole kernel).
+        replacementForkHostImports?.close();
+        await terminateTrackedWorker(replacementWorker);
+        prepared.memoryLease.release();
+        preparedLeaseConsumed = true;
+        externrefProcessOwner.releaseGeneration(replacementExternrefGeneration);
+        replacementExternrefGeneration = undefined;
+        kernelWorker.finishProcessExecHandoff(pid);
+        const signal = await retryKernelEntryResult(
+          () => kernelWorker.finalizeExecHandoffTermination(pid),
+        );
+        await awaitFinalizedProcessTeardown(
+          pid,
+          signal > 0 ? signalExitStatus(signal) : 0,
+          initiatingInfo.worker,
+          signal > 0 ? signal : undefined,
+          signal > 0 ? "signal" : "exit",
+        );
+        return 0;
+      }
       replacementRegistered = true;
       bindForkHostImports(replacementWorker, replacementForkHostImports);
 
@@ -2823,6 +3002,9 @@ async function handleExec(
       // pre-exec worker) is gone with the terminated worker; without re-arming
       // here, a wasm trap in the exec'd binary leaves waitpid blocked forever.
       installProcessWorkerListeners(replacementWorker, pid);
+      // Any exec ends the old image's grant (the kernel cleared it at
+      // commit); ask again if the new image is declared, before it runs.
+      await requireCredentialPolicy().imageCommitted(pid, launchArgv);
       const startDisposition = await retryKernelEntryResult(() =>
         kernelWorker.startProcessWorkerWhenRunnable(
           pid,
@@ -3144,6 +3326,7 @@ async function handlePosixSpawn(
     processes.set(childPid, childGeneration);
 
     installProcessWorkerListeners(worker, childPid);
+    await requireCredentialPolicy().imageCommitted(childPid, argv);
     const startDisposition = await retryKernelEntryResult(() =>
       kernelWorker.startProcessWorkerWhenRunnable(
         childPid,
@@ -3240,6 +3423,8 @@ async function handleClone(
     cacheCompiledModule = true;
   }
 
+  const preparedProgram = await prepareThreadProgram(processInfo.programBytes);
+
   // Compilation yields. A sibling pthread may have committed exec while this
   // clone continuation was suspended; never attach the old program/Memory to
   // the replacement exec image for the same process identity.
@@ -3319,7 +3504,7 @@ async function handleClone(
     type: "centralized_thread_init",
     pid,
     tid,
-    programBytes: processInfo.programBytes,
+    preparedProgram,
     programModule: threadModule,
     memory,
     processChannelOffset: processInfo.channelOffset,
@@ -3504,6 +3689,9 @@ function handleExit(
   vforkReason: VforkExactCompletionReason =
     signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
 ): void {
+  // The kernel reports this process exited, even one whose Worker never
+  // started (killed while held on a credential answer).
+  credentialPolicy?.processEnded(pid);
   void finishProcessExit(
     pid,
     exitStatus,
@@ -3524,6 +3712,9 @@ async function finishProcessExit(
   if (!expectedWorker) return;
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
+  // This exact generation is ending, whichever path reports it: end the
+  // image a grant or an open credential question was for.
+  credentialPolicy?.processEnded(pid);
   if (processTeardowns.has(expectedWorker)) return;
   vmInterruptTimers.clear(pid, info);
 
@@ -4279,6 +4470,12 @@ async function handleDestroy(
   // every creator already in flight, and runs this terminal sweep only once.
   // Browser main still terminates this whole worker realm on timeout.
   const destroy = processMemoryCreators.closeAndRunAfterDrain(performDestroy);
+  // A launch held on a credential answer is a creator in flight; deny every
+  // open question now, after admission closed, so the drain can finish.
+  credentialPolicy?.close();
+  // close() ended every grant and announced each to the service worker.
+  credentialGate?.close();
+  credentialGate = null;
   // Closing the creator gate happens synchronously. Cancel allocations before
   // awaiting its drain, including a constructor stalled in its own realm.
   processMemoryFactory?.dispose();
@@ -4489,6 +4686,10 @@ const sw = globalThis as unknown as {
 sw.onmessage = (e: MessageEvent) => {
   const msg = e.data as MainToKernelMessage;
   if (handleRemoteNetworkMessage(remoteSegmentRuntime, msg, initReady, respond, respondError)) return;
+  if (isCredentialMainMessage(msg)) {
+    dispatchCredentialMainMessage(credentialPolicy, msg, respond, respondError);
+    return;
+  }
   switch (msg.type) {
     case "init":
       void handleInit(msg).catch((err) => {

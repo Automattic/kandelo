@@ -231,14 +231,18 @@ test("Kandelo identifies a built-in VFS image only by its exact source", async (
   });
 });
 
-test("Kandelo service worker app probe does not capture the shell page client", async ({ page }) => {
+test("a computer/ request from the shell page does not capture the shell", async ({ page }) => {
+  // Guest pages live on the preview origin. A request the Kandelo page itself
+  // makes under computer/ is refused by Kandelo's service worker, and must
+  // never turn the shell into something routed into a machine.
   await gotoMachine(page, "shell");
 
-  await installDummyAppBridge(page);
-  await page.evaluate(async () => {
-    const response = await fetch("/app/", { cache: "no-store" });
-    await response.text();
+  const refused = await page.evaluate(async () => {
+    const response = await fetch("/computer/able-amber-acorn-lfd5pqz5pa7zjm5uyguw/", { cache: "no-store" });
+    return { status: response.status, body: await response.text() };
   });
+  expect(refused.status).toBe(404);
+  expect(refused.body).toContain("preview origin");
 
   await page.goto(appUrl("/?vfs=https%3A%2F%2Fcdn.example.invalid%2Fshell.vfs.zst"), {
     waitUntil: "domcontentloaded",
@@ -249,57 +253,22 @@ test("Kandelo service worker app probe does not capture the shell page client", 
   expect(url.searchParams.get("vfs")).toBe("https://cdn.example.invalid/shell.vfs.zst");
 });
 
-async function installDummyAppBridge(page: import("@playwright/test").Page): Promise<void> {
-  await page.evaluate(async () => {
-    if (!("serviceWorker" in navigator)) {
-      throw new Error("Service workers unavailable");
-    }
+test("a shared address for a computer no tab runs takes its frame down and says so", async ({ page }) => {
+  // The viewer shell (what `<scope>computer/<name>/` opens on Kandelo's
+  // origin) embeds the machine from the preview origin. With no owning tab,
+  // the preview worker reports the machine offline; the viewer must not
+  // keep a frame on screen for it.
+  await page.goto(appUrl("/computer/able-amber-acorn-lfd5pqz5pa7zjm5uyguw/"), { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".kviewer-status")).toContainText("no longer running", { timeout: 60_000 });
+  await expect(page.locator(".kviewer-frame")).toHaveCount(0);
+  expect(page.frames().filter((frame) => frame !== page.mainFrame() && frame.url().includes("/computer/")))
+    .toEqual([]);
+});
 
-    await navigator.serviceWorker.register("/service-worker.js", {
-      scope: "/",
-      updateViaCache: "none",
-    });
-    await navigator.serviceWorker.ready;
-    const controller = navigator.serviceWorker.controller ?? await new Promise<ServiceWorker>((resolve, reject) => {
-      const timeout = window.setTimeout(() => {
-        navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-        reject(new Error("Timed out waiting for service worker control"));
-      }, 10_000);
-      const onControllerChange = () => {
-        const next = navigator.serviceWorker.controller;
-        if (!next) return;
-        window.clearTimeout(timeout);
-        navigator.serviceWorker.removeEventListener("controllerchange", onControllerChange);
-        resolve(next);
-      };
-      navigator.serviceWorker.addEventListener("controllerchange", onControllerChange);
-    });
-
-    const bridge = new MessageChannel();
-    bridge.port1.onmessage = (event) => {
-      const msg = event.data;
-      if (msg?.type !== "http-request") return;
-      bridge.port1.postMessage({
-        type: "http-response",
-        requestId: msg.requestId,
-        status: 200,
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-        body: new TextEncoder().encode("<!doctype html><title>Dummy app</title>"),
-      });
-    };
-    bridge.port1.start();
-
-    const reply = new MessageChannel();
-    await new Promise<void>((resolve) => {
-      reply.port1.onmessage = () => resolve();
-      controller.postMessage(
-        {
-          type: "init-bridge",
-          appPrefix: "/app/",
-          sessionId: crypto.randomUUID(),
-        },
-        [bridge.port2, reply.port2],
-      );
-    });
-  });
-}
+test("an old three-word computer link says it no longer works", async ({ page }) => {
+  // Names now commit to their owner's secret; three-word names from before
+  // that never name a computer, and must not resolve to some other one.
+  await page.goto(appUrl("/computer/able-amber-acorn/wp-admin/"), { waitUntil: "domcontentloaded" });
+  await expect(page.locator(".kviewer-status")).toContainText("older Kandelo computer address", { timeout: 30_000 });
+  await expect(page.locator(".kviewer-frame")).toHaveCount(0);
+});

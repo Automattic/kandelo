@@ -97,6 +97,10 @@ name = "cli11"
 class = "platform"
 
 [[packages]]
+name = "codex"
+class = "user-software"
+
+[[packages]]
 name = "coreutils"
 class = "user-software"
 

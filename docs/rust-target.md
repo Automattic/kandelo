@@ -27,6 +27,8 @@ Verified on the kernel (see `programs/rust/*`):
 | stdio, formatting | `println!`, `eprintln!` | |
 | args, env | `std::env::args`, `std::env::var` | via `lang_start` |
 | files | `std::fs`, `std::io` | open/read/write/stat/dirs |
+| descriptor ownership | `File::try_clone`, `OwnedFd::try_clone` | shared offsets, distinct close-on-exec descriptors |
+| file locking | `File::lock`, `lock_shared`, `try_lock`, `try_lock_shared`, `unlock` | `flock`; independent opens contend, clones share the lock |
 | time | `std::time::Instant`, `SystemTime` | monotonic + realtime |
 | collections/rand | `HashMap` | getrandom-seeded SipHash |
 | threads | `std::thread`, `Mutex`, `Arc` | pthread→clone, futex, TLS |
@@ -119,9 +121,10 @@ in a private sysroot:
   (`linker = wasm32posix-cc`, `entry-name = __main_argc_argv`), and bakes
   in `+atomics,+bulk-memory`.
 - `sdk/rust/libc-upstream/` (submodule, `rust-lang/libc` pinned to the
-  version `std` uses) + `sdk/rust/libc-kandelo.patch` (our delta:
+  SDK's selected version for both `std` and guests) +
+  `sdk/rust/libc-kandelo.patch` (our delta:
   `kandelo` arms reusing linux-musl bindings + a reconciled wasm32 arch
-  leaf). The crate is NOT vendored; the fork is assembled at build time
+  leaf, with ILP32 signal and pthread layouts). The crate is NOT vendored; the fork is assembled at build time
   (submodule + patch), mirroring how `build-musl.sh` overlays
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
@@ -137,6 +140,32 @@ in a private sysroot:
   `-Zunstable-options` (rustc resolves a custom target by name from the
   sysroot only with that flag);
   `scripts/export-rust-overlay.sh` captures std-overlay edits.
+
+The SDK pins its libc source independently of the toolchain's original
+`rust-src` lockfile. The sysroot builder updates only that lockfile's libc
+entry to the SDK fork and verifies that it resolved a path dependency.
+This keeps `std` and guest dependencies on the same Kandelo bindings when
+the SDK needs a newer compatible libc release. The current pin is 0.2.186.
+The installed standard-library archives retain LLVM bitcode so downstream
+release profiles can use link-time optimization with the prebuilt sysroot.
+The descriptor overlay enables `File::try_clone`, `OwnedFd::try_clone`, and
+`BorrowedFd::try_clone_to_owned` through Kandelo's existing
+`fcntl(F_DUPFD_CLOEXEC)` implementation. Upstream's blanket wasm32 exclusion
+does not apply to this POSIX target. Clones own separate close-on-exec
+descriptors while sharing the open file description and its offset.
+File locking likewise uses the existing Unix `flock` implementation.
+Independent opens contend for exclusive locks; shared locks coexist, and
+nonblocking contention returns `TryLockError::WouldBlock`. Descriptor clones
+share their open-file-description lock.
+
+The libc overlay must match Kandelo’s installed C headers, rather than
+WALI’s 64-bit-long assumptions for wasm32. Signal masks occupy 128 bytes;
+`sigaction` therefore places its flags at byte 132. Pthread attributes,
+mutexes, rwlocks, barriers, and semaphores use the ILP32 musl sizes. These
+are corrections to the Rust mirror of the existing C ABI; the C/kernel
+ABI remains unchanged. The C/Rust interop fixture compares sizes and
+alignments against the installed headers and exercises a C-raised signal
+with a Rust three-argument `SA_SIGINFO` handler.
 
 First checkout: `git submodule update --init sdk/rust/libc-upstream`.
 
@@ -213,7 +242,7 @@ and `docs/plans/2026-09-07-rust-std-target-implementation.md`.
 
 ## Status
 
-Full-`std` parity is demonstrated. Remaining hardening: reconcile the
-remaining WALI-derived constants/syscall numbers in the wasm32 libc leaf
-to Kandelo's ABI (none has affected the demonstrated surface), and
-upstream the target as tier-3.
+The fixtures exercise the `std` surface listed above. Remaining hardening:
+audit other inherited WALI constants and layouts against Kandelo’s ABI,
+and upstream the target as tier-3. These checks do not imply complete
+`std` or libc parity.
