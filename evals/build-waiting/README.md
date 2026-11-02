@@ -158,6 +158,66 @@ toward the "recorded exit status is wrong" harm signal (1 session so far).
   `./run.sh setup`, `./run.sh local-build`, `ci-run-test-suite.sh`, and
   dev-shell vitest runs.
 
+### 1a. Waiting skill and session-specific start hints (2026-11-02)
+
+Plan committed before writing `waiting-on-kandelo-jobs`. The mechanism
+already exists; this change tests whether a discoverable skill gets agents
+to choose the right waiter. On 2026-11-02 a main session used `start`, then
+hand-written Monitor loops over status files, checking every 30-60 seconds
+and expiring every 30 minutes. Each expiry needed a re-arm turn. This is
+one reported incident, not a measured transcript baseline.
+
+- **Exposure:** record whether the skill was available and loaded, plus
+  whether the new `start` hint was present. Compare with same-window
+  sessions without the skill and the preceding 14 days. Keep job duration,
+  command family, hook version and session type alongside each record.
+  Do not attribute a combined skill/hint effect to either alone.
+- **Measure:** run `wait-impact.py --since <date> --until <date> --json`
+  and `--examples 10` over local transcripts. Report wait-turn count and
+  wait-token share, sleeps, PID/name waiters, peer waits, collisions,
+  edits during validation and empty suites. Its long-job cutoff is two
+  minutes; manually restrict this evaluation to jobs expected to exceed
+  ten minutes. Preserve raw reports locally, outside tracked source.
+- **Manual annotations:** the analyzer groups main sessions and subagents,
+  but does not distinguish interactive from headless mains or detect
+  Monitor loops, re-arms, skill exposure or lost results reliably. Review
+  each eligible job's tool calls and completion output. Record interactive
+  main, headless main, or subagent; own or peer job; waiter launches;
+  re-arm turns (restarting an expired waiter); Monitor/status-file/list
+  polling incidents; and lost or incorrectly reported results. Count one
+  loop as one incident, and report unknown session types separately.
+- **Controlled check:** add read-only tasks to `evals/agent-skills` for
+  interactive, headless, subagent and peer waiting. Run the skill-on/off
+  comparison and read the saved answers, not just regex scores. Require
+  correct exit/result handling first; compare turns and cost second.
+  These advice tasks do not prove actual interactive notification delivery.
+- **Judge:** review after the first five eligible interactive sessions,
+  and separately after five headless sessions and five subagent build
+  requests. Publish a checkpoint on 2026-11-16 even if samples are short;
+  mark unfilled groups pending rather than claiming success. Review the
+  controlled check before landing, and retain its sample size and limits.
+- **Keep if:** the controlled answers are at least as correct with the
+  skill, with a strict improvement on at least one waiting decision;
+  at least four of five interactive sessions use one background
+  `wait <id> --timeout 0` per job, median re-arms are zero, no session
+  writes a Monitor/sleep/status polling loop, and median wait turns per
+  job are at most one. Wait-token share should fall by at least half
+  against comparable sessions without the skill. Headless sessions must
+  all collect final status through foreground waits without ending early;
+  subagents must all return whole-tree build needs to their parent.
+- **Revise/remove:** any lost result, wrong-session waiter, collision or
+  invalid validation claim caused by the advice triggers revision. Revise
+  once if a filled group's keep rule fails, then judge the next five of
+  that type; remove the skill if it fails again. Remove the extra start
+  hint if it remains unused or misleading after that revision. If skill-on
+  never improves a decision in the controlled check, revise once and
+  rerun before keeping it. Higher cost without better correctness or
+  fewer waiting turns is a failure, not a saving.
+
+Do not extend the wait-guard hook in this experiment. A follow-up that
+blocks Monitor/background loops needs its own baseline, denial-precision
+and evasion measures under tool 8, including legitimate monitor commands.
+
 ### 1b. Waiting on another workspace's build: `list --all`, commits, `wait --peer`
 
 Several Conductor workspaces on one machine often build the same tree, and
