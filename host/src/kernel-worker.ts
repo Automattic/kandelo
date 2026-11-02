@@ -437,6 +437,18 @@ const ENOTSUP = 95;
  *  host: the kernel half of MAP_SHARED has no host fallback. */
 const MISSING_SHARED_MAPPING_EXPORT =
   "Kernel lacks the shared-mapping exports";
+/**
+ * `kernel_shared_mapping_sync_process` `force` value for the completion
+ * boundary of a syscall whose entry boundary was the previous call for the
+ * process and which delivered no output bytes: the host attests that no guest
+ * code of the process ran and that it wrote nothing into the process's memory
+ * since that call returned. The kernel adds its own conditions and may then
+ * skip comparing mappings it proved unchanged at the entry. Kept beside the
+ * kernel's copy, `SHARED_MAPPING_SYNC_UNCHANGED` in
+ * `crates/runtime-core/src/memory.rs`, whose `BoundaryRecord` documents the
+ * proof. An older kernel reads it as a forced sync: correct, only slower.
+ */
+const KERNEL_SHARED_MAPPING_SYNC_UNCHANGED = 2;
 const ETIMEDOUT = 110;
 const EHOSTUNREACH = 113;
 const EALREADY = 114;
@@ -3206,6 +3218,42 @@ export class CentralizedKernelWorker {
    * the predicate without a kernel that actually holds mappings.
    */
   private kernelSharedMappingPids = new Set<number>();
+
+  /**
+   * Serial of the latest `kernel_shared_mapping_sync_process` call per pid,
+   * from one counter that never repeats. With
+   * `#kernelSharedEntryRecords` it tells a completion boundary whether
+   * the previous call for its process was its own syscall's entry boundary;
+   * only then may it pass `KERNEL_SHARED_MAPPING_SYNC_UNCHANGED`.
+   */
+  #kernelSharedSyncSerial = 0;
+  #kernelSharedSyncSerialByPid = new Map<number, number>();
+  /**
+   * What a channel's current request recorded at its entry boundary, when
+   * every other agent on its memory was parked: the kernel sync serial and
+   * the memory's run epoch.
+   */
+  #kernelSharedEntryRecords = new WeakMap<
+    ChannelInfo,
+    { readonly serial: number; readonly runEpoch: number }
+  >();
+  /**
+   * Per process memory, a counter of every event that can release guest code
+   * onto it: a published syscall completion, a registered process (including
+   * a vfork child borrowing the memory) and an attached thread channel.
+   * Kernel-direct wait completions never apply to a process with a shared
+   * mapping (`publish_transfer_directly` in crates/kernel/src/wasm_api.rs),
+   * so `publishPreparedChannelCompletion` is the only resume path that
+   * matters here.
+   */
+  #memoryRunEpochs = new WeakMap<WebAssembly.Memory, number>();
+  /**
+   * Channels whose pending completion comes from a path that writes no
+   * process bytes except the completion's own `outputWrites`: the generic
+   * kernel dispatch and the opaque-record path (whose results go only to the
+   * syscall channel). Every other completion path is excluded by default.
+   */
+  #unchangedCompletionCandidates = new WeakSet<ChannelInfo>();
 
   /** PTY index → pid mapping (for draining output after syscalls) */
   private ptyIndexByPid = new Map<number, number>();
@@ -7054,6 +7102,7 @@ export class CentralizedKernelWorker {
           pid, memory, channels, execGeneration, borrowedAddressSpace,
           ptrWidth, explicitMaxAddr: explicitMaxAddr !== undefined,
         };
+        this.#noteGuestMayRun(memory);
         kernelEntryIntrinsicObjectDefineProperty(registration, "execGeneration", {
           value: execGeneration,
           writable: false, configurable: false, enumerable: true,
@@ -9947,6 +9996,7 @@ export class CentralizedKernelWorker {
 
     try {
       registration.channels.push(channel);
+      this.#noteGuestMayRun(registration.memory);
       this.activeChannels.push(channel);
       this.channelTids.set(channelKey, tid);
       this.threadForkContexts.set(channelKey, { fnPtr, argPtr });
@@ -11959,7 +12009,10 @@ export class CentralizedKernelWorker {
     // Separate Wasm memories cannot observe MAP_SHARED/SysV writes directly.
     // Treat every guest→kernel transition as a coherence boundary: merge only
     // bytes changed since this process's snapshot, then import peer updates.
-    this.synchronizeSharedMemoryForBoundary(channel, entry);
+    this.#recordBoundaryEntry(
+      channel,
+      this.synchronizeSharedMemoryForBoundary(channel, false, entry),
+    );
     const mayFlushSharedBacking = (this.sharedMmapBackings?.size ?? 0) > 0;
     const flushedSharedBacking = !mayFlushSharedBacking
       || this.flushSharedMappingsBeforeFileSyscall(
@@ -13867,6 +13920,11 @@ export class CentralizedKernelWorker {
             ),
         );
       }
+      // The generic dispatch delivers its outputs only through
+      // `kernelResult.outputWrites`; the post-processing above writes only
+      // memory the host owns (new mapping populations, DRI buffers, host-owned
+      // shared mappings, the signal record in the channel).
+      this.#unchangedCompletionCandidates.add(channel);
       this.completeChannel(
         channel,
         syscallNr,
@@ -14042,6 +14100,9 @@ export class CentralizedKernelWorker {
           + this.formatSyscallReturn(syscallNr, publicationRetVal, normErr),
       );
     }
+    // The record's results went into the syscall channel only; the guest
+    // copies them to its own pointers after it resumes, as guest code.
+    this.#unchangedCompletionCandidates.add(channel);
     this.completeChannel(
       channel,
       syscallNr,
@@ -14373,6 +14434,7 @@ export class CentralizedKernelWorker {
     // The copied signal record now belongs to the guest. A later syscall may
     // dequeue another signal after this boundary has actually been observed.
     this.resumePreparedSignals?.delete(channel);
+    this.#noteGuestMayRun(channel.memory);
     const i32View = new KernelEntryIntrinsicInt32Array(
       buffer,
       channel.channelOffset,
@@ -14400,6 +14462,10 @@ export class CentralizedKernelWorker {
   ): void {
     if (prepared.materialized) return;
 
+    const unchangedSinceEntry = this.#takeUnchangedSinceEntry(
+      channel,
+      prepared,
+    );
     const processMem = new Uint8Array(channel.memory.buffer);
     for (const write of prepared.outputWrites) {
       processMem.set(write.bytes, write.ptr);
@@ -14407,7 +14473,11 @@ export class CentralizedKernelWorker {
     prepared.outputWrites = [];
 
     try {
-      this.synchronizeSharedMemoryForBoundary(channel, entry);
+      this.synchronizeSharedMemoryForBoundary(
+        channel,
+        unchangedSinceEntry,
+        entry,
+      );
     } catch (err) {
       this.#rethrowKernelEntryFatal(err);
       console.error(
@@ -23647,6 +23717,9 @@ export class CentralizedKernelWorker {
       | ((pid: number, force: number) => number)
       | undefined;
     if (!syncProcess) throw new Error(MISSING_SHARED_MAPPING_EXPORT);
+    // Every call counts, whatever it returns: the kernel keeps its proof
+    // only across consecutive calls, and so must the host's claim.
+    this.#kernelSharedSyncSerialByPid.set(pid, ++this.#kernelSharedSyncSerial);
     return syncProcess(pid, force);
   }
 
@@ -23854,7 +23927,10 @@ export class CentralizedKernelWorker {
       );
     }
     if (count > 0) this.kernelSharedMappingPids.add(pid);
-    else this.kernelSharedMappingPids.delete(pid);
+    else {
+      this.kernelSharedMappingPids.delete(pid);
+      this.#kernelSharedSyncSerialByPid.delete(pid);
+    }
   }
 
   /** Validate a 0-or-negative-errno result from a shared-mapping export. */
@@ -23971,39 +24047,131 @@ export class CentralizedKernelWorker {
     return { kind: "error", errno };
   }
 
+  /**
+   * Synchronize one process's shared mappings at a syscall boundary.
+   *
+   * `unchangedSinceEntry` is set only by a completion boundary that
+   * `#takeUnchangedSinceEntry` vouched for. It changes nothing on the host
+   * side; it lets the kernel skip comparisons it can prove would find
+   * nothing (see `KERNEL_SHARED_MAPPING_SYNC_UNCHANGED`).
+   *
+   * Returns the serial of the kernel sync call this boundary made, or
+   * `undefined` when it made none.
+   */
   private synchronizeSharedMemoryForBoundary(
     process: Pick<ChannelInfo, "pid" | "memory">,
+    unchangedSinceEntry: boolean,
     entry?: KernelWorkerEntryContext,
-  ): void {
+  ): number | undefined {
     const testHook =
       this.#scratchBoundaryTestHooks?.synchronizeSharedMemoryForBoundary;
     if (testHook) {
       testHook(process);
-      return;
+      return undefined;
     }
     const registration = this.processes?.get(process.pid);
-    if (registration && registration.memory !== process.memory) return;
-    if (this.processes && !registration) return;
+    if (registration && registration.memory !== process.memory) return undefined;
+    if (this.processes && !registration) return undefined;
     const ownsKernelSharedMappings =
       this.#processOwnsKernelSharedMappings(process.pid);
     if (
       (this.sharedMappings?.size ?? 0) === 0
       && !ownsKernelSharedMappings
-    ) return;
+    ) return undefined;
     this.syncAnonymousSharedMappingsFromProcess(process);
     this.syncFileSharedMappingsFromProcess(process, {}, entry);
     // Cross into the kernel only for a process that holds kernel-owned shared
     // mappings. The kernel returns immediately for one that holds none, but
     // the call itself would otherwise be paid at every boundary of every
     // process.
-    if (
-      ownsKernelSharedMappings
-      && !this.#syncKernelSharedMappingsForProcess(process.pid, false, entry)
-    ) {
+    if (!ownsKernelSharedMappings) return undefined;
+    const result = this.#ksmSyncProcess(
+      process.pid,
+      unchangedSinceEntry ? KERNEL_SHARED_MAPPING_SYNC_UNCHANGED : 0,
+      entry,
+    );
+    if (this.#kernelSharedMappingResult("sync", result) !== 0) {
       throw new Error(
         `Cannot synchronize kernel shared mappings for pid=${process.pid}`,
       );
     }
+    return this.#kernelSharedSyncSerialByPid.get(process.pid);
+  }
+
+  /**
+   * Record the entry boundary of the request now being handled on `channel`.
+   * Any completion claim left by an earlier request is discarded first.
+   */
+  #recordBoundaryEntry(channel: ChannelInfo, serial: number | undefined): void {
+    this.#unchangedCompletionCandidates.delete(channel);
+    if (serial === undefined || !this.#otherAgentsParked(channel)) {
+      this.#kernelSharedEntryRecords.delete(channel);
+      return;
+    }
+    this.#kernelSharedEntryRecords.set(channel, {
+      serial,
+      runEpoch: this.#memoryRunEpochs.get(channel.memory) ?? 0,
+    });
+  }
+
+  #noteGuestMayRun(memory: WebAssembly.Memory): void {
+    this.#memoryRunEpochs.set(memory, (this.#memoryRunEpochs.get(memory) ?? 0) + 1);
+  }
+
+  /**
+   * Whether no guest code other than `channel`'s own (parked) thread can be
+   * running on its memory: every other thread channel of the process sits at
+   * `CH_PENDING` (its thread is blocked in a syscall) and no other process,
+   * such as a vfork child, borrows the memory.
+   */
+  #otherAgentsParked(channel: ChannelInfo): boolean {
+    const registration = this.processes?.get(channel.pid);
+    if (!registration || registration.memory !== channel.memory) return false;
+    for (const other of registration.channels) {
+      if (other === channel) continue;
+      if (Atomics.load(other.i32View, CH_STATUS / 4) !== CH_PENDING) return false;
+    }
+    for (const other of this.processes.values()) {
+      if (other !== registration && other.memory === channel.memory) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Whether the completion about to be materialized on `channel` may tell the
+   * kernel that nothing changed its process's memory since the entry
+   * boundary. Consumes the channel's entry record either way.
+   *
+   * All of these must hold:
+   * - the completion comes from a path that writes process bytes only
+   *   through `outputWrites` (see `#unchangedCompletionCandidates`), and it
+   *   has none to write;
+   * - this request's entry boundary called the kernel, and no kernel sync of
+   *   the process happened since (`#kernelSharedSyncSerialByPid`). The caller
+   *   thread was parked inside this syscall for that whole interval;
+   * - every other agent on the memory was parked at that entry and still is
+   *   (`#otherAgentsParked`), and nothing released guest code onto the
+   *   memory in between (`#memoryRunEpochs`). A sibling that resumed and
+   *   parked again would have changed the epoch.
+   *
+   * Host writes outside a completion (DRI buffer copies, host-owned shared
+   * mappings, the syscall channel) target memory the address space never
+   * lets overlap a kernel-owned mapping, and the kernel records its own
+   * syscall writes.
+   */
+  #takeUnchangedSinceEntry(
+    channel: ChannelInfo,
+    prepared: PreparedChannelCompletion,
+  ): boolean {
+    const candidate = this.#unchangedCompletionCandidates.delete(channel);
+    const record = this.#kernelSharedEntryRecords.get(channel);
+    this.#kernelSharedEntryRecords.delete(channel);
+    return candidate
+      && prepared.outputWrites.length === 0
+      && record !== undefined
+      && this.#kernelSharedSyncSerialByPid.get(channel.pid) === record.serial
+      && (this.#memoryRunEpochs.get(channel.memory) ?? 0) === record.runEpoch
+      && this.#otherAgentsParked(channel);
   }
 
   /**

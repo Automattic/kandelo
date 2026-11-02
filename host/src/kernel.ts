@@ -3956,7 +3956,8 @@ export class WasmPosixKernel {
         // `addr` arrives as a BigInt and is checked at width 8 for the same
         // reason as `host_proc_write_bytes` above.
         // The immutable snapshot span is lent by Rust for this import only.
-        // Equal means an observed comparison, never a persistent no-write epoch.
+        // Equal is one observation. The kernel carries it forward only under
+        // its own boundary proof (`BoundaryRecord` in runtime-core memory.rs).
         host_proc_compare_bytes: (
           pid: number,
           addr: bigint,

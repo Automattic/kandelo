@@ -234,6 +234,7 @@ host/test/kernel-scratch-contract.test.ts	source-only
 host/test/kernel-scratch-region.test.ts	source-only
 host/test/kernel-scratch-runtime.test.ts	prepared-product
 host/test/kernel-scratch-transfer-boundaries.test.ts	source-only
+host/test/kernel-shared-mapping-boundary-proof.test.ts	prepared-product
 host/test/kernel-shared-memory-inheritance-entry.test.ts	source-only
 host/test/kernel-teardown-pipe-entry.test.ts	source-only
 host/test/kernel-telemetry-entry.test.ts	source-only
