@@ -156,6 +156,15 @@ test.describe("ScummVM's ordinary Wayland GLES launcher inside Sway", () => {
       expect(quitRow, "portrait launcher row with Quit, About and Global Options").toBeDefined();
       about = quitRow!.sort((a, b) => a.x - b.x)[1];
     }
+    // The terminal click above captured the browser pointer. A locked
+    // pointer reports only relative movement, and each engine derives a
+    // synthetic absolute move's delta differently: Chromium from the
+    // previous position, Firefox from the point it re-centres the hidden
+    // cursor on. An absolute target is only meaningful uncaptured, so
+    // release capture as other absolute-input checks do, without sending
+    // the Escape key to the focused ScummVM window.
+    await page.evaluate(() => { if (document.pointerLockElement) document.exitPointerLock(); });
+    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
     const box = (await canvas(page).boundingBox())!;
     await canvas(page).click({ position: {
       x: (about.x + about.width / 2) * box.width / launcher.width,
