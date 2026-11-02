@@ -26,6 +26,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import shlex
 import signal
 import subprocess
 import sys
@@ -76,6 +77,29 @@ class JobsDirCase(unittest.TestCase):
 
 
 class AgentJobTest(JobsDirCase):
+    def test_start_prints_executable_wait_hints_for_both_session_types(self):
+        started = self.agent_job("start", "--", "sleep 0.1; echo hint-result; exit 7").stdout
+        job_id = started.splitlines()[0]
+        hints = {line.split(": ", 1)[0].strip(): line.split(": ", 1)[1]
+                 for line in started.splitlines() if line.startswith("  ")}
+        self.assertEqual(set(hints), {"interactive main", "headless/subagent"}, started)
+        self.assertIn("run_in_background: true", hints["interactive main"])
+        self.assertIn("--timeout 0", hints["interactive main"])
+        self.assertIn("one completion notification", hints["interactive main"])
+        self.assertIn("foreground", hints["headless/subagent"])
+        self.assertIn("repeat on exit 124", hints["headless/subagent"])
+        self.assertIn("never end the turn", hints["headless/subagent"])
+        for session_type, hint in hints.items():
+            with self.subTest(session_type=session_type):
+                # Execute the printed command, not a separately constructed
+                # equivalent: a wrong id/flag must not give usable advice.
+                command = shlex.split(hint.split("  (", 1)[0])
+                waited = subprocess.run([sys.executable, *command], cwd=self.cwd, env=self.env,
+                                        capture_output=True, text=True, timeout=30)
+                self.assertEqual(waited.returncode, 7, waited.stdout + waited.stderr)
+                self.assertIn(f"{job_id}: FAILED (exit 7)", waited.stdout)
+                self.assertIn("hint-result", waited.stdout)
+
     def test_multi_word_command_keeps_inner_bash_c_script_whole(self):
         # The 2026-10-01 shape: a wrapper, then `bash -c` with a script that
         # has spaces and `&&`. The whole script must run in the inner shell.

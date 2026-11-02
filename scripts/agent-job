@@ -456,7 +456,11 @@ def cmd_start(args):
     write_json(os.path.join(d, "meta.json"), meta)
     usual = f"; usually takes {fmt_secs(meta['usual_duration'])}" if meta["usual_duration"] else ""
     print(f"{job_id}\nlog: {os.path.join(d, 'output.log')}{usual}\n"
-          f"wait with: {sys.argv[0]} wait {job_id}   (repeat if it exits 124; do not poll)")
+          f"wait with (choose your session type; do not poll):\n"
+          f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
+          f"(Bash run_in_background: true; act on one completion notification)\n"
+          f"  headless/subagent: {shlex.quote(sys.argv[0])} wait {job_id}  "
+          f"(foreground; repeat on exit 124; never end the turn to wait)")
 
 
 def peer_job(text):
