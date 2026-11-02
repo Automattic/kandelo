@@ -212,7 +212,11 @@ async function paint(page: Page, savedPager?: PagerCell, menuEdge?: number): Pro
     if (menuEdge !== undefined)
       for (let y = 0; y < height; y++)
         for (let x = 0; x < Math.min(menuEdge, width); x++) menuMask[y * width + x] = 0;
-    const menus = components(menuMask).filter(r => r.width >= 80 && r.width < 450
+    // A text row needs only 5 bright pixels across the menu: short
+    // antialiased labels such as the window-operations menu's "focus"
+    // reach 8 in just their first and last rows, which then count as no
+    // row at all (that menu measured 3 rows for its 4 entries).
+    const menus = components(menuMask, 35, 5).filter(r => r.width >= 80 && r.width < 450
       && r.height >= 24 && r.height < 350 && r.textRows > 0);
     const highlights = colored.filter(r => start && r.y + r.height < start.y
       && r.width >= 80 && r.width < 450 && r.height < 65 && r.textRows === 1);
