@@ -12,9 +12,19 @@ const scene = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidde
 const owner = async (page: Page) => Number(await page.locator(".kmachine-primary .kmodeset-surface")
   .getAttribute("data-kms-owner-pid"));
 
+/** Release browser pointer capture before using controls outside the guest.
+ * Do not press Escape for this. The app's Escape handler releases capture,
+ * but the same key also reaches the focused guest window, as Escape over
+ * the display always does. There it lands in the shell, often while the
+ * previous command still runs, and bash's readline joins it with the next
+ * typed character as a Meta chord: Escape+s dropped the first "s" of
+ * "sfw_snap", and Escape+P opened a history search that swallowed the
+ * whole "PS1=..." command. Release through the document instead, as the
+ * Freeciv absolute-input checks do, so the guest receives no key.
+ */
 async function releasePointer(page: Page) {
   if (await page.evaluate(() => document.pointerLockElement !== null)) {
-    await page.keyboard.press("Escape");
+    await page.evaluate(() => document.exitPointerLock());
     await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
   }
 }
