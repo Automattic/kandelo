@@ -13,16 +13,19 @@
  *
  * Operation-table v2 adds the GLES2 texture, framebuffer, reflection,
  * uniform and depth/stencil commands needed by native renderers while
- * preserving the v1 command layouts.
+ * preserving the v1 command layouts. Version 3 adds the OpenGL ES 3.0
+ * commands. Where WebGL2 has no equivalent (buffer mapping, a client-side
+ * fence wait), the functions below say how they emulate it.
  */
 
-#include <GLES2/gl2.h>
+#include <GLES3/gl3.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 
 #include "gl_abi.h"
 
@@ -33,6 +36,19 @@ static uint8_t *g_cursor = NULL;
  * glTexSubImage2D can size source rows when splitting an upload into
  * u16-payload records. */
 static GLint g_unpack_alignment = 4;
+/* The other client-memory unpack parameters. A client upload is sent as
+ * tightly packed rows (see `unpack_source`), so the host applies none of
+ * them to it. */
+static GLint g_unpack_row_length = 0;
+static GLint g_unpack_image_height = 0;
+static GLint g_unpack_skip_pixels = 0;
+static GLint g_unpack_skip_rows = 0;
+static GLint g_unpack_skip_images = 0;
+/* The pack parameters, applied the same way to client-memory reads. */
+static GLint g_pack_alignment = 4;
+static GLint g_pack_row_length = 0;
+static GLint g_pack_skip_pixels = 0;
+static GLint g_pack_skip_rows = 0;
 
 /* An error this library raises itself, without a host round trip
  * (glShaderBinary, a client-array draw it cannot stage). GL records the
@@ -146,13 +162,18 @@ void glGenBuffers(GLsizei n, GLuint *out) {
 }
 
 /* The GL_ARRAY_BUFFER binding, mirrored so glVertexAttribPointer can tell a
- * buffer offset from a client-memory pointer (see the client arrays below). */
+ * buffer offset from a client-memory pointer (see the client arrays below).
+ * The pixel buffer bindings likewise turn a pixel pointer into an offset. */
 static GLuint g_array_buffer = 0;
 static GLuint g_element_buffer = 0;
+static GLuint g_pixel_pack_buffer = 0;
+static GLuint g_pixel_unpack_buffer = 0;
 
 void glBindBuffer(GLenum target, GLuint buf) {
     if (target == GL_ARRAY_BUFFER) g_array_buffer = buf;
     if (target == GL_ELEMENT_ARRAY_BUFFER) g_element_buffer = buf;
+    if (target == GL_PIXEL_PACK_BUFFER) g_pixel_pack_buffer = buf;
+    if (target == GL_PIXEL_UNPACK_BUFFER) g_pixel_unpack_buffer = buf;
     EMIT_BEGIN(OP_BIND_BUFFER, 8)
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, (uint32_t)buf);
@@ -545,127 +566,207 @@ void glActiveTexture(GLenum unit) {
     EMIT_END()
 }
 
-/* Bytes-per-pixel for the GL (format,type) pairs we know how to
- * marshal. Returns 0 for unknown combos so glTexImage2D / glTexSubImage2D
- * drops the upload rather than emit a garbled record. Extend when a
- * demo needs a new combo. */
+/* Bytes per pixel of client pixel data in (format, type), or 0 for a pair
+ * OpenGL ES 3.0 does not define, which drops the upload rather than emit a
+ * garbled record. */
 static uint32_t bytes_per_pixel(GLenum format, GLenum type) {
-    uint32_t channels;
-    switch (format) {
-        case GL_ALPHA: case GL_LUMINANCE: case 0x1903: /* RED */
-        case 0x1902: /* DEPTH_COMPONENT */ channels = 1; break;
-        case GL_LUMINANCE_ALPHA: case 0x8227: /* RG */ channels = 2; break;
-        case GL_RGB: channels = 3; break;
-        case GL_RGBA: channels = 4; break;
-        case 0x84F9: /* DEPTH_STENCIL */ return type == 0x84FA ? 4 : 0;
-        default: return 0;
-    }
     switch (type) {
-        case GL_UNSIGNED_BYTE: return channels;
-        case GL_FLOAT: case GL_UNSIGNED_INT: return channels * 4;
-        case GL_UNSIGNED_SHORT: case 0x140B: case 0x8D61: /* half float */
-            return channels * 2;
-        case GL_UNSIGNED_SHORT_5_6_5: return format == GL_RGB ? 2 : 0;
-        case GL_UNSIGNED_SHORT_4_4_4_4: case GL_UNSIGNED_SHORT_5_5_5_1:
-            return format == GL_RGBA ? 2 : 0;
+        case GL_UNSIGNED_SHORT_5_6_5:
+        case GL_UNSIGNED_SHORT_4_4_4_4:
+        case GL_UNSIGNED_SHORT_5_5_5_1:
+            return 2;
+        case GL_UNSIGNED_INT_2_10_10_10_REV:
+        case GL_UNSIGNED_INT_10F_11F_11F_REV:
+        case GL_UNSIGNED_INT_5_9_9_9_REV:
+        case GL_UNSIGNED_INT_24_8:
+            return 4;
+        case GL_FLOAT_32_UNSIGNED_INT_24_8_REV:
+            return 8;
+        default:
+            break;
+    }
+    uint32_t size;
+    switch (type) {
+        case GL_UNSIGNED_BYTE: case GL_BYTE: size = 1; break;
+        case GL_UNSIGNED_SHORT: case GL_SHORT: case GL_HALF_FLOAT:
+        case 0x8D61: /* GL_HALF_FLOAT_OES */
+            size = 2; break;
+        case GL_UNSIGNED_INT: case GL_INT: case GL_FLOAT: size = 4; break;
         default: return 0;
     }
-}
-
-/* Source row stride under the current GL_UNPACK_ALIGNMENT. */
-static uint32_t unpack_row_stride(GLsizei width, uint32_t bpp) {
-    uint32_t row = (uint32_t)width * bpp;
-    uint32_t a = (uint32_t)g_unpack_alignment;
-    return (row + a - 1u) & ~(a - 1u);
-}
-
-/* Emit one or more OP_TEX_SUB_IMAGE_2D records for a rect upload. The
- * TLV payload-length field is u16, so uploads larger than ~64 KB are
- * split into row bands; each band's data is sized to the GL client
- * image layout ((rows-1)*stride + width*bpp) so the copy never reads
- * past the caller's last row. */
-static void emit_tex_sub_image_2d(GLenum target, GLint level,
-                                  GLint xoff, GLint yoff,
-                                  GLsizei width, GLsizei height,
-                                  GLenum format, GLenum type,
-                                  const void *data) {
-    uint32_t bpp = bytes_per_pixel(format, type);
-    if (bpp == 0 || data == NULL || width <= 0 || height <= 0) return;
-    uint32_t stride = unpack_row_stride(width, bpp);
-    uint32_t tail = (uint32_t)width * bpp;
-    uint32_t max_rows = (0xFFFFu - 36u) / stride;
-    if (max_rows == 0) return;
-    const uint8_t *src = (const uint8_t *)data;
-    for (GLsizei y = 0; y < height; ) {
-        uint32_t rows = (uint32_t)(height - y);
-        if (rows > max_rows) rows = max_rows;
-        uint32_t dlen = (rows - 1u) * stride + tail;
-        EMIT_BEGIN(OP_TEX_SUB_IMAGE_2D, 36u + dlen)
-        w_u32(&_c, (uint32_t)target);
-        w_i32(&_c, level);
-        w_i32(&_c, xoff);
-        w_i32(&_c, yoff + y);
-        w_i32(&_c, width);
-        w_i32(&_c, (int32_t)rows);
-        w_u32(&_c, (uint32_t)format);
-        w_u32(&_c, (uint32_t)type);
-        w_u32(&_c, dlen);
-        memcpy(_c, src + (uint32_t)y * stride, dlen);
-        _c += dlen;
-        EMIT_END()
-        y += (GLsizei)rows;
+    switch (format) {
+        case GL_ALPHA: case GL_LUMINANCE: case GL_RED: case GL_RED_INTEGER:
+        case GL_DEPTH_COMPONENT:
+            return size;
+        case GL_LUMINANCE_ALPHA: case GL_RG: case GL_RG_INTEGER:
+            return 2 * size;
+        case GL_RGB: case GL_RGB_INTEGER:
+            return 3 * size;
+        case GL_RGBA: case GL_RGBA_INTEGER:
+            return 4 * size;
+        default:
+            return 0;
     }
 }
 
+static uint32_t align_up(uint32_t n, uint32_t a) {
+    return (n + a - 1u) & ~(a - 1u);
+}
+
+static void emit_pixel_storei(GLenum pname, GLint param) {
+    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    w_u32(&_c, (uint32_t)pname);
+    w_i32(&_c, param);
+    EMIT_END()
+}
+
+static int unpack_params_set(void) {
+    return g_unpack_row_length || g_unpack_image_height || g_unpack_skip_pixels
+        || g_unpack_skip_rows || g_unpack_skip_images;
+}
+
+/* Set the host's row length, image height and skips for a client upload
+ * (tightly packed rows: all zero) or back to the caller's values. */
+static void host_unpack_params(int caller) {
+    if (!unpack_params_set()) return;
+    emit_pixel_storei(GL_UNPACK_ROW_LENGTH, caller ? g_unpack_row_length : 0);
+    emit_pixel_storei(GL_UNPACK_IMAGE_HEIGHT, caller ? g_unpack_image_height : 0);
+    emit_pixel_storei(GL_UNPACK_SKIP_PIXELS, caller ? g_unpack_skip_pixels : 0);
+    emit_pixel_storei(GL_UNPACK_SKIP_ROWS, caller ? g_unpack_skip_rows : 0);
+    emit_pixel_storei(GL_UNPACK_SKIP_IMAGES, caller ? g_unpack_skip_images : 0);
+}
+
+/* Source row `y` of image `z` of a client upload, under the caller's
+ * unpack parameters (OpenGL ES 3.0 section 3.7.1). */
+static const uint8_t *unpack_source(const void *data, GLsizei width, GLsizei height,
+                                    uint32_t bpp, GLsizei y, GLsizei z) {
+    uint32_t row_pixels = g_unpack_row_length > 0 ? (uint32_t)g_unpack_row_length : (uint32_t)width;
+    uint32_t stride = align_up(row_pixels * bpp, (uint32_t)g_unpack_alignment);
+    uint32_t image_rows = g_unpack_image_height > 0 ? (uint32_t)g_unpack_image_height : (uint32_t)height;
+    return (const uint8_t *)data
+        + ((uint64_t)(uint32_t)(g_unpack_skip_images + z) * image_rows
+           + (uint32_t)(g_unpack_skip_rows + y)) * stride
+        + (uint32_t)g_unpack_skip_pixels * bpp;
+}
+
+/* Emit OP_TEX_SUB_IMAGE_2D (depth 0) or OP_TEX_SUB_IMAGE_3D records for a
+ * client-memory upload. The TLV payload length is 16-bit, so the upload is
+ * split into bands of whole rows of one image, and a row longer than one
+ * record (a 16384-texel RGBA row is 64 KiB) into bands of columns. Each
+ * band carries its rows at the host's stride: the band width aligned to
+ * GL_UNPACK_ALIGNMENT. */
+static void emit_tex_sub_image(GLenum target, GLint level,
+                               GLint xoff, GLint yoff, GLint zoff,
+                               GLsizei width, GLsizei height, GLsizei depth,
+                               GLenum format, GLenum type, const void *data, int is_3d) {
+    if (data == NULL || width <= 0 || height <= 0 || depth <= 0) return;
+    uint32_t bpp = bytes_per_pixel(format, type);
+    if (bpp == 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
+    uint32_t header = is_3d ? 44u : 36u;
+    uint32_t max_cols = (0xFFFFu - header) / bpp;
+    host_unpack_params(0);
+    for (GLsizei x = 0; x < width; ) {
+        uint32_t cols = (uint32_t)(width - x);
+        if (cols > max_cols) cols = max_cols;
+        uint32_t tail = cols * bpp;
+        uint32_t stride = align_up(tail, (uint32_t)g_unpack_alignment);
+        uint32_t max_rows = (0xFFFFu - header - tail) / stride + 1u;
+        for (GLsizei z = 0; z < depth; z++) {
+            for (GLsizei y = 0; y < height; ) {
+                uint32_t rows = (uint32_t)(height - y);
+                if (rows > max_rows) rows = max_rows;
+                uint32_t dlen = (rows - 1u) * stride + tail;
+                EMIT_BEGIN(is_3d ? OP_TEX_SUB_IMAGE_3D : OP_TEX_SUB_IMAGE_2D, header + dlen)
+                w_u32(&_c, (uint32_t)target);
+                w_i32(&_c, level);
+                w_i32(&_c, xoff + x);
+                w_i32(&_c, yoff + y);
+                if (is_3d) w_i32(&_c, zoff + z);
+                w_i32(&_c, (int32_t)cols);
+                w_i32(&_c, (int32_t)rows);
+                if (is_3d) w_i32(&_c, 1);
+                w_u32(&_c, (uint32_t)format);
+                w_u32(&_c, (uint32_t)type);
+                w_u32(&_c, dlen);
+                memset(_c, 0, dlen);
+                for (uint32_t r = 0; r < rows; r++)
+                    memcpy(_c + r * stride,
+                           unpack_source(data, width, height, bpp, y + (GLsizei)r, z) + (uint32_t)x * bpp,
+                           tail);
+                _c += dlen;
+                EMIT_END()
+                y += (GLsizei)rows;
+            }
+        }
+        x += (GLsizei)cols;
+    }
+    host_unpack_params(1);
+}
+
+/* With a GL_PIXEL_UNPACK_BUFFER bound, `data` is an offset into it and the
+ * host reads the buffer under the unpack parameters it already has. */
+static void emit_tex_sub_image_pbo(GLenum target, GLint level,
+                                   GLint xoff, GLint yoff, GLint zoff,
+                                   GLsizei width, GLsizei height, GLsizei depth,
+                                   GLenum format, GLenum type, const void *data, int is_3d) {
+    EMIT_BEGIN(is_3d ? OP_TEX_SUB_IMAGE_3D_PBO : OP_TEX_SUB_IMAGE_2D_PBO, is_3d ? 44u : 36u)
+    w_u32(&_c, (uint32_t)target);
+    w_i32(&_c, level);
+    w_i32(&_c, xoff);
+    w_i32(&_c, yoff);
+    if (is_3d) w_i32(&_c, zoff);
+    w_i32(&_c, width);
+    w_i32(&_c, height);
+    if (is_3d) w_i32(&_c, depth);
+    w_u32(&_c, (uint32_t)format);
+    w_u32(&_c, (uint32_t)type);
+    w_u32(&_c, (uint32_t)(uintptr_t)data);
+    EMIT_END()
+}
+
+/* Allocates the level (the host does so even with an unpack buffer
+ * bound), then uploads any data as glTexSubImage2D would. */
 void glTexImage2D(GLenum target, GLint level, GLint internalFormat,
                   GLsizei width, GLsizei height, GLint border,
                   GLenum format, GLenum type, const void *data) {
-    uint32_t dlen = 0;
-    if (data != NULL && width > 0 && height > 0) {
-        uint32_t bpp = bytes_per_pixel(format, type);
-        if (bpp > 0) {
-            dlen = ((uint32_t)height - 1u) * unpack_row_stride(width, bpp)
-                 + (uint32_t)width * bpp;
-        }
+    {
+        EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u)
+        w_u32(&_c, (uint32_t)target);
+        w_i32(&_c, level);
+        w_i32(&_c, internalFormat);
+        w_i32(&_c, width);
+        w_i32(&_c, height);
+        w_i32(&_c, border);
+        w_u32(&_c, (uint32_t)format);
+        w_u32(&_c, (uint32_t)type);
+        w_u32(&_c, 0);
+        EMIT_END()
     }
-    /* The TLV payload-length field is u16, so the largest single-call
-     * upload that fits is 0xFFFF - 36 (header fields) ≈ 65499 bytes.
-     * Larger uploads allocate the texture with no data here and stream
-     * the pixels through chunked OP_TEX_SUB_IMAGE_2D records below. */
-    const void *inline_data = data;
-    if (dlen > 0xFFFFu - 36u) {
-        dlen = 0;
-        inline_data = NULL;
-    }
-    EMIT_BEGIN(OP_TEX_IMAGE_2D, 36u + dlen)
-    w_u32(&_c, (uint32_t)target);
-    w_i32(&_c, level);
-    w_i32(&_c, internalFormat);
-    w_i32(&_c, width);
-    w_i32(&_c, height);
-    w_i32(&_c, border);
-    w_u32(&_c, (uint32_t)format);
-    w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, dlen);
-    if (dlen > 0) {
-        /* NULL data allocates an uninitialized texture; WebGL zero-fills,
-         * so ship zeros to keep the TLV framing and semantics aligned. */
-        if (inline_data) memcpy(_c, inline_data, dlen);
-        else memset(_c, 0, dlen);
-        _c += dlen;
-    }
-    EMIT_END()
-    if (inline_data == NULL && data != NULL) {
-        emit_tex_sub_image_2d(target, level, 0, 0, width, height,
-                              format, type, data);
-    }
+    if (g_pixel_unpack_buffer)
+        emit_tex_sub_image_pbo(target, level, 0, 0, 0, width, height, 1, format, type, data, 0);
+    else
+        emit_tex_sub_image(target, level, 0, 0, 0, width, height, 1, format, type, data, 0);
 }
 
 void glTexSubImage2D(GLenum target, GLint level, GLint xoff, GLint yoff,
                      GLsizei width, GLsizei height,
                      GLenum format, GLenum type, const void *data) {
-    emit_tex_sub_image_2d(target, level, xoff, yoff, width, height,
-                          format, type, data);
+    if (g_pixel_unpack_buffer)
+        emit_tex_sub_image_pbo(target, level, xoff, yoff, 0, width, height, 1, format, type, data, 0);
+    else
+        emit_tex_sub_image(target, level, xoff, yoff, 0, width, height, 1, format, type, data, 0);
+}
+
+void glTexSubImage3D(GLenum target, GLint level, GLint xoff, GLint yoff, GLint zoff,
+                     GLsizei width, GLsizei height, GLsizei depth,
+                     GLenum format, GLenum type, const void *data) {
+    if (g_pixel_unpack_buffer)
+        emit_tex_sub_image_pbo(target, level, xoff, yoff, zoff, width, height, depth, format, type, data, 1);
+    else
+        emit_tex_sub_image(target, level, xoff, yoff, zoff, width, height, depth, format, type, data, 1);
 }
 
 void glGenerateMipmap(GLenum target) {
@@ -686,6 +787,20 @@ void glPixelStorei(GLenum pname, GLint param) {
     if (pname == GL_UNPACK_ALIGNMENT
         && (param == 1 || param == 2 || param == 4 || param == 8)) {
         g_unpack_alignment = param;
+    }
+    if (pname == GL_PACK_ALIGNMENT
+        && (param == 1 || param == 2 || param == 4 || param == 8)) {
+        g_pack_alignment = param;
+    }
+    if (param >= 0) {
+        if (pname == GL_PACK_ROW_LENGTH) g_pack_row_length = param;
+        if (pname == GL_PACK_SKIP_PIXELS) g_pack_skip_pixels = param;
+        if (pname == GL_PACK_SKIP_ROWS) g_pack_skip_rows = param;
+        if (pname == GL_UNPACK_ROW_LENGTH) g_unpack_row_length = param;
+        if (pname == GL_UNPACK_IMAGE_HEIGHT) g_unpack_image_height = param;
+        if (pname == GL_UNPACK_SKIP_PIXELS) g_unpack_skip_pixels = param;
+        if (pname == GL_UNPACK_SKIP_ROWS) g_unpack_skip_rows = param;
+        if (pname == GL_UNPACK_SKIP_IMAGES) g_unpack_skip_images = param;
     }
     EMIT_BEGIN(OP_PIXEL_STOREI, 8)
     w_u32(&_c, (uint32_t)pname);
@@ -862,27 +977,72 @@ GLenum glCheckFramebufferStatus(GLenum target) {
     return (GLenum)status;
 }
 
+static int pack_params_set(void) {
+    return g_pack_alignment != 1 || g_pack_row_length || g_pack_skip_pixels || g_pack_skip_rows;
+}
+
+/* Set the host's pack parameters for a client read (tightly packed rows) or
+ * back to the caller's values. */
+static void host_pack_params(int caller) {
+    if (!pack_params_set()) return;
+    emit_pixel_storei(GL_PACK_ALIGNMENT, caller ? g_pack_alignment : 1);
+    emit_pixel_storei(GL_PACK_ROW_LENGTH, caller ? g_pack_row_length : 0);
+    emit_pixel_storei(GL_PACK_SKIP_PIXELS, caller ? g_pack_skip_pixels : 0);
+    emit_pixel_storei(GL_PACK_SKIP_ROWS, caller ? g_pack_skip_rows : 0);
+}
+
+/* With a GL_PIXEL_PACK_BUFFER bound, `pixels` is an offset into it. A read
+ * into client memory comes back in bands of tight rows (each sync query
+ * returns at most WPK_GL_MAX_QUERY_OUT_LEN bytes), and each row is stored
+ * under the caller's pack parameters. */
 void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height,
                   GLenum format, GLenum type, void *pixels) {
-    if (!pixels || width <= 0 || height <= 0) return;
-    /* Bytes-per-pixel sizing for the combinations this stub supports.
-     * Extend when a demo needs another (format,type) pair. */
-    uint32_t bpp = 4;
-    if (format == GL_RGB  && type == GL_UNSIGNED_BYTE) bpp = 3;
-    if (format == GL_RGBA && type == GL_FLOAT)         bpp = 16;
-    if (format == GL_RGB  && type == GL_FLOAT)         bpp = 12;
-    uint32_t out_len = (uint32_t)width * (uint32_t)height * bpp;
-    uint8_t in[24];
-    int32_t xi = x, yi = y;
-    int32_t wi = width, hi = height;
-    uint32_t fmt = (uint32_t)format, t = (uint32_t)type;
-    memcpy(in,      &xi,  4);
-    memcpy(in + 4,  &yi,  4);
-    memcpy(in + 8,  &wi,  4);
-    memcpy(in + 12, &hi,  4);
-    memcpy(in + 16, &fmt, 4);
-    memcpy(in + 20, &t,   4);
-    (void)_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, pixels, out_len);
+    if (width <= 0 || height <= 0) return;
+    if (g_pixel_pack_buffer) {
+        EMIT_BEGIN(OP_READ_PIXELS_PBO, 28)
+        w_i32(&_c, x);
+        w_i32(&_c, y);
+        w_i32(&_c, width);
+        w_i32(&_c, height);
+        w_u32(&_c, (uint32_t)format);
+        w_u32(&_c, (uint32_t)type);
+        w_u32(&_c, (uint32_t)(uintptr_t)pixels);
+        EMIT_END()
+        return;
+    }
+    uint32_t bpp = bytes_per_pixel(format, type);
+    if (bpp == 0) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_INVALID_ENUM;
+        return;
+    }
+    if (!pixels) return;
+    uint32_t tail = (uint32_t)width * bpp;
+    if (tail > WPK_GL_MAX_QUERY_OUT_LEN) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return;
+    }
+    uint32_t row_pixels = g_pack_row_length > 0 ? (uint32_t)g_pack_row_length : (uint32_t)width;
+    uint32_t stride = align_up(row_pixels * bpp, (uint32_t)g_pack_alignment);
+    uint8_t *dst = (uint8_t *)pixels + (uint32_t)g_pack_skip_rows * stride
+        + (uint32_t)g_pack_skip_pixels * bpp;
+    uint32_t max_rows = WPK_GL_MAX_QUERY_OUT_LEN / tail;
+    uint8_t *band = malloc((size_t)max_rows * tail);
+    if (!band) {
+        if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = GL_OUT_OF_MEMORY;
+        return;
+    }
+    host_pack_params(0);
+    for (GLsizei row = 0; row < height; ) {
+        uint32_t rows = (uint32_t)(height - row);
+        if (rows > max_rows) rows = max_rows;
+        int32_t in[6] = { x, y + row, width, (int32_t)rows, (int32_t)format, (int32_t)type };
+        if (_wpk_gl_query_into(QOP_READ_PIXELS, in, sizeof in, band, rows * tail) != 0) break;
+        for (uint32_t r = 0; r < rows; r++)
+            memcpy(dst + ((uint32_t)row + r) * stride, band + r * tail, tail);
+        row += (GLsizei)rows;
+    }
+    host_pack_params(1);
+    free(band);
 }
 
 void glGetShaderiv(GLuint shader, GLenum pname, GLint *params) {
@@ -963,9 +1123,9 @@ static char *wpk_host_string(GLenum name, char *buf, size_t cap) {
     return buf;
 }
 
-/* The context this stub exposes is OpenGL ES 2.0 (EGL client version 2
- * over the host WebGL2 bridge), but the host's own strings say "WebGL
- * 2.0 (…)". Report the ES API version of the context — the same
+/* The context this stub exposes is OpenGL ES 2.0 or 3.0 (its EGL client
+ * version, over the host WebGL2 bridge), but the host's own strings say
+ * "WebGL 2.0 (…)". Report the ES API version of the context — the same
  * normalization ANGLE and Mesa perform — with the host string kept in
  * the parenthesized vendor-specific suffix that GL version strings
  * allow. Results cache in statics: the strings are immutable for the
@@ -982,14 +1142,15 @@ const GLubyte *glGetString(GLenum name) {
         case GL_VERSION:
             if (version[0] == '\0') {
                 if (!wpk_host_string(name, host, sizeof host)) return NULL;
-                snprintf(version, sizeof version, "OpenGL ES 2.0 (%s)", host);
+                snprintf(version, sizeof version, "OpenGL ES %s (%s)",
+                         _wpk_gl_client_version() >= 3 ? "3.0" : "2.0", host);
             }
             return (const GLubyte *)version;
         case GL_SHADING_LANGUAGE_VERSION:
             if (glsl_version[0] == '\0') {
                 if (!wpk_host_string(name, host, sizeof host)) return NULL;
-                snprintf(glsl_version, sizeof glsl_version,
-                         "OpenGL ES GLSL ES 1.00 (%s)", host);
+                snprintf(glsl_version, sizeof glsl_version, "OpenGL ES GLSL ES %s (%s)",
+                         _wpk_gl_client_version() >= 3 ? "3.00" : "1.00", host);
             }
             return (const GLubyte *)glsl_version;
         case GL_VENDOR:
@@ -1695,4 +1856,454 @@ void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, app_element_buffer);
         glDeleteBuffers(1, &element);
     }
+}
+
+/* ===== OpenGL ES 3.0 ================================================ */
+
+static void emit_words(uint16_t op, uint32_t n, const uint32_t *words) {
+    EMIT_BEGIN(op, n * 4u)
+    for (uint32_t i = 0; i < n; i++) w_u32(&_c, words[i]);
+    EMIT_END()
+}
+
+static void latch_error(GLenum error) {
+    if (_wpk_gl_client_error == GL_NO_ERROR) _wpk_gl_client_error = error;
+}
+
+/* ----- buffers ------------------------------------------------------ */
+
+void glCopyBufferSubData(GLenum read_target, GLenum write_target,
+                         GLintptr read_offset, GLintptr write_offset, GLsizeiptr size) {
+    uint32_t w[5] = { read_target, write_target, (uint32_t)read_offset,
+                      (uint32_t)write_offset, (uint32_t)size };
+    emit_words(OP_COPY_BUFFER_SUB_DATA, 5, w);
+}
+
+void glBindBufferRange(GLenum target, GLuint index, GLuint buffer,
+                       GLintptr offset, GLsizeiptr size) {
+    uint32_t w[5] = { target, index, buffer, (uint32_t)offset, (uint32_t)size };
+    emit_words(OP_BIND_BUFFER_RANGE, 5, w);
+}
+
+void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) {
+    uint32_t w[3] = { target, index, buffer };
+    emit_words(OP_BIND_BUFFER_BASE, 3, w);
+}
+
+/* Read `length` bytes of the buffer bound to `target` into `dst`. */
+static int read_buffer_store(GLenum target, uint32_t offset, uint32_t length, uint8_t *dst) {
+    for (uint32_t done = 0; done < length; ) {
+        uint32_t chunk = length - done;
+        if (chunk > WPK_GL_MAX_QUERY_OUT_LEN) chunk = WPK_GL_MAX_QUERY_OUT_LEN;
+        uint32_t in[3] = { target, offset + done, chunk };
+        if (_wpk_gl_query_into(QOP_GET_BUFFER_SUB_DATA, in, sizeof in, dst + done, chunk) != 0)
+            return -1;
+        done += chunk;
+    }
+    return 0;
+}
+
+/* Buffer mapping. WebGL2 maps nothing, so a mapping is a client copy of the
+ * range: filled from the store unless the caller discards the old contents,
+ * and written back at glUnmapBuffer (or glFlushMappedBufferRange with
+ * GL_MAP_FLUSH_EXPLICIT_BIT) when the map allows writing. One mapping per
+ * target, as GL allows one per bound buffer. */
+struct wpk_mapping {
+    GLenum target;
+    uint32_t offset;
+    uint32_t length;
+    GLbitfield access;
+    uint8_t *data;
+};
+static struct wpk_mapping g_mappings[8];
+
+static struct wpk_mapping *mapping_for(GLenum target) {
+    for (size_t i = 0; i < sizeof g_mappings / sizeof g_mappings[0]; i++)
+        if (g_mappings[i].data && g_mappings[i].target == target) return &g_mappings[i];
+    return NULL;
+}
+
+void *glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) {
+    if (offset < 0 || length <= 0 || !(access & (GL_MAP_READ_BIT | GL_MAP_WRITE_BIT))) {
+        latch_error(GL_INVALID_VALUE);
+        return NULL;
+    }
+    if (mapping_for(target)) {
+        latch_error(GL_INVALID_OPERATION);
+        return NULL;
+    }
+    struct wpk_mapping *m = NULL;
+    for (size_t i = 0; i < sizeof g_mappings / sizeof g_mappings[0] && !m; i++)
+        if (!g_mappings[i].data) m = &g_mappings[i];
+    uint8_t *data = m ? calloc(1, (size_t)length) : NULL;
+    if (!data) {
+        latch_error(GL_OUT_OF_MEMORY);
+        return NULL;
+    }
+    int discard = access & (GL_MAP_INVALIDATE_RANGE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT);
+    if (((access & GL_MAP_READ_BIT) || !discard)
+        && read_buffer_store(target, (uint32_t)offset, (uint32_t)length, data) != 0) {
+        free(data);
+        latch_error(GL_INVALID_OPERATION);
+        return NULL;
+    }
+    *m = (struct wpk_mapping){ target, (uint32_t)offset, (uint32_t)length, access, data };
+    return data;
+}
+
+void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) {
+    struct wpk_mapping *m = mapping_for(target);
+    if (!m || !(m->access & GL_MAP_FLUSH_EXPLICIT_BIT) || offset < 0 || length < 0
+        || (uint64_t)offset + (uint64_t)length > m->length) {
+        latch_error(GL_INVALID_OPERATION);
+        return;
+    }
+    glBufferSubData(target, (GLintptr)(m->offset + (uint32_t)offset), length, m->data + offset);
+}
+
+GLboolean glUnmapBuffer(GLenum target) {
+    struct wpk_mapping *m = mapping_for(target);
+    if (!m) {
+        latch_error(GL_INVALID_OPERATION);
+        return GL_FALSE;
+    }
+    if ((m->access & GL_MAP_WRITE_BIT) && !(m->access & GL_MAP_FLUSH_EXPLICIT_BIT))
+        glBufferSubData(target, (GLintptr)m->offset, (GLsizeiptr)m->length, m->data);
+    free(m->data);
+    m->data = NULL;
+    return GL_TRUE;
+}
+
+/* ----- textures and samplers --------------------------------------- */
+
+void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalformat,
+                    GLsizei width, GLsizei height) {
+    uint32_t w[5] = { target, (uint32_t)levels, internalformat, (uint32_t)width, (uint32_t)height };
+    emit_words(OP_TEX_STORAGE_2D, 5, w);
+}
+
+void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalformat,
+                    GLsizei width, GLsizei height, GLsizei depth) {
+    uint32_t w[6] = { target, (uint32_t)levels, internalformat,
+                      (uint32_t)width, (uint32_t)height, (uint32_t)depth };
+    emit_words(OP_TEX_STORAGE_3D, 6, w);
+}
+
+void glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset,
+                         GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height) {
+    uint32_t w[9] = { target, (uint32_t)level, (uint32_t)xoffset, (uint32_t)yoffset,
+                      (uint32_t)zoffset, (uint32_t)x, (uint32_t)y,
+                      (uint32_t)width, (uint32_t)height };
+    emit_words(OP_COPY_TEX_SUB_IMAGE_3D, 9, w);
+}
+
+static uint32_t g_next_sampler = 1;
+
+void glGenSamplers(GLsizei n, GLuint *out) {
+    if (n <= 0 || !out) return;
+    for (GLsizei i = 0; i < n; i++) out[i] = g_next_sampler++;
+    emit_name_array(OP_GEN_SAMPLERS, n, out);
+}
+
+void glDeleteSamplers(GLsizei n, const GLuint *names) {
+    if (n <= 0 || !names) return;
+    emit_name_array(OP_DELETE_SAMPLERS, n, names);
+}
+
+void glBindSampler(GLuint unit, GLuint sampler) {
+    uint32_t w[2] = { unit, sampler };
+    emit_words(OP_BIND_SAMPLER, 2, w);
+}
+
+void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param) {
+    uint32_t w[3] = { sampler, pname, (uint32_t)param };
+    emit_words(OP_SAMPLER_PARAMETERI, 3, w);
+}
+
+void glSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param) {
+    EMIT_BEGIN(OP_SAMPLER_PARAMETERF, 12)
+    w_u32(&_c, sampler); w_u32(&_c, pname); w_f32(&_c, param);
+    EMIT_END()
+}
+
+/* ----- programs and uniforms --------------------------------------- */
+
+GLuint glGetUniformBlockIndex(GLuint program, const GLchar *name) {
+    if (!name) return GL_INVALID_INDEX;
+    uint8_t in[256];
+    size_t nlen = strlen(name);
+    if (8 + nlen > sizeof in) return GL_INVALID_INDEX;
+    uint32_t head[2] = { program, (uint32_t)nlen };
+    memcpy(in, head, 8);
+    memcpy(in + 8, name, nlen);
+    uint32_t index = GL_INVALID_INDEX;
+    if (_wpk_gl_query_into(QOP_GET_UNIFORM_BLOCK_INDEX, in, (uint32_t)(8 + nlen), &index, 4) != 0)
+        return GL_INVALID_INDEX;
+    return index;
+}
+
+void glUniformBlockBinding(GLuint program, GLuint index, GLuint binding) {
+    uint32_t w[3] = { program, index, binding };
+    emit_words(OP_UNIFORM_BLOCK_BINDING, 3, w);
+}
+
+/* `values` holds components * count words. */
+static void emit_uniform_uiv(GLint location, uint32_t comps, GLsizei count, const GLuint *values) {
+    if (location < 0) return;
+    if (count < 0 || !values) return;
+    uint32_t words = comps * (uint32_t)count;
+    if (12u + words * 4u > 0xFFFFu) {
+        latch_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    EMIT_BEGIN(OP_UNIFORM_UIV, 12u + words * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, comps);
+    w_u32(&_c, (uint32_t)count);
+    memcpy(_c, values, words * 4u);
+    _c += words * 4u;
+    EMIT_END()
+}
+
+void glUniform1uiv(GLint l, GLsizei n, const GLuint *v) { emit_uniform_uiv(l, 1, n, v); }
+void glUniform2uiv(GLint l, GLsizei n, const GLuint *v) { emit_uniform_uiv(l, 2, n, v); }
+void glUniform3uiv(GLint l, GLsizei n, const GLuint *v) { emit_uniform_uiv(l, 3, n, v); }
+void glUniform4uiv(GLint l, GLsizei n, const GLuint *v) { emit_uniform_uiv(l, 4, n, v); }
+
+void glUniform1ui(GLint l, GLuint x) { glUniform1uiv(l, 1, &x); }
+void glUniform2ui(GLint l, GLuint x, GLuint y) {
+    GLuint v[2] = { x, y };
+    glUniform2uiv(l, 1, v);
+}
+void glUniform3ui(GLint l, GLuint x, GLuint y, GLuint z) {
+    GLuint v[3] = { x, y, z };
+    glUniform3uiv(l, 1, v);
+}
+void glUniform4ui(GLint l, GLuint x, GLuint y, GLuint z, GLuint w) {
+    GLuint v[4] = { x, y, z, w };
+    glUniform4uiv(l, 1, v);
+}
+
+static void emit_uniform_matrix_fv(GLint location, uint32_t cols, uint32_t rows,
+                                   GLsizei count, GLboolean transpose, const GLfloat *values) {
+    if (location < 0) return;
+    if (count < 0 || !values) return;
+    uint32_t floats = cols * rows * (uint32_t)count;
+    if (20u + floats * 4u > 0xFFFFu) {
+        latch_error(GL_OUT_OF_MEMORY);
+        return;
+    }
+    EMIT_BEGIN(OP_UNIFORM_MATRIX_FV, 20u + floats * 4u)
+    w_i32(&_c, location);
+    w_u32(&_c, cols);
+    w_u32(&_c, rows);
+    w_u32(&_c, (uint32_t)count);
+    w_u32(&_c, transpose ? 1u : 0u);
+    memcpy(_c, values, floats * 4u);
+    _c += floats * 4u;
+    EMIT_END()
+}
+
+void glUniformMatrix2x3fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 2, 3, n, t, v); }
+void glUniformMatrix3x2fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 3, 2, n, t, v); }
+void glUniformMatrix2x4fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 2, 4, n, t, v); }
+void glUniformMatrix4x2fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 4, 2, n, t, v); }
+void glUniformMatrix3x4fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 3, 4, n, t, v); }
+void glUniformMatrix4x3fv(GLint l, GLsizei n, GLboolean t, const GLfloat *v) { emit_uniform_matrix_fv(l, 4, 3, n, t, v); }
+
+/* ----- vertex arrays and draws ------------------------------------- */
+
+void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride,
+                            const void *pointer) {
+    /* Client-memory integer attributes are not staged (see glDrawArrays). */
+    if (g_array_buffer == 0) {
+        latch_error(GL_INVALID_OPERATION);
+        return;
+    }
+    if (index < WPK_GL_MAX_ATTRIBS) g_attribs[index].client = 0;
+    uint32_t w[5] = { index, (uint32_t)size, type, (uint32_t)stride, (uint32_t)(uintptr_t)pointer };
+    emit_words(OP_VERTEX_ATTRIB_I_POINTER, 5, w);
+}
+
+void glVertexAttribDivisor(GLuint index, GLuint divisor) {
+    uint32_t w[2] = { index, divisor };
+    emit_words(OP_VERTEX_ATTRIB_DIVISOR, 2, w);
+}
+
+/* Client vertex arrays are not staged for instanced draws: staging would
+ * need the instance count of each attribute. Such a draw is refused, the
+ * gap being visible as GL_INVALID_OPERATION. */
+static int client_attribs_enabled(void) {
+    for (uint32_t i = 0; i < WPK_GL_MAX_ATTRIBS; i++)
+        if (g_attribs[i].client && g_attribs[i].enabled) return 1;
+    return 0;
+}
+
+void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instances) {
+    if (client_attribs_enabled()) {
+        latch_error(GL_INVALID_OPERATION);
+        return;
+    }
+    uint32_t w[4] = { mode, (uint32_t)first, (uint32_t)count, (uint32_t)instances };
+    emit_words(OP_DRAW_ARRAYS_INSTANCED, 4, w);
+}
+
+void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type,
+                             const void *indices, GLsizei instances) {
+    if (client_attribs_enabled()) {
+        latch_error(GL_INVALID_OPERATION);
+        return;
+    }
+    uint32_t w[5] = { mode, (uint32_t)count, type, (uint32_t)(uintptr_t)indices,
+                      (uint32_t)instances };
+    emit_words(OP_DRAW_ELEMENTS_INSTANCED, 5, w);
+}
+
+/* ----- framebuffers and renderbuffers ------------------------------ */
+
+void glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat,
+                                      GLsizei width, GLsizei height) {
+    uint32_t w[5] = { target, (uint32_t)samples, internalformat, (uint32_t)width, (uint32_t)height };
+    emit_words(OP_RENDERBUFFER_STORAGE_MULTISAMPLE, 5, w);
+}
+
+void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture,
+                               GLint level, GLint layer) {
+    uint32_t w[5] = { target, attachment, texture, (uint32_t)level, (uint32_t)layer };
+    emit_words(OP_FRAMEBUFFER_TEXTURE_LAYER, 5, w);
+}
+
+void glBlitFramebuffer(GLint sx0, GLint sy0, GLint sx1, GLint sy1,
+                       GLint dx0, GLint dy0, GLint dx1, GLint dy1,
+                       GLbitfield mask, GLenum filter) {
+    uint32_t w[10] = { (uint32_t)sx0, (uint32_t)sy0, (uint32_t)sx1, (uint32_t)sy1,
+                       (uint32_t)dx0, (uint32_t)dy0, (uint32_t)dx1, (uint32_t)dy1,
+                       mask, filter };
+    emit_words(OP_BLIT_FRAMEBUFFER, 10, w);
+}
+
+void glInvalidateFramebuffer(GLenum target, GLsizei n, const GLenum *attachments) {
+    if (n < 0 || (n > 0 && !attachments) || 8u + (uint32_t)n * 4u > 0xFFFFu) return;
+    EMIT_BEGIN(OP_INVALIDATE_FRAMEBUFFER, 8u + (uint32_t)n * 4u)
+    w_u32(&_c, target);
+    w_u32(&_c, (uint32_t)n);
+    for (GLsizei i = 0; i < n; i++) w_u32(&_c, attachments[i]);
+    EMIT_END()
+}
+
+/* The value array holds four words: color takes four, depth or stencil the
+ * first one (the host reads only what WebGL2 uses). */
+static void emit_clear_buffer(uint16_t op, GLenum buffer, GLint drawbuffer, const void *value) {
+    if (!value) return;
+    uint32_t words[4] = { 0, 0, 0, 0 };
+    memcpy(words, value, buffer == GL_COLOR ? 16 : 4);
+    EMIT_BEGIN(op, 24)
+    w_u32(&_c, buffer);
+    w_i32(&_c, drawbuffer);
+    for (int i = 0; i < 4; i++) w_u32(&_c, words[i]);
+    EMIT_END()
+}
+
+void glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value) {
+    emit_clear_buffer(OP_CLEAR_BUFFERFV, buffer, drawbuffer, value);
+}
+void glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value) {
+    emit_clear_buffer(OP_CLEAR_BUFFERIV, buffer, drawbuffer, value);
+}
+void glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value) {
+    emit_clear_buffer(OP_CLEAR_BUFFERUIV, buffer, drawbuffer, value);
+}
+void glClearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil) {
+    EMIT_BEGIN(OP_CLEAR_BUFFERFI, 16)
+    w_u32(&_c, buffer); w_i32(&_c, drawbuffer); w_f32(&_c, depth); w_i32(&_c, stencil);
+    EMIT_END()
+}
+
+/* ----- sync objects ------------------------------------------------- */
+
+/* A GLsync is the name the encoder gives the host's fence. */
+static uint32_t g_next_sync = 1;
+
+GLsync glFenceSync(GLenum condition, GLbitfield flags) {
+    uint32_t name = g_next_sync++;
+    uint32_t w[3] = { name, condition, flags };
+    emit_words(OP_FENCE_SYNC, 3, w);
+    return (GLsync)(uintptr_t)name;
+}
+
+void glDeleteSync(GLsync sync) {
+    if (!sync) return;
+    uint32_t name = (uint32_t)(uintptr_t)sync;
+    emit_words(OP_DELETE_SYNC, 1, &name);
+}
+
+/* WebGL2 has no client-side wait (its maximum timeout is 0), so the wait is
+ * repeated polls until the fence signals or `timeout` nanoseconds pass. */
+GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {
+    uint32_t in[2] = { (uint32_t)(uintptr_t)sync, flags };
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    for (;;) {
+        uint32_t status = GL_WAIT_FAILED;
+        if (_wpk_gl_query_into(QOP_CLIENT_WAIT_SYNC, in, sizeof in, &status, 4) != 0) {
+            latch_error(GL_INVALID_VALUE);
+            return GL_WAIT_FAILED;
+        }
+        if (status != GL_TIMEOUT_EXPIRED) return status;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        uint64_t elapsed = (uint64_t)(now.tv_sec - start.tv_sec) * 1000000000ull
+            + (uint64_t)(now.tv_nsec - start.tv_nsec);
+        if (elapsed >= timeout) return GL_TIMEOUT_EXPIRED;
+        struct timespec pause = { 0, 1000000 };
+        nanosleep(&pause, NULL);
+    }
+}
+
+void glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) {
+    if (timeout != GL_TIMEOUT_IGNORED) {
+        latch_error(GL_INVALID_VALUE);
+        return;
+    }
+    uint32_t w[2] = { (uint32_t)(uintptr_t)sync, flags };
+    emit_words(OP_WAIT_SYNC, 2, w);
+}
+
+void glGetSynciv(GLsync sync, GLenum pname, GLsizei count, GLsizei *length, GLint *values) {
+    if (count < 1 || !values) return;
+    uint32_t in[2] = { (uint32_t)(uintptr_t)sync, pname };
+    int32_t value = 0;
+    if (_wpk_gl_query_into(QOP_GET_SYNCIV, in, sizeof in, &value, 4) != 0) {
+        latch_error(GL_INVALID_VALUE);
+        return;
+    }
+    values[0] = value;
+    if (length) *length = 1;
+}
+
+/* ----- strings ------------------------------------------------------ */
+
+/* Each string is kept for the context's lifetime, as callers hold it. */
+const GLubyte *glGetStringi(GLenum name, GLuint index) {
+    static char *cache[64];
+    if (name != GL_EXTENSIONS) {
+        latch_error(GL_INVALID_ENUM);
+        return NULL;
+    }
+    if (index < sizeof cache / sizeof cache[0] && cache[index]) return (const GLubyte *)cache[index];
+    uint32_t in[2] = { name, index };
+    uint8_t out[4 + 128];
+    if (_wpk_gl_query_into(QOP_GET_STRINGI, in, sizeof in, out, sizeof out) != 0) {
+        latch_error(GL_INVALID_VALUE);
+        return NULL;
+    }
+    uint32_t slen;
+    memcpy(&slen, out, 4);
+    if (slen > sizeof out - 4) slen = sizeof out - 4;
+    char *str = malloc(slen + 1);
+    if (!str) return NULL;
+    memcpy(str, out + 4, slen);
+    str[slen] = '\0';
+    if (index < sizeof cache / sizeof cache[0]) cache[index] = str;
+    return (const GLubyte *)str;
 }

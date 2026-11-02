@@ -57,6 +57,22 @@ export interface GlShadowState {
 
   unpackAlignment: number;
   packAlignment: number;
+
+  // GLES 3.0 context state.
+  readFbo: WebGLFramebuffer | null;
+  /** Non-`TEXTURE_2D` targets (3D, 2D array, cube map) per unit; the
+   *  `TEXTURE_2D` bindings stay in `textureUnits`. */
+  textureUnitsByTarget: Map<number, (WebGLTexture | null)[]>;
+  samplerUnits: (WebGLSampler | null)[];
+  /** Generic (non-indexed) bindings of the targets other than ARRAY that are
+   *  context state: COPY_READ, COPY_WRITE, PIXEL_PACK, PIXEL_UNPACK,
+   *  UNIFORM. The element array binding is vertex-array state. */
+  bufferBindings: Map<number, WebGLBuffer | null>;
+  /** `glBindBufferRange` / `glBindBufferBase` on `GL_UNIFORM_BUFFER`, by
+   *  index. A size of -1 records a whole-buffer `glBindBufferBase`. */
+  uniformBufferRanges: Map<number, { buffer: WebGLBuffer | null, offset: number, size: number }>;
+  /** `glPixelStorei` parameters other than the two alignments. */
+  pixelStore: Map<number, number>;
 }
 
 export interface GlStencilFaceState {
@@ -122,6 +138,12 @@ export function defaultShadow(): GlShadowState {
     textureUnits: new Array(32).fill(null),
     unpackAlignment: 4,
     packAlignment: 4,
+    readFbo: null,
+    textureUnitsByTarget: new Map(),
+    samplerUnits: new Array(32).fill(null),
+    bufferBindings: new Map(),
+    uniformBufferRanges: new Map(),
+    pixelStore: new Map(),
   };
 }
 
@@ -140,6 +162,9 @@ export const GL_PACK_ALIGNMENT   = 0x0D05;
 
 export const GL_FRAMEBUFFER      = 0x8D40;
 export const GL_READ_FRAMEBUFFER = 0x8CA8;
+export const GL_DRAW_FRAMEBUFFER = 0x8CA9;
+export const GL_UNIFORM_BUFFER   = 0x8A11;
+export const GL_PIXEL_UNPACK_BUFFER = 0x88EC;
 export const GL_TEXTURE0         = 0x84C0;
 export const GL_TEXTURE_2D       = 0x0DE1;
 

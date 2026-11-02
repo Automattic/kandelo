@@ -1,0 +1,87 @@
+# xkbcommon-dl 0.4.2: Kandelo links libxkbcommon statically (found with
+# pkg-config); the handles point at the linked functions, not dlsym's.
+--- a/build.rs
++++ b/build.rs
+@@ -0,0 +1,25 @@
++use std::env;
++use std::process::Command;
++
++fn main() {
++    println!("cargo:rerun-if-env-changed=PKG_CONFIG");
++    println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
++    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("kandelo") {
++        return;
++    }
++    let pkg_config = env::var("PKG_CONFIG").unwrap_or_else(|_| "pkg-config".into());
++    let output = Command::new(&pkg_config)
++        .args(["--static", "--libs", "xkbcommon"])
++        .output()
++        .unwrap_or_else(|e| panic!("cannot run {pkg_config}: {e}"));
++    if !output.status.success() {
++        panic!("{pkg_config} --static --libs xkbcommon: {}", String::from_utf8_lossy(&output.stderr));
++    }
++    for flag in String::from_utf8(output.stdout).unwrap().split_whitespace() {
++        if let Some(dir) = flag.strip_prefix("-L") {
++            println!("cargo:rustc-link-search=native={dir}");
++        } else if let Some(lib) = flag.strip_prefix("-l") {
++            println!("cargo:rustc-link-lib=static={lib}");
++        }
++    }
++}
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -11,13 +11,35 @@
+ use std::os::raw::{c_char, c_int, c_uint, c_void};
+ 
+ use bitflags::bitflags;
+-use dlib::dlopen_external_library;
++#[cfg(not(target_os = "kandelo"))]
++use dlib::dlopen_external_library as xkb_library;
+ use log::info;
+ use once_cell::sync::OnceCell;
+ 
+ #[cfg(feature = "x11")]
+ pub mod x11;
+ 
++// Kandelo links libxkbcommon statically (build.rs): the handle structs
++// point at the linked functions, and `open` cannot fail.
++#[cfg(target_os = "kandelo")]
++macro_rules! xkb_library {
++    ($structname: ident, functions: $(fn $fname: ident($($farg: ty),*) -> $fret: ty),+,) => (
++        pub struct $structname {
++            $(pub $fname: unsafe extern "C" fn($($farg),*) -> $fret,)+
++        }
++
++        impl $structname {
++            pub unsafe fn open(_name: &str) -> Result<$structname, dlib::DlError> {
++                #[allow(improper_ctypes)]
++                extern "C" {
++                    $(fn $fname($(_: $farg),*) -> $fret;)+
++                }
++                Ok($structname { $($fname,)+ })
++            }
++        }
++    );
++}
++
+ pub const XKB_MOD_NAME_SHIFT: &[u8] = b"Shift\0";
+ pub const XKB_MOD_NAME_CAPS: &[u8] = b"Lock\0";
+ pub const XKB_MOD_NAME_CTRL: &[u8] = b"Control\0";
+@@ -185,7 +207,7 @@
+     }
+ );
+ 
+-dlopen_external_library!(XkbCommon,
++xkb_library!(XkbCommon,
+ functions:
+     fn xkb_keysym_get_name(xkb_keysym_t, *mut c_char, usize) -> c_int,
+     fn xkb_keysym_from_name(*const c_char, xkb_keysym_flags) -> xkb_keysym_t,
+@@ -281,7 +303,7 @@
+ );
+ 
+ // Compose and dead-keys support module
+-dlopen_external_library!(XkbCommonCompose,
++xkb_library!(XkbCommonCompose,
+ functions:
+     fn xkb_compose_table_new_from_locale(
+         *mut xkb_context,

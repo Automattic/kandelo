@@ -1,0 +1,32 @@
+script_path = "packages/registry/wgpu-window/build-wgpu-window.sh"
+repo_url    = "https://github.com/Automattic/kandelo.git"
+commit      = ""
+revision    = 1
+
+# The Rust setup is shared with the librsvg package; the sysroot sources
+# are not in the global toolchain fingerprint, so they are listed here.
+inputs = [
+  "packages/registry/wgpu-window/build-wgpu-window.sh",
+  "packages/registry/wgpu-window/patches",
+  "programs/rust/wgpu-window/Cargo.toml",
+  "programs/rust/wgpu-window/Cargo.lock",
+  "programs/rust/wgpu-window/src/main.rs",
+  "sdk/rust/build-env.sh",
+  "libc/glue/libegl_stub.c",
+  "libc/glue/libglesv2_stub.c",
+  "libc/glue/libgbm_stub.c",
+  "libc/glue/gl_abi.h",
+  "scripts/build-musl.sh",
+  "scripts/build-dri-stubs.sh",
+  "scripts/build-gles-stubs.sh",
+  "scripts/write-graphics-pkgconfig.sh",
+  "scripts/build-rust-sysroot.sh",
+  "scripts/install-local-binary.sh",
+  "scripts/package-build-roots.sh",
+  "scripts/run-wasm-fork-instrument.sh",
+  "scripts/wasm-artifact-guards.sh",
+  "sdk/rust/wasm32-unknown-kandelo-std.json",
+  "sdk/rust/libc-kandelo.patch",
+  "sdk/rust/libc-upstream",
+  "sdk/rust/std-overlay",
+]

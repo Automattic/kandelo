@@ -224,7 +224,10 @@
 ///     metadata or kernel-host wire formats. Those bump the kernel-host
 ///     version, `abi::HOST_ADAPTER_VERSION` (now 2, checked exactly), instead
 ///     of this. docs/abi-versioning.md ("ABI 55").
-pub const ABI_VERSION: u32 = 55;
+/// 56: a blocked signal whose default action is to ignore it stays pending,
+///     and `GLIO_MAKE_CURRENT` accepts a context without a surface.
+///     docs/abi-versioning.md ("ABI 56") lists each.
+pub const ABI_VERSION: u32 = 56;
 
 
 pub mod abi {

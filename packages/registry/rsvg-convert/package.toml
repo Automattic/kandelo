@@ -6,9 +6,9 @@ kind = "program"
 # rsvg-convert: librsvg's command-line SVG converter (PNG, PDF, PS, SVG
 # output). A Rust program built from the librsvg source with the same
 # Rust toolchain setup as the librsvg library package
-# (packages/registry/librsvg/rust-build-env.sh); it links librsvg's crates
-# directly, not the librsvg C library, and the C stack below through
-# the gtk-rs -sys crates.
+# (sdk/rust/build-env.sh); it links librsvg's crates directly, not the
+# librsvg C library, and the C stack below through the gtk-rs -sys
+# crates.
 name = "rsvg-convert"
 version = "2.63.2"
 kernel_abi = 45

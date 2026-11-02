@@ -101,6 +101,7 @@ export function ensurePresentTarget(b: GlBinding): boolean {
   b.presentTarget = { fbo, tex, depthStencil, w, h };
   b.renderTargetFbo = fbo;
   b.shadow.fbo = fbo;
+  b.shadow.readFbo = fbo;
   return true;
 }
 

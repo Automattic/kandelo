@@ -488,6 +488,7 @@ Located in `apps/browser-demos/pages/`:
 | freeciv | Freeciv 3.2.6 SDL2 client + server | dinit | Lazy game/data archive, GLES2 presentation, and direct TCP multiplayer through network sessions. The Multiplayer dock menu hosts or joins the session host on port 5556. Audio and multicast discovery are disabled; see [Freeciv](freeciv.md). |
 | love | Native LÖVE 11.5 games | dinit | SDL2 KMSDRM/EGL/GLES port with Pong, Snake, Breakout, Asteroids, BYTEPATH and SNKRX selectable through the Games dock menu. Starts Pong; switching restarts the process with the selected game directory. The executable and game tree download lazily. SDL2/OSS audio output is verified in Chromium. Steam integration is disabled. See `packages/registry/love/README.md` for the port's compatibility boundaries. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | dinit | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. Not listed in the gallery (Omarchy is the desktop shown there); boot it with `?profile=wayland`, which its browser specs use. The four binaries come from the `wayland-demo` package as lazy files in the image, fetched when the desktop first starts them; the image declares one command, `/usr/local/bin/wldesktop`, which brings the compositor up (it takes DRM master and drives KMS) and then starts the three clients once its socket exists. The image also declares `kms-gl-scanout`, so the pump presents the CRTC through the WebGL2 scanout presenter until the compositor's own GL context claims the canvas. |
+| wgpu-window | wlcompositor + wgpu-window | dinit | `wgpu-window`, a Rust program on winit 0.30 and wgpu 30, as the compositor's only client: it opens an `xdg_shell` window, renders 60 frames through wgpu's OpenGL ES backend, prints `WGPU WINDOW OK`, and exits. wgpu reaches the host's WebGL2 through the sysroot `libEGL.a` (Wayland platform, through `libwayland-egl`) and `libGLESv2.a`. Not listed in the gallery; boot it with `?profile=wgpu-window`, which `kandelo-wgpu-window.spec.ts` uses. The binary comes from the `wgpu-window` package as a lazy file in the image. The image's command is `/usr/local/bin/wldesktop /usr/local/bin/wgpu-window`: with a program argument, `wldesktop` execs `wlcompositor PROGRAM`, which runs that program as the session instead of the demo clients. The compositor spawns it once its socket is bound, with `XDG_RUNTIME_DIR=/tmp` and `WAYLAND_DISPLAY=wayland-0`, reaps it on `SIGCHLD`, and exits with its status. It also runs in kiosk mode: every window is maximized from its first configure and stays maximized, with server-side decorations, so winit draws no frame of its own. |
 | omarchy | wlcompositor (dwindle) + dbus-daemon + Quickshell (wallpaper, bar, launcher, notifications, OSD, lock screen) + qtgallery | dinit | Omarchy-shaped desktop — see [Omarchy desktop demo](#omarchy-desktop-demo). The image declares `/usr/local/bin/omarchydesktop`, which starts a session bus, the compositor and the Quickshell shell; windows, including the Qt gallery, are opened from the launcher and keybinds. The shell's binaries are lazy files of the shell image, fetched when the machine boots: `quickshell.wasm` (82 MB), `qtgallery.wasm` (26 MB), `foot.wasm` (6.5 MB) and `dbus-daemon.wasm` (1.5 MB). The desktop data archive also fetches on first read; the terminal-only boot does not download it. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
@@ -593,8 +594,15 @@ connector at the 1920×1080 fallback, which the boot log records. wlcompositor
 sizes its scanout from that mode and its placement rules are
 edge-anchored (wlterm left, wlclock/wlpaint offsets from the right
 edge), so wider panes spread the demo across the full width with no
-black bars. The mode is fixed at boot — resizing the browser window
-afterwards letterboxes rather than re-modes.
+black bars. The mode follows the pane after boot too: wlcompositor
+re-reads `DRM_IOCTL_MODE_GETCONNECTOR` every 250 ms, and when two reads
+agree on a new mode it rebuilds its scanout surface, wallpaper and EGL
+surface at that size, sends the new `wl_output` mode and `xdg_output`
+logical size, and re-fits maximized and fullscreen windows (the boot
+log prints `OUTPUT_MODE`). The output scale stays the one chosen at
+startup. It polls because Kandelo sends no hotplug uevent (no
+`AF_NETLINK`); a client that reads the connector only once, such as
+SDL2's KMSDRM backend, keeps its boot mode and letterboxes.
 
 Because the mode is device pixels, a HiDPI pane gets a mode larger than
 its CSS box, and nothing in the mode says which of the two it is.
