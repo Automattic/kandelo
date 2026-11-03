@@ -152,6 +152,17 @@ and two existing engine controls, WebKit 233 Pass, no failures. This is
 source/mechanism evidence; A3 dEQP, desktop, memory and performance validation
 remain pending and this checkpoint is not a readiness claim.
 
+**Sampler-array source checkpoint, 2026-11-03.** Translated loop-indexed
+sampler arrays now dispatch to constant-index lookups, including array
+parameters, scalar sampler parameters, `inout` arguments, struct returns
+and c = 0.5 variants. A standalone Firefox link crash found in the initial
+lowering is reproduced by the workaround registry; scalar parameter passing
+avoids it. The expanded real-compiler harness has no failures: Chromium
+266 Pass, Firefox 263 Pass with its one existing inconclusive result and
+two engine controls, WebKit 266 Pass. Separate textures verify that each
+index selects its actual sampler. Final-tree conformance and performance
+validation remain pending.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension

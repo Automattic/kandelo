@@ -28,6 +28,7 @@ type Result = { name: string; ok: boolean; status: Status; detail: string };
 const results: Result[] = [];
 function record(name: string, ok: boolean, detail = "", status: Status = ok ? "pass" : "fail"): void {
   results.push({ name, ok: status !== "fail", status, detail });
+  if ((globalThis as { shaderCheckProgress?: boolean }).shaderCheckProgress) console.info(`shader-check: ${name}: ${status}`);
 }
 
 const canvas = document.createElement("canvas");
@@ -948,6 +949,13 @@ function cubeSampling(): void {
       "vec4 look() { return (textureCube(a, vec3(0.0, 1.0, 0.0)) + textureCube(b, vec3(0.0, 1.0, 0.0)) + textureCube(c, vec3(0.0, 1.0, 0.0))) / 3.0; }"],
     ["parameter", "uniform samplerCube a;\nvec4 sampleIt(samplerCube x, vec3 d) { return textureCube(x, d); }\nvec4 look() { return sampleIt(a, vec3(0.0, 1.0, 0.0)); }"],
     ["array", "uniform samplerCube a[2];\nvec4 look() { return textureCube(a[1], vec3(0.0, 1.0, 0.0)); }"],
+    ["array-loop", "uniform samplerCube a[2];\nvec4 look() { vec4 v=vec4(0.0); for(int i=0;i<2;i++) v+=textureCube(a[i],vec3(0.0,1.0,0.0)); return v/2.0; }"],
+    ["array-parameter-loop", "uniform samplerCube a[2];\nvec4 f(samplerCube x[2]) { vec4 v=vec4(0.0); for(int i=0;i<2;i++) v+=textureCube(x[i],vec3(0.0,1.0,0.0)); return v/2.0; }\nvec4 look() { return f(a); }"],
+    ["array-element-parameter", "uniform samplerCube a[2];\nvec4 f(samplerCube x, vec3 d) { return textureCube(x,d); }\nvec4 look() { vec4 v=vec4(0.0); for(int i=0;i<2;i++) v+=f(a[i],vec3(0.0,1.0,0.0)); return v/2.0; }"],
+    ["array-element-inout", "uniform samplerCube a[2];\nvec4 f(samplerCube x, inout float count) { count+=1.0; return textureCube(x,vec3(0.0,1.0,0.0)); }\nvec4 look() { vec4 v=vec4(0.0); float count=0.0; for(int i=0;i<2;i++) v+=f(a[i],count); return v/count; }"],
+    ["array-element-struct-result", "struct Color { vec4 c; };\nuniform samplerCube a[2];\nColor f(samplerCube x) { Color v; v.c=textureCube(x,vec3(0.0,1.0,0.0)); return v; }\nvec4 look() { vec4 v=vec4(0.0); for(int i=0;i<2;i++) { Color c=f(a[i]); v+=c.c; } return v/2.0; }"],
+    ["array-constant-size", "const int N=1+1;\nuniform samplerCube a[N];\nvec4 look() { vec4 v=vec4(0.0); for(int i=0;i<N;i++) v+=textureCube(a[i],vec3(0.0,1.0,0.0)); return v/2.0; }"],
+    ["array-coordinate-effects", "uniform samplerCube a[2];\nint calls=0;\nvec3 coord() { calls++; return vec3(0.0,1.0,0.0); }\nvec4 look() { vec4 v=vec4(0.0); for(int i=0;i<2;i++) v+=textureCube(a[i],coord()); return v/float(calls); }"],
     ["struct", "struct S { samplerCube m; float k; };\nuniform S a;\nvec4 look() { return textureCube(a.m, vec3(0.0, 1.0, 0.0)) * a.k; }"],
     ["overload", "uniform samplerCube a;\nvec4 textureCube(samplerCube x, vec3 d, int k) { return textureCube(x, d) * float(k); }\n" +
       "vec4 look() { return textureCube(a, vec3(0.0, 1.0, 0.0), 1); }"],
@@ -976,6 +984,47 @@ function cubeSampling(): void {
     gl.deleteProgram(guest.program);
   }
   gl.deleteTexture(texture);
+}
+
+function samplerArraySelection(): void {
+  for (const cube of [false, true]) {
+    target(false);
+    const nativeTarget = cube ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D;
+    const textures = [[255, 0, 0], [0, 255, 0]].map((rgb, i) => {
+      if (cube) return cubeTexture(i + 1, true, 1, 1, () => rgb, gl.NEAREST, gl.NEAREST);
+      const texture = gl.createTexture()!;
+      gl.activeTexture(gl.TEXTURE0 + i + 1); gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([...rgb, 255]));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      return texture;
+    });
+    const sampler = cube ? "samplerCube" : "sampler2D", lookup = cube ? "textureCube" : "texture2D";
+    const coordinate = cube ? "vec3(1.0,0.0,0.0)" : "vec2(0.5)";
+    const cases: Array<[string, string, number[]]> = [
+      ["global-loop", `vec4 look() { vec4 v=vec4(0.0); for(int i=0;i<2;i++) v+=${lookup}(a[i],${coordinate}); return v/2.0; }`, [0.5,0.5,0,1]],
+      ["scalar-parameter", `vec4 f(${sampler} x) { return ${lookup}(x,${coordinate}); }\nvec4 look() { vec4 v; for(int i=0;i<2;i++) v=f(a[i]); return v; }`, [0,1,0,1]],
+      ["array-parameter", `vec4 f(${sampler} x[2]) { vec4 v; for(int i=0;i<2;i++) v=${lookup}(x[i],${coordinate}); return v; }\nvec4 look() { return f(a); }`, [0,1,0,1]],
+      ["shadowed-constant", `const int I=1;\nvec4 f(${sampler} x[2]) { const int I=0; return ${lookup}(x[I],${coordinate}); }\nvec4 look() { return f(a); }`, [1,0,0,1]],
+      ["parameter-forwarding", `vec4 f(${sampler} x[2]) { return ${lookup}(x[1],${coordinate}); }\nvec4 g(${sampler} y[2]) { return f(y); }\nvec4 look() { return g(a); }`, [0,1,0,1]],
+    ];
+    for (const [name, functions, want] of cases) {
+      const fragment = `precision highp float;\nuniform ${sampler} a[2];\n${functions}\nvoid main() { gl_FragColor=look(); }\n`;
+      const built = build(translateEssl100(VARYING_VERTEX, false).text, translateEssl100(fragment, true).text);
+      if (!built.program) { record(`sampler-array.${cube ? "cube" : "2d"}.${name}`, false, built.log); continue; }
+      gl.useProgram(built.program);
+      textures.forEach((texture, i) => {
+        gl.activeTexture(gl.TEXTURE0 + i + 1); gl.bindTexture(nativeTarget, texture);
+        gl.uniform1i(gl.getUniformLocation(built.program!, `a[${i}]`), i + 1);
+      });
+      gl.activeTexture(gl.TEXTURE0);
+      gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.POINTS,0,1);
+      const got = pixel();
+      record(`sampler-array.${cube ? "cube" : "2d"}.${name}`, near(got,want), `${fmt(got)} want ${want}`);
+      gl.deleteProgram(built.program);
+    }
+    textures.forEach(texture => gl.deleteTexture(texture));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,21 +1126,21 @@ function lodSwitchover(): void {
   // Fragment: (s, t) = (S0, T0) + k * gl_FragCoord.xy / SW_SIZE, so
   // rho = SW_N * k / SW_SIZE and lambda = log2(2k) (+ bias).
   const kFor = (lambda: number) => 2 ** lambda / 2;
-  const fragmentCase = (cube: boolean, lambda: number, form: "plain" | "bias" | "proj" | "parameter" | "array"): SwitchCase => {
+  const fragmentCase = (cube: boolean, lambda: number, form: "plain" | "bias" | "proj" | "parameter" | "array" | "array-loop" | "array-loop-parameter"): SwitchCase => {
     // Coordinates stay inside the face: s, t < T0 + k < 1.
     const bias = form === "bias" ? -0.3 : 0, k = kFor(lambda - bias);
     const st = `vec2(${S0.toFixed(4)}, ${T0.toFixed(4)}) + ${k.toFixed(6)} * gl_FragCoord.xy / ${SW_SIZE}.0`;
     const sampler = cube ? "samplerCube" : "sampler2D";
     const coord = cube ? "vec3(1.0, 1.0 - 2.0 * st.y, 1.0 - 2.0 * st.x)" : "st";
     const look = cube ? "textureCube" : "texture2D";
-    const call = form === "bias" ? `${look}(s, ${coord}, ${bias.toFixed(1)})`
+    const call = form === "array-loop-parameter" ? `lookUp(a[i], ${coord})` : form === "bias" ? `${look}(s, ${coord}, ${bias.toFixed(1)})`
       : form === "proj" ? "texture2DProj(s, vec4(2.0 * st, 0.0, 2.0))"
-      : form === "parameter" ? `lookUp(s, ${coord})` : form === "array" ? `${look}(a[i], ${coord})` : `${look}(s, ${coord})`;
+      : form === "parameter" ? `lookUp(s, ${coord})` : (form === "array" || form === "array-loop") ? `${look}(a[i], ${coord})` : `${look}(s, ${coord})`;
     // ESSL 3.00 indexes sampler arrays with constant expressions only.
-    const decls = form === "array" ? `uniform ${sampler} a[2];\nconst int i = 1;\n` : `uniform ${sampler} s;\n`;
-    const helper = form === "parameter" ? `vec4 lookUp(${sampler} x, ${cube ? "vec3" : "vec2"} c) { return ${look}(x, c); }\n` : "";
+    const decls = form.startsWith("array") ? `uniform ${sampler} a[2];\n${form === "array" ? "const int i = 1;\n" : ""}` : `uniform ${sampler} s;\n`;
+    const helper = (form === "parameter" || form === "array-loop-parameter") ? `vec4 lookUp(${sampler} x, ${cube ? "vec3" : "vec2"} c) { return ${look}(x, c); }\n` : "";
     return { name: `${cube ? "cube" : "2d"}.fragment.${form}.lambda-${lambda}`, cube, stage: "fragment", size: SW_SIZE,
-      vertex: QUAD_VERTEX, fragment: `precision highp float;\n${decls}${helper}void main() { vec2 st = ${st};\ngl_FragColor = ${call}; }\n`,
+      vertex: QUAD_VERTEX, fragment: `precision highp float;\n${decls}${helper}void main() { vec2 st = ${st};\n${form.startsWith("array-loop") ? `for(int i=1;i<2;i++) { gl_FragColor = ${call}; }` : `gl_FragColor = ${call};`} }\n`,
       sample: (px, py) => [lambda, S0 + k * (px + 0.5) / SW_SIZE, T0 + k * (py + 0.5) / SW_SIZE] };
   };
   const vertexCase = (cube: boolean, lambda: number): SwitchCase => {
@@ -1107,7 +1156,7 @@ function lodSwitchover(): void {
   const cases: SwitchCase[] = [];
   for (const cube of [false, true]) {
     for (const lambda of [0.1, 0.45, 0.6]) cases.push(fragmentCase(cube, lambda, "plain"), vertexCase(cube, lambda));
-    cases.push(fragmentCase(cube, 0.45, "bias"), fragmentCase(cube, 0.3, "parameter"), fragmentCase(cube, 0.3, "array"));
+    cases.push(fragmentCase(cube, 0.45, "bias"), fragmentCase(cube, 0.3, "parameter"), fragmentCase(cube, 0.3, "array"), fragmentCase(cube, 0.3, "array-loop"), fragmentCase(cube, 0.3, "array-loop-parameter"));
   }
   cases.push(fragmentCase(false, 0.3, "proj"));
 
@@ -1173,7 +1222,8 @@ function lodSwitchover(): void {
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling, shadingLanguageVersion, lodSwitchover]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling, samplerArraySelection, shadingLanguageVersion, lodSwitchover]) {
+    if ((globalThis as { shaderCheckProgress?: boolean }).shaderCheckProgress) console.info(`shader-check-start: ${check.name}`);
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

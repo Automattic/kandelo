@@ -3586,3 +3586,13 @@ worker-painted canvas during native readback. No product workaround is
 implemented. The separate Cage whole-frame screenshot failure and Firefox
 cursor rendering failure remain open; this extraction evidence does not
 establish their cause or waive their acceptance assertions.
+
+### Firefox sampler-array linking
+
+The standalone reproduction in
+[`FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH`](../tests/runtime-workarounds/FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH/entry.md)
+closes Firefox 153.0 and 155.0 on macOS during WebGL 2 program linking.
+Translated indexed sampler lookups and guest array parameters use scalar
+sampler parameters to avoid that shape. Chromium and WebKit link both
+standalone forms. The reproduction is retained for checking released
+Firefox versions before removing the workaround.

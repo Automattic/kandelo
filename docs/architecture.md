@@ -6073,6 +6073,19 @@ no WebGL renderer, so there it has nothing to instrument. Running suites
 with it is described in
 [graphics conformance testing](graphics/conformance-testing.md#native-divergence-audit).
 
+Translated sampler-array lookups use private dispatch functions with
+constant native indices (`webgl/sampler-arrays.ts`), because ESSL 1.00
+accepts loop-indexed sampler arrays while ESSL 3.00 requires constant integral
+indices. Dispatch preserves one evaluation of the coordinates and index,
+selects one lookup, carries the c = 0.5 flag, and preserves guest `out`/`inout`
+parameters. Guest sampler-array parameters are flattened into scalar sampler
+parameters too. A standalone WebGL page reproduces a Firefox 153/155 link
+crash when array-parameter elements are forwarded to another function;
+scalar parameters avoid it (registry
+`FIREFOX-SAMPLER-ARRAY-DISPATCH-LINK-CRASH`). Shaders without an indexed sampler
+lookup get no dispatch helper. This is shader work at compile time and adds
+no host draw-time branch.
+
 The guest side of the same contract keeps `glGetError` off the transport
 when the answer is already known. Applications that check every call (a
 debug GL wrapper is `glGetError(); call; glGetError()`) otherwise pay a

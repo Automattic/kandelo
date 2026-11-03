@@ -113,6 +113,43 @@ describe("ESSL 3.00 translation", () => {
     expect(translateEssl100("precision mediump float;\n#if 0\nuniform samplerCube c;\n#endif\nvoid main() { gl_FragColor = vec4(1.0); }\n", true).cube).toBe(false);
   });
 
+  it("lowers loop-indexed sampler arrays to constant-index native lookups", () => {
+    const source = "precision mediump float;\nconst int N = 1 + 1;\nuniform samplerCube a[N];\n" +
+      "void main() { vec4 v=vec4(0.0); for(int i=0;i<N;i++) v+=textureCube(a[i],vec3(1.0)); gl_FragColor=v; }\n";
+    const translated = translateEssl100(source, true).text;
+    expect(translated).toContain("highp sampler2DArray s0, highp sampler2DArray s1, int index");
+    expect(translated).toContain("case 0: return kandelo_essl3_textureCube(s0, p0)");
+    expect(translated).toContain("case 1: return kandelo_essl3_textureCube(s1, p0)");
+    expect(translated).toContain("kandelo_essl3_sampler_array_0 ( a[0], a[1], int(i)");
+    expect(translated).not.toMatch(/textureCube \( a \[/);
+    const variant = translateEssl100(source, true, new Set(["a[1]"])).text;
+    expect(variant).toContain("bool on, highp sampler2DArray s0, highp sampler2DArray s1");
+    expect(variant).toContain("kandelo_essl3_lod_textureCube(on, s1, p0)");
+  });
+
+  it("uses ESSL octal array dimensions rather than decimal spelling", () => {
+    const text = translateEssl100("precision mediump float; uniform samplerCube a[010];\n" +
+      "void main() { for(int i=0;i<2;i++) gl_FragColor=textureCube(a[i],vec3(1.0)); }", true).text;
+    expect(text).toContain("highp sampler2DArray s7");
+    expect(text).not.toContain("highp sampler2DArray s8");
+  });
+
+  it("preserves local constant shadowing when scalarizing an array parameter", () => {
+    const source = "precision mediump float;\nconst int N=2;\nuniform samplerCube a[3];\n" +
+      "vec4 f(samplerCube x[3]) { const int N=1; return textureCube(x[N],vec3(1.0)); }\n" +
+      "void main() { gl_FragColor=f(a); }\n";
+    const text = translateEssl100(source, true).text;
+    expect(text).toContain("textureCube ( kandelo_essl3_array_param_0_1");
+    expect(text).not.toContain("textureCube ( kandelo_essl3_array_param_0_2");
+  });
+
+  it("uses a sampler array parameter's own size when it shadows a global", () => {
+    const source = "precision mediump float;\nuniform samplerCube a[2];\nuniform samplerCube other[3];\n" +
+      "vec4 f(samplerCube a[3], int i) { return textureCube(a[i], vec3(1.0)); }\n" +
+      "void main() { gl_FragColor=f(other,1); }\n";
+    expect(translateEssl100(source, true).text).toContain("highp sampler2DArray s0, highp sampler2DArray s1, highp sampler2DArray s2");
+  });
+
   it("compiles a shader that samples a cube map as ESSL 3.00 even when ES 1.00 accepts it", () => {
     const gl = new TranslationGl(), context = gl as unknown as WebGL2RenderingContext;
     const cube = gl.createShader(0x8b30), plain = gl.createShader(0x8b30);

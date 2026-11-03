@@ -242,8 +242,9 @@ its specification defines. The decisions and their evidence are recorded in
 ### Move GL authority into the guest library and the Rust kernel (follow-up iteration)
 
 Planned as the next iteration after this baseline ships. Today the guest
-GLES library encodes commands while the TypeScript host validates them and
-asks WebGL for errors. Following Mesa's split, the guest library should own
+GLES library encodes commands while the TypeScript host validates them as
+the acceptance authority. Native errors are sampled at batch boundaries
+for context-reset diagnostics rather than guest acceptance. Following Mesa's split, the guest library should own
 GL state, validation, error flags and state queries ("Stage B": local
 `glGetError` for exactly validated commands, asynchronous binds, local state
 queries, program interface fetched once per link, kernel-native GL fences,

@@ -42,6 +42,10 @@ for (const engine of engines) {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", error => errors.push(String(error)));
+    if (process.env.KANDELO_SHADER_REWRITE_PROGRESS === "1") {
+      page.on("console", message => { if (message.text().startsWith("shader-check")) console.log(message.text()); });
+      await page.evaluate(() => { globalThis.shaderCheckProgress = true; });
+    }
     await page.setContent("<!doctype html><html><body></body></html>");
     await page.addScriptTag({ content: script });
     report = await page.evaluate(() => window.runShaderRewriteChecks());

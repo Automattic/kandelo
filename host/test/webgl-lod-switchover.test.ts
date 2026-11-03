@@ -73,7 +73,7 @@ describe("lookups through switching samplers (ESSL 3.00 translation)", () => {
     const array = t(frag("uniform sampler2D s[3];\nuniform int k;", "gl_FragColor = texture2D(s[1], vec2(0.5)) + texture2D(s[0], vec2(0.5)) + texture2D(s[k], vec2(0.5));"), ["s[1]", "s[2]"]);
     expect(array).toContain(`${LOD}texture2D ( true , s [ 1 ]`);
     expect(array).toContain("texture ( s [ 0 ]");
-    expect(array).toContain(`${LOD}texture2D ( kandelo_essl3_lodarray_s(int(k)) , s [ k ]`);
+    expect(array).toContain(`kandelo_essl3_sampler_array_0 ( kandelo_essl3_lodarray_s(int(k)) , s[0], s[1], s[2], int(k)`);
     expect(array).toContain("bool kandelo_essl3_lodarray_s(int i) { return i == 1 || i == 2; }");
     const member = t(frag("struct S { sampler2D t; float k; };\nuniform S u;", "gl_FragColor = texture2D(u.t, vec2(0.5)) * u.k;"), ["u.t"]);
     expect(member).toContain(`${LOD}texture2D ( true , u . t`);

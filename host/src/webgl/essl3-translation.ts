@@ -1,3 +1,4 @@
+import { lowerSamplerArrayLookups } from "./sampler-arrays.js";
 /**
  * GLSL ES 1.00 shaders compiled as GLSL ES 3.00 on WebGL 2.
  *
@@ -89,10 +90,9 @@
  * a fragment shader's `invariant gl_FragCoord` no longer requires the vertex
  * shader's gl_Position to be invariant; and a dynamically indexed
  * gl_FragData is still rejected (ESSL 3.00 requires constant output
- * indices). ESSL 3.00 indexes sampler arrays only with constant
- * expressions, so a translated shader that indexes one with a loop index
- * (ES 1.00 Appendix A allows it) fails to compile; every shader that
- * samples a cube map is translated.
+ * indices). Sampler-array loop indices are lowered to constant-index
+ * dispatch (sampler-arrays.ts), including array parameters and calls through
+ * scalar sampler parameters; every shader that samples a cube is translated.
  *
  * Only GLSL ES 1.00 is a guest language. OpenGL ES 2.0 has one shading
  * language, and Kandelo reports `OpenGL ES GLSL ES 1.00`, so a guest shader
@@ -1043,6 +1043,10 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
   // listed samplers (draw variants only).
   const lod = lodSwitch?.size ? lodSwitchCalls(tokens, depth, fragment, lodSwitch, declared, overloaded, out) : null;
 
+  const samplerArrayHelpers = lowerSamplerArrayLookups(tokens, depth, out, {
+    prefix: PRIVATE, signatures: name => builtinSignatures(name, fragment), declared,
+  });
+
   // Header: version, outputs, forwarders.
   const header = ["#version 300 es"];
   if (!fragment && pragmas.some(invariantAll)) header.push("#pragma STDGL invariant(all)");
@@ -1082,5 +1086,5 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
     const assignments = deferred.map(d => `${out[d.from - 1]} = ${out.slice(d.from + 1, d.to).join(" ")};`).join(" ");
     body += `\nvoid main() { ${assignments} ${PRIVATE}main(); }`;
   }
-  return { text: `${header.join("\n")}\n${body}\n`, cube, ...(lod?.gaps.length ? { lodSwitchGaps: lod.gaps } : {}) };
+  return { text: `${header.join("\n")}\n${body}${samplerArrayHelpers.length ? `\n${samplerArrayHelpers.join("\n")}` : ""}\n`, cube, ...(lod?.gaps.length ? { lodSwitchGaps: lod.gaps } : {}) };
 }
