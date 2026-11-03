@@ -136,6 +136,8 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 /* The hyprctl analog: a control + event socket alongside the wayland one.
  * kwlctl (programs/wlcompositor/kwlctl.c) and the Tier-1 bar speak to it. */
 #define KWLCTL_SOCKET_PATH "/tmp/kwlctl-0"
+/* CPU path: one bo on screen, one in flight, one being painted. */
+#define CPU_SCANOUT_BOS 3
 #define MAX_KWLCTL_CONNS 16
 /* The Hyprland IPC socket pair, where Waybar's hyprland modules expect it:
  * $XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket.sock (request/
@@ -393,11 +395,18 @@ struct compositor {
      * (SDL's Wayland backend, and so ScummVM) sees the real display. */
     int32_t mm_width, mm_height;
     struct gbm_device *gbm;
-    struct gbm_surface *gbm_surface;   /* CPU-composited scanout bos */
+    /* CPU-composited scanout bos: plain LINEAR|SCANOUT dumb buffers the
+     * compositor paints and flips itself. Not a gbm_surface: a gbm_surface
+     * is an EGL window, whose front buffer exists only once eglSwapBuffers
+     * has rendered one (gbm_surface_lock_front_buffer fails before that,
+     * as in Mesa), and the CPU path never swaps. */
+    struct gbm_bo *cpu_bos[CPU_SCANOUT_BOS];
+    int cpu_bo_busy[CPU_SCANOUT_BOS];   /* on screen or flip in flight */
     struct gbm_bo *displayed_bo;   /* on-screen right now */
     struct gbm_bo *pending_bo;     /* flip queued, not yet complete */
-    /* The gbm_surface each of those bos came from (the CPU one above or
-     * the GPU path's EGL window), so it is released back to its owner. */
+    /* The gbm_surface each of those bos came from (the GPU path's EGL
+     * window), or NULL for a CPU scanout bo, so it is released back to its
+     * owner. */
     struct gbm_surface *displayed_surface, *pending_surface;
     int crtc_configured;           /* SetCrtc done once */
 
@@ -4260,6 +4269,27 @@ static int repaint_gl(void) {
  * Modeset pane, a remote desktop) already shows the host pointer, and the
  * input bridge maps it absolutely so the two would sit on top of each
  * other. */
+/* Hand a scanout bo back to whoever owns it: the GPU path's EGL window,
+ * or (owner NULL) the CPU ring. */
+static void scanout_release(struct gbm_surface *owner, struct gbm_bo *bo) {
+    if (owner) {
+        gbm_surface_release_buffer(owner, bo);
+        return;
+    }
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++)
+        if (g.cpu_bos[i] == bo) g.cpu_bo_busy[i] = 0;
+}
+
+/* A CPU scanout bo that is neither on screen nor queued, or NULL. */
+static struct gbm_bo *cpu_scanout_acquire(void) {
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++)
+        if (!g.cpu_bo_busy[i]) {
+            g.cpu_bo_busy[i] = 1;
+            return g.cpu_bos[i];
+        }
+    return NULL;
+}
+
 static void repaint(void) {
     struct gbm_bo *bo = NULL;
     struct gbm_surface *scanout = NULL;
@@ -4286,10 +4316,8 @@ static void repaint(void) {
         }
     }
     if (!glc.active) {
-        if (!gbm_surface_has_free_buffers(g.gbm_surface)) return; /* retry on flip */
-        bo = gbm_surface_lock_front_buffer(g.gbm_surface);
-        if (!bo) return;
-        scanout = g.gbm_surface;
+        bo = cpu_scanout_acquire();
+        if (!bo) return;   /* retry on flip */
         uint32_t stride = 0;
         void *map_data = NULL;
         uint32_t *dst =
@@ -4299,7 +4327,7 @@ static void repaint(void) {
              * visible error — say so loudly. */
             fprintf(stderr, "wlcompositor: gbm_bo_map failed: %s\n",
                     strerror(errno));
-            gbm_surface_release_buffer(g.gbm_surface, bo);
+            scanout_release(NULL, bo);
             return;
         }
         uint32_t stride_px = stride / 4;
@@ -4352,7 +4380,7 @@ static void repaint(void) {
     if (!fb_id) {
         fprintf(stderr, "wlcompositor: drmModeAddFB failed: %s\n",
                 strerror(errno));
-        gbm_surface_release_buffer(scanout, bo);
+        scanout_release(scanout, bo);
         return;
     }
 
@@ -4360,7 +4388,7 @@ static void repaint(void) {
         if (drmModeSetCrtc(g.card_fd, g.crtc_id, fb_id, 0, 0,
                            &g.connector_id, 1, &g.mode) < 0) {
             perror("drmModeSetCrtc");
-            gbm_surface_release_buffer(scanout, bo);
+            scanout_release(scanout, bo);
             return;
         }
         g.crtc_configured = 1;
@@ -4378,7 +4406,7 @@ static void repaint(void) {
         if (drmModePageFlip(g.card_fd, g.crtc_id, fb_id,
                             DRM_MODE_PAGE_FLIP_EVENT, NULL) < 0) {
             perror("drmModePageFlip");
-            gbm_surface_release_buffer(scanout, bo);
+            scanout_release(scanout, bo);
             return;
         }
         g.pending_bo = bo;
@@ -4403,7 +4431,7 @@ static void on_flip(int fd, unsigned int seq, unsigned int sec,
                     unsigned int usec, void *user_data) {
     if (g.pending_bo) {
         if (g.displayed_bo)
-            gbm_surface_release_buffer(g.displayed_surface, g.displayed_bo);
+            scanout_release(g.displayed_surface, g.displayed_bo);
         g.displayed_bo = g.pending_bo;
         g.displayed_surface = g.pending_surface;
         g.pending_bo = NULL;
@@ -5835,10 +5863,11 @@ static int setup_drm(void) {
      * are valid for ADDFB2 on card0, so no PRIME round-trip is needed. */
     g.gbm = gbm_create_device(g.card_fd);
     if (!g.gbm) { fprintf(stderr, "gbm_create_device\n"); return -1; }
-    g.gbm_surface = gbm_surface_create(
-        g.gbm, g.pw, g.ph, GBM_FORMAT_XRGB8888,
-        GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
-    if (!g.gbm_surface) { fprintf(stderr, "gbm_surface_create\n"); return -1; }
+    for (int i = 0; i < CPU_SCANOUT_BOS; i++) {
+        g.cpu_bos[i] = gbm_bo_create(g.gbm, g.pw, g.ph, GBM_FORMAT_XRGB8888,
+                                     GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
+        if (!g.cpu_bos[i]) { perror("gbm_bo_create (scanout)"); return -1; }
+    }
     return 0;
 }
 
