@@ -375,18 +375,52 @@ was announced separately from validation. Evidence:
 `.context/graphics-preview-r10/`. The retired-client Node smokes,
 three-engine specs, manual check and matched performance are still open.
 
+**Validation checkpoint, 2026-11-03.** The normal r10 source at
+`ae0fc96da0` completes `scripts/ci-run-test-suite.sh cargo-workspace`
+(3,629 passing tests, zero ignored, 178 seconds),
+`... cargo-xtask` (845 passing tests, zero ignored, 412 seconds) and
+`check-vitest-evidence-classes.sh` (699 files agree). Commands run inside
+the declared dev shell; source stays unchanged. Evidence:
+`.context/graphics-rust-r10-r1/`. Later BO-writer changes affect
+TypeScript only; these results establish the recorded Rust checkpoint,
+not completion of final host or cross-host validation.
+
+At `01bb61483d` (runtime `030acf65aa`),
+`scripts/dev-shell.sh node tests/graphics/shader-rewrite-check/run.mjs
+.context/a3/final-shader-rewrite` exits zero. Chromium 151.0.7922.34 and
+WebKit 26.5 each pass 266 checks. Firefox 153.0 passes 263, with one
+inconclusive reversed-depth check and two failing unmodified-shader
+controls. No check fails. The harness covers the translated loop-indexed
+sampler arrays and their c = 0.5 variants. Full GLES2/EGL runs on three
+independent worktrees and Vite caches remain active, with private
+Playwright output under each actual engine's result directory:
+`.context/graphics-cts-final-r2-results/`. They use the normal r10 kernel
+and CTS executables, byte-identical to r9; no completed full result is
+claimed here.
+
+The historical A1 Chromium performance/stress instrumented run at
+`b1c005d7a12d` completes 26 chunks in 14,512 seconds. Aggregating its
+JSONL audit records reports 26 instrumented contexts, zero native
+divergence records and zero dropped records. Its 2,050 guest results are
+1,190 Pass, 117 Fail, 80 NotSupported and 663 InternalError. This is
+prediction-audit evidence, not a clean guest-conformance run. The
+matching audit-off run remains active and must be compared per case.
+Evidence: `.context/stage-a1-runs/gles2-chromium-perfstress-rec/` and
+`gles2-chromium-perfstress-rec-audit-analysis.txt`. This older source is
+separate from the final A3 candidate.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension
 text does not require ES3, wlroots requires the extension, and GLES3 is a
 separate expansion, so this case is expected to fail until GLES3 exists.
 
-**Unverified mechanisms to check first in the build phase.** The reversed-depth
-twin, attribute-alias executable and future depth-sampling variants rewrite
-GLSL that no real compiler has compiled yet. The blend-factor fold variant
-(below) is newer than the real-compiler harness run and has not been compiled
-by a real compiler either. Per-face stencil splitting costs
-about one native draw per triangle when the faces differ; this is unmeasured.
+**Remaining measurement work.** Real-compiler harness coverage now includes
+the reversed-depth, attribute-alias and blend-factor rewrites; the latest
+checkpoint and Firefox control limitation are recorded above. Full
+conformance remains separate. Per-face stencil splitting issues about one
+native draw per triangle when the faces differ; its application cost is
+unmeasured.
 `OES_standard_derivatives` relies on WebGL 2 accepting `#extension` in GLSL ES
 1.00 (checked 2026-11-02: no engine accepts any ESSL 1.00 extension in WebGL 2,
 so `dFdx` was undeclared; the host now provides the extension through the ESSL
