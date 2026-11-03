@@ -1635,7 +1635,9 @@ fn handle_dri_ioctl(
                 let dri = dri_state_mut(proc, ofd_idx)?;
                 let gls = dri.gl.as_mut().ok_or(Errno::EINVAL)?;
                 ctx_id = gls.context_id.ok_or(Errno::EINVAL)?;
-                surface_id = gls.surface_id.ok_or(Errno::EINVAL)?;
+                // 0: no surface. A context renders surfaceless (EGL 1.5)
+                // into framebuffer objects only.
+                surface_id = gls.surface_id.unwrap_or(0);
                 gls.current = true;
             }
             host.gl_make_current(pid, ctx_id, surface_id);
@@ -10893,7 +10895,7 @@ fn sys_sigsuspend_with_kind(
     let new_mask = mask & !sig_guard;
 
     proc.enter_signal_mask_wait_for(tid, kind, new_mask);
-    if proc.deliverable_for(tid) != 0 {
+    if proc.interrupting_signals_for(tid) != 0 {
         // Signal arrived — return EINTR but keep the temporary mask active so
         // dequeueSignalForDelivery picks the signal that woke sigsuspend. The
         // handler frame restores that current mask; libc then invokes exact
@@ -15975,7 +15977,7 @@ pub fn sys_poll_with_peers(
     }
 
     let tid = current_tid_for_process(proc);
-    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
+    if proc.interrupting_signals_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -18480,7 +18482,7 @@ pub fn sys_ppoll_with_peers(
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
         let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
         proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Ppoll, m);
-        if proc.deliverable_for(tid) != 0 {
+        if proc.interrupting_signals_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
@@ -18537,7 +18539,7 @@ pub fn sys_pselect6_with_peers(
         use wasm_posix_shared::signal::{SIGKILL, SIGSTOP};
         let m = new_mask & !(crate::signal::sig_bit(SIGKILL) | crate::signal::sig_bit(SIGSTOP));
         proc.enter_signal_mask_wait_for(tid, crate::signal::SignalMaskWaitKind::Pselect, m);
-        if proc.deliverable_for(tid) != 0 {
+        if proc.interrupting_signals_for(tid) != 0 {
             return Err(Errno::EINTR);
         }
     }
@@ -19416,7 +19418,7 @@ pub fn sys_epoll_pwait_with_peers(
             epoll_evaluate(proc, host, idx, maxevents as usize, true, 0, peers).and_then(|out| {
                 if !out.is_empty() || timeout_ms == 0 {
                     Ok((out.len() as i32, out))
-                } else if proc.deliverable_for(tid) != 0 {
+                } else if proc.interrupting_signals_for(tid) != 0 {
                     Err(Errno::EINTR)
                 } else {
                     Err(Errno::EAGAIN)
@@ -20989,7 +20991,7 @@ pub fn sys_select_with_peers(
         return Ok(ready);
     }
     let tid = current_tid_for_process(proc);
-    if proc.deliverable_for(tid) != 0 && !proc.should_restart_for(tid) {
+    if proc.interrupting_signals_for(tid) != 0 && !proc.should_restart_for(tid) {
         return Err(Errno::EINTR);
     }
     Err(Errno::EAGAIN)
@@ -44581,7 +44583,7 @@ impl HostIO for NetMock {
         sys_epoll_ctl(&mut proc, epfd, 1, read_fd, 0x001, 7).unwrap();
 
         // The reaper's handler must be installed: a default-disposition
-        // SIGCHLD is discarded at raise time and never becomes pending.
+        // SIGCHLD is ignored, so it never interrupts the wait.
         sys_sigaction(&mut proc, SIGCHLD, 42, 0, 0).unwrap();
         let orig_mask = proc.signals.blocked;
         sys_sigprocmask(&mut proc, SIG_BLOCK, crate::signal::sig_bit(SIGCHLD))
@@ -44603,6 +44605,31 @@ impl HostIO for NetMock {
             sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
         assert_eq!(retried, Err(Errno::EINTR));
         assert_ne!(proc.signals.deliverable(), 0);
+    }
+
+    #[test]
+    fn test_epoll_pwait_sigmask_discards_pending_default_ignored_signal() {
+        // libwayland's SIGCHLD source: SIGCHLD stays SIG_DFL and blocked, so
+        // a signalfd reads it. A wait whose mask unblocks it delivers it,
+        // which has no effect, so the wait parks instead of ending in EINTR.
+        use wasm_posix_shared::signal::SIGCHLD;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+
+        let (read_fd, _write_fd) = sys_pipe(&mut proc).unwrap();
+        let epfd = sys_epoll_create1(&mut proc, 0).unwrap();
+        sys_epoll_ctl(&mut proc, epfd, 1, read_fd, 0x001, 7).unwrap();
+
+        let orig_mask = proc.signals.blocked;
+        sys_sigprocmask(&mut proc, SIG_BLOCK, crate::signal::sig_bit(SIGCHLD))
+            .unwrap();
+        proc.signals.raise(SIGCHLD);
+        assert!(proc.signals.is_pending(SIGCHLD));
+
+        let parked =
+            sys_epoll_pwait(&mut proc, &mut host, epfd, 10, -1, Some(orig_mask));
+        assert_eq!(parked, Err(Errno::EAGAIN));
+        assert!(!proc.signals.is_pending(SIGCHLD));
     }
 
     #[test]
@@ -51435,6 +51462,31 @@ impl HostIO for RelSymlinkMock {
             sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut buf).unwrap_err(),
             Errno::EBUSY,
         );
+    }
+
+    #[test]
+    fn glio_make_current_needs_a_context_but_not_a_surface() {
+        use wasm_posix_shared::gl;
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let fd = sys_open(&mut proc, &mut host, b"/dev/dri/renderD128", O_RDWR, 0).unwrap();
+        let mut ver_buf = gl::OP_VERSION.to_le_bytes();
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_INIT, &mut ver_buf).unwrap();
+
+        let mut nullbuf = [0u8; 0];
+        assert_eq!(
+            sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_MAKE_CURRENT, &mut nullbuf).unwrap_err(),
+            Errno::EINVAL,
+        );
+
+        let attrs = gl::GlContextAttrs {
+            client_version: 3,
+            reserved: [0; 3],
+        };
+        let mut buf = [0u8; core::mem::size_of::<gl::GlContextAttrs>()];
+        unsafe { core::ptr::write_unaligned(buf.as_mut_ptr() as *mut gl::GlContextAttrs, attrs) };
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_CREATE_CONTEXT, &mut buf).unwrap();
+        sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_MAKE_CURRENT, &mut nullbuf).unwrap();
     }
 
     #[test]

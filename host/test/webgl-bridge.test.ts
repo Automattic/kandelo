@@ -140,6 +140,22 @@ class RecordingGl {
     for (let i = 0; i < dst.length; i++) dst[i] = (i & 0xff);
   }
   checkFramebufferStatus(_t: number) { return 0x8CD5 /* GL_FRAMEBUFFER_COMPLETE */; }
+
+  // OpenGL ES 3.0
+  extensions = new Set(["EXT_color_buffer_float", "OES_texture_float_linear"]);
+  getExtension(name: string) { return this.extensions.has(name) ? {} : null; }
+  stencilFuncSeparate(...a: number[]) { this.log.push(["stencilFuncSeparate", a]); }
+  bindBufferRange(...a: unknown[]) { this.log.push(["bindBufferRange", a]); }
+  uniform3uiv(l: unknown, v: Uint32Array) { this.log.push(["uniform3uiv", [l, [...v]]]); }
+  uniformMatrix3x2fv(l: unknown, t: boolean, m: Float32Array) { this.log.push(["uniformMatrix3x2fv", [l, t, [...m]]]); }
+  createSampler() { return { kind: "sampler", id: this.next++ }; }
+  bindSampler(u: number, s: unknown) { this.log.push(["bindSampler", [u, s]]); }
+  fenceSync(c: number, f: number) { this.log.push(["fenceSync", [c, f]]); return { kind: "sync", id: this.next++ }; }
+  clientWaitSync(s: unknown, f: number, t: number) { this.log.push(["clientWaitSync", [s, f, t]]); return 0x911A; /* GL_ALREADY_SIGNALED */ }
+  getBufferSubData(t: number, o: number, dst: Uint8Array, dstOff: number, len: number) {
+    this.log.push(["getBufferSubData", [t, o, dstOff, len]]);
+    for (let i = 0; i < len; i++) dst[dstOff + i] = (o + i) & 0xff;
+  }
 }
 
 function setupBinding(gl: RecordingGl, capacity = 4096) {
@@ -221,21 +237,29 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(h.p, 0x8892, true);
     t.view.setUint32(h.p + 4, 42, true);
 
-    // BufferData payload: u32 target, u32 dataLen=12, 12 bytes data, u32 usage.
-    h = t.op(O.OP_BUFFER_DATA, 8 + 12 + 4);
+    // BufferData allocates: u32 target, u32 size, u32 usage.
+    h = t.op(O.OP_BUFFER_DATA, 12);
     t.view.setUint32(h.p, 0x8892, true);
-    t.view.setUint32(h.p + 4, 12, true);
+    t.view.setUint32(h.p + 4, 300_000, true);
+    t.view.setUint32(h.p + 8, 0x88E4 /* GL_STATIC_DRAW */, true);
+
+    // BufferSubData: u32 target, i32 offset, u32 dataLen=12, 12 bytes data.
+    h = t.op(O.OP_BUFFER_SUB_DATA, 12 + 12);
+    t.view.setUint32(h.p, 0x8892, true);
+    t.view.setInt32(h.p + 4, 8, true);
+    t.view.setUint32(h.p + 8, 12, true);
     for (let i = 0; i < 12; i++) {
-      t.view.setUint8(h.p + 8 + i, (i + 1) * 17);
+      t.view.setUint8(h.p + 12 + i, (i + 1) * 17);
     }
-    t.view.setUint32(h.p + 8 + 12, 0x88E4 /* GL_STATIC_DRAW */, true);
 
     decodeAndDispatch(b, 0, t.p);
 
     expect(b.buffers.has(42)).toBe(true);
     const bufObj = b.buffers.get(42);
     expect(gl.log[1]).toEqual(["bindBuffer", [0x8892, bufObj]]);
-    const data = (gl.log[2][1] as unknown[])[1] as Uint8Array;
+    expect(gl.log[2]).toEqual(["bufferData", [0x8892, 300_000, 0x88E4]]);
+    const [, offset, data] = gl.log[3][1] as [number, number, Uint8Array];
+    expect(offset).toBe(8);
     expect(data.byteLength).toBe(12);
     expect(data[0]).toBe(17);
   });
@@ -611,5 +635,153 @@ describe("GLES texture upload marshalling", () => {
       expect(args[2]).toBe(expected);
       expect(args[8]).toBeNull();
     }
+  });
+});
+
+describe("cmdbuf decoder — OpenGL ES 3.0", () => {
+  it("TexSubImage2D hands WebGL2 the typed array its type requires", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    // An odd-length record first, so the pixel data starts unaligned.
+    let h = t.op(O.OP_SHADER_SOURCE, 9);
+    t.view.setUint32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 1, true);
+    h = t.op(O.OP_TEX_SUB_IMAGE_2D, 36 + 8);
+    t.view.setUint32(h.p, 0x0DE1, true);                 // GL_TEXTURE_2D
+    t.view.setUint32(h.p + 16, 2, true);                 // width
+    t.view.setUint32(h.p + 20, 1, true);                 // height
+    t.view.setUint32(h.p + 24, 0x1903, true);            // GL_RED
+    t.view.setUint32(h.p + 28, 0x1406, true);            // GL_FLOAT
+    t.view.setUint32(h.p + 32, 8, true);
+    t.view.setFloat32(h.p + 36, 0.5, true);
+    t.view.setFloat32(h.p + 40, 2.0, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+
+    const data = gl.log.find(([m]) => m === "texSubImage2D")![1][8];
+    expect(data).toBeInstanceOf(Float32Array);
+    expect([...(data as Float32Array)]).toEqual([0.5, 2.0]);
+  });
+
+  it("UniformUIV and UniformMatrixFV pick the setter by shape", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    b.uniformLocations.set(5, { kind: "uloc" } as unknown as WebGLUniformLocation);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_UNIFORM_UIV, 12 + 12);
+    t.view.setInt32(h.p, 5, true);
+    t.view.setUint32(h.p + 4, 3, true);
+    t.view.setUint32(h.p + 8, 1, true);
+    [7, 8, 0xFFFFFFFF].forEach((x, i) => t.view.setUint32(h.p + 12 + i * 4, x, true));
+    h = t.op(O.OP_UNIFORM_MATRIX_FV, 20 + 24);
+    t.view.setInt32(h.p, 5, true);
+    t.view.setUint32(h.p + 4, 3, true);
+    t.view.setUint32(h.p + 8, 2, true);
+    t.view.setUint32(h.p + 12, 1, true);
+    for (let i = 0; i < 6; i++) t.view.setFloat32(h.p + 20 + i * 4, i, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+
+    expect(gl.log[0]).toEqual(["uniform3uiv", [{ kind: "uloc" }, [7, 8, 0xFFFFFFFF]]]);
+    expect(gl.log[1]).toEqual(["uniformMatrix3x2fv", [{ kind: "uloc" }, false, [0, 1, 2, 3, 4, 5]]]);
+  });
+
+  it("a uniform vector whose size disagrees with its count is refused", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_UNIFORM_UIV, 12 + 4);
+    t.view.setUint32(h.p + 4, 2, true);
+    t.view.setUint32(h.p + 8, 1, true);
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("records the GLES 3.0 context state the muxer replays", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_GEN_BUFFERS, 8);
+    t.view.setUint32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 3, true);
+    h = t.op(O.OP_BIND_BUFFER_RANGE, 20);
+    [0x8A11, 2, 3, 256, 64].forEach((x, i) => t.view.setUint32(h.p + i * 4, x, true));
+    h = t.op(O.OP_STENCIL_FUNC_SEPARATE, 16);
+    [0x0404 /* GL_FRONT */, 0x0202, 1, 0xFF].forEach((x, i) => t.view.setUint32(h.p + i * 4, x, true));
+    h = t.op(O.OP_GEN_SAMPLERS, 8);
+    t.view.setUint32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 4, true);
+    h = t.op(O.OP_BIND_SAMPLER, 8);
+    t.view.setUint32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 4, true);
+    h = t.op(O.OP_GEN_FRAMEBUFFERS, 8);
+    t.view.setUint32(h.p, 1, true);
+    t.view.setUint32(h.p + 4, 6, true);
+    h = t.op(O.OP_BIND_FRAMEBUFFER, 8);
+    t.view.setUint32(h.p, 0x8D40 /* GL_FRAMEBUFFER */, true);
+    t.view.setUint32(h.p + 4, 6, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+
+    const buf = b.buffers.get(3)!;
+    expect(b.shadow.uniformBufferRanges.get(2)).toEqual({ buffer: buf, offset: 256, size: 64 });
+    expect(b.shadow.bufferBindings.get(0x8A11)).toBe(buf);
+    expect(b.shadow.stencil.front).toMatchObject({ func: 0x0202, ref: 1, valueMask: 0xFF });
+    expect(b.shadow.stencil.back.func).toBe(0x0207);
+    expect(b.shadow.samplerUnits[1]).toBe(b.samplers.get(4));
+    expect(b.shadow.fbo).toBe(b.fbos.get(6));
+    expect(b.shadow.readFbo).toBe(b.fbos.get(6));
+  });
+
+  it("FenceSync names a host fence that a client wait polls once", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_FENCE_SYNC, 12);
+    t.view.setUint32(h.p, 9, true);
+    t.view.setUint32(h.p + 4, 0x9117 /* GL_SYNC_GPU_COMMANDS_COMPLETE */, true);
+
+    expect(decodeAndDispatch(b, 0, t.p)).toBe(0);
+
+    const out = new Uint8Array(4);
+    const input = new Uint8Array(new Uint32Array([9, 1]).buffer);
+    expect(runGlQuery(b, O.QOP_CLIENT_WAIT_SYNC, input, out)).toBe(4);
+    expect(new DataView(out.buffer).getUint32(0, true)).toBe(0x911A);
+    expect(gl.log.at(-1)).toEqual(["clientWaitSync", [b.syncs.get(9), 1, 0]]);
+  });
+});
+
+describe("query handler — OpenGL ES 3.0", () => {
+  it("lists the GL_EXTENSIONS string one extension per index", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const strOut = new Uint8Array(4096);
+    const len = runGlQuery(b, O.QOP_GET_STRING, new Uint8Array(new Uint32Array([0x1F03, O.OP_VERSION]).buffer), strOut);
+    const listed = new TextDecoder().decode(strOut.subarray(4, len)).split(" ");
+    expect(listed).toContain("GL_OES_texture_float_linear");
+    expect(listed).not.toContain("GL_EXT_float_blend");
+
+    const count = new Uint8Array(4);
+    runGlQuery(b, O.QOP_GET_INTEGERV, new Uint8Array(new Uint32Array([0x821D]).buffer), count);
+    expect(new DataView(count.buffer).getInt32(0, true)).toBe(listed.length);
+
+    const out = new Uint8Array(64);
+    const indexed = listed.map((_, i) => {
+      const n = runGlQuery(b, O.QOP_GET_STRINGI, new Uint8Array(new Uint32Array([0x1F03, i]).buffer), out);
+      return new TextDecoder().decode(out.subarray(4, n));
+    });
+    expect(indexed).toEqual(listed);
+    const past = new Uint8Array(new Uint32Array([0x1F03, listed.length]).buffer);
+    expect(runGlQuery(b, O.QOP_GET_STRINGI, past, out)).toBe(-22);
+  });
+
+  it("QOP_GET_BUFFER_SUB_DATA reads the requested range", () => {
+    const gl = new RecordingGl();
+    const { b } = setupBinding(gl);
+    const out = new Uint8Array(4);
+    const n = runGlQuery(b, O.QOP_GET_BUFFER_SUB_DATA, new Uint8Array(new Uint32Array([0x8F36, 10, 4]).buffer), out);
+    expect(n).toBe(4);
+    expect([...out]).toEqual([10, 11, 12, 13]);
   });
 });

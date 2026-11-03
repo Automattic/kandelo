@@ -404,6 +404,11 @@
   outline: none;
 }
 
+.kdock-header-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
 .kdock-header-btn[aria-pressed="true"] {
   background: var(--kdock-active-fill);
   color: var(--kdock-active-text);
@@ -672,6 +677,12 @@
 .kdock-github-link svg {
   fill: currentColor;
   stroke: none;
+}
+
+.kdock-site-link img {
+  height: 18px;
+  display: block;
+  filter: grayscale(1);
 }
 
 .kdock-collapse-btn svg {
@@ -2326,6 +2337,11 @@
   inset: 0;
   visibility: hidden;
   pointer-events: none;
+}
+/* The terminal view lets the shell run under the dock. The KMS pane shows
+   above it, so the size it reports must leave the dock out. */
+.kdocked-app.is-terminal-view.is-dock-space-reserved .kmachine-primary-slot.is-measured {
+  bottom: var(--kdock-height, 0px);
 }
 .kmachine-primary-slot > * {
   flex: 1;

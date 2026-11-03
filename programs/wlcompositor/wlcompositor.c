@@ -63,9 +63,15 @@
  * Clients are paced with wl_surface.frame callbacks fired on flip
  * completion. ESC is forwarded, never special-cased.
  *
- * The process exits 0 once its last client disconnects, so the smoke
- * gates (host/test/wlcompositor-smoke.test.ts and friends) can spawn
- * compositor + client(s) and observe a clean shutdown.
+ * Without a session program, the process exits 0 once its last client
+ * disconnects, so the smoke gates (host/test/wlcompositor-smoke.test.ts
+ * and friends) can spawn compositor + client(s) and observe a clean
+ * shutdown.
+ *
+ * `wlcompositor PROGRAM [ARG...]` runs PROGRAM as the whole session, as
+ * cage does: it is spawned once the socket is bound, with WAYLAND_DISPLAY
+ * and XDG_RUNTIME_DIR set, its windows are kiosk-maximized, and the
+ * compositor exits with PROGRAM's status when PROGRAM exits.
  */
 #include <dirent.h>
 #include <errno.h>
@@ -83,6 +89,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -153,6 +160,10 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
  * browser reports without letting a bad WLC_SCALE shrink the logical grid
  * to nothing. */
 #define MAX_OUTPUT_SCALE 3
+/* How often the connector is re-read for a new mode. Kandelo sends no
+ * hotplug uevent, so a display that changes size is found by polling
+ * DRM_IOCTL_MODE_GETCONNECTOR, which works the same on Linux. */
+#define OUTPUT_POLL_MS 250
 
 /* The config path, hyprland.conf-shaped subset. Absent = generic defaults
  * (install_default_binds); WLC_CONFIG overrides for tests. */
@@ -261,6 +272,10 @@ struct surface {
     int workspace;                      /* 1..N_WORKSPACES; 0 until first map */
     int mapped;                         /* has a committed buffer been shown */
     int placed;                         /* position assigned at first map */
+    uint32_t wm_state;                  /* XDG_TOPLEVEL_STATE_MAXIMIZED or
+                                         * _FULLSCREEN; 0 = floating */
+    int32_t restore_x, restore_y;       /* the floating geometry wm_state */
+    int32_t restore_w, restore_h;       /* replaced, back on unset */
     struct wl_resource *frame_cbs[MAX_FRAME_CB];
     int n_frame_cbs;
     /* wp_presentation_feedback resources awaiting the next flip. */
@@ -389,7 +404,14 @@ struct compositor {
     struct gbm_surface *gbm_surface;
     struct gbm_bo *displayed_bo;   /* on-screen right now */
     struct gbm_bo *pending_bo;     /* flip queued, not yet complete */
-    int crtc_configured;           /* SetCrtc done once */
+    int crtc_configured;           /* SetCrtc done for the current mode */
+    struct wl_event_source *output_poll;
+    /* A connector mode seen by one poll and not applied yet. The next poll
+     * applies it only if it still reads the same, so a pane being dragged
+     * to a new size is rebuilt once, at the size it settles on. */
+    drmModeModeInfo probe_mode;
+    int32_t probe_mm_width, probe_mm_height;
+    int probe_pending;
 
     /* Pre-rendered desktop background (pw × ph, tightly packed). */
     uint32_t *wallpaper;
@@ -439,6 +461,13 @@ struct compositor {
 
     /* Layout policy (enum layout_mode); FLOATING unless WLC_LAYOUT overrides. */
     int layout;
+    /* WLC_KIOSK: every floating window is maximized from its first
+     * configure and stays so, as in the cage compositor. */
+    int kiosk;
+    /* The program named on the command line: the whole session, as in
+     * cage. The compositor exits with its status when it ends. 0 = none. */
+    pid_t session_pid;
+    int session_status;
 
     /* The visible workspace (1..N_WORKSPACES). Surfaces on other workspaces
      * stay mapped but are excluded from compositing, input, and tiling. */
@@ -472,6 +501,7 @@ struct compositor {
     struct wl_list keyboards;
     struct wl_list pointers;
     struct wl_list outputs;
+    struct wl_list xdg_outputs;
 
     int client_count;
     int had_client;   /* so we only exit after a client has actually connected */
@@ -1946,12 +1976,81 @@ static void toplevel_set_max_size(struct wl_client *c, struct wl_resource *r,
                                   int32_t w, int32_t h) {}
 static void toplevel_set_min_size(struct wl_client *c, struct wl_resource *r,
                                   int32_t w, int32_t h) {}
-static void toplevel_set_maximized(struct wl_client *c, struct wl_resource *r) {}
-static void toplevel_unset_maximized(struct wl_client *c, struct wl_resource *r) {}
+/* xdg-shell answers every maximize and fullscreen request with a configure.
+ * A floating window takes the usable area (maximized) or the whole output
+ * (fullscreen); a tiled window keeps the tile the layout gives it. */
+static void toplevel_send_wm_state(struct surface *s, int32_t w, int32_t h) {
+    struct wl_array states;
+    wl_array_init(&states);
+    uint32_t *st = wl_array_add(&states, sizeof(uint32_t));
+    if (st) *st = XDG_TOPLEVEL_STATE_ACTIVATED;
+    if (s->wm_state) {
+        st = wl_array_add(&states, sizeof(uint32_t));
+        if (st) *st = s->wm_state;
+    }
+    xdg_toplevel_send_configure(s->xdg_toplevel, w, h, &states);
+    wl_array_release(&states);
+    surface_send_xdg_configure(s);
+}
+/* Place a maximized or fullscreen floating window on the area its state
+ * claims and configure it to that size. */
+static void toplevel_fit_wm_state(struct surface *s) {
+    struct geom area = s->wm_state == XDG_TOPLEVEL_STATE_FULLSCREEN
+        ? (struct geom){ 0, 0, (int)g.width, (int)g.height }
+        : g.usable;
+    s->x = area.x;
+    s->y = area.y;
+    s->placed = 1;
+    printf("WM_STATE %s \"%s\" w=%d h=%d\n",
+           s->wm_state == XDG_TOPLEVEL_STATE_FULLSCREEN ? "fullscreen"
+                                                        : "maximized",
+           s->app_id, area.w, area.h);
+    fflush(stdout);
+    toplevel_send_wm_state(s, area.w, area.h);
+}
+static void toplevel_set_wm_state(struct wl_resource *r, uint32_t state) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s || !s->xdg_surface) return;
+    if (g.layout != LAYOUT_FLOATING) { retile(); return; }
+    if (!s->wm_state) {
+        s->restore_x = s->x;
+        s->restore_y = s->y;
+        s->restore_w = s->w;
+        s->restore_h = s->h;
+    }
+    s->wm_state = state;
+    toplevel_fit_wm_state(s);
+    schedule_repaint();
+}
+static void toplevel_unset_wm_state(struct wl_resource *r, uint32_t state) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s || !s->xdg_surface) return;
+    if (g.layout != LAYOUT_FLOATING) { retile(); return; }
+    if (g.kiosk) { toplevel_set_wm_state(r, XDG_TOPLEVEL_STATE_MAXIMIZED); return; }
+    if (s->wm_state != state) {
+        toplevel_send_wm_state(s, 0, 0);
+        return;
+    }
+    s->wm_state = 0;
+    s->x = s->restore_x;
+    s->y = s->restore_y;
+    toplevel_send_wm_state(s, s->restore_w, s->restore_h);
+    schedule_repaint();
+}
+static void toplevel_set_maximized(struct wl_client *c, struct wl_resource *r) {
+    toplevel_set_wm_state(r, XDG_TOPLEVEL_STATE_MAXIMIZED);
+}
+static void toplevel_unset_maximized(struct wl_client *c, struct wl_resource *r) {
+    toplevel_unset_wm_state(r, XDG_TOPLEVEL_STATE_MAXIMIZED);
+}
 static void toplevel_set_fullscreen(struct wl_client *c, struct wl_resource *r,
-                                    struct wl_resource *output) {}
+                                    struct wl_resource *output) {
+    toplevel_set_wm_state(r, XDG_TOPLEVEL_STATE_FULLSCREEN);
+}
 static void toplevel_unset_fullscreen(struct wl_client *c,
-                                      struct wl_resource *r) {}
+                                      struct wl_resource *r) {
+    toplevel_unset_wm_state(r, XDG_TOPLEVEL_STATE_FULLSCREEN);
+}
 static void toplevel_set_minimized(struct wl_client *c, struct wl_resource *r) {}
 static const struct xdg_toplevel_interface toplevel_impl = {
     .destroy = toplevel_destroy,
@@ -2021,6 +2120,13 @@ static void xdg_surface_get_toplevel(struct wl_client *client,
     wl_resource_set_implementation(tl, &toplevel_impl, s,
                                    toplevel_resource_destroy);
     if (s) { s->xdg_toplevel = tl; send_surface_enter(s); }
+
+    if (s && g.kiosk && g.layout == LAYOUT_FLOATING) {
+        s->configured = 0;
+        s->pending_serials.size = 0;
+        toplevel_set_wm_state(tl, XDG_TOPLEVEL_STATE_MAXIMIZED);
+        return;
+    }
 
     /* Advertise a suggested size of 0x0 ("you decide") plus the initial
      * configure. The window is not mapped until the client acks and
@@ -2190,9 +2296,10 @@ static void wm_base_bind(struct wl_client *client, void *data, uint32_t version,
 /* Negotiate the decoration mode by layout: a tiled window has no titlebar, so
  * DWINDLE forces SERVER_SIDE (the compositor draws the border/focus ring and
  * the client drops its CSD); FLOATING grants CLIENT_SIDE so a draggable
- * titlebar stays. The client's preferred mode is acknowledged but ignored. */
+ * titlebar stays, except in kiosk mode, where a window never moves. The
+ * client's preferred mode is acknowledged but ignored. */
 static void decoration_send_mode(struct wl_resource *r) {
-    uint32_t mode = g.layout == LAYOUT_DWINDLE
+    uint32_t mode = g.layout == LAYOUT_DWINDLE || g.kiosk
                         ? ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
                         : ZXDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
     zxdg_toplevel_decoration_v1_send_configure(r, mode);
@@ -2225,6 +2332,14 @@ static void decoration_mgr_get_toplevel_decoration(
     if (!d) { wl_client_post_no_memory(client); return; }
     wl_resource_set_implementation(d, &decoration_impl, NULL, NULL);
     decoration_send_mode(d);   /* initial configure */
+    /* A decoration configure takes effect with the next xdg_surface.configure.
+     * The floating layout configured the toplevel at get_toplevel, before
+     * this object existed, so it configures again. The tiling layout
+     * configures at map, which comes later. */
+    struct surface *s = wl_resource_get_user_data(toplevel);
+    if (!s || !s->xdg_surface || g.layout != LAYOUT_FLOATING) return;
+    if (s->wm_state) toplevel_set_wm_state(toplevel, s->wm_state);
+    else toplevel_send_wm_state(s, 0, 0);
 }
 static const struct zxdg_decoration_manager_v1_interface decoration_mgr_impl = {
     .destroy = decoration_mgr_destroy,
@@ -2665,14 +2780,8 @@ static const struct wl_output_interface output_impl = {
 static void output_resource_destroy(struct wl_resource *r) {
     wl_list_remove(wl_resource_get_link(r));
 }
-static void output_bind(struct wl_client *client, void *data, uint32_t version,
-                        uint32_t id) {
-    struct wl_resource *r =
-        wl_resource_create(client, &wl_output_interface, version, id);
-    if (!r) { wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(r, &output_impl, NULL,
-                                   output_resource_destroy);
-    wl_list_insert(&g.outputs, wl_resource_get_link(r));
+/* The output state that changes with the connector mode. */
+static void output_send_mode(struct wl_resource *r) {
     /* The physical size is the connector's, which the host reports for the
      * display the pane occupies. 0x0 means unknown (a host with no display);
      * never substitute pixels, which a DPI-aware client would read as a
@@ -2685,6 +2794,16 @@ static void output_bind(struct wl_client *client, void *data, uint32_t version,
     wl_output_send_mode(r,
                         WL_OUTPUT_MODE_CURRENT | WL_OUTPUT_MODE_PREFERRED,
                         (int32_t)g.pw, (int32_t)g.ph, 60000);
+}
+static void output_bind(struct wl_client *client, void *data, uint32_t version,
+                        uint32_t id) {
+    struct wl_resource *r =
+        wl_resource_create(client, &wl_output_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &output_impl, NULL,
+                                   output_resource_destroy);
+    wl_list_insert(&g.outputs, wl_resource_get_link(r));
+    output_send_mode(r);
     if (version >= WL_OUTPUT_SCALE_SINCE_VERSION)
         wl_output_send_scale(r, (int32_t)g.scale);
     /* v4: the name a client keys config on (mako binds v4 uncondition-
@@ -2717,11 +2836,13 @@ static void send_surface_enter(struct surface *s) {
 /* ====================================================================== */
 
 /* The single virtual output is fullscreen at (0,0), so the logical grid is
- * the mode divided by the output scale — g.width/g.height. The geometry is
- * fixed for the process lifetime, so each xdg_output is a one-shot burst
- * with no tracking list. */
+ * the mode divided by the output scale — g.width/g.height. Each xdg_output
+ * is tracked so a mode change can send its new logical size. */
 static void xdg_output_destroy_req(struct wl_client *c, struct wl_resource *r) {
     wl_resource_destroy(r);
+}
+static void xdg_output_resource_destroy(struct wl_resource *r) {
+    wl_list_remove(wl_resource_get_link(r));
 }
 static const struct zxdg_output_v1_interface xdg_output_impl = {
     .destroy = xdg_output_destroy_req,
@@ -2734,7 +2855,9 @@ static void xdg_output_mgr_get(struct wl_client *c, struct wl_resource *r,
     struct wl_resource *xo = wl_resource_create(
         c, &zxdg_output_v1_interface, wl_resource_get_version(r), id);
     if (!xo) { wl_client_post_no_memory(c); return; }
-    wl_resource_set_implementation(xo, &xdg_output_impl, NULL, NULL);
+    wl_resource_set_implementation(xo, &xdg_output_impl, NULL,
+                                   xdg_output_resource_destroy);
+    wl_list_insert(&g.xdg_outputs, wl_resource_get_link(xo));
     zxdg_output_v1_send_logical_position(xo, 0, 0);
     zxdg_output_v1_send_logical_size(xo, (int32_t)g.width, (int32_t)g.height);
     if (wl_resource_get_version(xo) >= ZXDG_OUTPUT_V1_NAME_SINCE_VERSION)
@@ -4018,6 +4141,23 @@ static void setup_gl(void) {
         return;
     }
     glc.active = 1;
+}
+
+/* Re-create the window surface and the wallpaper texture at the new mode,
+ * as a GBM compositor does on Linux after a mode change. The host sizes the
+ * display canvas to the new surface. Returns -1 when the GL session cannot
+ * follow; the caller then drops to the CPU path. */
+static int gl_resize(void) {
+    eglDestroySurface(glc.dpy, glc.srf);
+    const EGLint srf_attrs[] = { EGL_WIDTH, (EGLint)g.pw,
+                                 EGL_HEIGHT, (EGLint)g.ph, EGL_NONE };
+    glc.srf = eglCreateWindowSurface(glc.dpy, NULL, 0, srf_attrs);
+    if (glc.srf == EGL_NO_SURFACE) return -1;
+    if (!eglMakeCurrent(glc.dpy, glc.srf, glc.srf, glc.ctx)) return -1;
+    glViewport(0, 0, (GLsizei)g.pw, (GLsizei)g.ph);
+    wpkEglCloseBoHandle(glc.dpy, wallpaper_bo_handle);
+    gbm_bo_destroy(wallpaper_bo);
+    return setup_gl_wallpaper();
 }
 
 /* GPU frame: refresh dirty textures (host-side uploads, safe to flush),
@@ -5443,7 +5583,7 @@ static void lock_mgr_bind(struct wl_client *client, void *data,
 static void client_destroyed(struct wl_listener *listener, void *data) {
     free(listener);
     sel.dying = data;
-    if (--g.client_count <= 0 && g.had_client) {
+    if (--g.client_count <= 0 && g.had_client && !g.session_pid) {
         printf("COMPOSITOR_LAST_CLIENT_GONE\n");
         fflush(stdout);
         wl_display_terminate(g.display);
@@ -6073,11 +6213,27 @@ static int kwlctl_activewindow_json(char *buf, size_t cap) {
     return n;
 }
 
-/* dispatch exec: launch a client with the NON-forking posix_spawnp
- * (SYS_SPAWN, see docs/plans/2026-05-04-non-forking-posix-spawn-design.md).
- * fork() from inside a wl_event_loop callback would wedge the server; the
- * direct spawn syscall sidesteps it entirely and needs no fork instrumentation.
- * posix_spawnp walks PATH in libc and passes the kernel one resolved path. */
+/* Launch a client with the NON-forking posix_spawnp (SYS_SPAWN, see
+ * docs/plans/2026-05-04-non-forking-posix-spawn-design.md). fork() from
+ * inside a wl_event_loop callback would wedge the server; the direct spawn
+ * syscall sidesteps it entirely and needs no fork instrumentation.
+ * posix_spawnp walks PATH in libc and passes the kernel one resolved path.
+ * The event loop blocks SIGCHLD to read it from a signalfd, and a spawned
+ * process inherits the mask, so the child starts with an empty one. */
+static int spawn_client(pid_t *pid, char *const argv[]) {
+    extern char **environ;
+    posix_spawnattr_t attr;
+    sigset_t none;
+    sigemptyset(&none);
+    posix_spawnattr_init(&attr);
+    posix_spawnattr_setsigmask(&attr, &none);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK);
+    int rc = posix_spawnp(pid, argv[0], NULL, &attr, argv, environ);
+    posix_spawnattr_destroy(&attr);
+    return rc;
+}
+
+/* dispatch exec: launch a client from a control command. */
 static void kwlctl_exec(char *args) {
     char *argv[16];
     int argc = 0;
@@ -6086,9 +6242,8 @@ static void kwlctl_exec(char *args) {
         argv[argc++] = tok;
     argv[argc] = NULL;
     if (argc == 0) return;
-    extern char **environ;
     pid_t pid = 0;
-    int rc = posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
+    int rc = spawn_client(&pid, argv);
     if (rc != 0) {
         /* A failed launch is reported on stdout too: a keybind or launcher
          * entry pointing at a missing binary is otherwise a silent no-op. */
@@ -6314,12 +6469,143 @@ static int setup_socket(void) {
     return 0;
 }
 
-int main(void) {
+/* Move the output to a new connector mode: a scanout surface, wallpaper and
+ * GL surface at the new size, the new state to every wl_output and
+ * xdg_output, and the layout redone in the new work area. The output scale
+ * stays: it is chosen once, at startup. The first repaint at the new size
+ * runs SetCrtc with the new mode; the old surface goes only after it, so
+ * the CRTC never points at a removed framebuffer. */
+static void output_apply_mode(const drmModeModeInfo *mode, int32_t mm_width,
+                              int32_t mm_height) {
+    uint32_t pw = mode->hdisplay, ph = mode->vdisplay;
+    struct gbm_surface *surface = gbm_surface_create(
+        g.gbm, pw, ph, GBM_FORMAT_XRGB8888,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_LINEAR);
+    uint32_t *wallpaper = malloc((size_t)pw * ph * 4);
+    if (!surface || !wallpaper) {
+        fprintf(stderr, "wlcompositor: cannot allocate a %ux%u output\n", pw,
+                ph);
+        if (surface) gbm_surface_destroy(surface);
+        free(wallpaper);
+        return;
+    }
+    struct gbm_surface *old_surface = g.gbm_surface;
+    g.gbm_surface = surface;
+    g.displayed_bo = NULL;
+    g.crtc_configured = 0;
+    free(g.wallpaper);
+    g.wallpaper = wallpaper;
+    g.mode = *mode;
+    g.pw = pw;
+    g.ph = ph;
+    g.width = pw / g.scale;
+    g.height = ph / g.scale;
+    g.mm_width = mm_width;
+    g.mm_height = mm_height;
+    if (g.cursor_x > g.width) g.cursor_x = g.width;
+    if (g.cursor_y > g.height) g.cursor_y = g.height;
+    printf("OUTPUT_MODE pw=%u ph=%u w=%u h=%u\n", g.pw, g.ph, g.width,
+           g.height);
+    fflush(stdout);
+
+    render_wallpaper();
+    if (glc.active && gl_resize() != 0) {
+        fprintf(stderr,
+                "wlcompositor: GL resize failed; falling back to CPU\n");
+        glc.active = 0;
+        eglTerminate(glc.dpy);
+    }
+
+    struct wl_resource *res;
+    wl_resource_for_each(res, &g.xdg_outputs) {
+        zxdg_output_v1_send_logical_size(res, (int32_t)g.width,
+                                         (int32_t)g.height);
+        if (wl_resource_get_version(res) < 3) zxdg_output_v1_send_done(res);
+    }
+    wl_resource_for_each(res, &g.outputs) {
+        output_send_mode(res);
+        if (wl_resource_get_version(res) >= WL_OUTPUT_DONE_SINCE_VERSION)
+            wl_output_send_done(res);
+    }
+
+    layers_arrange();
+    if (g.layout == LAYOUT_FLOATING)
+        for (int i = 0; i < g.n_all_surfaces; i++) {
+            struct surface *s = g.all_surfaces[i];
+            if (s->xdg_toplevel && s->xdg_surface && s->wm_state)
+                toplevel_fit_wm_state(s);
+        }
+    schedule_repaint();
+    gbm_surface_destroy(old_surface);
+}
+
+/* Re-read the connector and apply a mode that two polls in a row agree on.
+ * A poll while a flip is in flight is skipped: the bo it holds belongs to
+ * the surface a mode change would destroy. */
+static int output_poll(void *data) {
+    wl_event_source_timer_update(g.output_poll, OUTPUT_POLL_MS);
+    if (g.pending_bo) return 0;
+    drmModeConnectorPtr conn = drmModeGetConnector(g.card_fd, g.connector_id);
+    if (!conn) return 0;
+    if (conn->count_modes < 1) {
+        drmModeFreeConnector(conn);
+        return 0;
+    }
+    drmModeModeInfo mode = conn->modes[0];
+    int32_t mm_width = (int32_t)conn->mmWidth;
+    int32_t mm_height = (int32_t)conn->mmHeight;
+    drmModeFreeConnector(conn);
+
+    int same_as_current = mode.hdisplay == g.mode.hdisplay &&
+                          mode.vdisplay == g.mode.vdisplay &&
+                          mm_width == g.mm_width && mm_height == g.mm_height;
+    if (same_as_current) {
+        g.probe_pending = 0;
+        return 0;
+    }
+    int same_as_probe = g.probe_pending &&
+                        mode.hdisplay == g.probe_mode.hdisplay &&
+                        mode.vdisplay == g.probe_mode.vdisplay &&
+                        mm_width == g.probe_mm_width &&
+                        mm_height == g.probe_mm_height;
+    if (!same_as_probe) {
+        g.probe_mode = mode;
+        g.probe_mm_width = mm_width;
+        g.probe_mm_height = mm_height;
+        g.probe_pending = 1;
+        return 0;
+    }
+    g.probe_pending = 0;
+    output_apply_mode(&mode, mm_width, mm_height);
+    return 0;
+}
+
+/* Reap every exited child, so `dispatch exec` children don't linger as
+ * zombies. The session program's exit ends the compositor, whether or not
+ * it ever connected. */
+static int child_exited(int signum, void *data) {
+    (void)signum;
+    (void)data;
+    int status;
+    pid_t pid;
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        if (pid != g.session_pid) continue;
+        g.session_status = WIFEXITED(status) ? WEXITSTATUS(status)
+                                             : 128 + WTERMSIG(status);
+        printf("SESSION_EXIT status=%d\n", g.session_status);
+        fflush(stdout);
+        wl_display_terminate(g.display);
+    }
+    return 0;
+}
+
+int main(int argc, char *argv[]) {
     g.display = wl_display_create();
     if (!g.display) { fprintf(stderr, "wl_display_create\n"); return 1; }
     wl_list_init(&g.keyboards);
     wl_list_init(&g.pointers);
     wl_list_init(&g.outputs);
+    wl_list_init(&g.xdg_outputs);
     wl_list_init(&sel.devices);
     wl_list_init(&sel.control_devices);
     wl_list_init(&g.shortcuts);
@@ -6334,6 +6620,8 @@ int main(void) {
         g.layout = LAYOUT_DWINDLE;
     printf("WLC_LAYOUT %s\n",
            g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
+    g.kiosk = getenv("WLC_KIOSK") != NULL || argc > 1;
+    if (g.kiosk) printf("WLC_KIOSK on\n");
     fflush(stdout);
 
     /* The mode is in device pixels, so it cannot tell a dpr-2 display from a
@@ -6415,6 +6703,9 @@ int main(void) {
                          NULL);
     wl_event_loop_add_fd(g.loop, libinput_get_fd(g.li), WL_EVENT_READABLE,
                          libinput_readable, NULL);
+    g.output_poll = wl_event_loop_add_timer(g.loop, output_poll, NULL);
+    if (!g.output_poll) { fprintf(stderr, "output poll timer\n"); return 1; }
+    wl_event_source_timer_update(g.output_poll, OUTPUT_POLL_MS);
 
     /* Notify us on every client connect so we can exit when the last one
      * leaves. */
@@ -6424,8 +6715,10 @@ int main(void) {
 
     if (setup_socket() != 0) return 1;
 
-    /* Auto-reap `dispatch exec` children so they don't linger as zombies. */
-    signal(SIGCHLD, SIG_IGN);
+    if (!wl_event_loop_add_signal(g.loop, SIGCHLD, child_exited, NULL)) {
+        fprintf(stderr, "SIGCHLD source\n");
+        return 1;
+    }
     /* A control client is free to fire a command and exit without reading the
      * reply — klauncher does exactly that when it launches an entry. Writing
      * that reply into the closed socket must not take the desktop down with
@@ -6435,10 +6728,21 @@ int main(void) {
      * Hyprland IPC sockets through this pair. */
     setenv("HYPRLAND_INSTANCE_SIGNATURE", HYPR_INSTANCE_SIG, 1);
     setenv("XDG_RUNTIME_DIR", "/tmp", 0);
+    setenv("WAYLAND_DISPLAY", "wayland-0", 0);
     if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);
     fflush(stdout);
+
+    if (argc > 1) {
+        int rc = spawn_client(&g.session_pid, argv + 1);
+        if (rc != 0) {
+            fprintf(stderr, "wlcompositor: %s: %s\n", argv[1], strerror(rc));
+            return 127;
+        }
+        printf("SESSION \"%s\" pid=%d\n", argv[1], (int)g.session_pid);
+        fflush(stdout);
+    }
 
     /* Show the desktop wallpaper before any client maps. */
     schedule_repaint();
@@ -6448,5 +6752,5 @@ int main(void) {
     printf("COMPOSITOR_DONE\n");
     fflush(stdout);
     wl_display_destroy(g.display);
-    return 0;
+    return g.session_status;
 }

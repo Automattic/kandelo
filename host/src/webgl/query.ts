@@ -18,7 +18,8 @@
  */
 import type { GlBinding } from "./registry.js";
 import * as O from "./ops.js";
-import { getGlesExtensionString } from "./capabilities.js";
+import { getGlesExtensions, getGlesExtensionString } from "./capabilities.js";
+import { pixelArrayType } from "./pixels.js";
 
 const GL_VENDOR = 0x1F00;
 const GL_RENDERER = 0x1F01;
@@ -31,62 +32,23 @@ const GL_CURRENT_PROGRAM = 0x8B8D;
 const GL_ACTIVE_UNIFORMS = 0x8B86;
 const GL_ACTIVE_UNIFORM_MAX_LENGTH = 0x8B87;
 const GL_INFO_LOG_LENGTH = 0x8B84;
-const GL_UNSIGNED_SHORT = 0x1403;
-const GL_UNSIGNED_INT = 0x1405;
-const GL_FLOAT = 0x1406;
 const GL_HALF_FLOAT = 0x140B;
 const GL_HALF_FLOAT_OES = 0x8D61;
-const GL_UNSIGNED_SHORT_4_4_4_4 = 0x8033;
-const GL_UNSIGNED_SHORT_5_5_5_1 = 0x8034;
-const GL_UNSIGNED_SHORT_5_6_5 = 0x8363;
-const GL_UNSIGNED_INT_2_10_10_10_REV = 0x8368;
-const GL_UNSIGNED_INT_24_8 = 0x84FA;
-const GL_UNSIGNED_INT_10F_11F_11F_REV = 0x8C3B;
+const GL_NUM_EXTENSIONS = 0x821D;
+const GL_INVALID_INDEX = 0xFFFFFFFF;
 
 function normalizeHalfFloatType(type: number): number {
   return type === GL_HALF_FLOAT_OES ? GL_HALF_FLOAT : type;
 }
 
-function alignedFloat32View(out: Uint8Array): Float32Array {
-  if (out.byteOffset % 4 === 0) {
-    return new Float32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
-  }
-  return new Float32Array((out.byteLength / 4) | 0);
-}
-
-function alignedUint32View(out: Uint8Array): Uint32Array {
-  if (out.byteOffset % 4 === 0) {
-    return new Uint32Array(out.buffer, out.byteOffset, (out.byteLength / 4) | 0);
-  }
-  return new Uint32Array((out.byteLength / 4) | 0);
-}
-
-function alignedUint16View(out: Uint8Array): Uint16Array {
-  if (out.byteOffset % 2 === 0) {
-    return new Uint16Array(out.buffer, out.byteOffset, (out.byteLength / 2) | 0);
-  }
-  return new Uint16Array((out.byteLength / 2) | 0);
-}
-
+/** The view WebGL2 requires for `readPixels` of `type`, over `out` when it
+ *  is aligned for that view, else over a buffer copied back to `out`. */
 function readPixelsViewForType(type: number, out: Uint8Array): ArrayBufferView {
-  switch (type) {
-    case GL_FLOAT:
-      return alignedFloat32View(out);
-    case GL_UNSIGNED_SHORT:
-    case GL_HALF_FLOAT:
-    case GL_HALF_FLOAT_OES:
-    case GL_UNSIGNED_SHORT_4_4_4_4:
-    case GL_UNSIGNED_SHORT_5_5_5_1:
-    case GL_UNSIGNED_SHORT_5_6_5:
-      return alignedUint16View(out);
-    case GL_UNSIGNED_INT:
-    case GL_UNSIGNED_INT_2_10_10_10_REV:
-    case GL_UNSIGNED_INT_24_8:
-    case GL_UNSIGNED_INT_10F_11F_11F_REV:
-      return alignedUint32View(out);
-    default:
-      return out;
-  }
+  const Ctor = pixelArrayType(type);
+  const n = Math.floor(out.byteLength / Ctor.BYTES_PER_ELEMENT);
+  return out.byteOffset % Ctor.BYTES_PER_ELEMENT === 0
+    ? new Ctor(out.buffer, out.byteOffset, n)
+    : new Ctor(n);
 }
 
 function copyReadPixelsResult(view: ArrayBufferView, out: Uint8Array): void {
@@ -143,6 +105,11 @@ export function runGlQuery(
       }
       if (pname === GL_SCISSOR_BOX) {
         return writeNumericValues(outDv, out.byteLength, b.shadow.scissor.rect, false, pname);
+      }
+      // WebGL has no GL_NUM_EXTENSIONS; answer for the QOP_GET_STRINGI list.
+      if (pname === GL_NUM_EXTENSIONS) {
+        outDv.setInt32(0, getGlesExtensions(gl).length, true);
+        return 4;
       }
       const value = gl.getParameter(pname);
       return writeNumericValues(outDv, out.byteLength, value, false, pname);
@@ -348,6 +315,54 @@ export function runGlQuery(
       const loc = b.uniformLocations.get(inDv.getInt32(4, true)) ?? null;
       const value = prog && loc ? gl.getUniform(prog, loc) : null;
       return writeNumericValues(outDv, out.byteLength, value, op === O.QOP_GET_UNIFORMFV, 0);
+    }
+
+    // in: u32 name, u32 index; out: u32 strLen, u8 str[strLen]
+    case O.QOP_GET_STRINGI: {
+      if (input.byteLength < 8) return -22;
+      if (inDv.getUint32(0, true) !== GL_EXTENSIONS) return -22;
+      const ext = getGlesExtensions(gl)[inDv.getUint32(4, true)];
+      if (ext === undefined) return -22;
+      return writeLengthPrefixedString(out, outDv, ext);
+    }
+
+    // in: u32 target, u32 offset, u32 length; out: u8 data[length]
+    case O.QOP_GET_BUFFER_SUB_DATA: {
+      if (input.byteLength < 12) return -22;
+      const length = inDv.getUint32(8, true);
+      if (out.byteLength < length) return -22;
+      gl.getBufferSubData(inDv.getUint32(0, true), inDv.getUint32(4, true), out, 0, length);
+      return length;
+    }
+
+    // in: u32 program, u32 nameLen, u8 name[nameLen]; out: u32 index
+    case O.QOP_GET_UNIFORM_BLOCK_INDEX: {
+      if (input.byteLength < 8 || out.byteLength < 4) return -22;
+      const nameLen = inDv.getUint32(4, true);
+      if (input.byteLength < 8 + nameLen) return -22;
+      const prog = b.programs.get(inDv.getUint32(0, true));
+      const name = new TextDecoder().decode(input.subarray(8, 8 + nameLen));
+      outDv.setUint32(0, prog ? gl.getUniformBlockIndex(prog, name) : GL_INVALID_INDEX, true);
+      return 4;
+    }
+
+    // in: u32 name, u32 flags; out: u32 status. One poll: WebGL2 allows no
+    // client-side wait, so the guest repeats the query until its timeout.
+    case O.QOP_CLIENT_WAIT_SYNC: {
+      if (input.byteLength < 8 || out.byteLength < 4) return -22;
+      const sync = b.syncs.get(inDv.getUint32(0, true));
+      if (!sync) return -22;
+      outDv.setUint32(0, gl.clientWaitSync(sync, inDv.getUint32(4, true), 0), true);
+      return 4;
+    }
+
+    // in: u32 name, u32 pname; out: i32 value
+    case O.QOP_GET_SYNCIV: {
+      if (input.byteLength < 8 || out.byteLength < 4) return -22;
+      const sync = b.syncs.get(inDv.getUint32(0, true));
+      if (!sync) return -22;
+      outDv.setInt32(0, Number(gl.getSyncParameter(sync, inDv.getUint32(4, true)) ?? 0), true);
+      return 4;
     }
 
     default:

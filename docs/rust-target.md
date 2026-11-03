@@ -30,6 +30,8 @@ Verified on the kernel (see `programs/rust/*`):
 | time | `std::time::Instant`, `SystemTime` | monotonic + realtime |
 | collections/rand | `HashMap` | getrandom-seeded SipHash |
 | threads | `std::thread`, `Mutex`, `Arc` | pthread→clone, futex, TLS |
+| CPU count | `std::thread::available_parallelism` | `sysconf(_SC_NPROCESSORS_ONLN)`; the kernel reports 1 |
+| fd duplication | `OwnedFd::try_clone`, `StdioExt::set_fd` | `F_DUPFD_CLOEXEC`, `dup2` |
 | networking | `std::net` TCP | loopback + Node external TCP |
 | processes | `std::process::Command` | fork+exec (see below) |
 
@@ -126,13 +128,15 @@ in a private sysroot:
   `libc/musl-overlay` onto the `libc/musl` submodule. A libc version bump
   makes the patch fail loudly — the signal to refresh the delta.
 - `sdk/rust/std-overlay/` — `kandelo` arms in `library/std` (the unix
-  pal and errno), `library/unwind` and `library/backtrace` (file-copy
+  pal, errno, fd duplication and the CPU count), `library/unwind` and `library/backtrace` (file-copy
   overlay onto the toolchain's `rust-src`, which is not a submodule).
 - `scripts/build-rust-sysroot.sh` — assembles the fork (submodule +
   patch) and the private sysroot (mirror-by-symlink + patched `rust-src`),
   installs the std target spec as
   `lib/rustlib/wasm32-unknown-kandelo-std/target.json`, compiles `std`
-  for that target once into `lib/rustlib/wasm32-unknown-kandelo-std/lib/`,
+  for that target once into `lib/rustlib/wasm32-unknown-kandelo-std/lib/`
+  with `-Cembed-bitcode=yes` (as rustup's std does, so a crate whose
+  profile sets `lto` links),
   and writes a `rustc` wrapper that injects `--sysroot` and
   `-Zunstable-options` (rustc resolves a custom target by name from the
   sysroot only with that flag);
@@ -157,25 +161,42 @@ cargo directly against a changed sysroot needs a clean target directory.
 
 ### Rust packages
 
-`packages/registry/librsvg/` (a library, through Meson and cargo-c) and
-`packages/registry/rsvg-convert/` (a program, through cargo) are the
-references for packages whose build compiles Rust for the target. Both
-source `packages/registry/librsvg/rust-build-env.sh`, which:
+A build that compiles a third-party crate graph (its own `Cargo.lock`)
+for the target sources `sdk/rust/build-env.sh` and calls:
 
-- assembles a private sysroot in its work root
+```
+source "$KANDELO/sdk/rust/build-env.sh"
+kandelo_rust_build_env <src-dir> <work-dir> <dep-pkg-config-path> <patches-dir>
+cargo build --locked --release --target "$KANDELO_RUST_TARGET"
+```
+
+`kandelo_rust_build_env`:
+
+- assembles a private sysroot in `<work-dir>/rust`
   (`KANDELO_RUST_DIR=<work>/rust scripts/build-rust-sysroot.sh`) rather
-  than sharing `~/.kandelo/rust` with other checkouts (each package lists
-  the sysroot's sources, and this helper, in `build.toml` `inputs`: they
-  are not in the global toolchain fingerprint);
+  than sharing `~/.kandelo/rust` with other checkouts, and exports
+  `KANDELO_RUST_DIR`, so `wasm32posix-cargo` uses the same sysroot (each
+  package lists the sysroot's sources, and this helper, in `build.toml`
+  `inputs`: they are not in the global toolchain fingerprint);
 - moves the lockfile's `libc` to the fork's exact version (`[patch]`
   replaces only that version) with `cargo update -p libc --precise`;
 - vendors the remaining crates with `cargo vendor --locked` (Cargo checks
-  each against the lockfile's checksums), applies the package's crate
-  patches as path overrides, then builds offline;
+  each against the lockfile's checksums), applies each
+  `<patches-dir>/<crate>-<version>.patch` as a path override of that
+  crate, then builds offline;
 - writes these overrides to `$CARGO_HOME/config.toml`, because build
   systems such as Meson run cargo from their build directory with
   `--manifest-path`, and cargo finds `.cargo/config.toml` from its working
-  directory, not from the manifest.
+  directory, not from the manifest;
+- sets `KANDELO_RUSTC`, the sysroot's `rustc` wrapper, for build systems
+  that query the target themselves (librsvg's Meson cross file).
+
+`packages/registry/librsvg/` (a library, through Meson and cargo-c),
+`packages/registry/rsvg-convert/` (a program, through cargo) and
+`packages/registry/wgpu-window/` (a windowed program with its own crate
+patches) are the references. The function sets `CARGO_HOME` and offline
+mode for the crate graph; a build that later runs the repository's own
+cargo calls it in a subshell, so that cargo does not inherit them.
 
 Programs that link such a library are fork-instrumented like any program
 whose libraries use `fork` (glib does).

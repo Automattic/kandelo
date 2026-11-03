@@ -7,7 +7,7 @@ revision    = 1
 # are not in the global toolchain fingerprint, so they are listed here.
 inputs = [
   "packages/registry/rsvg-convert/build-rsvg-convert.sh",
-  "packages/registry/librsvg/rust-build-env.sh",
+  "sdk/rust/build-env.sh",
   "packages/registry/librsvg/patches",
   "scripts/build-rust-sysroot.sh",
   "scripts/install-local-binary.sh",

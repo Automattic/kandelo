@@ -1,0 +1,28 @@
+# polling 3.11.0: Kandelo has Linux's epoll; use the epoll backend
+# (calloop needs `Poller: AsFd`, which the poll() fallback lacks).
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -83,6 +83,7 @@
+     } else if #[cfg(any(
+         target_os = "linux",
+         target_os = "android",
++        target_os = "kandelo",
+         target_os = "redox"
+     ))] {
+         mod epoll;
+@@ -976,6 +977,7 @@
+     any(
+         target_os = "linux",
+         target_os = "android",
++        target_os = "kandelo",
+         target_os = "redox",
+         target_os = "illumos",
+         target_os = "solaris",
+@@ -992,6 +994,7 @@
+     doc(cfg(any(
+         target_os = "linux",
+         target_os = "android",
++        target_os = "kandelo",
+         target_os = "redox",
+         target_os = "illumos",
+         target_os = "solaris",

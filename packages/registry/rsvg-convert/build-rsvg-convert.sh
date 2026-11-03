@@ -7,7 +7,7 @@
 # rsvg-convert`, then copies `rsvg-convert` from the cargo target dir; a
 # Kandelo executable is `rsvg-convert.wasm` (the target's exe suffix), so
 # this script runs that cargo build itself, in the environment
-# rust-build-env.sh prepares (the one meson would pass).
+# sdk/rust/build-env.sh prepares (the one meson would pass).
 #
 # Honors the dep-resolver build-script contract (see
 # docs/package-management.md): WASM_POSIX_DEP_VERSION / _SOURCE_URL /
@@ -39,7 +39,7 @@ for tool in wasm32posix-cc cargo rustc; do
 done
 DEP_PKG_CONFIG_PATH="${WASM_POSIX_DEP_PKG_CONFIG_PATH:?WASM_POSIX_DEP_PKG_CONFIG_PATH not set (must be invoked via cargo xtask build-deps resolve rsvg-convert)}"
 
-# Always fresh: rust-build-env.sh rewrites Cargo.lock.
+# Always fresh: sdk/rust/build-env.sh rewrites Cargo.lock.
 rm -rf "$SRC_DIR"
 echo "==> Staging verified librsvg $VERSION source..."
 kandelo_package_stage_verified_source rsvg-convert "$SRC_DIR" "$VERIFIED_SOURCE_DIR" \
@@ -47,17 +47,18 @@ kandelo_package_stage_verified_source rsvg-convert "$SRC_DIR" "$VERIFIED_SOURCE_
 
 TARGET_DIR="$WORK_DIR/target"
 OUT_BIN="$TARGET_DIR/wasm32-unknown-kandelo-std/release/rsvg-convert.wasm"
-# A subshell: the environment rust-build-env.sh sets (CARGO_HOME with the
+# A subshell: the environment sdk/rust/build-env.sh sets (CARGO_HOME with the
 # librsvg crate overrides, offline, the sysroot's rustc) is for this
 # build only, not for the repo's own cargo in install_local_binary.
 (
-    # shellcheck source=../librsvg/rust-build-env.sh
-    source "$REPO_ROOT/packages/registry/librsvg/rust-build-env.sh"
-    librsvg_rust_build_env "$REPO_ROOT" "$SRC_DIR" "$WORK_DIR" "$DEP_PKG_CONFIG_PATH"
+    # shellcheck source=../../../sdk/rust/build-env.sh
+    source "$REPO_ROOT/sdk/rust/build-env.sh"
+    kandelo_rust_build_env "$SRC_DIR" "$WORK_DIR" "$DEP_PKG_CONFIG_PATH" \
+        "$REPO_ROOT/packages/registry/librsvg/patches"
     echo "==> Building rsvg-convert..."
     cd "$SRC_DIR"
     cargo build --locked --release \
-        --target "$LIBRSVG_RUST_TARGET" --target-dir "$TARGET_DIR" \
+        --target "$KANDELO_RUST_TARGET" --target-dir "$TARGET_DIR" \
         -p rsvg_convert --bin rsvg-convert
 )
 
