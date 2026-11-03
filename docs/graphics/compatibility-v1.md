@@ -141,12 +141,17 @@ production switching while the remaining performance/stress audit continues.
 Guest submissions, queries and presents now use host validation as the
 acceptance authority and sample native flags at the batch boundary.
 Unpredicted native errors and native OOM reset the guilty binding with a
-process/session/batch diagnostic; the audit makes that failure fatal.
+process/session/batch diagnostic; the audit makes validation divergences
+fatal. Native OOM and real renderer loss retain their context-reset policy
+under the audit (D-50).
 Private host allocation and deletion checks remain exact. Compressed cube
 storage retains its allocation byte count when moved, present-target
 allocation captures its outgoing guest error owner, and exporting a cube
 with no faces is covered as `EINVAL`. Focused reset/replay/present tests and
-the graphics gate pass: 1,963 tests in 84 files. The real-compiler rewrite
+the graphics gate pass: initially 1,963 tests in 84 files, now 1,970 after
+the OOM and idle-query regressions. An idle host-owned error query does
+not sample native flags unless muxer replay or utility work ran; submitted
+batches still sample once. The initial real-compiler rewrite
 harness reports Chromium 233 Pass, Firefox 230 Pass with one inconclusive
 and two existing engine controls, WebKit 233 Pass, no failures. This is
 source/mechanism evidence; A3 dEQP, desktop, memory and performance validation
@@ -162,6 +167,16 @@ avoids it. The expanded real-compiler harness has no failures: Chromium
 two engine controls, WebKit 266 Pass. Separate textures verify that each
 index selects its actual sampler. Final-tree conformance and performance
 validation remain pending.
+
+**Labwc fixture checkpoint, 2026-11-03.** Firefox's focus test sent the
+second shell's command after its process appeared but before its window
+mapped. The trace shows `mark=second` split between two PTYs. The spec now
+observes the new window's paint, both focus transitions and each command's
+rendered completion before continuing. Its final file assertions still
+require the two distinct shell variables. Chromium, Firefox and WebKit
+each pass on the current host source with compatible r8 artifacts; this
+does not replace the final rebuilt desktop suite. SFWBar failures remain
+under investigation.
 
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config

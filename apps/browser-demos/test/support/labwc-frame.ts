@@ -3,7 +3,10 @@ import type { Page } from "@playwright/test";
 const canvas = (page: Page) => page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first();
 
 export interface Rect { x: number; y: number; width: number; height: number }
-export interface Frame { width: number; height: number; foot: Rect | null; ink: number; red: number }
+export interface Frame {
+  width: number; height: number; foot: Rect | null; ink: number;
+  red: number; blue: number; green: number; purple: number;
+}
 
 /** Find the connected neutral dark background of the real foot client.
  * Root background and SSD titlebars are lighter; text creates small holes.
@@ -51,15 +54,20 @@ export async function footFrame(page: Page): Promise<Frame> {
         foot = { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
       }
     }
-    let ink = 0, red = 0;
+    let ink = 0, red = 0, blue = 0, green = 0, purple = 0;
     if (foot) for (let y = foot.y; y < foot.y + foot.height; y++) {
       for (let x = foot.x; x < foot.x + foot.width; x++) {
         const p = (y * width + x) * 4;
         if (data[p] > 150 && data[p + 1] > 150 && data[p + 2] > 150) ink++;
         if (data[p] > 100 && data[p + 1] < 80 && data[p + 2] < 80) red++;
+        if (data[p] < 45 && data[p + 1] < 70 && data[p + 2] > 210) blue++;
+        if (data[p] >= 20 && data[p] <= 45 && data[p + 1] >= 170 && data[p + 1] <= 195
+          && data[p + 2] >= 50 && data[p + 2] <= 75) green++;
+        if (data[p] >= 170 && data[p] <= 195 && data[p + 1] >= 20 && data[p + 1] <= 45
+          && data[p + 2] >= 170 && data[p + 2] <= 195) purple++;
       }
     }
-    return { width, height, foot, ink, red };
+    return { width, height, foot, ink, red, blue, green, purple };
   }, png.toString("base64"));
 }
 

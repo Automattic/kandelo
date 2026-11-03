@@ -192,11 +192,34 @@ test("Kandelo labwc moves decorated foot windows, changes focus and exits cleanl
   // focus change reached the intended PTY, not only a repaint or key echo.
   await page.keyboard.press("Control+Enter");
   await footProcesses(page, 2);
-  await typePhysicalText(page, "mark=second\n", { delay: 40 });
+  // A process row precedes Wayland map/activation. Typing at that point
+  // splits the command across the old and new PTYs (Firefox trace: "mar"
+  // in the first shell, "k=second" in the second). Observe the new window
+  // where the menu-launched terminal also mapped before sending its keys.
+  await expect.poll(async () => {
+    const foreground = (await footFrame(page)).foot;
+    return foreground !== null && Math.abs(foreground.x - movedBounds.x) > 40
+      && Math.abs(foreground.y - movedBounds.y) > 25;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  const secondBounds = (await footFrame(page)).foot!;
+  await typePhysicalText(page, "mark=second; printf '\\033[48;2;30;50;220mSECOND_READY\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).blue, { timeout: 60_000 }).toBeGreaterThan(200);
   await page.keyboard.press("Alt+Tab");
-  await typePhysicalText(page, "echo FIRST:$mark > /tmp/labwc-first\n", { delay: 40 });
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.foot !== null && Math.abs(frame.foot.x - movedBounds.x) < 5
+      && Math.abs(frame.foot.y - movedBounds.y) < 5 && frame.red > 200;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  await typePhysicalText(page, "echo FIRST:$mark > /tmp/labwc-first && printf '\\033[48;2;30;180;60mFIRST_WRITTEN\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).green, { timeout: 60_000 }).toBeGreaterThan(200);
   await page.keyboard.press("Alt+Tab");
-  await typePhysicalText(page, "echo SECOND:$mark > /tmp/labwc-second\n", { delay: 40 });
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    return frame.foot !== null && Math.abs(frame.foot.x - secondBounds.x) < 5
+      && Math.abs(frame.foot.y - secondBounds.y) < 5 && frame.blue > 200;
+  }, { timeout: 60_000, intervals: [500] }).toBe(true);
+  await typePhysicalText(page, "echo SECOND:$mark > /tmp/labwc-second && printf '\\033[48;2;180;30;180mSECOND_WRITTEN\\033[0m\\n'\n", { delay: 40 });
+  await expect.poll(async () => (await footFrame(page)).purple, { timeout: 60_000 }).toBeGreaterThan(200);
   await page.keyboard.press("Control+Shift+E");
 
   // Observe real display release and automatic return to the launching shell.
