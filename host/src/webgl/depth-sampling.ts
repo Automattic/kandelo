@@ -18,10 +18,12 @@
  * array, and an added bool parameter for a sampler passed into a user
  * function, so every call site resolves to the sampler it actually reads.
  * Draws that sample no depth texture use the guest executable unchanged, and
- * a draw while no unit (nor texture zero) holds a depth texture pays one
- * comparison: each context keeps the count of such unit bindings, updated
- * when a binding changes and recounted only after some texture's level 0
- * started or stopped being depth (texture-levels.ts).
+ * a draw while no unit (nor texture zero) holds a depth texture, or a
+ * texture switching at lambda 0.5 (lod-switchover.ts), pays one comparison:
+ * each context keeps per-unit traits and their counts (`samplingUnits`),
+ * updated when a binding changes and recounted only after some texture's
+ * level 0 started or stopped being depth or its filters changed that trait
+ * (texture-levels.ts).
  * Sources the rewrite cannot resolve exactly (a lookup inside a macro, or a
  * sampler inside a struct) yield no variant, and the draw is refused.
  */
@@ -33,6 +35,7 @@ import { depthLevelRevision, levelSamplesDepth, textureLevel } from "./texture-l
 import type { GlShadowState } from "./shadow.js";
 import { noteSourcedUnit, type GlTextureView } from "./image-storage.js";
 import { programGuestName } from "./essl3-translation.js";
+import { textureSwitchesAtHalf } from "./lod-switchover.js";
 
 const LOOKUPS = new Set(["texture2D", "texture2DProj", "texture2DLod", "texture2DProjLod", "textureCube", "textureCubeLod"]);
 // samplerExternalOES compiles under a private macro name (external-texture.ts);
@@ -204,23 +207,44 @@ function samplesDepth(object: WebGLTexture | null | undefined, cube: boolean): b
   return !!object && levelSamplesDepth(textureLevel(object, cube ? 0x8515 : 0x0de1, 0));
 }
 
-function recountDepthUnits(s: GlShadowState): void {
-  let count = 0;
-  for (const object of s.textureUnits) if (samplesDepth(object, false)) count++;
-  for (const object of s.cubeTextureUnits) if (samplesDepth(object, true)) count++;
-  s.depthUnits = { revision: depthLevelRevision(), count,
-    defaults: samplesDepth(s.defaultTextures.get(0x0de1), false) || samplesDepth(s.defaultTextures.get(0x8513), true) };
+/** Sampling traits of a unit's texture: DEPTH (level 0 is a depth image)
+ * and HALF (its filters switch at lambda 0.5, lod-switchover.ts). */
+export const DEPTH_TRAIT = 1, HALF_TRAIT = 2;
+function traits(object: WebGLTexture | null | undefined, cube: boolean): number {
+  return object ? (samplesDepth(object, cube) ? DEPTH_TRAIT : 0) | (textureSwitchesAtHalf(object) ? HALF_TRAIT : 0) : 0;
+}
+
+function recountSamplingUnits(s: GlShadowState): GlShadowState["samplingUnits"] {
+  const flat = s.textureUnits.map(object => traits(object, false)), cube = s.cubeTextureUnits.map(object => traits(object, true));
+  let any = 0, depth = 0, half = 0;
+  for (const t of [...flat, ...cube]) { if (t) any++; if (t & DEPTH_TRAIT) depth++; if (t & HALF_TRAIT) half++; }
+  return s.samplingUnits = { revision: depthLevelRevision(), any, depth, half, flat, cube,
+    defaults: traits(s.defaultTextures.get(0x0de1), false) | traits(s.defaultTextures.get(0x8513), true) };
+}
+
+/** The context's current unit summary (recounted when stale). */
+export function samplingUnits(s: GlShadowState): GlShadowState["samplingUnits"] {
+  return s.samplingUnits.revision === depthLevelRevision() ? s.samplingUnits : recountSamplingUnits(s);
 }
 
 /** Every write of a texture-unit binding goes through here, keeping the
- * draw-time unit summaries (depth textures here, EGLImage sibling views in
- * image-storage.ts) current; a stale summary is recounted at the next draw. */
+ * draw-time unit summaries (depth textures and switch-over filters here,
+ * EGLImage sibling views in image-storage.ts) current; a stale summary is
+ * recounted at the next draw. */
 export function setTextureUnit(owner: { shadow: GlShadowState; textureViews: ReadonlyMap<WebGLTexture, GlTextureView> },
     cube: boolean, unit: number, object: WebGLTexture | null): void {
-  const s = owner.shadow, units = cube ? s.cubeTextureUnits : s.textureUnits, depth = s.depthUnits;
+  const s = owner.shadow, units = cube ? s.cubeTextureUnits : s.textureUnits, summary = s.samplingUnits;
   if (!cube) noteSourcedUnit(owner, unit, object);
-  if (depth.revision === depthLevelRevision())
-    depth.count += Number(samplesDepth(object, cube)) - Number(samplesDepth(units[unit], cube));
+  // The unit's previous traits are remembered; only `object` is read.
+  if (summary.revision === depthLevelRevision()) {
+    const flags = cube ? summary.cube : summary.flat, now = traits(object, cube), before = flags[unit] ?? 0;
+    if (now !== before) {
+      summary.any += (now ? 1 : 0) - (before ? 1 : 0);
+      summary.depth += (now & DEPTH_TRAIT) - (before & DEPTH_TRAIT);
+      summary.half += ((now & HALF_TRAIT) - (before & HALF_TRAIT)) >> 1;
+      flags[unit] = now;
+    }
+  }
   units[unit] = object;
 }
 
@@ -231,13 +255,12 @@ const caches = new WeakMap<WebGLProgram, SamplerCache>();
 
 /** Sampler elements of the installed executable that read a depth texture,
  * sorted (the variant key). Null means a native query failed (recorded). */
-export function depthSamplersForDraw(b: GlBinding): readonly string[] | null {
+export function depthSamplersForDraw(b: GlBinding, units = samplingUnits(b.shadow)): readonly string[] | null {
   const program = b.currentProgram, gl = b.gl!;
   if (!program) return NO_DEPTH_SAMPLERS;
   const s = b.shadow;
-  if (s.depthUnits.revision !== depthLevelRevision()) recountDepthUnits(s);
   // No unit, bound or texture zero, holds a depth texture: no native work.
-  if (s.depthUnits.count === 0 && !s.depthUnits.defaults) return NO_DEPTH_SAMPLERS;
+  if (units.depth === 0 && !(units.defaults & DEPTH_TRAIT)) return NO_DEPTH_SAMPLERS;
   const depthAt = (cube: boolean, unit: number) =>
     samplesDepth((cube ? s.cubeTextureUnits : s.textureUnits)[unit] ?? s.defaultTextures.get(cube ? 0x8513 : 0x0de1), cube);
   const link = programLinkGeneration(b, program).value, writes = samplerWrites.get(program) ?? 0;

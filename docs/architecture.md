@@ -4174,17 +4174,50 @@ guest binding; a complete cube in its own array costs a cached comparison,
 and a program without cube samplers keeps the one per-draw lookup it
 already made for external textures.
 
-One ES 2.0 filtering rule WebGL 2 engines do not apply to any texture:
-section 3.7.9 makes the minification/magnification switch-over point
-c = 0.5 when the magnification filter is `LINEAR` and the minification
-filter is `NEAREST_MIPMAP_NEAREST` or `NEAREST_MIPMAP_LINEAR`, so a
-level of detail in (0, 0.5] magnifies (`LINEAR` on the base level).
-Chromium, Firefox and WebKit minify there (c = 0, the hardware rule), so
-those lookups use `NEAREST` on the base level instead. dEQP-GLES2 builds
-its references for an ES 2.0 context with c = 0.5, and
-`functional.texture.vertex.cube.filtering.nearest_mipmap_nearest_linear_*`
-fail on that alone (a constant level of detail of 0.19); this is a known
-gap for 2D and cube lookups alike.
+ES 2.0 section 3.7.9 makes the minification/magnification switch-over
+point c = 0.5 when the magnification filter is `LINEAR` and the
+minification filter is `NEAREST_MIPMAP_NEAREST` or `NEAREST_MIPMAP_LINEAR`
+(ES 2.0's initial pair is `NEAREST_MIPMAP_LINEAR` with `LINEAR`), so a
+level of detail lambda in (0, 0.5] magnifies: `LINEAR` on level 0. ES 3.0
+dropped that case, and Chromium, Firefox and WebKit minify there (c = 0,
+reproduced without Kandelo code), returning `NEAREST` from level 0 or a
+`NEAREST` blend of levels 0 and 1. The host emulates c = 0.5
+(`host/src/webgl/lod-switchover.ts`). It records each 2D and cube
+texture's filters at `TexParameter`, and each context keeps the traits of
+its unit bindings (and texture zero) in the summary depth-texture sampling
+already kept (`samplingUnits` in `host/src/webgl/depth-sampling.ts`), so a
+bind looks up only the texture it binds and a draw while no unit holds a
+depth texture or a texture with the pair makes the one comparison it made
+before. Otherwise the program's sampler units (cached per link and
+`Uniform1i`) name the samplers that read such a texture, and the draw runs
+a private variant,
+built once per program and sampler set like the reversed-depth and
+depth-sampling variants. In it the lookups through those samplers compute
+lambda as ES 2.0 section 3.7.7 does (log2 of the larger derivative length
+of (s, t) times the level-0 size, plus the bias; for a cube map from the
+selected face's (s, t), as the per-face lookups do; in a vertex shader the
+`texture2DLod`, `texture2DProjLod` or `textureCubeLod` argument) and call
+`textureLod` at lambda when lambda > 0.5 and at 0 otherwise. Why that is
+exact: `textureLod(..., 0.0)` has lambda 0 <= c = 0 in WebGL 2, so it is
+the magnification ES 2.0 makes for lambda <= 0.5 (same `MAG` filter, level
+0, since ES 2.0 has no base level or LOD clamps); above 0.5 both rules
+minify, and `textureLod` at lambda makes ES 2.0's level choice and blend at
+that lambda. A vertex shader's implicit lookups have level of detail 0 and
+magnify under either rule, and ES 2.0 fragment shaders have no explicit
+level of detail, so neither changes. The rewrite works on the
+translation's preprocessed tokens (`textureSize` and fragment `textureLod`
+exist only in ESSL 3.00, so the variant of an ES 1.00 program is its
+translation): a uniform sampler, a member or constant-indexed element of
+one, an element indexed by an expression (a per-index function) and a
+sampler parameter of a user function (an added `bool` parameter every call
+passes) are resolved; other lookups (a sampler inside a struct parameter,
+an array parameter, overloads of one arity with different sampler
+positions) keep c = 0, as does a draw whose variant does not compile (a
+sampler array indexed by a loop index, which ESSL 3.00 rejects): those are
+the remaining gap, never a refused draw. Compositors such as wlroots set
+`LINEAR` or `NEAREST` filters, and imported foreign textures start
+`LINEAR`, so their draws never select the variant; costs are measured in
+`docs/measurements/2026-11-02-gles2-lod-switchover.md`.
 
 GBM, `DRM_IOCTL_WPK_CREATE_GPU_BO` and dma-buf import share one set of
 single-plane formats, each stored exactly: R8, GR88, RGB565, the four

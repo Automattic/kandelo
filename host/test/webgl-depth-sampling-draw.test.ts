@@ -114,11 +114,15 @@ function setup(gl = new SamplingGl(), vertexSource = vertex, bindings: [string, 
   const primary = gl.current!;
   send(O.OP_UNIFORM1I, [location("uDepth"), 1]);
   send(O.OP_UNIFORM1I, [location("uColor"), 2]);
-  // Unit 1: a depth texture; unit 2: an RGBA texture.
+  // Unit 1: a depth texture; unit 2: an RGBA texture. Single-level
+  // textures are complete only with a non-mipmap MIN_FILTER (the initial
+  // NEAREST_MIPMAP_LINEAR would also select the ES 2.0 switch-over variant,
+  // lod-switchover.ts).
   const image = (unit: number, name: number, format: number, type: number) => {
     send(O.OP_ACTIVE_TEXTURE, [0x84c0 + unit]);
     send(O.OP_BIND_TEXTURE, [0x0de1, name]);
     send(O.OP_TEX_IMAGE_2D, [0x0de1, 0, format, 4, 4, 0, format, type, 0]);
+    send(O.OP_TEX_PARAMETERI, [0x0de1, 0x2801, 0x2600]);
   };
   image(1, 71, 0x1902, 0x1403);
   image(2, 72, 0x1908, 0x1401);

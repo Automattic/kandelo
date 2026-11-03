@@ -254,10 +254,14 @@ function setup() {
     send(O.OP_BIND_FRAMEBUFFER, [FBO, name]);
     send(O.OP_FRAMEBUFFER_RENDERBUFFER, [FBO, point, RBO, rbo]);
   };
+  // wlroots sets LINEAR or NEAREST filters on its textures; ES 2.0's
+  // initial NEAREST_MIPMAP_LINEAR would make every lookup a switch-over
+  // lookup (lod-switchover.ts).
   const texture = (unit: number, name: number, format: number, type: number) => {
     send(O.OP_ACTIVE_TEXTURE, [0x84c0 + unit]);
     send(O.OP_BIND_TEXTURE, [TEX, name]);
     send(O.OP_TEX_IMAGE_2D, [TEX, 0, format, 4, 4, 0, format, type, 0]);
+    send(O.OP_TEX_PARAMETERI, [TEX, 0x2801, 0x2601]);
   };
   // The wlroots textured-quad program: one sampler on unit 0.
   send(O.OP_CREATE_SHADER, [0x8b31, 10]);
@@ -550,6 +554,7 @@ describe("derived draw state follows every change it depends on", () => {
     // Texture zero specified as depth is sampled by every unbound unit.
     h.send(O.OP_BIND_TEXTURE, [TEX, 0]);
     h.send(O.OP_TEX_IMAGE_2D, [TEX, 0, 0x1902, 4, 4, 0, 0x1902, 0x1403, 0]);
+    h.send(O.OP_TEX_PARAMETERI, [TEX, 0x2801, 0x2601]);
     h.send(O.OP_DRAW_ARRAYS, [5, 0, 4]);
     expect(h.gl.draws.at(-1)).not.toBe(primary);
     h.send(O.OP_BIND_TEXTURE, [TEX, 31]);

@@ -52,12 +52,17 @@ export function levelSamplesDepth(level: GlTextureLevel | undefined): boolean {
 }
 
 /** Depth sampling (depth-sampling.ts) depends on whether level 0 of a 2D
- * texture, or of a cube map's first face, is a depth image. This revision
- * advances whenever that changes for any texture, so per-context counts of
- * depth-bound units stay exact without rescanning units on every draw. */
+ * texture, or of a cube map's first face, is a depth image, and ES 2.0's
+ * switch-over point (lod-switchover.ts) on a texture's filters. This
+ * revision advances whenever either changes for any texture (or a context
+ * gains a texture zero), so the per-context counts of units holding such
+ * textures stay exact without rescanning units on every draw. */
 let depthRevision = 0;
 export function depthLevelRevision(): number {
   return depthRevision;
+}
+export function samplingTraitsChanged(): void {
+  depthRevision++;
 }
 function samplesDepthAt(faces: Faces | undefined, face: number): boolean {
   return levelSamplesDepth(faces?.get(face)?.get(0));

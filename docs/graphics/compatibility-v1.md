@@ -288,6 +288,32 @@ and on Firefox `mipmap.cube.projected.{linear_linear,nearest_*}`, from the
 Firefox triangle-edge level-of-detail defect above. Evidence and costs:
 `docs/measurements/2026-11-02-gles2-cube-maps-per-face.md`.
 
+**ES 2.0's switch-over point c = 0.5 (maintainer decision D-46,
+2026-11-02).** WebGL 2 magnifies only at a level of detail <= 0, where ES
+2.0 section 3.7.9 magnifies up to 0.5 when the magnification filter is
+`LINEAR` and the minification filter is `NEAREST_MIPMAP_NEAREST` or
+`NEAREST_MIPMAP_LINEAR` (ES 2.0's initial pair). Draws whose program
+samples such a 2D or cube texture now run a variant whose lookups through
+those samplers compute the ES 2.0 level of detail and magnify in (0, 0.5]
+(`docs/architecture.md`); other draws make the comparison they made
+before. The six `texture.vertex.cube.filtering.nearest_mipmap_*_linear_*`
+cases now pass on Chromium, Firefox and WebKit, and `functional.texture`,
+`fbo`, `accuracy.texture` and the full `functional.shaders` family newly
+fail nothing. Remaining gap: lookups the rewrite cannot attribute to a
+sampler (a sampler in a struct parameter, an array parameter, overloads of
+one arity with different sampler positions) and variants ESSL 3.00 cannot
+compile keep c = 0. Evidence and costs:
+`docs/measurements/2026-11-02-gles2-lod-switchover.md`.
+
+**GLSL ES 1.00 is the only guest language (maintainer decision D-47,
+2026-11-02).** `glCompileShader` of a shader whose leading `#version`
+names any number other than 100 (`#version 300 es` included) now fails
+with `COMPILE_STATUS` `GL_FALSE` and an "unsupported shading language
+version" info log, as on an ES 2.0 driver; it was compiled as ESSL 3.00
+and could link with a translated ES 1.00 partner. The dEQP-GLES2
+preprocessor version cases and the rest of `functional.shaders` are
+unchanged on all three engines (same measurement).
+
 **Robust buffer access (maintainer decision D-25, 2026-11-01): emulated for
 robust contexts only.** `EXT_robustness` §2.8 (`KHR_robustness` §10.3.1.1rob)
 makes an out-of-range vertex index give the attribute undefined values with no

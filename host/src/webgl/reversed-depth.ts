@@ -26,12 +26,13 @@
  */
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError, type CheckedGlOwner } from "./program-objects.js";
-import { depthSamplersForDraw, depthSamplingShaderSource } from "./depth-sampling.js";
+import { depthSamplersForDraw, depthSamplingShaderSource, samplingUnits } from "./depth-sampling.js";
 import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRangeValues, vertexDepthRangeShaderSource,
   vertexDepthRangeWorkaround } from "./vertex-depth-range.js";
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
-import { shaderLanguage, translateEssl100 } from "./essl3-translation.js";
+import { nativeInterfaceName, programGuestName, shaderLanguage, translateEssl100 } from "./essl3-translation.js";
+import { lodSwitchSamplersForDraw } from "./lod-switchover.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -181,22 +182,40 @@ export function noteUniformWrite(program: WebGLProgram | null): void {
 
 // --- twins ----------------------------------------------------------------------
 
+const NO_SAMPLERS: readonly string[] = Object.freeze([]);
+
+/** Switch-over variants of an executable's sources that failed to compile. */
+const unbuildableLodSwitch = new WeakMap<WebGLProgram, { sources: LinkedSources; keys: Set<string> }>();
+
 /** One private draw executable of a guest executable. A draw may need a
  * reversed depth range, luminance sampling of depth textures
- * (depth-sampling.ts) and/or a folded blend source factor
- * (blend-constant.ts); each combination is one variant, keyed by all. */
+ * (depth-sampling.ts), a folded blend source factor (blend-constant.ts)
+ * and/or ES 2.0's switch-over point c = 0.5 for some samplers
+ * (lod-switchover.ts); each combination is one variant, keyed by all. */
 export type VariantOptions = { reversedDepth: boolean; depthSamplers: readonly string[];
+  /** Sampler elements whose lookups switch at lambda 0.5 (lod-switchover.ts);
+   * a variant with any is compiled as ESSL 3.00. */
+  lodSwitch?: readonly string[];
   /** [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] The vertex stage reads gl_DepthRange from a private uniform. */
   vertexDepthRange?: boolean;
   /** The fragment color is multiplied by the RGB source blend factor, with
    * fixed-point or floating-point color buffer clamping. */
   blendFold?: "fixed" | "float" };
 type Twin = { program: WebGLProgram; sources: LinkedSources; uniforms: number; vertexDepthRange: boolean; rangeValues: string | null;
-  blendFold: boolean; blendFactor: readonly number[] | null };
+  blendFold: boolean; blendFactor: readonly number[] | null;
+  /** The twin is an ESSL 3.00 translation of a program WebGL linked as ES
+   * 1.00: its interface names are the translated ones. */
+  renamed: boolean };
 const twins = new WeakMap<WebGLProgram, Map<string, Twin>>();
 
 function variantKey(options: VariantOptions): string {
-  return `${options.reversedDepth ? 1 : 0}|${options.vertexDepthRange ? 1 : 0}|${options.blendFold ?? ""}|${options.depthSamplers.join(",")}`;
+  return `${options.reversedDepth ? 1 : 0}|${options.vertexDepthRange ? 1 : 0}|${options.blendFold ?? ""}|${options.depthSamplers.join(",")}` +
+    `|${options.lodSwitch?.join(",") ?? ""}`;
+}
+
+/** The twin's native name of a primary's native uniform or attribute name. */
+function twinName(primary: WebGLProgram, twin: Twin | { renamed: boolean }, name: string): string {
+  return twin.renamed ? nativeInterfaceName(programGuestName(primary, name)) : name;
 }
 
 function deleteTwin(owner: CheckedGlOwner, twin: Twin): void {
@@ -232,8 +251,12 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
   let vertexSource = variantStageSource(sources.vertex, true, options);
   let fragmentSource = variantStageSource(sources.fragment, false, options);
   if (vertexSource === null || fragmentSource === null) return null;
-  if (sources.essl300) {
-    const vertex = translateEssl100(vertexSource, false), fragment = translateEssl100(fragmentSource, true);
+  // A switch-over variant needs ESSL 3.00 (textureSize, fragment textureLod),
+  // so an ES 1.00 program's variant is its translation.
+  const lodSwitch = options.lodSwitch?.length ? new Set(options.lodSwitch) : undefined;
+  const renamed = !sources.essl300 && !!lodSwitch;
+  if (sources.essl300 || lodSwitch) {
+    const vertex = translateEssl100(vertexSource, false, lodSwitch), fragment = translateEssl100(fragmentSource, true, lodSwitch);
     if (vertex.error !== undefined || fragment.error !== undefined) return null;
     vertexSource = vertex.text; fragmentSource = fragment.text;
   }
@@ -257,14 +280,14 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
         const info = gl.getActiveAttrib(primary, i);
         if (!info || info.name.startsWith("gl_")) continue;
         const location = gl.getAttribLocation(primary, info.name);
-        if (location >= 0) gl.bindAttribLocation(p, location, info.name);
+        if (location >= 0) gl.bindAttribLocation(p, location, twinName(primary, { renamed }, info.name));
       }
       gl.linkProgram(p);
       linked = !!gl.getProgramParameter(p, 0x8b82);
     })) return null;
     if (!linked) return null;
     return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null,
-      blendFold: !!options.blendFold, blendFactor: null };
+      blendFold: !!options.blendFold, blendFactor: null, renamed };
   } finally {
     // Shaders stay alive while attached; the twin program owns them now.
     checkedGlCall(b, () => {
@@ -311,7 +334,7 @@ function setUniform(gl: WebGL2RenderingContext, type: number, to: WebGLUniformLo
 /** Copy every active guest uniform (including samplers) into the installed
  * twin. Uniform setters address the installed program, so the twin must be
  * current. Every value is read back from the guest executable itself. */
-function copyUniforms(b: GlBinding, primary: WebGLProgram, twin: WebGLProgram): boolean {
+function copyUniforms(b: GlBinding, primary: WebGLProgram, twin: Twin): boolean {
   const gl = b.gl!;
   return checkedGlCall(b, () => {
     const count = Number(gl.getProgramParameter(primary, 0x8b86));
@@ -321,7 +344,7 @@ function copyUniforms(b: GlBinding, primary: WebGLProgram, twin: WebGLProgram): 
       const array = info.name.endsWith("[0]"), base = array ? info.name.slice(0, -3) : info.name;
       for (let element = 0; element < info.size; element++) {
         const name = array ? `${base}[${element}]` : base;
-        const from = gl.getUniformLocation(primary, name), to = gl.getUniformLocation(twin, name);
+        const from = gl.getUniformLocation(primary, name), to = gl.getUniformLocation(twin.program, twinName(primary, twin, name));
         if (!from || !to) continue;
         setUniform(gl, info.type, to, numbers(gl.getUniform(primary, from)));
       }
@@ -338,22 +361,35 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
   const primary = b.currentProgram;
   if (!primary) return undefined;
   const reversedDepth = depthRangeReversed(b.shadow.depthRange);
-  const depthSamplers = depthSamplersForDraw(b);
-  if (depthSamplers === null) return null;
+  // Depth-texture sampling and ES 2.0's c = 0.5 switch-over
+  // (lod-switchover.ts) depend on the units' textures: one comparison
+  // unless some unit (or texture zero) holds such a texture.
+  const units = samplingUnits(b.shadow);
+  let depthSamplers = NO_SAMPLERS, lodSwitch = NO_SAMPLERS;
+  if (units.any !== 0 || units.defaults !== 0) {
+    const depth = depthSamplersForDraw(b, units), lod = depth && lodSwitchSamplersForDraw(b, units);
+    if (!depth || !lod) return null;
+    depthSamplers = depth; lodSwitch = lod;
+  }
   // [RUNTIME-WORKAROUND: FIREFOX-VERTEX-DEPTH-RANGE-UNIFORM] Only programs
   // meeting the reproduced trigger, and only on the affected engine.
   const affected = engineLosesVertexDepthRange();
   // One shadow field test for draws without a constant color/alpha pair.
   const folding = blendFoldNeeded(b.shadow);
-  if (!reversedDepth && !depthSamplers.length && !affected && !folding) return undefined;
+  if (!reversedDepth && !depthSamplers.length && !affected && !folding && !lodSwitch.length) return undefined;
   const sources = linkedSources.get(primary);
   const vertexDepthRange = affected && sources ? vertexDepthRangeWorkaround(b, primary, sources) : false;
   if (vertexDepthRange === null) return null;
   const blendFold = folding ? drawColorBufferKind(b) : undefined;
   if (blendFold === null) return null;
+  // A switch-over variant that could not be compiled is not retried: those
+  // draws keep c = 0 (lod-switchover.ts).
+  if (lodSwitch.length && sources && unbuildableLodSwitch.get(primary)?.sources === sources &&
+      unbuildableLodSwitch.get(primary)!.keys.has(variantKey({ reversedDepth, depthSamplers, vertexDepthRange, blendFold, lodSwitch })))
+    lodSwitch = [];
   // Draws needing none of these run the guest executable itself.
-  if (!reversedDepth && !depthSamplers.length && !vertexDepthRange && !blendFold) return undefined;
-  const options = { reversedDepth, depthSamplers, vertexDepthRange, blendFold }, key = variantKey(options);
+  if (!reversedDepth && !depthSamplers.length && !vertexDepthRange && !blendFold && !lodSwitch.length) return undefined;
+  const options = { reversedDepth, depthSamplers, vertexDepthRange, blendFold, lodSwitch }, key = variantKey(options);
   let variants = twins.get(primary);
   if (variants && [...variants.values()].some(twin => twin.sources !== sources)) {
     releaseReversedDepthTwin(b, primary); variants = undefined;
@@ -361,6 +397,14 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
   let twin = variants?.get(key);
   if (!twin) {
     const built = sources ? buildTwin(b, primary, sources, options) : null;
+    if (!built && lodSwitch.length && sources) {
+      // The ESSL 3.00 variant failed to compile (e.g. a sampler array
+      // indexed by a loop index): run without the switch-over, as before.
+      let record = unbuildableLodSwitch.get(primary);
+      if (record?.sources !== sources) unbuildableLodSwitch.set(primary, record = { sources, keys: new Set() });
+      record.keys.add(key);
+      return drawVariantExecutable(b);
+    }
     // INVALID_OPERATION is the WebGL boundary error the draw would otherwise
     // raise; recording it keeps an unemulated draw visible.
     if (!built) { recordGlError(b, 0x502); return null; }
@@ -378,7 +422,7 @@ export function synchronizeReversedDepthTwin(b: GlBinding, twinProgram: WebGLPro
   if (!primary || !twin) { recordGlError(b, 0x502); return false; }
   const generation = uniformWrites.get(primary) ?? 0;
   if (twin.uniforms !== generation) {
-    if (!copyUniforms(b, primary, twin.program)) return false;
+    if (!copyUniforms(b, primary, twin)) return false;
     twin.uniforms = generation;
   }
   if (twin.vertexDepthRange) {

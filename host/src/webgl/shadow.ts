@@ -84,10 +84,14 @@ export interface GlShadowState {
   /** Derived: the 2D texture units bound to an EGLImage sibling view
    * (image-storage.ts), as of a framebuffer-inputs revision. */
   sourcedUnits: { revision: number; units: number[] };
-  /** Derived: how many texture-unit bindings name a texture whose level 0
-   * is a depth image, and whether either texture zero is one, as of a depth
-   * level revision (depth-sampling.ts). */
-  depthUnits: { revision: number; count: number; defaults: boolean };
+  /** Derived: per-unit sampling traits of the bound 2D and cube textures
+   * (bit 1: level 0 is a depth image, depth-sampling.ts; bit 2: the filters
+   * switch from magnification to minification at lambda 0.5,
+   * lod-switchover.ts), how many units have each and any, and texture
+   * zero's traits, as of a sampling revision (texture-levels.ts). A draw
+   * while `any` and `defaults` are 0 does no sampling work; a bind looks up
+   * only the texture it binds. */
+  samplingUnits: { revision: number; any: number; depth: number; half: number; defaults: number; flat: number[]; cube: number[] };
 }
 
 export interface GlStencilFaceState {
@@ -162,7 +166,7 @@ export function defaultShadow(): GlShadowState {
     packAlignment: 4,
     drawTarget: { fbo: undefined, revision: -1, locked: false, writes: null },
     sourcedUnits: { revision: -1, units: [] },
-    depthUnits: { revision: -1, count: 0, defaults: false },
+    samplingUnits: { revision: -1, any: 0, depth: 0, half: 0, defaults: 0, flat: [], cube: [] },
   };
 }
 

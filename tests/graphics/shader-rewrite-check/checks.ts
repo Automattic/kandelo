@@ -1016,13 +1016,164 @@ function shadingLanguageVersion(): void {
 }
 
 // ---------------------------------------------------------------------------
+// 9. ES 2.0's magnification/minification switch-over point c = 0.5 (section
+//    3.7.9) for MAG_FILTER LINEAR with MIN_FILTER NEAREST_MIPMAP_NEAREST or
+//    NEAREST_MIPMAP_LINEAR (lod-switchover.ts; the variant's lookups are
+//    essl3-translation.ts lodSwitchHelpers). Level 0 is a black/white
+//    checker (LINEAR and NEAREST differ between texel centres), level 1 red,
+//    smaller levels blue. Each check compares every pixel with an ES 2.0
+//    reference at a known lambda (affine coordinates, so lambda is constant)
+//    just above 0, just below 0.5 and just above 0.5, in 2D and cube maps,
+//    fragment and vertex shaders. The controls are the same shaders without
+//    the switch-over (WebGL 2's c = 0).
+
+const SW_N = 32, SW_SIZE = 16, SW_LEVELS = 6;
+const swTexel = (level: number, x: number, y: number) =>
+  level === 0 ? ((x + y) & 1 ? [255, 255, 255] : [0, 0, 0]) : level === 1 ? [255, 0, 0] : [0, 0, 255];
+const clampIndex = (i: number, n: number) => Math.min(n - 1, Math.max(0, i));
+function swNearest(level: number, s: number, t: number): number[] {
+  const n = SW_N >> level;
+  return swTexel(level, clampIndex(Math.floor(s * n), n), clampIndex(Math.floor(t * n), n));
+}
+function swLinear(s: number, t: number): number[] {
+  const u = s * SW_N - 0.5, v = t * SW_N - 0.5, i = Math.floor(u), j = Math.floor(v), a = u - i, b = v - j;
+  const at = (x: number, y: number) => swTexel(0, clampIndex(x, SW_N), clampIndex(y, SW_N));
+  return [0, 1, 2].map(c => (1 - a) * (1 - b) * at(i, j)[c] + a * (1 - b) * at(i + 1, j)[c] + (1 - a) * b * at(i, j + 1)[c] + a * b * at(i + 1, j + 1)[c]);
+}
+/** ES 2.0 sections 3.7.7-3.7.9 with switch-over point `c`. */
+function swReference(lambda: number, min: number, s: number, t: number, c: number): number[] {
+  if (lambda <= c) return swLinear(s, t);
+  const q = SW_LEVELS - 1;
+  if (min === gl.NEAREST_MIPMAP_NEAREST) return swNearest(lambda <= 0.5 ? 0 : Math.min(q, Math.ceil(lambda + 0.5) - 1), s, t);
+  const d1 = Math.min(q, Math.floor(lambda)), d2 = Math.min(q, d1 + 1), f = lambda - Math.floor(lambda);
+  const a = swNearest(d1, s, t), b = swNearest(d2, s, t);
+  return [0, 1, 2].map(i => (1 - f) * a[i] + f * b[i]);
+}
+
+/** A 2D texture or a cube map's 2D array storage (all faces equal). */
+function switchTexture(cube: boolean, min: number): WebGLTexture {
+  if (cube) return cubeTexture(1, true, SW_N, SW_LEVELS, (_face, level, x, y) => swTexel(level, x, y), min, gl.LINEAR);
+  const texture = gl.createTexture()!;
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  for (let level = 0; level < SW_LEVELS; level++) {
+    const n = SW_N >> level, data = new Uint8Array(n * n * 4);
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) data.set([...swTexel(level, x, y), 255], (y * n + x) * 4);
+    gl.texImage2D(gl.TEXTURE_2D, level, gl.RGBA8, n, n, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  }
+  for (const [pname, value] of [[gl.TEXTURE_MIN_FILTER, min], [gl.TEXTURE_MAG_FILTER, gl.LINEAR],
+    [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, pname, value);
+  gl.activeTexture(gl.TEXTURE0);
+  return texture;
+}
+
+type SwitchCase = { name: string; cube: boolean; stage: "fragment" | "vertex"; vertex: string; fragment: string;
+  /** Per pixel (or the one point): lambda, s, t. */
+  sample: (px: number, py: number) => [number, number, number]; size: number; uniforms?: Record<string, number> };
+
+function lodSwitchover(): void {
+  const S0 = 0.05, T0 = 0.1;
+  // Fragment: (s, t) = (S0, T0) + k * gl_FragCoord.xy / SW_SIZE, so
+  // rho = SW_N * k / SW_SIZE and lambda = log2(2k) (+ bias).
+  const kFor = (lambda: number) => 2 ** lambda / 2;
+  const fragmentCase = (cube: boolean, lambda: number, form: "plain" | "bias" | "proj" | "parameter" | "array"): SwitchCase => {
+    // Coordinates stay inside the face: s, t < T0 + k < 1.
+    const bias = form === "bias" ? -0.3 : 0, k = kFor(lambda - bias);
+    const st = `vec2(${S0.toFixed(4)}, ${T0.toFixed(4)}) + ${k.toFixed(6)} * gl_FragCoord.xy / ${SW_SIZE}.0`;
+    const sampler = cube ? "samplerCube" : "sampler2D";
+    const coord = cube ? "vec3(1.0, 1.0 - 2.0 * st.y, 1.0 - 2.0 * st.x)" : "st";
+    const look = cube ? "textureCube" : "texture2D";
+    const call = form === "bias" ? `${look}(s, ${coord}, ${bias.toFixed(1)})`
+      : form === "proj" ? "texture2DProj(s, vec4(2.0 * st, 0.0, 2.0))"
+      : form === "parameter" ? `lookUp(s, ${coord})` : form === "array" ? `${look}(a[i], ${coord})` : `${look}(s, ${coord})`;
+    // ESSL 3.00 indexes sampler arrays with constant expressions only.
+    const decls = form === "array" ? `uniform ${sampler} a[2];\nconst int i = 1;\n` : `uniform ${sampler} s;\n`;
+    const helper = form === "parameter" ? `vec4 lookUp(${sampler} x, ${cube ? "vec3" : "vec2"} c) { return ${look}(x, c); }\n` : "";
+    return { name: `${cube ? "cube" : "2d"}.fragment.${form}.lambda-${lambda}`, cube, stage: "fragment", size: SW_SIZE,
+      vertex: QUAD_VERTEX, fragment: `precision highp float;\n${decls}${helper}void main() { vec2 st = ${st};\ngl_FragColor = ${call}; }\n`,
+      sample: (px, py) => [lambda, S0 + k * (px + 0.5) / SW_SIZE, T0 + k * (py + 0.5) / SW_SIZE] };
+  };
+  const vertexCase = (cube: boolean, lambda: number): SwitchCase => {
+    const s = 0.37, t = 0.61;
+    const coord = cube ? `vec3(1.0, ${(1 - 2 * t).toFixed(4)}, ${(1 - 2 * s).toFixed(4)})` : `vec2(${s}, ${t})`;
+    const call = cube ? `textureCubeLod(s, ${coord}, lod)` : `texture2DLod(s, ${coord}, lod)`;
+    return { name: `${cube ? "cube" : "2d"}.vertex.lambda-${lambda}`, cube, stage: "vertex", size: 1,
+      vertex: `uniform ${cube ? "samplerCube" : "sampler2D"} s;\nuniform float lod;\nvarying mediump vec4 v;\n` +
+        `void main() { v = ${call}; gl_Position = vec4(0.0, 0.0, 0.0, 1.0); gl_PointSize = 1.0; }\n`,
+      fragment: "precision mediump float;\nvarying vec4 v;\nvoid main() { gl_FragColor = v; }\n",
+      sample: () => [lambda, s, t], uniforms: { lod: lambda } };
+  };
+  const cases: SwitchCase[] = [];
+  for (const cube of [false, true]) {
+    for (const lambda of [0.1, 0.45, 0.6]) cases.push(fragmentCase(cube, lambda, "plain"), vertexCase(cube, lambda));
+    cases.push(fragmentCase(cube, 0.45, "bias"), fragmentCase(cube, 0.3, "parameter"), fragmentCase(cube, 0.3, "array"));
+  }
+  cases.push(fragmentCase(false, 0.3, "proj"));
+
+  for (const min of [gl.NEAREST_MIPMAP_NEAREST, gl.NEAREST_MIPMAP_LINEAR]) {
+    const minName = min === gl.NEAREST_MIPMAP_NEAREST ? "nearest_mipmap_nearest" : "nearest_mipmap_linear";
+    for (const c of cases) {
+      const name = `lod-switch.${minName}.${c.name}`;
+      const texture = switchTexture(c.cube, min);
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(c.cube ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D, texture); gl.activeTexture(gl.TEXTURE0);
+      const set = new Set([c.fragment.includes("a[2]") ? "a[1]" : "s"]);
+      const draw = (program: WebGLProgram) => {
+        if (c.stage === "fragment") bigTarget(c.size); else target(false);
+        gl.useProgram(program);
+        for (const sampler of ["s", "a[0]", "a[1]"]) {
+          const location = gl.getUniformLocation(program, sampler);
+          if (location) gl.uniform1i(location, 1);
+        }
+        for (const [uniform, value] of Object.entries(c.uniforms ?? {})) {
+          const location = gl.getUniformLocation(program, uniform);
+          if (location) gl.uniform1f(location, value);
+        }
+        gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+        if (c.stage === "fragment") drawQuad(program); else gl.drawArrays(gl.POINTS, 0, 1);
+        return pixels(c.size, c.size);
+      };
+      const compare = (got: Uint8Array, cRule: number) => {
+        let bad = 0, first = "";
+        for (let py = 0; py < c.size; py++) for (let px = 0; px < c.size; px++) {
+          const [lambda, s, t] = c.sample(px, py), want = swReference(lambda, min, s, t, cRule), at = (py * c.size + px) * 4;
+          if (!rgbNear(got, at, want.map(Math.round), 4)) {
+            bad++;
+            if (!first) first = `(${px},${py}) got ${[...got.slice(at, at + 3)]} want ${want.map(Math.round)}`;
+          }
+        }
+        return { bad, first };
+      };
+      // The variant: the host's translation with the switch-over.
+      const variant = build(translateEssl100(c.vertex, false, set).text, translateEssl100(c.fragment, true, set).text);
+      if (!variant.program) { record(name, false, `variant failed: ${variant.log}`); gl.deleteTexture(texture); continue; }
+      const got = compare(draw(variant.program), 0.5);
+      record(name, got.bad === 0, got.bad ? `${got.bad} pixels off the ES 2.0 (c = 0.5) result, first ${got.first}` :
+        `${c.size * c.size} pixels at the ES 2.0 (c = 0.5) result`);
+      gl.deleteProgram(variant.program);
+      // Control inside (0, 0.5]: the host path without the switch-over
+      // samples with c = 0 and misses the ES 2.0 result. (Its level of
+      // detail is the engine's own approximation, so the c = 0 count is
+      // informative only; SwiftShader's log2 is piecewise linear.)
+      const guest = c.sample(0, 0)[0] <= 0.5 ? buildGuest(c.vertex, c.fragment, [["p", 0]]) : null;
+      if (guest?.program) {
+        const native = draw(guest.program), es2 = compare(native, 0.5), webgl = compare(native, 0);
+        record(`${name}.native-control`, es2.bad > 0, `without the switch-over: ${es2.bad} pixels off ES 2.0, ${webgl.bad} off c = 0`);
+        gl.deleteProgram(guest.program);
+      } else if (guest) record(`${name}.native-control`, false, guest.log);
+      gl.deleteTexture(texture);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 (window as unknown as { runShaderRewriteChecks: () => unknown }).runShaderRewriteChecks = () => {
   if (!gl) return { renderer: "no WebGL 2", results: [{ name: "webgl2", ok: false, status: "fail", detail: "getContext('webgl2') failed" }] };
   const debug = gl.getExtension("WEBGL_debug_renderer_info");
   const renderer = String(debug ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
   const maxAttributes = Number(gl.getParameter(gl.MAX_VERTEX_ATTRIBS));
-  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling, shadingLanguageVersion]) {
+  for (const check of [() => deqpAliasingCases(maxAttributes), () => aliasingSemantics(maxAttributes), reversedDepth, vertexDepthRangeTrigger, depthSampling, externalSampling, builtinLimits, essl3Translation, cubeSampling, shadingLanguageVersion, lodSwitchover]) {
     try { check(); } catch (error) { record(`exception.${check.name}`, false, String(error)); }
     const error = gl.getError();
     if (error) record(`gl-error.after.${check.name || "check"}`, false, `0x${error.toString(16)}`);

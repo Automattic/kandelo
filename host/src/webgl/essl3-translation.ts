@@ -597,6 +597,227 @@ function cubeHelpers(fragment: boolean): string {
   ].join("\n");
 }
 
+// --- ES 2.0's switch-over point c = 0.5 -----------------------------------------
+
+const LOD = `${PRIVATE}lod_`, LOD_ARG = `${PRIVATE}lodarg`, LOD_ARRAY = `${PRIVATE}lodarray_`;
+/** The ES 1.00 lookups whose level of detail can lie in (0, 0.5]: in a
+ * fragment shader the implicit ones, in a vertex shader the explicit ones
+ * (a vertex shader's implicit level of detail is 0, which magnifies under
+ * either rule). */
+const LOD_LOOKUPS = { fragment: new Set(["texture2D", "texture2DProj", "textureCube"]),
+  vertex: new Set(["texture2DLod", "texture2DProjLod", "textureCubeLod"]) };
+const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube"]);
+
+/**
+ * The lookups of a sampler named in `lodSwitch` become private functions
+ * (`lodSwitchHelpers`) that apply ES 2.0's switch-over point c = 0.5
+ * (section 3.7.9; see lod-switchover.ts for why and for exactness). Each
+ * rewritten lookup takes a leading bool, true when its sampler argument is
+ * one of `lodSwitch`, resolved where the sampler is known:
+ *
+ * - a sampler uniform, or a member or element of one with constant
+ *   indices (`s`, `s[1]`, `u.t`): `true` or `false`; a lookup whose flag is
+ *   `false` is left as it was, so draws pay only for the listed samplers;
+ * - an element of a sampler array indexed by an expression (`s[i]`, a
+ *   constant-index-expression in ES 1.00): a private per-index function;
+ * - a sampler parameter of a user function: an added bool parameter that
+ *   every call passes, so a function called with different samplers
+ *   samples each by its own rule.
+ *
+ * Anything else (a sampler in a struct parameter, an array parameter, a
+ * name the guest overloads with different sampler positions at one arity,
+ * an index expression containing a call) is sampled natively, with c = 0:
+ * the gap that remains. The edits are made on the preprocessed tokens, so
+ * lookups produced by macros are rewritten like any other.
+ */
+function lodSwitchCalls(tokens: EsslToken[], depth: Int32Array, fragment: boolean, lodSwitch: ReadonlySet<string>,
+    declared: ReadonlySet<string>, overloaded: ReadonlyMap<string, Signature[]>, out: string[]): { helpers: string[] } | null {
+  const n = tokens.length, at = (i: number) => tokens[i]?.text, id = (i: number) => tokens[i]?.kind === "id";
+  const matching = (open: number) => {
+    const close = at(open) === "(" ? ")" : at(open) === "[" ? "]" : "}";
+    for (let d = 0, i = open; i < n; i++) {
+      if (at(i) === at(open)) d++;
+      else if (at(i) === close && --d === 0) return i;
+    }
+    return -1;
+  };
+  const split = (open: number, close: number) => {
+    const ranges: [number, number][] = [];
+    let start = open + 1;
+    for (let i = open + 1, d = 0; i < close; i++) {
+      if (at(i) === "(" || at(i) === "[") d++;
+      else if (at(i) === ")" || at(i) === "]") d--;
+      else if (at(i) === "," && d === 0) { ranges.push([start, i]); start = i + 1; }
+    }
+    if (close > open + 1) ranges.push([start, close]);
+    return ranges;
+  };
+
+  // Global sampler uniforms that are arrays (name -> declared).
+  const samplerArrays = new Set<string>();
+  for (let i = 0; i < n; i++) {
+    if (depth[i] !== 0 || at(i) !== "uniform") continue;
+    let j = i + 1;
+    while (j < n && PRECISIONS.has(at(j)!)) j++;
+    if (!SAMPLER_TYPES.has(at(j)!)) continue;
+    for (j++; j < n && at(j) !== ";"; j++) if (id(j) && at(j + 1) === "[") samplerArrays.add(at(j)!);
+  }
+
+  // Function declarations and definitions with their sampler parameters.
+  type Param = { name?: string; sampler: boolean; array: boolean };
+  type Fn = { name: string; at: number; close: number; body: [number, number] | null; params: Param[] };
+  const functions: Fn[] = [];
+  for (let i = 0, paren = 0, init = false; i < n; i++) {
+    const t = at(i)!;
+    if (depth[i] !== 0) continue;
+    if (t === "(") paren++;
+    else if (t === ")") paren--;
+    else if (paren === 0 && t === "=") init = true;
+    else if (paren === 0 && (t === ";" || t === ",")) init = false;
+    if (paren !== 0 || init || !id(i) || at(i + 1) !== "(" || !declared.has(t)) continue;
+    const close = matching(i + 1), after = at(close + 1);
+    if (close < 0 || (after !== "{" && after !== ";")) continue;
+    const params = split(i + 1, close).filter(([a, b]) => !(b - a === 1 && at(a) === "void")).map(([a, b]): Param => {
+      const sampler = tokens.slice(a, b).some(token => SAMPLER_TYPES.has(token.text));
+      const array = tokens.slice(a, b).some(token => token.text === "[");
+      const last = array ? tokens.slice(a, b).findIndex(token => token.text === "[") + a - 1 : b - 1;
+      return { name: id(last) && !SAMPLER_TYPES.has(at(last)!) && !PRECISIONS.has(at(last)!) ? at(last) : undefined, sampler, array };
+    });
+    functions.push({ name: t, at: i, close, body: after === "{" ? [close + 1, matching(close + 1)] : null, params });
+    i = close;
+  }
+  // A name takes flags only when every overload of an arity agrees on its
+  // sampler positions (calls are matched by arity) and none takes a sampler
+  // array; guest overloads of built-ins keep their own resolution.
+  const positions = (f: Fn) => f.params.flatMap((p, k) => p.sampler ? [k] : []);
+  const flagged = new Map<string, Fn[]>();
+  for (const f of functions) if (positions(f).length) flagged.set(f.name, [...flagged.get(f.name) ?? [], f]);
+  for (const [name, list] of [...flagged]) {
+    const byArity = new Map<number, string>();
+    let ok = !overloaded.has(name);
+    for (const f of functions.filter(g => g.name === name)) {
+      const key = positions(f).join(",");
+      if (f.params.some(p => p.sampler && p.array) || (byArity.has(f.params.length) && byArity.get(f.params.length) !== key)) ok = false;
+      byArity.set(f.params.length, key);
+    }
+    if (!ok) flagged.delete(name); else flagged.set(name, list);
+  }
+  const declarationAt = new Set(functions.map(f => f.at));
+  const scopeOf = (i: number) => functions.find(f => f.body && i > f.body[0] && i < f.body[1]);
+
+  const arrays = new Map<string, number[]>();
+  /** The flag of a sampler-valued argument [a, b) inside `scope`. */
+  const flag = (a: number, b: number, scope: Fn | undefined): string => {
+    while (at(a) === "(" && matching(a) === b - 1) { a++; b--; }
+    if (!id(a)) return "false";
+    const root = at(a)!;
+    const param = scope?.params.findIndex(p => p.name === root) ?? -1;
+    if (param >= 0) {
+      const p = scope!.params[param];
+      return b - a === 1 && p.sampler && flagged.has(scope!.name) ? `${LOD_ARG}${param}` : "false";
+    }
+    // A uniform path with constant indices names one sampler element.
+    let path = root, i = a + 1;
+    for (; i < b; i++) {
+      if (at(i) === "." && id(i + 1)) { path += `.${at(++i)}`; continue; }
+      if (at(i) === "[" && tokens[i + 1]?.kind === "num" && /^[0-9]+$/.test(at(i + 1)!) && at(i + 2) === "]") {
+        path += `[${Number(at(i + 1))}]`; i += 2; continue;
+      }
+      break;
+    }
+    if (i === b) return lodSwitch.has(path) ? "true" : "false";
+    // s[expr] of a sampler array: a per-index function.
+    if (i === a + 1 && at(i) === "[" && matching(i) === b - 1 && samplerArrays.has(root)
+        && !tokens.slice(i + 1, b - 1).some(token => token.text === "(")) {
+      const indices = [...lodSwitch].flatMap(name => {
+        const m = /^(.*)\[([0-9]+)\]$/.exec(name);
+        return m && m[1] === root ? [Number(m[2])] : [];
+      });
+      if (!indices.length) return "false";
+      arrays.set(root, indices);
+      return `${LOD_ARRAY}${root}(int(${out.slice(i + 1, b - 1).join(" ")}))`;
+    }
+    return "false";
+  };
+
+  const lookups = fragment ? LOD_LOOKUPS.fragment : LOD_LOOKUPS.vertex;
+  const edits: [number, string][] = [];
+  for (const f of functions) {
+    if (!flagged.has(f.name)) continue;
+    const extra = positions(f).map(k => `, bool ${LOD_ARG}${k}`).join("");
+    edits.push([f.close, `${extra} )`]);
+  }
+  let rewritten = false;
+  for (let i = 0; i < n; i++) {
+    const t = at(i)!;
+    if (!id(i) || at(i + 1) !== "(" || at(i - 1) === "." || declarationAt.has(i)) continue;
+    const lookup = lookups.has(t) && !declared.has(t) && !overloaded.has(t);
+    if (!lookup && !flagged.has(t)) continue;
+    const close = matching(i + 1);
+    if (close < 0) continue;
+    const args = split(i + 1, close), scope = scopeOf(i);
+    if (lookup) {
+      const f = args[0] ? flag(args[0][0], args[0][1], scope) : "false";
+      if (f === "false") continue;
+      edits.push([i, `${LOD}${t}`], [i + 1, `( ${f} ,`]);
+      rewritten = true;
+      continue;
+    }
+    const callee = flagged.get(t)!.find(g => g.params.length === args.length);
+    if (!callee) continue;
+    edits.push([close, `${positions(callee).map(k => `, ${flag(args[k][0], args[k][1], scope)}`).join("")} )`]);
+  }
+  if (!rewritten) return null;
+  for (const [i, text] of edits) out[i] = text;
+  return { helpers: [...arrays].map(([name, indices]) =>
+    `bool ${LOD_ARRAY}${name}(int i) { return ${indices.map(k => `i == ${k}`).join(" || ")}; }`) };
+}
+
+/**
+ * The lookups that apply c = 0.5 (`on`) or the native rule. ES 2.0 sections
+ * 3.7.7 to 3.7.9: lambda = log2(rho) + bias, rho the larger length of the
+ * derivatives of (u, v) = (s, t) times the level-0 size (equation 3.17),
+ * taken in a cube map from the selected face's (s, t) as the per-face
+ * lookups do; lambda <= c magnifies (the MAG filter on level 0). With
+ * c = 0.5, textureLod(x, p, 0.0) is that magnification (lambda 0 <= 0 for
+ * WebGL 2 as well), and textureLod at lambda > 0.5 is the minification ES
+ * 2.0 makes there. A vertex lookup's level of detail is its `lod` argument.
+ * `on` is a constant or a draw-uniform value, so the native lookups behind
+ * it keep their implicit derivatives.
+ */
+function lodSwitchHelpers(fragment: boolean, cube: boolean): string {
+  const level = `${PRIVATE}lodLevel`;
+  if (!fragment) return [
+    `highp float ${level}(highp float lod) { return lod > 0.5 ? lod : 0.0; }`,
+    `highp vec4 ${LOD}texture2DLod(bool on, highp sampler2D x, highp vec2 p, highp float lod) { return textureLod(x, p, on ? ${level}(lod) : lod); }`,
+    ...["vec3", "vec4"].map(c => `highp vec4 ${LOD}texture2DProjLod(bool on, highp sampler2D x, highp ${c} p, highp float lod) { return textureProjLod(x, p, on ? ${level}(lod) : lod); }`),
+    ...(cube ? [`highp vec4 ${LOD}textureCubeLod(bool on, highp sampler2DArray x, highp vec3 r, highp float lod) { return ${CUBE_LOD_LOOKUP}(x, r, on ? ${level}(lod) : lod); }`] : []),
+  ].join("\n");
+  const twoD = (name: string, native: string, coordinate: string, project: string, bias: boolean) =>
+    `highp vec4 ${LOD}${name}(bool on, highp sampler2D x, highp ${coordinate} p${bias ? ", highp float bias" : ""}) {
+  if (!on) return ${native}(x, p${bias ? ", bias" : ""});
+  highp vec2 size = vec2(textureSize(x, 0)), q = ${project};
+  return ${native}Lod(x, p, ${level}(dFdx(q) * size, dFdy(q) * size, ${bias ? "bias" : "0.0"}));
+}`;
+  const cubeLookup = (bias: boolean) =>
+    `highp vec4 ${LOD}textureCube(bool on, highp sampler2DArray x, highp vec3 r${bias ? ", highp float bias" : ""}) {
+  if (!on) return ${CUBE_LOOKUP}(x, r${bias ? ", bias" : ""});
+  highp vec3 s, t, m; highp float layer = ${PRIVATE}cubeFrame(r, s, t, m);
+  highp vec2 size = vec2(textureSize(x, 0).xy);
+  return textureLod(x, ${PRIVATE}cubeCoord(r, s, t, m, layer), ${level}(${PRIVATE}cubeGrad(r, dFdx(r), s, t, m) * size,
+    ${PRIVATE}cubeGrad(r, dFdy(r), s, t, m) * size, ${bias ? "bias" : "0.0"}));
+}`;
+  return [
+    `highp float ${level}(highp vec2 dx, highp vec2 dy, highp float bias) {
+  highp float lambda = 0.5 * log2(max(dot(dx, dx), dot(dy, dy))) + bias;
+  return lambda > 0.5 ? lambda : 0.0;
+}`,
+    ...[false, true].flatMap(bias => [twoD("texture2D", "texture", "vec2", "p", bias),
+      twoD("texture2DProj", "textureProj", "vec3", "p.xy / p.z", bias), twoD("texture2DProj", "textureProj", "vec4", "p.xy / p.w", bias),
+      ...(cube ? [cubeLookup(bias)] : [])]),
+  ].join("\n");
+}
+
 // --- translation ----------------------------------------------------------------
 
 const BASIC_TYPES = new Set(["void", "bool", "int", "float", "vec2", "vec3", "vec4", "bvec2", "bvec3", "bvec4",
@@ -613,8 +834,13 @@ export type Essl3Translation = { text: string; cube: boolean; error?: undefined 
  * limitations (see the file comment). `error` is set, and `text` is a
  * source that fails with that message, when the shader breaks the one ES
  * 1.00 rule that ANGLE checks after Appendix A.
+ *
+ * `lodSwitch` names the sampler uniform elements (`s`, `s[2]`, `u.t`) whose
+ * textures switch from magnification to minification at ES 2.0's c = 0.5
+ * for this draw (lod-switchover.ts); their lookups apply that switch-over
+ * point (`lodSwitchCalls`). Only private draw variants pass it.
  */
-export function translateEssl100(source: string, fragment: boolean): Essl3Translation {
+export function translateEssl100(source: string, fragment: boolean, lodSwitch?: ReadonlySet<string>): Essl3Translation {
   const { tokens, directives } = preprocessEssl100(source);
   const n = tokens.length;
   const text = tokens.map(t => t.text);
@@ -777,6 +1003,9 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
       out[i] = LOOKUPS_300[t];
     else if (t === "main" && deferred.length && !afterDot(i)) out[i] = `${PRIVATE}main`;
   }
+  // ES 2.0's magnification/minification switch-over point c = 0.5 for the
+  // listed samplers (draw variants only).
+  const lod = lodSwitch?.size ? lodSwitchCalls(tokens, depth, fragment, lodSwitch, declared, overloaded, out) : null;
 
   // Header: version, outputs, forwarders.
   const header = ["#version 300 es"];
@@ -786,6 +1015,7 @@ export function translateEssl100(source: string, fragment: boolean): Essl3Transl
   // samplerCube's default precision (lowp), then the per-face lookups.
   if (cube || overloaded.has("textureCube") || overloaded.has("textureCubeLod")) header.push(cubeHelpers(fragment));
   for (const [name, signatures] of overloaded) header.push(forwarders(name, signatures));
+  if (lod) header.push(lodSwitchHelpers(fragment, cube), ...lod.helpers);
   if (fragment) for (const f of DERIVATIVE_FUNCTIONS) if (text.includes(derivativeBuiltin(f)))
     header.push(GEN_TYPES.map(type => `highp ${type} ${derivativeBuiltin(f)}(highp ${type} p) { return ${f}(p); }`).join("\n"));
 

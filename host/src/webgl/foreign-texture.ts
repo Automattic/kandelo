@@ -17,6 +17,7 @@
  * restored so the upload does not become part of that owner's GL state.
  */
 import { importImageStorage, registerImageSource, type GlImageStorage } from "./image-storage.js";
+import { setTextureFilters } from "./lod-switchover.js";
 import type { GpuStorageFormat } from "./gpu-storage-format.js";
 
 /** A GPU bo's views are made in the bo's own storage format. */
@@ -71,6 +72,9 @@ export function bindGpuForeignTexture(b: GlBinding, bo: number,
       recordGlError(b,0x505); return -5;
     }
     b.textures.set(name, object);
+    // Its initial filters are LINEAR (set below), not ES 2.0's mipmapped
+    // pair, so it never switches at lambda 0.5 (lod-switchover.ts).
+    setTextureFilters(object, 0x2601, 0x2601);
     b.foreignTextureBos.set(object, bo);
     b.foreignTextures.set(bo, {tex:object,texId:name,w:gpu.w,h:gpu.h,scratch:null});
     let previous: WebGLTexture|null = null, active = 0;
@@ -161,6 +165,7 @@ export function bindForeignTexture(
         if (realloc) {
           for (const [pname,value] of [[gl.TEXTURE_MIN_FILTER,gl.LINEAR],[gl.TEXTURE_MAG_FILTER,gl.LINEAR],[gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE],[gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE]])
             if (!checkedGlCall(b, () => gl.texParameteri(GL_TEXTURE_2D,pname,value))) return false;
+          setTextureFilters(entry!.tex, 0x2601, 0x2601);
           return checkedGlCall(b, () => gl.texImage2D(GL_TEXTURE_2D,0,gl.RGBA,dims.w,dims.h,0,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));
         }
         return checkedGlCall(b, () => gl.texSubImage2D(GL_TEXTURE_2D,0,0,0,dims.w,dims.h,gl.RGBA,gl.UNSIGNED_BYTE,entry!.scratch!));

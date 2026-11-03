@@ -26,6 +26,7 @@ import { acceptedUniformCount, type GlUniformTarget } from "./uniform-setters.js
 import { imageTextureOperation, imageRenderbufferStorage, prepareCubeRespecification, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { cubeGenerateMipmap, cubeImagesChanged, cubeSpecifyImage, cubeTexParameter, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { boundTextureObject, isCubeFace, recordGeneratedMipmaps, recordTextureLevel, textureLevel } from "./texture-levels.js";
+import { noteTextureFilter } from "./lod-switchover.js";
 import { repairNativeState, rethrowNativeGlFault } from "./native-recovery.js";
 import { bindImageObject } from "./image-bindings.js";
 import { beginClientArray, endClientArray, reconcileClientArrayRestore, requestClientArrayRestore } from "./client-array.js";
@@ -1048,8 +1049,10 @@ function dispatch(
         externalTexParameter(b, v.getUint32(p + 4, true), v.getInt32(p + 8, true));
         return;
       }
+      // Filters are tracked for ES 2.0's switch-over point (lod-switchover.ts).
       if (v.getUint32(p, true) === 0x8513) {
-        cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameteri(target, v.getUint32(p + 4, true), v.getInt32(p + 8, true)));
+        if (cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameteri(target, v.getUint32(p + 4, true), v.getInt32(p + 8, true))))
+          noteTextureFilter(boundTextureObject(b, 0x8513), v.getUint32(p + 4, true), v.getInt32(p + 8, true));
         return;
       }
       gl.texParameteri(
@@ -1057,6 +1060,7 @@ function dispatch(
         v.getUint32(p + 4, true),
         v.getInt32(p + 8, true),
       );
+      noteTextureFilter(boundTextureObject(b, v.getUint32(p, true)), v.getUint32(p + 4, true), v.getInt32(p + 8, true));
       return;
     case O.OP_TEX_PARAMETERF:
       // An external texture's parameters are enums, which a float names
@@ -1066,7 +1070,8 @@ function dispatch(
         return;
       }
       if (v.getUint32(p, true) === 0x8513) {
-        cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameterf(target, v.getUint32(p + 4, true), v.getFloat32(p + 8, true)));
+        if (cubeTexParameter(b, v.getUint32(p + 4, true), target => gl.texParameterf(target, v.getUint32(p + 4, true), v.getFloat32(p + 8, true))))
+          noteTextureFilter(boundTextureObject(b, 0x8513), v.getUint32(p + 4, true), v.getFloat32(p + 8, true));
         return;
       }
       gl.texParameterf(
@@ -1074,6 +1079,7 @@ function dispatch(
         v.getUint32(p + 4, true),
         v.getFloat32(p + 8, true),
       );
+      noteTextureFilter(boundTextureObject(b, v.getUint32(p, true)), v.getUint32(p + 4, true), v.getFloat32(p + 8, true));
       return;
     case O.OP_ACTIVE_TEXTURE: {
       const unit = v.getUint32(p, true);
