@@ -4,6 +4,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // generic-kms-gles-runtime, retaining main's native-object shadow layout.
 import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
+import { createShaderError, useProgramError } from "./es2-validation.js";
 import { nativeGlFault, NativeGlFault, rendererEverLost, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
   type NativeDeletion, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
@@ -94,6 +95,10 @@ export function attributeLocation(b: GlBinding, program: WebGLProgram, text: str
  * AttachShader's one-shader-per-type rule is predicted (es2-validation.ts).
  * Keyed by the native object, which EGL share groups share. */
 const shaderTypes = new WeakMap<WebGLShader, number>();
+/** Native programs whose last link the host saw fail, so UseProgram's
+ * link-status rule is predicted for them (es2-validation.ts). A program the
+ * host never saw linked is left to the renderer (native-predictions.ts). */
+const failedLinks = new WeakSet<WebGLProgram>();
 export function shaderType(shader: WebGLShader | undefined): number | undefined {
   return shader ? shaderTypes.get(shader) : undefined;
 }
@@ -102,6 +107,8 @@ export function shaderType(shader: WebGLShader | undefined): number | undefined 
  * which returns a handle and an error leaves that handle owned for rollback. */
 export function createShaderIfAccepted(b: GlBinding, type: number, name: number): void {
   if (!b.gl) return;
+  const typeError = createShaderError(type);
+  if (typeError) { recordGlError(b, typeError); return; }
   if (!name || b.shaders.has(name) || b.programs.has(name)) {
     recordGlError(b, 0x502); return;
   }
@@ -406,6 +413,7 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     // retired with the candidate or the released previous executable.
     const aliased = queried && !linked ? linkAliasedExecutable(b, name, attached) : null;
     const executable = aliased ?? program;
+    if ((queried && linked) || aliased) failedLinks.delete(executable); else if (queried) failedLinks.add(program);
     if (aliased) { programLinkGeneration(b, aliased).value++; copyExternalSamplers(program, aliased); }
     b.programs.set(name, executable);
     // Locations are numbered per executable; an identical relink keeps the
@@ -436,6 +444,8 @@ export function useProgramIfAccepted(b: GlBinding, name: number): void {
   if (program === undefined) {
     recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
   }
+  const linkError = useProgramError(program, program === null || !failedLinks.has(program));
+  if (linkError) { recordGlError(b, linkError); return; }
   const previous = b.currentProgram, previousName = currentProgramName(b);
   const wasRetained = previous !== null && b.programs.get(previousName) !== previous;
   const released = wasRetained ? reserveExecutableRelease(b, previous) : null;

@@ -128,7 +128,8 @@ const bind = (b: GlBinding, target: number, name: number) =>
   expect(query(b, O.QOP_BIND_IMAGE_OBJECT, [1, target, name])).toEqual([0, 1, 0x47514c33]);
 /** A size x size face image (RGBA/UNSIGNED_BYTE, or LUMINANCE) whose first byte is `value`. */
 const image = (b: GlBinding, face: number, level: number, value: number, size = 1, format = 0x1908) => {
-  const bytes = size * size * (format === LUMINANCE ? 1 : 4);
+  // Rows padded to the default UNPACK_ALIGNMENT of 4, as WebGL reads them.
+  const row = size * (format === LUMINANCE ? 1 : 4), bytes = size ? (size - 1) * Math.ceil(row / 4) * 4 + row : 0;
   submit(b, O.OP_TEX_IMAGE_2D, [face, level, format, size, size, 0, format, 0x1401, bytes], Array.from({ length: bytes }, () => value));
 };
 const faces = (b: GlBinding, level: number, value: (face: number) => number, size = 1, format = 0x1908) => {

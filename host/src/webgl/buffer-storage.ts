@@ -1,4 +1,5 @@
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
+import { bufferUsageError } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
 import { prepareConvertedVertexData } from "./vertex-data.js";
 import { activeVertexArray } from "./buffer-references.js";
@@ -163,6 +164,8 @@ export function replaceBufferData(b: GlBinding, target: number, data: number | U
   // Buffer offsets travel as i32, so a larger store could never be addressed.
   // ES 2.0 section 2.9 reports a store the GL cannot create as OUT_OF_MEMORY.
   if (typeof data === "number" && data > 0x7fffffff) { recordGlError(b,0x505); return; }
+  const usageError = bufferUsageError(usage);
+  if (usageError) { recordGlError(b, usageError); return; }
   if (!checkedGlCall(b, () => {
     if (typeof data === "number") b.gl!.bufferData(target,data,usage);
     else b.gl!.bufferData(target,data,usage);

@@ -6036,7 +6036,16 @@ clears, reads and copies combines the ES 2.0 clauses WebGL 2 does not apply
 with the renderer's own `checkFramebufferStatus`, asked once per framebuffer
 whenever its inputs change (`image-sizes.ts`), so an incomplete framebuffer
 is refused before the call rather than by `getError` after it. Sibling
-views take the transfer pair WebGL 2 requires for their sized format. Node has
+views take the transfer pair WebGL 2 requires for their sized format.
+The host also predicts rules real applications reach on hot paths, so the
+renderer is not asked about them either: CreateShader types, UseProgram of
+a program whose link the host saw fail, a texture bound to a target other
+than the one recorded at its first bind, sampler uniform values outside the
+texture units (WebGL's INVALID_VALUE, which the guest has always seen
+here), BufferData usages, and WebGL's rule that client pixel data must
+cover what a TexImage2D or TexSubImage2D reads at the current unpack
+alignment. What remains left to the renderer is listed with its rule in
+`webgl/native-predictions.ts`. Node has
 no WebGL renderer, so there it has nothing to instrument. Running suites
 with it is described in
 [graphics conformance testing](graphics/conformance-testing.md#native-divergence-audit).

@@ -57,7 +57,7 @@ import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject, shaderType } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
 import { attachShaderError, bindAttribLocationError, renderbufferStorageError, subImageError, texImageSizeError,
-  texParameterValueError, vertexAttribIndexError } from "./es2-validation.js";
+  texParameterValueError, uploadBytes, uploadSizeError, vertexAttribIndexError } from "./es2-validation.js";
 import { glAuditOn, noteGlAuditOp, withGlAuditFrame } from "./native-audit.js";
 import { combinedTextureUnits, knownVertexAttributeLimit, MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE, MAX_VERTEX_ATTRIBS,
   maxCubeMapTextureSize, maxViewport, predictionLimit } from "./limits.js";
@@ -985,6 +985,9 @@ function dispatch(
       // Luminance/alpha float levels are stored as expanded RGBA (see
       // luminance-float.ts); every other admitted triple maps directly.
       const expanded = expandedFloatFormat(format, type);
+      // WebGL refuses client data shorter than the upload reads.
+      if (dataLen !== 0 && !expanded &&
+          !predicted(b, uploadSizeError(uploadBytes(width, height, format, type, b.shadow.unpackAlignment), dataLen))) return false;
       let data: ArrayBufferView | null = null;
       if (dataLen !== 0) {
         data = expanded
@@ -1052,7 +1055,12 @@ function dispatch(
       } else if (widenDepth && dataLen !== 0) {
         data = widenedDepthUpload(b, copyBytes(v, p + 36, dataLen), width, height);
         if (!data) return false;
-      } else data = copyPixels(v, p + 36, dataLen, nativeType);
+      } else {
+        // WebGL refuses client data shorter than the upload reads.
+        if (!destinationOnly && !predicted(b, uploadSizeError(
+          uploadBytes(width, height, nativeFormat, nativeType, b.shadow.unpackAlignment), dataLen))) return false;
+        data = copyPixels(v, p + 36, dataLen, nativeType);
+      }
       if (destinationOnly) {
         // GLES 2.0 section 3.7.2 bounds are x>=0, y>=0, x+w<=wt, y+h<=ht.
         // A zero-area native update at the checked endpoint validates the same

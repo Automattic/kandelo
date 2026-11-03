@@ -1,7 +1,8 @@
 import { expect, it } from "vitest";
 import {
-  attachShaderError, bindAttribLocationError, renderbufferStorageError, sizedFormatTransfer, subImageError,
-  texImageSizeError, texParameterValueError, vertexAttribIndexError,
+  attachShaderError, bindAttribLocationError, bindTextureError, bufferUsageError, createShaderError, pixelBytes,
+  renderbufferStorageError, samplerValueError, sizedFormatTransfer, subImageError, texImageSizeError,
+  texParameterValueError, uploadBytes, uploadSizeError, useProgramError, vertexAttribIndexError,
 } from "../src/webgl/es2-validation";
 
 const INVALID_ENUM = 0x500, INVALID_VALUE = 0x501, INVALID_OPERATION = 0x502;
@@ -77,4 +78,36 @@ it("gives sized formats the transfer pair WebGL 2 requires", () => {
   expect(sizedFormatTransfer(0x8057)).toEqual({ format: 0x1908, type: 0x8034 });
   expect(sizedFormatTransfer(0x8058)).toEqual({ format: 0x1908, type: 0x1401 });
   expect(sizedFormatTransfer(0x81a5)).toBeNull();
+});
+
+it("checks shader types, link status, texture targets, sampler units and buffer usages", () => {
+  expect(createShaderError(0x8b31)).toBe(0); expect(createShaderError(0x8b30)).toBe(0);
+  expect(createShaderError(0x8dd9 /* GEOMETRY_SHADER */)).toBe(INVALID_ENUM);
+  expect(useProgramError(null, false)).toBe(0);
+  expect(useProgramError({}, true)).toBe(0);
+  expect(useProgramError({}, false)).toBe(INVALID_OPERATION);
+  expect(bindTextureError(undefined, 0x0de1)).toBe(0);
+  expect(bindTextureError(0x0de1, 0x0de1)).toBe(0);
+  expect(bindTextureError(0x8c1a, 0x0de1)).toBe(INVALID_OPERATION);
+  expect(samplerValueError([0, 7], 8)).toBe(0);
+  expect(samplerValueError([8], 8)).toBe(INVALID_VALUE);
+  expect(samplerValueError([-1], 8)).toBe(INVALID_VALUE);
+  for (const usage of [0x88e0, 0x88e4, 0x88e8, 0x88e1, 0x88ea]) expect(bufferUsageError(usage)).toBe(0);
+  expect(bufferUsageError(0xffffffff)).toBe(INVALID_ENUM);
+});
+
+it("sizes client pixel data as WebGL reads it, padding rows to the unpack alignment", () => {
+  expect(pixelBytes(0x1908, 0x1401)).toBe(4);
+  expect(pixelBytes(0x1907, 0x1401)).toBe(3);
+  expect(pixelBytes(0x1907, 0x8363)).toBe(2);
+  expect(pixelBytes(0x1908, 0x1406)).toBe(16);
+  expect(pixelBytes(0x190a, 0x140b)).toBe(4);
+  expect(pixelBytes(0x1234, 0x1401)).toBeNull();
+  // RGB/UNSIGNED_BYTE 3x2 at alignment 4: 9-byte rows padded to 12, last row unpadded.
+  expect(uploadBytes(3, 2, 0x1907, 0x1401, 4)).toBe(21);
+  expect(uploadBytes(3, 2, 0x1907, 0x1401, 1)).toBe(18);
+  expect(uploadBytes(0, 5, 0x1908, 0x1401, 4)).toBe(0);
+  expect(uploadSizeError(21, 20)).toBe(INVALID_OPERATION);
+  expect(uploadSizeError(21, 21)).toBe(0);
+  expect(uploadSizeError(null, 0)).toBe(0);
 });

@@ -1,4 +1,6 @@
 import type { GlBinding } from "./registry.js";
+import { samplerValueError } from "./es2-validation.js";
+import { combinedTextureUnits } from "./limits.js";
 import { currentProgramName, recordGlError } from "./program-objects.js";
 import { uniformLayout, type GlUniformLayout } from "./uniform-layout.js";
 import * as O from "./ops.js";
@@ -45,6 +47,15 @@ export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: n
   const sampler=(meta.type===0x8b5e || meta.type===0x8b60 || meta.type===0x8dc1) && type===0x1404;
   if((meta.type!==type && meta.type!==boolean && !sampler) || (!meta.array && count>1)) return reject();
   const accepted=Math.min(count,meta.location+meta.size-location);
+  // Sampler values are texture units; the limit is unknown (0) only on a
+  // renderer that cannot report it, which then predicts nothing.
+  const units=sampler && b.gl ? combinedTextureUnits(b.gl) : 0;
+  if(units>0) {
+    const values=op===O.OP_UNIFORM1I ? [v.getInt32(p+4,true)]
+      : Array.from({length:accepted},(_,i)=>v.getInt32(p+8+i*4,true));
+    const error=samplerValueError(values,units);
+    if(error) {recordGlError(b,error);return null;}
+  }
   if(target && accepted) {
     const native=layout.native(b,location);
     if(native===false) return null;

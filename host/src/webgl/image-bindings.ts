@@ -1,4 +1,5 @@
 import { textureNative, renderbufferNative } from "./image-storage.js";
+import { bindTextureError } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 import { setTextureUnit } from "./depth-sampling.js";
@@ -42,6 +43,9 @@ export function bindImageObject(b: GlBinding, kind: number, target: number, name
     // validated above). A repeat bind to its own target, or of zero, cannot
     // fail, so it skips the checked call's two getError round trips; a
     // compositor binds a texture for every quad.
+    if (native !== null && bindTextureError(boundTargets.get(native), nativeTarget)) {
+      recordGlError(b, bindTextureError(boundTargets.get(native), nativeTarget)); return false;
+    }
     if (native === null || boundTargets.get(native) === nativeTarget) gl.bindTexture(nativeTarget,native);
     else if (!checkedGlCall(b, () => gl.bindTexture(nativeTarget,native))) {
       if (allocate && texture) { b.textures.delete(name); gl.deleteTexture(texture); }
