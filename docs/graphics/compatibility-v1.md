@@ -175,8 +175,18 @@ observes the new window's paint, both focus transitions and each command's
 rendered completion before continuing. Its final file assertions still
 require the two distinct shell variables. Chromium, Firefox and WebKit
 each pass on the current host source with compatible r8 artifacts; this
-does not replace the final rebuilt desktop suite. SFWBar failures remain
-under investigation.
+does not replace the final rebuilt desktop suite.
+
+**SFWBar fixture checkpoint, 2026-11-03.** Input diagnostics show that an
+absolute submenu target became a relative captured-pointer delta, moving
+the guest pointer to the output corner. Screenshot-coordinate actions now
+release capture first. After selecting a workspace, the pointer leaves the
+on-demand panel before the shell focus assertion. Menu activation also
+honors GTK 3.24.34's [500 ms initial-release policy](https://github.com/GNOME/gtk/blob/3.24.34/gtk/gtkmenushell.c#L703-L814).
+Both Firefox SFWBar specs pass with these fixture changes on the current
+host source and compatible r8 artifacts. Three-engine rebuilt validation
+remains pending. A separate run reproduced a Foot redraw stall after its
+title updated; the fixture fixes do not close that platform investigation.
 
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config

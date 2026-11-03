@@ -252,6 +252,7 @@ async function paint(page: Page, savedPager?: PagerCell, menuEdge?: number): Pro
  * rectangle.
  */
 async function hoverBar(page: Page, frame: Paint, rect: Rect) {
+  await releasePointer(page);
   const before = (await scene(page).screenshot({ animations: "disabled" })).toString("base64");
   const box = (await scene(page).boundingBox())!;
   await page.mouse.move(box.x + (rect.x + rect.width / 2) * box.width / frame.width,
@@ -287,14 +288,18 @@ async function hoverBar(page: Page, frame: Paint, rect: Rect) {
   }, { timeout: 30_000, intervals: [250, 500, 1_000] }).toBe(true);
 }
 
-async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | "right" = "left") {
+async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | "right" = "left", holdMs = 0) {
   const box = (await scene(page).boundingBox())!;
-  // With pointer lock, Playwright's next motion supplies the displacement
-  // from our previous click. There are no intervening dock/mouse actions
-  // between opening a popup and clicking its selected entry.
+  // Screenshot rectangles are absolute coordinates. A locked pointer uses
+  // relative motion from the browser's captured position, which need not
+  // match the last automation coordinate. Release capture before targeting
+  // an absolute rectangle; the following real click may capture it again.
+  await releasePointer(page);
   await page.mouse.move(box.x + (rect.x + rect.width / 2) * box.width / frame.width,
     box.y + (rect.y + rect.height / 2) * box.height / frame.height);
-  await page.mouse.down({ button }); await page.mouse.up({ button });
+  await page.mouse.down({ button });
+  if (holdMs) await page.waitForTimeout(holdMs);
+  await page.mouse.up({ button });
 }
 
 /** Click a task button, then wait until the compositor has focused that
@@ -311,6 +316,7 @@ async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | 
  */
 async function focusTask(page: Page, frame: Paint, rect: Rect) {
   await clickRect(page, frame, rect);
+  await releasePointer(page);
   const box = (await scene(page).boundingBox())!;
   await page.mouse.move(box.x + box.width * 0.6,
     box.y + (rect.y + rect.height / 2) * box.height / frame.height);
@@ -396,6 +402,13 @@ async function workspaceRoundTrip(page: Page, initial: Paint) {
     expect([on2Frame.width, on2Frame.height]).toEqual([initial.width, initial.height]);
     await screenshot(page, "sway-sfwbar-workspace-2-with-gray-1", on2Frame);
     await clickRect(page, on2Frame, pager);
+    // Leaving the on-demand layer releases its keyboard focus. The browser
+    // capture release can itself generate a pointer move at the pager's
+    // original capture position, so finish that before returning the pointer
+    // to the client. Workspace selection is still made only by the pager.
+    await releasePointer(page);
+    const clientBox = (await scene(page).boundingBox())!;
+    await page.mouse.move(clientBox.x + clientBox.width * 0.5, clientBox.y + clientBox.height * 0.4);
     await expect.poll(async () => (await paint(page)).red, { timeout: 60_000 }).toBeGreaterThan(200);
     await expect.poll(async () => (await paint(page)).tasks.length, { timeout: 60_000 }).toBe(1);
     // A query typed into the returned original shell must execute there.
@@ -499,7 +512,11 @@ for (const compositor of ["sway", "labwc"] as const) {
     }
     const submenu = await paint(page, undefined, categoriesEdge);
     await screenshot(page, `${compositor}-sfwbar-terminal-entry`, submenu);
-    await clickRect(page, submenu, terminalMenu(submenu)!);
+    // GTK 3.24.34 gtkmenushell.c suppresses an initial release inside its
+    // 500 ms MENU_SHELL_TIMEOUT. Exercise a completed ordinary menu press,
+    // rather than racing that native interaction policy after a fresh popup.
+    // https://github.com/GNOME/gtk/blob/3.24.34/gtk/gtkmenushell.c#L703-L814
+    await clickRect(page, submenu, terminalMenu(submenu)!, "left", 550);
     // The real GTK menu action execs the shipped terminal launcher. A Start
     // repaint or process spawn alone cannot satisfy the rendered shell proof.
     await expect.poll(async () => (await paint(page)).menus.length, { timeout: 30_000 }).toBe(0);
@@ -548,7 +565,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     await expect.poll(async () => (await paint(page)).highlights.length, { timeout: 30_000 }).toBe(1);
     const close = await paint(page);
     await screenshot(page, `${compositor}-sfwbar-close-action`, close);
-    await clickRect(page, close, close.highlights[0]);
+    await clickRect(page, close, close.highlights[0], "left", 550);
     await processes(page, 1);
     await expect.poll(async () => (await paint(page)).tasks.length, { timeout: 60_000 }).toBe(1);
     expect(await owner(page)).toBe(compositorOwner);
