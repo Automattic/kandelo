@@ -188,6 +188,17 @@ host source and compatible r8 artifacts. Three-engine rebuilt validation
 remains pending. A separate run reproduced a Foot redraw stall after its
 title updated; the fixture fixes do not close that platform investigation.
 
+**Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
+GTK 3 and Qt now use their upstream shared-memory pool allocators. The
+four DRM-buffer-pool patches and their recipe hooks/inputs are removed;
+recipe revisions are foot 2, mako 2, gtk3 11 and qtbase 10. Foot/mako's
+patch-only GBM links and GTK's injected GBM pkg-config dependency are also
+removed. wlcompositor maps ordinary pool fds and reads each buffer at its
+offset; GPU dma-buf import remains a separate path. This is source
+retirement only: rebuilding the clients and images, Node smokes,
+three-engine desktop specs and before/after measurements remain required.
+The frozen r9 build retains the earlier clients for that comparison.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension

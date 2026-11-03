@@ -283,9 +283,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
     .not.toMatch(/ABI version mismatch/);
   // GLDRAW is the compositor's proof that it drew this window's texture.
   // Every marker above is protocol — map, focus, tile — and all of them
-  // fire for a window whose wl_shm pool the GPU cannot import (a memfd
-  // pool instead of a gbm prime fd). foot carries the gbm-pool patch that
-  // keeps its pools importable; this is the gate that notices if it stops.
+  // fire for a window even if its wl_shm pixels never reach the GPU.
+  // Foot uses upstream shared-memory pools; this gate requires the mapped
+  // buffer to reach the compositor's actual texture draw.
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
 
   // Gate 5b: a real application through the same path. "vi" narrows to Vim;
@@ -315,10 +315,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   await expectTerminal(page, /TILE n=6 i=5 /, 120_000);
   expect(await syslogText(page), "qtgallery binary does not match the kernel ABI")
     .not.toMatch(/ABI version mismatch/);
-  // The invisible-window gate. Qt's stock backing store allocates memfd
-  // pools; the GL renderer cannot import those, skips the surface, and
-  // every gate above still passes. Qt carries the same gbm-pool patch as
-  // foot and GTK, and GLDRAW only fires once the window's texture was drawn.
+  // The invisible-window gate. Qt's upstream backing store allocates
+  // shared-memory pools. Mapping and focus alone do not prove their pixels
+  // reached the renderer; GLDRAW requires the window's texture to be drawn.
   // The card→dispatch→theme-switch loop is proven by the Node smoke
   // (host/test/qtgallery-smoke.test.ts); this gate proves the browser half.
   await expectTerminal(page, /GLDRAW app_id=qtgallery/, 60_000);

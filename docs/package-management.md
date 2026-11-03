@@ -2611,13 +2611,18 @@ basu.
 Every patch below is applied to real upstream source. They are grouped by
 the boundary they sit at, because that decides who owns the fix.
 
+The former foot, mako, GTK and Qt `wl_shm` DRM-pool patches have been
+retired. wlcompositor maps ordinary pool fds with `MAP_SHARED`; the four
+clients use their upstream shared-memory allocation paths. Rebuilt Node
+smokes, browser desktop specs and before/after measurements are tracked in
+`docs/graphics/compatibility-v1.md`.
+
 **Kandelo platform gaps.** These work around something the platform should
 provide. The fix belongs in the kernel, libc or host, and the patch should be
 dropped once it lands.
 
 | Package | Patch | Gap | Follow-up |
 |---|---|---|---|
-| `foot`, `mako`, `gtk3`, `qtbase` | `foot/patches/0001-shm-gbm-prime-fd-pools.patch`, `mako/patches/0001-pool-buffer-gbm-prime-fd.patch`, `gtk3/src/wayland-shm-gbm-pool.patch`, `qtbase/src/wayland-shm-gbm-pool.patch`: allocate `wl_shm` pools from DRI buffers instead of `memfd`. | wlcompositor imported every `wl_shm` pool with `gbm_bo_import`, so it accepted only DRI-buffer pools. It now maps any pool fd `MAP_SHARED`, as `wl_shm` specifies (`host/test/wlcompositor-shm-memfd-smoke.test.ts`); memfd mappings converge across processes at syscall boundaries (`docs/posix-status.md`, `mmap()`), and the wlroots compositors map memfd pools the same way. | Drop all four patches and rebuild `foot`, `mako`, `gtk3` and `qtbase` (and the images that carry them); then validate the Omarchy, Wayland, Sway and Labwc machines in the browser. |
 | `foot` | `patches/0002-serial-font-loading.patch`: load fonts one at a time. | Concurrent `FcFontMatch` calls race under Kandelo's thread model. Not root-caused. | Find the cause in the kernel or runtime; drop the patch. |
 | `libevdev`, `libinput` | `libevdev/patches/0001-linux-uapi-headers-off-linux-and-freebsd.patch`, `libinput/patches/0002-linux-uapi-headers-off-linux-and-freebsd.patch`: on a platform that is neither Linux nor FreeBSD, include the bundled Linux UAPI `<linux/input.h>` and `<linux/uinput.h>`. | The sysroot's `<linux/input.h>` lacks `input_event_sec`/`input_event_usec`, and there is no `<linux/types.h>` or `<linux/uinput.h>`, so both packages compile against their own bundled copies. | Add the missing UAPI headers to `libc/musl-overlay/include/linux/` and drop both patches. |
 | `libinput` | `patches/0001-quirks-empty-dmi-identity-without-dmi.patch`: report the empty DMI identity (`"dmi:"`) when the platform has no DMI source, so the identity-independent quirks still load. | Kandelo exposes no SMBIOS/DMI or devicetree firmware identity. | Expose a machine identity (for example `/sys/class/dmi/id/modalias`) and drop the patch, or send the platform-neutral change upstream. |

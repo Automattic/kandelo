@@ -255,6 +255,11 @@ also the planned migration of host GL logic out of TypeScript. Asynchronous
 binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
 `glBindTexture` is a synchronous round trip.
 
+This migration must preserve ordinary shared-memory Wayland clients. The
+baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
+wlcompositor maps memfd pools; future graphics transport and scheduling
+must keep that platform behavior and its Node CPU-renderer coverage.
+
 ### Run WebGL in a dedicated GPU worker (only if the responsiveness bar is missed)
 
 Designed but not built: a GPU worker owning one WebGL context executes an

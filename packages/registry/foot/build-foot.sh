@@ -9,11 +9,8 @@
 # the client glue for the eleven protocol XMLs with wayland-scanner,
 # and compile the meson TU list directly.
 #
-# One patch: shm.c allocates wl_shm pools as renderD128 dumb-bos passed
-# by prime-fd instead of memfds — on this kernel a memfd MAP_SHARED
-# mapping only writes back on msync/munmap, so the compositor would
-# composite stale bytes. The bo path is the same shared-buffer contract
-# every in-tree client uses (see wlcompositor.c "wl_shm pool / buffer").
+# wl_shm uses upstream memfd pools. The remaining patch serializes font
+# loading while the concurrent FcFontMatch race is investigated.
 #
 # foot forks its shell (slave.c) — wasm-fork-instrument is mandatory.
 
@@ -58,8 +55,6 @@ LIBXML2_PREFIX="${WASM_POSIX_DEP_LIBXML2_DIR:?WASM_POSIX_DEP_LIBXML2_DIR not set
 LIBICONV_PREFIX="${WASM_POSIX_DEP_LIBICONV_DIR:?WASM_POSIX_DEP_LIBICONV_DIR not set}"
 ZLIB_PREFIX="${WASM_POSIX_DEP_ZLIB_DIR:?WASM_POSIX_DEP_ZLIB_DIR not set}"
 PROTOCOLS_XML="${WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR:?WASM_POSIX_DEP_WAYLAND_PROTOCOLS_DIR not set}/share/wayland-protocols"
-
-SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 # --- Stage verified + patched source ---
 if [ ! -d "$SRC_DIR" ]; then
@@ -157,7 +152,7 @@ done
 
 # Link order: dependents before dependencies, libffi last so
 # wl_closure_invoke's ffi_call resolves (same rule as build-programs.sh's
-# wlcompositor pass). libgbm comes from the base sysroot (build-musl.sh).
+# wlcompositor pass).
 # libiconv follows libxml2: fontconfig parses its configuration with
 # libxml2, and this libxml2 converts encodings through GNU libiconv.
 echo "==> Linking foot.wasm..."
@@ -173,7 +168,6 @@ wasm32posix-cc "${OBJS[@]}" \
     "$LIBWAYLAND_PREFIX/lib/libwayland-cursor.a" \
     "$LIBWAYLAND_PREFIX/lib/libwayland-client.a" \
     "$LIBXKBCOMMON_PREFIX/lib/libxkbcommon.a" \
-    "$SYSROOT/lib/libgbm.a" "$SYSROOT/lib/libdrm.a" \
     "$LIBFFI_PREFIX/lib/libffi.a" \
     -o "$BUILD_DIR/foot.wasm"
 

@@ -1,7 +1,7 @@
 /**
- * PR24 gate, notification side: unmodified upstream mako 1.10.0 (two
- * declared patches — gbm prime-fd pool buffers and a parse_boolean
- * rename against basu, see packages/registry/mako/patches/) runs as a
+ * PR24 gate, notification side: upstream mako 1.10.0 with ordinary
+ * shared-memory pools and declared link/callback portability patches
+ * (packages/registry/mako/patches/) runs as a
  * layer-shell client under wlcompositor while owning
  * org.freedesktop.Notifications on the PR22 dbus-daemon session bus.
  *
@@ -15,7 +15,7 @@
  *     client and sd-bus server interoperate over the daemon;
  *   - mako maps its notification as a wlr-layer-shell surface (the
  *     compositor's LAYER ns=notifications marker) and renders it with
- *     pango/cairo through the patched gbm pool path;
+ *     pango/cairo through its upstream shared-memory pool path;
  *   - makoctl dismiss round-trips mako's private fr.emersion.Mako
  *     interface, and mako exits clean on SIGTERM (signalfd path).
  *

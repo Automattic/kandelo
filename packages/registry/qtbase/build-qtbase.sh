@@ -45,13 +45,8 @@
 # raises a hard error unless the input reads exactly 'no'. QtQuick will
 # need a graphics API, so the GL stack is the next stage's problem.
 #
-# On this kernel a wl_shm pool fd must be a DRI prime fd — the
-# compositor imports it with gbm_bo_import(GBM_BO_IMPORT_FD), and a
-# memfd carries no pixels across the socket.
-# src/wayland-shm-gbm-pool.patch backs Qt's shm backing store with a
-# renderD128 gbm bo, the same contract foot and GTK are patched to.
-# Programs linking libQt6WaylandClient.a link libgbm.a and libdrm.a
-# from the sysroot.
+# The upstream Wayland backing store uses shared-memory pools. Kandelo
+# maps ordinary memfd pools in wlcompositor and the wlroots compositors.
 #
 # Vulkan and LinuxFB are the two backends QtGui switches on by itself
 # here — Vulkan against Qt's bundled headers, LinuxFB against a
@@ -149,7 +144,6 @@ if [ ! -d "$SRC_DIR" ]; then
         "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
         "$KANDELO_PACKAGE_WORK_DIR"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/qmutex-honour-qt-linuxbase.patch"
-    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/forkfd-generic-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-fd-notifier-on-wasm.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/dbus-manager-on-thread-on-wasm.patch"

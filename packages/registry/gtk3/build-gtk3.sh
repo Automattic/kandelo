@@ -99,12 +99,6 @@ if [ ! -d "$SRC_DIR" ]; then
     # Match the getter definition and declaration: wasm calls have exact arity.
     # Upstream fix: GNOME/gtk 022c36a1379d82b4212a298ed6eaec02bc0ed7f1.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/fix-slowdown-prototype.patch"
-    # GDK backs its wl_shm pools with memfd_create/shm_open. A memfd is
-    # private to the process that made it here, so the compositor's
-    # gbm_bo_import(GBM_BO_IMPORT_FD) rejects the fd and the window shows
-    # no pixels. The patch allocates the pool as a DRI bo instead — the
-    # same shape foot and mako already use.
-    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wayland-shm-gbm-pool.patch"
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-interface-init-contract.patch"
     # Base application virtuals must preserve their exact function signatures.
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/src/wasm-application-default-vfuncs.patch"
@@ -181,8 +175,7 @@ echo "==> Configuring gtk+ for wasm32..."
     # configure reads lists these, and a link without them fails on the
     # undefined symbols:
     #   - libEGL, libGLESv2, libgbm, libdrm (base sysroot):
-    #     wayland-shm-gbm-pool.patch makes GDK allocate its wl_shm pools
-    #     with libgbm, and libwayland-egl calls libgbm and libEGL;
+    #     libwayland-egl calls the sysroot graphics libraries;
     #   - libiconv: fontconfig parses its configuration with libxml2, and
     #     this libxml2 converts encodings through GNU libiconv;
     #   - libc++, libc++abi: pango shapes through harfbuzz, which is C++.
@@ -228,19 +221,6 @@ echo "==> Configuring gtk+ for wasm32..."
     make -C gtk install
     make install-pkgconfigDATA
 )
-
-# The Wayland pool patch gives GDK a direct GBM dependency. Configure's
-# LIBS above links GTK's own tools but is not exported by upstream's .pc
-# templates; every static GDK consumer needs this dependency too.
-for name in gdk-3.0 gdk-wayland-3.0; do
-    pc="$INSTALL_DIR/lib/pkgconfig/$name.pc"
-    if ! grep -q '^Requires.private:' "$pc"; then
-        echo "ERROR: GDK pkg-config metadata lacks Requires.private: $pc" >&2
-        exit 1
-    fi
-    sed '/^Requires.private:/s/$/ gbm/' "$pc" > "$pc.tmp"
-    mv "$pc.tmp" "$pc"
-done
 
 for lib in libgdk-3.a libgtk-3.a; do
     if [ ! -f "$INSTALL_DIR/lib/$lib" ]; then
