@@ -98,3 +98,47 @@ export function waitForExitOrStall(exit, progress, { pollMs = 250, now = () => D
     check();
   });
 }
+
+/** A runner/transport failure, not evidence that a guest case timed out. */
+export class CtsHostDeadlineError extends Error {
+  constructor(phase, timeoutMs, cause) {
+    super(`CTS page did not respond during ${phase} within ${timeoutMs} ms`, { cause });
+    this.name = "CtsHostDeadlineError";
+    this.phase = phase;
+  }
+}
+
+/** The timer lives in the runner: a wedged page cannot suspend this limit. */
+export async function withCtsHostDeadline(operation, timeoutMs, phase) {
+  let timer;
+  try {
+    return await Promise.race([operation, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new CtsHostDeadlineError(phase, timeoutMs)), timeoutMs);
+    })]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Keep the page's responsiveness separate from the guest's case deadline.
+ * Legitimate long chunks retain their progress-based budget. Only one probe
+ * can be outstanding, and stopping removes the scheduling owner. */
+export function watchCtsPageLiveness(probe, { timeoutMs = 30_000, intervalMs = 1000 } = {}) {
+  let stopped = false, pending = false, rejectFailure;
+  const failure = new Promise((_, reject) => { rejectFailure = reject; });
+  const check = () => {
+    if (stopped || pending) return;
+    pending = true;
+    withCtsHostDeadline(Promise.resolve().then(probe), timeoutMs, "liveness probe").then(
+      () => { pending = false; },
+      error => {
+        pending = false;
+        if (!stopped) rejectFailure(error instanceof CtsHostDeadlineError ? error
+          : new CtsHostDeadlineError("liveness probe", timeoutMs, error));
+      },
+    );
+  };
+  const timer = setInterval(check, intervalMs);
+  check();
+  return { failure, stop() { stopped = true; clearInterval(timer); } };
+}

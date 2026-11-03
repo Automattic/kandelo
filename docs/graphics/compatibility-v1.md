@@ -266,6 +266,21 @@ heldpress,unprofiled}/` and `.context/snkrx-source-inspection/`. No game or
 platform input semantics changed. The separate ship-bar measurements remain
 required.
 
+**CTS runner liveness checkpoint, 2026-11-03.** The historical r7
+WebKit EGL trace waits on a page call with an eight-hour chunk ceiling;
+its in-page deadline cannot run when that page is wedged. Host-side guards
+now bound setup, liveness probes, QPA reads and teardown independently of
+page timers. Unresponsive pages fail the runner, retain phase/artifact
+records and leave unaccounted cases Missing; they are never converted to
+passing cases or guessed guest timeouts. The existing guest progress limits
+remain unchanged. Controls pass 33 planner/progress/accounting/QPA tests
+and deliberate page wedges on Chromium 153, Firefox 155 and WebKit 26.6.
+Normal r9-artifact probes pass all 19 color-clear and five EGL info cases
+on each engine with strict accounting. Evidence is in
+`.context/a3/cts-host-deadline-unit.log`, `.context/cts-page-liveness-probe/`
+and `.context/cts-host-deadline-normal/`; this is runner validation, not a
+replacement for the final full CTS runs.
+
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
 four DRM-buffer-pool patches and their recipe hooks/inputs are removed;

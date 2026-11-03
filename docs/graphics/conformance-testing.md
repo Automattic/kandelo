@@ -82,13 +82,31 @@ transport refuses outputs larger than 64 KiB. Keep that ResourceError and all
 missing later cases visible while the captured-readback repair is rebuilt and
 validated; source controls do not establish a rendered pass.
 
+## Chunked browser runner liveness
+
+`scripts/run-graphics-cts.sh` keeps the guest's progress-based case deadline
+separate from page/transport liveness. A responsive page can run a long chunk
+as long as each case makes progress within its existing limit. The Node
+runner probes page responsiveness once per second, with at most one probe
+outstanding and a 30-second host timer. Setup, QPA reads and kernel teardown
+also have host-side guards; page timers cannot enforce these bounds when
+the page itself is wedged.
+
+An unresponsive page is a runner failure, not an inferred guest Timeout or
+Pass. Its chunk, planned cases, artifact hashes, browser version, failed
+phase and cleanup failures are written under `<engine>/runner-errors/`.
+The absent chunk record remains Missing in the normal summary and the
+runner exits unsuccessfully. Closing an unresponsive context is bounded;
+if it fails, the runner attempts bounded retirement of its own browser.
+This changes no upstream assertion, case budget or accepted outcome.
+
 ## Native-divergence audit
 
-The host still decides whether some guest GL commands were accepted by
-asking the native WebGL renderer (`getError`). The test-only audit
-described in [the architecture notes](../architecture.md) checks every
-native call against the host's own prediction, so a suite run lists the
-places where host validation is not yet authoritative. Enable it for the
+Host validation decides guest GL acceptance. Production samples native
+errors at submitted-batch boundaries; private host allocation and cleanup
+checks remain exact. The test-only audit described in
+[the architecture notes](../architecture.md) checks every native call
+against the host's prediction, so a suite run exposes prediction gaps. Enable it for the
 chunked dEQP runner with `KANDELO_GL_AUDIT`:
 
 ```sh
@@ -96,8 +114,9 @@ scripts/dev-shell.sh bash -c 'KANDELO_GL_AUDIT=record bash scripts/run-graphics-
 ```
 
 `record` reports every divergence and continues. `fatal` stops the machine
-at the first divergence with a fatal host fault naming the call, import,
-process, session and op. dEQP's QPA log lives in that machine's filesystem,
+at the first validation divergence with a fatal host fault naming the call,
+import, process, session and op. Native OOM retains its documented context
+reset policy under audit too (D-50). dEQP's QPA log lives in that machine's filesystem,
 so a fatal divergence loses the whole attempt's results and the runner
 records the chunk's cases as Missing; use `record` to inventory a suite and
 `fatal` as the gate once a selection is clean. Records are written per chunk

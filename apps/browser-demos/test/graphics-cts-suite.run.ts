@@ -15,7 +15,8 @@ import { fileURLToPath } from "node:url";
 import { test } from "@playwright/test";
 import { chunkFileName } from "../../../tests/graphics/cts-plan.mjs";
 import { runChunk } from "../../../tests/graphics/cts-accounting.mjs";
-import { ctsAttemptCeilingMs, ctsDeadlineConfig } from "../../../tests/graphics/cts-progress.mjs";
+import { ctsAttemptCeilingMs, ctsDeadlineConfig, CtsHostDeadlineError,
+  withCtsHostDeadline, watchCtsPageLiveness } from "../../../tests/graphics/cts-progress.mjs";
 import { buildCtsGuest, ctsArguments, ctsCaselist, CTS_CASELIST_PATH, CTS_QPA_MAX_BYTES,
   CTS_QPA_PATH, type CtsGuest } from "../../../tests/graphics/cts-guest";
 
@@ -63,7 +64,7 @@ for (const chunk of plan.chunks) {
     const progressUrl = new URL(`/@fs${fileURLToPath(new URL("../../../tests/graphics/cts-progress.mjs", import.meta.url))}`, baseURL).href;
 
     const result = await runChunk(chunk, async (cases: string[], attempt: number) => {
-      await page.evaluate(async ({ moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path, args, caselist, caselistPath,
+      await withCtsHostDeadline(page.evaluate(async ({ moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path, args, caselist, caselistPath,
           glAudit, auditLimit }) => {
         const scope = globalThis as any;
         const { CaseProgress } = await import(progressUrl);
@@ -103,44 +104,49 @@ for (const chunk of plan.chunks) {
         child.exit.then((code: number) => { state.exit = code; }, (error: unknown) => { state.error = String(error); });
       }, { moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path: guest.guestPath, args: ctsArguments(plan.suite),
         caselist: [...ctsCaselist(cases)], caselistPath: CTS_CASELIST_PATH, glAudit,
-        auditLimit: GL_AUDIT_RECORDS_PER_ATTEMPT });
+        auditLimit: GL_AUDIT_RECORDS_PER_ATTEMPT }), deadlines.startupMs + 60_000, "setup");
       let outcome: Record<string, unknown>;
       const deadlineEvidence: unknown[] = [];
+      const liveness = watchCtsPageLiveness(() => page.evaluate(() => true));
       try {
         // Settles on exit, error or a stalled case. The outer timeout only
         // guards a page that stops evaluating; it is never the case deadline.
-        const settled = await page.waitForFunction(() => {
+        const settled = await Promise.race([page.waitForFunction(() => {
           const state = (globalThis as any).__ctsSuiteState;
           if (!state) return false;
           if (state.exit !== null || state.error !== null) return { exit: state.exit, error: state.error };
           return state.progress.expired() ? { stalled: state.progress.snapshot() } : false;
-        }, undefined, { timeout: ceiling + 60_000, polling: 250 });
+        }, undefined, { timeout: ceiling + 60_000, polling: 250 }), liveness.failure]);
         const result = await settled.jsonValue() as { exit?: number | null; error?: string | null; stalled?: unknown };
         if (result.stalled) { outcome = { kind: "timeout" }; deadlineEvidence.push({ deadline: result.stalled }); }
         else outcome = result.error !== null && result.error !== undefined ? { kind: "error", message: result.error }
           : { kind: "exit", code: result.exit };
       } catch (error) {
+        if (error instanceof CtsHostDeadlineError) throw error;
         if (page.isClosed()) throw error;
         outcome = { kind: "timeout" };
         deadlineEvidence.push({ deadline: "page did not settle within the attempt ceiling" });
+      } finally {
+        liveness.stop();
       }
       // The kernel stays alive across a deadline, so the open case's begin
       // marker is still readable before teardown.
       // Bounded so a wedged kernel cannot hold the page past its test.
       let qpa = "", qpaError: string | null = null;
       try {
-        qpa = await page.evaluate(async ({ qpaPath, maxBytes }) => {
+        qpa = await withCtsHostDeadline(page.evaluate(async ({ qpaPath, maxBytes }) => {
           const kernel = (globalThis as any).__ctsSuiteKernel;
           const bytes: Uint8Array | null = kernel ? await Promise.race([kernel.readFileFromVfs(qpaPath),
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error("QPA read timed out")), 30_000))]) : null;
           if (bytes && bytes.length > maxBytes) throw new Error(`CTS QPA exceeds ${maxBytes} bytes`);
           return bytes ? new TextDecoder().decode(bytes) : "";
-        }, { qpaPath: CTS_QPA_PATH, maxBytes: CTS_QPA_MAX_BYTES });
+        }, { qpaPath: CTS_QPA_PATH, maxBytes: CTS_QPA_MAX_BYTES }), 35_000, "QPA read");
       } catch (error) {
+        if (error instanceof CtsHostDeadlineError) throw error;
         if (page.isClosed()) throw error;
         qpaError = String(error);
       }
-      const state = await page.evaluate(async () => {
+      const state = await withCtsHostDeadline(page.evaluate(async () => {
         const scope = globalThis as any;
         try {
           await Promise.race([scope.__ctsSuiteKernel?.destroy(),
@@ -149,7 +155,7 @@ for (const chunk of plan.chunks) {
         finally { scope.__ctsSuiteKernel = null; }
         const { progress: _progress, ...state } = scope.__ctsSuiteState;
         return state;
-      });
+      }), 35_000, "kernel teardown");
       writeFileSync(join(qpaDir, `${chunkFileName(chunk.id)}.attempt${attempt}.qpa`), qpa);
       if (glAudit) {
         const { audit = [], auditDropped = 0 } = (state ?? {}) as { audit?: string[]; auditDropped?: number };
@@ -159,7 +165,29 @@ for (const chunk of plan.chunks) {
       return { qpa, outcome, output: state?.output ?? "",
         diagnostics: [...(state?.diagnostics ?? []), ...deadlineEvidence, ...(qpaError ? [{ qpaError }] : []),
           ...(state?.destroyError ? [{ destroyError: state.destroyError }] : [])] };
-    }, { maxAttempts });
+    }, { maxAttempts }).catch(async error => {
+      const errorsDir = join(engineDir, "runner-errors");
+      mkdirSync(errorsDir, { recursive: true });
+      const evidence = { chunk: chunk.id, cases: chunk.cases, engine: browserName,
+        version: browser.version(), artifacts: guest.artifacts, error: String(error),
+        phase: error instanceof CtsHostDeadlineError ? error.phase : undefined,
+        cleanupErrors: [] as string[] };
+      const errorPath = join(errorsDir, `${chunkFileName(chunk.id)}.json`);
+      writeFileSync(errorPath, JSON.stringify(evidence) + "\n");
+      if (error instanceof CtsHostDeadlineError) {
+        try {
+          await withCtsHostDeadline(page.context().close(), 30_000, "unresponsive context close");
+        } catch (closeError) {
+          evidence.cleanupErrors.push(String(closeError));
+          try { await withCtsHostDeadline(browser.close(), 30_000, "unresponsive browser close"); }
+          catch (browserError) { evidence.cleanupErrors.push(String(browserError)); }
+          writeFileSync(errorPath, JSON.stringify(evidence) + "\n");
+        }
+      }
+      // No case verdict is inferred from a lost page. The failed runner and
+      // absent chunk record leave its cases Missing in the normal summary.
+      throw error;
+    });
 
     const record = { ...result, engine: browserName, version: browser.version(), suite: plan.suite,
       args: ctsArguments(plan.suite), artifacts: guest.artifacts, pageErrors, consoleErrors };

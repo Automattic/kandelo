@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CaseProgress, ctsAttemptCeilingMs, ctsDeadlineConfig, waitForExitOrStall } from "./cts-progress.mjs";
+import { CaseProgress, ctsAttemptCeilingMs, ctsDeadlineConfig, waitForExitOrStall,
+  CtsHostDeadlineError, withCtsHostDeadline, watchCtsPageLiveness } from "./cts-progress.mjs";
 
 const config = { startupMs: 100, caseMs: 1000 };
 
@@ -66,4 +67,37 @@ test("keeps a progressing guest alive past the flat budget and stops a stalled o
   stalled.feed("\nTest case 'dEQP-EGL.hang'..\n");
   assert.deepEqual(await waitForExitOrStall(new Promise(() => {}), stalled, { pollMs: 5 }), { kind: "timeout" });
   assert.equal(stalled.current, "dEQP-EGL.hang");
+});
+
+test("bounds a wedged page operation from the host and preserves ordinary results and failures", async () => {
+  assert.equal(await withCtsHostDeadline(Promise.resolve(7), 1000, "setup"), 7);
+  const original = new Error("guest initialization failed");
+  await assert.rejects(withCtsHostDeadline(Promise.reject(original), 1000, "setup"), error => error === original);
+  await assert.rejects(withCtsHostDeadline(new Promise(() => {}), 20, "QPA read"), error =>
+    error instanceof CtsHostDeadlineError && error.phase === "QPA read");
+});
+
+test("detects a lost page without converting a long progressing chunk to a case timeout", async () => {
+  let probes = 0;
+  const healthy = watchCtsPageLiveness(() => { probes++; return true; }, { timeoutMs: 20, intervalMs: 5 });
+  try {
+    assert.equal(await Promise.race([healthy.failure,
+      new Promise(resolve => setTimeout(() => resolve("long chunk finished"), 100))]), "long chunk finished");
+    assert.ok(probes > 1);
+  } finally { healthy.stop(); }
+  const lost = watchCtsPageLiveness(() => new Promise(() => {}), { timeoutMs: 20, intervalMs: 5 });
+  try { await assert.rejects(lost.failure, CtsHostDeadlineError); }
+  finally { lost.stop(); }
+});
+
+test("a stopped liveness owner cannot fail a completed run when its probe settles later", async () => {
+  let rejectProbe, calls = 0;
+  const probe = new Promise((_, reject) => { rejectProbe = reject; });
+  const watch = watchCtsPageLiveness(() => { calls++; return probe; }, { timeoutMs: 1000, intervalMs: 5 });
+  await Promise.resolve();
+  watch.stop();
+  rejectProbe(new Error("page closed after completion"));
+  assert.equal(await Promise.race([watch.failure,
+    new Promise(resolve => setTimeout(() => resolve("stopped"), 30))]), "stopped");
+  assert.equal(calls, 1);
 });
