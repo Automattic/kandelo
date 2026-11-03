@@ -15,6 +15,7 @@ import {
   createCentralizedKernelWorkerTestDouble,
 } from "../src/kernel-worker";
 import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
+import { WasmPosixKernel } from "../src/kernel";
 import {
   createKernelSharedMappingStub,
   SYSV_MIRROR_EXPORT_NAMES,
@@ -535,6 +536,53 @@ describe("kernel-owned shared-mapping boundary failures", () => {
       { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
       { name: "kernel_shared_mapping_sync_process", args: [channel.pid, 0] },
     ]);
+  });
+
+  it.each([ABI_SYSCALLS.Read, ABI_SYSCALLS.Readv, ABI_SYSCALLS.Recvfrom,
+    ABI_SYSCALLS.Recvmsg])(
+    "refreshes BO imports when receive %i consumes a publication newer than its readiness wake",
+    (syscallNr) => {
+      const h = sysvHarness(), channel = pendingChannel(h);
+      const reader = channel.memory, writer = h.memories.get(h.pids[1])!;
+      const kernel = new WasmPosixKernel({}, {} as any, {
+        getProcessMemory: pid => h.memories.get(pid),
+      });
+      h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+      const address = 0x6000, size = 256;
+      kernel.bos.create({ pid: h.pids[1], bo_id: 7, size, w: 16, h: 4, stride: 64 });
+      for (const [pid, memory] of [[channel.pid, reader], [h.pids[1], writer]] as const) {
+        kernel.bos.bind(pid, 7, address, size);
+        kernel.bos.primeBindFromSab(pid, 7, memory, address);
+      }
+      // A previous message woke the reader. The producer paints and sends
+      // another commit while the reader is still draining that socket.
+      kernel.bos.syncImportsForPid(channel.pid, reader);
+      new Uint8Array(writer.buffer)[address + 17] = 0xdc;
+      const observed: number[] = [];
+      h.kw.testAuthority.configureScratchBoundaryHooksForTest({
+        relistenChannel: () => { observed.push(...new Uint8Array(reader.buffer, address + 17, 2)); },
+      });
+      (h.kw as any).completeChannel(channel, syscallNr, [4, address + 18, 1], undefined, 1, 0,
+        [{ ptr: address + 18, bytes: new Uint8Array([0x5d]) }]);
+      expect(new Uint8Array(reader.buffer)[address + 17]).toBe(0xdc);
+      expect([...kernel.bos.pixelView(7)!.slice(17, 19)]).toEqual([0xdc, 0x5d]);
+      expect(observed).toEqual([0xdc, 0x5d]);
+    },
+  );
+
+  it.each([
+    [ABI_SYSCALLS.Recvmsg, 0, 0],
+    [ABI_SYSCALLS.Recvmsg, -1, 11],
+    [ABI_SYSCALLS.Getpid, 61, 0],
+  ])("does not scan BO imports for syscall %i returning %i with errno %i", (syscallNr, value, errno) => {
+    const h = sysvHarness(), channel = pendingChannel(h);
+    const kernel = new WasmPosixKernel({}, {} as any);
+    h.kw.testAuthority.replaceKernelForScratchBoundaryTest(kernel);
+    const scan = vi.spyOn(kernel.bos, "hasStaleableImports");
+    h.kw.testAuthority.configureScratchBoundaryHooksForTest({ relistenChannel: vi.fn() });
+    (h.kw as any).completeChannel(channel, syscallNr, [], undefined, value, errno, []);
+    expect(scan).not.toHaveBeenCalled();
+    expect(new DataView(channel.memory.buffer).getBigInt64(CH_RETURN, true)).toBe(BigInt(value));
   });
 
   // `host_proc_quiescent_epoch` (`CleanStamp` in runtime-core memory.rs):

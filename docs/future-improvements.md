@@ -259,6 +259,10 @@ This migration must preserve ordinary shared-memory Wayland clients. The
 baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
 wlcompositor maps memfd pools; future graphics transport and scheduling
 must keep that platform behavior and its Node CPU-renderer coverage.
+Mapped BO imports also need receive-completion coherence: a producer may
+publish another buffer update after the consumer's readiness wake. Moving
+execution or queues must preserve that happens-before edge, including when
+a receive writes directly into a mapped buffer.
 
 ### Run WebGL in a dedicated GPU worker (only if the responsiveness bar is missed)
 

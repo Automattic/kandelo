@@ -13736,7 +13736,7 @@ export class CentralizedKernelWorker {
       // readiness. Below the EAGAIN branch so a still-blocked poller doesn't
       // pay the copy on every retry.
       if (syscallNr === SYS_POLL || syscallNr === SYS_PPOLL) {
-        this.#syncImportedBosOnReadiness(channel, retVal);
+        this.#syncImportedBosBeforeResume(channel, retVal);
       }
 
       if ((this.sharedMmapBackings?.size ?? 0) > 0) {
@@ -14350,6 +14350,18 @@ export class CentralizedKernelWorker {
     // materialization until after wake processing would expose stale bytes.
     // The stopped child's mailbox status/notification remains parked below.
     this.materializePreparedChannelCompletion(channel, prepared, entry);
+
+    // A producer can paint and send another message after the consumer's
+    // readiness wake, while it is still draining the socket or pipe. Refresh
+    // imported BO mappings at the receive's actual completion too. Output
+    // writes must land first: the receive destination can itself be mapped.
+    if (
+      prepared.retVal > 0
+      && (syscallNr === SYS_READ || syscallNr === SYS_READV
+        || syscallNr === SYS_RECVFROM || syscallNr === SYS_RECVMSG)
+    ) {
+      this.#syncImportedBosBeforeResume(channel, 1);
+    }
 
     // The syscall is logically complete even if publication must wait for a
     // future SIGCONT. Retire one-shot timeout/deadline state now so no second
@@ -17580,7 +17592,7 @@ export class CentralizedKernelWorker {
     // Use the captured operation, not a mutable channel header, when this
     // retry finally reports imported-buffer readiness.
     if (snapshot.syscallNr === SYS_POLL || snapshot.syscallNr === SYS_PPOLL) {
-      this.#syncImportedBosOnReadiness(channel, result.retVal);
+      this.#syncImportedBosBeforeResume(channel, result.retVal);
     }
     this.completeChannel(
       channel,
@@ -18866,7 +18878,7 @@ export class CentralizedKernelWorker {
 
     // Imported-bo coherence on readiness, as for poll/ppoll and epoll: a
     // select-based importer wakes here to re-read long-lived mappings.
-    this.#syncImportedBosOnReadiness(channel, retVal);
+    this.#syncImportedBosBeforeResume(channel, retVal);
     this.completeChannel(
       channel,
       SYS_SELECT,
@@ -19071,7 +19083,7 @@ export class CentralizedKernelWorker {
       return;
     }
 
-    this.#syncImportedBosOnReadiness(channel, retVal);
+    this.#syncImportedBosBeforeResume(channel, retVal);
     this.completeChannel(
       channel,
       SYS_PSELECT6,
@@ -19323,7 +19335,7 @@ export class CentralizedKernelWorker {
       // re-read its long-lived imported wl_shm mappings. Refresh them from
       // the creator's memory first (mirror of the poll/ppoll hook in the
       // generic post-syscall path — epoll is intercepted before that tail).
-      this.#syncImportedBosOnReadiness(channel, retVal);
+      this.#syncImportedBosBeforeResume(channel, retVal);
       this.completeChannelRawAndRelisten(channel, retVal, 0, entry);
       return;
     }
@@ -31207,15 +31219,19 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Imported-bo coherence at a wait's readiness report. The GbmBoRegistry is
+   * Imported-bo coherence before a ready wait or successful receive resumes.
+   * The GbmBoRegistry is
    * bind-boundary-synced (host/src/dri/registry.ts): an importer's
    * long-lived mmap of another process's bo holds the mmap-time snapshot
    * until refreshed. A compositor wakes from its wait -- poll, ppoll,
    * epoll_wait, select or pselect6 -- to process a client's commit, so every
    * one of them refreshes the importer's mappings when it reports ready fds.
+   * A later message can arrive during that drain, so successful receive
+   * completions refresh again after their output writes are materialized.
    */
-  #syncImportedBosOnReadiness(channel: ChannelInfo, readyCount: number): void {
+  #syncImportedBosBeforeResume(channel: ChannelInfo, readyCount: number): void {
     if (readyCount > 0 && this.#kernel.bos.hasStaleableImports(channel.pid)) {
+      if (!this.isRegisteredChannel(channel)) return;
       this.#kernel.bos.syncImportsForPid(channel.pid, channel.memory);
     }
   }

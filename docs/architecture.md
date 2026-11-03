@@ -3805,8 +3805,14 @@ KMS master, cursor and event inheritance still have separate gaps; see
 The worker's DRI registry merges changed byte runs relative to a private
 snapshot of each mapping. It uses the same merge primitive as anonymous
 `MAP_SHARED` publication. Allocator and importer writes both publish at
-mapping, readiness, texture submission, and cursor/scanout presentation
-boundaries; unchanged readers do not overwrite newer bytes. Refreshing a
+mapping, readiness, successful receive completion, texture submission,
+and cursor/scanout presentation boundaries; unchanged readers do not
+overwrite newer bytes. A readiness wake is insufficient when a producer
+stores pixels and sends another commit while the consumer is draining its
+socket. Successful `read`, `readv`, `recvfrom` and `recvmsg` completions
+therefore refresh live imported BO mappings after their output writes land
+and before the guest resumes. EOF, failed receives and unrelated calls do
+not perform this scan; a process without mapped imports does not copy BOs. Refreshing a
 reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
 Publication scans retain the independent baseline without copying it when
@@ -5040,15 +5046,14 @@ See [browser-support.md](browser-support.md#omarchy-desktop-demo).
 ### Stock upstream clients (`foot` + the font stack)
 
 Every client above is Kandelo-authored on `libkwl`. `foot` 1.17.2
-(`packages/registry/foot/`) is the first **unmodified upstream** Wayland
+(`packages/registry/foot/`) is the first upstream Wayland
 client: stock `wl_display_connect()` (via `XDG_RUNTIME_DIR`), stock
-xdg-shell/SSD negotiation, and a real font pipeline. Two declared patches are
-the entire delta, both kernel-model boundaries rather than feature edits:
-`0001` allocates its `wl_shm` pools as `gbm` prime-fd dumb-bos instead of
-memfds (wlcompositor used to import every pool with `gbm_bo_import`; it now
-maps any pool fd, so the patch is pending removal), and `0002`
-serializes its font loading (concurrent `FcFontMatch` garbles pattern doubles under the
-kernel's thread model — any future threaded font consumer hits the same wall).
+xdg-shell/SSD negotiation, and a real font pipeline. Its ordinary memfd
+`wl_shm` pools are mapped by wlcompositor; the earlier DRM-pool patch and
+its GBM link are removed. The remaining declared patch,
+`0002-serial-font-loading.patch`, serializes font loading (the recorded
+concurrent `FcFontMatch` pattern-double corruption remains separate
+platform work).
 foot forks its shell (`slave.c`), so its wasm is mandatorily
 fork-instrumented; it runs with `--term=vt100` because no foot terminfo is
 staged in any VFS image.

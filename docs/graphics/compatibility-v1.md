@@ -281,6 +281,29 @@ on each engine with strict accounting. Evidence is in
 and `.context/cts-host-deadline-normal/`; this is runner validation, not a
 replacement for the final full CTS runs.
 
+**BO receive-coherence checkpoint, 2026-11-03.** A minimal Foot trace
+reproduces stale pixels after the client submits its final damaged frame,
+receives its frame callback and disarms both delayed-render timers. The
+host's imported buffer snapshot could remain stale when a producer wrote
+and sent another commit after the compositor's readiness wake. Successful
+`read`, `readv`, `recvfrom` and `recvmsg` completions now refresh live BO
+imports after copying their outputs and before resuming the caller. This
+also preserves output copied directly into a mapped buffer. EOF, failed
+receives and unrelated calls do not scan; absent imported mappings do not
+copy BOs. No client code or ABI changes.
+
+Four causal host regressions fail before the change. Afterward the shared
+memory/DRI cohort passes 89 cases and the graphics gate passes 1,978 cases
+in 84 files. A private receive-refresh control passes three Chromium Sway
+SFWBar flows after its control fails; the preceding minimal traces retain
+three failures. One earlier candidate dump exhausted the diagnostic Node
+heap through large structured arrays; that run is invalid. The corrected
+dump copies only returned message bytes and serializes in the worker.
+Evidence is in `.context/a3/recv-coherence/` and
+`.context/graphics-r9-foot-{minimal-r2,recv-coherence-r2}/`. Uninstrumented
+final-host Labwc/SFWBar checks on all three engines, the new-client rebuild,
+manual confirmation and before/after performance remain required.
+
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
 four DRM-buffer-pool patches and their recipe hooks/inputs are removed;
