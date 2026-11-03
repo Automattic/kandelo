@@ -6015,7 +6015,10 @@ present runs in one synchronous native batch, including muxer replay and
 CPU-image preparation/publication. Checked calls on that guest's error owner
 execute without native `getError`; temporary inverses use the same policy.
 Native flags are sampled at batch completion before another logical context
-can acquire the shared renderer. A clean batch takes one error sample.
+can acquire the shared renderer. A clean submitted batch takes one error
+sample. A `glGetError` query that only reads host-owned flags issues no
+native sample; muxer replay or utility work on that path still marks native
+execution and receives its boundary sample.
 Private allocation and retirement owners still use exact checks where native
 success is required to publish or delete a handle. If such a check discovers
 an error within a guest batch, it routes the error to that batch's reset

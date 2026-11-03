@@ -125,3 +125,30 @@ it("keeps native OOM a per-context allocation boundary under audit", () => {
   expect(rendererLost(owner)).toBe(true);
   expect(rendererLost({ gl, pid: 101, sessionId: 8, errors: [] })).toBe(false);
 });
+
+it("answers host-owned error flags without a native sample when no native work ran", () => {
+  const { owner, reads } = setup();
+  recordGlError(owner, 0x501);
+  expect(withNativeBatch(owner, "getError", () => {
+    captureNativeGlErrors(owner.gl, owner);
+    return owner.errors.shift()!;
+  }, false)).toBe(0x501);
+  expect(reads()).toBe(0);
+  expect(withNativeBatch(owner, "query with work", () => {
+    checkedGlCall(owner, () => {});
+    return 4;
+  }, false)).toBe(4);
+  expect(reads()).toBe(1);
+});
+
+it("still samples a muxer replay, then skips an error query on the selected owner", () => {
+  const { owner, reads, gl } = setup();
+  const proxy = new Proxy(gl, { get: (target, key) => Reflect.get(target, key)
+    ?? (key === "createVertexArray" ? () => ({}) : () => {}) });
+  const binding = { ...owner, gl: proxy, shadow: defaultShadow(), clientArrayEndRequested: false } as unknown as GlBinding;
+  const muxer = new GlMuxer(proxy);
+  expect(withNativeBatch(binding, "getError with replay", () => muxer.switchTo(binding), false)).toBe(0);
+  expect(reads()).toBe(1);
+  expect(withNativeBatch(binding, "getError already selected", () => muxer.switchTo(binding), false)).toBe(0);
+  expect(reads()).toBe(1);
+});

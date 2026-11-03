@@ -11,7 +11,7 @@ import { reportGlDiagnostic } from "./diagnostics.js";
 import { markRendererReset, rendererLost, RENDERER_LOST } from "./renderer-loss.js";
 
 type Owner = { gl: WebGL2RenderingContext | null; errors: number[]; pid: number; sessionId: number };
-type Batch = { owner: Owner; label: string; sequence: number };
+type Batch = { owner: Owner; label: string; sequence: number; nativeWork: boolean };
 let active: Batch | null = null;
 let sequence = 0;
 
@@ -28,7 +28,13 @@ export function predictsNativeCalls(owner: { gl: WebGL2RenderingContext | null; 
   return !!active && active.owner.gl === owner.gl && active.owner.errors === owner.errors;
 }
 
+/** A replay or utility can issue native calls without a checked wrapper. */
+export function noteNativeBatchWork(gl: WebGL2RenderingContext): void {
+  if (active?.owner.gl === gl) active.nativeWork = true;
+}
+
 export function predictedNativeCalls(calls: readonly (() => void)[]): boolean {
+  if (active && calls.length) active.nativeWork = true;
   try { for (const call of calls) call(); return true; }
   catch (error) {
     if (error instanceof NativeContextReset || isKernelExportFailure(error)) throw error;
@@ -68,7 +74,7 @@ export function observeBatchNativeError(gl: WebGL2RenderingContext, error: numbe
 
 /** Nesting the dispatcher/query under its kernel entry shares one sample.
  * No native error check can be delayed past a logical context switch. */
-export function withNativeBatch(owner: Owner, label: string, work: () => number | void): number {
+export function withNativeBatch(owner: Owner, label: string, work: () => number | void, sampleWhenIdle = true): number {
   const gl = owner.gl;
   if (!gl) return work() ?? 0;
   if (rendererLost(owner)) return RENDERER_LOST;
@@ -77,9 +83,12 @@ export function withNativeBatch(owner: Owner, label: string, work: () => number 
       nativeGlFault("A native GL batch reentered a different logical context");
     return work() ?? 0;
   }
-  active = { owner, label, sequence: ++sequence };
+  active = { owner, label, sequence: ++sequence, nativeWork: false };
   try {
     const result = work() ?? 0;
+    // A host-owned glGetError answer has no native batch of its own. A replay
+    // or utility performed along that path still requires its boundary sample.
+    if (!sampleWhenIdle && !active.nativeWork) return rendererLost(owner) ? RENDERER_LOST : result;
     // One sample on the common NO_ERROR path. Drain only after a failure,
     // before another logical context can acquire the shared renderer.
     let first = 0;

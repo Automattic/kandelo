@@ -1,3 +1,4 @@
+import { QOP_GET_ERROR } from "./webgl/ops.js";
 import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
@@ -3768,7 +3769,7 @@ export class WasmPosixKernel {
               if (failure) throw failure.error;
               if (!published) return -5;
               return reply;
-              });
+              }, op !== QOP_GET_ERROR);
             }
           } catch (caught) { rethrowNativeGlFault(caught);
             return -5; // EIO: the renderer failed without a reply

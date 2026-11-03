@@ -1,3 +1,4 @@
+import { noteNativeBatchWork } from "./native-batch.js";
 // Replay each GLES2 texture target independently on the shared context.
 import { TEXTURE_2D_ARRAY } from "./cube-storage.js";
 import { renderbufferNative, type GlRenderbufferView, type GlTextureView } from "./image-storage.js";
@@ -73,6 +74,7 @@ export class GlMuxer {
         return;
       } catch (error) { this.invalidateCurrent(); throw error; }
     }
+    noteNativeBatchWork(this.gl);
     captureNativeGlErrors(this.gl, this.errorOwner);
     this.errorOwner = null;
     const previous = this.current;

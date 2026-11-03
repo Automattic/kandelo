@@ -1,4 +1,4 @@
-import { predictsNativeCalls, predictedNativeCalls, observeBatchNativeError } from "./native-batch.js";
+import { predictsNativeCalls, predictedNativeCalls, observeBatchNativeError, noteNativeBatchWork } from "./native-batch.js";
 import { copyExternalSamplers, recordLinkedExternalSamplers } from "./external-texture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // Deferred shader/program ownership adapted from Brandon Payton's
@@ -22,6 +22,7 @@ export function checkedGlCall(b: CheckedGlOwner, call: () => void, policy?: "cle
   if (policy !== "cleanup" && predictsNativeCalls(b)) return predictedNativeCalls([call]);
   const gl = b.gl;
   if (!gl) return false;
+  noteNativeBatchWork(gl);
   try {
     let cleared = false;
     for (let i = 0; i < 32; i++) {
@@ -191,6 +192,7 @@ export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[]
   if (predictsNativeCalls(b)) return predictedNativeCalls(calls);
   const gl = b.gl;
   if (!gl) return false;
+  noteNativeBatchWork(gl);
   try {
     let cleared = cleanEntry;
     if (!cleared) for (let i = 0; i < 32; i++) {
@@ -254,6 +256,7 @@ export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): bo
   if (predictsNativeCalls(b)) return predictedNativeCalls([call]);
   const gl = b.gl;
   if (!gl) return false;
+  noteNativeBatchWork(gl);
   try {
     call();
     const error = gl.getError();
@@ -271,6 +274,7 @@ export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void
   if (predictsNativeCalls(b)) return predictedNativeCalls(calls);
   const gl = b.gl;
   if (!gl) return false;
+  noteNativeBatchWork(gl);
   try {
     let cleared = false;
     for (let i = 0; i < 32; i++) {
