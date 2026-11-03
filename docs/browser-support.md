@@ -3565,7 +3565,9 @@ video only in the browser. On Node, `ffplay` also reports
 exits as upstream does (status 0). LÖVE reports the same SDL window failure
 and exits with status 1 before executing the game's `main.lua`.
 `ffplay -nodisp` still plays audio through SDL's OSS backend to `/dev/dsp`,
-and FFmpeg's own `fbdev` and `oss` outputs work on both hosts.
+and FFmpeg's own `fbdev` and `oss` outputs work on both hosts. The SDL playground
+also exits 1 at window creation before starting its editor. Its native editor
+logic is tested separately; visual and shader behavior require a browser.
 
 Why not a Node software path: it would need either a GL implementation on the
 Node host or a KMSDRM window framebuffer in SDL, and SDL's KMSDRM backend has no

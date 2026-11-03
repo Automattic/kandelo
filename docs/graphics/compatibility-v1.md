@@ -20835,3 +20835,39 @@ and products. Both SDK ensures pass, and the eight graphics archives have
 identical SHA-256 values before and after. Evidence:
 `.context/graphics-fixture-programs-r12/`. The larger final host inventory
 and the new libffi dependency closure remain required. No ABI change.
+
+
+**Prepared Node CPU/display-fixture checkpoint, 2026-11-03.** Five GBM CPU
+fixture files pass seven SDK guest assertions with the complete normal r12
+SDK. The native SDL editor unit and a diagnostic of the actual Node SDL
+playground also pass, for nine assertions across seven files. Its ordinary
+program exits 1 with the exact EGL no-renderer and SDL window diagnostics,
+before editor startup, with no host diagnostic. The older Node test instead
+waited for a fake headless GL renderer to reach the editor and timed out.
+The replacement verifies the already approved D-37 capability boundary and
+requires the supported program artifact. The SDL editor's native unit and
+the browser renderer spec retain their respective coverage; no application
+code or host capability changes. The replacement and native editor unit
+pass together. Evidence: `.context/graphics-cpu-gbm-sdl-node-r1/`. This is
+prepared-r12 fixture evidence, not a complete current desktop acceptance.
+
+**Normal r12 validation checkpoint, 2026-11-03.** The full build at
+`8a2a7ae841` completes unchanged, including both SDKs, setup-all, all
+standalone programs, ABI and freshness. Workspace Rust passes 3,631 tests
+in 98 groups (313 seconds); xtask passes 845 in six groups (523 seconds),
+with no failures or ignored tests. ABI and evidence-class checks also pass.
+Evidence: `.context/graphics-normal-build-r12/results/`,
+`.context/graphics-rust-r12-r1/`. Later host changes and the libffi dependency
+closure still require their normal rebuild and combined acceptance.
+
+The second historical runtime-030 host main inventory remains failed:
+35 failed files, 647 passed, 16 skipped; 72 failed assertions, 7,340 passed,
+43 skipped (7,380.21 seconds for that Vitest process). Its CI-shaped wrapper
+returns 1; runtime-workaround checks then pass. The obsolete chain was
+retired by verified owned process group during its following browser-memory
+prepare step, preserving all results and partial evidence. Its completed
+fixture failures and package-preparation failures are retained, not allowed
+as passing results. The full latest-source memory/POSIX/host chain remains
+required after the current normal libffi rebuild and quiet performance
+measurement. Evidence: `.context/graphics-validation-r11-r2-results/`,
+including `superseded-retirement.json`.
