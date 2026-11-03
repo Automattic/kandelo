@@ -100,6 +100,16 @@ runner exits unsuccessfully. Closing an unresponsive context is bounded;
 if it fails, the runner attempts bounded retirement of its own browser.
 This changes no upstream assertion, case budget or accepted outcome.
 
+The chunked runner keeps Playwright artifacts under
+`$KANDELO_CTS_OUT/<engine>/playwright`, beside that engine's chunk records.
+It does not clean the application's default `test-results` directory or
+another suite's output. Concurrent source servers also need separate
+worktrees and ports so their Vite dependency caches remain independent.
+The output-isolation probe passes 19 strict GLES2 color-clear and five
+strict EGL info cases on each engine while preserving both default-output
+and previous-suite control files; see
+`.context/cts-output-isolation-probe-r2/`.
+
 ## Native-divergence audit
 
 Host validation decides guest GL acceptance. Production samples native
@@ -144,4 +154,3 @@ KANDELO_BROWSER_TEST_GL_AUDIT=record KANDELO_BROWSER_TEST_GL_AUDIT_LOG=/abs/path
 Each line of the log carries the page, the arrival time and the record. The
 hook exists only on the development server (`apply: "serve"`); production
 pages cannot enable the audit.
-

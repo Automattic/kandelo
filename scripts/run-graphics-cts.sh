@@ -58,7 +58,8 @@ if [[ "$host" == node ]]; then
     (cd "$repo_root/host" && npx vitest run -c vitest.graphics-cts.config.ts) || runner_status=$?
 else
     (cd "$repo_root/apps/browser-demos" && node node_modules/@playwright/test/cli.js test \
-        --config playwright.graphics-cts-suite.config.ts --project "$host" --workers 1 --retries 0) || runner_status=$?
+        --config playwright.graphics-cts-suite.config.ts --project "$host" --workers 1 --retries 0 \
+        --output "$out/$host/playwright") || runner_status=$?
 fi
 
 summary_arguments=(summarize --out "$out" --engines "$host")
