@@ -188,6 +188,20 @@ host source and compatible r8 artifacts. Three-engine rebuilt validation
 remains pending. A separate run reproduced a Foot redraw stall after its
 title updated; the fixture fixes do not close that platform investigation.
 
+**r9 build and preview checkpoint, 2026-11-03.** The normal build at
+`57381bc604` completed provisioning, both sysroots, `setup --all`, the full
+program-fixture build, ABI checking and `verify-fresh`. The frozen checkout
+then advanced to `734e8d673d` and ran the canonical `build-host.sh`, ABI check
+and normal freshness check again. Its client, SDK and kernel inputs were
+unchanged. Preview port 5693 now serves this r9 tree with A3 and all current
+production host changes. Build evidence is in
+`.context/graphics-normal-build-r9/results/` and
+`.context/graphics-r9-host-refresh/`. Availability does not establish desktop
+acceptance or the performance ship bar: the Foot redraw investigation,
+three-engine final validation and matched client-retirement measurements
+remain open. A separate normal build at `23e6972153` rebuilds the clients
+without the four pool patches; r9 retains them as the comparison baseline.
+
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
 four DRM-buffer-pool patches and their recipe hooks/inputs are removed;
