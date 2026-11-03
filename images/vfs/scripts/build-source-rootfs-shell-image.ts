@@ -1,6 +1,6 @@
 /** Compose the canonical browser shell from resolver-owned package outputs. */
-import { lstatSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ABI_VERSION, ERRNO } from "../../../host/src/generated/abi";
@@ -25,7 +25,7 @@ import {
 } from "../../../web-libs/kandelo-session/src/experimental-terminal-session";
 import {
   ensureDirRecursive,
-  saveImage,
+  serializeImage,
   sourceDateEpochMilliseconds,
   writeVfsBinary,
   writeVfsFile,
@@ -39,6 +39,13 @@ import {
   registerDeclaredShellLazyArchive,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
+import {
+  describeBudgetUse,
+  measureEagerContent,
+  readImageEagerBudget,
+  requireCompressedImageWithinBudget,
+  requireEagerContentWithinBudget,
+} from "./image-eager-budget";
 import {
   populateSourceRootfsShellOverlay,
   PACKAGE_ROOTFS_SHELL_COMPOSITION,
@@ -83,6 +90,8 @@ export interface SourceRootfsShellInputs {
   espeakNgDataPath: string;
   demoConfigPath: string;
   demoProfileOverlayPath: string;
+  /** The checked-in eager-content budget (packages/registry/shell/eager-budget.json). */
+  eagerBudgetPath: string;
   outFile: string;
   resolveArtifact: ShellLazyArchiveResolver;
   sourceDateEpoch?: string;
@@ -1602,6 +1611,8 @@ export async function buildSourceRootfsShellImage(
     inputs.demoProfileOverlayPath,
   );
   const scummvmCatalog = loadScummvmFreewareCatalog();
+  // Read first so a malformed budget fails before any composition work.
+  const eagerBudget = readImageEagerBudget(inputs.eagerBudgetPath);
 
   // WHY: the terminal document is image-owned policy. Validate its programs
   // against the unmodified source rootfs before overlays can accidentally make
@@ -1776,12 +1787,20 @@ export async function buildSourceRootfsShellImage(
   // Checked before saving so a rejected composition writes no output.
   requireLazyShellPrograms(sourceEagerPrograms, fs);
   requireLazyShellData(fs);
+  // WHY: every visitor downloads and decompresses the eager content before
+  // the first prompt, and nothing else notices when it grows (an eager
+  // xkeyboard-config tree once added 3.3 MB). Growth must be a reviewed
+  // change to the checked-in budget; see image-eager-budget.ts.
+  const eagerContent = measureEagerContent(fs);
+  requireEagerContentWithinBudget(eagerBudget, inputs.eagerBudgetPath, eagerContent);
 
   // WHY: Bash is the one intentional eager identity. Every other source-rootfs
   // first-use download must retain the same path, URL, size, and tree metadata.
   const composedLazyState = serializedLazyState(fs);
 
-  const image = await saveImage(fs, inputs.outFile, {
+  // Serialized here rather than through saveImage so the compressed-size
+  // budget is checked before anything is written.
+  const serialized = await serializeImage(fs, inputs.outFile, {
     expectedMaxByteLength: sourceCapacity.maxByteLength,
     metadata: {
       ...sourceMetadata,
@@ -1794,6 +1813,17 @@ export async function buildSourceRootfsShellImage(
       inputs.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH,
     ),
   });
+  const image = serialized.bytes;
+  requireCompressedImageWithinBudget(
+    eagerBudget,
+    inputs.eagerBudgetPath,
+    image.byteLength,
+    eagerContent,
+  );
+  console.log(describeBudgetUse(eagerBudget, eagerContent, image.byteLength));
+  mkdirSync(dirname(inputs.outFile), { recursive: true });
+  writeFileSync(inputs.outFile, image);
+  console.log(`Written to: ${inputs.outFile}`);
 
   const outputMetadata = KandeloImageFs.readImageMetadata(image);
   if (outputMetadata?.kernelAbi !== ABI_VERSION) {
@@ -1836,6 +1866,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     "--espeak-ng-data",
     "--demo-config",
     "--demo-profile-overlay",
+    "--eager-budget",
     "--dependency-contract",
     "--out",
   ]);
@@ -1859,6 +1890,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
           "--xkeyboard-config <xkeyboard-config.zip> " +
           "--espeak-ng-data <espeak-ng-data.zip> " +
           "--demo-config <demo.json> --demo-profile-overlay <profiles.json> " +
+          "--eager-budget <eager-budget.json> " +
           "--dependency-contract <dependencies.json> " +
           "--out <shell.vfs.zst>",
       );
@@ -1880,6 +1912,7 @@ function parseArguments(argv: readonly string[]): SourceRootfsShellInputs {
     espeakNgDataPath: values.get("--espeak-ng-data")!,
     demoConfigPath: values.get("--demo-config")!,
     demoProfileOverlayPath: values.get("--demo-profile-overlay")!,
+    eagerBudgetPath: values.get("--eager-budget")!,
     outFile: values.get("--out")!,
     resolveArtifact: strictResolverFromDependencyEnvironment(
       process.env,

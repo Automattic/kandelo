@@ -344,6 +344,64 @@ WordPress payload with an older shell. The shell recipe also owns the complete
 source closure used by its image tools; imported repository modules are
 explicit build inputs.
 
+### Image eager-content budgets
+
+Eager content is the part of an image a machine needs before it can run
+anything: every visitor downloads it, decompresses it and holds it in VFS
+memory before the first prompt. Lazy files and lazy archives cost nothing
+at boot. Choosing one over the other is a one-line decision in a composer,
+so an image can grow without anyone deciding that it should. The browser
+shell did exactly that: an eager copy of the xkeyboard-config keymap tree
+(293 files, 3,332,352 bytes) took the compressed `shell.vfs.zst` from
+1,047,839 to 1,436,395 bytes, and no check noticed. Moving that tree to a
+lazy archive brought it back down.
+
+The shell composer
+(`images/vfs/scripts/build-source-rootfs-shell-image.ts`) now enforces a
+checked-in budget, `packages/registry/shell/eager-budget.json`. It fails
+the package build, writing no image, when any of three limits is exceeded:
+
+| Limit | Measures | Why this number |
+|---|---|---|
+| `maxEagerBytes` | Sum of the sizes of regular files stored in the image (not deferred), once per inode | Deterministic and attributable to paths, so a failure can say what grew; also the boot memory cost |
+| `maxEagerFiles` | Count of the same files | Many small files cost directory and inode records and boot work beyond their bytes |
+| `maxCompressedBytes` | Size of the zstd-19 `shell.vfs.zst` | What a visitor downloads; also catches growth in lazy-file records and directories that adds no eager bytes |
+
+The measurement (`images/vfs/scripts/image-eager-budget.ts`) walks the
+composer's own tree just before serialization, so it runs on the normal
+package path rather than as a separate check over a published artifact.
+`xtask vfs-image describe` reads the written image the way the kernel does
+and agrees with it: the eager set is its entries of `kind` `file` that
+carry a `content_sha256`. The failure message names the budget file, each
+exceeded limit with the current total and the value recorded when the
+budget was set, and the largest eager directories and files.
+
+The budget file also records `measured`, the image's totals when the
+limits were last set. Each limit may sit at most 5% above that
+measurement (the file count gets at least four files of slack), so a
+budget cannot be loosened far enough to hide future growth. The reader
+rejects a budget that breaks this rule, has unknown keys, or omits its
+explanatory `why`, `measurement` and `raising` fields.
+
+When the build fails on the budget:
+
+1. Ask whether the new content can be lazy. Programs belong in
+   `SHELL_LAZY_BINARY_SPECS` and optional data trees in
+   `SHELL_LAZY_DATA_ARCHIVE_SPECS`
+   (`images/vfs/scripts/shell-lazy-archives.ts`); both are fetched on
+   first read on Node and in the browser.
+2. If it must be present at boot, raise the limits and update `measured`
+   to the new image's totals in a commit whose message names the content,
+   its size, and why it must be eager. The failure message prints the
+   current eager totals; a successful build logs all three
+   (`shell eager-content budget: ...`), and `xtask vfs-image describe`
+   on the new image reports the eager files and their sizes.
+3. When content shrinks, lower the limits in the same change so the
+   headroom stays small.
+
+The budget file is a declared input of the shell package, so changing it
+re-runs the composition.
+
 ### Canonical VFS product authority
 
 Canonical VFS product manifests are the lasting product authority. The TOML

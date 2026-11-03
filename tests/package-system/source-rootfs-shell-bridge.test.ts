@@ -76,6 +76,7 @@ const canonicalDependencyContract = join(
   repoRoot,
   "packages/registry/shell/source-rootfs-shell-dependencies.json",
 );
+const canonicalEagerBudget = join(canonicalPackageRoot, "eager-budget.json");
 const roots: string[] = [];
 const MiB = 1024 * 1024;
 const CA_FIXTURE = new TextEncoder().encode("rootfs CA fixture\n");
@@ -402,6 +403,9 @@ function fixturePaths(root: string) {
     xkeyboardConfigPath,
     demoConfigPath,
     demoProfileOverlayPath,
+    // The real budget: fixture content is far below it, so only the tests
+    // that substitute a tighter budget exercise a rejection.
+    eagerBudgetPath: canonicalEagerBudget,
     dependencyRoots,
     resolveArtifact,
   };
@@ -483,7 +487,9 @@ describe("canonical source-rootfs shell", () => {
       "packages/registry/shell/source-rootfs-shell-demo.json",
       "packages/registry/shell/source-rootfs-shell-demo-profiles.json",
       "packages/registry/shell/scummvm-freeware-games.json",
+      "packages/registry/shell/eager-budget.json",
       "images/vfs/scripts/build-source-rootfs-shell-image.ts",
+      "images/vfs/scripts/image-eager-budget.ts",
       "images/vfs/scripts/source-rootfs-shell-overlay.ts",
       "images/vfs/scripts/shell-lazy-archives.ts",
       "images/vfs/lib/init/shell-binaries.ts",
@@ -1303,6 +1309,64 @@ describe("canonical source-rootfs shell", () => {
     expect(existsSync(join(root, "eager-program.vfs.zst"))).toBe(false);
   });
 
+  it("rejects eager content over its checked-in budget before writing an output", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    // An eager launcher script far larger than the fixture's other content
+    // stands in for an optional tree written eagerly.
+    writeFileSync(paths.omarchydesktopPath, `#!/bin/sh\n${"#".repeat(64 * 1024)}\n`);
+    const eagerBudgetPath = join(root, "eager-budget.json");
+    const budget = JSON.parse(readFileSync(canonicalEagerBudget, "utf8"));
+    writeFileSync(eagerBudgetPath, JSON.stringify({
+      ...budget,
+      image: "fixture-shell",
+      maxEagerBytes: 32 * 1024,
+      measured: { ...budget.measured, eagerBytes: 32 * 1024 },
+    }));
+
+    let message = "";
+    try {
+      await buildSourceRootfsShellImage({
+        ...paths,
+        eagerBudgetPath,
+        outFile: join(root, "over-budget.vfs.zst"),
+        sourceDateEpoch: "0",
+      });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain(
+      `fixture-shell image exceeds its eager-content budget in ${eagerBudgetPath}`,
+    );
+    expect(message).toMatch(/eager bytes: [\d,]+ exceeds the budget of 32,768/);
+    expect(message).toMatch(/65,547 +\/usr\/local\/bin\/omarchydesktop/);
+    expect(existsSync(join(root, "over-budget.vfs.zst"))).toBe(false);
+  });
+
+  it("rejects a compressed image over its checked-in budget before writing it", async () => {
+    const root = tempRoot();
+    const paths = fixturePaths(root);
+    await writeRootfs(paths.rootfsPath);
+    const eagerBudgetPath = join(root, "eager-budget.json");
+    const budget = JSON.parse(readFileSync(canonicalEagerBudget, "utf8"));
+    writeFileSync(eagerBudgetPath, JSON.stringify({
+      ...budget,
+      maxCompressedBytes: 100,
+      measured: { ...budget.measured, compressedBytes: 100 },
+    }));
+
+    await expect(
+      buildSourceRootfsShellImage({
+        ...paths,
+        eagerBudgetPath,
+        outFile: join(root, "over-budget.vfs.zst"),
+        sourceDateEpoch: "0",
+      }),
+    ).rejects.toThrow(/compressed image bytes: [\d,]+ exceeds the budget of 100/);
+    expect(existsSync(join(root, "over-budget.vfs.zst"))).toBe(false);
+  });
+
   it("rejects a demo profile that no longer launches its owned executable", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
@@ -1491,6 +1555,7 @@ printf '%s\\n' "source-rootfs-shell" >"$out"
     expect(invocation).toContain(
       `--demo-profile-overlay ${join(repoRoot, "packages/registry/shell/source-rootfs-shell-demo-profiles.json")}`,
     );
+    expect(invocation).toContain(`--eager-budget ${canonicalEagerBudget}`);
   });
 });
 

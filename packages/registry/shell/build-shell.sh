@@ -123,6 +123,9 @@ XKEYBOARD_CONFIG="$WAYLAND_DEMO_DIR/xkeyboard-config.zip"
 ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"
 DEMO_PROFILE_OVERLAY="$SCRIPT_DIR/source-rootfs-shell-demo-profiles.json"
+# The reviewed ceiling on what every visitor downloads before the first
+# prompt. The composer fails the build when the image exceeds it.
+EAGER_BUDGET="$SCRIPT_DIR/eager-budget.json"
 COMPOSER="$REPO_ROOT/images/vfs/scripts/build-source-rootfs-shell-image.ts"
 TSX_CLI="$REPO_ROOT/node_modules/tsx/dist/cli.mjs"
 
@@ -136,6 +139,7 @@ require_regular_file "xkeyboard-config dependency output" "$XKEYBOARD_CONFIG"
 require_regular_file "espeak-ng data dependency output" "$ESPEAK_NG_DATA"
 require_regular_file "main-shell demo config" "$DEMO_CONFIG"
 require_regular_file "source-rootfs demo profile overlay" "$DEMO_PROFILE_OVERLAY"
+require_regular_file "shell eager-content budget" "$EAGER_BUDGET"
 require_regular_file "source-rootfs shell composer" "$COMPOSER"
 require_regular_file "locked tsx CLI" "$TSX_CLI"
 
@@ -165,6 +169,7 @@ TMPDIR="$TSX_TMP" PATH="$DECLARED_TOOL_PATH" \
     --espeak-ng-data "$ESPEAK_NG_DATA" \
     --demo-config "$DEMO_CONFIG" \
     --demo-profile-overlay "$DEMO_PROFILE_OVERLAY" \
+    --eager-budget "$EAGER_BUDGET" \
     --dependency-contract "$DEPENDENCY_CONTRACT" \
     --out "$VFS"
 
