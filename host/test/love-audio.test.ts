@@ -65,7 +65,10 @@ test("LÖVE reports an unavailable graphics context without trapping", async () 
       { ownedJob: { id: "love-graphics-capability", timeoutMs: 15_000 } },
     );
     expect(code, stderr).toBe(1);
-    expect(stderr).toContain("an active OpenGL ES context is required for graphics");
+    // Renderer admission fails at EGL initialization before LÖVE can create
+    // a window. Keep the exact host boundary and the consumer failure visible.
+    expect(stderr).toContain("eglInitialize: no GLES renderer is available on this host");
+    expect(stderr).toContain("love: SDL2 EGL window failed: Can't load EGL/GL library on window creation.");
     expect(stderr).not.toContain("main must not run");
     expect(diagnostics).toEqual([]);
   } finally {

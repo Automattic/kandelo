@@ -20773,3 +20773,20 @@ and exact last-entered-case snapshot. Evidence:
 and `.context/graphics-cts-diagnostic-r13-results/`. The isolated WebKit API
 performance chunk is still running to investigate the initial renderer loss;
 these three info cases are evidence for recording, not full conformance.
+
+
+**Node no-renderer fixture checkpoint, 2026-11-03.** The normal SDK/package
+products now reject SDL window creation at EGL renderer admission. LÖVE and
+ffplay retain their existing failure behavior, but their fixtures expected
+older downstream diagnostics. Both assertions fail before the fixture
+update and pass afterward with the exact EGL and SDL messages. LÖVE still
+exits 1 without executing the game; ffplay still exits 0 as upstream does.
+No renderer, consumer code or approved Node boundary changes. Five other
+cases in those files are filtered, not claimed as acceptance. Evidence:
+`.context/graphics-host-failure-r14-results/{run,node-boundary-after}.log`,
+using normally prepared r12 package/kernel products and the current host.
+The same diagnostic cohort passes the two real-package lazy resolver
+assertions and the mandatory kernel-export contract. Its upstream GObject
+signals test still aborts on an ungenerated mixed 20-argument libffi call;
+that platform dispatch gap remains under investigation. This is not full
+host validation or a new deferral. ABI family 56/3/17/21 is unchanged.

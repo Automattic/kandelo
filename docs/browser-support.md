@@ -3556,14 +3556,16 @@ content decoding. `elinks -version` lists what is compiled in.
 
 SDL2 on Kandelo presents video through its KMSDRM backend with the OpenGL ES 2
 renderer, which the browser host bridges to WebGL on the `/dev/dri/card0`
-scanout. The Node host has no GL context (`host_gl_query` returns -1), and SDL2's
-KMSDRM backend implements no window framebuffer, so SDL's software renderer
-cannot present there either. A program that creates an SDL renderer therefore
-shows video only in the browser. On Node, `ffplay` reports
-`Failed to create window or renderer: Couldn't find matching render driver` and
-exits as upstream does (status 0); `ffplay -nodisp` still plays audio through
-SDL's OSS backend to `/dev/dsp`, and FFmpeg's own `fbdev` and `oss` outputs work
-on both hosts.
+scanout. The Node host has no GLES renderer: `eglInitialize` fails with
+`eglInitialize: no GLES renderer is available on this host`. SDL2's KMSDRM
+backend implements no window framebuffer, so SDL's software renderer cannot
+present there either. A program that creates an SDL renderer therefore shows
+video only in the browser. On Node, `ffplay` also reports
+`Failed to create window: Can't load EGL/GL library on window creation.` and
+exits as upstream does (status 0). LÖVE reports the same SDL window failure
+and exits with status 1 before executing the game's `main.lua`.
+`ffplay -nodisp` still plays audio through SDL's OSS backend to `/dev/dsp`,
+and FFmpeg's own `fbdev` and `oss` outputs work on both hosts.
 
 Why not a Node software path: it would need either a GL implementation on the
 Node host or a KMSDRM window framebuffer in SDL, and SDL's KMSDRM backend has no
