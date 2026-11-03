@@ -117,7 +117,8 @@ for (const chunk of plan.chunks) {
           if (state.exit !== null || state.error !== null) return { exit: state.exit, error: state.error };
           return state.progress.expired() ? { stalled: state.progress.snapshot() } : false;
         }, undefined, { timeout: ceiling + 60_000, polling: 250 }), liveness.failure]);
-        const result = await settled.jsonValue() as { exit?: number | null; error?: string | null; stalled?: unknown };
+        const result = await withCtsHostDeadline(settled.jsonValue(), 30_000, "outcome snapshot") as {
+          exit?: number | null; error?: string | null; stalled?: unknown };
         if (result.stalled) { outcome = { kind: "timeout" }; deadlineEvidence.push({ deadline: result.stalled }); }
         else outcome = result.error !== null && result.error !== undefined ? { kind: "error", message: result.error }
           : { kind: "exit", code: result.exit };
