@@ -583,10 +583,20 @@ test("Kandelo omarchy launches all six LÖVE games as Wayland GL windows @slow",
         const menuBytes = (await page.screenshot({ clip })).byteLength;
         await page.mouse.move(x(55), y(125));
         await page.waitForTimeout(250); // upstream button hover state
-        await page.mouse.click(x(55), y(125), { delay: 120 });
-        await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
-          timeout: 15_000,
-        }).toBeGreaterThan(menuBytes + 1_000);
+        // SNKRX drains mousepressed/mousereleased into one button state
+        // before Input:update derives its pressed edge (engine/init.lua,
+        // engine/game/input.lua). A complete click within one slow frame
+        // disappears upstream even when Wayland delivers both events.
+        // Hold the ordinary press through the resulting painted action,
+        // then release it, including on assertion failure.
+        await page.mouse.down();
+        try {
+          await expect.poll(async () => (await page.screenshot({ clip })).byteLength, {
+            timeout: 15_000,
+          }).toBeGreaterThan(menuBytes + 1_000);
+        } finally {
+          await page.mouse.up();
+        }
         await pressCtrl(page, "KeyJ"); // focus the clock again before closing it
       }
       await pressCtrl(page, "KeyW");

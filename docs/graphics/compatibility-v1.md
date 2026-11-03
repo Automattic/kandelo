@@ -250,6 +250,22 @@ pause during screenshots, without Kandelo code. Screenshot involvement is
 established in that probe; runtime versus automation cause is still under
 investigation. Neither finding waives desktop acceptance.
 
+**Omarchy fixture checkpoint, 2026-11-03.** The WebKit six-game check
+failed at SNKRX's resized menu. A bounded wire trace observes both button
+events at the expected surface coordinates: the compositor sends press at
+92740.66 ms and release at 92786.28 ms, and LÖVE next receives at 92803 ms.
+Pinned upstream SNKRX `engine/init.lua` drains those events into one button
+state before `engine/game/input.lua` derives its pressed edge; a complete
+click in one slow frame therefore disappears. The spec now holds the press
+through the same painted shop assertion and always releases it in `finally`.
+The original timeout and image assertion remain. Two traced runs fail before
+the change; the held-press control passes the complete six-game WebKit flow.
+Unprofiled three-engine verification is running. Evidence and the verified
+upstream archive are in `.context/graphics-r9-omarchy-{inputtrace,wiretrace,
+heldpress,unprofiled}/` and `.context/snkrx-source-inspection/`. No game or
+platform input semantics changed. The separate ship-bar measurements remain
+required.
+
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
 four DRM-buffer-pool patches and their recipe hooks/inputs are removed;
