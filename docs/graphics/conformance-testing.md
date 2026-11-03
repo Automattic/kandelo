@@ -81,3 +81,48 @@ The first color-clear probe aborts before comparison because the prior C readbac
 transport refuses outputs larger than 64 KiB. Keep that ResourceError and all
 missing later cases visible while the captured-readback repair is rebuilt and
 validated; source controls do not establish a rendered pass.
+
+## Native-divergence audit
+
+The host still decides whether some guest GL commands were accepted by
+asking the native WebGL renderer (`getError`). The test-only audit
+described in [the architecture notes](../architecture.md) checks every
+native call against the host's own prediction, so a suite run lists the
+places where host validation is not yet authoritative. Enable it for the
+chunked dEQP runner with `KANDELO_GL_AUDIT`:
+
+```sh
+scripts/dev-shell.sh bash -c 'KANDELO_GL_AUDIT=record bash scripts/run-graphics-cts.sh gles2 chromium functional.negative_api'
+```
+
+`record` reports every divergence and continues. `fatal` stops the machine
+at the first divergence with a fatal host fault naming the call, import,
+process, session and op. dEQP's QPA log lives in that machine's filesystem,
+so a fatal divergence loses the whole attempt's results and the runner
+records the chunk's cases as Missing; use `record` to inventory a suite and
+`fatal` as the gate once a selection is clean. Records are written per chunk
+attempt to
+`<engine>/gl-audit/<chunk>.attemptN.jsonl`, one JSON line each with the dEQP
+case that was running and the audit record: native call, observed and
+predicted outcome, cause (`unpredicted`, `native-decided` for a gap the
+table in `host/src/webgl/native-predictions.ts` already names, or a
+boundary such as `out-of-memory`), kernel import, process, session, guest op
+and the host call stack. Stack line numbers are those of the transpiled
+module the browser ran; function names are the stable part. A case result
+under `record` must match the same run without the audit; the audit adds a
+renderer round trip per native call, so per-case time grows.
+
+Browser specs that boot machines from the demo pages (compositors, desktop
+sessions) use the development server's test hook instead, so the specs
+themselves are unchanged. Set both variables for the server Playwright
+starts:
+
+```sh
+KANDELO_BROWSER_TEST_GL_AUDIT=record KANDELO_BROWSER_TEST_GL_AUDIT_LOG=/abs/path/audit.jsonl \
+  npx playwright test test/kandelo-cage.spec.ts --project=chromium
+```
+
+Each line of the log carries the page, the arrival time and the record. The
+hook exists only on the development server (`apply: "serve"`); production
+pages cannot enable the audit.
+

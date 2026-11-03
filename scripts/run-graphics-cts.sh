@@ -15,6 +15,8 @@
 #   KANDELO_CTS_CASE_MS      time from one dEQP "Test case" line to the next (default 600000)
 #   KANDELO_CTS_MAX_ATTEMPTS resumes per chunk after attributed crashes (default 8)
 #   KANDELO_CTS_STRICT=1     same as --strict
+#   KANDELO_GL_AUDIT         record|fatal: run with the test-only GL native-divergence audit
+#                            (docs/graphics/conformance-testing.md); records go to <host>/gl-audit/
 # Writes plan.json, <host>/<chunk>.json, <host>/qpa/*.qpa, summary.json and
 # cases.tsv. Without --strict the exit status reports only runner failures;
 # with --strict any Fail/Crash/Timeout/Missing (or other non-passing upstream

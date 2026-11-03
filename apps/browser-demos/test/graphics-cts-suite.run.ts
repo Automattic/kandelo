@@ -23,6 +23,14 @@ const planPath = process.env.KANDELO_CTS_PLAN, outDir = process.env.KANDELO_CTS_
 if (!planPath || !outDir) throw new Error("KANDELO_CTS_PLAN and KANDELO_CTS_OUT are set by scripts/run-graphics-cts.sh");
 const plan = JSON.parse(readFileSync(planPath, "utf8"));
 const maxAttempts = Number(process.env.KANDELO_CTS_MAX_ATTEMPTS ?? 8);
+// Test-only GL native-divergence audit (host/src/webgl/native-audit.ts).
+// Its records are written per attempt under <engine>/gl-audit/, each tagged
+// with the dEQP case open when the native call ran.
+const glAudit = process.env.KANDELO_GL_AUDIT || undefined;
+if (glAudit !== undefined && glAudit !== "record" && glAudit !== "fatal") {
+  throw new Error(`KANDELO_GL_AUDIT must be "record" or "fatal", not ${JSON.stringify(glAudit)}`);
+}
+const GL_AUDIT_RECORDS_PER_ATTEMPT = 20_000;
 const deadlines = ctsDeadlineConfig();
 let guestPromise: Promise<CtsGuest> | undefined;
 
@@ -39,6 +47,8 @@ for (const chunk of plan.chunks) {
     const guest = await (guestPromise ??= buildCtsGuest(plan.suite));
     const engineDir = resolve(outDir, browserName), qpaDir = join(engineDir, "qpa");
     mkdirSync(qpaDir, { recursive: true });
+    const auditDir = join(engineDir, "gl-audit");
+    if (glAudit) mkdirSync(auditDir, { recursive: true });
     const kernelUrl = new URL("/__cts_suite_kernel", baseURL).href;
     const imageUrl = new URL("/__cts_suite_image", baseURL).href;
     await page.route(kernelUrl, route => route.fulfill({ body: Buffer.from(guest.kernel) }));
@@ -53,12 +63,13 @@ for (const chunk of plan.chunks) {
     const progressUrl = new URL(`/@fs${fileURLToPath(new URL("../../../tests/graphics/cts-progress.mjs", import.meta.url))}`, baseURL).href;
 
     const result = await runChunk(chunk, async (cases: string[], attempt: number) => {
-      await page.evaluate(async ({ moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path, args, caselist, caselistPath }) => {
+      await page.evaluate(async ({ moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path, args, caselist, caselistPath,
+          glAudit, auditLimit }) => {
         const scope = globalThis as any;
         const { CaseProgress } = await import(progressUrl);
         const progress = new CaseProgress(deadlines), decoder = new TextDecoder();
         const state = { exit: null as number | null, error: null as string | null, diagnostics: [] as unknown[],
-          output: "", outputBytes: 0, progress };
+          output: "", outputBytes: 0, progress, audit: [] as string[], auditDropped: 0 };
         scope.__ctsSuiteState = state;
         const append = (bytes: Uint8Array) => {
           state.outputBytes += bytes.byteLength;
@@ -67,8 +78,18 @@ for (const chunk of plan.chunks) {
           if (state.output.length < 65536) state.output += text.slice(0, 65536 - state.output.length);
         };
         const { BrowserKernel } = await import(moduleUrl);
-        const kernel = new BrowserKernel({ kernelOwnedFs: true, maxWorkers: 4, onStdout: append, onStderr: append,
-          onHostDiagnostic: (diagnostic: unknown) => { if (state.diagnostics.length < 64) state.diagnostics.push(diagnostic); } });
+        const kernel = new BrowserKernel({ kernelOwnedFs: true, maxWorkers: 4, onStdout: append, onStderr: append, glAudit,
+          onHostDiagnostic: (diagnostic: { source?: string; message?: string }) => {
+            if (diagnostic.source === "gl-audit") {
+              // Diagnostics and stdout share the kernel worker's ordered
+              // message channel, so the open case is the one that ran it.
+              if (state.audit.length < auditLimit) {
+                state.audit.push(JSON.stringify({ case: progress.current, record: JSON.parse(String(diagnostic.message)) }));
+              } else state.auditDropped++;
+              return;
+            }
+            if (state.diagnostics.length < 64) state.diagnostics.push(diagnostic);
+          } });
         scope.__ctsSuiteKernel = kernel;
         await kernel.initFromImage({ kernelWasm: await (await fetch(kernelUrl)).arrayBuffer(),
           vfsImage: new Uint8Array(await (await fetch(imageUrl)).arrayBuffer()) });
@@ -81,7 +102,8 @@ for (const chunk of plan.chunks) {
         const child = await kernel.spawnFromVfs(path, args, { env: [], uid: 1000, gid: 1000 });
         child.exit.then((code: number) => { state.exit = code; }, (error: unknown) => { state.error = String(error); });
       }, { moduleUrl, progressUrl, deadlines, kernelUrl, imageUrl, path: guest.guestPath, args: ctsArguments(plan.suite),
-        caselist: [...ctsCaselist(cases)], caselistPath: CTS_CASELIST_PATH });
+        caselist: [...ctsCaselist(cases)], caselistPath: CTS_CASELIST_PATH, glAudit,
+        auditLimit: GL_AUDIT_RECORDS_PER_ATTEMPT });
       let outcome: Record<string, unknown>;
       const deadlineEvidence: unknown[] = [];
       try {
@@ -129,6 +151,11 @@ for (const chunk of plan.chunks) {
         return state;
       });
       writeFileSync(join(qpaDir, `${chunkFileName(chunk.id)}.attempt${attempt}.qpa`), qpa);
+      if (glAudit) {
+        const { audit = [], auditDropped = 0 } = (state ?? {}) as { audit?: string[]; auditDropped?: number };
+        writeFileSync(join(auditDir, `${chunkFileName(chunk.id)}.attempt${attempt}.jsonl`),
+          audit.map(line => `${line}\n`).join("") + (auditDropped ? `${JSON.stringify({ dropped: auditDropped })}\n` : ""));
+      }
       return { qpa, outcome, output: state?.output ?? "",
         diagnostics: [...(state?.diagnostics ?? []), ...deadlineEvidence, ...(qpaError ? [{ qpaError }] : []),
           ...(state?.destroyError ? [{ destroyError: state.destroyError }] : [])] };
