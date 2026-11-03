@@ -1,4 +1,5 @@
 import { applyNativeChanges, invokeNativeCall, rethrowNativeGlFault, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
+import { sizedFormatTransfer } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
 import type { GpuScanoutStorage } from "./kms-scanout.js";
 import type { GlImageAttachment } from "./image-references.js";
@@ -56,6 +57,16 @@ export type GlRenderbufferView = {
   source: GlImageSource | null;
 };
 const TEX = 0x0de1, CUBE = 0x8513, RBO = 0x8d41, DRAW = 0x8ca9, READ = 0x8ca8, COLOR = 0x8ce0, EXTERNAL = 0x8d65;
+/** The texImage2D triple of a sibling view of `source`. A source that names
+ * only its sized format (a renderbuffer image records no format/type) takes
+ * the transfer pair WebGL 2 requires for that format: RGB565 needs
+ * RGB/UNSIGNED_SHORT_5_6_5, and RGBA/UNSIGNED_BYTE would be refused. */
+function sourceTransfer(source: GlImageStorage): { internalFormat: number; format: number; type: number } {
+  const internalFormat = source.internalFormat ?? 0x8058;
+  if (source.format !== undefined && source.type !== undefined) return { internalFormat, format: source.format, type: source.type };
+  const sized = sizedFormatTransfer(internalFormat);
+  return { internalFormat, format: source.format ?? sized?.format ?? 0x1908, type: source.type ?? sized?.type ?? 0x1401 };
+}
 export function registerImageSource(b: GlBinding, bo: number, texture: WebGLTexture | null, width: number, height: number, key?: string, storage: GlImageStorage = {}): number {
   for (const source of b.imageSources.values())
     if (source.bo === bo && source.key === key)
@@ -163,8 +174,9 @@ function allocateTextureView(b: GlBinding, old: WebGLTexture, source: GlImageSou
         if (preserveBase) {
           gl.bindFramebuffer(READ, read);
           invokeNativeCall(gl, sourceAttachment(source, READ, COLOR));
-          gl.texImage2D(TEX, 0, source.internalFormat ?? 0x8058, source.width, source.height, 0,
-            source.format ?? 0x1908, source.type ?? 0x1401, null);
+          const transfer = sourceTransfer(source);
+          gl.texImage2D(TEX, 0, transfer.internalFormat, source.width, source.height, 0,
+            transfer.format, transfer.type, null);
         }
       }))
         return false;
@@ -427,8 +439,7 @@ function importImageObject(b: GlBinding, kind: number, object: WebGLTexture | We
       if (replaceTextureView(b, object as WebGLTexture, view)) {
         transferCandidate(view); installed = true;
         replaceTextureLevels(object as WebGLTexture, TEX, {width: source.width, height: source.height,
-          internalFormat: source.internalFormat ?? 0x8058, format: source.format ?? 0x1908,
-          type: source.type ?? 0x1401, compressed: false});
+          ...sourceTransfer(source), compressed: false});
         return true;
       }
       return false;
@@ -453,8 +464,8 @@ function pureSibling(object: WebGLTexture, source: GlImageSource): boolean {
   const faces = textureFaces(object), levels = faces.get(TEX), base = levels?.get(0);
   return faces.size === 1 && levels!.size === 1 && base !== undefined && !base.compressed
     && base.width === source.width && base.height === source.height
-    && base.internalFormat === (source.internalFormat ?? 0x8058)
-    && base.format === (source.format ?? 0x1908) && base.type === (source.type ?? 0x1401);
+    && base.internalFormat === sourceTransfer(source).internalFormat
+    && base.format === sourceTransfer(source).format && base.type === sourceTransfer(source).type;
 }
 /** glEGLImageTargetTexture2DOES with the image the texture is already a
  * sibling of. wlroots does this on every commit of a client dmabuf: it makes

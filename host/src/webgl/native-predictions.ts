@@ -34,19 +34,12 @@ export function nativeDecides(label: string, rule: string): NativePrediction {
 
 // --- Guest commands (class (a): a native refusal decides the guest error) ---
 
-/** glClear on a framebuffer the host considers complete. */
-export const CLEAR_FRAMEBUFFER = nativeDecides("glClear",
-  "ES 2.0 4.4.5: native framebuffer completeness (missing/incomplete attachment, UNSUPPORTED) raises " +
-  "INVALID_FRAMEBUFFER_OPERATION; the host checks only the ES 2.0-only completeness clauses");
 export const TEX_IMAGE = nativeDecides("glTexImage2D",
-  "ES 2.0 3.7.1: width/height < 0 or > MAX_TEXTURE_SIZE >> level and border != 0 raise INVALID_VALUE; " +
-  "WebGL: pixel data shorter than width/height/UNPACK_ALIGNMENT require raises INVALID_OPERATION");
+  "WebGL: pixel data shorter than width/height/UNPACK_ALIGNMENT require raises INVALID_OPERATION " +
+  "(sizes, border and level are predicted: es2-validation.ts)");
 export const TEX_SUB_IMAGE = nativeDecides("glTexSubImage2D",
-  "ES 2.0 3.7.2: x+w > level width or y+h > level height raise INVALID_VALUE; an undefined level or a " +
-  "format/type differing from the level raise INVALID_OPERATION; WebGL: short pixel data");
-export const TEX_PARAMETER = nativeDecides("glTexParameter",
-  "ES 2.0 3.7.4 / table 3.10: a param value invalid for the pname raises INVALID_ENUM; the host checks " +
-  "only the pname");
+  "ES 2.0 3.7.2: an undefined level or a format/type differing from the level raise INVALID_OPERATION, " +
+  "and bounds of a level the host did not record; WebGL: short pixel data");
 export const GENERATE_MIPMAP = nativeDecides("glGenerateMipmap",
   "ES 2.0 3.7.11 / WebGL 2: a compressed or non-color-renderable/filterable level 0, or an undefined " +
   "level 0, raise INVALID_OPERATION");
@@ -56,30 +49,22 @@ export const COMPRESSED_TEX_IMAGE = nativeDecides("glCompressedTexImage2D",
 export const COMPRESSED_TEX_SUB_IMAGE = nativeDecides("glCompressedTexSubImage2D",
   "ES 2.0 3.7.3: offsets, size, format equal to the level's, imageSize");
 export const COPY_TEX_IMAGE = nativeDecides("glCopyTexImage2D",
-  "ES 2.0 3.7.2 / table 3.9: internalformat incompatible with the read buffer raises INVALID_OPERATION; " +
-  "size/border INVALID_VALUE; native read-framebuffer completeness raises INVALID_FRAMEBUFFER_OPERATION");
+  "ES 2.0 3.7.2 / table 3.9: internalformat incompatible with the read buffer raises INVALID_OPERATION");
 export const COPY_TEX_SUB_IMAGE = nativeDecides("glCopyTexSubImage2D",
-  "ES 2.0 3.7.2: destination bounds, read-buffer format compatibility, native read-framebuffer completeness");
+  "ES 2.0 3.7.2: read-buffer format compatibility, an undefined level, bounds of an unrecorded level");
 export const CREATE_SHADER = nativeDecides("glCreateShader",
   "ES 2.0 2.10.1: a type other than VERTEX_SHADER/FRAGMENT_SHADER raises INVALID_ENUM");
-export const ATTACH_SHADER = nativeDecides("glAttachShader",
-  "ES 2.0 2.10.3: attaching a second shader of the same type raises INVALID_OPERATION");
 export const USE_PROGRAM = nativeDecides("glUseProgram",
   "ES 2.0 2.10.3 / WebGL: a program that is not successfully linked raises INVALID_OPERATION; the host " +
   "does not consult link status");
 export const BIND_ATTRIB_LOCATION = nativeDecides("glBindAttribLocation",
-  "ES 2.0 2.10.4: index >= MAX_VERTEX_ATTRIBS raises INVALID_VALUE, a gl_ prefix INVALID_OPERATION; WebGL " +
-  "adds name length/character-set/webgl_ errors ES 2.0 does not define");
+  "WebGL's name length/character-set/webgl_ errors, which ES 2.0 does not define (the ES 2.0 index and " +
+  "gl_ rules are predicted)");
 export const SAMPLER_UNIFORM = nativeDecides("glUniform1i(v) sampler",
   "WebGL / ES 3.0: a sampler value outside the texture units raises INVALID_VALUE; ES 2.0 lists no such error");
-export const VERTEX_ATTRIB_ARRAY_INDEX = nativeDecides("glEnable/DisableVertexAttribArray",
-  "ES 2.0 2.7: index >= MAX_VERTEX_ATTRIBS raises INVALID_VALUE (limit not yet cached by the host)");
 export const DRAW = nativeDecides("glDrawArrays/glDrawElements",
   "WebGL draw validation: no current program (no ES 2.0 error), out-of-range attribute fetch (WebGL 1.0 6.6), " +
-  "native framebuffer completeness, feedback loops, mixed sampler types on one unit (ES 2.0 2.10.4)");
-export const RENDERBUFFER_STORAGE = nativeDecides("glRenderbufferStorage",
-  "ES 2.0 4.4.2.1: target != RENDERBUFFER raises INVALID_ENUM; size > MAX_RENDERBUFFER_SIZE or < 0 " +
-  "INVALID_VALUE; renderbuffer 0 bound INVALID_OPERATION");
+  "feedback loops, mixed sampler types on one unit (ES 2.0 2.10.4); framebuffer completeness is predicted");
 export const DRAW_BUFFERS = nativeDecides("glDrawBuffers(EXT)",
   "EXT_draw_buffers / ES 3.0 DrawBuffers rules (n, BACK/NONE/COLOR_ATTACHMENTi per framebuffer); no host validation");
 export const READ_BUFFER = nativeDecides("glReadBuffer",
@@ -91,7 +76,7 @@ export const BUFFER_DATA = nativeDecides("glBufferData",
 
 export const READ_PIXELS = nativeDecides("glReadPixels",
   "ES 2.0 4.3.1: unknown format/type INVALID_ENUM; a pair other than RGBA/UNSIGNED_BYTE or the " +
-  "IMPLEMENTATION_COLOR_READ pair INVALID_OPERATION; native read-framebuffer completeness");
+  "IMPLEMENTATION_COLOR_READ pair INVALID_OPERATION (framebuffer completeness is predicted)");
 export const LEGACY_ACTIVE_UNIFORM = nativeDecides("legacy QOP_GET_ACTIVE_UNIFORM",
   "ES 2.0 2.10.4: index >= ACTIVE_UNIFORMS raises INVALID_VALUE");
 export const LEGACY_GET_UNIFORM = nativeDecides("legacy QOP_GET_UNIFORMFV/IV",
@@ -122,31 +107,29 @@ type Gap = Readonly<{ methods: readonly string[]; prediction: NativePrediction }
 const gap = (prediction: NativePrediction, ...methods: string[]): Gap => Object.freeze({ methods, prediction });
 
 /** Guest commands, by TLV op (also used for a command carried by a checked
- * query such as QOP_IMAGE_STORAGE). */
+ * query such as QOP_IMAGE_STORAGE). Closed in Stage A2 and removed from this
+ * table: glClear and draw framebuffer completeness, TexParameter values,
+ * TexImage2D/CopyTexImage2D sizes and border, sub-image bounds of recorded
+ * levels, RenderbufferStorage, AttachShader types, the ES 2.0
+ * BindAttribLocation rules and vertex attribute array indices
+ * (es2-validation.ts, image-sizes.ts). */
 const OP_GAPS: ReadonlyMap<number, readonly Gap[]> = new Map<number, readonly Gap[]>([
-  [O.OP_CLEAR, [gap(CLEAR_FRAMEBUFFER, "clear")]],
   [O.OP_TEX_IMAGE_2D, [gap(TEX_IMAGE, "texImage2D", "texImage3D", "texSubImage3D")]],
   [O.OP_TEX_SUB_IMAGE_2D, [gap(TEX_SUB_IMAGE, "texSubImage2D", "texSubImage3D")]],
-  [O.OP_TEX_PARAMETERI, [gap(TEX_PARAMETER, "texParameteri", "texParameterf")]],
-  [O.OP_TEX_PARAMETERF, [gap(TEX_PARAMETER, "texParameteri", "texParameterf")]],
   [O.OP_GENERATE_MIPMAP, [gap(GENERATE_MIPMAP, "generateMipmap")]],
   [O.OP_COMPRESSED_TEX_IMAGE_2D, [gap(COMPRESSED_TEX_IMAGE, "compressedTexImage2D", "compressedTexImage3D", "compressedTexSubImage3D")]],
   [O.OP_COMPRESSED_TEX_SUB_IMAGE_2D, [gap(COMPRESSED_TEX_SUB_IMAGE, "compressedTexSubImage2D", "compressedTexSubImage3D")]],
   [O.OP_COPY_TEX_IMAGE_2D, [gap(COPY_TEX_IMAGE, "copyTexImage2D", "texImage3D", "copyTexSubImage3D")]],
   [O.OP_COPY_TEX_SUB_IMAGE_2D, [gap(COPY_TEX_SUB_IMAGE, "copyTexSubImage2D", "copyTexSubImage3D")]],
   [O.OP_CREATE_SHADER, [gap(CREATE_SHADER, "createShader")]],
-  [O.OP_ATTACH_SHADER, [gap(ATTACH_SHADER, "attachShader")]],
   [O.OP_USE_PROGRAM, [gap(USE_PROGRAM, "useProgram")]],
   [O.OP_BIND_ATTRIB_LOCATION, [gap(BIND_ATTRIB_LOCATION, "bindAttribLocation")]],
   [O.OP_UNIFORM1I, [gap(SAMPLER_UNIFORM, "uniform1i")]],
   [O.OP_UNIFORM1IV, [gap(SAMPLER_UNIFORM, "uniform1iv")]],
   [O.OP_UNIFORM_UPLOAD_COMMIT, [gap(SAMPLER_UNIFORM, "uniform1i", "uniform1iv")]],
-  [O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, [gap(VERTEX_ATTRIB_ARRAY_INDEX, "enableVertexAttribArray")]],
-  [O.OP_DISABLE_VERTEX_ATTRIB_ARRAY, [gap(VERTEX_ATTRIB_ARRAY_INDEX, "disableVertexAttribArray")]],
   [O.OP_DRAW_ARRAYS, [gap(DRAW, "drawArrays")]],
   [O.OP_DRAW_ELEMENTS, [gap(DRAW, "drawElements")]],
   [O.OP_DRAW_CLIENT_ARRAYS, [gap(DRAW, "drawArrays")]],
-  [O.OP_RENDERBUFFER_STORAGE, [gap(RENDERBUFFER_STORAGE, "renderbufferStorage")]],
   [O.OP_DRAW_BUFFER, [gap(DRAW_BUFFERS, "drawBuffers")]],
   [O.OP_DRAW_BUFFERS, [gap(DRAW_BUFFERS, "drawBuffers")]],
   [O.OP_READ_BUFFER, [gap(READ_BUFFER, "readBuffer")]],

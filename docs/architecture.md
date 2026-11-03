@@ -6019,7 +6019,24 @@ observed and predicted outcome, the kernel import, process, session, an
 audit sequence number and the guest op being executed. `"record"` reports
 every divergence as a host diagnostic (source `gl-audit`) and continues;
 `"fatal"` latches a `NativeGlFault` at the first one. The audit is never on
-by default: it adds a renderer round trip after every native call. Node has
+by default: it adds a renderer round trip after every native call.
+
+The first audit of dEQP-GLES2, dEQP-EGL and the compositor sessions on
+Chromium found every native refusal at a site the gap table already named,
+all in dEQP's negative API cases, plus one host defect: a texture view of a
+renderbuffer EGLImage was allocated with RGBA/UNSIGNED_BYTE whatever the
+renderbuffer's format, which WebGL 2 refuses for RGB565. The host now
+evaluates those rules itself (`webgl/es2-validation.ts`) and records the
+GLES 2.0 error before any native call: TexParameter values (table 3.10),
+TexImage2D and CopyTexImage2D sizes and border, sub-image bounds of a level
+the host recorded, RenderbufferStorage's target, size and binding rules,
+AttachShader's one shader per type, BindAttribLocation's index and `gl_`
+prefix, and attribute array indices. Framebuffer completeness for draws,
+clears, reads and copies combines the ES 2.0 clauses WebGL 2 does not apply
+with the renderer's own `checkFramebufferStatus`, asked once per framebuffer
+whenever its inputs change (`image-sizes.ts`), so an incomplete framebuffer
+is refused before the call rather than by `getError` after it. Sibling
+views take the transfer pair WebGL 2 requires for their sized format. Node has
 no WebGL renderer, so there it has nothing to instrument. Running suites
 with it is described in
 [graphics conformance testing](graphics/conformance-testing.md#native-divergence-audit).

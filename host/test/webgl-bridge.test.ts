@@ -10,6 +10,7 @@ import { GlContextRegistry } from "../src/webgl/registry.js";
 import { applyCurrentDrawable } from "../src/webgl/current.js";
 import { maxVertexAttributes } from "../src/webgl/limits.js";
 import { activeVertexArray } from "../src/webgl/buffer-references.js";
+import { framebufferInputsChanged } from "../src/webgl/framebuffer-revision.js";
 
 /**
  * Hand-rolled WebGL2 stand-in. Records every dispatched call as
@@ -156,6 +157,7 @@ class RecordingGl {
   getParameter(p: number) {
     if (p === 0x8f36 || p === 0x8f37) return this.boundBuffers.get(p) ?? null;
     if (p === 0x1F03 /* GL_EXTENSIONS */) return "WEBGL_test";
+    if (p === 0x84e8 /* MAX_RENDERBUFFER_SIZE */) return 4096;
     return 42;
   }
   getUniformLocation(_p: unknown, name: string) {
@@ -2013,6 +2015,39 @@ describe("deferred native error ownership", () => {
     return { b, gl, pending, send, getError, reads: () => reads };
   }
 
+  it("predicts TexParameter value errors (ES 2.0 table 3.10) with no native call or flag read", () => {
+    const { b, gl, send, reads } = setup();
+    send(O.OP_BIND_TEXTURE, 0x0de1, 5);
+    const calls = gl.log.filter(([name]) => name === "texParameteri").length, before = reads();
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2800 /* MAG_FILTER */, 0x2700 /* a MIN-only value */);
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2802 /* WRAP_S */, 0);
+    expect(b.errors).toEqual([0x500]);
+    expect(gl.log.filter(([name]) => name === "texParameteri")).toHaveLength(calls);
+    expect(reads()).toBe(before);
+    send(O.OP_TEX_PARAMETERI, 0x0de1, 0x2802, 0x812f);
+    expect(gl.log.filter(([name]) => name === "texParameteri")).toHaveLength(calls + 1);
+  });
+
+  it("predicts INVALID_FRAMEBUFFER_OPERATION from the renderer's completeness, queried once per framebuffer revision", () => {
+    const { b, gl, send, reads } = setup();
+    let status = 0x8cd6, statusQueries = 0;
+    gl.checkFramebufferStatus = () => { statusQueries++; return status; };
+    send(O.OP_GEN_FRAMEBUFFERS, 1, 7);
+    send(O.OP_BIND_FRAMEBUFFER, 0x8d40, 7);
+    const before = reads(), clears = gl.log.filter(([name]) => name === "clear").length;
+    send(O.OP_CLEAR, 0x4000); send(O.OP_CLEAR, 0x4000);
+    expect(b.errors).toEqual([0x506]);
+    expect(gl.log.filter(([name]) => name === "clear")).toHaveLength(clears);
+    expect(statusQueries).toBe(1);
+    expect(reads()).toBe(before);
+    // Once the framebuffer's inputs change the status is asked again.
+    status = 0x8cd5;
+    framebufferInputsChanged();
+    send(O.OP_CLEAR, 0x4000);
+    expect(statusQueries).toBe(2);
+    expect(gl.log.filter(([name]) => name === "clear")).toHaveLength(clears + 1);
+  });
+
   it("toggles ES 2.0 capabilities without reading error flags", () => {
     const { b, gl, send, reads } = setup();
     send(O.OP_ENABLE, 0x0be2); send(O.OP_ENABLE, 0x0c11); send(O.OP_DISABLE, 0x0be2);
@@ -2024,7 +2059,7 @@ describe("deferred native error ownership", () => {
     expect(gl.log.length).toBe(calls); expect(b.errors).toEqual([0x500]);
   });
 
-  it("toggles attribute arrays below the renderer's limit without reading flags; past it the renderer decides", () => {
+  it("toggles attribute arrays below the renderer's limit without reading flags; past it the host predicts INVALID_VALUE", () => {
     const { b, gl, pending, send, reads, getError } = setup();
     // The limit read once from this renderer (RecordingGl reports 42).
     expect(maxVertexAttributes({ gl: b.gl, errors: [] })).toBe(42);
@@ -2034,9 +2069,14 @@ describe("deferred native error ownership", () => {
     expect(reads()).toBe(before);
     expect(activeVertexArray(b).attributes.get(4)?.enabled).toBe(true);
     expect(activeVertexArray(b).attributes.get(3)?.enabled).toBe(false);
-    gl.enableVertexAttribArray = () => { pending.push(0x501); };
+    // ES 2.0 section 2.7: index >= MAX_VERTEX_ATTRIBS is INVALID_VALUE. The
+    // host predicts it from the cached limit (es2-validation.ts, Stage A2)
+    // and issues no native call, so no native flag is read either.
+    let nativeCalls = 0;
+    gl.enableVertexAttribArray = () => { nativeCalls++; pending.push(0x501); };
     send(O.OP_ENABLE_VERTEX_ATTRIB_ARRAY, 42);
-    expect(reads()).toBeGreaterThan(before);
+    expect(nativeCalls).toBe(0);
+    expect(reads()).toBe(before);
     expect(activeVertexArray(b).attributes.get(42)?.enabled).not.toBe(true);
     expect(getError()).toBe(0x501); expect(getError()).toBe(0);
   });

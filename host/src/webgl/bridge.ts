@@ -54,10 +54,13 @@ import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-clien
 import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
-import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject } from "./program-objects.js";
+import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject, shaderType } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
+import { attachShaderError, bindAttribLocationError, renderbufferStorageError, subImageError, texImageSizeError,
+  texParameterValueError, vertexAttribIndexError } from "./es2-validation.js";
 import { glAuditOn, noteGlAuditOp, withGlAuditFrame } from "./native-audit.js";
-import { combinedTextureUnits, knownVertexAttributeLimit, maxCubeMapTextureSize, maxViewport } from "./limits.js";
+import { combinedTextureUnits, knownVertexAttributeLimit, MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE, MAX_VERTEX_ATTRIBS,
+  maxCubeMapTextureSize, maxViewport, predictionLimit } from "./limits.js";
 import * as O from "./ops.js";
 import { withMultisampleRead } from "./multisample.js";
 import { collectRetiredImages, deleteRenderbufferName, deleteTextureName, deleteFramebufferName, attachImageObject, bindFramebufferObject } from "./image-references.js";
@@ -557,6 +560,25 @@ export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boo
   return dispatch(b.gl!, b, payload, 0, view.getUint32(0, true), true) === true;
 }
 
+/** Record a predicted GLES 2.0 error; true when there is none. */
+function predicted(b: GlBinding, error: number): boolean {
+  if (error === 0) return true;
+  recordGlError(b, error);
+  return false;
+}
+
+/** ES 2.0 section 3.7.1 sizes of a 2D image (es2-validation.ts). */
+function texImageSizeValid(b: GlBinding, level: number, width: number, height: number, border: number): boolean {
+  return predicted(b, texImageSizeError(predictionLimit(b.gl!, MAX_TEXTURE_SIZE), level, width, height, border));
+}
+
+/** ES 2.0 section 3.7.2 destination rules of a sub-image update against the
+ * level the host recorded for the bound texture (es2-validation.ts). */
+function subImageValid(b: GlBinding, target: number, level: number, x: number, y: number, width: number, height: number): boolean {
+  const object = boundTextureObject(b, target);
+  return predicted(b, subImageError(object ? textureLevel(object, target, level) : undefined, x, y, width, height));
+}
+
 /** ES 2.0 section 3.7.1 sizes of a cube-map face image: square, within
  * MAX_CUBE_MAP_TEXTURE_SIZE at its level, border 0 (INVALID_VALUE). Native
  * cube targets checked this; the face's 2D array storage
@@ -635,8 +657,13 @@ function dispatch(
       break;
     case O.OP_TEX_PARAMETERI: case O.OP_TEX_PARAMETERF:
       if (!validGlesTextureParameter(v.getUint32(p+4,true))) { recordGlError(b,0x500); return; }
-      // An external texture has no native target (external-texture.ts).
-      if (v.getUint32(p,true) !== TEXTURE_EXTERNAL_OES && !prepareTextureOperation(b,v.getUint32(p,true))) return;
+      // An external texture has no native target (external-texture.ts),
+      // and its own value rules.
+      if (v.getUint32(p,true) !== TEXTURE_EXTERNAL_OES) {
+        if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
+        const value = op === O.OP_TEX_PARAMETERI ? v.getInt32(p+8,true) : v.getFloat32(p+8,true);
+        if (!predicted(b, texParameterValueError(v.getUint32(p+4,true), value))) return;
+      }
       break;
     case O.OP_GENERATE_MIPMAP:
       if (!prepareTextureOperation(b,v.getUint32(p,true))) return;
@@ -970,6 +997,7 @@ function dispatch(
       // A cube face is a layer of the cube's 2D array storage (cube-storage.ts).
       const cube = isCubeFace(target);
       if (cube && (!cubeImageSizeValid(b, level, width, height, border) || !prepareCubeRespecification(b))) return false;
+      if (!cube && !texImageSizeValid(b, level, width, height, border)) return false;
       const accepted = cube
         ? cubeSpecifyImage(b, target, level, { size: width, internalFormat: native.internal, format: native.format, type, compressed: false },
           data === null ? null : layer => gl.texSubImage3D(TEXTURE_2D_ARRAY, level, 0, 0, layer, width, height, 1, native.format, type, data),
@@ -1035,6 +1063,7 @@ function dispatch(
             endX > 0x7fff_ffff || endY > 0x7fff_ffff) {
           recordGlError(b,0x501); return false;
         }
+        if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
         let unpackBuffer: WebGLBuffer | null = null;
         if (!checkedGlCall(b,()=>{ unpackBuffer=gl.getParameter(0x88ef); })) return false;
         if (isCubeFace(target)) return cubeUpdateImage(b,target,level,layer=>{
@@ -1052,9 +1081,11 @@ function dispatch(
         // Negative values are INVALID_VALUE before an undefined image's
         // INVALID_OPERATION, as for the native call.
         if (xoff < 0 || yoff < 0 || width < 0 || height < 0) { recordGlError(b,0x501); return false; }
+        if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
         return cubeUpdateImage(b,target,level,layer=>gl.texSubImage3D(
           TEXTURE_2D_ARRAY, level, xoff, yoff, layer, width, height, 1, nativeFormat, nativeType, data));
       }
+      if (!subImageValid(b, target, level, xoff, yoff, width, height)) return false;
       return imageTextureOperation(b,v.getUint32(p,true),false,()=>gl.texSubImage2D(
         target, level, xoff, yoff, width, height, nativeFormat, nativeType, data,
       ));
@@ -1185,6 +1216,7 @@ function dispatch(
       // WebGL 2 has no unsized form of) is allocated, then copied into.
       const cube = isCubeFace(target);
       if (cube && (!cubeImageSizeValid(b, level, width, height, v.getInt32(p + 28, true)) || !prepareCubeRespecification(b))) return;
+      if (!cube && !texImageSizeValid(b, level, width, height, v.getInt32(p + 28, true))) return;
       const nativeInternal = cube ? normalizeTextureInternalFormat(internalFormat, internalFormat, GL_UNSIGNED_BYTE) : internalFormat;
       // ES 2.0 copies take an unsized internal format from the framebuffer;
       // a multisampled default framebuffer supplies its resolved values.
@@ -1214,6 +1246,8 @@ function dispatch(
       if (textureLevel(boundTextureObject(b,v.getUint32(p,true))!,v.getUint32(p,true),v.getInt32(p+4,true))?.gles?.depth) {
         recordGlError(b,0x502); return;
       }
+      if (!subImageValid(b, v.getUint32(p,true), v.getInt32(p+4,true), v.getInt32(p+8,true), v.getInt32(p+12,true),
+          v.getInt32(p+24,true), v.getInt32(p+28,true))) return;
       if (isCubeFace(v.getUint32(p,true))) {
         withMultisampleRead(b,()=>cubeUpdateImage(b,v.getUint32(p,true),v.getInt32(p+4,true),layer=>gl.copyTexSubImage3D(
           TEXTURE_2D_ARRAY, v.getInt32(p+4,true), v.getInt32(p+8,true), v.getInt32(p+12,true), layer,
@@ -1310,6 +1344,8 @@ function dispatch(
       const sh = requireShaderObject(b, shaderName);
       if (!sh) return;
       if (b.programShaders.get(programName)?.has(shaderName)) { recordGlError(b, 0x502); return; }
+      const attachedTypes = [...b.programShaders.get(programName) ?? []].map(name => shaderType(b.shaders.get(name)));
+      if (!predicted(b, attachShaderError(attachedTypes, shaderType(sh)))) return;
       // Aliasing executables keep attachments logical (attribute-aliasing.ts).
       if (attributeAliasLayout(prog) || checkedGlCall(b, () => gl.attachShader(prog, sh))) {
         let attached = b.programShaders.get(programName);
@@ -1339,6 +1375,7 @@ function dispatch(
       const nameBytes = new Uint8Array(nameLen);
       nameBytes.set(new Uint8Array(v.buffer, v.byteOffset + p + 12, nameLen));
       const name = new TextDecoder().decode(nameBytes);
+      if (!predicted(b, bindAttribLocationError(index, predictionLimit(gl, MAX_VERTEX_ATTRIBS), name))) return;
       if (checkedGlCall(b, () => gl.bindAttribLocation(prog, index, name))) {
         let attributes = b.programAttributeBindings.get(programName);
         if (!attributes) { attributes = new Map(); b.programAttributeBindings.set(programName, attributes); }
@@ -1486,15 +1523,23 @@ function dispatch(
     // call is accepted, as for OP_ENABLE; otherwise the native answer decides.
     case O.OP_ENABLE_VERTEX_ATTRIB_ARRAY: {
       const index = v.getUint32(p,true);
-      if (index < knownVertexAttributeLimit(gl)) gl.enableVertexAttribArray(index);
-      else if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return;
+      if (index >= knownVertexAttributeLimit(gl)) {
+        const attributes = predictionLimit(gl, MAX_VERTEX_ATTRIBS);
+        if (attributes === null) { if (!checkedGlCall(b, () => gl.enableVertexAttribArray(index))) return; }
+        else if (!predicted(b, vertexAttribIndexError(index, attributes))) return;
+        else gl.enableVertexAttribArray(index);
+      } else gl.enableVertexAttribArray(index);
       activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:true});
       return;
     }
     case O.OP_DISABLE_VERTEX_ATTRIB_ARRAY: {
       const index = v.getUint32(p,true);
-      if (index < knownVertexAttributeLimit(gl)) gl.disableVertexAttribArray(index);
-      else if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return;
+      if (index >= knownVertexAttributeLimit(gl)) {
+        const attributes = predictionLimit(gl, MAX_VERTEX_ATTRIBS);
+        if (attributes === null) { if (!checkedGlCall(b, () => gl.disableVertexAttribArray(index))) return; }
+        else if (!predicted(b, vertexAttribIndexError(index, attributes))) return;
+        else gl.disableVertexAttribArray(index);
+      } else gl.disableVertexAttribArray(index);
       activeVertexArray(b).attributes.set(index,{...vertexAttribute(b,index),enabled:false});
       return;
     }
@@ -1616,6 +1661,8 @@ function dispatch(
     // Payload: u32 target, u32 internalformat, i32 width, i32 height
     case O.OP_RENDERBUFFER_STORAGE: {
       const internal = v.getUint32(p + 4, true);
+      if (!predicted(b, renderbufferStorageError(v.getUint32(p, true), v.getInt32(p + 8, true),
+          v.getInt32(p + 12, true), predictionLimit(gl, MAX_RENDERBUFFER_SIZE), b.shadow.renderbuffer !== null))) return false;
       const accepted = imageRenderbufferStorage(b,()=>{
         gl.renderbufferStorage(v.getUint32(p, true), nativeRenderbufferFormat(internal),
           v.getInt32(p + 8, true), v.getInt32(p + 12, true));

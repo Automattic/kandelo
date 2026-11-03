@@ -90,6 +90,14 @@ export function attributeLocation(b: GlBinding, program: WebGLProgram, text: str
   return location;
 }
 
+/** Each accepted guest shader's type (VERTEX_SHADER or FRAGMENT_SHADER), so
+ * AttachShader's one-shader-per-type rule is predicted (es2-validation.ts).
+ * Keyed by the native object, which EGL share groups share. */
+const shaderTypes = new WeakMap<WebGLShader, number>();
+export function shaderType(shader: WebGLShader | undefined): number | undefined {
+  return shader ? shaderTypes.get(shader) : undefined;
+}
+
 /** Empty native receivers are reserved before creation. Even a native call
  * which returns a handle and an error leaves that handle owned for rollback. */
 export function createShaderIfAccepted(b: GlBinding, type: number, name: number): void {
@@ -104,6 +112,7 @@ export function createShaderIfAccepted(b: GlBinding, type: number, name: number)
     const shader = receiver.calls[0][1] as WebGLShader | null;
     if (!accepted) return;
     if (!shader) { recordGlError(b, 0x505); return; }
+    shaderTypes.set(shader, type);
     b.shaders.set(name, shader);
     transferNativeRetirement(receiver);
   } catch (error) { rethrowNativeGlFault(error);

@@ -31,6 +31,8 @@ class ImageTransactionsGl {
   reject: string | undefined;
   deleted: object[] = [];
   getError() { return this.errors.shift() ?? 0; }
+  /** No usable limits: the host's size predictions then check only signs. */
+  getParameter() { return 0; }
   before(name: string) {
     this.calls.push(name);
     if (this.reject === name) {

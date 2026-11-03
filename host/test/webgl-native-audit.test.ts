@@ -6,7 +6,7 @@ import {
 } from "../src/webgl/native-audit";
 import { nativePredictionGap } from "../src/webgl/native-predictions";
 import { checkedGlCall, type CheckedGlOwner } from "../src/webgl/program-objects";
-import { OP_TEX_PARAMETERI, OP_USE_PROGRAM, QOP_READ_PIXELS } from "../src/webgl/ops";
+import { OP_DRAW_ARRAYS, OP_TEX_PARAMETERI, OP_USE_PROGRAM, QOP_READ_PIXELS } from "../src/webgl/ops";
 
 /** A renderer with GL error-flag semantics: each distinct flag is recorded
  * once until getError reads it. Methods live on the prototype, like WebGL. */
@@ -125,8 +125,10 @@ it("labels a call site's own explicit prediction", () => {
 });
 
 it("keeps the gap table keyed by op, query and import", () => {
-  expect(nativePredictionGap(OP_TEX_PARAMETERI, null, "host_gl_submit", "texParameteri")?.label).toBe("glTexParameter");
-  expect(nativePredictionGap(OP_TEX_PARAMETERI, null, "host_gl_submit", "bindTexture")).toBeUndefined();
+  expect(nativePredictionGap(OP_DRAW_ARRAYS, null, "host_gl_submit", "drawArrays")?.label).toBe("glDrawArrays/glDrawElements");
+  expect(nativePredictionGap(OP_DRAW_ARRAYS, null, "host_gl_submit", "bindTexture")).toBeUndefined();
+  // Closed in Stage A2: TexParameter values are predicted (es2-validation.ts).
+  expect(nativePredictionGap(OP_TEX_PARAMETERI, null, "host_gl_submit", "texParameteri")).toBeUndefined();
   expect(nativePredictionGap(null, QOP_READ_PIXELS, "host_gl_query", "readPixels")?.label).toBe("glReadPixels");
   expect(nativePredictionGap(null, null, "host_gbm_gpu_bo_create", "texImage2D")?.label).toBe("GBM/EGLImage GPU storage");
   expect(nativePredictionGap(null, null, "unscoped", "texImage2D")).toBeUndefined();

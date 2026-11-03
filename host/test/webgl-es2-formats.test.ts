@@ -173,6 +173,9 @@ describe("ES2 RenderbufferStorage internalformat admission (section 4.4.3)", () 
     ["OES_packed_depth_stencil", 0x88f0], ["EXT_texture_rg R8", 0x8229],
   ])("admits %s", (_name, internal) => {
     const { b, log } = binding();
+    // A renderbuffer must be bound (ES 2.0 section 4.4.3, predicted by the
+    // host); which object it is does not matter to format admission.
+    b.shadow.renderbuffer = {} as WebGLRenderbuffer;
     expect(storage(b, rbStorage(internal))).toBe(1);
     expect(b.errors).toEqual([]);
     expect(nativeCalls(log, "renderbufferStorage")).toEqual([[ "renderbufferStorage", [RENDERBUFFER, internal, 4, 4]]]);

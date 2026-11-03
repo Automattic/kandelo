@@ -116,12 +116,38 @@ function glesIncompleteness(b: GlBinding, framebuffer: WebGLFramebuffer | null):
   return status;
 }
 
-/** Draw/clear (read = false) and ReadPixels/CopyTex* (read = true) preflight
- * for the ES 2.0 completeness rules WebGL 2 does not apply: attachment
- * color-renderability and equal dimensions. Records
- * INVALID_FRAMEBUFFER_OPERATION before any native side effect. */
+/** The renderer's own completeness of a guest framebuffer (missing or
+ * incomplete attachments, unsupported combinations), cached against the same
+ * revision as the ES 2.0 verdict. With it the host predicts the
+ * INVALID_FRAMEBUFFER_OPERATION a draw, clear, read or copy raises instead of
+ * learning it from getError after the native call (Stage A2, D-48): one
+ * status query when a framebuffer's inputs change replaces an error round
+ * trip on every such command. Host-owned default framebuffers are complete
+ * by construction. The framebuffer is the one bound to the target, as the
+ * muxer has selected the executing owner's state. */
+type NativeVerdict = { revision: number; complete: boolean };
+const nativeVerdicts = new WeakMap<WebGLFramebuffer, NativeVerdict>();
+
+function nativeIncomplete(b: GlBinding, framebuffer: WebGLFramebuffer | null, read: boolean): boolean {
+  const gl = b.gl;
+  if (!gl || !framebuffer || isDefaultFramebuffer(b, framebuffer)) return false;
+  const revision = framebufferInputsRevision(), cached = nativeVerdicts.get(framebuffer);
+  if (cached !== undefined && cached.revision === revision) return !cached.complete;
+  const status = gl.checkFramebufferStatus(read ? 0x8ca8 : 0x8ca9);
+  // A lost renderer answers 0; its loss is reported at the next entry.
+  if (status === 0) return false;
+  nativeVerdicts.set(framebuffer, { revision, complete: status === 0x8cd5 });
+  return status !== 0x8cd5;
+}
+
+/** Draw/clear (read = false) and ReadPixels/CopyTex* (read = true) preflight:
+ * the ES 2.0 completeness rules WebGL 2 does not apply (attachment
+ * color-renderability and equal dimensions), then the renderer's own
+ * completeness. Records INVALID_FRAMEBUFFER_OPERATION before any native
+ * side effect. */
 export function requireGlesFramebufferComplete(b: GlBinding, read = false): boolean {
-  if (glesIncompleteness(b, read ? b.shadow.readFbo : b.shadow.fbo) === 0) return true;
+  const framebuffer = read ? b.shadow.readFbo : b.shadow.fbo;
+  if (glesIncompleteness(b, framebuffer) === 0 && !nativeIncomplete(b, framebuffer, read)) return true;
   recordGlError(b, 0x506);
   return false;
 }

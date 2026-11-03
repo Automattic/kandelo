@@ -35,6 +35,25 @@ function nativeTextureLimit(owner: CheckedGlOwner, pname: number): number | null
   return size;
 }
 
+/** A renderer limit for a host prediction (es2-validation.ts): MAX_TEXTURE_SIZE
+ * for TexImage2D/CopyTexImage2D, MAX_RENDERBUFFER_SIZE for
+ * RenderbufferStorage, MAX_VERTEX_ATTRIBS for attribute indices. Cached per
+ * renderer. Null when the renderer does not report a usable value (a lost
+ * context); the caller then predicts nothing from it, and records no error
+ * of its own. */
+const predictionLimits = new WeakMap<WebGL2RenderingContext, Map<number, number>>();
+export function predictionLimit(gl: WebGL2RenderingContext, pname: number): number | null {
+  const cached = predictionLimits.get(gl)?.get(pname);
+  if (cached !== undefined) return cached;
+  const value: unknown = gl.getParameter(pname);
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0 || value > 0x7fff_ffff) return null;
+  let limits = predictionLimits.get(gl);
+  if (!limits) { limits = new Map(); predictionLimits.set(gl, limits); }
+  limits.set(pname, value);
+  return value;
+}
+export const MAX_TEXTURE_SIZE = 0x0d33, MAX_RENDERBUFFER_SIZE = 0x84e8, MAX_VERTEX_ATTRIBS = 0x8869;
+
 /** MAX_CUBE_MAP_TEXTURE_SIZE as advertised to the guest. A cube map is a
  * six-layer 2D array texture (cube-storage.ts), whose layers are limited by
  * MAX_TEXTURE_SIZE rather than the native cube limit, so the advertised
