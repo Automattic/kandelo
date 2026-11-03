@@ -21,7 +21,9 @@ those choices:
       Block until the job ends (keyed on its supervisor PID), then print the
       result and exit with the job's exit status. The default timeout, 540 s,
       stays under the Bash tool's 10-minute limit; on timeout it prints status
-      and exits 124, and you run the same command again. One call per
+      and exits 124. Repeat only when the wait-window notice says the job
+      is still running; a completed job can also exit 124, and its
+      FAILED (exit 124) result is final. One call per
       9 minutes, instead of a poll every few seconds. --timeout 0 waits
       without limit, for an interactive main session that runs it with
       run_in_background and ends its turn. Never end your turn to wait in a
@@ -33,7 +35,9 @@ those choices:
       loop on its PID. --peer <text> picks the one running job, in any
       worktree, whose command contains <text> (for example `local-build` or
       `prepare-browser`). If none or several match, it lists them on stderr
-      and exits 2 rather than guess.
+      and exits 2 rather than guess. After a selector wait times out, retry
+      by the resolved job id in `waiting on <id>` or `resume with:`, never
+      by --peer again: a new job could match instead.
   agent-job status [<id>]
       What is running: elapsed vs the usual duration, log age, local-build
       node progress, and every process in the job with command line and age.
@@ -456,7 +460,12 @@ def cmd_start(args):
     write_json(os.path.join(d, "meta.json"), meta)
     usual = f"; usually takes {fmt_secs(meta['usual_duration'])}" if meta["usual_duration"] else ""
     print(f"{job_id}\nlog: {os.path.join(d, 'output.log')}{usual}\n"
-          f"wait with: {sys.argv[0]} wait {job_id}   (repeat if it exits 124; do not poll)")
+          f"wait with (choose your session type; do not poll):\n"
+          f"  interactive main: {shlex.quote(sys.argv[0])} wait {job_id} --timeout 0  "
+          f"(Bash run_in_background: true; act on one completion notification)\n"
+          f"  headless/subagent: {shlex.quote(sys.argv[0])} wait {job_id}  "
+          f"(foreground; repeat only if wait reports still running; "
+          f"FAILED (exit 124) is final; never end the turn to wait)")
 
 
 def peer_job(text):
@@ -496,7 +505,7 @@ def cmd_wait(args):
         args.id, d = peer_job(args.peer)
         meta = read_json(os.path.join(d, "meta.json")) or {}
         # Name the chosen job up front, so the agent knows which build it
-        # waited on (and can re-run `wait <id>` by id after an exit 124).
+        # waited on (and can re-run `wait <id>` after a wait-window timeout).
         print(f"waiting on {args.id} in {meta.get('worktree', '?')}: {meta.get('cmd', '')[:120]}")
         print(describe_commit(meta, os.getcwd()), flush=True)
     else:
@@ -507,8 +516,9 @@ def cmd_wait(args):
         if state != "running":
             break
         if deadline and now() >= deadline:
-            print(f"agent-job: still running after {args.timeout}s of waiting; run the same wait again "
-                  f"(exit 124 means not finished, not failed)\n")
+            print(f"agent-job: still running after {args.timeout}s of waiting "
+                  f"(wait window expired; exit 124)\n"
+                  f"resume with: {shlex.quote(sys.argv[0])} wait {args.id}\n")
             print_status(args.id, d)
             sys.exit(124)
         time.sleep(2)

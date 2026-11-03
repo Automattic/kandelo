@@ -13,14 +13,17 @@ against a short checklist in `tasks.json` of facts a correct answer must
 mention.
 
 ```bash
-python3 evals/agent-skills/run.py              # 4 tasks x 2 arms x 3 reps, Sonnet
+python3 evals/agent-skills/run.py              # all tasks x 2 arms x 3 reps, Sonnet
 python3 evals/agent-skills/run.py --reps 1     # quick check
 ```
 
 - **Isolation:** only project settings load, so your personal hooks and plugins don't skew the result.
 - **Read the score first, then the cost.** A cheaper answer that misses checks is not a win.
 - **Read the saved answers** (the path is printed) before trusting a score. A regex match is not proof the advice is right.
-- **When to run it:** a full run is 24 sessions, about $4 on Sonnet. Run it when a skill changes, not in CI.
+- **When to run it:** run when a skill changes, not in CI. The default
+  runs every task in `tasks.json` in both arms, three times each. Cost
+  grows with that inventory; use `--tasks id,id` and `--reps 1` to scope
+  a quick check instead of assuming a fixed session count or budget.
 - **Adding a skill?** Add tasks for it to `tasks.json` and its name to `SKILLS` in `run.py`. Keep it only if it wins here.
 
 ## 2. Is it helping me? (`skill-impact.py`)
@@ -60,6 +63,15 @@ When a line says something was wrong or missing, fix the skill.
 people reading this feedback catch advice that is well formed and still wrong.
 
 ## What this has decided so far
+
+A waiting skill was tried and removed before landing. Advice checks cost
+more with it enabled and did not establish incremental waiting benefits
+over the shared guidance. Both arms saw the updated CLAUDE.md, and some
+skill-off sessions still read the skill file. The retained changes are
+the core waiting guidance, CLI hints and retry regression tests. The
+experiment and its limitations are recorded in
+`evals/build-waiting/README.md`, tool 1a. Its six scenarios were removed
+from this skill-on/off runner, since no waiting skill remains to toggle.
 
 A second skill for diagnosing build failures was tried and removed. Over 3
 runs per task it cost about 20% more than no skill ($0.11 versus $0.09 per
