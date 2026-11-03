@@ -15,7 +15,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
 const require = createRequire(join(root, "host/package.json"));
 const esbuild = require("esbuild");
-const playwright = require("playwright");
+// Use the browser app's declared driver, matching CTS and compositor specs.
+// Resolving the host's standalone playwright can silently choose older engines.
+const browserRequire = createRequire(join(root, "apps/browser-demos/package.json"));
+const playwright = browserRequire("@playwright/test");
 
 const [outArg, ...engineArgs] = process.argv.slice(2);
 const out = resolve(outArg ?? join(tmpdir(), "kandelo-shader-rewrite-check"));

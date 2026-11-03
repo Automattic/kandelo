@@ -20871,3 +20871,38 @@ as passing results. The full latest-source memory/POSIX/host chain remains
 required after the current normal libffi rebuild and quiet performance
 measurement. Evidence: `.context/graphics-validation-r11-r2-results/`,
 including `superseded-retirement.json`.
+
+
+**Current-driver shader and API checkpoint, 2026-11-03.** The shader runner
+previously resolved standalone Playwright from the host dependency tree,
+selecting Chromium 151, Firefox 153 and WebKit 26.5 even when the app's
+CTS driver used newer installed engines. It now resolves the app's declared
+`@playwright/test` driver. No dependency version or shader check changes.
+Chromium 153.0.8010.12 and WebKit 26.6 each pass 266 rewrite checks. Firefox
+155 passes 263, with one inconclusive reversed-depth check and two failing
+unmodified-shader controls; there are zero rewrite failures and page errors.
+The preceding older-driver report is also preserved. Evidence:
+`.context/graphics-shader-current-driver-r14/`,
+`.context/graphics-shader-final-r13/`.
+
+The isolated WebKit API performance chunk on the current host and normally
+built fence-fixed kernel completes all 100 cases with Pass (44.9 minutes),
+with its QPA, guest output and progress retained. It does not reproduce the
+older runtime's physical renderer loss in that chunk. This does not identify
+that earlier loss's cause or establish complete CTS acceptance. The three
+strict native info cases also pass. Evidence:
+`.context/graphics-cts-diagnostic-r13-results/`.
+
+The corrected r13 host/preview refresh passes normal kernel bootstrap, host,
+rootfs, ABI and freshness (339/20/4/4/21 seconds), but the following isolated
+preview admission check rejects its no-longer-published shell projection.
+The existing port-5693 preview is retained; HTTP success alone is not a
+working desktop. The complete current dependency/image closure remains in
+the queued full build. Separately, a copied native tool made the first
+normal GObject package probe resolve its original checkout's libffi revision
+three. Those failed results did not test the new dispatcher. The corrected
+probe first compiles its own native tool and bootstraps the package through
+the normal publication path, with an explicit revision check. Evidence:
+`.context/graphics-final-r13-build-r2/`, `.context/graphics-preview-r13-check/`,
+`.context/graphics-gobject-normal-r14-r2/`,
+`.context/graphics-gobject-normal-r14-r3/`. No new boundary or allowance.

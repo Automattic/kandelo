@@ -141,6 +141,11 @@ runner is the one for the combined validation phase.
 
 ## Host GLSL rewrite check
 
+The runner uses esbuild from the host dependencies and the browser app's
+`@playwright/test` driver, matching the CTS and compositor browser versions.
+Provision both dependency sets before running it. Reports record the actual
+engine versions; the host's standalone Playwright may select older builds.
+
 `node tests/graphics/shader-rewrite-check/run.mjs [output-dir] [engine...]`
 compiles, links and draws the host's private GLSL rewrites (reversed depth
 range, attribute aliasing including the dEQP-GLES2 `bind_aliasing` templates,

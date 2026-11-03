@@ -266,6 +266,19 @@ the measurement window or limits. The Node spawn-churn test uses 256
 children with unchanged 2 MiB-per-child and 64 MiB late-growth limits.
 See [the window calibration](../measurements/2026-10-20-process-memory-rss-window.md).
 
+## Native build tools copied between checkouts
+
+A copied `xtask` retains its compile-time repository root. Its authenticated
+program-index source-context commands accept `--source-repo-root` and are
+portable; ordinary package resolve/path/output-path and bootstrap commands
+still use the compiled root. Before those build operations, compile the
+current checkout's release tool with `cargo build --release -p xtask --target
+<host-target>`, or use `run.sh`'s normal tool-freshening path. Merely setting
+`WASM_POSIX_XTASK_BIN` to a copied binary does not select the current checkout.
+Prepare that tool before a browser test's clock starts. Preserve the SDK's
+`sdk/.build` cache together with its copied sysroots, then run the normal SDK
+ensures; otherwise preparing a new tool can re-key or replace core outputs.
+
 ## Waiting on long builds and suites
 
 `./run.sh setup`, `local-build`, `build-musl.sh`, `build-programs.sh`, and
