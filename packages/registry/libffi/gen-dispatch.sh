@@ -4,18 +4,15 @@
 # full libffi port (see src/ffi_internal.h for the shared key encoding):
 #
 #   ffi_dispatch.c      the ffi_call signature switch. Emitted families:
-#                       every signature of arity <= 8 with at most two
-#                       non-i32 arguments (glib generic-marshal calls are
-#                       instance + params + data, pointers all being i32
-#                       words on wasm32; two doubles/i64s covers the
-#                       gesture-style tails), plus all-i32 signatures up
-#                       to arity 22 (the Wayland ceiling), each times the
-#                       five return classes. Also emit f32/f64 (either
-#                       order) followed by two i64 arguments, with arbitrary
-#                       i32 prefixes, intervening words and suffixes, through
-#                       arity 22. An un-emitted signature
-#                       makes ffi_call abort printing its key — extend a
-#                       family bound here and rebuild.
+#                       every signature of arity <= 9 with at most two
+#                       non-i32 arguments, plus all-i32 signatures through
+#                       arity 22, each times the five return classes.
+#                       Full scalar records (9 words, f32/f64 in either
+#                       order, 6 words, 2 i64s) also allow leading/trailing
+#                       context or sret words through arity 22. This covers
+#                       complete typed records without generating every
+#                       unused placement of those scalar classes.
+#                       Un-emitted signatures abort with their exact key.
 #
 #                       The switch is split into one function per
 #                       (return class, arity): a single function holding
@@ -132,7 +129,7 @@ BEGIN {
         for (n = 0; n <= 22; n++) {
             reset(n, cls)
             emit_case(rc, n, cls)
-            if (n <= 8) {
+            if (n <= 9) {
                 for (p = 0; p < n; p++)
                     for (c = 1; c <= 3; c++) {
                         reset(n, cls); cls[p] = c
@@ -146,20 +143,21 @@ BEGIN {
                                 emit_case(rc, n, cls)
                             }
             }
-            # Full scalar records can contain a floating pair and an i64
-            # pair among ordinary words. Keep arbitrary leading, middle and
-            # trailing word counts; do not assume a long call is all-i32.
-            # This bounded family avoids enumerating all 4^22 signatures.
-            for (prefix = 0; prefix <= n - 4; prefix++)
-                for (middle = 0; middle <= n - 4 - prefix; middle++)
-                    for (float_order = 0; float_order <= 1; float_order++) {
-                        reset(n, cls)
-                        cls[prefix] = 2 + float_order
-                        cls[prefix + 1] = 3 - float_order
-                        cls[prefix + 2 + middle] = 1
-                        cls[prefix + 3 + middle] = 1
-                        emit_case(rc, n, cls)
-                    }
+            # The full scalar record has nine word fields, a floating pair,
+            # six more words and an i64 pair. Context/data and hidden sret
+            # words can surround that record; keep every existing short-call
+            # family unchanged rather than enumerate unused word paddings.
+            for (prefix = 0; prefix <= 3; prefix++)
+                for (suffix = 0; suffix <= 3 - prefix; suffix++)
+                    if (n == 19 + prefix + suffix)
+                        for (float_order = 0; float_order <= 1; float_order++) {
+                            reset(n, cls)
+                            cls[prefix + 9] = 2 + float_order
+                            cls[prefix + 10] = 3 - float_order
+                            cls[prefix + 17] = 1
+                            cls[prefix + 18] = 1
+                            emit_case(rc, n, cls)
+                        }
             emit_leaf(rc, n)
         }
     }

@@ -20906,3 +20906,35 @@ the normal publication path, with an explicit revision check. Evidence:
 `.context/graphics-final-r13-build-r2/`, `.context/graphics-preview-r13-check/`,
 `.context/graphics-gobject-normal-r14-r2/`,
 `.context/graphics-gobject-normal-r14-r3/`. No new boundary or allowance.
+
+
+**Compact scalar-dispatch checkpoint, 2026-11-03.** The first normal
+GObject rebuild with libffi revision four passes the previously aborting
+all-types, variant and destroy-target-object cases, then exposes another
+missing ordinary ABI shape: eight logical arguments plus callback data
+(key `11534408`, nine arguments including a double/float pair). The mixed
+family now includes arity nine. The long-record family is represented by
+its complete scalar layout plus surrounding context/data/sret words,
+retaining 6,290 call cases and the existing 810 closure classes. Ninety
+existing generated dispatcher functions are byte-identical to the original.
+No GObject source or assertion is changed.
+
+The expanded matrix passes 365 checks on Node and each of Chromium,
+Firefox and WebKit. Original-dispatch controls abort at the original long
+record key on all four hosts; the broad intermediate dispatcher passes
+that record and aborts at the new nine-argument key on all four. Native
+scalar-matrix and Wayland-arity controls also pass. The following values
+come from the same SDK matrix source, differing only in the dispatcher:
+
+| Dispatcher | Module bytes | Largest Wasm function body |
+|---|---:|---:|
+| Original | 651,273 | 19,037 |
+| Broad intermediate family | 2,490,671 | 55,223 |
+| Compact complete-record family plus arity nine | 812,136 | 24,588 |
+
+The unchanged function-body guard is 131,072 bytes. These are artifact-size
+measurements, not execution-performance evidence. The complete normal
+GObject rerun and full dependency/image rebuild remain required. Evidence:
+`.context/graphics-libffi-compact-r15/`,
+`.context/graphics-gobject-normal-r14-r3/`. ABI family remains
+program 56 / host 3 / GL 17 / fork 21.

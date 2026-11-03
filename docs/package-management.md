@@ -2567,11 +2567,13 @@ zero sha256) because it fetches no upstream archive.
 | `libffi` | Kandelo's own implementation of the libffi API (`packages/registry/libffi/src/ffi_core.c` plus the dispatch tables `gen-dispatch.sh` generates): one `call_indirect` case per call shape and per closure class. It is not upstream libffi. | libwayland, glib and the GTK stack need `ffi_call` and closures, and upstream libffi's wasm32 port targets Emscripten's JavaScript glue, which Kandelo does not use. | Port upstream libffi for Kandelo's wasm target and drop this implementation. |
 | `libwayland-egl` (shipped by `libwayland`) | `libc/glue/libwayland-egl.c`: the `wl_egl_window` API plus the buffer allocation and present logic that Mesa's EGL Wayland platform owns on Linux. It sits on the sysroot's `libEGL`/`libGLESv2`/`libgbm` stubs, which forward GL to the host's WebGL2 (see "Sysroot libraries are not packages"). | There is no Mesa on Kandelo; SDL2's Wayland backend and other GL clients need a `wl_egl_window`. | Tied to the GL stack: a real EGL with dmabuf import (the GL section of the real-Hyprland inventory) would let upstream libwayland-egl and a real EGL Wayland platform replace it. |
 
-The in-tree libffi call dispatcher emits the small mixed signatures through
-arity eight, all-i32 calls through arity 22, and scalar-record calls with
-an adjacent f32/f64 pair (either order), a later adjacent i64 pair, and
-arbitrary i32 words before, between and after those pairs through arity 22.
-This is a static call-shape family, not a caller-specific marshaller. The
+The in-tree libffi call dispatcher emits mixed signatures with at most two
+non-i32 arguments through arity nine and all-i32 calls through arity 22.
+Its full scalar-record family contains nine word fields, an adjacent
+f32/f64 pair (either order), six more word fields and an i64 pair, with
+leading or trailing context/data/sret words through arity 22. These are
+static call-shape families, not caller-specific marshallers. Existing
+small-arity dispatcher functions retain their generated source unchanged. The
 closure trampoline families remain separately bounded by
 `packages/registry/libffi/gen-dispatch.sh`. Dispatch stays partitioned by
 return class and arity; adding a family must retain the Wasm function-body
