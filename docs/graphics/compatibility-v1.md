@@ -98,6 +98,44 @@ records why. Deferred work is also listed in
 | wasm64 compositor builds | Deferred (foundation kept) | No program needs them; the wasm64 Meson cross file and build-roots helper landed. |
 | Host faults | Fatal | A refused cleanup, lost writeback, or bookkeeping violation means the system is breaking down; WebGL context loss is a normal reset, not a fault. |
 
+**Maintainer decisions, 2026-11-02.** Made during validation and
+performance work on the same baseline, each with its reason. Deferred work is
+listed in [future improvements](../future-improvements.md#graphics).
+
+| Item | Decision | Why |
+|---|---|---|
+| Graphics validation on Node | Browsers only; Node keeps one check that GL fails loudly as documented | GL rendering on Node is deferred, so Node compositor and dEQP runs would only exercise the deferral. Kernel-side DRI state stays covered by Rust and host tests. |
+| GLSL ES 1.00 restrictions WebGL enforces (Appendix A) | Translate guest ESSL 1.00 to ESSL 3.00 in the host, only when every engine error is an Appendix A restriction | Real GLES 2.0 drivers accept `while` loops, non-constant loop bounds and dynamic indexing; dEQP must-pass cases and ported programs need them. The engine's own 1.00 compiler still decides validity. |
+| Cube-map filtering | Emulate ES 2.0 per-face sampling (6-layer 2D array plus face selection with face-frame gradients) | WebGL 2 always filters across face edges (ES 3.0 seamless); ES 2.0 filters within a face. Programs without cube maps pay nothing. |
+| Uniform locations | Numbered densely per program, as Linux drivers do | Spec-legal either way; ported programs and dEQP performance tests reuse locations across programs with the same layout. |
+| wl_shm DRM-buffer pool patches (foot, mako, GTK, Qt) | Replace or fix wlcompositor so ordinary memfd pools work, then drop the patches | The patches exist only because Kandelo's own compositor imports pools as DRM buffers; ported software must not be patched to suit Kandelo. |
+| `/proc/<pid>/maps` and the CI browser path | Fixed in this branch | Truthful process state; the CI script called a removed `run.sh` mode. |
+| Desktop responsiveness bar | Pointer with SFWBar: input to commit at most 16 ms p90 and input to display at most two frames p90; typing at most 20 ms p50; ScummVM at least 30 fps with its cursor at most 33 ms p50; idle kernel worker at most 5% | A vblank-synchronized 60 Hz compositor takes about one frame from input to display even natively, so the bar measures what Kandelo controls plus a native-like end-to-end bound. |
+| GPU worker | Designed now (`docs` follow-up), implemented only if the bar is missed after the synchronous-call work | Measurements show synchronous WebGL calls, not the thread GL runs on, dominate; moving GL unchanged would miss the ScummVM bar. |
+| ES 2.0 magnification switch-over point c = 0.5 | Emulated through draw-time shader variants, only for textures using `MAG=LINEAR` with a `NEAREST_MIPMAP_*` minification filter | WebGL 2 engines always use c = 0; the variant costs nothing for other draws. Lookups the rewrite cannot attribute keep c = 0 and are reported once per program through host diagnostics. |
+| `#version 300 es` in the ES 2.0 context | Refused at compile with an info log | Kandelo is a GLES 2.0 implementation, which accepts only GLSL ES 1.00. |
+| Host-side error prediction ("Stage A") | Host validation becomes authoritative, as Mesa's is; native `getError` stops deciding acceptance. Introduced through an audit mode first | Native `getError` is a synchronous round trip to the browser's GPU process and dominates the kernel worker. Real drivers compute API errors from tracked state. |
+| A native error the host did not predict | Production: reset only that context, with a loud diagnostic (native errors sampled once per submitted batch). Audit and test runs: fatal | Linux resets the guilty GPU context instead of stopping the system; tests must not hide validation gaps. |
+| Native out-of-memory | Per-context reset, documented as a platform boundary | WebGL reports OOM asynchronously; per-call `GL_OUT_OF_MEMORY` would need per-call native checks. |
+| GPU-worker design choices | Shared-timeline fences signal when executed; a stall watchdog reports, not fatal; Node gets a null-renderer device worker; GPU-worker idle joins the bar; direct guest-to-GPU submission deferred | Settles the design so it is ready if needed. |
+| Display-aligned vblank | KMS vblank follows `requestAnimationFrame` frames in the kernel worker where they are display-aligned (Chromium, Firefox); WebKit and Node keep a timer | A free-running 62.5 Hz timer doubled and dropped frames against a 60 Hz display. |
+| Implementation language | Stage A in TypeScript as interim scaffolding; the follow-up moves GL state and validation into the guest library and scheduling and fences into the Rust kernel, leaving TypeScript as a thin WebGL executor | Reach the bar sooner without writing the validator twice. |
+| dEQP-EGL `performance.gles2_shared_render` timeouts | Recorded as a performance gap | Each case runs about 1.2 million draws with a synchronous round trip per `glBindTexture`; asynchronous binds in the follow-up fix the cause. Functional EGL is clean. |
+
+**Status, 2026-11-02.** Normal builds r7 (`07e8e10aec`) and r8 (`df8a54d6b9`)
+pass every stage; r8's package stage built 187 packages with no failures.
+Full dEQP on r2/r7: GLES2 on three engines (Chromium 17,545 Pass before the
+ESSL translation, which then added about 990 passing shader cases per engine
+with none newly failing); EGL on Chromium after the EGL fixes: 1,865 Pass,
+1 Fail (the `no_config` ES3 expectation above), with timeouts confined to
+`gles2_shared_render`. Desktop acceptance: Cage, Sway and the rendered
+sessions pass on three engines; labwc, SFWBar and Omarchy test fixes landed
+and are pending their next run. Measured desktop changes (headless Chromium,
+exact counts, noisy times): shared-mapping comparisons per frame about 70 to
+about 5; idle WebGL calls about 3,300/s to about 125/s; keystroke to commit
+about 54 ms to about 15-17 ms without the panel; ScummVM GL round trips per
+frame 128 to 73. The benchmark-suite comparison against main is still to run.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension

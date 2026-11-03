@@ -239,6 +239,38 @@ is truthful: the feature is not advertised, or the call fails with the error
 its specification defines. The decisions and their evidence are recorded in
 [the graphics compatibility ledger](graphics/compatibility-v1.md).
 
+### Move GL authority into the guest library and the Rust kernel (follow-up iteration)
+
+Planned as the next iteration after this baseline ships. Today the guest
+GLES library encodes commands while the TypeScript host validates them and
+asks WebGL for errors. Following Mesa's split, the guest library should own
+GL state, validation, error flags and state queries ("Stage B": local
+`glGetError` for exactly validated commands, asynchronous binds, local state
+queries, program interface fetched once per link, kernel-native GL fences,
+inline client-array `glDrawElements`), and the Rust kernel should own
+submission scheduling, foreign-fence dependencies and fence completion
+("Stage C1"). TypeScript then remains a thin WebGL command executor. This is
+also the planned migration of host GL logic out of TypeScript. Asynchronous
+binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
+`glBindTexture` is a synchronous round trip.
+
+### Run WebGL in a dedicated GPU worker (only if the responsiveness bar is missed)
+
+Designed but not built: a GPU worker owning one WebGL context executes an
+ordered command ring copied at submit, while the kernel keeps buffer, fd and
+fence authority as DRM does. Measurements show synchronous WebGL calls, not
+the thread that runs GL, dominate today, so the worker is worthwhile only
+after the synchronous-call work, and only if the bar is still missed. Direct
+guest-to-GPU-worker submission (user-mode queues) is deferred further: after
+the guest-library work it saves about 0.1-0.3 ms per frame at a large cost in
+authority and teardown complexity.
+
+### Rework the CI browser job
+
+The CI browser path now calls the supported `./run.sh prepare-browser`, a full
+local build that may exceed the job's time limit on a cold cache. CI does not
+run today and will be reworked before it resumes; budget the build then.
+
 ### Implement OpenGL ES 3.0 contexts
 
 Deferred because Cage, Sway and Labwc (through the wlroots GLES2 renderer),
