@@ -300,9 +300,28 @@ three failures. One earlier candidate dump exhausted the diagnostic Node
 heap through large structured arrays; that run is invalid. The corrected
 dump copies only returned message bytes and serializes in the worker.
 Evidence is in `.context/a3/recv-coherence/` and
-`.context/graphics-r9-foot-{minimal-r2,recv-coherence-r2}/`. Uninstrumented
-final-host Labwc/SFWBar checks on all three engines, the new-client rebuild,
-manual confirmation and before/after performance remain required.
+`.context/graphics-r9-foot-{minimal-r2,recv-coherence-r2}/`.
+
+The uninstrumented host at `ae0fc96da0`, with compatible normal r9
+artifacts, passes all three Labwc/SFWBar cases on Chromium. Firefox and
+WebKit each pass Labwc and Sway/SFWBar, but fail Labwc/SFWBar's final exit
+command. All preceding paint and distinct-shell focus assertions pass.
+A Firefox protocol trace shows Labwc sends the initial `l` press and
+release to SFWBar during the final taskbar click's keyboard handoff; Foot
+receives the following characters. The task's already-focused highlight
+does not acknowledge that handoff. Evidence:
+`.context/graphics-recv-coherence-browser-r1/` and
+`.context/sfwbar-final-key-trace/`. Fixture corrections remain under
+validation; the new-client rebuild, manual confirmation and before/after
+performance remain required.
+
+Full final-host EGL/GLES2 runs started on a frozen `ae0fc96da0` checkout
+with the CTS host liveness guards, on separate Chromium, Firefox and
+WebKit ports. They reuse the normal r9 kernel and CTS artifacts; their
+hashes must also be compared with the new-client build before claiming
+final-artifact validation. Commands, source identities and results are
+under `.context/graphics-cts-final-r1-results/`. No completed full-suite
+result is claimed at this checkpoint. The remaining A1 audit continues.
 
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
