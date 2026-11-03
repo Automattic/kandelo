@@ -55,6 +55,24 @@ test("selectors union families, groups and all in inventory order", () => {
   for (const bad of ["", " , ", "functional.nonexistent", "vulkan"]) assert.throws(() => selectCases("gles2", cases, bad));
 });
 
+test("exact cases compose with families without broadening the selection", () => {
+  const a = "dEQP-EGL.performance.make_current.complex.contexts_100_pbuffers_100_release";
+  const b = "dEQP-EGL.performance.make_current.complex.contexts_100_windows_10_release";
+  assert.deepEqual(selectCases("egl", inventories.egl, a), [a]);
+  assert.deepEqual(selectCases("egl", inventories.egl, `${b},${a.slice("dEQP-EGL.".length)},${a}`),
+    inventories.egl.filter(path => path === a || path === b));
+  const selected = selectCases("egl", inventories.egl, `${a},info`);
+  assert.deepEqual(selected, inventories.egl.filter(path => path === a || path.startsWith("dEQP-EGL.info.")));
+});
+
+test("exact-case selection rejects unknown leaves and partial names", () => {
+  for (const name of ["performance.make_current.complex.contexts_100",
+    "performance.make_current.complex.contexts_100_pbuffers_100_release.invalid",
+    "dEQP-GLES2.info.vendor"]) {
+    assert.throws(() => selectCases("egl", inventories.egl, name), /matches no egl case/);
+  }
+});
+
 test("chunks are bounded, family-pure, complete and stable", () => {
   for (const suite of ["gles2", "egl"]) {
     const plan = buildPlan({ suite, selector: "all", cases: inventories[suite] });

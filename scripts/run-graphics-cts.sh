@@ -6,8 +6,8 @@
 #
 # selector: all (default), a top-level group (functional, info, ...), a
 # family (functional.fbo or dEQP-GLES2.functional.fbo), a legacy GLES2
-# name (negative-state, negative-api, color-clear), or a comma-separated
-# union. Environment:
+# name (negative-state, negative-api, color-clear), an exact case name, or a
+# comma-separated union. Environment:
 #   KANDELO_CTS_OUT          result directory (default .context/graphics-cts-runs/<suite>-<host>-<time>)
 #   KANDELO_CTS_CHUNK_SIZE   cases per chunk (default 100 GLES2, 50 EGL)
 #   KANDELO_CTS_CHUNKS       comma-separated chunk IDs to rerun only those

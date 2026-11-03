@@ -993,3 +993,9 @@ An overlapping newer uniform BEGIN explicitly reports the abandoned call as
 BEGIN/CHUNK/COMMIT/CANCEL traffic cannot erase that newer owner. The focused
 control proves the abandoned prefix never reaches the native setter while the
 replacement can still commit; ordinary C recovery sends CANCEL first.
+
+Exact case selectors use the same pinned inventory as family runs. Pass a full
+case name (or omit `dEQP-GLES2.` / `dEQP-EGL.`), and combine names or families
+with commas. Unknown names and partial leaf prefixes fail before a browser is
+started. This supports focused failed-case checks without changing the complete
+`all` inventory, verdict accounting or case deadlines.

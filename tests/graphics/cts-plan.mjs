@@ -99,6 +99,7 @@ export function selectCases(suite, cases, selector) {
   const terms = String(selector ?? "").split(",").map(term => term.trim()).filter(Boolean);
   if (terms.length === 0) throw new Error("CTS selector is empty");
   const byFamily = families(cases);
+  const byCase = new Set(cases);
   const chosen = new Set();
   for (const term of terms) {
     let matched;
@@ -110,7 +111,7 @@ export function selectCases(suite, cases, selector) {
       matched = cases.filter(path => path.startsWith(`${spec.root}.${term}.`));
     } else {
       const family = term.startsWith(`${spec.root}.`) ? term : `${spec.root}.${term}`;
-      matched = byFamily.get(family);
+      matched = byFamily.get(family) ?? (byCase.has(family) ? [family] : undefined);
     }
     if (!matched || matched.length === 0) throw new Error(`CTS selector "${term}" matches no ${suite} case`);
     for (const path of matched) chosen.add(path);

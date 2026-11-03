@@ -21042,3 +21042,26 @@ GLES2/EGL matrix is still required. Evidence:
 `.context/graphics-egl-pre-a3-r15-results/`,
 `.context/graphics-egl-release-fences-r15-before-r3/`,
 `.context/graphics-egl-release-fences-r15-after/`.
+
+
+**Exact-case driver and current WebKit failure checkpoint, 2026-11-03.**
+CTS selection now admits exact pinned case names, with or without the suite
+root, including unions with families. Unknown leaves and partial leaf
+prefixes still fail before browser startup. The complete `all` inventory,
+case deadlines and verdict accounting are unchanged. All 36 normal
+planning/accounting/QPA/progress controls pass. Earlier focused commands
+which supplied unsupported leaf selectors failed in preparation and did
+not execute those guest cases; they remain retained as failed attempts.
+
+The fresh current-host WebKit API chunk 001 accounts for all 100 cases:
+nine Pass and 91 Fail, with no Missing or Timeout. Its first failure is
+`dEQP-GLES2.performance.api.draw_call_batching.draw_elements.100_draws.8_attributes.4_static_buffers_4_dynamic_2_triangles`:
+context post-iteration fails after native renderer loss. Subsequent cases
+cannot create shaders on that reset context. The retained diagnostics
+identify pid 100/session 2, batch 6,863,607, query `0xe`; the console also
+records four refused old-object deletes. There are no page errors. This
+remains a current acceptance failure, not an identified outside-runtime
+boundary or an accepted waiver. The initial loss and those cleanup calls
+require further investigation. Evidence:
+`.context/graphics-cts-current-failures-r15/webkit-api001/` and
+`.context/cts-exact-case-r15/all-controls.log` in the integration checkout.
