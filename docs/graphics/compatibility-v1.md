@@ -20693,3 +20693,23 @@ restoration case still passes on Chromium, Firefox and WebKit. Evidence:
 `.context/graphics-renderer-retirement-r1-results/no-canvas-before.log`,
 `after-r3-gate.log`, `browser-after-r4.log`. This is Node/browser lifecycle
 parity, with no ABI change or performance claim; combined gates remain open.
+
+**Host completion-fixture checkpoint, 2026-11-03.** The stdin wake test now
+waits for the guest's actual empty `read(0)` before appending bytes, and
+measures delivery at the stdout callback. Its unchanged five-second bound
+covers input delivery, rather than subsequent worker retirement. The lazy
+rootfs cohort test delegates to the configured CI checker instead of a
+missing guessed checker path. The shipped-rootfs integrity test fails when
+its required image is absent and allows 30 seconds for its complete cold
+artifact admission. Its 71-member batch alone takes 8.5 seconds in the
+recorded diagnostic, explaining the previous generic five-second timeout;
+all address, identity and named-file assertions remain. This changes no
+application latency budget or production behavior.
+
+The three targeted files pass four selected assertions; six unrelated stdin
+cases are filtered, not counted as acceptance. The preceding probe retains
+the integrity-test timeout, and the equivalent targeted main run also
+records that timeout and the old stdin end-to-end timing failure. Evidence:
+`.context/graphics-host-fixtures-r13/`,
+`.context/graphics-main-host-failures-r1/`. This is fixture validation on
+prepared ABI-56 products, not full final-runtime acceptance.

@@ -8,7 +8,11 @@ import { tryResolveRootfsArtifact } from "./support/rootfs-artifact";
 
 // The default rootfs as the resolver finds it -- the same image the host
 // boots for `rootfsImage: "default"`, not a path of this file's own.
-const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
+const rootfsImage = (() => {
+  const artifact = tryResolveRootfsArtifact();
+  if (!artifact) throw new Error("default rootfs is missing; build it with ./run.sh setup");
+  return artifact.selectedPath;
+})();
 
 /**
  * Every address the SHIPPED image records is one this deployment can serve.
@@ -32,15 +36,17 @@ const rootfsImage = tryResolveRootfsArtifact()?.selectedPath;
  * The image is read with `KandeloImageFs`, the reader that sees an `SDEF`
  * image's deferred half, so the assertions are about real deferred entries.
  */
-describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
+describe("rootfs lazy assets resolve", () => {
   const directory = "https://kandelo.invalid/lazy/";
   const deferredAddresses = (): string[] => {
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     return files.map((f) => f.uri);
   };
 
+  // Cold bulk admission hashes every member and checks its source index;
+  // the deadline covers that complete finite artifact inventory.
   it("maps every address the image records, bash, ps and pgrep included", () => {
     const addresses = deferredAddresses();
     expect(addresses.length, "the image must carry deferred files").toBeGreaterThan(0);
@@ -66,7 +72,7 @@ describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
     // Named by path rather than by count, so a rootfs that grows does not
     // quietly stop checking them.
     const fs = KandeloImageFs.create();
-    fs.loadImage(new Uint8Array(readFileSync(rootfsImage!)));
+    fs.loadImage(new Uint8Array(readFileSync(rootfsImage)));
     const { files } = fs.lazyEntries() as { files: { path: string; uri: string }[] };
     for (const path of [
       "/usr/bin/bash",
@@ -82,7 +88,7 @@ describe.skipIf(rootfsImage === undefined)("rootfs lazy assets resolve", () => {
         `${path} must resolve for this deployment`,
       ).toBeTruthy();
     }
-  });
+  }, 30_000);
 
   it("maps to somewhere other than the address itself, or nothing was deployed", () => {
     for (const uri of deferredAddresses()) {
