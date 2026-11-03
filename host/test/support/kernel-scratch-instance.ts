@@ -176,6 +176,10 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    kernel_get_process_exec_generation: {
+      parameters: [i32, pointer, i32],
+      result: i32,
+    },
     kernel_get_process_exit_status: {
       parameters: [i32],
       result: i32,

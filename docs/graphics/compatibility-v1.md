@@ -20621,3 +20621,37 @@ tests and six doctests. Evidence: `.context/fence-drop-bounded-r1-results/`.
 ABI family 56/3/17/21 is unchanged. Normal-artifact rebuild and browser
 acceptance remain required; this source checkpoint does not close the
 remaining desktop, redraw or performance requirements.
+
+
+**Broad host-fixture checkpoint, 2026-11-03.** The earlier
+`ae0fc96da0` host inventory fails (main inventory: 39 failed files,
+643 passed, 16 skipped; 76 failed assertions, 7,334 passed, 43 skipped).
+These are preserved failures, not allowances. Its copied SDK subsequently
+contains only core libc and lacks the graphics libraries/headers required
+by the SDK-linked tests. Other failures include stale test kernels missing
+the required process-image generation reader, an old cursor protocol
+expectation, a missing generated-comparator prebuild input in an isolated
+host package, and a resolver test wrapping a nonexistent checker path.
+Evidence: `.context/graphics-host-validation-r1-results/`; normal-main
+reruns are classifying the remaining failures.
+
+The focused fixture repairs retain a genuine gated Wasm test kernel and
+explicit export restrictions. Initial-image fixtures copy all eight
+generation bytes into scratch; exec-specific tests may override that
+reader. The package build and startup guards now both enforce the already
+required `kernel_get_process_exec_generation` export. Cursor tests reject
+old protocols and accept the generated current version; the exact frozen
+test-authority list includes the existing quiescent-epoch observer.
+The isolated host build includes its comparator source scripts, and the
+resolver proof delegates to the checker's actual configured path.
+
+Eight focused files pass all 77 tests with normal r11 products and an
+SDK-built ABI-marker fixture (the isolated config disables global setup).
+The initial scratch run's missing ABI-marker fixture is retained as a
+preparation failure; it passes after supplying that unchanged fixture.
+The regenerated standalone resolver bundle passes
+`scripts/test-resolve-binary-bundle.sh`. Evidence:
+`.context/graphics-host-fixture-repairs-r1/`,
+`.context/graphics-host-fixture-repairs-r2/` and integration
+`.context/a3/resolver-bundle-check.log`. These checks do not establish
+full host readiness or change ABI family 56/3/17/21.

@@ -33,6 +33,11 @@ describe("installed host package binary policy", () => {
     cpSync(join(repoRoot, "host", "src"), join(isolatedHost, "src"), {
       recursive: true,
     });
+    // The package prebuild verifies generated comparator bytes from its WAT
+    // template. Preserve that source contract in the isolated build too.
+    cpSync(join(repoRoot, "host", "scripts"), join(isolatedHost, "scripts"), {
+      recursive: true,
+    });
     for (const file of [
       "package-lock.json",
       "package.json",

@@ -22,6 +22,15 @@ interface KernelWorkerTestScratchOptions {
   readonly kernelExportNames?: readonly string[];
 }
 
+/** Stable initial image for synthetic fixtures which do not model exec. */
+export function initialProcessExecGeneration(memory: WebAssembly.Memory) {
+  return (_pid: number, pointer: number | bigint, capacity: number): number => {
+    if (capacity !== 8) return -22;
+    new DataView(memory.buffer).setBigUint64(Number(pointer), 0n, true);
+    return 8;
+  };
+}
+
 /** Neutral Rust-owned timer teardown result for tests without platform timers. */
 export function emptyProcessTimerCleanup(
   memory: WebAssembly.Memory,
@@ -75,6 +84,7 @@ export function installKernelWorkerTestScratch(
     // Rust-owned cleanup record is the neutral production result; timer
     // ownership tests override this implementation explicitly.
     const defaultTimerCleanup = emptyProcessTimerCleanup(memory);
+    const defaultExecGeneration = initialProcessExecGeneration(memory);
     const rawInstance = createKernelScratchTestInstance(
       pointerWidth,
       memory,
@@ -84,6 +94,7 @@ export function installKernelWorkerTestScratch(
       // one-time spread would silently ignore later fault injection.
       () => ({
         kernel_take_process_timer_cleanup: defaultTimerCleanup,
+        kernel_get_process_exec_generation: defaultExecGeneration,
         ...options.kernelExports,
       }),
       () => pointerWidth === 8 ? BigInt(pointer) : pointer,
