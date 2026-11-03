@@ -20938,3 +20938,38 @@ GObject rerun and full dependency/image rebuild remain required. Evidence:
 `.context/graphics-libffi-compact-r15/`,
 `.context/graphics-gobject-normal-r14-r3/`. ABI family remains
 program 56 / host 3 / GL 17 / fork 21.
+
+
+**Historical A1 audit comparison and r12 desktop checkpoint, 2026-11-03.**
+The remaining recorded performance/stress audit completes 26 contexts,
+2,050 cases, with zero native prediction divergences and zero dropped
+records. Both recorded and audit-off arms use historical source
+`b1c005d7a12dd4915f02529943404a07dc9b7f7a` and recorded kernel SHA-256
+`5b1dd2e17b2cedbeb649dbdf8fc28a8f9f99a614c5095e663f860da6d148f388`.
+Both have the same 1,190 passing cases. There are 138 verdict differences:
+105 Fail to InternalError, one Fail to Timeout, 31 InternalError to Fail,
+and one InternalError to Timeout. Recorded totals are 1,190 Pass, 117 Fail,
+663 InternalError and 80 NotSupported; off totals are 1,190 Pass, 42 Fail,
+736 InternalError, two Timeout and 80 NotSupported. This is neither an
+identical result nor final A3 conformance or performance acceptance.
+Evidence: `.context/stage-a1-runs/perfstress-completed-comparison/`,
+including per-case `compare.txt` and preserved source provenance.
+
+The completed r12 desktop matrix at `8a2a7ae841` fails: Chromium has
+14 Pass and one Cage timeout; Firefox has 13 Pass and two existing
+host-clipboard skips; WebKit has 12 Pass, the same two skips and one
+Omarchy guest-clipboard startup failure. Cage's cold native checker build
+consumes about 267 seconds before application navigation inside the
+300-second test clock. Prepare that tool before repeating the unchanged
+application checks; no application latency budget is raised.
+
+In the WebKit failure, the shell reports a dbus-daemon segmentation fault.
+The retained console identifies a blank `worker.onerror` during exec,
+with `Service Worker context closed` and `Cannot load .` page errors at
+the same point; the last recorded syscall is execve, before the daemon
+makes its own syscalls. SIGSEGV is the host's fallback classification,
+not proof of a guest memory access defect. Its cause remains under
+investigation with complete original assertions retained. The remaining
+Labwc/SFWBar cases pass in this checkpoint, which is not the final combined
+source. Evidence: `.context/graphics-desktop-r12-results/`,
+`omarchy-webkit-console.json`.
