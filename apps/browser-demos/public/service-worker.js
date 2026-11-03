@@ -1332,6 +1332,18 @@ if (typeof window !== "undefined") {
   }
 
   function fetchScopedLazyVfsRequest(request) {
+    // Native integrity rejection evicts the transport body and a later
+    // explicit read asks to reload it. CacheStorage must honor that request;
+    // otherwise every read receives the same rejected bytes forever.
+    if (request.cache === "reload") {
+      return caches.open(LAZY_ASSET_CACHE).then(function (cache) {
+        return cache.delete(request);
+      }).then(function () {
+        return fetch(request);
+      }).then(function (response) {
+        return cacheCompleteLazyVfsResponse(request, response);
+      });
+    }
     return caches.keys().then(function (cacheNames) {
       if (cacheNames.indexOf(LAZY_ASSET_CACHE) === -1) return null;
       return caches.open(LAZY_ASSET_CACHE).then(function (cache) {

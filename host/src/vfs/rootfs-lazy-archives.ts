@@ -230,7 +230,13 @@ export function buildRootfsLazyWiring(
   const discardDeferred = (uri: string): void => {
     // Only native validation can reject a completed transfer. Pending and
     // terminal transport failures retain their original bounded policy.
-    if (slots.get(uri)?.state === "ready") slots.delete(uri);
+    const slot = slots.get(uri);
+    if (slot?.state === "ready") {
+      slots.delete(uri);
+      report(onProgress, { id: uri, kind: "file", url: uri, status: "error",
+        loadedBytes: slot.bytes.byteLength,
+        error: "Native VFS rejected the transfer: size or SHA-256 mismatch" });
+    }
   };
   return { deferredProvider, whenFetchSettles, discardDeferred };
 }

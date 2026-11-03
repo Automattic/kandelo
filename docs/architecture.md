@@ -2626,6 +2626,17 @@ the archive and each extracted member in kernel memory, and never evicts
 them. Archives may be sealed into atomic activation cohorts (`seal.rs`); the
 kernel verifies the cohort digests when it loads the image.
 
+If native length or digest validation rejects a deferred body, the read fails
+with `EIO` without materializing it. `host_discard_deferred` evicts that
+transport body, changes its download progress from complete to error, and
+emits a `vfs-integrity` host diagnostic (also visible on the console). This
+remains visible even if the guest library handles `EIO` by omitting a font
+or other data. No automatic retry follows an integrity failure. A later
+explicit read requests `cache: "reload"`; the browser service worker evicts
+that exact entry from its own scoped lazy cache and replaces it from the
+origin. Node carries the same request through its transport. Content
+admission still belongs to Rust's size/digest checks, not the service worker.
+
 Relative URIs are resolved against the deployment at fetch time: the browser
 uses `BrowserKernel`'s `lazyUrlBase`, Node the peer
 `NodeKernelHost.rootfsLazyUrlBase`. The image itself is never rewritten.

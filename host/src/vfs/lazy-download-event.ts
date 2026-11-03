@@ -23,7 +23,7 @@
  * of each naming it through some filesystem's method signature.
  */
 export type LazyFetch =
-  (url: string, init?: { signal?: AbortSignal }) => Promise<Response>;
+  (url: string, init?: { signal?: AbortSignal; cache?: RequestCache }) => Promise<Response>;
 
 export type LazyDownloadKind = "file" | "tree" | "archive";
 export type LazyDownloadStatus = "started" | "progress" | "complete" | "error";

@@ -2650,7 +2650,15 @@ export class WasmPosixKernel {
           }
         },
         host_discard_deferred: (uriPtr: KernelPointer, uriLen: number): void => {
-          this.#rootfsDeferredInvalidator?.(this.#readComponentFromMemory(uriPtr, uriLen));
+          const uri = this.#readComponentFromMemory(uriPtr, uriLen);
+          this.#rootfsDeferredInvalidator?.(uri);
+          // WHY: libraries may recover from EIO with missing fonts or data.
+          // Native integrity rejection must still be visible to the operator,
+          // not remain a successful download followed by silent degradation.
+          const message = `Lazy VFS asset rejected: size or SHA-256 mismatch for ${uri.split(/[?#]/, 1)[0]}; the read fails with EIO`;
+          console.error(message);
+          try { this.callbacks.onHostDiagnostic?.({ pid: 0, source: "vfs-integrity", message }); }
+          catch (error) { console.error("VFS integrity diagnostic reporter failed", error); }
         },
         host_fetch_deferred: (
           uriPtr: KernelPointer,

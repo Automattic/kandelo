@@ -406,6 +406,7 @@ export function configureRootfsOverlayFromImage(
   },
 ): () => void {
   let resourceLimits: Map<string, number> | undefined;
+  const rejectedResources = new Set<string>();
   const installedLazyFetcher = options.lazyFetcher;
   const onLazyProgress = options.onLazyProgress;
   const lazyUrlBase = options.lazyUrlBase;
@@ -430,7 +431,8 @@ export function configureRootfsOverlayFromImage(
         const resolved = resolveAddress(url);
         const limit = resourceLimits?.get(url);
         if (limit === undefined) throw new Error(`No native lazy resource bound for ${url}`);
-        return fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress);
+        return fetchLazyResourceBytes(installedLazyFetcher, resolved, limit, onProgress,
+          rejectedResources.has(url) ? { cache: "reload" } : undefined);
       }
       : async () => {
         // With no transport installed a lazy read genuinely cannot succeed;
@@ -453,7 +455,7 @@ export function configureRootfsOverlayFromImage(
     options.imageBytes,
     options.imageRead,
     whenFetchSettles,
-    discardDeferred,
+    uri => { rejectedResources.add(uri); discardDeferred(uri); },
   );
   // Populate only after native image validation, outside Wasm imports. These
   // are transfer bounds, never a second filesystem or content authority.

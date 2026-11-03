@@ -98,3 +98,10 @@ describe("native rootfs lazy transport retry policy", () => {
   });
 
 });
+
+it("carries an explicit reload through the native byte transport", async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3])));
+  expect(await fetchLazyResourceBytes(fetcher, "https://fixture.invalid/data", 3, undefined,
+    { cache: "reload" })).toEqual(new Uint8Array([1, 2, 3]));
+  expect(fetcher).toHaveBeenCalledWith("https://fixture.invalid/data", { cache: "reload" });
+});

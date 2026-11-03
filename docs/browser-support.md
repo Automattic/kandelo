@@ -2784,6 +2784,12 @@ own lazy cache, and restarting/updating `/a/` left `/candidate-b/` usable and
 unchanged. This is evidence for that scenario, not a claim that every browser,
 host configuration, or arbitrary prefix pair was exercised.
 
+A lazy body rejected by native size or SHA-256 validation is an explicit
+`EIO`, a failed download entry and a `vfs-integrity` host diagnostic. A later
+explicit read reloads that body through the service worker, evicting only
+its exact entry in the current scope's lazy cache. It does not require
+clearing the browser profile or deleting another deployment's caches.
+
 If one prefix retains a stale worker, unregister only that exact registration
 from a page on the same origin, then reload that prefix:
 

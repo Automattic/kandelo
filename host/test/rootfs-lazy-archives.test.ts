@@ -297,3 +297,21 @@ describe("deferred fetch settlement", () => {
     expect(Date.now() - started).toBeGreaterThanOrEqual(15);
   });
 });
+
+it("turns completed transfer progress into a visible native-integrity error without retrying", async () => {
+  const events: Array<{ status: string; error?: string }> = [];
+  let fetches = 0;
+  const wiring = buildRootfsLazyWiring(async () => { fetches++; return new Uint8Array([1, 2, 3]); },
+    event => events.push(event));
+  const dest = new Uint8Array(3);
+  expect(wiring.deferredProvider("asset", 0n, dest)).toBe(-11);
+  await wiring.whenFetchSettles();
+  expect(wiring.deferredProvider("asset", 0n, dest)).toBe(3);
+  wiring.discardDeferred("asset");
+  expect(events.map(event => event.status)).toEqual(["started", "complete", "error"]);
+  expect(events.at(-1)!.error).toMatch(/size or SHA-256 mismatch/);
+  expect(fetches).toBe(1);
+  expect(wiring.deferredProvider("asset", 0n, dest)).toBe(-11);
+  await wiring.whenFetchSettles();
+  expect(fetches).toBe(2);
+});
