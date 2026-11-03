@@ -17127,22 +17127,34 @@ pub extern "C" fn kernel_take_pty_readiness_changed() -> u32 {
 // DRI / KMS
 // ---------------------------------------------------------------------------
 
-/// Count one vblank of the host's present pump and return the new (low 32
-/// bits of the) sequence.
-///
-/// The host runs this on its 16.67 ms vblank pump in the kernel worker, on
-/// Node and in the browser alike. The tick completes the CRTC's pending
-/// page flip, queues `DRM_EVENT_FLIP_COMPLETE` / `DRM_EVENT_VBLANK` records,
-/// and releases parked `DRM_IOCTL_WAIT_VBLANK` callers; the host learns
-/// that it must retry parked callers from [`kernel_kms_take_vblank_wake`].
+/// Count one vblank of the host's present pump, stamped with the time of the
+/// call, and return the new (low 32 bits of the) sequence. Equivalent to
+/// [`kernel_vblank_elapsed`]`(0)`; kept for hosts that predate it.
 #[unsafe(no_mangle)]
 pub extern "C" fn kernel_vblank() -> u32 {
+    kernel_vblank_elapsed(0)
+}
+
+/// Count one vblank that happened `elapsed_us` microseconds before this call
+/// and return the new (low 32 bits of the) sequence.
+///
+/// The host's vblank pump in the kernel worker calls this once per vblank:
+/// a display frame (`requestAnimationFrame`) in the browser, whose age is
+/// the time since the frame's timestamp, and a timer at the mode's refresh
+/// where there is no display (Node, or a hidden page), whose age is 0. The
+/// tick completes the CRTC's pending page flip, queues
+/// `DRM_EVENT_FLIP_COMPLETE` / `DRM_EVENT_VBLANK` records, signals the
+/// commit's out-fence and releases parked `DRM_IOCTL_WAIT_VBLANK` callers,
+/// all stamped with the vblank's `CLOCK_MONOTONIC` time; the host learns
+/// that it must retry parked callers from [`kernel_kms_take_vblank_wake`].
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_vblank_elapsed(elapsed_us: u32) -> u32 {
     let mut host = WasmHostIO;
-    let (tv_sec, tv_usec) =
-        match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
-            Ok((sec, nsec)) => (sec as u32, (nsec / 1000) as u32),
-            Err(_) => (0u32, 0u32),
-        };
+    let now_us = match host.host_clock_gettime(wasm_posix_shared::clock::CLOCK_MONOTONIC) {
+        Ok((sec, nsec)) => (sec as u64) * 1_000_000 + (nsec as u64) / 1000,
+        Err(_) => 0,
+    };
+    let (tv_sec, tv_usec) = crate::dri::vblank_time_elapsed(now_us, elapsed_us);
     crate::dri::retire_vblank(&mut host, tv_sec, tv_usec) as u32
 }
 

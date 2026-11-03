@@ -4449,6 +4449,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_vblank_elapsed",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_wait_deadline_close",
       "signature": "(i64) -> (i32)"
     },

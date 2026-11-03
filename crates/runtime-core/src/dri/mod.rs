@@ -55,6 +55,29 @@ pub fn vblank_count_and_time() -> (u64, u32, u32) {
     (vblank_count(), (stamp >> 32) as u32, stamp as u32)
 }
 
+/// The `(tv_sec, tv_usec)` of a vblank the host observed `elapsed_us`
+/// microseconds before `now_us` (both `CLOCK_MONOTONIC`), never earlier than
+/// the previous vblank's packed `last_stamp`.
+///
+/// WHY: in the browser the host's vblank is a display frame, and its time is
+/// the frame's `requestAnimationFrame` timestamp, which precedes the moment
+/// the host can run this tick (by about a millisecond idle, more while the
+/// kernel worker is busy). The host passes that age rather than an absolute
+/// time, so the stamp needs no agreement between the host's frame clock and
+/// the kernel's `CLOCK_MONOTONIC` source beyond both advancing at the same
+/// rate. Vblank timestamps are monotonic on Linux, so a stamp older than the
+/// previous vblank (or than the stamp a CRTC enable recorded) is raised to it.
+pub fn vblank_time_before(now_us: u64, elapsed_us: u32, last_stamp: u64) -> (u32, u32) {
+    let last_us = (last_stamp >> 32) * 1_000_000 + (last_stamp & 0xffff_ffff);
+    let at = now_us.saturating_sub(u64::from(elapsed_us)).max(last_us);
+    ((at / 1_000_000) as u32, (at % 1_000_000) as u32)
+}
+
+/// [`vblank_time_before`] against the current vblank's stamp.
+pub fn vblank_time_elapsed(now_us: u64, elapsed_us: u32) -> (u32, u32) {
+    vblank_time_before(now_us, elapsed_us, VBLANK_STAMP.load(Ordering::Relaxed))
+}
+
 /// Enabling the CRTC before the pump's first tick still gives the current
 /// count a real timestamp, as Linux's `drm_vblank_enable` records one.
 pub fn stamp_vblank_if_unset(tv_sec: u32, tv_usec: u32) {
@@ -179,7 +202,7 @@ pub fn retire_vblank_for_process(
 
 /// One host vblank: advance the counter, complete the CRTC's pending flip,
 /// and retire every card0 file's flips, vblank events and waiters. Called
-/// from `kernel_vblank` on each tick of the host's present pump, so
+/// from `kernel_vblank_elapsed` on each tick of the host's present pump, so
 /// `drmModePageFlip → poll → drmHandleEvent` and `drmWaitVBlank` both run
 /// at the real refresh cadence on every host.
 pub fn retire_vblank(host: &mut dyn crate::process::HostIO, tv_sec: u32, tv_usec: u32) -> u64 {
@@ -285,6 +308,20 @@ mod tests {
         assert!(vblank_passed(11, 10));
         assert!(!vblank_passed(9, 10));
         assert!(!vblank_passed(10 + (1 << 23) + 1, 10));
+    }
+
+    #[test]
+    fn vblank_time_is_its_age_before_now_and_never_precedes_the_last_vblank() {
+        // A display frame 1.5 ms before now, with no earlier vblank.
+        assert_eq!(vblank_time_before(5_001_000, 1_500, 0), (4, 999_500));
+        // A timer tick: the vblank is now.
+        assert_eq!(vblank_time_before(5_001_000, 0, 0), (5, 1_000));
+        // A frame older than the previous vblank (here: a CRTC enable stamp
+        // at 5.000900 s) is raised to it rather than going backwards.
+        let last = (5u64 << 32) | 900;
+        assert_eq!(vblank_time_before(5_001_000, 1_500, last), (5, 900));
+        // An age larger than the clock saturates instead of wrapping.
+        assert_eq!(vblank_time_before(1_000, u32::MAX, 0), (0, 0));
     }
 
     #[test]
