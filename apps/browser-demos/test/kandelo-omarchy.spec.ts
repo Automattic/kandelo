@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { gotoApp } from "./support/kandelo-machine";
+import { footFrame } from "./support/labwc-frame";
+import { typePhysicalText } from "./support/physical-typing";
 
 
 /**
@@ -69,21 +71,67 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
   }, { timeout }).toMatch(pattern);
 }
 
-/** A theme reload can scroll its initiating command off screen before the
- * terminal view mounts. Read it through the terminal's ordinary scrollback. */
-async function expectTerminalHistory(page: Page, pattern: RegExp) {
-  await openSurface(page, "Terminal");
-  await expect.poll(() => terminalText(page)).not.toBe("");
-  await page.locator(".xterm-screen").hover();
-  let text = "";
-  for (let i = 0; i < 12 && !pattern.test(text); i++) {
-    text = await terminalText(page);
-    if (pattern.test(text)) break;
-    await page.mouse.wheel(0, -200);
-    await page.waitForTimeout(100);
-  }
-  expect(text).toMatch(pattern);
-  await page.mouse.wheel(0, 10_000);
+/** Read rendered rows across the terminal's ordinary DOM scrollback.
+ * Start at the bottom: view handoff preserves an older scroll position, so
+ * scanning upward from that position can miss a newer notification entirely. */
+async function expectTerminalHistory(page: Page, pattern: RegExp, timeout = 60_000) {
+  await expect.poll(async () => {
+    await openSurface(page, "Terminal");
+    const viewport = page.locator(".xterm-viewport").first();
+    const scroll = async (top: number) => {
+      await viewport.evaluate((node, y) => node.scrollTo(0, y), top);
+      // Capture the actual painted terminal before reading its virtual rows.
+      await page.locator(".xterm-screen").first().screenshot();
+    };
+    await scroll(Number.MAX_SAFE_INTEGER);
+    let text = "";
+    try {
+      for (let i = 0; i < 12; i++) {
+        text = `${await terminalText(page)}\n${text}`;
+        if (pattern.test(text)) return text;
+        const {top, height} = await viewport.evaluate(node =>
+          ({top: node.scrollTop, height: node.clientHeight}));
+        if (top === 0) break;
+        await scroll(Math.max(0, top - Math.max(1, height / 2)));
+      }
+      return text;
+    } finally {
+      await scroll(Number.MAX_SAFE_INTEGER);
+    }
+  }, { timeout }).toMatch(pattern);
+}
+
+/** A mapped Foot first presents a blank cursor before its shell is ready.
+ * Require text across several columns of the real client, excluding a lone
+ * cursor cell; typing into the initial PTY can race the shell's tty setup. */
+async function expectFootPrompt(page: Page) {
+  await openSurface(page, "Demo");
+  // Locator screenshots include page overlays above the guest canvas.
+  await expect(page.getByRole("complementary", {name: "Download status"}))
+    .toBeHidden({timeout: 60_000});
+  await expect.poll(async () => {
+    const frame = await footFrame(page);
+    if (!frame.foot) return 0;
+    const png = await page.locator(".kmachine-primary-slot:not(.is-hidden) canvas").first().screenshot();
+    return page.evaluate(async ([base64, rect]) => {
+      const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], {type: "image/png"}));
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+      const image = ctx.getImageData(rect.x, rect.y, rect.width, Math.min(rect.height, 60));
+      bitmap.close();
+      let columns = 0;
+      for (let x = 0; x < image.width; x++) {
+        for (let y = 0; y < image.height; y++) {
+          const at = (y * image.width + x) * 4;
+          if (Math.min(image.data[at], image.data[at + 1], image.data[at + 2]) > 150) {
+            columns++; break;
+          }
+        }
+      }
+      return columns;
+    }, [png.toString("base64"), frame.foot] as const);
+  }, {timeout: 60_000}).toBeGreaterThan(24);
 }
 
 /** Press a CTRL combo on the desktop. A browser reserves SUPER (Cmd/Win), so
@@ -338,9 +386,9 @@ test("Kandelo omarchy boots a themed tiling desktop with a Quickshell bar, launc
   // real org.freedesktop.Notifications.Notify over the dbus-daemon session
   // bus, the shell's notification server answers with the assigned id and
   // maps the card as a layer-shell surface.
-  await expectTerminal(page, /NOTIFY_ID id=\d+/, 60_000);
-  await expectTerminal(page, /NOTIFICATION id=\d+ summary=Theme/, 60_000);
-  await expectTerminal(page, /LAYER ns=notifications /, 60_000);
+  await expectTerminalHistory(page, /NOTIFY_ID id=\d+/);
+  await expectTerminalHistory(page, /NOTIFICATION id=\d+ summary=Theme/);
+  await expectTerminalHistory(page, /LAYER ns=notifications /);
 
   // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher at
   // its root level. Down+Enter descends into the theme list, and Enter on
@@ -674,7 +722,12 @@ test("Kandelo omarchy copies and pastes between foot windows through the Wayland
   await expectTerminal(page, /GLDRAW app_id=foot/, 60_000);
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
-  await page.keyboard.type("echo notify-send clip-ok\n", { delay: 20 });
+  await expectFootPrompt(page);
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  await typePhysicalText(page, "echo notify-send clip-ok; "
+    + "printf '\\033[48;2;30;180;60mCLIPBOARD_SOURCE_READY\\033[0m\\n'\n", {delay: 20});
+  // Observe the executed output before starting Foot's scrollback search.
+  await expect.poll(async () => (await footFrame(page)).green, {timeout: 60_000}).toBeGreaterThan(200);
 
   // Select it from the keyboard (foot's scrollback search, committed with
   // Enter), then copy with SUPER+C.

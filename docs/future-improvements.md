@@ -1008,8 +1008,3 @@ Batch PRs classify every failure against main by rebuilding main in a second che
 
 **Files:** new `tests/baselines/`, an xtask command to record, check and classify, `docs/agent-guidance/validation.md`
 
-### Read the Omarchy boot spec's markers from scrollback
-
-`kandelo-omarchy.spec.ts` "boots a themed tiling desktop…" matches each gate's marker only in the terminal rows on screen. During a busy run a burst of compositor output (repeated `TILE` lines) can scroll a marker away before the spec reads it. It failed that way on Chromium and WebKit in PR #1600's full run and passed when run alone (3 of 3). Read markers through scrollback or a cumulative log, as `expectTerminalHistory` does for theme reloads, so the gates do not depend on timing.
-
-**Files:** `apps/browser-demos/test/kandelo-omarchy.spec.ts`

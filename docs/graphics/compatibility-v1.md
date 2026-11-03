@@ -20580,3 +20580,21 @@ SDKs, setup-all, program fixtures, ABI and freshness (7/127/41/3670/3674/
 for comparison; candidate products remain in ABI family 56/3/17/21.
 Evidence: `.context/graphics-main-normal-r2/results/`. No benchmark or
 shipping claim follows from successful builds.
+
+
+**Omarchy observation checkpoint, 2026-11-03.** The notification gates
+read real terminal scrollback beginning at its current bottom, and capture
+the painted terminal before reading virtual rows. Beginning from a saved
+older scroll position could omit the newer notification entirely. Clipboard
+setup waits for Foot's own prompt and executed colored output before search
+and copy; a mapped blank client is not shell readiness. The original
+selection, data-device delivery and notification assertions remain intact.
+Both the complete themed-desktop case and guest-to-guest clipboard case pass
+on Chromium, Firefox and WebKit, using runtime `030acf65aa` and normally
+rebuilt retired-client r10 products (six native flows, 5 minutes 27 seconds).
+Command: `playwright test test/kandelo-omarchy.spec.ts --grep 'boots a
+themed|copies and pastes between foot' --project=<engine> --workers=1
+--trace=on`; run through the declared dev shell. Evidence:
+`.context/graphics-desktop-r11-results/omarchy-r15/`. Earlier R13/R14
+failures remain preserved. This focused run does not replace the final
+combined desktop gate or close the intermittent WebKit kernel failure.
