@@ -1,16 +1,21 @@
-import { expect, it } from "vitest";
+import { afterEach, expect, it } from "vitest";
 import { createWasmPosixKernelTestHarness } from "../src/kernel.js";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance.js";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import { QOP_CREATE_FENCE, QOP_FENCE_STATUS, QOP_RELEASE_FENCE, QOP_FLUSH } from "../src/webgl/ops.js";
 
+import { markRendererReset, rendererLost, RENDERER_LOST } from "../src/webgl/renderer-loss.js";
+import { setGlDiagnosticReporter } from "../src/webgl/diagnostics.js";
+import { configureGlAudit, resetGlAuditForTesting } from "../src/webgl/native-audit.js";
+afterEach(() => { setGlDiagnosticReporter(null); resetGlAuditForTesting(); setNativeGlFaultReporter(null); });
+
 function renderer() {
-  let serial = 0, flushes = 0;
+  let serial = 0, flushes = 0, errorReads = 0;
   const live = new Map<WebGLSync, number>(), deleted: WebGLSync[] = [];
   const errors: number[] = [];
   const hooks = { create: () => {} };
   const gl = new Proxy({
-    getError: () => errors.shift() ?? 0,
+    getError: () => { errorReads++; return errors.shift() ?? 0; },
     getParameter: () => null,
     flush() { flushes++; },
     isContextLost: () => false,
@@ -18,7 +23,7 @@ function renderer() {
     getSyncParameter: (fence: WebGLSync) => live.get(fence) ?? null,
     deleteSync(fence: WebGLSync) { expect(live.delete(fence)).toBe(true); deleted.push(fence); },
   }, { get(target, name) { return Reflect.get(target, name) ?? (() => null); } }) as unknown as WebGL2RenderingContext;
-  return { gl, live, deleted, hooks, errors, created: () => serial, flushes: () => flushes,
+  return { gl, live, deleted, hooks, errors, errorReads: () => errorReads, created: () => serial, flushes: () => flushes,
     signal() { for (const fence of live.keys()) live.set(fence, 0x9119); } };
 }
 function bytes(token: number): Uint8Array {
@@ -127,9 +132,72 @@ it("reports a fence deletion the live renderer refuses as a fatal host fault", (
 });
 it("preserves selected flags on valid fence admission", () => {
   const value = direct(4); value.query(QOP_CREATE_FENCE, 7);
-  value.native.errors.push(0x500);
+  value.binding.errors.push(0x500);
   expect(value.query(QOP_CREATE_FENCE, 8).rc).toBe(16);
   expect(value.binding.errors).toEqual([0x500]);
   value.kernel.releaseProcessViews(7);
   expect(value.native.deleted).toHaveLength(2);
+});
+
+it.each([4, 8] as const)("samples creation and polling once per fence query at wasm%d widths", width => {
+  const value = direct(width);
+  const before = value.native.errorReads();
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  expect(value.native.errorReads() - before).toBe(1);
+  const afterCreate = value.native.errorReads();
+  expect(value.query(QOP_FENCE_STATUS, 7).rc).toBe(16);
+  expect(value.native.errorReads() - afterCreate).toBe(1);
+  value.kernel.releaseProcessViews(7);
+});
+
+it.each([0x502, 0x505])("resets a fence creator on native flag %s without publishing its candidate", flag => {
+  const value = direct(4);
+  const peer = { gl: value.native.gl };
+  const messages: string[] = [];
+  setGlDiagnosticReporter(d => messages.push(d.message));
+  value.native.hooks.create = () => value.native.errors.push(flag);
+  const result = value.query(QOP_CREATE_FENCE, 7);
+  expect(result.rc).toBe(RENDERER_LOST);
+  expect([...result.output]).toEqual(Array(16).fill(0xa5));
+  expect(rendererLost(value.binding)).toBe(true);
+  expect(rendererLost(peer)).toBe(false);
+  expect(value.binding.fences.has(7)).toBe(false);
+  expect(value.native.live.size).toBe(0);
+  expect(value.binding.errors).toEqual([]);
+  expect(messages).toHaveLength(1);
+  expect(messages[0]).toMatch(/pid 7 session 11 batch .*query 0x2e/);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("resets an unexpected native fence-status error instead of swallowing it privately", () => {
+  const value = direct(4);
+  setGlDiagnosticReporter(() => {});
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  value.native.gl.getSyncParameter = () => { value.native.errors.push(0x502); return 0x9118; };
+  const result = value.query(QOP_FENCE_STATUS, 7);
+  expect(result.rc).toBe(RENDERER_LOST);
+  expect([...result.output]).toEqual(Array(16).fill(0xa5));
+  expect(rendererLost(value.binding)).toBe(true);
+  expect(value.binding.errors).toEqual([]);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("releases a retained fence after the guest context resets", () => {
+  const value = direct(4);
+  expect(value.query(QOP_CREATE_FENCE, 7).rc).toBe(16);
+  markRendererReset(value.binding);
+  expect(value.query(QOP_RELEASE_FENCE, 7).rc).toBe(16);
+  expect(value.native.deleted).toHaveLength(1);
+  value.kernel.releaseProcessViews(7);
+});
+
+it("keeps a divergent fence creation fatal under audit and cancels its unpublished candidate", () => {
+  const value = direct(4);
+  setGlDiagnosticReporter(() => {});
+  configureGlAudit({ mode: "fatal", sink: () => {}, fault: message => { throw new NativeGlFault(message); } });
+  value.native.hooks.create = () => value.native.errors.push(0x502);
+  expect(() => value.query(QOP_CREATE_FENCE, 7)).toThrow(NativeGlFault);
+  expect(value.binding.fences.has(7)).toBe(false);
+  expect(value.native.live.size).toBe(0);
+  expect(rendererLost(value.binding)).toBe(true);
 });

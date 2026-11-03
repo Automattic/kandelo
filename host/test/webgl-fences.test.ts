@@ -264,3 +264,15 @@ it.each(["candidate", "published"] as const)("faults when the live renderer refu
   expect(value.native.live.size).toBe(1);
   expect(value.native.deleted).toHaveLength(0);
 });
+
+it("keeps an off-batch native polling failure private after capturing the selected guest's flags", () => {
+  const value = fixture(), token = published(value);
+  const lease = value.owner.acquire(token)!;
+  const selected = {errors: [] as number[]};
+  value.native.errors.push(0x501);
+  value.native.gl.getSyncParameter = () => { value.native.errors.push(0x502); return 0x9118; };
+  expect(lease.poll(selected)).toBeNull();
+  expect(selected.errors).toEqual([0x501]);
+  expect(value.source.errors).toEqual([]);
+  lease.release(); value.owner.destroy(token);
+});

@@ -157,6 +157,20 @@ and two existing engine controls, WebKit 233 Pass, no failures. This is
 source/mechanism evidence; A3 dEQP, desktop, memory and performance validation
 remain pending and this checkpoint is not a readiness claim.
 
+**A3 fence-query follow-up, 2026-11-03.** Native call-site counters on
+normal r9 found that retained fence queries bypassed the batch wrapper.
+Creation, polling and same-renderer server waits now use the requesting
+binding's batch/reset policy; private retirement and foreign-context checks
+remain exact. A refused creation cancels its unpublished candidate, native
+OOM resets its context, divergences remain fatal under audit, and retained
+sync cleanup still works after a reset. Export/release with no native work
+skip sampling. Five new causal regressions fail on the preceding source and
+pass with the fix; the full graphics gate passes 1,978/1,978 in 84 files,
+including audit cancellation and off-batch error-ownership checks. TypeScript
+retains its 38 recorded diagnostics. Evidence is in
+`.context/a3/fence-batch/`. Browser and final-artifact validation of this
+follow-up remain required; the current preview still has the earlier host.
+
 **Sampler-array source checkpoint, 2026-11-03.** Translated loop-indexed
 sampler arrays now dispatch to constant-index lookups, including array
 parameters, scalar sampler parameters, `inout` arguments, struct returns

@@ -1,3 +1,4 @@
+import { predictsNativeCalls } from "./native-batch.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlOperationStream } from "./operation-stream.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
@@ -5,6 +6,15 @@ import { checkedGlCall, checkedGlCallAfterClean, type CheckedGlOwner } from "./p
 import {
   hasNativeRepair, reserveNativeRetirement, repairNativeState, retireNativeRetirement,
   type NativeRetirement, retainNativeRetirement, type NativeRetirementLease, rethrowNativeGlFault } from "./native-recovery.js";
+
+// Borrow the requesting error owner only during its active guest batch.
+// Creatorless/foreign polling outside that batch keeps private native faults
+// separate from the selected guest's previously captured flags.
+function executionOwner(owner: CheckedGlOwner, current: GlErrorState | null): CheckedGlOwner {
+  if (!current) return owner;
+  const selected = {gl: owner.gl, errors: current.errors};
+  return predictsNativeCalls(selected) ? selected : owner;
+}
 
 type Fence = {
   token: number;
@@ -73,7 +83,7 @@ export class GlFenceLease {
       captureNativeGlErrors(gl, currentErrors);
       if (!repairNativeState(gl) || gl.isContextLost()) return null;
       let status: unknown;
-      if (!checkedGlCall(this.fence.owner, () => {
+      if (!checkedGlCall(executionOwner(this.fence.owner, currentErrors), () => {
         status = gl.getSyncParameter(this.fence.deletion[1]!, 0x9114);
       })) return null;
       if (status === 0x9119) return true; // SIGNALED
@@ -88,7 +98,7 @@ export class GlFenceLease {
     try {
       captureNativeGlErrors(destination,currentErrors);
       if (!repairNativeState(destination) || destination.isContextLost()) return null;
-      if (!checkedGlCall(this.fence.owner,()=>destination.waitSync(this.fence.deletion[1]!,0,-1))) return null;
+      if (!checkedGlCall(executionOwner(this.fence.owner, currentErrors),()=>destination.waitSync(this.fence.deletion[1]!,0,-1))) return null;
       return true;
     } catch (error) { rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;return null;}
   }
@@ -146,7 +156,8 @@ export class GlFenceOwner {
       result.candidate = new GlFenceCandidate(this,fence);
       this.fences.set(token,fence); this.serial = token;
       const create = () => { deletion[1] = gl.fenceSync(0x9117,0); };
-      const accepted = clean ? checkedGlCallAfterClean(owner,create) : checkedGlCall(owner,create);
+      const accepted = predictsNativeCalls(source) ? checkedGlCall(source,create)
+        : clean ? checkedGlCallAfterClean(owner,create) : checkedGlCall(owner,create);
       fence.created = accepted && !!deletion[1]; result.accepted = fence.created;
       return result;
     } catch (caught) {

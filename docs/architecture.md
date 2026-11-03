@@ -6025,6 +6025,14 @@ can acquire the shared renderer. A clean submitted batch takes one error
 sample. A `glGetError` query that only reads host-owned flags issues no
 native sample; muxer replay or utility work on that path still marks native
 execution and receives its boundary sample.
+Fence creation, status queries and same-renderer server waits share this
+batch policy too; retained fence leases borrow the requesting error owner
+only for that synchronous execution, without storing a guest binding. Fence
+creation/status errors reset that binding before a reply or new fence is
+published. Export/release paths with no native work need no sample, and
+retained sync cleanup remains available after the guest context resets.
+Off-batch or foreign-context polling keeps exact private checks and preserves
+the previously selected guest's flags separately.
 Private allocation and retirement owners still use exact checks where native
 success is required to publish or delete a handle. If such a check discovers
 an error within a guest batch, it routes the error to that batch's reset

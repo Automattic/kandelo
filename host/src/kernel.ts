@@ -13,7 +13,7 @@ import type { HostScanout } from "./dri/kms-registry.js";
 import { KMS_CURSOR_PROTOCOL_VERSION } from "./dri/kms-cursor-protocol.js";
 import { prepareSurfaceCreation, validSurfaceCreation, GL_SURFACE_WIRE_BYTES } from "./webgl/surface-create.js";
 import { querySurfaceCapabilities, surfaceCapabilityRenderer, validSurfaceCapabilitiesLength } from "./webgl/surface-capabilities.js";
-import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE } from "./webgl/ops.js";
+import { QOP_SURFACE_CAPABILITIES, QOP_FINISH, QOP_FLUSH, QOP_SERVER_WAIT, QOP_EXPORT_FENCE, QOP_RELEASE_FENCE } from "./webgl/ops.js";
 /**
  * WasmPosixKernel — Loads the kernel Wasm module and provides host
  * import functions that bridge Wasm syscalls to the PlatformIO backend.
@@ -3713,6 +3713,10 @@ export class WasmPosixKernel {
           try {
             if (!this.prepareForeignRetirements(b)) return -5;
             outBuf = new IntrinsicUint8Array(outputLength);
+            // Fence creation/waits are guest execution too. Retained foreign
+            // contexts keep their exact private checks, while native work on
+            // this selected owner shares the same reset/sample policy.
+            const queryWork = (): number => {
             if (isFenceQuery(op)) {
               preparedFence = prepareFenceQuery(b,op,inBuf,outBuf,
                 gl => this.gl_muxers.get(gl)?.captureCurrentErrors(),
@@ -3752,7 +3756,6 @@ export class WasmPosixKernel {
             } else {
               // A reset context answers nothing; see host_gl_submit.
               if (rendererLost(b)) return RENDERER_LOST;
-              written = withNativeBatch(b, `query 0x${op.toString(16)}`, () => {
               // Empty command buffers still need to select their owner.
               this.glMuxerFor(b.gl!).switchTo(b);
               const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
@@ -3769,9 +3772,18 @@ export class WasmPosixKernel {
               if (failure) throw failure.error;
               if (!published) return -5;
               return reply;
-              }, op !== QOP_GET_ERROR);
             }
-          } catch (caught) { rethrowNativeGlFault(caught);
+            return written;
+            };
+            const retainedCleanup = op === QOP_EXPORT_FENCE || op === QOP_RELEASE_FENCE;
+            // Destroying/exporting a retained sync remains possible after its
+            // guest context resets. These paths do not execute guest GL work.
+            written = retainedCleanup && rendererLost(b) ? queryWork()
+              : withNativeBatch(b, `query 0x${op.toString(16)}`, queryWork,
+                op !== QOP_GET_ERROR && !retainedCleanup);
+          } catch (caught) {
+            preparedFence?.candidate?.cancel();
+            rethrowNativeGlFault(caught);
             return -5; // EIO: the renderer failed without a reply
           }
           try {

@@ -54,7 +54,7 @@ export function prepareFenceQuery(b: GlBinding, op: number, input: Uint8Array, o
         const lease = b.fences.acquire(token);
         if (!lease) { result.rc = -5; return result; }
         try {
-          const value = lease.poll(null);
+          const value = lease.poll(b);
           if (value === null) { result.rc = -5; return result; }
           signaled = value ? 1 : 0;
         } finally { lease.release(); }
@@ -115,7 +115,7 @@ export function runServerWait(destination: GlBinding, source: GlBinding | undefi
     if (exported.context === gl) {
       captureErrors(gl);
       selectCurrent();
-      if (exported.enqueueNativeWait(gl, null) !== true) return -5;
+      if (exported.enqueueNativeWait(gl, destination) !== true) return -5;
       disposition = SERVER_WAIT_ORDERED;
     }
     const reply = new DataView(out.buffer, out.byteOffset, out.byteLength);
@@ -136,7 +136,7 @@ export function runServerWait(destination: GlBinding, source: GlBinding | undefi
         // the destination becomes current and the barrier is issued.
         captureErrors(gl);
         selectCurrent();
-        if (lease.enqueueNativeWait(gl, null) !== true) return -5;
+        if (lease.enqueueNativeWait(gl, destination) !== true) return -5;
       } else disposition = SERVER_WAIT_CLIENT_SIGNAL;
     } finally { lease.release(); }
   }
