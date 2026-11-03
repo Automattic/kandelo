@@ -4489,6 +4489,11 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
    connection and may reuse it independently. Node's direct TCP backend is
    unaffected.
 
+   The shared TLS engine awaits plaintext and encrypted stream writes.
+   This preserves stream backpressure and delivers write failures to the
+   owning reader or encryption pump, including when teardown closes an
+   output stream during encryption.
+
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
 
 The injected HTTP pump is shared with Node's `fetchInKernel`. It retains a
