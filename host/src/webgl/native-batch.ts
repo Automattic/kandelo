@@ -38,14 +38,14 @@ export function predictedNativeCalls(calls: readonly (() => void)[]): boolean {
   }
 }
 
-function resetBatch(detail: string): never {
+function resetBatch(detail: string, fatalInAudit = true): never {
   const batch = active;
   if (!batch) nativeGlFault(`Unowned native execution failure: ${detail}`);
   const { owner, label } = batch;
   const message = `GL context reset: ${detail}; pid ${owner.pid} session ${owner.sessionId} batch ${batch.sequence} (${label})`;
   markRendererReset(owner);
   reportGlDiagnostic(owner.pid, "gl-context-reset", message);
-  if (glAuditOn) nativeGlFault(message);
+  if (glAuditOn && fatalInAudit) nativeGlFault(message);
   // A private exact check can discover a flag before the final sample.
   // Clear the physical queue before a peer acquires this shared renderer.
   for (let i = 0; i < 32; i++) {
@@ -63,7 +63,7 @@ export function observeBatchNativeError(gl: WebGL2RenderingContext, error: numbe
     throw new NativeContextReset("Native WebGL renderer lost");
   }
   resetBatch(error === 0x505 ? "native OUT_OF_MEMORY (platform allocation boundary)"
-    : `unpredicted native error 0x${error.toString(16)}`);
+    : `unpredicted native error 0x${error.toString(16)}`, error !== 0x505);
 }
 
 /** Nesting the dispatcher/query under its kernel entry shares one sample.

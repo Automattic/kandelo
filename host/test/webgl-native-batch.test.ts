@@ -116,3 +116,12 @@ it("keeps real WebGL context loss a reset boundary under audit", () => {
   expect(withNativeBatch(owner, "submit", () => { flags.push(0x9242); })).toBe(RENDERER_LOST);
   expect(rendererLost(owner)).toBe(true);
 });
+
+it("keeps native OOM a per-context allocation boundary under audit", () => {
+  const { owner, flags, gl } = setup();
+  configureGlAudit({ mode: "fatal", sink: () => {}, fault: message => { throw new NativeGlFault(message); } });
+  setGlDiagnosticReporter(() => {});
+  expect(withNativeBatch(owner, "submit", () => { flags.push(0x505); })).toBe(RENDERER_LOST);
+  expect(rendererLost(owner)).toBe(true);
+  expect(rendererLost({ gl, pid: 101, sessionId: 8, errors: [] })).toBe(false);
+});

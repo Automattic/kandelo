@@ -6038,8 +6038,9 @@ observed error with the host prediction, naming the native call, kernel
 import, process, session, batch and guest operation. The gap inventory in
 `webgl/native-predictions.ts` identifies rules needing additional coverage.
 `"record"` collects per-call findings; `"fatal"` latches a `NativeGlFault`
-at the first divergence. A batch failure under either audit mode is fatal,
-so the production reset cannot hide it during audit validation. The audit
+at the first divergence. A validation divergence under either audit mode is fatal, so the production
+reset cannot hide it during audit validation. Native OOM and actual context
+loss remain reset boundaries in the audit too. The audit
 adds a native round trip per call and is disabled by default. Node has no
 WebGL renderer and keeps its documented loud initialization failure.
 
