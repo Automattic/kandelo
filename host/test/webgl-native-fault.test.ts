@@ -227,3 +227,16 @@ it("still faults when a new shader's final deletion is refused after restoration
   r.refuse(true);
   expect(caught(() => finalizeShader(b,1))?.name).toBe("NativeGlFault");
 });
+
+it("detects a second physical loss on Node renderers without canvas events", () => {
+  const r = renderer(); Reflect.deleteProperty(r.gl,"canvas");
+  observeRendererLoss(r.owner);
+  r.lose(); expect(rendererLost(r.owner)).toBe(true);
+  r.restore();
+  const next = {gl:r.gl,errors:[] as number[]}; observeRendererLoss(next);
+  const object = r.make();
+  r.lose(); expect(rendererLost(next)).toBe(true);
+  r.restore(); r.refuse(true);
+  const retirement = reserveNativeRetirement(next,[["deleteTexture",object]])!;
+  expect(caught(() => retireNativeRetirement(retirement))).toBeUndefined();
+});

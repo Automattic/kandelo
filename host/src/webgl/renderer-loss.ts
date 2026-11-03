@@ -80,7 +80,12 @@ export function observeRendererLoss(b: { gl: WebGL2RenderingContext | null }): v
   const existing = baselines.get(b);
   if (existing?.gl === gl) return;
   const counter = lossCounter(gl);
-  baselines.set(b, { gl, counter, count: counter.count, lost: !!existing?.lost });
+  const baseline = { gl, counter, count: counter.count, lost: !!existing?.lost };
+  baselines.set(b, baseline);
+  // A Node renderer may have no canvas restoration event. Starting a new
+  // owner after restoration must permit detecting its next physical loss.
+  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = true; }
+  else counter.lost = false;
 }
 
 /** True once the binding's renderer has been lost. */
@@ -90,7 +95,7 @@ export function rendererLost(b: { gl: WebGL2RenderingContext | null }): boolean 
   let baseline = baselines.get(b);
   if (!baseline || baseline.gl !== gl) { observeRendererLoss(b); baseline = baselines.get(b)!; }
   if (baseline.lost) return true;
-  if (gl.isContextLost()) noteRendererLoss(gl);
+  if (gl.isContextLost()) { noteRendererLoss(gl); baseline.lost = true; }
   else baseline.counter.lost = false;
   if (baseline.counter.count !== baseline.count) baseline.lost = true;
   return baseline.lost;

@@ -5794,7 +5794,9 @@ owners and exported images copy that generation without retaining a guest
 binding. A synchronous loss result advances it before the queued canvas
 loss event, which does not count the same loss twice. Ending a context
 clears its session's observation baseline, so a new independent context can
-use the restored renderer. Refused cleanup of that new generation remains
+use the restored renderer. Hosts without canvas events observe restoration
+when a new owner begins, so its next physical loss is detected too.
+Refused cleanup of that new generation remains
 fatal; a logical guest reset alone does not discard live native resources.
 The same leases cover borrowed GPU BO allocations through a native-only
 allocation receipt copied into the surface record. Public BO retirement

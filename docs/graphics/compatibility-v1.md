@@ -20682,3 +20682,14 @@ The standalone host TypeScript check still reports the same 38 diagnostics
 as its recorded pre-change checkpoint, with identical normalized messages;
 it is not a clean typecheck. ABI family 56/3/17/21 is unchanged. These focused
 checks do not close final CTS, desktop, memory or performance acceptance.
+
+**Node renderer follow-up, 2026-11-03.** An embedder without canvas events
+must also detect a second loss after restoration. Starting a new owner now
+observes the renderer's current loss state, and an actual lost boolean
+always resets that owner even if a previous loss was already counted. The
+new two-loss control fails before this adjustment and passes afterward.
+The complete graphics source gate passes 1,988 assertions; the native
+restoration case still passes on Chromium, Firefox and WebKit. Evidence:
+`.context/graphics-renderer-retirement-r1-results/no-canvas-before.log`,
+`after-r3-gate.log`, `browser-after-r4.log`. This is Node/browser lifecycle
+parity, with no ABI change or performance claim; combined gates remain open.
