@@ -20758,3 +20758,18 @@ omitted the offline image-builder module, and one retry used a wrong
 checker path; those failures are preserved separately from guest results.
 This closes the focused cohort, not the remaining full validation or
 performance work. ABI family 56/3/17/21 is unchanged.
+
+**CTS diagnostic preservation checkpoint, 2026-11-03.** The chunk runner
+already captured a bounded output prefix and live case progress, but dropped
+both from ordinary failed-attempt records when QPA could not be read. Attempt
+records now retain at most 65,536 output characters and a copied progress
+snapshot. This does not infer a case outcome from diagnostic text; missing
+QPA results retain Missing verdicts. The new output regression fails on the
+preceding accounting code; all 34 planning/accounting/QPA/progress tests pass
+with the change. Strict native `info.vendor` passes on Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6, and each recorded attempt contains its output
+and exact last-entered-case snapshot. Evidence:
+`.context/graphics-renderer-retirement-r1-results/cts-output-{before,after}.log`
+and `.context/graphics-cts-diagnostic-r13-results/`. The isolated WebKit API
+performance chunk is still running to investigate the initial renderer loss;
+these three info cases are evidence for recording, not full conformance.

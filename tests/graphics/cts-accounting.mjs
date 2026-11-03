@@ -127,7 +127,8 @@ export async function runChunk(chunk, runAttempt, { maxAttempts = 8 } = {}) {
     unexpected.push(...accounted.unexpected);
     duplicates.push(...accounted.duplicates);
     attempts.push({ attempt, cases: remaining.length, outcome: result.outcome, accounted: accounted.rows.length,
-      attributed: accounted.attributed, diagnostics: result.diagnostics ?? [] });
+      attributed: accounted.attributed, diagnostics: result.diagnostics ?? [],
+      output: (result.output ?? "").slice(0, 65_536) });
     if (accounted.abnormal) crashed ??= { attempt, case: accounted.attributed,
       reason: result.outcome.kind === "exit" ? `exit ${result.outcome.code}` : result.outcome.kind };
     const missing = accounted.left.filter(path => !accounted.resume.includes(path));

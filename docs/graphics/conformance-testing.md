@@ -100,6 +100,12 @@ runner exits unsuccessfully. Closing an unresponsive context is bounded;
 if it fails, the runner attempts bounded retirement of its own browser.
 This changes no upstream assertion, case budget or accepted outcome.
 
+Ordinary attempt records retain a bounded stdout/stderr prefix (up to
+65,536 characters) and a copied progress snapshot, including the last case
+entered. A fatal kernel error can prevent reading QPA while the page still
+has this diagnostic evidence. These fields do not create case verdicts:
+cases without authoritative results keep their normal Missing status.
+
 The chunked runner keeps Playwright artifacts under
 `$KANDELO_CTS_OUT/<engine>/playwright`, beside that engine's chunk records.
 It does not clean the application's default `test-results` directory or

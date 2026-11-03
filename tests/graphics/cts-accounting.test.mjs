@@ -134,3 +134,13 @@ test("summarizes per engine and family, reports absent chunks and strict failure
   assert.match(wrong.accountingErrors[0], /do not match/);
   assert.equal(strictVerdict({ engines: {}, accountingErrors: [] }).ok, false);
 });
+
+test("retains bounded failed-attempt output with its progress diagnostics", async () => {
+  const output = "Test case 'a'..\n" + "x".repeat(70_000);
+  const diagnostics = [{ progress: { lastCase: "a", casesEntered: 1 } }];
+  const result = await runChunk({ id: "f#000", family: "f", cases: ["a", "b"] },
+    async () => ({ qpa: "", outcome: { kind: "error", message: "renderer reset" }, output, diagnostics }));
+  assert.equal(result.attempts[0].output, output.slice(0, 65_536));
+  assert.deepEqual(result.attempts[0].diagnostics, diagnostics);
+  assert.deepEqual(result.rows.map(row => [row.path,row.status]), [["a","Missing"],["b","Missing"]]);
+});

@@ -154,8 +154,8 @@ for (const chunk of plan.chunks) {
             new Promise<never>((_, reject) => setTimeout(() => reject(new Error("kernel destroy timed out")), 30_000))]);
         } catch (error) { scope.__ctsSuiteState.destroyError = String(error); }
         finally { scope.__ctsSuiteKernel = null; }
-        const { progress: _progress, ...state } = scope.__ctsSuiteState;
-        return state;
+        const { progress, ...state } = scope.__ctsSuiteState;
+        return { ...state, progress: progress.snapshot() };
       }), 35_000, "kernel teardown");
       writeFileSync(join(qpaDir, `${chunkFileName(chunk.id)}.attempt${attempt}.qpa`), qpa);
       if (glAudit) {
@@ -164,7 +164,7 @@ for (const chunk of plan.chunks) {
           audit.map(line => `${line}\n`).join("") + (auditDropped ? `${JSON.stringify({ dropped: auditDropped })}\n` : ""));
       }
       return { qpa, outcome, output: state?.output ?? "",
-        diagnostics: [...(state?.diagnostics ?? []), ...deadlineEvidence, ...(qpaError ? [{ qpaError }] : []),
+        diagnostics: [...(state?.diagnostics ?? []), { progress: state?.progress }, ...deadlineEvidence, ...(qpaError ? [{ qpaError }] : []),
           ...(state?.destroyError ? [{ destroyError: state.destroyError }] : [])] };
     }, { maxAttempts }).catch(async error => {
       const errorsDir = join(engineDir, "runner-errors");
