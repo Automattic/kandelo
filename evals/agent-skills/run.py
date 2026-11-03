@@ -11,8 +11,9 @@ answers too, because a regex hit is not proof the advice is right.
 Usage (from the repo root):
   python3 evals/agent-skills/run.py [--reps 3] [--model sonnet] [--tasks id,id] [--jobs 4]
 
-Cost: roughly $0.10-0.30 per run on Sonnet. The default (2 tasks x 2 arms x
-3 reps) is 12 runs; run it when a skill changes, not in CI.
+The default runs every tasks.json task in both arms, three times each.
+Use --tasks and --reps to limit the scope and cost. Run it when a skill
+changes, not in CI.
 """
 import argparse
 import concurrent.futures
