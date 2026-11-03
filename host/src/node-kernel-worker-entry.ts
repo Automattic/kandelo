@@ -166,6 +166,7 @@ import {
   type VforkWorkspaceOwnership,
 } from "./process-lifecycle";
 import { NodePcmDriver } from "./audio/node-pcm-driver";
+import { parseGlAuditMode } from "./webgl/native-audit";
 
 if (!parentPort) {
   throw new Error("node-kernel-worker-entry must run in a worker_thread");
@@ -992,6 +993,9 @@ async function handleInit(msg: InitMessage) {
       useSharedMemory: msg.config.useSharedMemory ?? true,
       defaultThreadSlots,
       enableSyscallLog: !!process.env.KERNEL_SYSCALL_LOG,
+      // Node has no WebGL renderer (D-6), so the audit has no context to
+      // instrument here; the option is still parsed for host parity.
+      glAudit: parseGlAuditMode(process.env.KANDELO_GL_AUDIT),
       imageBuildDeterminism: msg.config.imageBuildDeterminism,
     },
     io,

@@ -5998,6 +5998,32 @@ order to the implementation. A renderer whose flags never clear still fails
 loudly at the next capture, and context loss is still detected at every
 entry (`renderer-loss.ts`).
 
+Those native round trips are being retired: the host's own GLES 2.0
+validation is to decide acceptance, as a native driver's validation does,
+and native errors are to become an audit signal. Before any production path
+stops asking the renderer, every place where the host does not yet know the
+outcome has to be found, so the host carries a test-only native-divergence
+audit (`webgl/native-audit.ts`). With `KernelConfig.glAudit` set, every
+WebGL 2 context created in the kernel worker is instrumented: after each
+native call the audit reads `getError` at once and compares it with the
+host's prediction. A call is predicted to be accepted unless the gap table
+(`webgl/native-predictions.ts`) records, for that guest op, query or kernel
+import and that native method, the GLES 2.0 or WebGL rule the host still
+leaves to the renderer. OUT_OF_MEMORY and context loss are recorded as
+boundaries, never as divergences. The errors the audit reads are handed
+back to the host's own `getError` calls with GL flag semantics, so
+acceptance decisions, error attribution and guest replies are unchanged;
+only the order of two different pending flags can differ, which ES 2.0
+section 2.5 leaves unspecified. Each record names the native call, the
+observed and predicted outcome, the kernel import, process, session, an
+audit sequence number and the guest op being executed. `"record"` reports
+every divergence as a host diagnostic (source `gl-audit`) and continues;
+`"fatal"` latches a `NativeGlFault` at the first one. The audit is never on
+by default: it adds a renderer round trip after every native call. Node has
+no WebGL renderer, so there it has nothing to instrument. Running suites
+with it is described in
+[graphics conformance testing](graphics/conformance-testing.md#native-divergence-audit).
+
 The guest side of the same contract keeps `glGetError` off the transport
 when the answer is already known. Applications that check every call (a
 debug GL wrapper is `glGetError(); call; glGetError()`) otherwise pay a

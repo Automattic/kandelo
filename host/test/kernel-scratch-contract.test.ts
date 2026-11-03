@@ -1541,6 +1541,16 @@ const auditAllowances: AuditAllowance[] = [
     why: "The dedicated memory is returned only as env.memory inside the private kernel import object consumed by the reviewed instantiation path or module-secret test companion.",
   },
   {
+    key: "host/src/kernel.ts::WasmPosixKernel.init::kernel-memory-escape::intrinsicObjectKeys(env)",
+    disposition: "kernel-control",
+    why: "Only with the test-only GL native-divergence audit on: the import names are listed so each host_gl_/host_kms_/host_gbm_ function entry can be replaced by its attributing wrapper before instantiation. env.memory is neither read nor passed on.",
+  },
+  {
+    key: "host/src/webgl/native-audit.ts::glAuditEntry::kernel-memory-escape::Reflect.apply(entry, this, args)",
+    disposition: "kernel-control",
+    why: "The audit wrapper calls the original GL/KMS/GBM import with its unchanged receiver and arguments inside an attribution scope; it adds no kernel-memory access of its own.",
+  },
+  {
     key: "host/src/kernel.ts::WasmPosixKernel.#createTestAuthority::kernel-memory-return::this.#buildImportObject(memory)",
     disposition: "kernel-control",
     why: "The module-secret test companion exposes this import builder only as a frozen named method; supported package entry points expose neither the companion nor a kernel Memory.",

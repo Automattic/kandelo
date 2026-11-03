@@ -59,6 +59,7 @@ import { queryOperationKind } from "./webgl/operation-stream";
 import { SubmitFrame, SubmitQueue } from "./webgl/submit-queue";
 import { GlMuxer } from "./webgl/muxer";
 import { drainSubmitQueue, glSubmitExecuting } from "./webgl/submit-drain";
+import { configureGlAudit, glAuditEntry, glAuditOn, isGlAuditEntryName } from "./webgl/native-audit";
 import { resolveIoctlContract } from "./ioctl-contract";
 import {
   KERNEL_SCRATCH_FD_PAIR_BYTES,
@@ -249,6 +250,7 @@ const intrinsicReflectConstruct = Reflect.construct;
 const intrinsicObjectCreate = Object.create;
 const intrinsicObjectDefineProperty = Object.defineProperty;
 const intrinsicObjectFreeze = Object.freeze;
+const intrinsicObjectKeys = Object.keys;
 const intrinsicWasmCompile = WebAssembly.compile;
 const intrinsicWasmInstantiate = WebAssembly.instantiate;
 const intrinsicWasmMemoryBuffer = Object.getOwnPropertyDescriptor(
@@ -1853,6 +1855,18 @@ export class WasmPosixKernel {
       if (this.callbacks.onHostDiagnostic) this.callbacks.onHostDiagnostic(diagnostic);
       else console.warn(diagnostic.message);
     });
+    // Test-only native-divergence audit (webgl/native-audit.ts). Records go
+    // out as host diagnostics; a "fatal" divergence is a NativeGlFault, the
+    // same fatal host fault a refused native cleanup is.
+    if (config.glAudit) {
+      configureGlAudit({
+        mode: config.glAudit,
+        sink: record => this.callbacks.onHostDiagnostic?.({
+          pid: record.pid ?? 0, source: "gl-audit", message: JSON.stringify(record),
+        }),
+        fault: message => nativeGlFault(message),
+      });
+    }
     this.gl.cpuImages.attachPlanarGpu({
       plane: bo => this.#planarPlaneStorage(bo),
       pass: (b, work) => this.#planarConversionPass(b, work),
@@ -2396,6 +2410,17 @@ export class WasmPosixKernel {
       this.#memoryGeneration = intrinsicObjectFreeze({});
       this.#memory = memory;
       const importObject = this.#buildImportObject(memory);
+      // Test-only GL native-divergence audit: attribute each audited native
+      // call to the GL/KMS/GBM import that made it. Only those function
+      // entries are replaced; env.memory is never read here.
+      if (glAuditOn) {
+        const env = importObject.env as Record<string, unknown>;
+        for (const name of intrinsicObjectKeys(env)) {
+          if (!isGlAuditEntryName(name)) continue;
+          const entry = env[name];
+          if (typeof entry === "function") env[name] = glAuditEntry(name, entry as (...args: unknown[]) => unknown);
+        }
+      }
       const rawInstance =
         this.#testEngine === undefined
           ? await intrinsicApply(

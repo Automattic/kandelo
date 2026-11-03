@@ -149,6 +149,7 @@ import {
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 import { createDestroyProgressReporter } from "./destroy-progress-reporter";
+import { parseGlAuditMode } from "./webgl/native-audit";
 import {
   configureRootfsOverlayFromImage,
   createProcessLifecycle,
@@ -1008,6 +1009,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       kernelMaxPages: msg.config.kernelMaxPages,
       enableSyscallLog: msg.config.enableSyscallLog,
       syscallLogPtrWidth: msg.config.syscallLogPtrWidth,
+      glAudit: parseGlAuditMode(msg.config.glAudit),
     },
     io,
     {

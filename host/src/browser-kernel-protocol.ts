@@ -225,6 +225,8 @@ export interface InitMessage {
     /** Forwarded to KernelConfig.syscallLogPtrWidth — only log for processes
      *  of the given pointer width. */
     syscallLogPtrWidth?: 4 | 8;
+    /** Forwarded to KernelConfig.glAudit (test-only). */
+    glAudit?: "record" | "fatal";
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
     /** Routes guest HTTP(S) and external lazy VFS downloads through a browser

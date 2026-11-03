@@ -56,6 +56,7 @@ import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData
 import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject } from "./program-objects.js";
 import { stateArgumentError } from "./state-validation.js";
+import { glAuditOn, noteGlAuditOp, withGlAuditFrame } from "./native-audit.js";
 import { combinedTextureUnits, knownVertexAttributeLimit, maxCubeMapTextureSize, maxViewport } from "./limits.js";
 import * as O from "./ops.js";
 import { withMultisampleRead } from "./multisample.js";
@@ -126,12 +127,24 @@ export function decodeAndDispatch(
   length: number,
   storage?: {before: () => boolean; after: () => boolean},
 ): number {
+  // Test-only native-divergence audit: attribute this frame's native calls.
+  if (glAuditOn) return withGlAuditFrame(b, () => decodeAndDispatchFrame(b, offset, length, storage));
+  return decodeAndDispatchFrame(b, offset, length, storage);
+}
+
+function decodeAndDispatchFrame(
+  b: GlBinding,
+  offset: number,
+  length: number,
+  storage?: {before: () => boolean; after: () => boolean},
+): number {
   if (!b.cmdbufView || !b.gl) return GL_SUBMIT_OK;
   // Validate the entire batch before the first observable mutation. A bad
   // trailing record must not leave a partially executed, rejected batch.
   const validation = validateCommandBuffer(b.cmdbufView, offset, length);
   if (validation !== GL_SUBMIT_OK) {b.compressedUpload=null;b.uniformUpload=null;return validation;}
   const result = walkCommandBuffer(b.cmdbufView, offset, length, (payload, op) => {
+    if (glAuditOn) noteGlAuditOp(op, payload);
     // Flags have no native effects and may accompany a partial upload batch.
     // Merge before repair/utility work without interrupting that transaction.
     if (op === O.OP_CLIENT_ERRORS) {
@@ -539,7 +552,9 @@ export function validImageStorageRequest(input: Uint8Array): boolean {
 /** Execute storage allocation or destination admission after span validation. */
 export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boolean {
   const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
-  return dispatch(b.gl!, b, new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4), 0, view.getUint32(0, true), true) === true;
+  const payload = new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4);
+  if (glAuditOn) noteGlAuditOp(view.getUint32(0, true), payload);
+  return dispatch(b.gl!, b, payload, 0, view.getUint32(0, true), true) === true;
 }
 
 /** ES 2.0 section 3.7.1 sizes of a cube-map face image: square, within

@@ -169,6 +169,12 @@ export interface BrowserKernelOptions {
   kernelOwnedFs?: boolean;
   /** Debug: log every syscall to the kernel-worker console. Noisy. */
   enableSyscallLog?: boolean;
+  /** Test-only GL native-divergence audit; see KernelConfig.glAudit. When
+   *  absent, a test page may supply it through the dev server's test hook
+   *  `globalThis.__KANDELO_TEST_GL_AUDIT__` (apps/browser-demos vite.config.ts,
+   *  KANDELO_BROWSER_TEST_GL_AUDIT), which also receives every "gl-audit"
+   *  diagnostic. */
+  glAudit?: "record" | "fatal";
   /** Debug: only log syscalls for processes of the given pointer width
    *  (4=wasm32, 8=wasm64). Use 8 to focus on a single wasm64 process in a
    *  mixed-arch demo. */
@@ -306,6 +312,17 @@ function decodeVfsImage(image: Uint8Array): Uint8Array {
   return whole;
 }
 
+/** Test-only hook a development server may install in a test page (see
+ * apps/browser-demos vite.config.ts, KANDELO_BROWSER_TEST_GL_AUDIT). It lets
+ * an unmodified demo page boot its machine with the GL native-divergence
+ * audit (webgl/native-audit.ts) and collect its records. Production pages
+ * never define it. */
+type GlAuditTestHook = { mode?: unknown; report?: (record: string) => void };
+function glAuditTestHook(): GlAuditTestHook | undefined {
+  const hook = (globalThis as { __KANDELO_TEST_GL_AUDIT__?: GlAuditTestHook }).__KANDELO_TEST_GL_AUDIT__;
+  return hook && typeof hook === "object" ? hook : undefined;
+}
+
 export class BrowserKernel {
   private kernelWorkerHandle!: Worker;
   private workerStarted = false;
@@ -412,6 +429,13 @@ export class BrowserKernel {
     // included (the in-kernel tmpfs serves `/dev/shm`). The main thread holds
     // no filesystem buffer at all, so nothing accumulates on it across image
     // switches.
+  }
+
+  /** The explicit option wins; otherwise a test page's hook may select it. */
+  private glAuditMode(): "record" | "fatal" | undefined {
+    if (this.options.glAudit !== undefined) return this.options.glAudit;
+    const mode = glAuditTestHook()?.mode;
+    return mode === "record" || mode === "fatal" ? mode : undefined;
   }
 
   /**
@@ -694,6 +718,7 @@ export class BrowserKernel {
             env: this.options.env,
             enableSyscallLog: this.options.enableSyscallLog,
             syscallLogPtrWidth: this.options.syscallLogPtrWidth,
+            glAudit: this.glAuditMode(),
             dnsAliases: this.options.dnsAliases,
             corsProxy: this.options.corsProxy,
           },
@@ -2002,6 +2027,7 @@ export class BrowserKernel {
         this.options.onProcessStderr?.(msg.pid, msg.data);
         break;
       case "host_diagnostic": {
+        if (msg.source === "gl-audit") glAuditTestHook()?.report?.(msg.message);
         this.options.onHostDiagnostic?.({
           pid: msg.pid,
           source: msg.source,
