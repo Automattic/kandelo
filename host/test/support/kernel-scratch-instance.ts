@@ -636,6 +636,10 @@ function signatures(
       parameters: [],
       result: i32,
     },
+    kernel_vblank_elapsed: {
+      parameters: [i32],
+      result: i32,
+    },
     kernel_set_wait_queue_enabled: {
       parameters: [i32],
       result: i32,

@@ -311,6 +311,74 @@ describe("CentralizedKernelWorker KMS stats SAB", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
+  it("ticks on display frames where the worker animates, passing each frame's age to the kernel", () => {
+    // A browser kernel worker has requestAnimationFrame; Node does not. The
+    // worker captures it at construction, like its timers.
+    const frames: Array<(time: number) => void> = [];
+    const scope = globalThis as {
+      requestAnimationFrame?: (cb: (time: number) => void) => number;
+      cancelAnimationFrame?: (handle: number) => void;
+    };
+    scope.requestAnimationFrame = (cb) => frames.push(cb);
+    scope.cancelAnimationFrame = () => {};
+    try {
+      const ages: number[] = [];
+      const kernel = makeKernel({
+        kernel_vblank_elapsed: (elapsedUs: number) => { ages.push(elapsedUs); return 0; },
+      });
+      const stats = new Int32Array(new SharedArrayBuffer(64));
+      kernel.attachKmsStats(1, stats.buffer as SharedArrayBuffer);
+      stubScanout(kernel, 16, 16);
+      const frame = (lagMs: number) => {
+        vi.advanceTimersByTime(17);
+        const cb = frames.shift()!;
+        cb(performance.now() - lagMs);
+      };
+      frame(2);
+      frame(0.5);
+      expect(ages).toEqual([2000, 500]);
+      expect(Atomics.load(stats, 9)).toBe(1);
+      // Frames stop (a hidden page): the timer keeps 60 Hz with age 0.
+      vi.advanceTimersByTime(1000);
+      expect(ages.length).toBeGreaterThanOrEqual(58);
+      expect(ages.slice(2).every((age) => age === 0)).toBe(true);
+    } finally {
+      delete scope.requestAnimationFrame;
+      delete scope.cancelAnimationFrame;
+    }
+  });
+
+  it("keeps the timer on WebKit, whose worker animation frames do not follow the display", () => {
+    const frames: Array<(time: number) => void> = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: (time: number) => void) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("navigator", {
+      userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 "
+        + "(KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+    });
+    try {
+      const ages: number[] = [];
+      const kernel = makeKernel({
+        kernel_vblank_elapsed: (elapsedUs: number) => { ages.push(elapsedUs); return 0; },
+      });
+      kernel.attachKmsStats(1, new SharedArrayBuffer(5 * 4));
+      vi.advanceTimersByTime(1000);
+      expect(frames).toHaveLength(0);
+      expect(ages).toHaveLength(60);
+      expect(ages.every((age) => age === 0)).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stamps with the kernel's own time through kernel_vblank on a kernel without kernel_vblank_elapsed", () => {
+    let ticks = 0;
+    const kernel = makeKernel({ kernel_vblank: () => { ticks++; return 0; } });
+    kernel.attachKmsStats(1, new SharedArrayBuffer(5 * 4));
+    vi.advanceTimersByTime(1000);
+    expect(ticks).toBe(60);
+  });
+
   it("tickVblank samples cursor storage once per tick while accepting records and live writes", () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let pending: Uint8Array | undefined;

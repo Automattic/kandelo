@@ -88,6 +88,7 @@ host/test/dri-modeset.test.ts	prepared-product
 host/test/dri-multiplex.test.ts	source-only
 host/test/dri-registry.test.ts	source-only
 host/test/dri-smoke.test.ts	prepared-product
+host/test/dri-vblank-clock.test.ts	source-only
 host/test/dylink-fork-archive.test.ts	source-only
 host/test/dylink.test.ts	source-only
 host/test/egl-dmabuf-smoke.test.ts	prepared-product

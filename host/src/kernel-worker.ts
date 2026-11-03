@@ -52,6 +52,8 @@ import {
 } from "./kernel";
 import { resolveIoctlContract } from "./ioctl-contract";
 import { connectorModeSize } from "./dri/kms-registry";
+import { VblankClock } from "./dri/vblank-clock";
+import { isJavaScriptCoreUserAgent } from "./runtime-memory-profile";
 import { ABSOLUTE_POINTER_EXTENT } from "./input/input-source.js";
 import {
   createKernelEntryScopedInstance,
@@ -3309,7 +3311,9 @@ export class CentralizedKernelWorker {
    *  texture, instead of scaling an fb-sized bitmap in CSS. Absent →
    *  the canvas tracks the framebuffer size. */
   private kmsDisplaySizes = new Map<number, KmsDisplaySize>();
-  private vblankTimer: ReturnType<typeof setInterval> | null = null;
+  /** The vblank pump's clock: display frames where the worker has them,
+   *  else a timer at the mode's refresh (see dri/vblank-clock.ts). */
+  private vblankClock: VblankClock | null = null;
   /** `KmsRegistry.flipCount()` at the last vblank tick. The pump wakes
    *  blocked retries only when this moved — an unconditional 60 Hz wake
    *  would retry every parked poll/select in the system each tick. */
@@ -3324,6 +3328,12 @@ export class CentralizedKernelWorker {
   readonly #cancelTimeout: typeof clearTimeout;
   readonly #scheduleInterval: typeof setInterval;
   readonly #cancelInterval: typeof clearInterval;
+  /** The worker's display-frame scheduler (`requestAnimationFrame`), or
+   *  undefined on a host without one (Node). Captured with the timers. */
+  readonly #scheduleFrame: ((callback: FrameRequestCallback) => number) | undefined;
+  readonly #cancelFrame: ((handle: number) => void) | undefined;
+  readonly #performanceReceiver: Performance;
+  readonly #performanceNow: () => number;
   readonly #promiseReceiver: PromiseConstructor;
   readonly #promiseResolve: typeof Promise.resolve;
   readonly #promiseThen: typeof Promise.prototype.then;
@@ -3346,6 +3356,28 @@ export class CentralizedKernelWorker {
     this.#cancelTimeout = clearTimeout;
     this.#scheduleInterval = setInterval;
     this.#cancelInterval = clearInterval;
+    const frameScope = globalThis as {
+      requestAnimationFrame?: (callback: FrameRequestCallback) => number;
+      cancelAnimationFrame?: (handle: number) => void;
+    };
+    // WHY not on WebKit: its worker animation frames come from a 15 ms timer
+    // (WebCore's WorkerAnimationController) stamped with the callback time,
+    // not from the display, as the HTML standard leaves the cadence to the
+    // browser. Decimated to 60 Hz they still landed at random display phases
+    // and gave more doubled display frames than the timer (measured on the
+    // labwc desktop in Playwright WebKit), so WebKit keeps the timer.
+    const userAgent = (globalThis as { navigator?: { userAgent?: string } })
+      .navigator?.userAgent;
+    this.#scheduleFrame = typeof frameScope.requestAnimationFrame === "function"
+      && typeof frameScope.cancelAnimationFrame === "function"
+      && !isJavaScriptCoreUserAgent(userAgent)
+      ? frameScope.requestAnimationFrame
+      : undefined;
+    this.#cancelFrame = this.#scheduleFrame === undefined
+      ? undefined
+      : frameScope.cancelAnimationFrame;
+    this.#performanceReceiver = performance;
+    this.#performanceNow = performance.now;
     this.#promiseReceiver = Promise;
     this.#promiseResolve = Promise.resolve;
     this.#promiseThen = Promise.prototype.then;
@@ -4948,9 +4980,9 @@ export class CentralizedKernelWorker {
     this.blockingRetrySnapshots.clear();
     this.blockingRetryWakeTargets.clear();
     this.activeChannelRequests.clear();
-    if (this.vblankTimer !== null) {
-      this.#cancelRegisteredInterval(this.vblankTimer);
-      this.vblankTimer = null;
+    if (this.vblankClock !== null) {
+      this.vblankClock.stop();
+      this.vblankClock = null;
     }
     this.stopPolling();
     for (const channel of this.activeChannels) {
@@ -31190,17 +31222,52 @@ export class CentralizedKernelWorker {
 
   private startVblankPump(): void {
     if (
-      this.vblankTimer
+      this.vblankClock
       || !this.#initialized
       || this.#kernelInstance === null
       || this.#kernelFatalError !== null
     ) {
       return;
     }
-    const timer = this.#registerInterval(() => {
-      this.#runScheduledListenerRoot("vblank interval", () => {
-        if (this.vblankTimer !== timer) {
-          this.#cancelRegisteredInterval(timer);
+    const scheduleFrame = this.#scheduleFrame;
+    const cancelFrame = this.#cancelFrame;
+    const clock: VblankClock = new VblankClock({
+      now: () => kernelEntryIntrinsicApply(
+        this.#performanceNow, this.#performanceReceiver, [],
+      ) as number,
+      setTimer: (callback, delayMs) => {
+        const timer = kernelEntryIntrinsicApply(
+          this.#scheduleTimeout,
+          this.#schedulerReceiver,
+          [callback, delayMs],
+        ) as ReturnType<typeof setTimeout>;
+        // Node only: prevent the pump from blocking process exit.
+        (timer as { unref?: () => void }).unref?.();
+        return timer;
+      },
+      clearTimer: (timer) => {
+        kernelEntryIntrinsicApply(
+          this.#cancelTimeout,
+          this.#schedulerReceiver,
+          [timer],
+        );
+      },
+      requestFrame: scheduleFrame === undefined
+        ? undefined
+        : (callback) => kernelEntryIntrinsicApply(
+          scheduleFrame, this.#schedulerReceiver, [callback],
+        ),
+      cancelFrame: cancelFrame === undefined
+        ? undefined
+        : (handle) => {
+          kernelEntryIntrinsicApply(
+            cancelFrame, this.#schedulerReceiver, [handle],
+          );
+        },
+    }, (timeMs) => {
+      this.#runScheduledListenerRoot("vblank clock", () => {
+        if (this.vblankClock !== clock) {
+          clock.stop();
           return;
         }
         if (
@@ -31208,26 +31275,38 @@ export class CentralizedKernelWorker {
           || !this.#initialized
           || this.#kernelInstance === null
         ) {
-          this.#cancelRegisteredInterval(timer);
-          if (this.vblankTimer === timer) this.vblankTimer = null;
+          clock.stop();
+          if (this.vblankClock === clock) this.vblankClock = null;
           return;
         }
-        this.#tickVblank(timer);
+        this.#tickVblank(clock, timeMs);
       });
-    }, 1000 / 60);
-    this.vblankTimer = timer;
-    // Node only: prevent the pump from blocking process exit.
-    (timer as { unref?: () => void }).unref?.();
+    });
+    this.vblankClock = clock;
+    clock.start();
   }
 
-  #tickVblank(timer: ReturnType<typeof setInterval>): void {
+  /** One vblank at `timeMs` (the clock `#performanceNow` reads): a display
+   *  frame's timestamp, or the moment a timer tick fired. */
+  #tickVblank(clock: VblankClock, timeMs: number): void {
     this.#runOrDeferKernelEntry(
       "vblank tick",
       (entry) => {
-        if (this.vblankTimer !== timer) return;
-        const vblankFn = entry.instance.exports.kernel_vblank as
-          (() => void) | undefined;
-        vblankFn?.();
+        if (this.vblankClock !== clock) return;
+        // The kernel stamps the vblank with its own CLOCK_MONOTONIC minus
+        // the vblank's age, measured here at the call because a busy gate
+        // can defer this entry past the frame. A kernel without
+        // kernel_vblank_elapsed (an additive export) stamps the call time.
+        const vblankElapsed = entry.instance.exports.kernel_vblank_elapsed as
+          ((elapsedUs: number) => number) | undefined;
+        if (vblankElapsed) {
+          const now = kernelEntryIntrinsicApply(
+            this.#performanceNow, this.#performanceReceiver, [],
+          ) as number;
+          vblankElapsed(Math.min(0xffff_ffff, Math.max(0, Math.round((now - timeMs) * 1000))));
+        } else {
+          (entry.instance.exports.kernel_vblank as (() => number) | undefined)?.();
+        }
         // kernel_vblank just drained any pending page-flips into each open
         // card0 fd's `event_ring`. Wake blocked DRM poll() callers now
         // instead of letting them spin on the generic safety-net retry —
@@ -31442,7 +31521,7 @@ export class CentralizedKernelWorker {
           return { plane, width: size.width, height: size.height, composited: crtcGamma(crtcId) !== null };
         });
         entry.deferObserverEffect(() => {
-          if (this.vblankTimer !== timer) return undefined;
+          if (this.vblankClock !== clock) return undefined;
           for (const { plane, width, height, composited } of cursorPlanes) {
             plane.present(cursorSnapshot, width, height, composited);
           }
