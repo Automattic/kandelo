@@ -1,21 +1,29 @@
-import { publishedUniformLocation } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
 import { currentProgramName, recordGlError } from "./program-objects.js";
+import { uniformLayout, type GlUniformLayout } from "./uniform-layout.js";
 import * as O from "./ops.js";
+
+/** The accepted command's native target, filled by acceptedUniformCount. */
+export type GlUniformTarget = { native: WebGLUniformLocation | null; layout: GlUniformLayout | null };
 
 /** Return the GLES elements to submit, after authoritative executable/type
  * validation. GLES ignores zero counts and excessive array tails only after
- * checking program, location and signature; WebGL cannot judge that no-op. */
-export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: number): number | null {
+ * checking program, location and signature; WebGL cannot judge that no-op.
+ * The location is resolved against the installed executable's own numbering
+ * (uniform-layout.ts, decision D-41): any program's location is accepted
+ * where this executable has a uniform of a matching signature there. */
+export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: number,
+    target?: GlUniformTarget): number | null {
   const matrix=op===O.OP_UNIFORM_MATRIX2FV || op===O.OP_UNIFORM_MATRIX3FV || op===O.OP_UNIFORM_MATRIX4FV;
   if(matrix && v.getUint32(p+8,true)!==0) {recordGlError(b,0x501);return null;}
-  const location=v.getInt32(p,true), program=currentProgramName(b);
+  const location=v.getInt32(p,true), executable=b.currentProgram;
   const reject=()=>{recordGlError(b,0x502);return null;};
-  if(!program) return reject();
+  if(!executable || !currentProgramName(b)) return reject();
   if(location===-1) return 0;
-  const record=publishedUniformLocation(b,location), meta=record?.metadata;
-  if(!meta || record?.program!==program
-      || meta.executable!==b.currentProgram) return reject();
+  const layout=uniformLayout(b,executable);
+  if(!layout) return null;
+  const meta=location>=0 ? layout.slots[location] : undefined;
+  if(!meta) return reject();
   const scalar=op<=O.OP_UNIFORM4F;
   const count=scalar?1:v.getUint32(p+4,true);
   let type=0, boolean=0;
@@ -36,5 +44,12 @@ export function acceptedUniformCount(b: GlBinding, op: number, v: DataView, p: n
   // (essl3-translation.ts); ES 2.0 has no other 2D array sampler.
   const sampler=(meta.type===0x8b5e || meta.type===0x8b60 || meta.type===0x8dc1) && type===0x1404;
   if((meta.type!==type && meta.type!==boolean && !sampler) || (!meta.array && count>1)) return reject();
-  return Math.min(count,meta.remaining);
+  const accepted=Math.min(count,meta.location+meta.size-location);
+  if(target && accepted) {
+    const native=layout.native(b,location);
+    if(native===false) return null;
+    if(!native) return reject();
+    target.native=native;target.layout=layout;
+  }
+  return accepted;
 }

@@ -183,12 +183,18 @@ function setupBinding(gl: RecordingGl, capacity = 4096) {
   return { reg, b };
 }
 
-function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, location=1): void {
+/** Install program 1 whose native reflection is `uniforms`, numbered per
+ * program in that order (uniform-layout.ts). The default is one array
+ * `u` of `type` whose element `location` has four elements remaining. */
+function seedUniform(b: ReturnType<typeof setupBinding>["b"], type=0x8b5c, location=1,
+    uniforms=[{name:"u[0]",type,size:location+4}]): void {
   const program = {} as WebGLProgram;
   b.programs.set(1, program);
   b.shadow.currentProgram = b.currentProgram = program;
   b.currentProgramId = 1;
-  b.uniformLocationRecords.set(location,{program:1,canonical:"u",native:{kind:"uloc",name:"u"} as unknown as WebGLUniformLocation,metadata:{executable:program,type,array:true,remaining:4},state:"published",references:0});
+  const gl = b.gl as unknown as { getActiveUniform: (p: unknown, i: number) => unknown; getProgramParameter: (p: unknown, q: number) => unknown };
+  gl.getActiveUniform = (_p, index) => uniforms[index] ?? null;
+  gl.getProgramParameter = (_p, pname) => pname === 0x8b86 ? uniforms.length : 1;
 }
 
 it("preserves legacy extension queries and gates new capabilities by table version", () => {
@@ -1278,7 +1284,7 @@ describe("cmdbuf decoder — TLV walker", () => {
     // later frame with the stale one.
     const gl = new RecordingGl();
     const { b } = setupBinding(gl);
-    seedUniform(b);
+    seedUniform(b,0x8b5c,1,[{name:"u[0]",type:0x8b5c,size:2},{name:"u2",type:0x8b52,size:1}]);
     // SDL updates a named texture. Keep this fixture about unaligned
     // record layout rather than lazy creation of GLES texture zero.
     const texture = gl.createTexture() as unknown as WebGLTexture;
@@ -1303,7 +1309,6 @@ describe("cmdbuf decoder — TLV walker", () => {
     t.view.setUint32(m.p + 4, 1, true);
     t.view.setUint32(m.p + 8, 0, true);
     for (let i = 0; i < 16; i++) t.view.setFloat32(m.p + 12 + i * 4, mat[i], true);
-    b.uniformLocationRecords.set(2,{program:1,canonical:"u2",native:{} as WebGLUniformLocation,metadata:{executable:b.currentProgram!,type:0x8b52,array:false,remaining:1},state:"published",references:0});
     const u = t.op(O.OP_UNIFORM4FV, 8 + 4 * 4);
     t.view.setInt32(u.p, 2, true);
     t.view.setUint32(u.p + 4, 1, true);
@@ -1730,7 +1735,7 @@ describe("query handler", () => {
     expect(names).toEqual([0x86a3]);
   });
 
-  it("QOP_GET_UNIFORM_LOC reuses live locations and allocates monotonic replacement indices", () => {
+  it("QOP_GET_UNIFORM_LOC numbers each program's uniforms from zero", () => {
     const { b } = setup();
     // Plant a "program" object so the lookup succeeds.
     const prog = { kind: "program", id: 1 } as unknown as WebGLProgram;
@@ -1745,19 +1750,19 @@ describe("query handler", () => {
     const o1 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o1)).toBe(4);
     const idx1 = new DataView(o1.buffer).getInt32(0, true);
-    expect(idx1).toBe(1);
-    expect(b.uniformLocationRecords.has(1)).toBe(true);
+    expect(idx1).toBe(0);
 
     const o2 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o2)).toBe(4);
     const idx2 = new DataView(o2.buffer).getInt32(0, true);
     expect(idx2).toBe(idx1);
 
-    // Removing the live record must never recycle its published index.
-    b.uniformLocationRecords.delete(1);
+    // A second program with the same declarations gets the same number.
+    b.programs.set(8, { kind: "program", id: 2 } as unknown as WebGLProgram);
+    new DataView(inp.buffer).setUint32(0, 8, true);
     const o3 = out(4);
     expect(runGlQuery(b, O.QOP_GET_UNIFORM_LOC, inp, o3)).toBe(4);
-    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(2);
+    expect(new DataView(o3.buffer).getInt32(0, true)).toBe(idx1);
   });
 
   it("QOP_GET_UNIFORM_LOC returns -1 for a missing uniform", () => {

@@ -1,11 +1,10 @@
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlUniformLookupBytes } from "./uniform-lookup-bytes.js";
-import type { GlUniformMetadata, GlUniformLocationRecord, GlObjectGroup } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
+import { recordGlError, programLinkGeneration, linkedProgramForQuery } from "./program-objects.js";
 import { checkedQueryReply } from "./state-query.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
-import { programNativeName } from "./essl3-translation.js";
+import { uniformLayout } from "./uniform-layout.js";
 
 export class GlUniformLookup {
   cursor=0;
@@ -21,111 +20,24 @@ export function replaceUniformLookup(b: GlBinding, next: GlUniformLookup | null)
 }
 
 
-/** Structs/struct arrays are reduced by native reflection to fundamental
- * fields. Only a final array selector denotes the remaining uniform array;
- * an earlier selector is part of that field's exact identity (ES2 2.10.4). */
-function reflectedUniform(b: GlBinding, program: WebGLProgram, text: string): GlUniformMetadata | null {
-  let count = 0;
-  if (!checkedGlCall(b,()=>{count=Number(b.gl!.getProgramParameter(program,0x8b86));})) return null;
-  for(let index=0;index<count;index++) {
-    let info: WebGLActiveInfo | null = null;
-    if(!checkedGlCall(b,()=>{info=b.gl!.getActiveUniform(program,index);})) return null;
-    if(!info) continue;
-    const {name,type,size}=info as WebGLActiveInfo;
-    const array=name.endsWith("[0]");
-    if(array) {
-      const base=name.slice(0,-3), match=/^(.*)\[(\d+)\]$/.exec(text);
-      const element=text===base?0:match?.[1]===base?Number(match[2]):-1;
-      if(Number.isSafeInteger(element) && element>=0 && element<size)
-        return {executable:program,type,array:true,remaining:size-element};
-    } else if(name===text) return {executable:program,type,array:false,remaining:1};
-  }
-  // A non-null native location without reflection cannot be safely assigned
-  // a setter signature. Do not publish a partially described location.
-  recordGlError(b,0x502); return null;
-}
-
-/** One reserved index/record. Commit changes existing state only; cancellation
- * can reclaim an index which has never become public. */
-export class GlUniformLocationReservation {
-  private closed=false;
-  constructor(private objects: GlObjectGroup, readonly index: number,
-      private record: GlUniformLocationRecord | null) {}
-  publish(): boolean {
-    if(this.closed) return false;
-    const record=this.record;
-    if(record) {
-      if(record.state==="reserved") record.state="published";
-      this.objects.nextUniformLoc=Math.max(this.objects.nextUniformLoc,this.index);
-    }
-    this.close();return true;
-  }
-  cancel(): void { if(!this.closed)this.close(); }
-  private close(): void {
-    const record=this.record;
-    if(record) {
-      if(record.references<=0) throw new Error("Uniform location reservation lost");
-      record.references--;
-      if(!record.references && record.state!=="published" && this.objects.uniformLocationRecords.get(this.index)===record)
-        this.objects.uniformLocationRecords.delete(this.index);
-    }
-    this.record=null;this.closed=true;
-  }
-}
-
-/** Resolve against an already retained exact native link generation. */
-export function reserveUniformLocation(b: GlBinding, name: number, text: string,
-    program: WebGLProgram): GlUniformLocationReservation | null {
-  // GLSL names are identifiers plus field/array selectors. Inactive or
-  // reserved names return -1 without importing WebGL-only name errors.
-  if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*(?:\[\d+\]|\.[A-Za-z_][A-Za-z_0-9]*)*$/.test(text)) return new GlUniformLocationReservation(b.objects,-1,null);
-  // A translated program's uniforms have native names (essl3-translation.ts).
-  const nativeText = programNativeName(program, text.replace(/\[0*(\d+)\]/g,"[$1]"));
-  // WebGL limits lookup strings to 256 characters. A root absent from
-  // actual reflection is certainly inactive, regardless of its length.
-  // Active paths exceeding that limit still need shader-name translation.
-  if (nativeText.length > 256) {
-    const root = nativeText.split(/[.\[]/,1)[0];
-    let count = 0, found = false;
-    if (!checkedGlCall(b,() => { count=Number(b.gl!.getProgramParameter(program,0x8b86)); })) return null;
-    for (let index=0;index<count;index++) {
-      let info: WebGLActiveInfo | null = null;
-      if (!checkedGlCall(b,() => { info=b.gl!.getActiveUniform(program,index); })) return null;
-      if (info && (info as WebGLActiveInfo).name.split(/[.\[]/,1)[0] === root) { found=true;break; }
-    }
-    if (!found) return new GlUniformLocationReservation(b.objects,-1,null);
-  }
-  let native: WebGLUniformLocation | null = null;
-  if (!checkedGlCall(b,() => { native = b.gl!.getUniformLocation(program,nativeText); })) return null;
-  if (!native) return new GlUniformLocationReservation(b.objects,-1,null);
-  try {
-    const metadata=reflectedUniform(b,program,nativeText);
-    if (!metadata) return null;
-    const canonical = nativeText.replace(/\[0\]$/,"");
-    for (const [index,known] of b.uniformLocationRecords) {
-      if (known.state !== "invalid" && known.canonical === canonical && known.program === name && known.metadata.executable === program) {
-        if(known.references>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);return null;}
-        const result=new GlUniformLocationReservation(b.objects,index,known);
-        known.references++;return result;
-      }
-    }
-    let index=b.nextUniformLoc+1;
-    while(b.uniformLocationRecords.has(index)) index++;
-    if(index>0x7fffffff) {recordGlError(b,0x505);return null;}
-    const record:GlUniformLocationRecord={program:name,canonical,native,metadata,state:"reserved",references:1};
-    const result=new GlUniformLocationReservation(b.objects,index,record);
-    b.uniformLocationRecords.set(index,record);
-    return result;
-  } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error; recordGlError(b,0x505); return null; }
-}
-
-/** Immediate queries share the same reservation/publication authority. */
+/** ES 2.0 section 2.10.4 against the program's latest successful link,
+ * numbered per program (uniform-layout.ts). GLSL names are identifiers plus
+ * field/array selectors; inactive, `gl_`-prefixed or malformed names are -1
+ * without importing WebGL-only name errors. Array indices may carry leading
+ * zeros. Null when the program cannot be queried (error recorded). */
 export function uniformLocation(b: GlBinding, name: number, text: string): number | null {
   const program=linkedProgramForQuery(b,name);
   if(!program) return null;
-  const reservation=reserveUniformLocation(b,name,text,program);
-  if(!reservation) return null;
-  reservation.publish();return reservation.index;
+  if (text.startsWith("gl_") || !/^[A-Za-z_][A-Za-z_0-9]*(?:\[\d+\]|\.[A-Za-z_][A-Za-z_0-9]*)*$/.test(text)) return -1;
+  const layout=uniformLayout(b,program);
+  if(!layout) return null;
+  const location=layout.locate(text.replace(/\[0*(\d+)\]/g,"[$1]"));
+  if(location<0) return -1;
+  // Only a name past WebGL's lookup limit reaches the engine here; its
+  // refusal is the real boundary and stays visible, as for attributes.
+  const native=layout.native(b,location);
+  if(native===false) return null;
+  return native ? location : -1;
 }
 
 /** Context-owned lookup bytes retain an exact executable/link-generation

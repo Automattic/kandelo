@@ -3,7 +3,7 @@ import { decodeAndDispatch, validateCommandBuffer } from "../src/webgl/bridge.js
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { uniformLocation } from "../src/webgl/uniform-queries.js";
 import { runGlQuery } from "../src/webgl/query.js";
-import { linkProgramRetainingExecutable } from "../src/webgl/program-objects.js";
+import { linkProgramRetainingExecutable, programLinkGeneration } from "../src/webgl/program-objects.js";
 import { uniformUploadComponents } from "../src/webgl/uniform-upload.js";
 import * as O from "../src/webgl/ops.js";
 
@@ -45,7 +45,7 @@ function setup(type=0x1406,size=20000,array=true) {
   const registry=new GlContextRegistry();registry.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:1<<20});
   const b=registry.get(1,2)!;b.gl=gl;b.contextId=21;b.cmdbufView=new Uint8Array(1<<20);
   b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
-  const location=uniformLocation(b,20,"values")!;expect(location).toBeGreaterThan(0);
+  const location=uniformLocation(b,20,"values")!;expect(location).toBe(0);
   function bytes(op:number,words:number[]) {
     const input=new Uint8Array(4+words.length*4),v=new DataView(input.buffer);
     v.setUint16(0,op,true);v.setUint16(2,words.length*4,true);
@@ -166,12 +166,12 @@ describe("atomic large uniform uploads",()=>{
     expect(runGlQuery(t.b,O.QOP_GET_INTEGERV,new Uint8Array(new Uint32Array([0x8b8d]).buffer),output)).toBe(-5);
     expect([...output]).toEqual([0xaa,0xaa,0xaa,0xaa]);expect(t.b.uniformUpload).toBeNull();expect(t.b.errors).toEqual([0x502]);
   });
-  it("rechecks exact executable/location/context/group authority before commit",()=>{
-    for(const change of ["executable","location","metadata","context","group"]){
+  it("rechecks exact executable/numbering/context/group authority before commit",()=>{
+    for(const change of ["executable","numbering","context","group"]){
       const t=setup();t.begin(1);t.chunk(0,t.bits([1]));
       if(change==="executable")t.b.currentProgram={} as WebGLProgram;
-      if(change==="location")t.b.uniformLocationRecords.get(t.location)!.native={} as WebGLUniformLocation;
-      if(change==="metadata")t.b.uniformLocationRecords.get(t.location)!.metadata={...t.b.uniformLocationRecords.get(t.location)!.metadata};
+      // A new link generation of the same native object renumbers it.
+      if(change==="numbering")programLinkGeneration(t.b,t.program).value++;
       if(change==="context")t.b.contextId=22;
       if(change==="group")t.b.objects={...t.b.objects};
       t.commit();expect(t.calls,change).toEqual([]);expect(t.b.errors).toEqual([0x502]);expect(t.b.uniformUpload).toBeNull();
@@ -183,14 +183,16 @@ describe("atomic large uniform uploads",()=>{
     t.send(O.OP_DELETE_PROGRAM,[20]);t.begin(1);t.chunk(0,t.bits([1]));t.commit();
     expect(t.calls).toEqual([{name:"uniform1fv",values:[1]}]);expect(t.b.errors).toEqual([]);
   });
-  it("a successful shared-peer relink invalidates staged location authority",()=>{
+  it("commits to the installed executable across a successful shared-peer relink",()=>{
     const t=setup();t.begin(1);t.chunk(0,t.bits([1]));
     t.registry.bind({pid:1,sessionId:3,cmdbufAddr:0,cmdbufLen:0});
     const peer=t.registry.get(1,3)!;peer.gl=t.gl;peer.contextId=22;
     expect(t.registry.shareObjects(1,3,2)).toBe(true);t.native.linkSucceeds=true;
     linkProgramRetainingExecutable(peer,20);
-    expect(t.b.currentProgram).toBe(t.program);expect(t.b.uniformLocationRecords.has(t.location)).toBe(false);
-    t.commit();expect(t.calls).toEqual([]);expect(t.b.errors).toEqual([0x502]);expect(t.b.uniformUpload).toBeNull();
+    // Locations resolve against this context's installed executable, which
+    // a peer's relink does not replace (uniform-layout.ts).
+    expect(t.b.currentProgram).toBe(t.program);
+    t.commit();expect(t.calls).toEqual([{name:"uniform1fv",values:[1]}]);expect(t.b.errors).toEqual([]);expect(t.b.uniformUpload).toBeNull();
     t.registry.destroyContext(1,3);t.registry.destroyContext(1,2);
   });
   it("clears staged ownership after an actual native commit rejection",()=>{

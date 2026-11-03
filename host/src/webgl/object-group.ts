@@ -4,23 +4,6 @@ import type { GlImageSource, GlTextureView, GlRenderbufferView } from "./image-s
 import type { GlBufferStore } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 
-/** Immutable reflection for one accepted native executable. The public numeric
- * program can name a later failed/successful link while an older one is current. */
-export type GlUniformMetadata = Readonly<{ executable: WebGLProgram; type: number; array: boolean; remaining: number }>;
-
-/** One authoritative location identity. Reserved entries are never usable by
- * a setter or a value query; publication changes this existing record only. */
-export type GlUniformLocationRecord = {
-  program: number; canonical: string; native: WebGLUniformLocation;
-  metadata: GlUniformMetadata;
-  state: "reserved" | "published" | "invalid";
-  references: number;
-};
-export function publishedUniformLocation(owner: Pick<GlSharedObjects,"uniformLocationRecords">, index: number): GlUniformLocationRecord | undefined {
-  const record = owner.uniformLocationRecords.get(index);
-  return record?.state === "published" ? record : undefined;
-}
-
 /** Shareable object names and metadata. Bindings, FBOs, VAOs and errors
  * belong to individual contexts even when these objects are shared. */
 export type GlSharedObjects = {
@@ -53,10 +36,6 @@ export type GlSharedObjects = {
   programShaders: Map<number, Set<number>>;
   programAttributeBindings: Map<number, Map<string, number>>;
   rbos: Map<number, WebGLRenderbuffer>;
-  /** Positive public IDs are never reused after publication. */
-  uniformLocationRecords: Map<number, GlUniformLocationRecord>;
-  /** Highest index ever published; reservations may lie above it. */
-  nextUniformLoc: number;
 
   /** Foreign textures bound from DRI bos (`WPK_BIND_FOREIGN_TEXTURE`),
    *  keyed by bo_id. Each entry mirrors into `textures` under `texId`
@@ -88,7 +67,6 @@ export function createGlObjectGroup(): GlObjectGroup {
     programLinkGenerations: new WeakMap(), uniformLookupBudget: new GlUniformLookupBudget(),
     rbos: new Map(), shaderSources: new Map(), shaderDeletePending: new Set(), programDeletePending: new Set(),
     programShaders: new Map(), programAttributeBindings: new Map(),
-    uniformLocationRecords: new Map(), nextUniformLoc: 0,
     foreignTextures: new Map(), nextForeignTexId: 0x4000_0000, foreignTextureBos: new Map(),
     retiredTextures: new Map(), retiredBuffers: new Map(), retiredRenderbuffers: new Map(), externallyOwnedTextures: new WeakSet(),
   };

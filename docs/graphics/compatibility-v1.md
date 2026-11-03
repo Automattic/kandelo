@@ -202,6 +202,32 @@ programs' identical uniforms alike hides the mistake. A leftover
 (ANGLE: "Expression too complex"). Firefox and WebKit performance and
 stress groups were not rerun.
 
+**Per-program uniform locations (decision D-41, 2026-11-02).** The trace
+above was right. Locations are now numbered per program as Mesa and
+native ANGLE number them (`host/src/webgl/uniform-layout.ts`): active
+uniforms in GetActiveUniform order from 0, each array element its own
+consecutive location, structures flattened by native reflection, no
+location for `gl_` built-ins, and none for host-private uniforms, which
+live only in variant executables. Uniform* resolves a location against
+the context's installed executable, so another program's location is
+accepted exactly where the current program has a uniform of a matching
+signature there; GetUniformLocation and GetUniform* use the named
+program's latest successful link. A relink with an identical active set
+keeps its numbering. The layout is built once per native executable;
+Uniform* stays O(1) and draws pay nothing. dEQP-GLES2 on `d2c6514ffb`
+plus this change, host-only, with the r7 guest artifacts: the
+`performance.shader#001` chunk (100 `operator` cases) went from
+InternalError (Chromium) or Fail (Firefox, WebKit; pre-translation
+baseline) to 100/100 Pass on Chromium and 98/100 on Firefox and WebKit,
+whose remaining two each are InternalError for a non-positive measured
+slope (timing noise, not a GL error). Chunk `#000` (20 `operator`, 80
+`control_statement`) passes 100/100 on Chromium. `functional.uniform_api`,
+`functional.state_query` and `functional.negative_api` (1,909 cases)
+and seven `functional.shaders` chunks covering `indexing` (including
+`uniform_array`), `struct` (including `struct.uniform`), `scoping` and
+`random` (700 cases) have no newly failing case in any engine. The rest
+of `performance.shader.operator` was not rerun.
+
 **Runtime workaround.** Firefox reads the wrong vertex-stage `gl_DepthRange`
 when both stages read it and the program has another active uniform. A
 standalone self-judging reproduction confirms it on Firefox 155 only; it is
@@ -10099,6 +10125,9 @@ pending result, complete two-sided error handling on the legacy path, or
 establish guest/browser/memory/conformance evidence for this increment.
 
 ### Uniform-location publication foundation
+
+Superseded by per-program numbering (decision D-41, above): locations
+are no longer group-wide records.
 
 The host now stores each uniform location in one authoritative typed record,
 including native identity, named program, canonical path, immutable reflection

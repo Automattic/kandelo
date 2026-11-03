@@ -336,7 +336,9 @@ it("a busy logical stream leaves runnable peers drainable and resumes its exact 
 it("retires pending uniform staging with its exact accepted execution owner",()=>{
   const f=fixture(),b=f.binding,program={} as WebGLProgram;
   b.programs.set(20,program);b.currentProgram=b.shadow.currentProgram=program;b.currentProgramId=20;
-  b.uniformLocationRecords.set(1,{program:20,canonical:"value",native:{} as WebGLUniformLocation,metadata:{executable:program,type:0x1406,array:true,remaining:2},state:"published",references:0});
+  // Reflection numbers "value" 0..2 (uniform-layout.ts): location 1 has two elements left.
+  Object.assign(f.gl,{getProgramParameter:(_p:unknown,q:number)=>q===0x8b86?1:true,
+    getActiveUniform:()=>({name:"value[0]",type:0x1406,size:3}),getUniformLocation:()=>({})});
   runUniformUpload(b,UniformOps.OP_UNIFORM_UPLOAD_BEGIN,
     new DataView(new Uint32Array([1,UniformOps.OP_UNIFORM1FV,1,20000,0]).buffer),()=>{});
   const pending=b.uniformUpload;expect(pending?.payload?.byteLength).toBe(16);

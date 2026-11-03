@@ -27,18 +27,15 @@ import { replaceUniformLookup, type GlUniformLookup } from "./uniform-queries.js
  *
  *   - the cmdbuf region (a slice of the process's wasm Memory SAB),
  *   - a lazily-built `WebGL2RenderingContext` once a canvas is attached,
- *   - object-group maps for shareable GL names and uniform locations,
+ *   - object-group maps for shareable GL names,
  *   - context-local state, errors, VAOs and framebuffer containers.
  *
  * The cmdbuf view is built lazily on the first `host_gl_submit` and
  * invalidated on `WebAssembly.Memory.grow()` via `rebindMemory(pid)`,
  * mirroring the framebuffer registry's pattern.
  *
- * Uniform-location indexing uses a monotonic `nextUniformLoc` counter
- * (never decremented) rather than `Map.size`. Map.size shrinks on delete
- * and would collide with prior indices that the C side may still hold.
- * Indices are int-keyed (not stringified) so the cmdbuf u32 round-trips
- * cleanly without `Map<string, ...>` / `Map<number, ...>` mismatches.
+ * Uniform locations belong to native executables, not to bindings or
+ * groups: each program numbers its own uniforms (uniform-layout.ts).
  */
 import { defaultShadow, type GlShadowState } from "./shadow.js";
 import type { GlDrawableBinding } from "./current.js";
@@ -436,7 +433,6 @@ export class GlContextRegistry {
       if (b.surfaceId !== null) next.surface = b.surface;
       next.fences = b.fences;
       next.operations = b.operations;
-      next.objects.nextUniformLoc = b.objects.nextUniformLoc;
       next.objects.nextForeignTexId = b.objects.nextForeignTexId;
       next.objects.nextImageSource = b.objects.nextImageSource;
       if (replace) this.bindings.set(record.key,next);
@@ -489,7 +485,7 @@ export class GlContextRegistry {
         || target.compressedUpload !== null || target.uniformUpload !== null || target.uniformLookup !== null || target.objectCapture !== null || target.readbackCapture !== null || target.objects.members.size !== 1) return false;
     const names = target.objects;
     if (names.bufferRetirements.size || names.imageRetirements.size || names.buffers.size || names.bufferStores.size || names.textures.size || names.shaders.size || names.programs.size
-        || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.uniformLocationRecords.size || names.foreignTextures.size
+        || names.rbos.size || names.programQueryPins.size || names.imageSources.size || names.textureViews.size || names.renderbufferViews.size || names.foreignTextures.size
         || names.retiredTextures.size || names.retiredBuffers.size || names.retiredRenderbuffers.size
         || names.shaderDeletePending.size || names.programDeletePending.size) return false;
     // Reserve membership before removing the old owner; allocation failure
@@ -757,7 +753,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
       if (cleanup && !accepted) throw new Error("Renderbuffer retirement remains pending");
       if (cleanup) for (const [name,value] of b.rbos) if (value === object) b.rbos.delete(name);
     }
-    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.uniformLocationRecords,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
+    for (const map of [b.buffers,b.textures,b.shaders,b.programs,b.rbos,b.programShaders,b.programAttributeBindings,b.foreignTextures,b.shaderSources]) map.clear();
     b.imageSources.clear();
     b.programQueryPins.clear();
     b.shaderDeletePending.clear(); b.programDeletePending.clear();
@@ -774,7 +770,6 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   collectRetiredImages(b);
   collectRetiredBuffers(b);
   b.objects = createGlObjectGroup();
-  b.objects.nextUniformLoc = objects.nextUniformLoc;
   b.objects.nextForeignTexId = objects.nextForeignTexId;
   b.objects.nextImageSource = objects.nextImageSource;
   b.objects.members.add(b);

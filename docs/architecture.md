@@ -5485,10 +5485,19 @@ state before reading without changing the current program. C publishes
 only a completed successful reply; failed or malformed results preserve
 caller output. Table 7 adds this query within ABI 58, preserving all older
 tags/layouts. Table 8 adds checked active-uniform chunks and context-owned
-name lookup transfers in the existing 64 KiB query messages. Public
-locations are stable across repeated names, array aliases and sharing
-peers until successful relink/final deletion; allocation failure rolls
-back maps before publication. Lookup transfers are token-checked, replaced
+name lookup transfers in the existing 64 KiB query messages. Uniform
+locations are numbered per program, as Mesa and native ANGLE number them
+(decision D-41, `host/src/webgl/uniform-layout.ts`): active uniforms in
+GetActiveUniform order from 0, one location per array element, no
+location for `gl_` built-ins or host-private variant uniforms. Ported
+software (and dEQP-GLES2 `performance.shader.operator`) uses one
+program's location with another program of the same declarations
+current, which works on Linux drivers. Uniform* resolves a location
+against the context's installed executable, GetUniformLocation and
+GetUniform* against the named program's latest successful link; a
+location the current executable lacks, or a mismatched signature, is
+`INVALID_OPERATION`. A relink with an identical active set keeps the
+previous numbering. Lookup transfers are token-checked, replaced
 or cancelled independently per context and released on retirement. C
 publishes reflected metadata/names only after accumulating every requested
 chunk. Fixed C name/reflection buffers are removed. Shader-name translation
@@ -5952,7 +5961,7 @@ consulted before any local answer and is still learned from the next
 request's `ENODEV`. A malformed or failed drain reply is reported as one
 `GL_INVALID_OPERATION` and never establishes local knowledge.
 Host object groups now own shareable name maps, shader/program metadata,
-uniform-location allocation and imported textures. Each binding initially
+and imported textures. Each binding initially
 has its own group. An internal construction operation can join unused
 contexts on the same native renderer; guest EGL sharing is not wired to it
 yet. Context state, errors, VAOs and FBO containers stay local. Group
@@ -6050,7 +6059,8 @@ current program before deleting objects, without unbinding another owner.
 The logical current program name is distinct from its installed native
 executable. Relinking a current program uses a separate native link target:
 failure updates link status/logs while keeping the installed executable;
-success installs the replacement and retires old uniform handles. Shader
+success installs the replacement, which keeps the previous uniform
+numbering when its active uniforms are identical. Shader
 attachments and explicit attribute bindings seed replacement targets. Native
 shader deletion is deferred while these logical attachments retain it.
 Context teardown releases both the latest link target and any older installed

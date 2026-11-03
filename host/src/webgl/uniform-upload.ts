@@ -1,7 +1,6 @@
-import { publishedUniformLocation } from "./object-group.js";
 import type { GlBinding } from "./registry.js";
-import type { GlUniformMetadata } from "./object-group.js";
-import { acceptedUniformCount } from "./uniform-setters.js";
+import type { GlUniformLayout } from "./uniform-layout.js";
+import { acceptedUniformCount, type GlUniformTarget } from "./uniform-setters.js";
 import { checkedGlCall, currentProgramName, recordGlError } from "./program-objects.js";
 import * as O from "./ops.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
@@ -11,7 +10,9 @@ export type GlUniformUpload = {
   payload: Uint8Array<ArrayBuffer> | null;
   gl: GlBinding["gl"]; context: GlBinding["contextId"]; objects: GlBinding["objects"];
   executable: WebGLProgram | null; program: number;
-  nativeLocation: WebGLUniformLocation | undefined; metadata: GlUniformMetadata | undefined;
+  /** The installed executable's numbering and the location's native target
+   * when the call was accepted (uniform-layout.ts). */
+  nativeLocation: WebGLUniformLocation | null; layout: GlUniformLayout | null;
 };
 
 export function uniformUploadComponents(op: number): number {
@@ -79,15 +80,17 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
     // requested bytes or replacing its first GL error with continuation errors.
     const pending: GlUniformUpload={token,op,location,total,cursor:0,stride,payload:null,
       gl:b.gl,context:b.contextId,objects:b.objects,executable:b.currentProgram,program:currentProgramName(b),
-      nativeLocation:publishedUniformLocation(b,location)?.native,metadata:publishedUniformLocation(b,location)?.metadata};
+      nativeLocation:null,layout:null};
     b.uniformUpload=pending;
     if (total>0x7fffffff) {recordGlError(b,0x501);return;}
     const original=new DataView(new ArrayBuffer(header));
     original.setInt32(0,location,true);original.setUint32(4,total,true);
     if (header===12) original.setUint32(8,view.getUint32(16,true),true);
     else if (view.getUint32(16,true)!==0) {invalid();return;}
-    const accepted=acceptedUniformCount(b,op,original,0);
+    const target: GlUniformTarget={native:null,layout:null};
+    const accepted=acceptedUniformCount(b,op,original,0,target);
     if (accepted===null) return;
+    pending.nativeLocation=target.native;pending.layout=target.layout;
     try {
       const bytes=header+accepted*stride;
       if (!Number.isSafeInteger(bytes)) {recordGlError(b,0x505);return;}
@@ -117,7 +120,7 @@ export function runUniformUpload(b: GlBinding, command: number, view: DataView,
   if (!pending.payload) return;
   if (pending.gl!==b.gl || pending.context!==b.contextId || pending.objects!==b.objects
       || pending.executable!==b.currentProgram || pending.program!==currentProgramName(b)
-      || pending.nativeLocation!==publishedUniformLocation(b,pending.location)?.native
-      || pending.metadata!==publishedUniformLocation(b,pending.location)?.metadata) {invalid();return;}
+      || (pending.layout && (!pending.layout.current
+        || pending.nativeLocation!==pending.layout.resolvedNative(pending.location)))) {invalid();return;}
   checkedGlCall(b,()=>commit(pending.op,new DataView(pending.payload!.buffer)));
 }

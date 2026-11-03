@@ -10,6 +10,7 @@ export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
 import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable } from "./attribute-aliasing.js";
 import { nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage } from "./essl3-translation.js";
+import { noteProgramRelinked } from "./uniform-layout.js";
 
 /** Keep previously pending errors observable, then commit bookkeeping only
  * if this native call is accepted. Driver rejection must leave state intact. */
@@ -287,17 +288,8 @@ function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram
   const shaders = b.programShaders.get(name);
   b.programShaders.delete(name);
   b.programAttributeBindings.delete(name);
-  invalidateProgramLocations(b, name);
   if (shaders) for (const shader of shaders) finalizeShader(b, shader);
   return true;
-}
-
-function invalidateProgramLocations(b: GlBinding, name: number): void {
-  for (const [location, record] of b.uniformLocationRecords) {
-    if (record.program !== name) continue;
-    if (record.references > 0) record.state = "invalid";
-    else b.uniformLocationRecords.delete(location);
-  }
 }
 
 export function currentProgramName(b: GlBinding): number {
@@ -407,10 +399,12 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
     const executable = aliased ?? program;
     if (aliased) { programLinkGeneration(b, aliased).value++; copyExternalSamplers(program, aliased); }
     b.programs.set(name, executable);
+    // Locations are numbered per executable; an identical relink keeps the
+    // previous link's numbering (uniform-layout.ts).
+    noteProgramRelinked(previous, executable);
     if (candidate && !aliased) transferNativeRetirement(candidate);
     if (currentName === name) b.currentProgramId = name;
     if ((queried && linked) || aliased) {
-      invalidateProgramLocations(b, name);
       if (currentName === name && checkedGlCall(b, () => gl.useProgram(executable))) {
         b.shadow.currentProgram = b.currentProgram = executable;
       }

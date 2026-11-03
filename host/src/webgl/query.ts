@@ -6,7 +6,7 @@ import { interruptCompressedUpload, runCompressedUpload } from "./compressed-upl
 import { runReadbackCapture } from "./readback-capture.js";
 import { attributeAliasLayout } from "./attribute-aliasing.js";
 import { glesFramebufferStatus, requireGlesFramebufferComplete } from "./image-sizes.js";
-import { publishedUniformLocation } from "./object-group.js";
+import { uniformLayout } from "./uniform-layout.js";
 import { interruptUniformUpload } from "./uniform-upload.js";
 import {
   GL_IMAGE_MUTATION_LEGACY_REPLY_BYTES,
@@ -32,10 +32,8 @@ import { finishRenderer } from "./finish.js";
  * (-22) for an unknown query op.
  *
  * Uniform locations: WebGL hands back opaque `WebGLUniformLocation`
- * objects; the cmdbuf needs an integer. We allocate monotonic indices
- * via `++b.nextUniformLoc` (audit finding #12 — Map.size shrinks on
- * delete and would collide). Indices are number-keyed for clean u32
- * round-tripping.
+ * objects; the cmdbuf needs an integer. Each program numbers its own
+ * uniforms densely, as Linux drivers do (uniform-layout.ts, D-41).
  */
 import { validImageStorageRequest, executeImageStorageRequest } from "./bridge.js";
 import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
@@ -710,11 +708,15 @@ export function runGlQuery(
         const fail = (error: number) => { recordGlError(b,error); return -22; };
         const program = b.programs.get(name);
         if (!program) return fail(b.shaders.has(name) ? 0x502 : 0x501);
-        const location = publishedUniformLocation(b,index)?.native;
-        if (!location || publishedUniformLocation(b,index)?.program !== name) return fail(0x502);
         let linked = false, value: unknown;
         if (!checkedGlCall(b,() => { linked = !!gl.getProgramParameter(program,0x8b82); })) return -5;
         if (!linked) return fail(0x502);
+        // The location is numbered by this program (uniform-layout.ts).
+        const layout = uniformLayout(b,program);
+        if (!layout) return -5;
+        const location = index >= 0 && layout.slots[index] ? layout.native(b,index) : null;
+        if (location === false) return -5;
+        if (!location) return fail(0x502);
         if (!checkedGlCall(b,() => { value = gl.getUniform(program,location); })) return -5;
         if (value == null || !(typeof value === "number" || typeof value === "boolean" || Array.isArray(value) || ArrayBuffer.isView(value))) return fail(0x502);
         const values = normalizeNumericValues(value,0);
@@ -733,8 +735,9 @@ export function runGlQuery(
     case O.QOP_GET_UNIFORMFV:
     case O.QOP_GET_UNIFORMIV: {
       if (input.byteLength < 8 || out.byteLength < 4) return -22;
-      const prog = b.programs.get(inDv.getUint32(0, true));
-      const loc = publishedUniformLocation(b,inDv.getInt32(4, true))?.native ?? null;
+      const prog = b.programs.get(inDv.getUint32(0, true)), index = inDv.getInt32(4, true);
+      const layout = prog ? uniformLayout(b, prog) : null;
+      const loc = layout && index >= 0 && layout.slots[index] ? layout.native(b, index) : null;
       const value = prog && loc ? gl.getUniform(prog, loc) : null;
       return writeNumericValues(outDv, out.byteLength, value, op === O.QOP_GET_UNIFORMFV, 0);
     }
