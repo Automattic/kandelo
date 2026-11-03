@@ -202,6 +202,16 @@ three-engine final validation and matched client-retirement measurements
 remain open. A separate normal build at `23e6972153` rebuilds the clients
 without the four pool patches; r9 retains them as the comparison baseline.
 
+**Cage fixture checkpoint, 2026-11-03.** The rebuilt r9 run reached a
+stable wlterm prompt but failed the idle screenshot comparison: the first
+image included the host's final download toast and the next did not. The
+trace preserves both images with unchanged guest content. The check now
+waits for download status to clear before comparing the idle pair, preserving
+its exact equality, subsequent keyboard redraw and clean-exit assertions.
+The focused spec passes on Chromium, Firefox and WebKit using a frozen
+copy of the normal r9 artifacts; evidence is in
+`.context/graphics-r9-cage-fix/`. The complete desktop sequence is separate.
+
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
 four DRM-buffer-pool patches and their recipe hooks/inputs are removed;

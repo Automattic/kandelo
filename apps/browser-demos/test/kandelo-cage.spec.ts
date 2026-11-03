@@ -115,6 +115,11 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
     { timeout: 60_000, message: "wlterm has rendered the shell's first output" },
   ).toBeGreaterThan(24);
   await page.locator("body").click({ position: { x: 5, y: 5 } });
+  // Locator screenshots include DOM overlays above the canvas. The initial
+  // lazy-download toasts can finish after the shell prompt is painted; their
+  // disappearance is not a change in wlterm's framebuffer.
+  await expect(page.getByRole("complementary", { name: "Download status" }))
+    .toBeHidden({ timeout: 60_000 });
   const frame = () => canvas.screenshot({ animations: "disabled" });
   const before = await frame();
   await page.waitForTimeout(1_000);
