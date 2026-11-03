@@ -57,7 +57,7 @@ const CUBE = 0x8513, FACE0 = 0x8515, DRAW = 0x8ca9, READ = 0x8ca8, COLOR0 = 0x8c
 const MIN_FILTER = 0x2801;
 
 /** Native storage shape of one face image: square, so one size. */
-export type CubeImageShape = { size: number; internalFormat: number; format: number; type: number; compressed: boolean };
+export type CubeImageShape = { size: number; internalFormat: number; format: number; type: number; compressed: boolean; compressedBytes?: number };
 type Storage = { texture: WebGLTexture; levels: Map<number, CubeImageShape> };
 type CubeStore = {
   /** The object's own native texture, which guest binds name on units. */
@@ -152,10 +152,10 @@ function allocate(b: GlBinding, storage: Storage, level: number, shape: CubeImag
   const gl = b.gl!;
   const accepted = withArray(b, storage.texture, () => {
     if (shape.compressed)
-      gl.compressedTexImage3D(TEXTURE_2D_ARRAY, level, shape.internalFormat, shape.size, shape.size, 6, 0, new Uint8Array((bytes ?? 0) * 6));
+      gl.compressedTexImage3D(TEXTURE_2D_ARRAY, level, shape.internalFormat, shape.size, shape.size, 6, 0, new Uint8Array((bytes ?? shape.compressedBytes ?? 0) * 6));
     else gl.texImage3D(TEXTURE_2D_ARRAY, level, shape.internalFormat, shape.size, shape.size, 6, 0, shape.format, shape.type, null);
   });
-  if (accepted) storage.levels.set(level, shape);
+  if (accepted) storage.levels.set(level, { ...shape, compressedBytes: bytes ?? shape.compressedBytes });
   return accepted;
 }
 
@@ -292,7 +292,7 @@ function gather(b: GlBinding, object: WebGLTexture, store: CubeStore): boolean {
     if (!image || !sameShape(cubeShapeOf(image), expected)) continue;
     const at = base.levels.get(level);
     if (at && !sameShape(at, expected) && residents(store, base, level) > 0) continue;
-    if (!sameShape(at, expected) && !allocate(b, base, level, expected)) { gathered = false; continue; }
+    if (!sameShape(at, expected) && !allocate(b, base, level, storage.levels.get(level)!)) { gathered = false; continue; }
     if (!copyImage(b, storage, base, layer, level, expected.size) || !settle(b, object, store, layer, level, base)) gathered = false;
   }
   return gathered;

@@ -1,3 +1,4 @@
+import { NativeContextReset, predictsNativeCalls, predictedNativeCalls, observeBatchNativeError } from "./native-batch.js";
 import type { GlObjectGroup } from "./object-group.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
@@ -44,7 +45,7 @@ export function nativeGlFault(message: string, cause?: unknown): never {
  * NativeGlFault (the fatal shutdown is already latched, and the operation
  * did not happen) or a kernel export failure. */
 export function rethrowNativeGlFault(error: unknown): void {
-  if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+  if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
 }
 /** True when the renderer is lost now or was lost at some point, so an
  * object created before that loss may already be gone. For a direct deletion
@@ -135,6 +136,9 @@ export function invokeNativeCall(gl: WebGL2RenderingContext, call: NativeCall): 
  * is the next call's clean entry; failure revokes it before the next group.
  * No clean-entry evidence survives this invocation. */
 function restoreInverse(inverse: NativeInverse): boolean {
+  if (predictsNativeCalls(inverse.owner)) {
+    return predictedNativeCalls(inverse.groups.flatMap(group => group.map(call => () => { invokeNativeCall(inverse.owner.gl!, call); })));
+  }
   if (inverse.batched) return restoreBatched(inverse);
   let accepted = true;
   // Evidence belongs only to this synchronous inverse and error owner.
@@ -149,18 +153,21 @@ function restoreInverse(inverse: NativeInverse): boolean {
       if (gl) {
         if (!cleared) for (let i = 0; i < 32; i++) {
           const error = gl.getError();
+          observeBatchNativeError(gl, error);
           if (error === 0) { cleared = true; break; }
           recordGlError(inverse.owner, error);
         }
         if (cleared) {
           invokeNativeCall(gl, call);
           const error = gl.getError();
+          observeBatchNativeError(gl, error);
           recordGlError(inverse.owner, error);
           acceptedCall = error === 0;
           cleanEntry = acceptedCall;
         }
       }
-    } catch {
+    } catch (error) {
+      rethrowNativeGlFault(error);
       recordGlError(inverse.owner, 0x502);
     }
     if (acceptedCall) continue;
@@ -233,13 +240,13 @@ function collectNativeRetirements(gl: WebGL2RenderingContext): boolean {
         // A logical switch can orphan an executable still physically selected.
         // Unbind only that exact handle before deleting it.
         if (retirement.uninstallPrograms && call[0] === "deleteProgram" &&
-            !checkedGlCall(retirement.owner, () => {
+            !checkedGlCall({gl, errors:[]}, () => {
               if (gl.getParameter(0x8b8d) === object) gl.useProgram(null);
-            })) {
+            }, "cleanup")) {
           if (rendererGone(gl, retirement.epoch)) { call[1] = null; continue; }
           nativeGlFault("the live renderer refused to uninstall a retired program before deleting it");
         }
-        if (!checkedGlCall(retirement.owner, () => Reflect.apply(gl[call[0]],gl,[object]))) {
+        if (!checkedGlCall({gl, errors:[]}, () => Reflect.apply(gl[call[0]],gl,[object]), "cleanup")) {
           if (rendererGone(gl, retirement.epoch)) { call[1] = null; continue; }
           nativeGlFault(`the live renderer refused ${call[0]} of an object the host retired`);
         }
@@ -363,7 +370,7 @@ export function applyNativeChanges(b: CheckedGlOwner & { shadow: object }, chang
     let accepted = false;
     try { accepted = change.apply(); }
     catch (error) {
-      if (error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
+      if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
       recordGlError(b,0x502);
     }
     if (accepted) continue;
@@ -438,17 +445,20 @@ function restoreBatched(inverse: NativeInverse): boolean {
         let cleared = false;
         for (let i = 0; i < 32; i++) {
           const error = gl.getError();
+          observeBatchNativeError(gl, error);
           if (error === 0) { cleared = true; break; }
           recordGlError(inverse.owner, error);
         }
         if (cleared) {
           for (const call of group) invokeNativeCall(gl, call);
           const error = gl.getError();
+          observeBatchNativeError(gl, error);
           recordGlError(inverse.owner, error);
           restored = error === 0;
         }
       }
-    } catch {
+    } catch (error) {
+      rethrowNativeGlFault(error);
       recordGlError(inverse.owner, 0x502);
     }
     accepted = restored && accepted;

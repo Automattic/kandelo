@@ -1,3 +1,4 @@
+import { captureNativeGlErrors } from "./errors.js";
 /**
  * Canvas-backed present target: the offscreen FBO a KMS master renders
  * into, blitted to the real default framebuffer once per `GLIO_PRESENT`.
@@ -53,6 +54,7 @@ export function resizeSurfaceTarget(b: GlBinding, w: number, h: number): boolean
   if (existing && existing.w === w && existing.h === h) return true;
   // EGL-private allocation failures use their own error channel. The caller
   // captures the outgoing logical owner's errors before entering this utility.
+  captureNativeGlErrors(gl, b);
   const owner = {gl,errors:[] as number[]};
   // The default framebuffer each selector may still name natively.
   const previousDefault = b.surface.renderTargetFbo;

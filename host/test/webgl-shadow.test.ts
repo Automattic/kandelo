@@ -57,6 +57,8 @@ class StubGl {
   bindFramebuffer() {}
   createTexture() { return {}; }
   createProgram() { return {}; }
+  linkProgram() {}
+  getProgramParameter(_program: unknown, pname: number) { return pname === 0x8b82 ? true : 0; }
   createVertexArray() { return {}; }
   createFramebuffer() { return {}; }
 }
@@ -417,6 +419,11 @@ describe("cmdbuf decoder — shadow writes", () => {
     const b = setupBinding();
     let t = new Tlv(b.cmdbufView!.buffer);
     let h = t.op(O.OP_CREATE_PROGRAM, 4);
+    t.view.setUint32(h.p, 7, true);
+    decodeAndDispatch(b, 0, t.p);
+
+    t = new Tlv(b.cmdbufView!.buffer);
+    h = t.op(O.OP_LINK_PROGRAM, 4);
     t.view.setUint32(h.p, 7, true);
     decodeAndDispatch(b, 0, t.p);
 

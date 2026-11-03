@@ -1,3 +1,4 @@
+import { predictsNativeCalls, predictedNativeCalls, observeBatchNativeError } from "./native-batch.js";
 import { copyExternalSamplers, recordLinkedExternalSamplers } from "./external-texture.js";
 import { isKernelExportFailure } from "../kernel-entry-gate.js";
 // Deferred shader/program ownership adapted from Brandon Payton's
@@ -13,22 +14,26 @@ import { aliasedAttributeLocation, attributeAliasLayout, linkAliasedExecutable }
 import { nativeInterfaceName, prepareLinkLanguages, programNativeName, recordProgramLanguage } from "./essl3-translation.js";
 import { noteProgramRelinked } from "./uniform-layout.js";
 
-/** Keep previously pending errors observable, then commit bookkeeping only
- * if this native call is accepted. Driver rejection must leave state intact. */
+/** Inside a guest execution batch, validation has already decided acceptance.
+ * Private host allocations outside that owner still need exact native checks
+ * before publishing their handles; their errors cannot consume batch errors. */
 export type CheckedGlOwner = Pick<GlBinding, "gl" | "errors">;
-export function checkedGlCall(b: CheckedGlOwner, call: () => void): boolean {
+export function checkedGlCall(b: CheckedGlOwner, call: () => void, policy?: "cleanup"): boolean {
+  if (policy !== "cleanup" && predictsNativeCalls(b)) return predictedNativeCalls([call]);
   const gl = b.gl;
   if (!gl) return false;
   try {
     let cleared = false;
     for (let i = 0; i < 32; i++) {
       const error = gl.getError();
+    observeBatchNativeError(gl, error);
       if (error === 0) { cleared = true; break; }
       recordGlError(b, error);
     }
     if (!cleared) return false;
     call();
     const error = gl.getError();
+    if (policy !== "cleanup") observeBatchNativeError(gl, error);
     recordGlError(b, error);
     return error === 0;
   } catch (error) { rethrowNativeGlFault(error); if(isKernelExportFailure(error)) throw error;
@@ -144,6 +149,7 @@ export function createProgramIfAccepted(b: GlBinding, name: number): void {
     if (!program) { recordGlError(b, 0x505); return; }
     b.programShaders.set(name, shaders); metadata = true;
     b.programs.set(name, program);
+    failedLinks.add(program);
     transferNativeRetirement(receiver);
   } catch (error) { rethrowNativeGlFault(error);
     if (isKernelExportFailure(error)) throw error;
@@ -182,18 +188,21 @@ function reserveExecutableRelease(b: GlBinding, first: WebGLProgram | null,
  * failure would redirect a later write belongs in its own check).
  * `cleanEntry`: the caller's previous check of this owner was clean. */
 export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[], cleanEntry = false): boolean {
+  if (predictsNativeCalls(b)) return predictedNativeCalls(calls);
   const gl = b.gl;
   if (!gl) return false;
   try {
     let cleared = cleanEntry;
     if (!cleared) for (let i = 0; i < 32; i++) {
       const error = gl.getError();
+    observeBatchNativeError(gl, error);
       if (error === 0) { cleared = true; break; }
       recordGlError(b, error);
     }
     if (!cleared) return false;
     for (const call of calls) call();
     const error = gl.getError();
+    observeBatchNativeError(gl, error);
     recordGlError(b, error);
     return error === 0;
   } catch (error) { rethrowNativeGlFault(error);
@@ -206,11 +215,13 @@ export function checkedGlGroup(b: CheckedGlOwner, calls: readonly (() => void)[]
 /** Drain pending flags into `b`. True once they are clear: the caller's
  * next checkedGlGroup(…, true) on this owner starts from a clean entry. */
 export function clearGlErrors(b: CheckedGlOwner): boolean {
+  if (predictsNativeCalls(b)) return true;
   const gl = b.gl;
   if (!gl) return false;
   try {
     for (let i = 0; i < 32; i++) {
       const error = gl.getError();
+    observeBatchNativeError(gl, error);
       if (error === 0) return true;
       recordGlError(b, error);
     }
@@ -240,11 +251,13 @@ export function checkedGlGroups(b: CheckedGlOwner, groups: readonly (readonly ((
 /** One call issued right after a clean check of the same owner: no entry
  * drain is needed, only its own post-check. */
 export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): boolean {
+  if (predictsNativeCalls(b)) return predictedNativeCalls([call]);
   const gl = b.gl;
   if (!gl) return false;
   try {
     call();
     const error = gl.getError();
+    observeBatchNativeError(gl, error);
     recordGlError(b, error);
     return error === 0;
   } catch (error) { rethrowNativeGlFault(error);
@@ -255,12 +268,14 @@ export function checkedGlCallAfterClean(b: CheckedGlOwner, call: () => void): bo
 }
 
 export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void)[]): boolean {
+  if (predictsNativeCalls(b)) return predictedNativeCalls(calls);
   const gl = b.gl;
   if (!gl) return false;
   try {
     let cleared = false;
     for (let i = 0; i < 32; i++) {
       const error = gl.getError();
+    observeBatchNativeError(gl, error);
       if (error === 0) { cleared = true; break; }
       recordGlError(b, error);
     }
@@ -268,6 +283,7 @@ export function checkedGlSequence(b: CheckedGlOwner, calls: readonly (() => void
     for (let i = 0; i < calls.length; i++) {
       calls[i]();
       const error = gl.getError();
+    observeBatchNativeError(gl, error);
       recordGlError(b, error);
       if (error !== 0) return false;
     }
@@ -283,7 +299,10 @@ export function finalizeShader(b: GlBinding, name: number): void {
   if (!b.shaderDeletePending.has(name)) return;
   for (const attached of b.programShaders.values()) if (attached.has(name)) return;
   const shader = b.shaders.get(name);
-  if (shader && !checkedGlCall(b, () => b.gl!.deleteShader(shader))) return;
+  if (shader && !checkedGlCall(b, () => b.gl!.deleteShader(shader), "cleanup")) {
+    if (!rendererEverLost(b.gl!)) nativeGlFault("the live renderer refused deleteShader of a retired shader");
+    return;
+  }
   b.shaderDeletePending.delete(name);
   if (shader) b.shaderSources.delete(shader);
   for (const member of b.objects.members) if (member.shaderUpload?.shader === shader) member.shaderUpload = null;
@@ -329,8 +348,8 @@ function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean
   const gl = b.gl!;
   if (!checkedGlCall(b, () => {
     if (gl.getParameter(0x8b8d) === program) gl.useProgram(null);
-  }) && !rendererEverLost(gl)) nativeGlFault("the live renderer refused to uninstall a program before deleting it");
-  if (!checkedGlCall(b, () => gl.deleteProgram(program)) && !rendererEverLost(gl))
+  }, "cleanup") && !rendererEverLost(gl)) nativeGlFault("the live renderer refused to uninstall a program before deleting it");
+  if (!checkedGlCall(b, () => gl.deleteProgram(program), "cleanup") && !rendererEverLost(gl))
     nativeGlFault("the live renderer refused deleteProgram of a program no owner uses");
   releaseReversedDepthTwin(b, program);
   return true;

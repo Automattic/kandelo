@@ -181,7 +181,7 @@ describe("context creation acknowledgement", () => {
     const {kernel, create, imports} = harness();
     const deleted: unknown[] = [];
     const renderer = () => new Proxy({
-      getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
+      getError: () => 0, getExtension: () => null, isContextLost: () => false, getParameter: (p:number) => p === 0x84e0 ? 0x84c0 : null, getError: () => 0,
       createTexture: () => ({}), createFramebuffer: () => ({}), createRenderbuffer: () => ({}),
       FRAMEBUFFER_COMPLETE: 0x8cd5, checkFramebufferStatus: () => 0x8cd5,
       deleteFramebuffer: (value: unknown) => deleted.push(value),
@@ -334,7 +334,7 @@ describe("context creation acknowledgement", () => {
     let available = false;
     const claims: number[] = [];
     const gl = new Proxy({
-      getExtension: () => null, isContextLost: () => false,
+      getError: () => 0, getExtension: () => null, isContextLost: () => false,
     }, { get: (target, key) => Reflect.get(target, key) ?? (() => null) });
     const canvas = { width: 16, height: 16, getContext: () => available ? gl : null };
     const { kernel, create, setMaster } = harness({

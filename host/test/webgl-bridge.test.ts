@@ -1417,6 +1417,7 @@ describe("shader/program deferred deletion", () => {
     send(O.OP_CREATE_SHADER, 0x8b31, 11);
     send(O.OP_CREATE_PROGRAM, 12);
     send(O.OP_ATTACH_SHADER,12,11);
+    send(O.OP_LINK_PROGRAM,12);
     send(O.OP_USE_PROGRAM,12);
     send(O.OP_DELETE_SHADER,11);
     send(O.OP_DELETE_PROGRAM,12);
@@ -1451,10 +1452,22 @@ describe("shader/program deferred deletion", () => {
     expect(gl.log.filter(([method]) => method === "detachShader")).toHaveLength(2);
   });
 
+  it("predicts UseProgram of a never-linked program without a native call", () => {
+    const { b, gl, send, query } = setup();
+    send(O.OP_CREATE_PROGRAM, 12);
+    const calls = gl.log.length;
+    send(O.OP_USE_PROGRAM, 12);
+    expect(b.currentProgram).toBeNull();
+    expect(gl.log).toHaveLength(calls);
+    expect(query(O.QOP_GET_ERROR)).toBe(0x502);
+  });
+
   it("preserves the prior program when the driver rejects a switch", () => {
     const { b, gl, send, query } = setup();
     send(O.OP_CREATE_PROGRAM,12);
     send(O.OP_CREATE_PROGRAM,13);
+    send(O.OP_LINK_PROGRAM,12);
+    send(O.OP_LINK_PROGRAM,13);
     send(O.OP_USE_PROGRAM,12);
     send(O.OP_DELETE_PROGRAM,12);
     let pending = 0;

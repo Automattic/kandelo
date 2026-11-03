@@ -136,6 +136,22 @@ about 5; idle WebGL calls about 3,300/s to about 125/s; keystroke to commit
 about 54 ms to about 15-17 ms without the panel; ScummVM GL round trips per
 frame 128 to 73. The benchmark-suite comparison against main is still to run.
 
+**Stage A3 source checkpoint, 2026-11-03.** The maintainer chose to start
+production switching while the remaining performance/stress audit continues.
+Guest submissions, queries and presents now use host validation as the
+acceptance authority and sample native flags at the batch boundary.
+Unpredicted native errors and native OOM reset the guilty binding with a
+process/session/batch diagnostic; the audit makes that failure fatal.
+Private host allocation and deletion checks remain exact. Compressed cube
+storage retains its allocation byte count when moved, present-target
+allocation captures its outgoing guest error owner, and exporting a cube
+with no faces is covered as `EINVAL`. Focused reset/replay/present tests and
+the graphics gate pass: 1,963 tests in 84 files. The real-compiler rewrite
+harness reports Chromium 233 Pass, Firefox 230 Pass with one inconclusive
+and two existing engine controls, WebKit 233 Pass, no failures. This is
+source/mechanism evidence; A3 dEQP, desktop, memory and performance validation
+remain pending and this checkpoint is not a readiness claim.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension

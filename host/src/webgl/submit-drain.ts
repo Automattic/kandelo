@@ -1,3 +1,4 @@
+import { withNativeBatch } from "./native-batch.js";
 /**
  * Queue-aware drain step that pairs `SubmitQueue.pickNext` with a muxer
  * `switchTo` and the TLV dispatcher (plan 3 §B4).
@@ -50,11 +51,11 @@ export function drainSubmitQueue(
     if (mux) executingMuxers.add(mux);
     let rc: number | void;
     try {
-      rc = frame.run(entry.binding, () => {
+      rc = withNativeBatch(entry.binding, "submit", () => frame.run(entry.binding, () => {
         if (lookupFailed) throw lookupError;
         if (mux) mux.switchTo(entry.binding);
         return dispatch(entry.binding,0,frame.byteLength);
-      });
+      }));
     } catch (error) {
       // A native cleanup fault is fatal, never an I/O result.
       if (error instanceof NativeGlFault) throw error;

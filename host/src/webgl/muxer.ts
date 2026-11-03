@@ -59,7 +59,7 @@ export class GlMuxer {
       if (!this.framebufferSelectorsDirty) return;
       try {
         this.captureCurrentErrors();
-        const owner = {gl:this.gl,errors:[] as number[]};
+        const owner = {gl:this.gl,errors:target.errors};
         // This is permanent selection of desired logical state, not a
         // temporary borrow whose inverse could use a mutable shadow preimage.
         if (this.gl.isContextLost?.() ||

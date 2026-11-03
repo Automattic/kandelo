@@ -5998,28 +5998,39 @@ order to the implementation. A renderer whose flags never clear still fails
 loudly at the next capture, and context loss is still detected at every
 entry (`renderer-loss.ts`).
 
-Those native round trips are being retired: the host's own GLES 2.0
-validation is to decide acceptance, as a native driver's validation does,
-and native errors are to become an audit signal. Before any production path
-stops asking the renderer, every place where the host does not yet know the
-outcome has to be found, so the host carries a test-only native-divergence
-audit (`webgl/native-audit.ts`). With `KernelConfig.glAudit` set, every
-WebGL 2 context created in the kernel worker is instrumented: after each
-native call the audit reads `getError` at once and compares it with the
-host's prediction. A call is predicted to be accepted unless the gap table
-(`webgl/native-predictions.ts`) records, for that guest op, query or kernel
-import and that native method, the GLES 2.0 or WebGL rule the host still
-leaves to the renderer. OUT_OF_MEMORY and context loss are recorded as
-boundaries, never as divergences. The errors the audit reads are handed
-back to the host's own `getError` calls with GL flag semantics, so
-acceptance decisions, error attribution and guest replies are unchanged;
-only the order of two different pending flags can differ, which ES 2.0
-section 2.5 leaves unspecified. Each record names the native call, the
-observed and predicted outcome, the kernel import, process, session, an
-audit sequence number and the guest op being executed. `"record"` reports
-every divergence as a host diagnostic (source `gl-audit`) and continues;
-`"fatal"` latches a `NativeGlFault` at the first one. The audit is never on
-by default: it adds a renderer round trip after every native call.
+Guest execution now uses host GLES validation as the acceptance authority
+(`webgl/native-batch.ts`). Each submitted frame, result-bearing query and
+present runs in one synchronous native batch, including muxer replay and
+CPU-image preparation/publication. Checked calls on that guest's error owner
+execute without native `getError`; temporary inverses use the same policy.
+Native flags are sampled at batch completion before another logical context
+can acquire the shared renderer. A clean batch takes one error sample.
+Private allocation and retirement owners still use exact checks where native
+success is required to publish or delete a handle. If such a check discovers
+an error within a guest batch, it routes the error to that batch's reset
+policy instead of swallowing it in a private error queue.
+
+An unpredicted native error resets the guilty logical binding, emits a
+`gl-context-reset` host diagnostic naming its process, session, batch and
+entry, and returns `ENODEV`. Later work on that binding executes nothing;
+unrelated logical contexts keep their renderer and objects. The guest's
+existing robustness handling reports the reset (including its required
+share-group propagation). Native `OUT_OF_MEMORY` uses that same reset path:
+WebGL's asynchronous allocation failure is an approved platform boundary,
+rather than a late API error attributed to a later command. Native flags
+never enter the guest's API-error queue on these paths. Host validation and
+the guest's client-error trailer own those flags.
+
+The native-divergence audit (`webgl/native-audit.ts`) remains opt-in through
+`KernelConfig.glAudit`. It instruments every native method and compares the
+observed error with the host prediction, naming the native call, kernel
+import, process, session, batch and guest operation. The gap inventory in
+`webgl/native-predictions.ts` identifies rules needing additional coverage.
+`"record"` collects per-call findings; `"fatal"` latches a `NativeGlFault`
+at the first divergence. A batch failure under either audit mode is fatal,
+so the production reset cannot hide it during audit validation. The audit
+adds a native round trip per call and is disabled by default. Node has no
+WebGL renderer and keeps its documented loud initialization failure.
 
 The first audit of dEQP-GLES2, dEQP-EGL and the compositor sessions on
 Chromium found every native refusal at a site the gap table already named,

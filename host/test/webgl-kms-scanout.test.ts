@@ -1,3 +1,4 @@
+import { recordGlError } from "../src/webgl/errors.js";
 import { afterEach, expect, it } from "vitest";
 import { drawGpuScanout, readGpuScanout } from "../src/webgl/kms-scanout";
 import { createWasmPosixKernelTestHarness, getKernelGraphicsAccess } from "../src/kernel";
@@ -620,7 +621,7 @@ it.each([false,true])("restores only framebuffer selectors after same-owner curr
   // Selectors are context state; changing these through ordinary commands is
   // outside this fixture's transition. Explicitly establish their selection.
   r.muxer.invalidateCurrent();expect(r.submit()).toBe(0);const before=r.selections();r.binds.length=0;
-  r.setError(0x501);
+  recordGlError(r.binding, 0x501);
   if(release)expect(r.release()).toBe(0);
   expect(r.makeCurrent()).toBe(0);expect(r.submit()).toBe(0);
   expect(r.selections()).toBe(before);
@@ -676,10 +677,14 @@ for(const target of [0x8ca9,0x8ca8])for(const fault of ["native","throw"]as cons
     r.binding.cmdbufView=bytes;r.binding.cmdbufLen=8;
     expect(r.release()).toBe(0);expect(r.makeCurrent()).toBe(0);const bind=r.gl.bindFramebuffer.bind(r.gl);
     r.gl.bindFramebuffer=(which,value)=>{if(!rejected&&which===target){rejected=true;if(fault==="throw")throw Error("selector refused");r.setError(0x502);return;}bind(which,value);};
-    expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-5);expect(draws).toBe(0);
+    expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-19);
+    // Validated selectors execute optimistically. A native refusal is
+    // discovered at batch completion; a thrown call unwinds immediately.
+    expect(draws).toBe(fault === "native" ? 1 : 0);
     expect(r.binding.errors).toEqual([]);
-    r.gl.bindFramebuffer=bind;expect(r.imports.host_gl_submit(8,0,8,12)).toBe(0);expect(draws).toBe(1);
-    expect(r.selections()).toBe(r.before+1);
+    r.gl.bindFramebuffer=bind;
+    expect(r.imports.host_gl_submit(8,0,8,12)).toBe(-19);
+    expect(draws).toBe(fault === "native" ? 1 : 0);
   });
 
 it("invalidates before releasing an owner-dead surface's final native allocation",()=>{
@@ -733,14 +738,14 @@ it.each([false,true])("adds no selector/error work for clean surfaceless current
   const getError=r.gl.getError;let errorReads=0;
   r.gl.getError=()=>{errorReads++;return getError();};
   expect(r.submit()).toBe(0);const ordinaryEntryReads=errorReads;errorReads=0;
-  r.setError(0x501);
+  recordGlError(r.binding, 0x501);
   if(release)expect(r.release()).toBe(0);
   expect(r.imports.host_gl_make_current(8,22,0,0,12)).toBe(0);
   expect(errorReads).toBe(0);expect(r.binds).toEqual([]);
   expect(r.submit()).toBe(0);
-  // The entry reads no flags (no repair is pending): the queued guest flag
-  // stays native, owned by the selected binding. No private selector checks.
-  expect(ordinaryEntryReads).toBe(0);expect(errorReads).toBe(0);
+  // Each submitted batch samples once; guest flags live in host state.
+  // Logical rebinds add no native selector or error checks.
+  expect(ordinaryEntryReads).toBe(1);expect(errorReads).toBe(1);
   expect(r.binds).toEqual([]);expect(r.selections()).toBe(before);
   // The binding's own capture (as its glGetError query does) receives it.
   r.muxer.captureCurrentErrors();

@@ -72,3 +72,11 @@ export function rendererLost(b: { gl: WebGL2RenderingContext | null }): boolean 
   if (gl.isContextLost() || baseline.counter.count !== baseline.count) baseline.lost = true;
   return baseline.lost;
 }
+
+/** A validation divergence or native OOM loses only the guilty logical
+ * context. Do not lose the physical renderer shared by unrelated sessions. */
+export function markRendererReset(b: { gl: WebGL2RenderingContext | null }): void {
+  observeRendererLoss(b);
+  const baseline = baselines.get(b);
+  if (baseline) baseline.lost = true;
+}

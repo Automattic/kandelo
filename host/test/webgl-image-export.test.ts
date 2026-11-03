@@ -280,6 +280,7 @@ it("reports the KHR_gl_texture_2D_image and cubemap creation errors", () => {
   expect(exportImageStorage(b, 41, 0x0de1, 5, 32)).toBe(-34);
   expect(exportImageStorage(b, 41, 0x8515, 5, 0)).toBe(-22);             // 2D object, cube target
   bind(b, 1, 0x8513, 7);
+  expect(exportImageStorage(b, 41, 0x8515, 7, 0)).toBe(-22);             // cube has no faces
   image(b, 0x8515, 0, 1);
   expect(exportImageStorage(b, 41, 0x0de1, 7, 0)).toBe(-22);             // cube object, 2D target
   // An incomplete cube map needs level 0 of every face.

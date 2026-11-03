@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { GlContextRegistry, type GlBinding } from "../src/webgl/registry.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
-import { cubeExtraTextures, cubeImageTexture, cubeSamplingTexture } from "../src/webgl/cube-storage.js";
+import { cubeExtraTextures, cubeImageTexture, cubeSamplingTexture, cubeSpecifyImage, orphanCubeStorage } from "../src/webgl/cube-storage.js";
 import { externalDrawUnits, guestUniformType, recordLinkedExternalSamplers } from "../src/webgl/external-texture.js";
 import { recordShaderLanguage, shaderSamplesCube } from "../src/webgl/essl3-translation.js";
 import { collectRetiredImages } from "../src/webgl/image-references.js";
@@ -163,6 +163,26 @@ describe("cube maps as six-layer 2D arrays", () => {
     expect(cubeSamplingTexture(cube)).toBeNull();
     for (let level = 1, size = 2; size >= 1; level++, size >>= 1) faces(b, level, () => level, size);
     expect(cubeSamplingTexture(cube)).toBe(cube);
+    expect(b.errors).toEqual([]);
+  });
+
+  it("retains compressed allocation size when orphaning a cube storage", () => {
+    const { b, gl } = setup();
+    bind(b, CUBE, 7);
+    const cube = b.textures.get(7)!, sizes: number[] = [];
+    Object.assign(gl, {
+      compressedTexImage3D: (target: number, level: number, format: number, w: number, h: number,
+        depth: number, _border: number, bytes: Uint8Array) => {
+        sizes.push(bytes.byteLength);
+        if (bytes.byteLength !== 48) { gl.errors.push(0x501); return; }
+        gl.texImage3D(target, level, format, w, h, depth);
+      },
+    });
+    expect(cubeSpecifyImage(b, PX, 0, { size: 4, internalFormat: 0x83f0,
+      format: 0x83f0, type: 0, compressed: true }, null, { inPlace: true, compressedBytes: 8 })).toBe(true);
+    expect(orphanCubeStorage(b, cube, cube)).toBe(true);
+    expect(sizes).toEqual([48, 48]);
+    expect(gl.errors).toEqual([]);
     expect(b.errors).toEqual([]);
   });
 

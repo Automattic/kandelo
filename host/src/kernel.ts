@@ -1,3 +1,4 @@
+import { withNativeBatch } from "./webgl/native-batch.js";
 import type { HostDiagnostic } from "./host-diagnostic.js";
 import { interruptUniformUpload } from "./webgl/uniform-upload.js";
 import { recordComparisonMemoryShape, lookupComparisonMemoryShape, getSnapshotComparatorModule } from "./process-snapshot-comparator";
@@ -3590,6 +3591,7 @@ export class WasmPosixKernel {
           if (!operation) return -5;
           try {
           if (interruptUniformUpload(b)) return -5;
+          return withNativeBatch(b, "present", () => {
           if (!b.gl) return -5;
           if (rendererLost(b)) return RENDERER_LOST;
           if (!this.prepareForeignRetirements(b)) return -5;
@@ -3645,6 +3647,7 @@ export class WasmPosixKernel {
             }
             return 0;
           } catch (caught) { rethrowNativeGlFault(caught); return -5; }
+          });
           } finally { operation.finish(); }
         },
         host_gl_query: (
@@ -3740,6 +3743,7 @@ export class WasmPosixKernel {
             } else {
               // A reset context answers nothing; see host_gl_submit.
               if (rendererLost(b)) return RENDERER_LOST;
+              written = withNativeBatch(b, `query 0x${op.toString(16)}`, () => {
               // Empty command buffers still need to select their owner.
               this.glMuxerFor(b.gl!).switchTo(b);
               const capture = (gl: WebGL2RenderingContext) => this.gl_muxers.get(gl)?.captureCurrentErrors();
@@ -3755,7 +3759,8 @@ export class WasmPosixKernel {
               const published = this.gl.cpuImages.publish(b, this.bos, capture);
               if (failure) throw failure.error;
               if (!published) return -5;
-              written = reply;
+              return reply;
+              });
             }
           } catch (caught) { rethrowNativeGlFault(caught);
             return -5; // EIO: the renderer failed without a reply
