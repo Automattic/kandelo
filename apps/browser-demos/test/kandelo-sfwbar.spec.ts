@@ -23,10 +23,20 @@ const owner = async (page: Page) => Number(await page.locator(".kmachine-primary
  * Freeciv absolute-input checks do, so the guest receives no key.
  */
 async function releasePointer(page: Page) {
-  if (await page.evaluate(() => document.pointerLockElement !== null)) {
-    await page.evaluate(() => document.exitPointerLock());
-    await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
-  }
+  await page.evaluate(() => {
+    // Keep the real native request. Release asynchronous capture completions
+    // too, as the Freeciv absolute-input fixtures do: checking only the
+    // current element can miss a click's still-pending request.
+    const scope = globalThis as typeof globalThis & { __sfwbarReleaseCapture?: () => void };
+    if (!scope.__sfwbarReleaseCapture) {
+      scope.__sfwbarReleaseCapture = () => {
+        if (document.pointerLockElement) document.exitPointerLock();
+      };
+      document.addEventListener("pointerlockchange", scope.__sfwbarReleaseCapture);
+    }
+    scope.__sfwbarReleaseCapture();
+  });
+  await expect.poll(() => page.evaluate(() => document.pointerLockElement === null)).toBe(true);
 }
 
 async function surface(page: Page, label: "Demo" | "Internals") {
@@ -302,19 +312,63 @@ async function clickRect(page: Page, frame: Paint, rect: Rect, button: "left" | 
   await page.mouse.up({ button });
 }
 
-/** Click a task button, then wait until the compositor has focused that
- * window before anything is typed. The Focus action is asynchronous: Sway
- * and Labwc give the on-demand bar the keyboard for the click itself, and
- * the window receives it only after SFWBar has handled the click and asked
- * the compositor to focus it (Sway IPC focus, foreign-toplevel activate).
- * Keys typed in between go to the bar, as they would on any system; with
- * no wait the shell received "ntf"/"tf" instead of "printf". SFWBar paints
- * a task focused only after the compositor reports that focus, which is
- * the same transaction that moves the keyboard. The hover style uses the
- * same colour, so move the pointer onto the bar's empty spacer first; that
- * also lets a later hover over this task show its tooltip again.
- */
-async function focusTask(page: Page, frame: Paint, rect: Rect) {
+/** Foot paints a filled cursor only while it owns keyboard focus. Read
+ * solid horizontal runs rather than connected components: a cursor in the
+ * first column touches the window border, which belongs to a larger shape.
+ * These commands leave the cursor on a blank, non-blinking prompt cell. */
+async function hasFocusedFootCursor(page: Page, panelTop: number, rect?: Rect): Promise<boolean> {
+  const png = await scene(page).screenshot({ animations: "disabled" });
+  return page.evaluate(async ([base64, panelTop, rect]) => {
+    const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+    const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+    const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+    context.drawImage(bitmap, 0, 0);
+    const { width, height, data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+    bitmap.close();
+    const heights = new Uint16Array(width);
+    const left = Math.max(0, rect?.x ?? 0);
+    const right = Math.min(width, rect ? rect.x + rect.width : width);
+    const top = Math.max(0, rect?.y ?? 0);
+    const bottom = Math.min(height, panelTop, rect ? rect.y + rect.height : height);
+    for (let y = top; y < bottom; y++) {
+      const row = new Uint8Array(width);
+      let start = -1;
+      for (let x = left; x <= right; x++) {
+        const at = (y * width + x) * 4;
+        const r = data[at], g = data[at + 1], b = data[at + 2];
+        const white = x < right && Math.min(r, g, b) > 155
+          && Math.max(r, g, b) - Math.min(r, g, b) < 35;
+        if (white && start < 0) start = x;
+        if (!white && start >= 0) {
+          if (x - start >= 6 && x - start <= 24) row.fill(1, start, x);
+          start = -1;
+        }
+      }
+      for (let x = 0; x < width; x++) heights[x] = row[x] ? heights[x] + 1 : 0;
+      let span = 0;
+      for (const h of heights) {
+        span = h >= 18 ? span + 1 : 0;
+        if (span >= 8) return true;
+      }
+    }
+    return false;
+  }, [png.toString("base64"), panelTop, rect] as const);
+}
+
+/** Capture the same painted frame that acknowledges the native task update.
+ * A terminal repaint can precede the panel's separate GTK repaint. */
+async function paintWithTasks(page: Page, count: number): Promise<Paint> {
+  let frame: Paint | undefined;
+  await expect.poll(async () => {
+    frame = await paint(page);
+    return frame.tasks.length;
+  }, { timeout: 60_000 }).toBe(count);
+  return frame!;
+}
+
+/** Task activation precedes the on-demand layer's keyboard handoff. Leave
+ * its hover area, then observe the selected client's own focused cursor. */
+async function focusTask(page: Page, frame: Paint, rect: Rect, compositor: "sway" | "labwc") {
   await clickRect(page, frame, rect);
   await releasePointer(page);
   const box = (await scene(page).boundingBox())!;
@@ -337,6 +391,72 @@ async function focusTask(page: Page, frame: Paint, rect: Rect) {
       return focused > rect.width * rect.height * 0.4;
     }, [png.toString("base64"), rect] as const);
   }, { timeout: 30_000, intervals: [250, 500, 1_000] }).toBe(true);
+  await waitForFootKeyboardFocus(page, frame, compositor);
+}
+
+async function waitForFootKeyboardFocus(page: Page, frame: Paint, compositor: "sway" | "labwc") {
+  // Native capture can be refused after an automated immediate release.
+  // Its persistent DOM alert covers titlebar pixels in locator screenshots.
+  // Dismiss through the real control before measuring the guest's bounds.
+  const captureAlert = page.getByRole("button", { name: "Dismiss pointer lock error", exact: true });
+  if (await captureAlert.isVisible()) await captureAlert.click();
+  await scene(page).focus();
+  const box = (await scene(page).boundingBox())!;
+  let target: Rect | null;
+  if (compositor === "sway") {
+    // The task's selected state acknowledges activation, while the panel
+    // can still own keyboard focus. The default focused titlebar is
+    // #285577; read its bounds to identify the already-selected client before
+    // entering that client and checking its keyboard-focus cursor.
+    const png = await scene(page).screenshot({ animations: "disabled" });
+    const title = await page.evaluate(async ([base64, panelTop]) => {
+      const bytes = Uint8Array.from(atob(base64), c => c.charCodeAt(0));
+      const bitmap = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d")!;
+      ctx.drawImage(bitmap, 0, 0);
+      const { width, height, data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+      bitmap.close();
+      const blue = (x: number, y: number) => {
+        const at = (y * width + x) * 4;
+        return Math.abs(data[at] - 40) <= 2 && Math.abs(data[at + 1] - 85) <= 2
+          && Math.abs(data[at + 2] - 119) <= 2;
+      };
+      for (let y = 0; y < Math.min(height, panelTop); y++) {
+        let start = -1;
+        for (let x = 0; x <= width; x++) {
+          const focused = x < width && blue(x, y);
+          if (focused && start < 0) start = x;
+          if (!focused && start >= 0) {
+            if (x - start > 100) {
+              let bottom = y;
+              while (bottom < panelTop && blue(x - 3, bottom)) bottom++;
+              return { client: { x: start, y: bottom + 1, width: x - start,
+                  height: panelTop - bottom - 1 } };
+            }
+            start = -1;
+          }
+        }
+      }
+      return null;
+    }, [png.toString("base64"), frame.start!.y] as const);
+    expect(title, "selected Sway client has a painted focused titlebar").not.toBeNull();
+    target = title!.client;
+  } else {
+    // Labwc raises the activated client. Its foreground Foot body is the
+    // largest connected dark client, independent of the panel highlight.
+    target = (await footFrame(page)).foot;
+    expect(target, "activated Labwc client is painted").not.toBeNull();
+  }
+  // Enter the already-activated client's surface. A server-side titlebar
+  // can retain Sway's layer keyboard focus; entry into the client completes
+  // the on-demand panel handoff without another activation click.
+  await page.mouse.move(box.x + (target!.x + target!.width / 2) * box.width / frame.width,
+    box.y + (target!.y + target!.height / 2) * box.height / frame.height);
+  // This is the newly selected client's cursor, not another window's old
+  // cursor. Do not require observing a transient unfocused frame: native
+  // focus can leave and return before a screenshot is taken.
+  await expect.poll(() => hasFocusedFootCursor(page, frame.start!.y, target!),
+    { timeout: 30_000 }).toBe(true);
 }
 
 async function screenshot(page: Page, name: string, frame: Paint) {
@@ -456,7 +576,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     await expect.poll(async () => (await paint(page)).red, { timeout: 60_000 }).toBeGreaterThan(200);
 
     await expect.poll(async () => (await paint(page)).pager !== null, { timeout: 60_000 }).toBe(true);
-    const desktop = await paint(page);
+    const desktop = await paintWithTasks(page, 1);
     expect(desktop.tasks, "default pager label must not become a task title").toHaveLength(1);
     await screenshot(page, `${compositor}-sfwbar-default-pager-and-first-task`, desktop);
     if (compositor === "sway") await workspaceRoundTrip(page, desktop);
@@ -537,15 +657,15 @@ for (const compositor of ["sway", "labwc"] as const) {
     // Click actual title glyph runs rather than assumed taskbar cell widths.
     // The two saved shell variables must differ: a focus repaint, key echo,
     // or writing twice to the same PTY cannot pass the final file assertions.
-    let tasks = await paint(page);
-    await focusTask(page, tasks, tasks.tasks[0]);
+    let tasks = await paintWithTasks(page, 2);
+    await focusTask(page, tasks, tasks.tasks[0], compositor);
     await typePhysicalText(page, "printf 'LEFT:%s\\n' \"$mark\" > /tmp/sfwbar-left; "
       + "printf '\\033[48;2;30;180;60mFOCUSED_LEFT\\033[0m\\n'\n", { delay: 20 });
     await expect.poll(async () => (await paint(page)).green, { timeout: 60_000 }).toBeGreaterThan(200);
     await releasePointer(page);
-    tasks = await paint(page);
+    tasks = await paintWithTasks(page, 2);
     expect(tasks.tasks).toHaveLength(2);
-    await focusTask(page, tasks, tasks.tasks[1]);
+    await focusTask(page, tasks, tasks.tasks[1], compositor);
     await typePhysicalText(page, "printf 'RIGHT:%s\\n' \"$mark\" > /tmp/sfwbar-right; "
       + "printf '\\033[48;2;180;30;180mFOCUSED_RIGHT\\033[0m\\n'\n", { delay: 20 });
     await expect.poll(async () => (await paint(page)).purple, { timeout: 60_000 }).toBeGreaterThan(200);
@@ -555,7 +675,7 @@ for (const compositor of ["sway", "labwc"] as const) {
     // Right-click this real task. The shipped winops menu has Focus, Close,
     // Minimize and Maximize; select its second actual painted row and click.
     await releasePointer(page);
-    tasks = await paint(page);
+    tasks = await paintWithTasks(page, 2);
     // The window-operations menu is driven by keys too (see hoverBar).
     await hoverBar(page, tasks, tasks.tasks[1]);
     await clickRect(page, tasks, tasks.tasks[1], "right");
@@ -570,12 +690,12 @@ for (const compositor of ["sway", "labwc"] as const) {
     await expect.poll(async () => (await paint(page)).tasks.length, { timeout: 60_000 }).toBe(1);
     expect(await owner(page)).toBe(compositorOwner);
 
-    // Restore browser and guest focus through the actual task, then invoke
-    // the compositor's normal cooperative exit client from that foot shell.
-    // No host kill, test exit wrapper or forced click. Sway's CtrlShiftE
-    // opens a separate swaynag confirmation, covered by kandelo-sway.spec.
-    const remaining = await paint(page);
-    await focusTask(page, remaining, remaining.tasks[0]);
+    // A menu can keep the on-demand layer's keyboard focus after Close.
+    // Activate the actual remaining task, then observe Foot's focus cursor
+    // before typing. The task highlight alone can precede keyboard delivery.
+    const remaining = await paintWithTasks(page, 1);
+    await scene(page).focus();
+    await focusTask(page, remaining, remaining.tasks[0], compositor);
     await typePhysicalText(page, `${compositor === "sway" ? "swaymsg exit" : "labwc --exit"}\n`, { delay: 20 });
     await expect.poll(() => owner(page), { timeout: 90_000 }).toBe(0);
     await expect(page.getByLabel("Computer views").getByRole("button", { name: "Terminal", exact: true }))

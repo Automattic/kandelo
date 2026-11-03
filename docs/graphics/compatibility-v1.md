@@ -375,6 +375,33 @@ was announced separately from validation. Evidence:
 `.context/graphics-preview-r10/`. The retired-client Node smokes,
 three-engine specs, manual check and matched performance are still open.
 
+**SFWBar interaction checkpoint, 2026-11-03.** Native protocol traces
+separate two fixture failures from a lost platform key. Task activation
+can precede keyboard delivery; the task's focused highlight does not
+acknowledge that handoff. A window-operations menu can also leave the
+on-demand panel holding the keyboard after Close. The fixture activates
+the actual remaining task and waits for that client's own filled Foot
+cursor before typing. Distinct-shell marker files, visible paint, normal
+compositor exit status and process cleanup remain required.
+
+The fixture releases asynchronous native pointer-capture completions for
+absolute-coordinate input, waits for the frame that actually contains
+the expected task count, and dismisses the real pointer-lock alert before
+measuring titlebar pixels. A persistent DOM alert obscured WebKit's
+selected titlebar: the inferred client started at x=980 instead of
+x=720, excluding the correctly focused cursor at x=722. The wire trace
+confirms keyboard enter and Foot's repaint; this was a geometry error,
+not a missing native focus event.
+
+The corrected full Sway/SFWBar interaction passes Chromium, Firefox and
+WebKit with copied-value protocol observation. After removing that
+observer, all 15 selected desktop cases pass Chromium with the normal
+r10 clients and runtime `030acf65aa`, including both SFWBar sessions,
+all Omarchy cases and the six-game flow. Uninstrumented Firefox/WebKit
+runs remain active. Evidence: `.context/sfwbar-native-wire-r3/` and
+`.context/graphics-desktop-r11-results/acceptance-r13/`. This does not
+close the separate Foot redraw or performance validation requirements.
+
 **Validation checkpoint, 2026-11-03.** The normal r10 source at
 `ae0fc96da0` completes `scripts/ci-run-test-suite.sh cargo-workspace`
 (3,629 passing tests, zero ignored, 178 seconds),
