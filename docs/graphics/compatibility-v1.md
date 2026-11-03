@@ -397,8 +397,10 @@ The corrected full Sway/SFWBar interaction passes Chromium, Firefox and
 WebKit with copied-value protocol observation. After removing that
 observer, all 15 selected desktop cases pass Chromium with the normal
 r10 clients and runtime `030acf65aa`, including both SFWBar sessions,
-all Omarchy cases and the six-game flow. Uninstrumented Firefox/WebKit
-runs remain active. Evidence: `.context/sfwbar-native-wire-r3/` and
+all Omarchy cases and the six-game flow. The complete uninstrumented Firefox run has 11 passes, two failures
+(Omarchy notification observation and guest clipboard), and two existing
+host-clipboard permission skips. WebKit has 12 passes, one failure
+(Labwc/SFWBar cooperative exit), and the same two permission skips. Evidence: `.context/sfwbar-native-wire-r3/` and
 `.context/graphics-desktop-r11-results/acceptance-r13/`. This does not
 close the separate Foot redraw or performance validation requirements.
 
@@ -20558,3 +20560,23 @@ Programs must be rebuilt to use the drain: `libc/glue` is a global package
 input, so the normal build re-keys every package. Programs built before it
 keep the legacy one-flag `QOP_GET_ERROR` form, which this host still serves
 unchanged.
+
+
+**Final-host preview checkpoint, 2026-11-03.** At frozen `01bb61483d`
+(runtime `030acf65aa`), the normal host/rootfs/ABI/freshness refresh passes
+(15/4/60/16 seconds), using the complete retired-client r10 products.
+Port 5693 now serves this isolated tree; the previous owned preview was
+stopped by its verified PID and working directory. Availability is separate
+from validation: full CTS and final host acceptance remain running.
+The matched old-client host refresh also passes (16/3/14/15 seconds),
+preserving the old client recipes for the pending performance comparison.
+Evidence: `.context/graphics-final-r11-build-r2/`,
+`.context/graphics-old-clients-host-refresh-r11-r2/` and
+`.context/graphics-preview-r11/`.
+
+The normal main baseline at `689bfc19978d` completes provisioning, both
+SDKs, setup-all, program fixtures, ABI and freshness (7/127/41/3670/3674/
+2289/17 seconds), with unchanged source. It retains its own ABI 55 products
+for comparison; candidate products remain in ABI family 56/3/17/21.
+Evidence: `.context/graphics-main-normal-r2/results/`. No benchmark or
+shipping claim follows from successful builds.
