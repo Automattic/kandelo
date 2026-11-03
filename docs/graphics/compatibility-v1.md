@@ -21008,3 +21008,37 @@ combined), with private error-event observations retained. This preserves
 the preceding startup failure as intermittent rather than clearing it.
 Evidence: `.context/graphics-desktop-r12-focused-r2/`. Final combined
 three-engine desktop acceptance remains required.
+
+
+**Completed historical WebKit comparison, 2026-11-03.** The frozen
+runtime-030/kernel-2f7 matrix completes after 8 hours 17 minutes. GLES2
+accounts for all 19,825 planned cases: 19,072 Pass, 415 NotSupported,
+three QualityWarning, three CompatibilityWarning, 135 Fail, 196 Missing
+and one Timeout. Its ordered recorded comparison retains 304 regressions:
+API performance has 100 Fail, 196 Missing and one Timeout; compiler
+performance has seven Fail. No functional-family regression appears in
+this comparison. The run predates the renderer cleanup and iterative
+fence-destruction fixes; it is not final-source acceptance.
+
+EGL accounts for 4,117 cases: 1,849 Pass, 2,181 NotSupported, two
+QualityWarning, one Fail, 74 Missing and ten Timeout. Initially there are
+zero regressions among cases with recorded baseline results, but 112 cases
+lack a baseline. A new pre-A3 run at `4debe2d0d0`, using normally built r9
+kernel/program artifacts, fills those cases with 48 Pass and 64
+NotSupported. Rust, ABI, libc and CTS package sources are identical between
+that checkpoint and the normal artifact producer `734e8d673d`; the copied
+current test driver changes accounting/liveness only, leaving production
+host source unchanged. Its strict run completes in 64 seconds.
+
+The completed baseline reveals two older post-A3 regressions:
+`dEQP-EGL.performance.make_current.complex.contexts_100_pbuffers_100_release`
+and `dEQP-EGL.performance.make_current.complex.contexts_100_windows_10_release`
+change from Pass to case-deadline Timeout. They are not covered by D-56's
+shared-render timeout decision. Matched current-host checks with the old
+and iterative-fence-destruction kernels are queued/running; their cause
+and current verdict remain unproven. The complete final three-engine
+GLES2/EGL matrix is still required. Evidence:
+`.context/graphics-cts-final-r2-comparison-completed-webkit/`,
+`.context/graphics-egl-pre-a3-r15-results/`,
+`.context/graphics-egl-release-fences-r15-before-r3/`,
+`.context/graphics-egl-release-fences-r15-after/`.
