@@ -20973,3 +20973,38 @@ investigation with complete original assertions retained. The remaining
 Labwc/SFWBar cases pass in this checkpoint, which is not the final combined
 source. Evidence: `.context/graphics-desktop-r12-results/`,
 `omarchy-webkit-console.json`.
+
+
+**Normal-build tooling and callback checkpoint, 2026-11-03.** Copying native
+Cargo target artifacts can retain a release `xtask` bound to the seed
+checkout even after `cargo build` reports it fresh. The r14 r5 setup uses
+its correctly rooted Debug tool, but its copied Release tool still embeds
+r13. The owned build is retired before relying on later Release operations;
+its valid intermediate package nodes and all failed-attempt evidence remain.
+The r6 continuation first cleans only the destination's release `xtask`
+package, recompiles it (97 seconds), verifies its embedded root, and resolves
+the exact compact-libffi key used by the normal GObject probe. Both SDK
+ensures pass. The complete normal build is still running; this is no claim
+of image readiness. Evidence: `.context/graphics-final-r14-build-r5/`,
+`.context/graphics-final-r14-build-r6/`.
+
+The corrected GObject package rebuild succeeds. Nine of ten selected
+upstream Node tests pass; signals passes its first four TAP cases, then
+traps at an indirect call signature mismatch. The same first four cases
+pass before the same mismatch on all three browsers. The newly covered
+long-record and arity-nine families no longer produce missing-dispatch
+errors. The next upstream connected callback declares six arguments while
+the generic marshaller supplies seven including userdata; native C accepts
+the extra argument but strict Wasm signatures differ. Its original assertion
+and diagnostic remain intact. A maintainer decision is pending between
+platform callback adaptation and an explicitly approved compatibility
+boundary; neither has been silently selected. Evidence:
+`.context/graphics-gobject-normal-r15-r4/`.
+
+With the native index checker prepared before the test clock, the unchanged
+Cage Chromium check passes in 27 seconds. The original Omarchy guest
+clipboard test also passes three focused WebKit repeats (92 seconds
+combined), with private error-event observations retained. This preserves
+the preceding startup failure as intermittent rather than clearing it.
+Evidence: `.context/graphics-desktop-r12-focused-r2/`. Final combined
+three-engine desktop acceptance remains required.

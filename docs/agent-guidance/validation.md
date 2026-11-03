@@ -273,8 +273,13 @@ program-index source-context commands accept `--source-repo-root` and are
 portable; ordinary package resolve/path/output-path and bootstrap commands
 still use the compiled root. Before those build operations, compile the
 current checkout's release tool with `cargo build --release -p xtask --target
-<host-target>`, or use `run.sh`'s normal tool-freshening path. Merely setting
-`WASM_POSIX_XTASK_BIN` to a copied binary does not select the current checkout.
+<host-target>`, or use `run.sh`'s normal tool-freshening path. If native Cargo
+target artifacts were copied too, first run `cargo clean --release -p xtask
+--target <host-target>` in the destination checkout: Cargo can report that
+copied executable as fresh while it still embeds the previous manifest root.
+Verify the resolved package identity against the intended source before
+bootstrapping. Merely setting `WASM_POSIX_XTASK_BIN` to a copied binary does
+not select the current checkout.
 Prepare that tool before a browser test's clock starts. Preserve the SDK's
 `sdk/.build` cache together with its copied sysroots, then run the normal SDK
 ensures; otherwise preparing a new tool can re-key or replace core outputs.
