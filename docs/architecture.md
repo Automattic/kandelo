@@ -3816,8 +3816,12 @@ not perform this scan; a process without mapped imports does not copy BOs. Refre
 reader also refreshes its snapshot. A pending reader remains eligible for
 refresh after the last writer unmaps, exits, or replaces its address space.
 Publication scans retain the independent baseline without copying it when
-no changed runs are found. A changed publication still updates its baseline
-and marks readers pending. Readiness refresh remains unconditional for the
+no changed runs are found. A changed publication advances only its copied
+runs, using the exact bytes that reached canonical storage, and marks
+readers pending. It never rereads the live producer to advance that
+baseline: stores made during the scan must remain detectable at the next
+publication, including stores to an earlier byte the scan already passed.
+Readiness refresh remains unconditional for the
 selected BO's mapped readers: mutable canonical pixel views do not provide
 an authoritative version that would permit skipping those refreshes.
 This remains boundary synchronization,

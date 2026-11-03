@@ -1,5 +1,7 @@
 /** Merge only writes relative to this mapping's last published snapshot.
- * Unchanged readers must never overwrite newer canonical bytes. */
+ * Unchanged readers must never overwrite newer canonical bytes. When advancing
+ * the snapshot, copy the exact published bytes from the host-owned destination:
+ * a concurrent producer may already have changed the live source again. */
 export function mergeChangedByteRuns(
   source: Uint8Array,
   sourceOffset: number,
@@ -8,6 +10,7 @@ export function mergeChangedByteRuns(
   destination: Uint8Array,
   destinationOffset: number,
   len: number,
+  updateSnapshot = false,
 ): boolean {
   // These views belong to this synchronous call only. Both callers recreate
   // their byte views from the current memory buffer; never retain guest views
@@ -23,6 +26,7 @@ export function mergeChangedByteRuns(
     && (snapshotStart + lead) % 4 === 0;
   if (!useWords) return mergeChangedByteRunsScalar(
     source, sourceOffset, snapshot, snapshotOffset, destination, destinationOffset, len,
+    updateSnapshot,
   );
   let changed = false;
   let i = 0;
@@ -52,6 +56,9 @@ export function mergeChangedByteRuns(
       i < len && source[sourceOffset + i] !== snapshot[snapshotOffset + i]
     );
     destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
+    if (updateSnapshot) snapshot.set(
+      destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
+    );
     changed = true;
   }
   return changed;
@@ -67,6 +74,7 @@ function mergeChangedByteRunsScalar(
   destination: Uint8Array,
   destinationOffset: number,
   len: number,
+  updateSnapshot: boolean,
 ): boolean {
   let changed = false;
   let i = 0;
@@ -78,6 +86,9 @@ function mergeChangedByteRunsScalar(
       i < len && source[sourceOffset + i] !== snapshot[snapshotOffset + i]
     );
     destination.set(source.subarray(sourceOffset + start, sourceOffset + i), destinationOffset + start);
+    if (updateSnapshot) snapshot.set(
+      destination.subarray(destinationOffset + start, destinationOffset + i), snapshotOffset + start,
+    );
     changed = true;
   }
   return changed;

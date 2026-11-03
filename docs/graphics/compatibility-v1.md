@@ -334,6 +334,28 @@ retirement only: rebuilding the clients and images, Node smokes,
 three-engine desktop specs and before/after measurements remain required.
 The frozen r9 build retains the earlier clients for that comparison.
 
+**BO writer-baseline checkpoint, 2026-11-03.** A separate publication
+race can permanently lose producer stores. After merging changed runs,
+the registry reread the entire live mapping into its baseline. A store
+made after its canonical copy, or to an earlier byte the scan had passed,
+could therefore become clean without ever reaching canonical storage.
+Publication now advances only copied runs, from the canonical bytes
+actually published. Unchanged readers retain their independent baselines.
+Anonymous shared-memory callers keep the merge helper's non-mutating
+default; no ABI changes.
+
+Two deterministic aligned/unaligned regressions fail on the previous
+source: 89 pass, two fail. The corrected cohort passes 91/91 and the
+graphics gate passes 1,978/1,978 in 84 files. Native worker probes inject
+stores immediately after the canonical copy, for 64-byte and 4-KiB BOs
+at aligned and unaligned addresses. All four cases fail before and pass
+after on each of Chromium, Firefox and WebKit. No guest memory reaches
+the persistent page. Evidence is in
+`.context/a3/bo-publication-race/` and
+`.context/bo-publication-browser-r1/{before,after}/`. This proves the
+publication contract; desktop, final conformance and performance
+validation of this follow-up remain open.
+
 **Retired-client build and preview checkpoint, 2026-11-03.** The normal
 r10 build at `23e6972153` passes provisioning (8 seconds), both SDK
 freshness/build steps (5 and 2 seconds), `setup --all` (5,685 seconds),

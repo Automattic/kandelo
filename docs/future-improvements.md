@@ -262,7 +262,10 @@ must keep that platform behavior and its Node CPU-renderer coverage.
 Mapped BO imports also need receive-completion coherence: a producer may
 publish another buffer update after the consumer's readiness wake. Moving
 execution or queues must preserve that happens-before edge, including when
-a receive writes directly into a mapped buffer.
+a receive writes directly into a mapped buffer. A writer's baseline must
+also advance from the exact bytes published, rather than a later reread of
+its live mapping, so concurrent stores cannot become clean without ever
+reaching canonical storage.
 
 ### Run WebGL in a dedicated GPU worker (only if the responsiveness bar is missed)
 

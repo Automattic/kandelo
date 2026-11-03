@@ -17,6 +17,44 @@ const BO_SIZE = 4096;
 const BO_ADDR = 0;
 
 describe("BO publication copies", () => {
+  it.each([0, 1])("keeps stores made during publication pending at address %i", (addr) => {
+    const memory = newMemory();
+    const registry = new GbmBoRegistry({ getProcessMemory: () => memory });
+    registry.create({ pid: 100, bo_id: 1, size: BO_SIZE, w: 16, h: 16, stride: 64 });
+    const canonical = registry.pixelView(1)!;
+    registry.bind(100, 1, addr, BO_SIZE);
+    registry.primeBindFromSab(100, 1, memory, addr);
+    const producer = new Uint8Array(memory.buffer, addr, BO_SIZE);
+    producer[32] = 11;
+
+    // A producer can keep running while a peer causes a publication. Model
+    // two stores immediately after the canonical copy: one changes the run
+    // just published, and one changes an earlier byte the scan passed over.
+    // Neither store has been published by this scan, so neither may become
+    // clean in the writer's baseline.
+    const nativeSet = Uint8Array.prototype.set;
+    let wroteDuringCopy = false;
+    const copy = vi.spyOn(Uint8Array.prototype, "set").mockImplementation(
+      function (this: Uint8Array, values: ArrayLike<number>, offset = 0) {
+        nativeSet.call(this, values, offset);
+        if (this.buffer === canonical.buffer && !wroteDuringCopy) {
+          wroteDuringCopy = true;
+          producer[32] = 22;
+          producer[1] = 33;
+        }
+      },
+    );
+    try {
+      registry.syncToSab(1);
+    } finally {
+      copy.mockRestore();
+    }
+    expect(wroteDuringCopy).toBe(true);
+    expect([canonical[1], canonical[32]]).toEqual([0, 11]);
+    registry.syncToSab(1);
+    expect([canonical[1], canonical[32]]).toEqual([33, 22]);
+  });
+
   it.each([0, 1])("does not copy an unchanged mapping at address %i", (addr) => {
     const memory = newMemory();
     const registry = new GbmBoRegistry({ getProcessMemory: () => memory });

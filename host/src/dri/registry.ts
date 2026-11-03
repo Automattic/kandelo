@@ -553,12 +553,14 @@ export class GbmBoRegistry {
     const dst = new Uint8Array(e.sab, Math.min(binding.boOffset,e.size), copyLen);
     const src = new Uint8Array(mappingMemoryBuffer(mem), binding.addr, copyLen);
     const snapshot = binding.snapshot;
-    if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen)) {
+    // Publish and advance the baseline together, using only the bytes that
+    // reached canonical storage. Reading src again here could swallow stores
+    // made by a still-running producer after its changed run was copied.
+    if (mergeChangedByteRuns(src, 0, snapshot, 0, dst, 0, copyLen, true)) {
       e.writes++;
       // A reader must consume the final publication even if this writer's
       // mapping disappears before the reader's next poll/epoll/select return.
       for (const reader of this.bindings(e)) if (reader !== binding) e.pendingReaders.add(reader.pid);
-      snapshot.set(src);
     }
     // An unchanged scan already agrees with this independent baseline. Do
     // not copy the whole mapping again or capture later, unpublished stores.
