@@ -20822,3 +20822,16 @@ before/after logs, normal SDK commands, program/kernel digests, four-host
 results and `body-size.json`. The actual normal-package GObject rerun and
 rebuilt desktop dependency closure remain required before final acceptance.
 libffi's package revision advances to four; ABI family 56/3/17/21 is unchanged.
+
+**Required host-fixture build checkpoint, 2026-11-03.** Global setup now
+builds the channel-request validator, POSIX MQ, and mapped-file descriptor
+fence fixtures before their tests resolve them. The channel and mapped-file
+fixtures receive the same fork instrumentation as their guest control flow
+requires. Their supported outputs were previously absent from global setup;
+this adds preparation rather than a skip or a runtime allowance.
+The ordinary setup and three selected files pass all five assertions
+(288.29 seconds for the Vitest process) with the completed normal r12 SDK
+and products. Both SDK ensures pass, and the eight graphics archives have
+identical SHA-256 values before and after. Evidence:
+`.context/graphics-fixture-programs-r12/`. The larger final host inventory
+and the new libffi dependency closure remain required. No ABI change.
