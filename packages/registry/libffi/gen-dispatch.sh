@@ -10,19 +10,22 @@
 #                       words on wasm32; two doubles/i64s covers the
 #                       gesture-style tails), plus all-i32 signatures up
 #                       to arity 22 (the Wayland ceiling), each times the
-#                       five return classes. An un-emitted signature
+#                       five return classes. Also emit f32/f64 (either
+#                       order) followed by two i64 arguments, with arbitrary
+#                       i32 prefixes, intervening words and suffixes, through
+#                       arity 22. An un-emitted signature
 #                       makes ffi_call abort printing its key — extend a
 #                       family bound here and rebuild.
 #
 #                       The switch is split into one function per
 #                       (return class, arity): a single function holding
-#                       all 4435 cases compiles to a ~275 KB wasm
+#                       all of the original 4435 cases compiled to a ~275 KB wasm
 #                       function, and V8 aborts the whole process with
 #                       "Fatal process out of memory: Zone" when its
 #                       optimizing tier compiles it. The key low byte is
 #                       rc + nargs * 8, so the router indexes a function
 #                       pointer table with key & 0xff and each leaf
-#                       stays <= 277 cases. The table (not a switch of
+#                       stays bounded to one arity. The table (not a switch of
 #                       direct calls) is load-bearing: the clang driver
 #                       runs wasm-opt -O2 post-link when binaryen is on
 #                       PATH, and binaryen re-inlines single-caller
@@ -126,26 +129,37 @@ BEGIN {
 
     body = ""; routes = ""
     for (rc = 0; rc <= 4; rc++) {
-        for (n = 0; n <= 8; n++) {
+        for (n = 0; n <= 22; n++) {
             reset(n, cls)
             emit_case(rc, n, cls)
-            for (p = 0; p < n; p++)
-                for (c = 1; c <= 3; c++) {
-                    reset(n, cls); cls[p] = c
-                    emit_case(rc, n, cls)
-                }
-            for (p1 = 0; p1 < n; p1++)
-                for (p2 = p1 + 1; p2 < n; p2++)
-                    for (c1 = 1; c1 <= 3; c1++)
-                        for (c2 = 1; c2 <= 3; c2++) {
-                            reset(n, cls); cls[p1] = c1; cls[p2] = c2
-                            emit_case(rc, n, cls)
-                        }
-            emit_leaf(rc, n)
-        }
-        for (n = 9; n <= 22; n++) {
-            reset(n, cls)
-            emit_case(rc, n, cls)
+            if (n <= 8) {
+                for (p = 0; p < n; p++)
+                    for (c = 1; c <= 3; c++) {
+                        reset(n, cls); cls[p] = c
+                        emit_case(rc, n, cls)
+                    }
+                for (p1 = 0; p1 < n; p1++)
+                    for (p2 = p1 + 1; p2 < n; p2++)
+                        for (c1 = 1; c1 <= 3; c1++)
+                            for (c2 = 1; c2 <= 3; c2++) {
+                                reset(n, cls); cls[p1] = c1; cls[p2] = c2
+                                emit_case(rc, n, cls)
+                            }
+            }
+            # Full scalar records can contain a floating pair and an i64
+            # pair among ordinary words. Keep arbitrary leading, middle and
+            # trailing word counts; do not assume a long call is all-i32.
+            # This bounded family avoids enumerating all 4^22 signatures.
+            for (prefix = 0; prefix <= n - 4; prefix++)
+                for (middle = 0; middle <= n - 4 - prefix; middle++)
+                    for (float_order = 0; float_order <= 1; float_order++) {
+                        reset(n, cls)
+                        cls[prefix] = 2 + float_order
+                        cls[prefix + 1] = 3 - float_order
+                        cls[prefix + 2 + middle] = 1
+                        cls[prefix + 3 + middle] = 1
+                        emit_case(rc, n, cls)
+                    }
             emit_leaf(rc, n)
         }
     }

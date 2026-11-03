@@ -20790,3 +20790,35 @@ assertions and the mandatory kernel-export contract. Its upstream GObject
 signals test still aborts on an ungenerated mixed 20-argument libffi call;
 that platform dispatch gap remains under investigation. This is not full
 host validation or a new deferral. ABI family 56/3/17/21 is unchanged.
+
+
+**Mixed-scalar libffi source checkpoint, 2026-11-03.** The unchanged upstream
+GObject signals program aborts at `ffi_call` key 87964688318624: arity 20,
+f32/f64 plus two i64 values among ordinary i32 arguments. Kandelo's own
+libffi implementation emitted only all-i32 calls beyond arity eight. A
+new scalar matrix case independently reproduces the exact missing key;
+its native run fails before the dispatcher change.
+
+The dispatcher now emits a general scalar-record family: either order of
+an adjacent f32/f64 pair, followed by an adjacent i64 pair, with arbitrary
+i32 leading, intervening and trailing words through arity 22. Return
+classes and ordinary per-arity routing remain unchanged; closure pools
+are untouched. Regression cases check every slot of a 20-argument void
+call and a 21-argument call with trailing data and a full-width i64 return.
+No GLib assertion or application source is adapted.
+
+Both the native scalar/closure matrix and Wayland arity matrix pass. The
+SDK-built Wasm scalar matrix passes all 354 checks on Node, Chromium,
+Firefox and WebKit. The same fixture compiled against the old dispatcher
+exits 134 with the exact missing-key diagnostic on all four hosts. These
+are positive and negative controls, not guest conformance allowances.
+Native browser memory-boundary checks pass. The generated matrix module
+grows from 649,746 to 2,489,143 bytes; its maximum function body grows from
+18,518 to 55,223 bytes, below the unchanged 131,072-byte guard. Performance
+has not been measured.
+
+Evidence: `.context/graphics-libffi-long-mixed-r1/`, including the native
+before/after logs, normal SDK commands, program/kernel digests, four-host
+results and `body-size.json`. The actual normal-package GObject rerun and
+rebuilt desktop dependency closure remain required before final acceptance.
+libffi's package revision advances to four; ABI family 56/3/17/21 is unchanged.
