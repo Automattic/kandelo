@@ -1,10 +1,12 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
 import { translateEssl100 } from "../src/webgl/essl3-translation.js";
-import { noteTextureFilter, setTextureFilters, textureSwitchesAtHalf } from "../src/webgl/lod-switchover.js";
+import { LOD_SWITCH_DIAGNOSTIC_SOURCE, noteTextureFilter, setTextureFilters, textureSwitchesAtHalf } from "../src/webgl/lod-switchover.js";
+import { setGlDiagnosticReporter } from "../src/webgl/diagnostics.js";
+import type { HostDiagnostic } from "../src/host-diagnostic.js";
 import { depthLevelRevision as lodSwitchRevision } from "../src/webgl/texture-levels.js";
 
 /**
@@ -101,6 +103,38 @@ describe("lookups through switching samplers (ESSL 3.00 translation)", () => {
     expect(struct).not.toContain(`${LOD}texture2D (`);
   });
 
+  it("returns each lookup it leaves native that may read a listed sampler, with the reason (D-55)", () => {
+    const gaps = (source: string, names: string[]) => translateEssl100(source, true, new Set(names)).lodSwitchGaps;
+    const head = "precision mediump float;\n";
+    // Overloads of one arity with different sampler positions: any listed
+    // sampler may reach them. Both lookups are one gap.
+    expect(gaps(head + "uniform sampler2D a;\nuniform sampler2D b;\n" +
+      "vec4 f(sampler2D x, vec2 p) { return texture2D(x, p); }\nvec4 f(vec2 p, sampler2D x) { return texture2D(x, p); }\n" +
+      "void main() { gl_FragColor = f(a, vec2(0.5)) + texture2D(b, vec2(0.5)); }\n", ["a", "b"]))
+      .toEqual([{ reason: "overloaded-function", samplers: ["a", "b"], argument: "x", function: "f" }]);
+    // A struct parameter can carry only a struct uniform's samplers.
+    const struct = head + "struct S { sampler2D t; };\nuniform S u;\nuniform sampler2D a;\n" +
+      "vec4 f(S s) { return texture2D(s.t, vec2(0.5)); }\nvoid main() { gl_FragColor = f(u) + texture2D(a, vec2(0.5)); }\n";
+    expect(gaps(struct, ["u.t", "a"])).toEqual([{ reason: "struct-parameter", samplers: ["u.t"], argument: "s . t", function: "f" }]);
+    expect(gaps(struct, ["a"])).toBeUndefined();
+    // A sampler array parameter: only listed array elements; a plain
+    // sampler parameter of the same name is unattributed for the same reason.
+    expect(gaps(head + "uniform sampler2D s[2];\nuniform sampler2D a;\n" +
+      "vec4 g(sampler2D xs[2]) { return texture2D(xs[1], vec2(0.5)); }\nvec4 g(sampler2D x) { return texture2D(x, vec2(0.5)); }\n" +
+      "void main() { gl_FragColor = g(s) + g(a); }\n", ["s[1]", "a"])).toEqual([
+      { reason: "array-parameter", samplers: ["s[1]"], argument: "xs [ 1 ]", function: "g" },
+      { reason: "array-parameter", samplers: ["a", "s[1]"], argument: "x", function: "g" }]);
+    // An index containing a call: the listed elements of that array.
+    expect(gaps(head + "uniform sampler2D s[3];\nuniform sampler2D a;\nint k(int i) { return i; }\n" +
+      "void main() { gl_FragColor = texture2D(s[k(1)], vec2(0.5)) + texture2D(a, vec2(0.5)); }\n", ["s[1]", "a"]))
+      .toEqual([{ reason: "index-expression", samplers: ["s[1]"], argument: "s [ k ( 1 ) ]", function: "main" }]);
+    // Everything the rewrite resolves is no gap.
+    expect(gaps(head + "uniform sampler2D s[3];\nuniform int k;\nstruct S { sampler2D t; };\nuniform S u;\n" +
+      "vec4 look(sampler2D x) { return texture2D(x, vec2(0.5)); }\n" +
+      "void main() { gl_FragColor = texture2D(s[1], vec2(0.5)) + texture2D(s[k], vec2(0.5)) + texture2D(u.t, vec2(0.5)) + look(s[2]); }\n",
+    ["s[1]", "s[2]", "u.t"])).toBeUndefined();
+  });
+
   it("uses the explicit level of detail in a vertex shader and leaves its implicit lookups alone", () => {
     const text = t("uniform sampler2D a;\nuniform samplerCube c;\nattribute vec4 p;\nvarying vec4 v;\n" +
       "void main() { v = texture2DLod(a, p.xy, p.z) + texture2D(a, p.xy) + texture2DProjLod(a, p, 0.25) + textureCubeLod(c, p.xyz, p.w);\n" +
@@ -189,7 +223,7 @@ const vertex = "attribute vec4 sample;\nvoid main() { gl_Position = sample; }\n"
 const fragment = "precision mediump float;\nuniform sampler2D uColor;\nuniform sampler2D uOther;\n" +
   "void main() { gl_FragColor = texture2D(uColor, vec2(0.5)) + texture2D(uOther, vec2(0.5)); }\n";
 
-function setup(gl = new LodGl()) {
+function setup(gl = new LodGl(), fragmentSource = fragment) {
   const proxy = new Proxy(gl, { get(target, key) {
     const value = Reflect.get(target, key);
     return typeof value === "function" ? value.bind(target) : value ?? (() => {});
@@ -225,7 +259,7 @@ function setup(gl = new LodGl()) {
   send(O.OP_CREATE_SHADER, [0x8b31, 10]);
   send(O.OP_CREATE_SHADER, [0x8b30, 11]);
   send(O.OP_SHADER_SOURCE, [10, vertex.length], vertex);
-  send(O.OP_SHADER_SOURCE, [11, fragment.length], fragment);
+  send(O.OP_SHADER_SOURCE, [11, fragmentSource.length], fragmentSource);
   send(O.OP_COMPILE_SHADER, [10]);
   send(O.OP_COMPILE_SHADER, [11]);
   send(O.OP_CREATE_PROGRAM, [20]);
@@ -250,6 +284,9 @@ function setup(gl = new LodGl()) {
 }
 
 describe("draws whose samplers switch at lambda 0.5", () => {
+  let diagnostics: HostDiagnostic[] = [];
+  beforeEach(() => { diagnostics = []; setGlDiagnosticReporter(diagnostic => diagnostics.push(diagnostic)); });
+  afterEach(() => setGlDiagnosticReporter(null));
   it("run the guest executable while no unit holds such a texture", () => {
     const { gl, send, error, primary } = setup();
     send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
@@ -286,6 +323,8 @@ describe("draws whose samplers switch at lambda 0.5", () => {
     expect(both).not.toBe(variant);
     expect(both.fragment).toContain(`${LOD}texture2D ( true , uOther`);
     expect(error()).toBe(0);
+    // The emulation applied to every lookup: nothing to report.
+    expect(diagnostics).toEqual([]);
   });
 
   it("follow bindings, sampler units, texture zero and cube maps", () => {
@@ -324,6 +363,47 @@ describe("draws whose samplers switch at lambda 0.5", () => {
     send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
     expect(gl.draws.map(d => d.program)).toEqual([primary, primary]);
     expect(gl.links).toBe(links);
+    expect(error()).toBe(0);
+    // Reported once, when the variant failed, not at the draws after it.
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ pid: 1, source: LOD_SWITCH_DIAGNOSTIC_SOURCE });
+    expect(diagnostics[0].message).toMatch(/^GLES program 20: lookups that may read sampler uColor keep WebGL's .*c = 0 instead of ES 2\.0's c = 0\.5/);
+    expect(diagnostics[0].message).toContain("did not compile or link, and is not retried");
+    // Another failing sampler set names only the sampler not yet reported.
+    texture(2, 72, NML);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    expect(diagnostics.map(d => d.message.match(/read samplers? (\S+) keep/)?.[1])).toEqual(["uColor", "uOther"]);
+  });
+
+  it("report lookups the rewrite cannot attribute once per program, reason and sampler, and keep drawing", () => {
+    const overloads = "precision mediump float;\nuniform sampler2D uColor;\nuniform sampler2D uOther;\n" +
+      "vec4 f(sampler2D x, vec2 p) { return texture2D(x, p); }\nvec4 f(vec2 p, sampler2D x) { return texture2D(x, p); }\n" +
+      "void main() { gl_FragColor = f(uColor, vec2(0.5)) + f(vec2(0.5), uOther); }\n";
+    const { gl, send, error, location, primary, texture } = setup(new LodGl(), overloads);
+    texture(1, 71, NML);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    // The variant runs (with c = 0 for those lookups); no GL error.
+    expect(gl.draws[0].program).not.toBe(primary);
+    expect(error()).toBe(0);
+    expect(diagnostics).toHaveLength(1);
+    expect(diagnostics[0]).toMatchObject({ pid: 1, source: LOD_SWITCH_DIAGNOSTIC_SOURCE });
+    expect(diagnostics[0].message).toContain("GLES program 20: lookups that may read sampler uColor keep");
+    expect(diagnostics[0].message).toContain("overloads of one arity take samplers at different positions");
+    expect(diagnostics[0].message).toContain("(`x` in f)");
+    // A second sampler set: a new variant, and only the new sampler.
+    texture(2, 72, NML);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    texture(2, 72, LINEAR);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    expect(diagnostics.map(d => d.message.match(/read samplers? (\S+) keep/)?.[1])).toEqual(["uColor", "uOther"]);
+    // A relink is a new executable: its gaps are reported afresh.
+    send(O.OP_LINK_PROGRAM, [20]);
+    send(O.OP_UNIFORM1I, [location("uColor"), 1]);
+    send(O.OP_DRAW_ARRAYS, [4, 0, 3]);
+    expect(diagnostics).toHaveLength(3);
+    expect(diagnostics[2].message).toContain("GLES program 20: lookups that may read sampler uColor keep");
     expect(error()).toBe(0);
   });
 });

@@ -85,6 +85,7 @@ import { isKernelExportFailure } from "./kernel-entry-gate.js";
 import { copyGbmFront, readGbmFront, packGbmFront, validGbmFrontCopy, validGbmFrontRead } from "./webgl/gbm-front-copy";
 import { exportedImageScanout, exportImageStorage, GL_IMAGE_EXPORT_BYTES, registerExportedSource, registerImageSource, WPK_IMAGE_SOURCE_TARGET } from "./webgl/image-storage";
 import { hasNativeRepair, NativeGlFault, nativeGlFault, repairNativeState, retireNativeRetirement, rethrowNativeGlFault, setNativeGlFaultReporter } from "./webgl/native-recovery";
+import { setGlDiagnosticReporter } from "./webgl/diagnostics.js";
 import { allocateMultisampleTarget, resolveSurfaceMultisample } from "./webgl/multisample";
 import { bindForeignTexture, bindGpuForeignTexture, gpuSourceStorage } from "./webgl/foreign-texture";
 import { imageWriteAudit, noteStorageWrite, storageWrites } from "./webgl/image-writes";
@@ -1846,6 +1847,12 @@ export class WasmPosixKernel {
     // A refused native GL deletion or restoration (native-recovery.ts) is a
     // fatal host fault. This kernel owns the renderers of its worker realm.
     setNativeGlFaultReporter(fault => this.callbacks.onHostFault?.(fault));
+    // Emulation the GL host could not apply (webgl/diagnostics.ts) is a
+    // non-fatal host diagnostic; without a callback it stays on the console.
+    setGlDiagnosticReporter(diagnostic => {
+      if (this.callbacks.onHostDiagnostic) this.callbacks.onHostDiagnostic(diagnostic);
+      else console.warn(diagnostic.message);
+    });
     this.gl.cpuImages.attachPlanarGpu({
       plane: bo => this.#planarPlaneStorage(bo),
       pass: (b, work) => this.#planarConversionPass(b, work),

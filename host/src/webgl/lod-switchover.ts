@@ -45,6 +45,17 @@
  * 3.00 rejects, such as a sampler array indexed by a loop index) leaves
  * those draws with c = 0, the gap as before, rather than refusing them.
  *
+ * Reported gaps (maintainer decision D-55). Where the emulation cannot
+ * apply, a draw keeps WebGL's c = 0: a variant that did not build (not
+ * retried), or a lookup the rewrite cannot attribute to one sampler (a
+ * sampler inside a struct parameter, an array parameter, same-arity
+ * overloads with different sampler positions, an unresolvable index). That
+ * is the remaining gap, never a refused draw, but it is not silent:
+ * `reportLodSwitchGaps` sends a host diagnostic (diagnostics.ts) naming the
+ * process, the guest program, the samplers and the reason, once per linked
+ * executable, reason and sampler. It runs when a variant is built or found
+ * unbuildable, never per draw.
+ *
  * Cost. Each context keeps the sampling traits of its 2D and cube unit
  * bindings (depth-sampling.ts `samplingUnits`, shared with depth-texture
  * sampling): a bind looks up the filters of the texture it binds, and the
@@ -56,11 +67,12 @@
  * program and sampler set and then cached like every other variant.
  */
 import type { GlBinding } from "./registry.js";
-import { checkedGlCall, programLinkGeneration } from "./program-objects.js";
+import { checkedGlCall, currentProgramName, programLinkGeneration } from "./program-objects.js";
 import { HALF_TRAIT, samplerWriteGeneration, samplingUnits } from "./depth-sampling.js";
 import { guestUniformType } from "./external-texture.js";
-import { programGuestName } from "./essl3-translation.js";
+import { programGuestName, type LodSwitchGap, type LodSwitchGapReason } from "./essl3-translation.js";
 import { samplingTraitsChanged } from "./texture-levels.js";
+import { reportGlDiagnostic } from "./diagnostics.js";
 
 const TEX = 0x0de1, CUBE = 0x8513, MIN_FILTER = 0x2801, MAG_FILTER = 0x2800;
 const NEAREST = 0x2600, LINEAR = 0x2601, NEAREST_MIPMAP_NEAREST = 0x2700, NEAREST_MIPMAP_LINEAR = 0x2702;
@@ -156,4 +168,45 @@ function programLodSwitchSamplers(b: GlBinding, program: WebGLProgram): readonly
     if (textureSwitchesAtHalf(object)) (hits ??= []).push(sampler.name);
   }
   return hits ? hits.sort() : NONE;
+}
+
+// --- reported gaps (decision D-55) -------------------------------------------------
+
+export const LOD_SWITCH_DIAGNOSTIC_SOURCE = "GLES texture switch-over point";
+
+const GAP_REASONS: Record<LodSwitchGapReason, string> = {
+  "variant-build": "the ESSL 3.00 draw variant that applies it did not compile or link, and is not retried",
+  "struct-parameter": "a lookup samples a sampler inside a struct function parameter",
+  "array-parameter": "a lookup samples a sampler array function parameter",
+  "overloaded-function": "a lookup samples a sampler parameter of a function whose overloads of one arity take samplers at " +
+    "different positions, or that overloads a built-in",
+  "index-expression": "a lookup indexes a sampler array with an expression the rewrite cannot resolve",
+  "expression": "a lookup's sampler argument is an expression the rewrite cannot resolve",
+};
+
+/** Samplers already reported, per linked executable and reason. */
+const reported = new WeakMap<object, Map<LodSwitchGapReason, Set<string>>>();
+
+/** Report that the installed program's lookups in `gaps` keep WebGL's c = 0.
+ * `executable` identifies one link of the program (a relink is a new
+ * executable whose gaps are reported afresh); each sampler is named once per
+ * executable and reason. Called when a variant is built or found
+ * unbuildable, so draws pay nothing. */
+export function reportLodSwitchGaps(b: GlBinding, executable: object, gaps: readonly LodSwitchGap[]): void {
+  if (!gaps.length) return;
+  let byReason = reported.get(executable);
+  if (!byReason) reported.set(executable, byReason = new Map());
+  for (const gap of gaps) {
+    let names = byReason.get(gap.reason);
+    if (!names) byReason.set(gap.reason, names = new Set());
+    const fresh = gap.samplers.filter(name => !names!.has(name));
+    if (!fresh.length) continue;
+    for (const name of fresh) names.add(name);
+    const where = gap.argument === undefined ? "" : ` (\`${gap.argument}\`${gap.function ? ` in ${gap.function}` : ""})`;
+    reportGlDiagnostic(b.pid, LOD_SWITCH_DIAGNOSTIC_SOURCE,
+      `GLES program ${currentProgramName(b)}: lookups that may read sampler${fresh.length > 1 ? "s" : ""} ${fresh.join(", ")} ` +
+      `keep WebGL's magnification switch-over point c = 0 instead of ES 2.0's c = 0.5 (section 3.7.9): ` +
+      `${GAP_REASONS[gap.reason]}${where}. Drawing continues; at a level of detail in (0, 0.5] those lookups minify ` +
+      `where ES 2.0 magnifies.`);
+  }
 }

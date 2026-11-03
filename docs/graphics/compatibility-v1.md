@@ -302,8 +302,26 @@ cases now pass on Chromium, Firefox and WebKit, and `functional.texture`,
 fail nothing. Remaining gap: lookups the rewrite cannot attribute to a
 sampler (a sampler in a struct parameter, an array parameter, overloads of
 one arity with different sampler positions) and variants ESSL 3.00 cannot
-compile keep c = 0. Evidence and costs:
+compile keep c = 0, and are reported (D-55, below). Evidence and costs:
 `docs/measurements/2026-11-02-gles2-lod-switchover.md`.
+
+**The c = 0.5 gap is reported, not silent (maintainer decision D-55,
+2026-11-02).** Where D-46's emulation cannot apply, the draw still runs
+with WebGL's c = 0, and the host now says so: it sends one host diagnostic
+(source `GLES texture switch-over point`, through the kernel's
+`onHostDiagnostic` channel that `NodeKernelHost` and `BrowserKernel`
+expose; the worker entries also log it) naming the process, the guest
+program id, the samplers whose lookups may keep c = 0, and the reason: the
+ESSL 3.00 variant did not compile or link (not retried), or a lookup
+samples a sampler inside a struct parameter, a sampler array parameter, a
+sampler parameter of a function whose same-arity overloads take samplers
+at different positions (or that overloads a built-in), or a sampler array
+element whose index the rewrite cannot resolve (one containing a call).
+Each sampler is named once per linked executable and reason; a relink
+reports afresh. Reports are made when a variant is built or found
+unbuildable, so draws pay nothing for them, and a program the emulation
+fully covers reports nothing. It is a diagnostic, not a GL error: the
+guest's commands were valid and the draw is not refused.
 
 **GLSL ES 1.00 is the only guest language (maintainer decision D-47,
 2026-11-02).** `glCompileShader` of a shader whose leading `#version`

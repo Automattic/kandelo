@@ -627,11 +627,15 @@ const SAMPLER_TYPES = new Set(["sampler2D", "samplerCube"]);
  * Anything else (a sampler in a struct parameter, an array parameter, a
  * name the guest overloads with different sampler positions at one arity,
  * an index expression containing a call) is sampled natively, with c = 0:
- * the gap that remains. The edits are made on the preprocessed tokens, so
- * lookups produced by macros are rewritten like any other.
+ * the gap that remains. Each such lookup that may read a listed sampler is
+ * returned as a `LodSwitchGap` (decision D-55), so the variant's builder
+ * can report it instead of keeping c = 0 silently. The edits are made on
+ * the preprocessed tokens, so lookups produced by macros are rewritten like
+ * any other.
  */
 function lodSwitchCalls(tokens: EsslToken[], depth: Int32Array, fragment: boolean, lodSwitch: ReadonlySet<string>,
-    declared: ReadonlySet<string>, overloaded: ReadonlyMap<string, Signature[]>, out: string[]): { helpers: string[] } | null {
+    declared: ReadonlySet<string>, overloaded: ReadonlyMap<string, Signature[]>, out: string[]):
+    { rewritten: boolean; helpers: string[]; gaps: LodSwitchGap[] } {
   const n = tokens.length, at = (i: number) => tokens[i]?.text, id = (i: number) => tokens[i]?.kind === "id";
   const matching = (open: number) => {
     const close = at(open) === "(" ? ")" : at(open) === "[" ? "]" : "}";
@@ -691,30 +695,47 @@ function lodSwitchCalls(tokens: EsslToken[], depth: Int32Array, fragment: boolea
   // array; guest overloads of built-ins keep their own resolution.
   const positions = (f: Fn) => f.params.flatMap((p, k) => p.sampler ? [k] : []);
   const flagged = new Map<string, Fn[]>();
+  /** Why a name with sampler parameters takes no flags. */
+  const unflagged = new Map<string, LodSwitchGapReason>();
   for (const f of functions) if (positions(f).length) flagged.set(f.name, [...flagged.get(f.name) ?? [], f]);
   for (const [name, list] of [...flagged]) {
     const byArity = new Map<number, string>();
-    let ok = !overloaded.has(name);
+    let why: LodSwitchGapReason | undefined = overloaded.has(name) ? "overloaded-function" : undefined;
     for (const f of functions.filter(g => g.name === name)) {
       const key = positions(f).join(",");
-      if (f.params.some(p => p.sampler && p.array) || (byArity.has(f.params.length) && byArity.get(f.params.length) !== key)) ok = false;
+      if (f.params.some(p => p.sampler && p.array)) why ??= "array-parameter";
+      else if (byArity.has(f.params.length) && byArity.get(f.params.length) !== key) why ??= "overloaded-function";
       byArity.set(f.params.length, key);
     }
-    if (!ok) flagged.delete(name); else flagged.set(name, list);
+    if (why) { flagged.delete(name); unflagged.set(name, why); } else flagged.set(name, list);
   }
   const declarationAt = new Set(functions.map(f => f.at));
   const scopeOf = (i: number) => functions.find(f => f.body && i > f.body[0] && i < f.body[1]);
 
   const arrays = new Map<string, number[]>();
+  const listed = [...lodSwitch].sort(), gaps = new Map<string, LodSwitchGap>();
+  /** A lookup sampled natively although it may read one of `samplers`
+   * (none: it cannot read a listed sampler, so it is no gap). */
+  const gap = (reason: LodSwitchGapReason, samplers: string[], a: number, b: number, scope: Fn | undefined): "false" => {
+    const key = `${reason}|${samplers.join(",")}`;
+    if (samplers.length && !gaps.has(key))
+      gaps.set(key, { reason, samplers, argument: tokens.slice(a, b).map(t => t.text).join(" "), function: scope?.name });
+    return "false";
+  };
   /** The flag of a sampler-valued argument [a, b) inside `scope`. */
   const flag = (a: number, b: number, scope: Fn | undefined): string => {
     while (at(a) === "(" && matching(a) === b - 1) { a++; b--; }
-    if (!id(a)) return "false";
+    if (!id(a)) return gap("expression", listed, a, b, scope);
     const root = at(a)!;
     const param = scope?.params.findIndex(p => p.name === root) ?? -1;
     if (param >= 0) {
       const p = scope!.params[param];
-      return b - a === 1 && p.sampler && flagged.has(scope!.name) ? `${LOD_ARG}${param}` : "false";
+      if (b - a === 1 && p.sampler && flagged.has(scope!.name)) return `${LOD_ARG}${param}`;
+      // Samplers live only in uniforms: a struct parameter's samplers are
+      // members of a struct uniform, an array parameter's are elements.
+      if (!p.sampler) return gap("struct-parameter", listed.filter(name => name.includes(".")), a, b, scope);
+      if (p.array) return gap("array-parameter", listed.filter(name => name.endsWith("]")), a, b, scope);
+      return gap(unflagged.get(scope!.name) ?? "expression", listed, a, b, scope);
     }
     // A uniform path with constant indices names one sampler element.
     let path = root, i = a + 1;
@@ -737,7 +758,9 @@ function lodSwitchCalls(tokens: EsslToken[], depth: Int32Array, fragment: boolea
       arrays.set(root, indices);
       return `${LOD_ARRAY}${root}(int(${out.slice(i + 1, b - 1).join(" ")}))`;
     }
-    return "false";
+    // An index the rewrite cannot resolve (a call, an element of a struct
+    // array): any listed element below the resolved prefix may be read.
+    return gap("index-expression", listed.filter(name => name.startsWith(`${path}[`)), a, b, scope);
   };
 
   const lookups = fragment ? LOD_LOOKUPS.fragment : LOD_LOOKUPS.vertex;
@@ -767,9 +790,9 @@ function lodSwitchCalls(tokens: EsslToken[], depth: Int32Array, fragment: boolea
     if (!callee) continue;
     edits.push([close, `${positions(callee).map(k => `, ${flag(args[k][0], args[k][1], scope)}`).join("")} )`]);
   }
-  if (!rewritten) return null;
+  if (!rewritten) return { rewritten, helpers: [], gaps: [...gaps.values()] };
   for (const [i, text] of edits) out[i] = text;
-  return { helpers: [...arrays].map(([name, indices]) =>
+  return { rewritten, gaps: [...gaps.values()], helpers: [...arrays].map(([name, indices]) =>
     `bool ${LOD_ARRAY}${name}(int i) { return ${indices.map(k => `i == ${k}`).join(" || ")}; }`) };
 }
 
@@ -825,8 +848,21 @@ const BASIC_TYPES = new Set(["void", "bool", "int", "float", "vec2", "vec3", "ve
 const PRECISIONS = new Set(["lowp", "mediump", "highp"]);
 const DECLARATION_QUALIFIERS = new Set(["const", "uniform", "attribute", "varying", "precision", "invariant", "struct"]);
 
-/** `cube`: the shader uses samplerCube, which the text samples per face. */
-export type Essl3Translation = { text: string; cube: boolean; error?: undefined } | { text: string; cube: boolean; error: string };
+/** Why a lookup keeps WebGL's switch-over point c = 0 where ES 2.0's
+ * c = 0.5 applies (lod-switchover.ts, decision D-55). `variant-build`: the
+ * draw variant applying it did not build; the others name a lookup whose
+ * sampler argument `lodSwitchCalls` cannot attribute to one sampler. */
+export type LodSwitchGapReason = "variant-build" | "struct-parameter" | "array-parameter" | "overloaded-function" |
+  "index-expression" | "expression";
+/** Listed samplers (`samplers`, sorted) that a natively sampled lookup may
+ * read: its sampler `argument` (guest tokens) inside `function`. */
+export type LodSwitchGap = { reason: LodSwitchGapReason; samplers: readonly string[]; argument?: string; function?: string };
+
+/** `cube`: the shader uses samplerCube, which the text samples per face.
+ * `lodSwitchGaps`: lookups that keep c = 0 although `lodSwitch` lists a
+ * sampler they may read. */
+export type Essl3Translation = ({ text: string; cube: boolean; error?: undefined } | { text: string; cube: boolean; error: string }) &
+  { lodSwitchGaps?: readonly LodSwitchGap[] };
 
 /**
  * The ESSL 3.00 source with the meaning of an ESSL 1.00 source that the
@@ -1015,7 +1051,7 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
   // samplerCube's default precision (lowp), then the per-face lookups.
   if (cube || overloaded.has("textureCube") || overloaded.has("textureCubeLod")) header.push(cubeHelpers(fragment));
   for (const [name, signatures] of overloaded) header.push(forwarders(name, signatures));
-  if (lod) header.push(lodSwitchHelpers(fragment, cube), ...lod.helpers);
+  if (lod?.rewritten) header.push(lodSwitchHelpers(fragment, cube), ...lod.helpers);
   if (fragment) for (const f of DERIVATIVE_FUNCTIONS) if (text.includes(derivativeBuiltin(f)))
     header.push(GEN_TYPES.map(type => `highp ${type} ${derivativeBuiltin(f)}(highp ${type} p) { return ${f}(p); }`).join("\n"));
 
@@ -1046,5 +1082,5 @@ export function translateEssl100(source: string, fragment: boolean, lodSwitch?: 
     const assignments = deferred.map(d => `${out[d.from - 1]} = ${out.slice(d.from + 1, d.to).join(" ")};`).join(" ");
     body += `\nvoid main() { ${assignments} ${PRIVATE}main(); }`;
   }
-  return { text: `${header.join("\n")}\n${body}\n`, cube };
+  return { text: `${header.join("\n")}\n${body}\n`, cube, ...(lod?.gaps.length ? { lodSwitchGaps: lod.gaps } : {}) };
 }

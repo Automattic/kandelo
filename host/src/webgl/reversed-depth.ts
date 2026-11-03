@@ -32,7 +32,8 @@ import { engineLosesVertexDepthRange, NATIVE_DEPTH_RANGE_UNIFORM, nativeDepthRan
 import { BLEND_SOURCE_FACTOR_UNIFORM, blendFoldNeeded, blendFoldShaderSource, drawColorBufferKind } from "./blend-constant.js";
 import { rethrowNativeGlFault } from "./native-recovery.js";
 import { nativeInterfaceName, programGuestName, shaderLanguage, translateEssl100 } from "./essl3-translation.js";
-import { lodSwitchSamplersForDraw } from "./lod-switchover.js";
+import { lodSwitchSamplersForDraw, reportLodSwitchGaps } from "./lod-switchover.js";
+import type { LodSwitchGap } from "./essl3-translation.js";
 
 const VERTEX_SHADER = 0x8b31, FRAGMENT_SHADER = 0x8b30;
 const MAIN = "kandelo_reversed_depth_main";
@@ -255,10 +256,13 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
   // so an ES 1.00 program's variant is its translation.
   const lodSwitch = options.lodSwitch?.length ? new Set(options.lodSwitch) : undefined;
   const renamed = !sources.essl300 && !!lodSwitch;
+  // Lookups through listed samplers the rewrite left with c = 0.
+  let gaps: readonly LodSwitchGap[] = [];
   if (sources.essl300 || lodSwitch) {
     const vertex = translateEssl100(vertexSource, false, lodSwitch), fragment = translateEssl100(fragmentSource, true, lodSwitch);
     if (vertex.error !== undefined || fragment.error !== undefined) return null;
     vertexSource = vertex.text; fragmentSource = fragment.text;
+    gaps = [...vertex.lodSwitchGaps ?? [], ...fragment.lodSwitchGaps ?? []];
   }
   const gl = b.gl!;
   let vs: WebGLShader | null = null, fs: WebGLShader | null = null, program: WebGLProgram | null = null;
@@ -286,6 +290,8 @@ function buildTwin(b: GlBinding, primary: WebGLProgram, sources: LinkedSources, 
       linked = !!gl.getProgramParameter(p, 0x8b82);
     })) return null;
     if (!linked) return null;
+    // Built once per program and variant key, so this is never per draw.
+    reportLodSwitchGaps(b, sources, gaps);
     return { program: p, sources, uniforms: -1, vertexDepthRange: !!options.vertexDepthRange, rangeValues: null,
       blendFold: !!options.blendFold, blendFactor: null, renamed };
   } finally {
@@ -399,10 +405,13 @@ export function drawVariantExecutable(b: GlBinding): WebGLProgram | null | undef
     const built = sources ? buildTwin(b, primary, sources, options) : null;
     if (!built && lodSwitch.length && sources) {
       // The ESSL 3.00 variant failed to compile (e.g. a sampler array
-      // indexed by a loop index): run without the switch-over, as before.
+      // indexed by a loop index): run without the switch-over, as before,
+      // and report it (decision D-55) once, here, not at the draws that
+      // skip the cached failure.
       let record = unbuildableLodSwitch.get(primary);
       if (record?.sources !== sources) unbuildableLodSwitch.set(primary, record = { sources, keys: new Set() });
       record.keys.add(key);
+      reportLodSwitchGaps(b, sources, [{ reason: "variant-build", samplers: lodSwitch }]);
       return drawVariantExecutable(b);
     }
     // INVALID_OPERATION is the WebGL boundary error the draw would otherwise

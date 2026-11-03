@@ -921,8 +921,10 @@ ABI floor in the same ABI reconciliation that versions and snapshots the new
 surface.
 
 Host-runtime failure diagnostics are kept separate from guest file descriptor
-2. Worker traps, protocol failures, and failed process or thread transitions
-produce typed `host_diagnostic` messages; `NodeKernelHost` and `BrowserKernel`
+2. Worker traps, protocol failures, failed process or thread transitions, and
+GL emulation the host could not apply to a guest draw (the draw still runs
+with WebGL's behavior; `host/src/webgl/diagnostics.ts`) produce typed
+`host_diagnostic` messages; `NodeKernelHost` and `BrowserKernel`
 expose them through `onHostDiagnostic`. An ordinary process exit, including a
 nonzero exit used as POSIX control flow, is reported only through its exit
 status and is not a host warning. Node records actual host diagnostics on the
@@ -4212,9 +4214,16 @@ one, an element indexed by an expression (a per-index function) and a
 sampler parameter of a user function (an added `bool` parameter every call
 passes) are resolved; other lookups (a sampler inside a struct parameter,
 an array parameter, overloads of one arity with different sampler
-positions) keep c = 0, as does a draw whose variant does not compile (a
-sampler array indexed by a loop index, which ESSL 3.00 rejects): those are
-the remaining gap, never a refused draw. Compositors such as wlroots set
+positions, an index containing a call) keep c = 0, as does a draw whose
+variant does not compile (a sampler array indexed by a loop index, which
+ESSL 3.00 rejects): those are the remaining gap, never a refused draw.
+They are not silent (decision D-55): the translation returns each
+unattributed lookup that may read an affected sampler, and the variant
+builder reports it, or a variant that did not build, as a host diagnostic
+(`host/src/webgl/diagnostics.ts`, source `GLES texture switch-over
+point`) naming the process, the guest program id, the samplers and the
+reason, once per linked executable, reason and sampler, at build time
+rather than per draw. Compositors such as wlroots set
 `LINEAR` or `NEAREST` filters, and imported foreign textures start
 `LINEAR`, so their draws never select the variant; costs are measured in
 `docs/measurements/2026-11-02-gles2-lod-switchover.md`.
