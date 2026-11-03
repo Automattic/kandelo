@@ -1045,9 +1045,11 @@ Smaller gaps, each a follow-up:
 - **`wlterm` advertises `TERM=vt100` without the VT100 line-drawing
   set**, so curses borders print as letters in it (the desktop's
   terminal entries use foot, which has it).
-- **No xkb data in the image** (`/usr/share/X11/xkb`): GTK clients log
-  that they cannot compile a keymap from names. They receive the
-  compositor's keymap, so input works.
+- **xkb data is fetched on first use**: the shell image registers the
+  `xkeyboard-config` package's rules at `/usr/share/X11/xkb` as a verified
+  lazy archive, so the first keymap compiled from names (a compositor's,
+  or GTK's default before the compositor's keymap arrives) downloads it.
+  A shell that never starts a desktop never fetches it.
 - **NetHack's curses interface does not redraw at its intro prompt after
   a resize** (upstream behaviour; the resize itself reaches it — `Ctrl+R`
   redraws).

@@ -798,7 +798,8 @@ describe("canonical source-rootfs shell", () => {
     for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
       const source = spec.id === "ca-certificates" ? paths.caBundlePath
         : spec.id === "desktop-data" ? paths.desktopDataPath
-        : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency) : paths.espeakNgDataPath;
+        : spec.id === "cursor-theme" ? paths.resolveArtifact(spec.resolverPath, spec.dependency)
+        : spec.id === "xkeyboard-config" ? paths.xkeyboardConfigPath : paths.espeakNgDataPath;
       const bytes = readFileSync(source);
       expect(fs.isPathDeferred(`${spec.mountPrefix}${spec.requiredMember}`)).toBe(true);
       expect(composed.archives.find(({ uri }) => uri === spec.archiveUrl))
@@ -882,8 +883,12 @@ describe("canonical source-rootfs shell", () => {
     expect(
       text(readVfsFile(fs, "/usr/share/libinput/10-generic-keyboard.quirks")),
     ).toBe("[Generic Keyboard]\n");
-    expect(text(readVfsFile(fs, "/usr/share/X11/xkb/rules/evdev"))).toBe(
-      "! model = keycodes\n",
+    // The keymap data is libxkbcommon's compiled-in root, but only Wayland
+    // programs read it: the path exists at boot with its real size, and its
+    // bytes wait for the first read instead of growing every shell boot.
+    expect(fs.isPathDeferred("/usr/share/X11/xkb/rules/evdev")).toBe(true);
+    expect(fs.stat("/usr/share/X11/xkb/rules/evdev").size).toBe(
+      "! model = keycodes\n".length,
     );
     // Assert byte-for-byte equality against the tracked source for one
     // image shader and one sound shader: a loose "non-empty" check would

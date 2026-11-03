@@ -117,7 +117,8 @@ OMARCHYDESKTOP="$WAYLAND_DEMO_DIR/omarchydesktop"
 DESKTOP_DATA="$WAYLAND_DEMO_DIR/kandelo-desktop-data.zip"
 # libinput's device quirks, unpacked by the composer at /usr/share/libinput.
 LIBINPUT_QUIRKS="$WAYLAND_DEMO_DIR/libinput-quirks.zip"
-# The xkeyboard-config rules, unpacked by the composer at /usr/share/X11/xkb.
+# The xkeyboard-config rules, registered by the composer as a lazy archive
+# at /usr/share/X11/xkb.
 XKEYBOARD_CONFIG="$WAYLAND_DEMO_DIR/xkeyboard-config.zip"
 ESPEAK_NG_DATA="$ESPEAK_NG_DIR/espeak-ng-data.zip"
 DEMO_CONFIG="$SCRIPT_DIR/source-rootfs-shell-demo.json"

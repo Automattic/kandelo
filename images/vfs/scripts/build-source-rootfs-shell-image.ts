@@ -1638,10 +1638,7 @@ export async function buildSourceRootfsShellImage(
     "libinput quirks dependency",
   );
   requireRegularInput(inputs.espeakNgDataPath, "espeak-ng data dependency");
-  const xkeyboardConfig = readRegularInput(
-    inputs.xkeyboardConfigPath,
-    "xkeyboard-config dependency",
-  );
+  requireRegularInput(inputs.xkeyboardConfigPath, "xkeyboard-config dependency");
 
   // WHY: Bash remains the ordinary account shell and is therefore eager after
   // login. Opening its canonical alias follows a symlink when present,
@@ -1667,7 +1664,8 @@ export async function buildSourceRootfsShellImage(
   // starts a desktop never fetches them.
   writeVfsBinary(fs, "/usr/local/bin/wldesktop", wldesktop, 0o755);
   writeVfsBinary(fs, "/usr/local/bin/omarchydesktop", omarchydesktop, 0o755);
-  // WHY: CA, speech and desktop data need not be fetched to boot a shell.
+  // WHY: CA, speech, cursor, keymap and desktop data need not be fetched to
+  // boot a shell.
   // Register the exact package ZIPs at their compiled-in guest paths: normal
   // open/read triggers a verified first-use fetch on both Node and browser.
   removeEagerShellCaBundle(fs, caBundle);
@@ -1678,6 +1676,10 @@ export async function buildSourceRootfsShellImage(
     "ca-certificates": inputs.caBundlePath,
     "desktop-data": inputs.desktopDataPath,
     "espeak-ng-data": inputs.espeakNgDataPath,
+    // GTK3 compiles a default keymap from the xkeyboard-config rules before
+    // the compositor's keymap arrives; libxkbcommon reads them from its
+    // compiled-in root, /usr/share/X11/xkb.
+    "xkeyboard-config": inputs.xkeyboardConfigPath,
   };
   for (const spec of SHELL_LAZY_DATA_ARCHIVE_SPECS) {
     registerDeclaredShellLazyArchive(fs, spec, () => dataArchivePaths[spec.id]);
@@ -1692,10 +1694,6 @@ export async function buildSourceRootfsShellImage(
     new TextEncoder().encode(FBDOOM_LAUNCH_SCRIPT),
     0o755,
   );
-  // GTK3 compiles a default keymap from the xkeyboard-config rules before
-  // the compositor's keymap arrives; libxkbcommon reads them from its
-  // compiled-in root, /usr/share/X11/xkb.
-  unpackDataZip(fs, "/usr/share/X11/xkb", xkeyboardConfig);
   // The Quake engine, unzip, and lha are lazy /usr/bin binaries; only this
   // small extraction+launch wrapper is written eagerly.
   writeVfsBinary(
