@@ -168,8 +168,13 @@ skip sampling. Five new causal regressions fail on the preceding source and
 pass with the fix; the full graphics gate passes 1,978/1,978 in 84 files,
 including audit cancellation and off-batch error-ownership checks. TypeScript
 retains its 38 recorded diagnostics. Evidence is in
-`.context/a3/fence-batch/`. Browser and final-artifact validation of this
-follow-up remain required; the current preview still has the earlier host.
+`.context/a3/fence-batch/`. At frozen source `a0fb5d8990`, the retained-fence
+wire, pixels, creator-destruction and server-wait browser cohort passes four
+cases each on Chromium, Firefox and WebKit with normal r9 artifacts. Exact
+selection: `playwright test test/webgl-state-contract.spec.ts --grep
+'fence|server wait' --project=<engine> --workers=1`; evidence is in
+`.context/a3/fence-batch-browser/`. Final-artifact validation remains required;
+the current preview still has the earlier host.
 
 **Sampler-array source checkpoint, 2026-11-03.** Translated loop-indexed
 sampler arrays now dispatch to constant-index lookups, including array
@@ -225,6 +230,25 @@ its exact equality, subsequent keyboard redraw and clean-exit assertions.
 The focused spec passes on Chromium, Firefox and WebKit using a frozen
 copy of the normal r9 artifacts; evidence is in
 `.context/graphics-r9-cage-fix/`. The complete desktop sequence is separate.
+
+**r9 desktop acceptance checkpoint, 2026-11-03.** The uninstrumented
+six-spec sequence at `734e8d673d` reports Chromium 12 passes/3 failures,
+Firefox 10 passes/3 failures/2 skips, and WebKit 11 passes/2 failures/2 skips.
+The Cage overlay failure is separately fixed above. Remaining failures are
+Labwc/Foot paints, SFWBar focus or exit, and WebKit's resized SNKRX menu
+activation in the six-game Omarchy check. Raw commands and results remain in
+`.context/graphics-r9-desktops/`; the wrapper's exit zero is not a passing
+suite verdict. A chunked timer/completion trace passes both Chromium SFWBar
+flows without changing their assertions, so the earlier failures remain
+intermittent, not resolved. An earlier diagnostic overflowed its private
+span buffer and failed loudly; it is invalid for judging the product.
+
+A separate manual Chromium 156 session on port 5693 reproduced a second
+Foot window retaining stale pixels after its title changed. An independent
+unmodified-browser probe also finds a Firefox 155 nested-worker constructor
+pause during screenshots, without Kandelo code. Screenshot involvement is
+established in that probe; runtime versus automation cause is still under
+investigation. Neither finding waives desktop acceptance.
 
 **Client-pool retirement source checkpoint, 2026-11-03.** Foot, mako,
 GTK 3 and Qt now use their upstream shared-memory pool allocators. The
