@@ -334,6 +334,25 @@ retirement only: rebuilding the clients and images, Node smokes,
 three-engine desktop specs and before/after measurements remain required.
 The frozen r9 build retains the earlier clients for that comparison.
 
+**Retired-client build and preview checkpoint, 2026-11-03.** The normal
+r10 build at `23e6972153` passes provisioning (8 seconds), both SDK
+freshness/build steps (5 and 2 seconds), `setup --all` (5,685 seconds),
+all program fixtures (2,973 seconds), ABI verification (54 seconds) and
+normal freshness verification (32 seconds). Tracked source stays unchanged
+through that complete build. Afterward the clean checkout advances to
+`ae0fc96da0` for the host-only fence and BO receive-coherence fixes. The
+canonical host build, rootfs refresh, ABI check and freshness check pass
+in 34, 7, 32 and 33 seconds respectively. No ABI versions change.
+
+Port 5693 now serves that normally rebuilt r10 tree. The earlier owned r9
+preview was stopped by verified process identity before replacement; the
+old-client r9 artifacts remain available for comparison. HTTP availability
+was announced separately from validation. Evidence:
+`.context/graphics-normal-build-r10/results/`,
+`.context/graphics-host-refresh-r10-r2/` and
+`.context/graphics-preview-r10/`. The retired-client Node smokes,
+three-engine specs, manual check and matched performance are still open.
+
 **Known upstream expectations outside this baseline.**
 `dEQP-EGL.functional.create_context.no_config` requires an ES3 no-config
 context whenever `EGL_KHR_no_config_context` is advertised. The extension
