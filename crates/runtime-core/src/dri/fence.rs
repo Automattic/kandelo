@@ -318,6 +318,40 @@ impl Drop for FenceInner {
                 });
                 crate::wakeup::push_fence_host_work();
             }
+            return;
+        }
+        // WHY: ordinary Rc drop glue recursively releases every chain link
+        // and array child. A timeline can outlive thousands of frames; its
+        // final owner must not exhaust the kernel's native/Wasm call stack.
+        let mut pending = Vec::new();
+        self.detach_drop_children(&mut pending);
+        while let Some(Fence(inner)) = pending.pop() {
+            // Shared children retain their other owners. try_unwrap also
+            // admits weak references, including a host fence's poll record.
+            if let Ok(mut inner) = Rc::try_unwrap(inner) {
+                inner.detach_drop_children(&mut pending);
+                // Empty containers now drop at constant depth. Leaves keep
+                // the exact final-reference native release path above.
+            }
+        }
+    }
+}
+
+impl FenceInner {
+    fn detach_drop_children(&mut self, pending: &mut Vec<Fence>) {
+        if matches!(self.kind, Kind::Leaf { .. }) {
+            return;
+        }
+        match core::mem::replace(&mut self.kind, Kind::Array(Vec::new())) {
+            Kind::Array(mut children) => pending.append(&mut children),
+            Kind::Chain(link) => {
+                let Link { prev, fence, .. } = link.into_inner();
+                if let Some(prev) = prev {
+                    pending.push(prev);
+                }
+                pending.push(fence);
+            }
+            Kind::Leaf { .. } => unreachable!(),
         }
     }
 }
@@ -884,6 +918,45 @@ mod tests {
 
     fn sw(name: &'static str) -> SwTimeline {
         SwTimeline::new("sw_sync", Timeline::Static(name))
+    }
+
+    #[test]
+    fn dropping_deep_chain_uses_bounded_stack() {
+        std::thread::Builder::new().stack_size(128 * 1024).spawn(|| {
+            let export_id = allocate_export_id().unwrap();
+            let leaf = Fence::pending(context_alloc(), 1, "test", Timeline::Static("drop"),
+                Source::HostGl { export_id });
+            leaf.enable_signaling();
+            let mut head = None;
+            let mut middle = None;
+            for point in 1..=8192 {
+                head = Some(Fence::chain(head, leaf.clone(), point));
+                if point == 4096 {
+                    middle = Some(Rc::downgrade(&head.as_ref().unwrap().0));
+                }
+            }
+            drop(head);
+            assert!(middle.unwrap().upgrade().is_none(), "history must be released, not leaked");
+            assert_eq!(Rc::strong_count(&leaf.0), 1, "shared leaf belongs to its remaining owner");
+            assert_eq!(host_requests(), alloc::vec![(export_id, HOST_REQUEST_POLL)]);
+            drop(leaf);
+            assert_eq!(host_requests(), alloc::vec![(export_id, HOST_REQUEST_RELEASE)]);
+            assert!(host_requests().is_empty(), "native release happens exactly once");
+        }).unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn dropping_deep_array_uses_bounded_stack() {
+        std::thread::Builder::new().stack_size(128 * 1024).spawn(|| {
+            let leaf = Fence::stub(1);
+            let weak = Rc::downgrade(&leaf.0);
+            let mut head = leaf;
+            for _ in 0..8192 {
+                head = Fence::array(alloc::vec![head]);
+            }
+            drop(head);
+            assert!(weak.upgrade().is_none(), "nested containers must release their leaf");
+        }).unwrap().join().unwrap();
     }
 
     #[test]

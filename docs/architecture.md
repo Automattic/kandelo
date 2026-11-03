@@ -4654,6 +4654,13 @@ cross-interface behavior programs rely on (merge a timeline point with
 another fence, import that into a dma-buf, wait on it through a syncobj
 eventfd) follows from one model.
 
+Final-reference release walks owned fence containers iteratively. A long
+sync-object timeline or nested array therefore uses bounded call-stack
+space when retired. Shared children keep their other owners, weak poll
+references do not retain the payload, and each pending host GL leaf queues
+its native release exactly once when its last strong reference disappears.
+Leaf-only release keeps the direct path and allocates no traversal storage.
+
 **Fences and their sources.** A leaf fence is pending on one source until
 it signals once, with an error (a negative errno) or without. A second
 signal is a kernel invariant violation and stops the kernel. Sources:

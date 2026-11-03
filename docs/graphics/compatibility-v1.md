@@ -20598,3 +20598,26 @@ themed|copies and pastes between foot' --project=<engine> --workers=1
 `.context/graphics-desktop-r11-results/omarchy-r15/`. Earlier R13/R14
 failures remain preserved. This focused run does not replace the final
 combined desktop gate or close the intermittent WebKit kernel failure.
+
+
+**Fence lifetime checkpoint, 2026-11-03.** Private WebKit desktop tracing
+captures two fatal kernel stack overflows and one passing Labwc/SFWBar
+flow in three repeats. The repeated stripped Wasm function 4128 has an
+identical, uniquely matching body in a symbol-bearing diagnostic kernel:
+`Rc<FenceInner>::drop_slow`. Ordinary recursive release of a sufficiently
+deep fence history can exhaust the kernel stack. This is a kernel lifetime
+defect; it is not attributed to a browser defect. Evidence:
+`.context/labwc-exit-native-r17/`, `.context/kernel-symbol-map-r1/`.
+
+Container release now detaches children and unwraps uniquely owned nodes
+iteratively. Shared owners remain intact; native leaf release and weak
+poll references retain their normal semantics. Separate regressions drop
+8,192-link chains and 8,192-level arrays on a 128 KiB native thread stack.
+Both abort with stack overflow before the change (test exit 101/SIGABRT),
+and both pass afterward; the chain also checks weak history reclamation,
+shared-leaf ownership, and exactly one native release. The complete
+`cargo test -p runtime-core --target aarch64-apple-darwin` passes 2,856
+tests and six doctests. Evidence: `.context/fence-drop-bounded-r1-results/`.
+ABI family 56/3/17/21 is unchanged. Normal-artifact rebuild and browser
+acceptance remain required; this source checkpoint does not close the
+remaining desktop, redraw or performance requirements.
