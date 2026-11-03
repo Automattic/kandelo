@@ -8,7 +8,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import { glAuditOn } from "./native-audit.js";
 import { NativeGlFault, nativeGlFault } from "./native-recovery.js";
 import { reportGlDiagnostic } from "./diagnostics.js";
-import { markRendererReset, rendererLost, RENDERER_LOST } from "./renderer-loss.js";
+import { markRendererReset, noteRendererLoss, rendererLost, RENDERER_LOST } from "./renderer-loss.js";
 
 type Owner = { gl: WebGL2RenderingContext | null; errors: number[]; pid: number; sessionId: number };
 type Batch = { owner: Owner; label: string; sequence: number; nativeWork: boolean };
@@ -49,6 +49,7 @@ function resetBatch(detail: string, fatalInAudit = true): never {
   if (!batch) nativeGlFault(`Unowned native execution failure: ${detail}`);
   const { owner, label } = batch;
   const message = `GL context reset: ${detail}; pid ${owner.pid} session ${owner.sessionId} batch ${batch.sequence} (${label})`;
+  if (owner.gl!.isContextLost()) noteRendererLoss(owner.gl!);
   markRendererReset(owner);
   reportGlDiagnostic(owner.pid, "gl-context-reset", message);
   if (glAuditOn && fatalInAudit) nativeGlFault(message);
@@ -65,6 +66,7 @@ function resetBatch(detail: string, fatalInAudit = true): never {
 export function observeBatchNativeError(gl: WebGL2RenderingContext, error: number): void {
   if (!error || !nativeBatchActive(gl)) return;
   if (error === 0x9242) {
+    noteRendererLoss(gl);
     markRendererReset(active!.owner);
     throw new NativeContextReset("Native WebGL renderer lost");
   }

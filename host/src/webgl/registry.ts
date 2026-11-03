@@ -1,3 +1,4 @@
+import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
 import { cubeExtraTextures } from "./cube-storage.js";
 import type { GlObjectCapture } from "./object-capture.js";
 import type { GlCompressedUpload } from "./compressed-upload.js";
@@ -243,7 +244,7 @@ function reserveExecutionCleanup(record: ExecutionRecord): NativeRetirement | nu
     // Texture zero of TEXTURE_CUBE_MAP may own more 2D array storage (cube-storage.ts).
     for (const storage of cubeExtraTextures(object)) add(["deleteTexture",storage]);
   }
-  return reserveNativeRetirement({gl:record.gl,errors:[]},calls);
+  return reserveNativeRetirement({gl:record.gl,errors:[],nativeEpoch:rendererObjectEpoch(b)},calls);
 }
 
 /** Delete a retired context's native objects once its last accepted
@@ -802,5 +803,6 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   b.vertexArrays.set(0,defaultVertexArray());
   b.contextId = null;
   b.robustAccess = false;
+  forgetRendererLoss(b);
   b.gl = null;
 }

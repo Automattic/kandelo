@@ -5788,6 +5788,14 @@ same context object, detected through the renderer's loss count), so cleanup
 completes without native calls, pending restorations are dropped, and the
 bindings that used it report the loss as a graphics reset through
 `host/src/webgl/renderer-loss.ts` (`ENODEV` replies).
+Native cleanup keeps the object's original renderer generation, even when
+its deletion receipt is first created after restoration. Independent native
+owners and exported images copy that generation without retaining a guest
+binding. A synchronous loss result advances it before the queued canvas
+loss event, which does not count the same loss twice. Ending a context
+clears its session's observation baseline, so a new independent context can
+use the restored renderer. Refused cleanup of that new generation remains
+fatal; a logical guest reset alone does not discard live native resources.
 The same leases cover borrowed GPU BO allocations through a native-only
 allocation receipt copied into the surface record. Public BO retirement
 revokes lookup while existing leases keep the old allocation usable. A

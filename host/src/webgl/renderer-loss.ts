@@ -19,7 +19,7 @@
  * glGetGraphicsResetStatus from that state with no extra round trip.
  */
 
-type LossCounter = { count: number };
+type LossCounter = { count: number; lost: boolean };
 type LossBaseline = { gl: WebGL2RenderingContext; counter: LossCounter; count: number; lost: boolean };
 
 /** -ENODEV: the binding's renderer was lost; nothing was executed. */
@@ -35,11 +35,13 @@ type LossEventTarget = { addEventListener?: (type: string, listener: () => void)
 function lossCounter(gl: WebGL2RenderingContext): LossCounter {
   let counter = counters.get(gl);
   if (counter) return counter;
-  const created: LossCounter = { count: 0 };
+  const created: LossCounter = { count: 0, lost: false };
   counters.set(gl, created);
   const canvas = (gl as { canvas?: unknown }).canvas as LossEventTarget | null | undefined;
-  if (canvas && typeof canvas.addEventListener === "function")
-    canvas.addEventListener("webglcontextlost", () => { created.count += 1; });
+  if (canvas && typeof canvas.addEventListener === "function") {
+    canvas.addEventListener("webglcontextlost", () => { noteRendererLoss(gl); });
+    canvas.addEventListener("webglcontextrestored", () => { created.lost = false; });
+  }
   return created;
 }
 
@@ -50,6 +52,25 @@ function lossCounter(gl: WebGL2RenderingContext): LossCounter {
 export function rendererLossCount(gl: WebGL2RenderingContext): number {
   return lossCounter(gl).count;
 }
+
+/** Record an actual native loss immediately: a long synchronous batch can
+ * reach teardown before the canvas dispatches its queued loss event. */
+export function noteRendererLoss(gl: WebGL2RenderingContext): void {
+  const counter = lossCounter(gl);
+  if (!counter.lost) { counter.count += 1; counter.lost = true; }
+}
+
+/** Generation of this owner's objects, including a receipt created only at
+ * destruction. A restored renderer must not reclassify its old handles. */
+export function rendererObjectEpoch(b: { gl: WebGL2RenderingContext | null; nativeEpoch?: number }): number {
+  if (b.nativeEpoch !== undefined) return b.nativeEpoch;
+  const baseline = baselines.get(b);
+  return baseline?.gl === b.gl ? baseline.count : b.gl ? rendererLossCount(b.gl) : 0;
+}
+
+/** The logical context ended; a later independent context in this session
+ * establishes a new baseline. Already reserved native owners keep theirs. */
+export function forgetRendererLoss(b: object): void { baselines.delete(b); }
 
 /** Start observing a binding's renderer: losses before this call belong to
  * earlier owners of the same (since restored) context object. */
@@ -69,7 +90,9 @@ export function rendererLost(b: { gl: WebGL2RenderingContext | null }): boolean 
   let baseline = baselines.get(b);
   if (!baseline || baseline.gl !== gl) { observeRendererLoss(b); baseline = baselines.get(b)!; }
   if (baseline.lost) return true;
-  if (gl.isContextLost() || baseline.counter.count !== baseline.count) baseline.lost = true;
+  if (gl.isContextLost()) noteRendererLoss(gl);
+  else baseline.counter.lost = false;
+  if (baseline.counter.count !== baseline.count) baseline.lost = true;
   return baseline.lost;
 }
 

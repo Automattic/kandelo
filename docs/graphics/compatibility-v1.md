@@ -20655,3 +20655,30 @@ The regenerated standalone resolver bundle passes
 `.context/graphics-host-fixture-repairs-r2/` and integration
 `.context/a3/resolver-bundle-check.log`. These checks do not establish
 full host readiness or change ABI family 56/3/17/21.
+
+
+**Renderer-generation cleanup checkpoint, 2026-11-03.** The ongoing WebKit
+CTS performance run records native renderer loss during completion, followed
+by a fatal refused deletion in context teardown. Several deletion receipts
+were first created at destruction and incorrectly captured the restored
+renderer's current generation. Cleanup now takes the native owner's original
+generation, including copied execution owners and exported images. A
+synchronous native loss is recorded before its queued canvas event;
+recreating a context in the same session establishes a new baseline.
+Logical resets keep live resources eligible for ordinary checked cleanup.
+Refused deletion of a new object after restoration remains fatal.
+
+Before the fix, seven focused Node assertions fail, and the identical native
+loss/restoration case fails on Chromium, Firefox and WebKit with refused
+buffer deletion. After the fix, the graphics source gate passes all 1,987
+assertions across 84 files, and that native case passes on all three engines.
+The case also checks exported-image cleanup and a deliberate refused delete
+on the restored generation. The first browser probe's incorrect double-slash
+module URL and early restoration request are preserved as fixture failures;
+the final comparison uses one canonical module identity and waits for the
+loss event's dispatch to finish. Commands, logs, source identities and raw
+browser traces are in `.context/graphics-renderer-retirement-r1-results/`.
+The standalone host TypeScript check still reports the same 38 diagnostics
+as its recorded pre-change checkpoint, with identical normalized messages;
+it is not a clean typecheck. ABI family 56/3/17/21 is unchanged. These focused
+checks do not close final CTS, desktop, memory or performance acceptance.

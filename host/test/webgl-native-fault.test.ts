@@ -6,6 +6,11 @@
  * objects and state are gone with it, so cleanup completes without touching
  * it and the bindings report the loss through renderer-loss.ts.
  */
+import { finalizeShader } from "../src/webgl/program-objects.js";
+import * as Loss from "../src/webgl/renderer-loss.js";
+import { observeRendererLoss, rendererLossCount, rendererLost, markRendererReset } from "../src/webgl/renderer-loss.js";
+import { destroyBufferStorage } from "../src/webgl/buffer-storage.js";
+import { destroyTextureView, destroyRenderbufferView } from "../src/webgl/image-storage.js";
 import { afterEach, expect, it, vi } from "vitest";
 import * as R from "../src/webgl/native-recovery.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, hasNativeRepair } from "../src/webgl/native-recovery.js";
@@ -20,22 +25,22 @@ afterEach(() => setReporter(null));
 
 function renderer() {
   let lost = false, refuse = false;
-  const errors: number[] = [], live = new Set<object>(), listeners: (() => void)[] = [];
+  const errors: number[] = [], live = new Set<object>(), listeners: (() => void)[] = [], restored: (() => void)[] = [];
   const make = () => { const value = {}; live.add(value); return value; };
   const remove = (value: object) => { if (refuse) { errors.push(0x502); return; } live.delete(value); };
   const gl = {
-    canvas: { addEventListener: (type: string, listener: () => void) => { if (type === "webglcontextlost") listeners.push(listener); } },
+    canvas: { addEventListener: (type: string, listener: () => void) => { if (type === "webglcontextlost") listeners.push(listener); else if (type === "webglcontextrestored") restored.push(listener); } },
     isContextLost: () => lost,
     getError: () => errors.shift() ?? 0,
     getParameter: () => null,
     createTexture: make, createFramebuffer: make,
-    deleteTexture: remove, deleteFramebuffer: remove,
+    deleteTexture: remove, deleteFramebuffer: remove, deleteBuffer: remove, deleteRenderbuffer: remove, deleteShader: remove,
     bindTexture: () => { if (refuse) errors.push(0x502); },
   } as unknown as WebGL2RenderingContext;
   return { gl, live, make, owner: { gl, errors: [] as number[], shadow: {} },
     refuse(value: boolean) { refuse = value; },
     lose() { lost = true; for (const listener of listeners) listener(); },
-    restore() { lost = false; } };
+    restore() { lost = false; for (const listener of restored) listener(); } };
 }
 
 function caught(call: () => unknown): Fault | undefined {
@@ -148,4 +153,77 @@ it("routes a native GL fault to the kernel's host-fault callback", () => {
   const fault = caught(() => retireNativeRetirement(retirement));
   expect(fault).toBeInstanceOf(Error);
   expect(onHostFault).toHaveBeenCalledWith(fault);
+});
+
+for (const kind of ["buffer", "texture", "renderbuffer"] as const) {
+  it(`retires ${kind} storage first scheduled after loss and restoration`, () => {
+    const r = renderer(), registry = new GlContextRegistry();
+    registry.bind({pid:7, sessionId:11, cmdbufAddr:0, cmdbufLen:64});
+    const b = registry.get(7,11)!; b.gl = r.gl;
+    observeRendererLoss(b);
+    const object = r.make();
+    r.lose(); r.restore(); r.refuse(true);
+    const destroy = kind === "buffer" ? destroyBufferStorage : kind === "texture" ? destroyTextureView : destroyRenderbufferView;
+    expect(caught(() => expect(destroy(b,object)).toBe(true))).toBeUndefined();
+  });
+}
+
+it("keeps the original generation in an independent native owner", () => {
+  const r = renderer(); observeRendererLoss(r.owner);
+  const owner = R.nativeOwner(r.owner), object = r.make();
+  r.lose(); r.restore(); r.refuse(true);
+  const retirement = reserveNativeRetirement(owner, [["deleteTexture",object]])!;
+  expect(caught(() => retireNativeRetirement(retirement))).toBeUndefined();
+  expect(retirement.complete).toBe(true);
+});
+
+it("still faults on refused deletion of a new object after restoration", () => {
+  const r = renderer(); observeRendererLoss(r.owner);
+  r.lose(); r.restore();
+  const fresh = {gl:r.gl, errors:[] as number[]}; observeRendererLoss(fresh);
+  const retirement = reserveNativeRetirement(fresh, [["deleteTexture",r.make()]])!;
+  r.refuse(true);
+  expect(caught(() => retireNativeRetirement(retirement))?.name).toBe("NativeGlFault");
+});
+
+it("records synchronous loss before the delayed canvas event, without counting it twice", () => {
+  const r = renderer(); observeRendererLoss(r.owner);
+  const object = r.make();
+  (Reflect.get(Loss,"noteRendererLoss") as ((gl: WebGL2RenderingContext) => void) | undefined)?.(r.gl);
+  expect(rendererLossCount(r.gl)).toBe(1);
+  r.lose();
+  expect(rendererLossCount(r.gl)).toBe(1);
+  r.restore(); r.refuse(true);
+  const retirement = reserveNativeRetirement(r.owner, [["deleteTexture",object]])!;
+  expect(caught(() => retireNativeRetirement(retirement))).toBeUndefined();
+});
+
+it("does not discard native cleanup when only the logical guest context reset", () => {
+  const r = renderer(); observeRendererLoss(r.owner);
+  const retirement = reserveNativeRetirement(r.owner, [["deleteTexture",r.make()]])!;
+  markRendererReset(r.owner);
+  expect(rendererLost(r.owner)).toBe(true);
+  r.refuse(true);
+  expect(caught(() => retireNativeRetirement(retirement))?.name).toBe("NativeGlFault");
+});
+
+it("a recreated context in the same session starts after the earlier renderer loss", () => {
+  const r = renderer(), registry = new GlContextRegistry();
+  registry.bind({pid:7, sessionId:11, cmdbufAddr:0, cmdbufLen:64});
+  const b = registry.get(7,11)!; b.gl = r.gl; observeRendererLoss(b);
+  r.lose(); r.restore();
+  expect(rendererLost(b)).toBe(true);
+  registry.destroyContext(7,11);
+  b.gl = r.gl; observeRendererLoss(b);
+  expect(rendererLost(b)).toBe(false);
+});
+
+it("still faults when a new shader's final deletion is refused after restoration", () => {
+  const r = renderer(); observeRendererLoss(r.owner); r.lose(); r.restore();
+  const registry = new GlContextRegistry();
+  registry.bind({pid:7,sessionId:11,cmdbufAddr:0,cmdbufLen:64});
+  const b = registry.get(7,11)!; b.gl = r.gl; observeRendererLoss(b);
+  b.shaders.set(1,r.make()); b.shaderDeletePending.add(1);
+  r.refuse(true);
+  expect(caught(() => finalizeShader(b,1))?.name).toBe("NativeGlFault");
 });

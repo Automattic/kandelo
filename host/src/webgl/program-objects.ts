@@ -6,7 +6,7 @@ import { isKernelExportFailure } from "../kernel-entry-gate.js";
 import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { recordGlError } from "./errors.js";
 import { createShaderError, useProgramError } from "./es2-validation.js";
-import { nativeGlFault, NativeGlFault, rendererEverLost, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
+import { nativeGlFault, NativeGlFault, rendererOwnerGone, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement,
   type NativeDeletion, type NativeRetirement, rethrowNativeGlFault } from "./native-recovery.js";
 export { recordGlError } from "./errors.js";
 import { recordLinkedProgram, releaseReversedDepthTwin } from "./reversed-depth.js";
@@ -17,7 +17,7 @@ import { noteProgramRelinked } from "./uniform-layout.js";
 /** Inside a guest execution batch, validation has already decided acceptance.
  * Private host allocations outside that owner still need exact native checks
  * before publishing their handles; their errors cannot consume batch errors. */
-export type CheckedGlOwner = Pick<GlBinding, "gl" | "errors">;
+export type CheckedGlOwner = Pick<GlBinding, "gl" | "errors"> & { nativeEpoch?: number };
 export function checkedGlCall(b: CheckedGlOwner, call: () => void, policy?: "cleanup"): boolean {
   if (policy !== "cleanup" && predictsNativeCalls(b)) return predictedNativeCalls([call]);
   const gl = b.gl;
@@ -303,8 +303,8 @@ export function finalizeShader(b: GlBinding, name: number): void {
   if (!b.shaderDeletePending.has(name)) return;
   for (const attached of b.programShaders.values()) if (attached.has(name)) return;
   const shader = b.shaders.get(name);
-  if (shader && !checkedGlCall(b, () => b.gl!.deleteShader(shader), "cleanup")) {
-    if (!rendererEverLost(b.gl!)) nativeGlFault("the live renderer refused deleteShader of a retired shader");
+  if (shader && !rendererOwnerGone(b) && !checkedGlCall(b, () => b.gl!.deleteShader(shader), "cleanup")) {
+    if (!rendererOwnerGone(b)) nativeGlFault("the live renderer refused deleteShader of a retired shader");
     return;
   }
   b.shaderDeletePending.delete(name);
@@ -350,10 +350,11 @@ export function releaseRetainedExecutable(b: GlBinding, program: WebGLProgram | 
  * and its bindings report the loss (renderer-loss.ts). */
 function deleteUnusedNativeProgram(b: GlBinding, program: WebGLProgram): boolean {
   const gl = b.gl!;
+  if (rendererOwnerGone(b)) return true;
   if (!checkedGlCall(b, () => {
     if (gl.getParameter(0x8b8d) === program) gl.useProgram(null);
-  }, "cleanup") && !rendererEverLost(gl)) nativeGlFault("the live renderer refused to uninstall a program before deleting it");
-  if (!checkedGlCall(b, () => gl.deleteProgram(program), "cleanup") && !rendererEverLost(gl))
+  }, "cleanup") && !rendererOwnerGone(b)) nativeGlFault("the live renderer refused to uninstall a program before deleting it");
+  if (!checkedGlCall(b, () => gl.deleteProgram(program), "cleanup") && !rendererOwnerGone(b))
     nativeGlFault("the live renderer refused deleteProgram of a program no owner uses");
   releaseReversedDepthTwin(b, program);
   return true;

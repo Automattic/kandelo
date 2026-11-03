@@ -2071,3 +2071,59 @@ for (const retained of [false,true]) {
     expect(await memoryBoundaryFailures(page)).toEqual([]);
   });
 }
+
+test("restored native renderers retire old storage without deleting it as new storage", async ({page}) => {
+  await page.goto("/trap-signal-test.html");
+  const root = fileURLToPath(new URL("../../../",import.meta.url));
+  const result = await page.evaluate(async root => {
+    const base = `/@fs${root}host/src/webgl/`;
+    const {GlContextRegistry} = await import(base+"registry.ts");
+    const {observeRendererLoss,rendererLost} = await import(base+"renderer-loss.ts");
+    const {nativeOwner,reserveNativeRetirement,retireNativeRetirement} = await import(base+"native-recovery.ts");
+    const {destroyBufferStorage} = await import(base+"buffer-storage.ts");
+    const {destroyTextureView,destroyRenderbufferView,retireExportedImage} = await import(base+"image-storage.ts");
+    const canvas = document.createElement("canvas"), gl = canvas.getContext("webgl2");
+    if (!gl) throw new Error("WebGL2 required");
+    const extension = gl.getExtension("WEBGL_lose_context");
+    if (!extension) throw new Error("WEBGL_lose_context required");
+    const reg = new GlContextRegistry(); reg.bind({pid:91,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const b = reg.get(91,2)!; b.gl = gl; observeRendererLoss(b);
+    const owner = nativeOwner(b), buffer = gl.createBuffer()!, texture = gl.createTexture()!, renderbuffer = gl.createRenderbuffer()!;
+    gl.bindBuffer(gl.ARRAY_BUFFER,buffer); gl.bufferData(gl.ARRAY_BUFFER,16,gl.STATIC_DRAW);
+    gl.bindTexture(gl.TEXTURE_2D,texture); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,null);
+    gl.bindRenderbuffer(gl.RENDERBUFFER,renderbuffer); gl.renderbufferStorage(gl.RENDERBUFFER,gl.RGBA8,1,1);
+    if (!gl.isBuffer(buffer) || !gl.isTexture(texture) || !gl.isRenderbuffer(renderbuffer) || gl.getError()) throw new Error("native storage preparation failed");
+    const wait = (type: string) => new Promise<void>((resolve,reject) => {
+      const timeout = setTimeout(() => reject(new Error(`${type} was not delivered`)),15000);
+      canvas.addEventListener(type,event => { event.preventDefault(); clearTimeout(timeout); resolve(); },{once:true});
+    });
+    const lost = wait("webglcontextlost"); extension.loseContext(); await lost;
+    const restored = wait("webglcontextrestored");
+    // Leave the loss event dispatch before requesting restoration: its
+    // preventDefault decision must have reached the native renderer.
+    await new Promise<void>(resolve => setTimeout(resolve,0));
+    extension.restoreContext(); await restored;
+    const reset = rendererLost(b), calls: string[] = [];
+    // Old native handles are already invalid. Count attempted deletes without
+    // changing what the real renderer would return for an accidental call.
+    for (const method of ["deleteBuffer","deleteTexture","deleteRenderbuffer"] as const) {
+      const native = gl[method].bind(gl);
+      Object.defineProperty(gl,method,{configurable:true,value:(object: any) => { calls.push(method); native(object); }});
+    }
+    const retired = [destroyBufferStorage(b,buffer),destroyTextureView(b,texture),destroyRenderbufferView(b,renderbuffer)];
+    const exported = retireExportedImage({bo:7,gl,nativeEpoch:owner.nativeEpoch!,object:texture,native:texture,renderbuffer:false,
+      width:1,height:1,storage:{target:gl.TEXTURE_2D,level:0,internalFormat:gl.RGBA8,format:gl.RGBA,type:gl.UNSIGNED_BYTE},
+      sourceUsing:false,boLive:true,format:gl.RGBA8});
+    const oldCalls = [...calls];
+    const fresh = {gl,errors:[] as number[]}; observeRendererLoss(fresh);
+    const next = gl.createTexture()!;
+    // The positive control proves a historical loss never excuses a live
+    // failure on the restored generation.
+    Object.defineProperty(gl,"deleteTexture",{configurable:true,value:() => { throw new Error("deliberate live cleanup refusal"); }});
+    const receipt = reserveNativeRetirement(fresh,[["deleteTexture",next]])!;
+    let control = "";
+    try { retireNativeRetirement(receipt); } catch (error) { control = (error as Error).name; }
+    return {reset,retired,exported,oldCalls,freshReset:rendererLost(fresh),control};
+  },root);
+  expect(result).toEqual({reset:true,retired:[true,true,true],exported:true,oldCalls:[],freshReset:false,control:"NativeGlFault"});
+});

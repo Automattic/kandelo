@@ -5,7 +5,7 @@ import { checkedGlCall, type CheckedGlOwner } from "./program-objects.js";
 import { recordGlError } from "./errors.js";
 import { captureNativeGlErrors, type GlErrorState } from "./errors.js";
 import { releaseReversedDepthTwin } from "./reversed-depth.js";
-import { rendererLossCount } from "./renderer-loss.js";
+import { rendererLossCount, rendererObjectEpoch } from "./renderer-loss.js";
 
 /**
  * A native GL operation the host's own bookkeeping depends on -- deleting a
@@ -47,13 +47,10 @@ export function nativeGlFault(message: string, cause?: unknown): never {
 export function rethrowNativeGlFault(error: unknown): void {
   if (error instanceof NativeContextReset || error instanceof NativeGlFault || isKernelExportFailure(error)) throw error;
 }
-/** True when the renderer is lost now or was lost at some point, so an
- * object created before that loss may already be gone. For a direct deletion
- * that has no recorded creation generation. */
-export function rendererEverLost(gl: WebGL2RenderingContext): boolean {
-  let lost = false;
-  try { lost = gl.isContextLost?.() === true; } catch { lost = false; }
-  return lost || rendererLossCount(gl) !== 0;
+/** The owner's native generation is gone; a previous loss does not excuse
+ * refused cleanup of objects created after restoration. */
+export function rendererOwnerGone(owner: CheckedGlOwner): boolean {
+  return !!owner.gl && rendererGone(owner.gl, rendererObjectEpoch(owner));
 }
 /** True when native objects of renderer generation `epoch` no longer exist:
  * the context is lost now, or was lost (and perhaps restored) since. */
@@ -183,7 +180,7 @@ export function reserveNativeRetirement(b: CheckedGlOwner, calls: NativeDeletion
   try {
     const retirement = {owner:nativeOwner(b),calls,pending:false,complete:false,references:0,dependencies,ordered:options.ordered,uninstallPrograms:options.uninstallPrograms,
       unusedProgramOwners:options.unusedProgramOwners ? new WeakRef(options.unusedProgramOwners) : undefined,
-      epoch:rendererLossCount(b.gl)};
+      epoch:rendererObjectEpoch(b)};
     let owners = retirements.get(b.gl);
     if (!owners) { owners = new Set(); retirements.set(b.gl,owners); }
     owners.add(retirement);
@@ -426,7 +423,7 @@ export function retireNativeRepair(gl: WebGL2RenderingContext, lifetime: object)
 }
 
 export function nativeOwner(b: CheckedGlOwner): CheckedGlOwner {
-  return {gl:b.gl, errors:b.errors};
+  return {gl:b.gl, errors:b.errors, nativeEpoch:rendererObjectEpoch(b)};
 }
 export function nativeInverse(owner: CheckedGlOwner, ...groups: NativeCall[][]): NativeInverse {
   return {owner:nativeOwner(owner),groups};

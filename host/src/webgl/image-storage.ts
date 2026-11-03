@@ -1,3 +1,4 @@
+import { rendererObjectEpoch } from "./renderer-loss.js";
 import { applyNativeChanges, invokeNativeCall, rethrowNativeGlFault, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeRetirement, type NativeChange, type NativeCall, type NativeDeletion } from "./native-recovery.js";
 import { sizedFormatTransfer } from "./es2-validation.js";
 import type { GlBinding } from "./registry.js";
@@ -720,6 +721,7 @@ export function destroyRenderbufferView(b: GlBinding, object: WebGLRenderbuffer)
 export type GlExportedImage = {
   bo: number;
   gl: WebGL2RenderingContext;
+  nativeEpoch: number;
   object: WebGLTexture | WebGLRenderbuffer;
   native: WebGLTexture | WebGLRenderbuffer;
   renderbuffer: boolean;
@@ -921,7 +923,7 @@ export function exportImageStorage(b: GlBinding, bo: number, target: number, nam
   }
   const previous = b.imageRevisions.get(object) ?? 0;
   if (previous === 0xffffffff) return -12;
-  const record: GlExportedImage = { bo, gl, object, native, renderbuffer, width, height, storage,
+  const record: GlExportedImage = { bo, gl, nativeEpoch: rendererObjectEpoch(b), object, native, renderbuffer, width, height, storage,
     sourceUsing: true, boLive: true, format: effective };
   const token = registerImageSource(b, bo, renderbuffer ? null : native as WebGLTexture, width, height, undefined, storage);
   if (token < 0) return token;
@@ -1001,7 +1003,7 @@ export function retireExportedImage(record: GlExportedImage): boolean {
     return true;
   }
   exportedByNative.delete(record.native);
-  const retirement = reserveNativeRetirement({ gl: record.gl, errors: [] },
+  const retirement = reserveNativeRetirement({ gl: record.gl, errors: [], nativeEpoch: record.nativeEpoch },
     [[record.renderbuffer ? "deleteRenderbuffer" : "deleteTexture", record.native] as NativeDeletion]);
   return !!retirement && retireNativeRetirement(retirement);
 }
