@@ -20713,3 +20713,48 @@ records that timeout and the old stdin end-to-end timing failure. Evidence:
 `.context/graphics-host-fixtures-r13/`,
 `.context/graphics-main-host-failures-r1/`. This is fixture validation on
 prepared ABI-56 products, not full final-runtime acceptance.
+
+**SDK and native fixture checkpoint, 2026-11-03.** The allocation/ownership
+GL double now describes finite 4096-pixel texture/renderbuffer limits and
+single-sampled storage; generic zero getters described an unavailable
+renderer. The cube/pyramid multiplex test uses that shared shader-aware
+double and requires its supported artifacts. Pixel rendering remains
+covered by real browsers.
+
+The KMS inheritance fixture checks the non-root child's exact `EACCES`
+from SET_MASTER while retaining its shared file's positive KMS rights.
+Linux checks the original opener or CAP_SYS_ADMIN before its already-master
+case ([drm_auth.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_auth.c)).
+Its CPU cursor case now modesets a real black background: an inactive CRTC
+correctly hides the retained cursor. The render-node CPU interlude changes
+FOURCC through a modeset and checks that a legacy page flip rejects the
+format change, as Linux requires
+([drm_plane.c](https://github.com/torvalds/linux/blob/master/drivers/gpu/drm/drm_plane.c)).
+The exact libdrm return is `-EINVAL`, not ioctl's `-1` convention. The own
+libdrm smoke program verifies an initially unbound encoder, an actual
+modeset binding, and unbinding again.
+
+The native-display fixture checks NO_DISPLAY with SUCCESS for an unmatched
+native display on a valid platform, and retains BAD_PARAMETER for an
+invalid platform. This follows
+[EXT_platform_base](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_platform_base.txt).
+It checks stable positive config count and first-config identity across
+termination of another display, instead of assuming a historical single
+config. Its new browser spec runs the same C source on wasm32 and wasm64.
+These are fixture corrections; production permissions, EGL errors and KMS
+format checks remain intact.
+
+The completed normal r12 setup-all supplied the prepared SDK products.
+Both normal SDK ensures pass, and all eight wasm32/wasm64 graphics archives
+retain their recorded SHA-256 values. Seven focused Node files pass all 17
+assertions. The own libdrm program is compiled through the normal SDK in a
+private probe driver; rebuilding its ordinary standalone program artifact
+remains part of the final normal build. Native EGL-display and rendered-GBM
+cases pass six each across three engines; all twelve KMS inheritance cases
+pass across three engines after the fixture corrections. Commands, source
+diffs, program/kernel hashes, traces and earlier failures are in
+`.context/graphics-sdk-probe-r13-results/`. The initial browser preparation
+omitted the offline image-builder module, and one retry used a wrong
+checker path; those failures are preserved separately from guest results.
+This closes the focused cohort, not the remaining full validation or
+performance work. ABI family 56/3/17/21 is unchanged.

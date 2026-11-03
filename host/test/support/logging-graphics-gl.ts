@@ -15,6 +15,14 @@ export function loggingGraphicsGl(uniforms: {name:string;size:number;type:number
       return (...args: unknown[]) => {
         calls.push([key, args.map(value => ArrayBuffer.isView(value)
           ? Array.from(value as unknown as ArrayLike<number>) : value)]);
+        // EGL probes a renderer before creating a logical context. This
+        // ownership double models single-sampled storage with finite limits;
+        // an all-zero generic getter describes an unavailable renderer.
+        if (key === "getParameter" && (args[0] === 0x0d33 || args[0] === 0x84e8)) return 4096;
+        if (key === "getInternalformatParameter" && args[0] === 0x8d41
+          && (args[1] === 0x8058 || args[1] === 0x88f0) && args[2] === 0x80a9)
+          return new Int32Array();
+        if (key === "isContextLost") return false;
         if (typeof member === "function") return Reflect.apply(member, target, args);
         if (key === "compileShader") { compiled.add(args[0]); return; }
         if (key === "attachShader") {

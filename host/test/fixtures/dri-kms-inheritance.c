@@ -142,7 +142,11 @@ static struct rendered_display render_frames(int fd, int render_node) {
                 for (uint32_t x = 0; x < cpu.width; x++) bytes[y * (cpu.pitch / 4) + x] = 0xff0000ff;
             uint32_t handles[4] = {cpu.handle}, pitches[4] = {cpu.pitch}, offsets[4] = {0}, fb = 0;
             CHECK(drmModeAddFB2(fd, cpu.width, cpu.height, GBM_FORMAT_XRGB8888, handles, pitches, offsets, &fb, 0) == 0);
-            wait_for_flip(fd, state.crtc, fb);
+            /* Linux drm_mode_page_flip_ioctl forbids changing FOURCC.
+             * Exercise that rejection, then perform the format transition
+             * through a real modeset before observing the CPU presenter. */
+            CHECK(drmModePageFlip(fd, state.crtc, fb, 0, NULL) == -EINVAL);
+            CHECK(drmModeSetCrtc(fd, state.crtc, fb, 0, 0, &connector_id, 1, &mode) == 0);
             puts("render-node CPU interlude ready"); fflush(stdout);
             char command;
             CHECK(read(STDIN_FILENO, &command, 1) == 1 && command == 'c');
@@ -195,6 +199,35 @@ static struct rendered_display render_frames(int fd, int render_node) {
         state.front = front;
         state.framebuffer = fb;
     }
+    return state;
+}
+
+/* A retained cursor on a disabled CRTC is correctly invisible. Give the
+ * CPU-cursor case a real black primary scanout before checking its pixels. */
+static struct rendered_display cursor_background(int fd) {
+    struct rendered_display state = {0};
+    drmModeRes *resources = drmModeGetResources(fd);
+    CHECK(resources && resources->count_crtcs && resources->count_connectors);
+    state.crtc = resources->crtcs[0];
+    drmModeConnector *connector = drmModeGetConnector(fd, resources->connectors[0]);
+    CHECK(connector && connector->connection == DRM_MODE_CONNECTED && connector->count_modes);
+    drmModeModeInfo mode = connector->modes[0];
+    uint32_t connector_id = connector->connector_id;
+    struct dumb background = {.width = mode.hdisplay, .height = mode.vdisplay, .bpp = 32};
+    CHECK(ioctl(fd, 0xc02064b2, &background) == 0);
+    struct mapping map = {.handle = background.handle};
+    CHECK(ioctl(fd, 0xc01064b3, &map) == 0);
+    void *bytes = mmap(NULL, background.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, map.offset);
+    CHECK(bytes != MAP_FAILED);
+    memset(bytes, 0, background.size);
+    CHECK(munmap(bytes, background.size) == 0);
+    uint32_t handles[4] = {background.handle}, pitches[4] = {background.pitch}, offsets[4] = {0};
+    CHECK(drmModeAddFB2(fd, background.width, background.height, GBM_FORMAT_XRGB8888,
+        handles, pitches, offsets, &state.framebuffer, 0) == 0);
+    CHECK(drmModeSetCrtc(fd, state.crtc, state.framebuffer, 0, 0, &connector_id, 1, &mode) == 0);
+    CHECK(drmCloseBufferHandle(fd, background.handle) == 0);
+    drmModeFreeConnector(connector);
+    drmModeFreeResources(resources);
     return state;
 }
 
@@ -259,7 +292,11 @@ int main(int argc, char **argv) {
         return 0;
     }
     CHECK(close(ready[0]) == 0);
-    CHECK(ioctl(fd, 0x641e, 0) == 0);
+    /* Linux checks the original opener or CAP_SYS_ADMIN before the
+     * already-master case (drivers/gpu/drm/drm_auth.c). The shared file
+     * retains its KMS rights, but a non-root child cannot SET_MASTER. */
+    CHECK(geteuid() != 0);
+    CHECK(ioctl(fd, 0x641e, 0) == -1 && errno == EACCES);
     struct client_cap cap = {.capability = 2, .value = 1};
     CHECK(ioctl(fd, 0x4010640d, &cap) == 0);
     uint32_t inherited_magic = 0;
@@ -269,7 +306,7 @@ int main(int argc, char **argv) {
     CHECK(write(ready[1], "r", 1) == 1 && close(ready[1]) == 0);
     char byte;
     CHECK(read(STDIN_FILENO, &byte, 1) == 1 && byte == 'g');
-    CHECK(ioctl(fd, 0x641e, 0) == 0);
+    CHECK(ioctl(fd, 0x641e, 0) == -1 && errno == EACCES);
     CHECK(ioctl(fd, 0xc01064b3, &map) == 0);
     pixels = mmap(NULL, bo.size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, map.offset);
     CHECK(pixels != MAP_FAILED && pixels[0] == 0xff00ff00);
@@ -284,12 +321,17 @@ int main(int argc, char **argv) {
 #ifdef TEST_EGL_RENDER
     struct rendered_display display = {0};
     if (render) display = render_frames(fd, render_node);
+    else if (strcmp(argv[1], "cursor") == 0) display = cursor_background(fd);
 #endif
     printf("inherited %s after opener retirement: ready\n", argv[1]);
     fflush(stdout);
     CHECK(read(STDIN_FILENO, &byte, 1) == 1 && byte == 'q');
 #ifdef TEST_EGL_RENDER
     if (render) retire_display(fd, &display);
+    else if (display.framebuffer) {
+        CHECK(drmModeSetCrtc(fd, display.crtc, 0, 0, 0, NULL, 0, NULL) == 0);
+        CHECK(drmModeRmFB(fd, display.framebuffer) == 0);
+    }
 #endif
     cursor.flags = 1;
     cursor.handle = 0;
