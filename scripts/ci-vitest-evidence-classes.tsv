@@ -573,6 +573,7 @@ host/test/wlcompositor-output-scale-smoke.test.ts	prepared-product
 host/test/wlcompositor-protocols-smoke.test.ts	prepared-product
 host/test/wlcompositor-resize-smoke.test.ts	prepared-product
 host/test/wlcompositor-shell-protocols-smoke.test.ts	prepared-product
+host/test/wlcompositor-shm-memfd-smoke.test.ts	prepared-product
 host/test/wlcompositor-smoke.test.ts	prepared-product
 host/test/wlcompositor-theme-smoke.test.ts	prepared-product
 host/test/wlcompositor-tiling-smoke.test.ts	prepared-product
