@@ -143,6 +143,7 @@ export const OP_POLYGON_OFFSET = 0x001B;
 export const OP_DEPTH_RANGEF = 0x001C;
 export const OP_SAMPLE_COVERAGE = 0x001D;
 export const OP_CLIENT_ERRORS = 0x001E;
+export const OP_ERROR_OBSERVED = 0x001F;
 export const OP_TEX_PARAMETERF = 0x0208;
 export const OP_COMPRESSED_TEX_IMAGE_2D = 0x0209;
 export const OP_COMPRESSED_TEX_SUB_IMAGE_2D = 0x020A;

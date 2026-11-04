@@ -21395,3 +21395,65 @@ C1–C3 have not started. Evidence and exact commands:
 `.context/graphics-b1-real-gl-r33/run-wasm.sh`,
 `.context/graphics-b1-node-refusal-r34/`,
 `.context/graphics-b1-node-refusal-r35/run.sh`.
+
+
+### B1 ordered observations and scalar argument validation
+
+The next B1 increment validates 31 scalar/state entry points locally while
+retaining their original command records for the independent host oracle.
+It includes rejected arguments. An ordered `OP_ERROR_OBSERVED` clears only
+the flag already returned locally, so another command can set the same
+flag again. The expected pending mask is compared before consumption in
+the audit; fatal mode rejects a divergence with its context and operation.
+Unknown commands and every device request still invalidate the local proof.
+There is no draw-path validation shortcut in this increment.
+
+`tests/graphics/run-libc-unit.sh` passes 415 native cases; the three new
+ordered/held/wrap controls fail against e015eead69. The graphics gate passes
+1,996 assertions in 84 files. Both worktree-local SDK targets rebuild
+normally, the complete ABI snapshot/layout check passes, the Rust opcode
+uniqueness case passes and the normal host build including declarations
+passes. The reserved versions and snapshot are unchanged. The first ABI
+attempt had no local SDK and contributes no ABI coverage; the SDK job then
+stopped on an incorrect Rust package selector after its ABI check passed.
+The corrected selector is `wasm-posix-shared`. No failed setup is counted
+as a passing gate. Evidence: `.context/graphics-b1-ordered-r37/`,
+`.context/graphics-b1-ordered-r38/`, `.context/graphics-b1-build-r39/`,
+`.context/graphics-b1-sdk-r40/`, `.context/graphics-b1-host-r41/`.
+
+The normal SDK archive, current kernel from the ABI build and current
+compiled host run the library/device-double cases and an ordinary EGL/GLES
+pbuffer matrix. Node passes eight cases and the three-engine browser run
+passes thirty cases, with zero skips. This includes three deliberately
+failing old-library assertions per host and the unchanged loud Node
+renderer refusal. All three engines run the 1,705-case real scalar matrix
+in production and fatal-audit modes. Its observed request counts, including
+the trailing ordered-error sequence and excluding the final flush, are:
+
+| Engine | e015eead69 library | Candidate | Candidate with fatal audit |
+| --- | ---: | ---: | ---: |
+| Chromium 153.0.8010.12 | 1,703 | 0 | 0 |
+| Firefox 155.0 | 1,703 | 0 | 0 |
+| WebKit 26.6 | 1,703 | 0 | 0 |
+
+The matrix covers valid and invalid capability, viewport, scissor,
+depth/face/line, blend, stencil, attribute, active-texture and pixel-store
+arguments. The fatal audit independently checks the queued observations;
+there are no divergences on the valid runs. A deliberately false pending
+mask separately rejects the guest's exit promise with
+`guest-error-flags` on every engine, naming `OP_ERROR_OBSERVED`, its process,
+session and batch. That negative control proves fatal rejection, not the
+full memory/retirement fault-injection gate. The positive runs have no page
+or memory-boundary failures. Exact commands, source patches and artifact
+hashes: `.context/graphics-b1-runtime-r42/run.sh`. The committed ordinary
+SDK probe is `tests/graphics/libc/predicted-errors.c`.
+
+These are bounded API and request-count results, not desktop latency,
+throughput or native-feel acceptance. A separate private diagnostic of the
+normal pre-B1 ScummVM launcher observes 17,157 error queries, 3,913 buffer-bind
+queries and 903 image-bind queries alongside 301 surface-update ioctls during
+the active window. The corresponding ratios are 57, 13 and three per update;
+the diagnostic includes instrumentation and does not establish displayed
+frame rate. Evidence: `.context/graphics-b1-hotpaths-r36/`. B1's remaining
+object/draw validation, application measurements and full conformance gates
+remain open; B2–B6 and C1–C3 remain required. The normal preview has not moved.

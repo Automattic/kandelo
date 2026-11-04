@@ -55,6 +55,7 @@ export type GlAuditCause =
   | "unattributed"     // an error appeared outside any audited call
   | "out-of-memory"    // boundary (D-50)
   | "context-lost"     // boundary
+  | "guest-error-flags" // guest UMD prediction differs from the host oracle
   | "instrumented";    // a context came under audit (proves the audit ran)
 
 export interface GlAuditRecord {
@@ -139,6 +140,21 @@ export function configureGlAudit(options: {
 export function resetGlAuditForTesting(): void {
   glAuditOn = false; sink = null; fault = null; scope = null; sequence = 0;
   nextPrediction = null; activePrediction = null; occurrences.clear();
+}
+
+/** Compare before consuming a locally returned flag. No native query is
+ * involved: this oracle independently validated the original guest records. */
+export function auditGuestErrorFlags(errors: readonly number[], expected: number): void {
+  if (!glAuditOn) return;
+  let observed = 0;
+  for (const error of errors) {
+    const bit = error - 0x500;
+    observed |= bit >= 0 && bit <= 6 && (0x67 & (1 << bit)) ? 1 << bit : 0x8000_0000;
+  }
+  observed >>>= 0;
+  if (observed === expected) return;
+  report({kind: "divergence", cause: "guest-error-flags"}, "guestErrorFlagMask", errors, observed,
+    {kind: "error", error: expected, label: "guest error-flag mask", rule: "B1 ordered error observation"});
 }
 
 /** Parse a mode string from configuration. Unknown values fail loudly: a

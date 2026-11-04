@@ -13,6 +13,15 @@ export function mergeClientGlErrors(owner: GlErrorState, mask: number): void {
   }
 }
 
+/** A queued glGetError already returned this flag in the guest. Clear only
+ * that flag at its original position in the command stream. */
+export function consumeObservedGlError(owner: GlErrorState, mask: number): void {
+  for (let i = owner.errors.length - 1; i >= 0; i--) {
+    const bit = owner.errors[i]! - 0x500;
+    if (bit >= 0 && bit <= 6 && (mask & (1 << bit))) owner.errors.splice(i, 1);
+  }
+}
+
 /** Native error flags belong to the selected logical context. Drain before
  * losing that identity; errors from unowned host operations have no guest
  * owner and must not be inherited by the next context. */

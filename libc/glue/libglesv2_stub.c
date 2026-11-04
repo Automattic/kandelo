@@ -307,6 +307,9 @@ struct wpk_gles_context {
     int errors_known;
     uint64_t errors_known_at;
     uint8_t *errors_known_cursor;
+    /* Flags the host oracle will independently record for exact commands.
+     * These are separate from client-only guards that encode no command. */
+    uint32_t predicted_errors;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_compressed_upload;
     uint32_t next_shader_upload;
@@ -441,6 +444,7 @@ static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
 
 static void raise_client_error(GLenum error);
 static void record_client_error(struct wpk_gles_context *state, GLenum error);
+static int hold_error(struct wpk_gles_context *state, GLenum error);
 static void finish_command_submission(struct wpk_gles_context *state,
                                       uint8_t *base, uint32_t errors, int rc) {
     g_cursor = base;
@@ -524,23 +528,73 @@ static uint8_t *reserve(size_t bytes) {
 
 #define EMIT_END() g_cursor = _c;
 
-/* Start B1 with scalar setters whose GLES2 contract cannot raise an API
- * error, regardless of other context state. Keep their original TLVs so
- * the host still independently validates and executes them. Do not extend
- * this to draws, allocations or object-dependent operations. */
-static void finish_infallible_command(uint8_t *start, uint8_t *end) {
+static int exact_error_state(struct wpk_gles_context *state) {
+    return state->errors_known && (!g_cursor || state->errors_known_cursor == g_cursor) &&
+           _wpk_gl_device_requests() == state->errors_known_at;
+}
+
+/* Keep original records, including rejected arguments: the host oracle
+ * independently validates them before the ordered error observation. */
+static void finish_predicted_command(uint8_t *start, uint8_t *end, GLenum error) {
     struct wpk_gles_context *state = _wpk_gl_current_encoder();
     /* WHY: reserve() can submit when the buffer fills. Even if its cursor
      * wraps to the same address, that request revokes the old error proof. */
     if (state->errors_known && state->errors_known_cursor == start &&
-        _wpk_gl_device_requests() == state->errors_known_at)
+        _wpk_gl_device_requests() == state->errors_known_at) {
         state->errors_known_cursor = end;
+        if (error) {
+            state->predicted_errors |= 1u << (error - GL_INVALID_ENUM);
+            if (!hold_error(state,error)) state->errors_known = 0;
+        }
+    }
     g_cursor = end;
 }
-#define EMIT_INFALLIBLE_BEGIN(op_, payload_len_)                         \
+#define EMIT_PREDICTED_BEGIN(op_, payload_len_, error_)                  \
     EMIT_BEGIN(op_, payload_len_)                                       \
-    uint8_t *_exact_start = _c - 4;
-#define EMIT_INFALLIBLE_END() finish_infallible_command(_exact_start, _c);
+    uint8_t *_exact_start = _c - 4;                                     \
+    const GLenum _predicted_error = (error_);
+#define EMIT_PREDICTED_END() finish_predicted_command(_exact_start, _c, _predicted_error);
+#define EMIT_INFALLIBLE_BEGIN(op_, payload_len_) EMIT_PREDICTED_BEGIN(op_, payload_len_, GL_NO_ERROR)
+#define EMIT_INFALLIBLE_END() EMIT_PREDICTED_END()
+
+/* GLES2 scalar argument rules. Keep these independent of the host's
+ * state-validation.ts: the ordered audit must be able to detect disagreement. */
+static int scalar_cap(GLenum value) {
+    switch (value) {
+    case GL_DITHER: case GL_DEPTH_TEST: case GL_STENCIL_TEST: case GL_BLEND:
+    case GL_CULL_FACE: case GL_SCISSOR_TEST: case GL_POLYGON_OFFSET_FILL:
+    case GL_SAMPLE_ALPHA_TO_COVERAGE: case GL_SAMPLE_COVERAGE: return 1;
+    default: return 0;
+    }
+}
+static int scalar_face(GLenum value) {
+    return value == GL_FRONT || value == GL_BACK || value == GL_FRONT_AND_BACK;
+}
+static int scalar_compare(GLenum value) { return value >= GL_NEVER && value <= GL_ALWAYS; }
+static int scalar_blend_factor(GLenum value, int source) {
+    switch (value) {
+    case GL_ZERO: case GL_ONE:
+    case GL_SRC_COLOR: case GL_ONE_MINUS_SRC_COLOR:
+    case GL_DST_COLOR: case GL_ONE_MINUS_DST_COLOR:
+    case GL_SRC_ALPHA: case GL_ONE_MINUS_SRC_ALPHA:
+    case GL_DST_ALPHA: case GL_ONE_MINUS_DST_ALPHA:
+    case GL_CONSTANT_COLOR: case GL_ONE_MINUS_CONSTANT_COLOR:
+    case GL_CONSTANT_ALPHA: case GL_ONE_MINUS_CONSTANT_ALPHA: return 1;
+    case GL_SRC_ALPHA_SATURATE: return source;
+    default: return 0;
+    }
+}
+static int scalar_blend_equation(GLenum value) {
+    return value == GL_FUNC_ADD || value == GL_FUNC_SUBTRACT || value == GL_FUNC_REVERSE_SUBTRACT ||
+           value == GL_MIN_EXT || value == GL_MAX_EXT;
+}
+static int scalar_stencil_op(GLenum value) {
+    switch (value) {
+    case GL_ZERO: case GL_KEEP: case GL_REPLACE: case GL_INCR: case GL_DECR:
+    case GL_INVERT: case GL_INCR_WRAP: case GL_DECR_WRAP: return 1;
+    default: return 0;
+    }
+}
 
 /* Max u32 names that fit one `{u16 op, u16 payload_len, u32 n, u32
  * names[n]}` record: the payload_len header is 16-bit, so
@@ -583,25 +637,25 @@ void glClear(GLbitfield mask) {
 
 void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_VIEWPORT, 16)
+    EMIT_PREDICTED_BEGIN(OP_VIEWPORT, 16, w < 0 || h < 0 ? GL_INVALID_VALUE : GL_NO_ERROR)
     w_i32(&_c, x); w_i32(&_c, y); w_i32(&_c, w); w_i32(&_c, h);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glScissor(GLint x, GLint y, GLsizei w, GLsizei h) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_SCISSOR, 16)
+    EMIT_PREDICTED_BEGIN(OP_SCISSOR, 16, w < 0 || h < 0 ? GL_INVALID_VALUE : GL_NO_ERROR)
     w_i32(&_c, x); w_i32(&_c, y); w_i32(&_c, w); w_i32(&_c, h);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glEnable(GLenum cap)  {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_ENABLE,  4) w_u32(&_c, (uint32_t)cap); EMIT_END()
+    EMIT_PREDICTED_BEGIN(OP_ENABLE,  4, scalar_cap(cap) ? GL_NO_ERROR : GL_INVALID_ENUM) w_u32(&_c, (uint32_t)cap); EMIT_PREDICTED_END()
 }
 void glDisable(GLenum cap) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DISABLE, 4) w_u32(&_c, (uint32_t)cap); EMIT_END()
+    EMIT_PREDICTED_BEGIN(OP_DISABLE, 4, scalar_cap(cap) ? GL_NO_ERROR : GL_INVALID_ENUM) w_u32(&_c, (uint32_t)cap); EMIT_PREDICTED_END()
 }
 
 /* ----- buffers ------------------------------------------------------ */
@@ -988,7 +1042,9 @@ void glEnableVertexAttribArray(GLuint index) {
     const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 1);
     if (slot == WPK_ATTRIB_ERROR) return;
     if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].enabled = 1;
-    EMIT_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+    EMIT_PREDICTED_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4,
+        slot == WPK_ATTRIB_OUT_OF_RANGE ? GL_INVALID_VALUE : GL_NO_ERROR)
+    w_u32(&_c, (uint32_t)index); EMIT_PREDICTED_END()
 }
 
 void glDisableVertexAttribArray(GLuint index) {
@@ -996,7 +1052,9 @@ void glDisableVertexAttribArray(GLuint index) {
     const int slot = vertex_attrib_slot(_wpk_gl_current_encoder(), index, 0);
     if (slot == WPK_ATTRIB_ERROR) return;
     if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].enabled = 0;
-    EMIT_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4) w_u32(&_c, (uint32_t)index); EMIT_END()
+    EMIT_PREDICTED_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4,
+        slot == WPK_ATTRIB_OUT_OF_RANGE ? GL_INVALID_VALUE : GL_NO_ERROR)
+    w_u32(&_c, (uint32_t)index); EMIT_PREDICTED_END()
 }
 
 void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
@@ -1577,17 +1635,33 @@ GLenum glGetError(void) {
     if (!state) return GL_NO_ERROR;
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
-    const int idle = !g_cursor || g_cursor == base;
-    if (state->errors_known && (!g_cursor || g_cursor == state->errors_known_cursor) &&
-        _wpk_gl_device_requests() == state->errors_known_at)
-        return take_held_error(state);
+    if (exact_error_state(state)) {
+        if (!g_cursor || g_cursor == base) return take_held_error(state);
+        /* WHY: observing a flag is ordered work too. If another invalid
+         * command records that value later, it must set a fresh flag rather
+         * than being swallowed by a host flag the guest already returned. */
+        uint8_t *observed = reserve(12);
+        if (observed && exact_error_state(state)) {
+            const uint32_t expected = state->predicted_errors;
+            const GLenum result = take_held_error(state);
+            const uint32_t consumed = result >= GL_INVALID_ENUM && result <= GL_INVALID_FRAMEBUFFER_OPERATION
+                ? expected & (1u << (result - GL_INVALID_ENUM)) : 0;
+            w_u16(&observed,OP_ERROR_OBSERVED); w_u16(&observed,8);
+            w_u32(&observed,expected); w_u32(&observed,consumed);
+            g_cursor = state->errors_known_cursor = observed;
+            state->predicted_errors &= ~consumed;
+            return result;
+        }
+        /* reserve() may have submitted. Re-enter the ordinary drain before
+         * returning or consuming any flag under a now-invalid proof. */
+    }
     state->errors_known = 0;
     /* One request carries the queued commands (as the compound prefix), the
      * unacknowledged client flags and the drain, in that order, matching the
      * ordering the separate trailer flush used to give. */
     const int fd = _wpk_gl_fd();
     const uint32_t errors = state->client_errors;
-    const uint32_t prefix = idle ? 0 : (uint32_t)(g_cursor-base);
+    const uint32_t prefix = !g_cursor ? 0 : (uint32_t)(g_cursor-base);
     state->error_request[0] = errors;
     state->error_request[1] = WPK_GL_ERROR_DRAIN_REQUEST;
     memset(state->error_drain, 0, sizeof state->error_drain);
@@ -1614,6 +1688,7 @@ GLenum glGetError(void) {
         return _wpk_gl_reset_error(&reset_error) ? reset_error : GL_INVALID_OPERATION;
     }
     state->client_errors &= ~errors;
+    state->predicted_errors = 0;
     /* Exactly one request since the snapshot means no other thread reached
      * a device in between. A fork child must not inherit this knowledge;
      * when that cannot be arranged, every call keeps asking the host. */
@@ -2336,10 +2411,11 @@ void glActiveTexture(GLenum unit) {
     uint8_t *cursor = reserve(8);
     if (!cursor)
         return;
+    uint8_t *start = cursor;
     w_u16(&cursor, OP_ACTIVE_TEXTURE);
     w_u16(&cursor, 4);
     w_u32(&cursor, unit);
-    g_cursor = cursor;
+    finish_predicted_command(start,cursor,GL_NO_ERROR);
     g_active_unit = index;
 }
 
@@ -2697,10 +2773,10 @@ void glPixelStorei(GLenum pname, GLint param) {
         if (pname == GL_UNPACK_SKIP_PIXELS_EXT) g_unpack_skip_pixels = param;
         return;
     }
-    EMIT_BEGIN(OP_PIXEL_STOREI, 8)
+    EMIT_INFALLIBLE_BEGIN(OP_PIXEL_STOREI, 8)
     w_u32(&_c, (uint32_t)pname);
     w_i32(&_c, param);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
     if (pname == GL_UNPACK_ALIGNMENT) g_unpack_alignment = param;
     else if (pname == GL_PACK_ALIGNMENT) g_pack_alignment = param;
 }
@@ -2995,29 +3071,29 @@ void glFramebufferTexture2D(GLenum target, GLenum attachment,
 
 void glBlendFunc(GLenum sfactor, GLenum dfactor) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_BLEND_FUNC, 8)
+    EMIT_PREDICTED_BEGIN(OP_BLEND_FUNC, 8, scalar_blend_factor(sfactor,1) && scalar_blend_factor(dfactor,0) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)sfactor);
     w_u32(&_c, (uint32_t)dfactor);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glBlendFuncSeparate(GLenum srcRGB, GLenum dstRGB,
                          GLenum srcAlpha, GLenum dstAlpha) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_BLEND_FUNC_SEPARATE, 16)
+    EMIT_PREDICTED_BEGIN(OP_BLEND_FUNC_SEPARATE, 16, scalar_blend_factor(srcRGB,1) && scalar_blend_factor(dstRGB,0) && scalar_blend_factor(srcAlpha,1) && scalar_blend_factor(dstAlpha,0) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)srcRGB);
     w_u32(&_c, (uint32_t)dstRGB);
     w_u32(&_c, (uint32_t)srcAlpha);
     w_u32(&_c, (uint32_t)dstAlpha);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_BLEND_EQUATION_SEPARATE, 8)
+    EMIT_PREDICTED_BEGIN(OP_BLEND_EQUATION_SEPARATE, 8, scalar_blend_equation(modeRGB) && scalar_blend_equation(modeAlpha) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)modeRGB);
     w_u32(&_c, (uint32_t)modeAlpha);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glBlendEquation(GLenum mode) {
@@ -3593,49 +3669,49 @@ void glDepthMask(GLboolean flag) {
 
 void glDepthFunc(GLenum func) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DEPTH_FUNC, 4)
+    EMIT_PREDICTED_BEGIN(OP_DEPTH_FUNC, 4, scalar_compare(func) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)func);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glCullFace(GLenum mode) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_CULL_FACE, 4)
+    EMIT_PREDICTED_BEGIN(OP_CULL_FACE, 4, scalar_face(mode) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)mode);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glFrontFace(GLenum mode) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_FRONT_FACE, 4)
+    EMIT_PREDICTED_BEGIN(OP_FRONT_FACE, 4, mode == GL_CW || mode == GL_CCW ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)mode);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glLineWidth(GLfloat width) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_LINE_WIDTH, 4)
+    EMIT_PREDICTED_BEGIN(OP_LINE_WIDTH, 4, width > 0 ? GL_NO_ERROR : GL_INVALID_VALUE)
     w_f32(&_c, width);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glStencilFunc(GLenum func, GLint ref, GLuint mask) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_FUNC, 12)
+    EMIT_PREDICTED_BEGIN(OP_STENCIL_FUNC, 12, scalar_compare(func) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)func);
     w_i32(&_c, ref);
     w_u32(&_c, mask);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_FUNC_SEPARATE, 16)
+    EMIT_PREDICTED_BEGIN(OP_STENCIL_FUNC_SEPARATE, 16, scalar_face(face) && scalar_compare(func) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)face);
     w_u32(&_c, (uint32_t)func);
     w_i32(&_c, ref);
     w_u32(&_c, mask);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glStencilMask(GLuint mask) {
@@ -3647,29 +3723,29 @@ void glStencilMask(GLuint mask) {
 
 void glStencilMaskSeparate(GLenum face, GLuint mask) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_MASK_SEPARATE, 8)
+    EMIT_PREDICTED_BEGIN(OP_STENCIL_MASK_SEPARATE, 8, scalar_face(face) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)face);
     w_u32(&_c, mask);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_OP, 12)
+    EMIT_PREDICTED_BEGIN(OP_STENCIL_OP, 12, scalar_stencil_op(fail) && scalar_stencil_op(zfail) && scalar_stencil_op(zpass) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)fail);
     w_u32(&_c, (uint32_t)zfail);
     w_u32(&_c, (uint32_t)zpass);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glStencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_OP_SEPARATE, 16)
+    EMIT_PREDICTED_BEGIN(OP_STENCIL_OP_SEPARATE, 16, scalar_face(face) && scalar_stencil_op(fail) && scalar_stencil_op(zfail) && scalar_stencil_op(zpass) ? GL_NO_ERROR : GL_INVALID_ENUM)
     w_u32(&_c, (uint32_t)face);
     w_u32(&_c, (uint32_t)fail);
     w_u32(&_c, (uint32_t)zfail);
     w_u32(&_c, (uint32_t)zpass);
-    EMIT_END()
+    EMIT_PREDICTED_END()
 }
 
 void glPolygonOffset(GLfloat factor, GLfloat units) {

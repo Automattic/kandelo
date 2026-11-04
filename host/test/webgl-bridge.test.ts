@@ -232,6 +232,45 @@ class Tlv {
 }
 
 describe("ordered client error flags", () => {
+  it("consumes a locally observed flag before a later command records it again", () => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const enable = () => {
+      const h = t.op(O.OP_ENABLE,4); t.view.setUint32(h.p,0xdead,true);
+    };
+    const observed = (expected: number, consumed: number) => {
+      const h = t.op(O.OP_ERROR_OBSERVED,8);
+      t.view.setUint32(h.p,expected,true);t.view.setUint32(h.p+4,consumed,true);
+    };
+    enable(); observed(1,1); enable(); observed(1,0);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x500]);
+    expect(gl.log).toEqual([]);
+  });
+
+  it("clears only the reported flag, preserving other flags and context peers", () => {
+    const gl = new RecordingGl(), { reg,b } = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer = reg.get(1,2)!;
+    b.errors.push(0x500,0x501);peer.errors.push(0x500);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    const h = t.op(O.OP_ERROR_OBSERVED,8);
+    t.view.setUint32(h.p,3,true);t.view.setUint32(h.p+4,1,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual([0x501]);expect(peer.errors).toEqual([0x500]);
+    expect(gl.log).toEqual([]);
+  });
+
+  it.each([[8,0],[3,3],[1,2],[0,1]])("refuses malformed error observations %j before batch effects", (expected,consumed) => {
+    const gl = new RecordingGl(), { b } = setupBinding(gl);
+    const t = new Tlv(b.cmdbufView!.buffer);
+    let h = t.op(O.OP_CLEAR,4);t.view.setUint32(h.p,0x4000,true);
+    h = t.op(O.OP_ERROR_OBSERVED,8);
+    t.view.setUint32(h.p,expected!,true);t.view.setUint32(h.p+4,consumed!,true);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(gl.log).toEqual([]);expect(b.errors).toEqual([]);
+  });
+
   it("merges repeated client/native flags once while retaining unrelated flags", () => {
     const gl = new RecordingGl(), { b } = setupBinding(gl);
     const pending = [0x500,0x505,0];

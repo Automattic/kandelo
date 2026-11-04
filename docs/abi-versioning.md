@@ -2512,6 +2512,30 @@ The guest semantics that depend on it (answering later `glGetError` calls
 locally until the next device request) are described in
 `docs/architecture.md` with the host error-flag contract.
 
+### Ordered guest error observations within ABI 56 and GL table 17
+
+`OP_ERROR_OBSERVED` (`0x001f`) adds an 8-byte payload containing two
+little-endian u32 masks: the pending command-predicted flags and the single
+flag bit already returned locally. Both use bits 0,1,2,5,6 for the five ES2
+flags; the consumed mask is zero or one bit of the pending mask. Malformed
+records reject the complete batch before effects. The host consumes only
+that flag in the selected context, at this position in the stream. It
+neither clears other flags nor interrupts private upload transactions.
+The audit compares the pending mask with its independent host validator
+before consumption; a mismatch is fatal in fatal mode. Production consumes
+the locally reported flag without trusting the expected mask to change
+command acceptance or any other context's state.
+
+Existing operations and layouts remain unchanged. The kernel forwards
+opaque command bytes, so no syscall, marshalled structure, snapshot section
+or program digest changes. Rust, C and TypeScript mirror the new constant.
+Keep program 56 / unpublished host 3 / GL 17 / fork 21. Old binaries retain
+their existing error drains. New libGLESv2 consumers need the updated host:
+an older host rejects the new record with `EINVAL`, rather than silently
+misreading it. Rebuild the libraries, linked consumers and host together
+through the normal build graph. Both SDK layout checks and the current
+kernel/snapshot check pass without changing the reserved family.
+
 ### Additive multisampled surface configs within ABI 56
 
 Two existing values gain new accepted forms; no layout, operation number

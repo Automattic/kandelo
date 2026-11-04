@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import {
-  auditGlContext, glAuditEntry, isGlAuditEntryName, configureGlAudit, glAuditOn, nativeDecides, noteGlAuditOp,
+  auditGlContext, glAuditEntry, isGlAuditEntryName, configureGlAudit, glAuditOn, nativeDecides, noteGlAuditOp, auditGuestErrorFlags,
   parseGlAuditMode, predictNextNativeCall, resetGlAuditForTesting, withGlAuditFrame, withNativePrediction,
   type GlAuditRecord,
 } from "../src/webgl/native-audit";
@@ -37,6 +37,25 @@ function audit(mode: "record" | "fatal" = "record") {
 }
 
 afterEach(() => resetGlAuditForTesting());
+
+it("checks the guest error oracle without reading or consuming native flags", () => {
+  const {native,records} = audit();
+  const errors = [0x501,0x500];
+  auditGuestErrorFlags(errors,3);
+  expect(records).toEqual([]);expect(native.nativeReads).toBe(0);
+  auditGuestErrorFlags(errors,1);
+  expect(records).toHaveLength(1);expect(records[0]!.cause).toBe("guest-error-flags");
+  expect(errors).toEqual([0x501,0x500]);expect(native.nativeReads).toBe(0);
+});
+
+it("makes guest/host error divergence fatal in the fatal audit with context identity", () => {
+  const {records,faults,native} = audit("fatal");
+  expect(() => withGlAuditFrame({pid:7,sessionId:3}, () => auditGuestErrorFlags([0x500],2)))
+    .toThrow(/guest-error-flags/);
+  expect(faults).toHaveLength(1);
+  expect(records[0]).toMatchObject({pid:7,session:3,cause:"guest-error-flags"});
+  expect(native.nativeReads).toBe(0);
+});
 
 it("announces each instrumented context once, never as a divergence", () => {
   const records: GlAuditRecord[] = [];

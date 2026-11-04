@@ -6170,6 +6170,24 @@ whose request produced it, as described above. Reset reporting is
 consulted before any local answer and is still learned from the next
 request's `ENODEV`. A malformed or failed drain reply is reported as one
 `GL_INVALID_OPERATION` and never establishes local knowledge.
+
+The scalar validator also covers viewport/scissor dimensions, capabilities,
+depth/face/line arguments, blend factors/equations, stencil arguments,
+attribute enable/disable, active texture and pixel-store alignment. Their
+original records, including rejected arguments, still reach the independent
+host validator. Locally predicted flags live beside held flags in the guest;
+`OP_ERROR_OBSERVED` records their pending mask and the one flag already
+returned by `glGetError`. The host consumes that flag at this exact stream
+position, preserving unrelated flags and allowing a later command to record
+the same value again. It performs no native GL operation. The fatal audit
+compares the pending mask before consumption and rejects a divergence with
+process, context, batch and operation identity. Client-only guards remain a
+separate error source and cannot mask an incorrect command prediction.
+Reserving an observation can submit a full buffer; the guest rechecks the
+epoch before consuming any flag and uses the ordinary drain if it changed.
+This is still partial B1; the remaining draw/object validation, later driver
+stages and desktop acceptance measurements are not established by these
+scalar checks.
 Host object groups now own shareable name maps, shader/program metadata,
 and imported textures. Each binding initially
 has its own group. An internal construction operation can join unused

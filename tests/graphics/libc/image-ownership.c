@@ -24,6 +24,7 @@
 #include "wayland-native.h"
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
+#define GRAPHICS_ERROR_OBSERVED 0x001fu
 /* Existing bridge entry points; this fixture does not advertise GLES3. */
 void glGenVertexArrays(GLsizei, GLuint *);
 void glDeleteVertexArrays(GLsizei, const GLuint *);
@@ -1083,8 +1084,22 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(at + 4 + len <= end);
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
-            if (op != 0x001eu) only_client_errors = 0;
-            if (op == OP_ENABLE && words[0] == 0xdead) client_error_masks[fd-10] |= 1u;
+            if (op != OP_CLIENT_ERRORS && op != GRAPHICS_ERROR_OBSERVED) only_client_errors = 0;
+            if ((op == OP_ENABLE || op == OP_DISABLE) && words[0] == 0xdead) client_error_masks[fd-10] |= 1u;
+            if ((op == OP_ENABLE_VERTEX_ATTRIB_ARRAY || op == OP_DISABLE_VERTEX_ATTRIB_ARRAY) &&
+                words[0] >= (advertised_vertex_attribs ? advertised_vertex_attribs : 16u))
+                client_error_masks[fd-10] |= 2u;
+            if (op == OP_VIEWPORT || op == OP_SCISSOR) {
+                int32_t width, height;
+                memcpy(&width,commands+at+12,4); memcpy(&height,commands+at+16,4);
+                if (width < 0 || height < 0) client_error_masks[fd-10] |= 2u;
+            }
+            if (op == GRAPHICS_ERROR_OBSERVED) {
+                assert(len == 8 && !(words[0] & ~0x67u) && !(words[1] & ~words[0]));
+                assert(!words[1] || !(words[1] & (words[1]-1u)));
+                assert(words[0] == client_error_masks[fd-10]);
+                client_error_masks[fd-10] &= ~words[1];
+            }
             if (op == 0x001eu) {
                 assert(len == 4 && !(words[0] & ~0x67u));
                 client_error_masks[fd-10] |= words[0];
@@ -4569,10 +4584,13 @@ int main(int argc, char **argv) {
         glBindBuffer(0xdead,17);
         assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
         assert(error_queries == queries + 1 && submit_batches == submits + 1);
-        /* A queued command makes the next call ask, as the prefix of one
-         * compound request; the call after that is local again. */
+        /* A predicted rejection is returned locally, then consumed at its
+         * original stream position. An unknown command still needs a drain. */
         glEnable(0xdead);
         assert(glGetError() == GL_INVALID_ENUM);
+        assert(error_queries == queries + 1 && submit_batches == submits + 1);
+        glClear(GL_COLOR_BUFFER_BIT);
+        assert(glGetError() == GL_NO_ERROR);
         assert(error_queries == queries + 2 && compound_batches == compounds + 2 && submit_batches == submits + 2);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
         glFlush(); assert(submit_batches == submits + 2);
@@ -4609,14 +4627,54 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-drain-infallible"); return 0;
     }
+    if (!strcmp(argv[1], "error-predicted-ordered")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glEnable(0xdead); glViewport(0,0,-1,1);
+        assert(glGetError() == GL_INVALID_ENUM);
+        assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        glEnable(0xdead);
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-predicted-ordered"); return 0;
+    }
+    if (!strcmp(argv[1], "error-predicted-held")) {
+        /* VALUE was transferred into guest custody by the first drain.
+         * Repeating that flag before it is returned must not duplicate it. */
+        glEnable(0xdead); glViewport(0,0,-1,1);
+        assert(glGetError() == GL_INVALID_ENUM);
+        const unsigned queries = error_queries;
+        glViewport(0,0,-1,1);
+        assert(glGetError() == GL_INVALID_VALUE && glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-predicted-held"); return 0;
+    }
+    if (!strcmp(argv[1], "error-predicted-observation-wrap")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries, submits = submit_batches;
+        for (unsigned i = 0; i < (WPK_GL_CMDBUF_LEN-8u)/8u; ++i) glDepthMask(GL_TRUE);
+        assert(submit_batches == submits);
+        /* The observation itself needs space. A flush revokes the proof
+         * before that call may consume a flag or answer locally. */
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(submit_batches == submits + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-predicted-observation-wrap"); return 0;
+    }
     if (!strcmp(argv[1], "error-drain-infallible-unknown")) {
         assert(glGetError() == GL_NO_ERROR);
         const unsigned queries = error_queries;
         glClearColor(1, 0, 0, 1);
-        glEnable(0xdead);
+        glClear(GL_COLOR_BUFFER_BIT);
         glBlendColor(1, 0, 0, 1);
         /* A later infallible command cannot cover an unknown earlier op. */
-        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
         glClearColor(0, 0, 0, 1);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
@@ -4648,9 +4706,11 @@ int main(int argc, char **argv) {
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
         /* The fake host reports in flag order, so VALUE stays held... */
         glEnable(0xdead); glDrawArrays(GL_POINTS,0,-1);
+        glClear(GL_COLOR_BUFFER_BIT); /* Force host observation, not a local predicted toggle. */
         assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 2);
         /* ...and merges with the same flag recorded again by host and client. */
         glDrawArrays(GL_POINTS,0,-1); glEnable(0xdead);
+        glClear(GL_COLOR_BUFFER_BIT);
         assert(glGetError() == GL_INVALID_VALUE && error_queries == queries + 3);
         assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
         assert(error_queries == queries + 3);

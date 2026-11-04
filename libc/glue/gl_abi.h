@@ -139,6 +139,8 @@
 #define OP_DEPTH_RANGEF 0x001Cu
 #define OP_SAMPLE_COVERAGE 0x001Du
 #define OP_CLIENT_ERRORS 0x001Eu
+/* Pending host-predicted flag mask, then the one locally observed flag bit. */
+#define OP_ERROR_OBSERVED 0x001Fu
 #define OP_TEX_PARAMETERF 0x0208u
 #define OP_COMPRESSED_TEX_IMAGE_2D 0x0209u
 #define OP_COMPRESSED_TEX_SUB_IMAGE_2D 0x020Au

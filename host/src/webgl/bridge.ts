@@ -21,7 +21,7 @@ import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
  * ioctl-style device operation instead of hiding the failure in host code.
  */
 import { interruptUniformUpload, runUniformUpload, uniformUploadOp, validUniformUploadPayload } from "./uniform-upload.js";
-import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors } from "./errors.js";
+import { GL_CLIENT_ERROR_MASK, mergeClientGlErrors, consumeObservedGlError } from "./errors.js";
 import { acceptedUniformCount, type GlUniformTarget } from "./uniform-setters.js";
 import { imageTextureOperation, imageRenderbufferStorage, prepareCubeRespecification, prepareImageDraw, renderbufferNative } from "./image-storage.js";
 import { cubeGenerateMipmap, cubeImagesChanged, cubeSpecifyImage, cubeTexParameter, cubeUpdateImage, TEXTURE_2D_ARRAY } from "./cube-storage.js";
@@ -58,7 +58,7 @@ import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finaliz
 import { stateArgumentError } from "./state-validation.js";
 import { attachShaderError, bindAttribLocationError, renderbufferStorageError, subImageError, texImageSizeError,
   texParameterValueError, uploadBytes, uploadSizeError, vertexAttribIndexError } from "./es2-validation.js";
-import { glAuditOn, noteGlAuditOp, withGlAuditFrame } from "./native-audit.js";
+import { glAuditOn, noteGlAuditOp, withGlAuditFrame, auditGuestErrorFlags } from "./native-audit.js";
 import { combinedTextureUnits, knownVertexAttributeLimit, MAX_RENDERBUFFER_SIZE, MAX_TEXTURE_SIZE, MAX_VERTEX_ATTRIBS,
   maxCubeMapTextureSize, maxViewport, predictionLimit } from "./limits.js";
 import * as O from "./ops.js";
@@ -152,6 +152,11 @@ function decodeAndDispatchFrame(
     // Merge before repair/utility work without interrupting that transaction.
     if (op === O.OP_CLIENT_ERRORS) {
       mergeClientGlErrors(b,payload.getUint32(0,true));
+      return GL_SUBMIT_OK;
+    }
+    if (op === O.OP_ERROR_OBSERVED) {
+      if (glAuditOn) auditGuestErrorFlags(b.errors,payload.getUint32(0,true));
+      consumeObservedGlError(b,payload.getUint32(4,true));
       return GL_SUBMIT_OK;
     }
     if (interruptCompressedUpload(b)) return GL_SUBMIT_OK;
@@ -392,6 +397,12 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 
 function validPayload(op: number, v: DataView): boolean {
   if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
+  if (op === O.OP_ERROR_OBSERVED) {
+    if (!exact(v,8)) return false;
+    const expected = v.getUint32(0,true), consumed = v.getUint32(4,true);
+    return (expected & ~GL_CLIENT_ERROR_MASK) === 0 && (consumed & ~expected) === 0 &&
+      (consumed === 0 || (consumed & (consumed - 1)) === 0);
+  }
   if (uniformUploadOp(op)) return validUniformUploadPayload(op,v);
   switch (op) {
     case O.OP_DRAW_CLIENT_ARRAYS:
