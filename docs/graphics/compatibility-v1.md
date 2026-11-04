@@ -18,6 +18,11 @@ conditional-worker scheduling decisions below are historical. Implement,
 land, validate and measure each stage separately in A → B → C1 → C2 → C3
 order; the other maintainer decisions remain in force.
 
+On 2026-11-04 the maintainer approved drafting B2–B6 ahead with focused
+checks after each, then validating and measuring each frozen stage before
+landing it. Stage landing order, B1 ownership prerequisites, the full B
+preview before C1–C3 and all final acceptance gates remain required.
+
 Retain the existing pointer, typing, ScummVM and idle-worker ship bar.
 Additional targets are pointer input to display within one refresh interval
 p50 and two refresh intervals p95; desktop motion, dragging, resizing and
@@ -22757,3 +22762,41 @@ controls, not normal public-C/browser GLIO, full CTS, browser-memory or desktop
 performance acceptance. The C driver does not consume0x3a yet and enables no
 local selector. Finish its immutable generation/pending graph and ordered
 logical-current publication, then B2–B6 and C1–C3; no scope is deferred.
+
+## 2026-11-04 complete host inventory and EGL fixture correction (R159, R167, R168)
+
+The ordinary full host inventory R159 (`graphics-host-r159-1104-094333-b757`)
+finished FAILED at frozen source96e9dcd068 after1h35m:702 files,7505 tests,
+7470 passed,2 failed and33 skipped, including16 fully skipped files. The two
+failures are the EGL dma-buf smoke's stale assumptions and an upstream GObject
+signals null-function/signature trap after four passing cases. Missing supported
+fixtures behind skips require provisioning; none is waived. This checkpoint
+predates the latest source and does not validate the final combined tree.
+
+Its resource-isolated tail was run separately as R167
+(`graphics-host-isolated-r167-1104-112506-6730`): all three declared Ruby cases
+pass in three fresh processes. Filtered cases in those processes are not
+additional executed tests. This does not turn the failed ordinary run green.
+
+R168 corrects Kandelo's own EGL smoke fixture rather than a ported package.
+The fixture allocates its format/sentinel array from the advertised count,
+uses an unknown FourCC rather than now-supported RGB565, and checks successful
+CPU-image renderbuffer storage with exact dimensions. The ownership double
+supplies the fixture's declared matrix uniform; native-call assertions check
+sized RGBA8 image allocation and XRGB's opaque alpha while retaining exact
+unpack pixels, matrix upload and attachment assertions.
+
+Exact focused command:
+`scripts/dev-shell.sh bash .context/graphics-egl-formats-r168-r7/run.sh`
+from the root workspace. It compiles the candidate C fixture through the normal
+R35 SDK and executes the original full smoke assertions against that frozen
+checkpoint's normal kernel/host. Result:1 passed,0 failed,0 skipped in20.51s;
+private input hashes match before/after. The relocated test imports only move
+its fixture/helpers into that frozen checkout. Earlier runner and assertion
+failures are preserved separately under R168 directories; r5 accidentally
+repeated unchanged r4 and produced no diagnostic-test result. R6 records the
+native-call trace; r7 retains all corrected assertions. This focused Node
+result resolves the observed harness failure at R35, not final-current host,
+browser, conformance or performance acceptance. The GObject defect and the full
+final validation inventory remain open. No runtime or ABI version changes are
+introduced by this fixture correction.

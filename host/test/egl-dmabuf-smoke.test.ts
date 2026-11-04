@@ -14,6 +14,7 @@ afterAll(() => fixture?.cleanup());
 const GL_TEXTURE_2D = 0x0de1;
 const GL_UNSIGNED_BYTE = 0x1401;
 const GL_RGBA = 0x1908;
+const GL_RGBA8 = 0x8058;
 const GL_UNPACK_ROW_LENGTH = 0x0cf2;
 const GL_UNPACK_SKIP_ROWS = 0x0cf3;
 const GL_UNPACK_SKIP_PIXELS = 0x0cf4;
@@ -30,7 +31,7 @@ function makeFakeCanvas(gl: WebGL2RenderingContext) {
   } as unknown as OffscreenCanvas;
 }
 
-function rgbaFromBgrx(
+function rgbaFromBgra(
   rows: number,
   columns: number,
   byte: (row: number, column: number, channel: number) => number,
@@ -48,7 +49,9 @@ describe("EGL dma-buf import over the GLES stubs", () => {
   it(
     "validates dma-buf planes and forwards EGLImage and unpack uploads to WebGL",
     async () => {
-      const { calls: log, gl } = loggingGraphicsGl();
+      // Match the fixture's declared active interface. The ownership double
+      // does not compile GLSL or infer uniforms from shader source.
+      const { calls: log, gl } = loggingGraphicsGl([{ name: "foo", size: 1, type: 0x8b5b }]); // FLOAT_MAT3
       const result = await runCentralizedProgram({
         programPath: fixture.programPath,
         argv: ["egl_dmabuf_smoke"],
@@ -68,11 +71,12 @@ describe("EGL dma-buf import over the GLES stubs", () => {
         log.filter(([n]) => n === name).map(([, a]) => a);
 
       const imageAllocation = at("texImage2D", [
-        GL_TEXTURE_2D, 0, GL_RGBA, 3, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, null,
+        GL_TEXTURE_2D, 0, GL_RGBA8, 3, 2, 0, GL_RGBA, GL_UNSIGNED_BYTE, null,
       ]);
       const imageUpload = at("texSubImage2D", [
         GL_TEXTURE_2D, 0, 0, 0, 3, 2, GL_RGBA, GL_UNSIGNED_BYTE,
-        rgbaFromBgrx(2, 3, (y, x, c) => y * 16 + x * 4 + c + 1),
+        // XRGB padding is opaque alpha, independent of the plane byte.
+        rgbaFromBgra(2, 3, (y, x, c) => c === 3 ? 255 : y * 16 + x * 4 + c + 1),
       ]);
       expect(imageAllocation).toBeGreaterThan(-1);
       expect(imageUpload).toBeGreaterThan(imageAllocation);
@@ -82,7 +86,7 @@ describe("EGL dma-buf import over the GLES stubs", () => {
       ]);
       const unpackUpload = at("texSubImage2D", [
         GL_TEXTURE_2D, 0, 0, 0, 2, 2, GL_RGBA, GL_UNSIGNED_BYTE,
-        rgbaFromBgrx(2, 2, (y, x, c) => 0x40 + (y + 1) * 16 + (x + 1) * 4 + c),
+        rgbaFromBgra(2, 2, (y, x, c) => 0x40 + (y + 1) * 16 + (x + 1) * 4 + c),
       ]);
       expect(unpackAllocation).toBeGreaterThan(-1);
       expect(unpackUpload).toBeGreaterThan(unpackAllocation);
