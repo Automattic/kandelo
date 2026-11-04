@@ -21673,3 +21673,31 @@ released. Native cursor visibility, the full workload matrix, overhead, missed
 frames and all driver-stage acceptance remain open. Program 56, host 3, GL 17
 and fork 21 are unchanged. A normal build of the partial B1 candidate is
 running separately; it is not an available preview or a completed B stage.
+
+
+### Cage idle checks compare rendered pixels, not PNG bytes
+
+The Cage idle/typing gate now decodes its screenshots and compares dimensions
+and every RGBA pixel. PNG metadata and compression do not define the display
+contract. Failure evidence includes the changed-pixel count and bounding box;
+a dimension change remains a failure. The keyboard check still requires an
+actual rendered change and the original clean guest exit remains mandatory.
+
+A source-only browser control inserts a valid PNG text chunk, demonstrating
+that the previous byte-equality predicate rejects an unchanged image. The
+new predicate accepts that image, rejects a one-pixel change at its exact
+coordinates, rejects a dimension change and fails on malformed image data.
+The control and the full Cage rendering/idle/typing/exit case pass all six
+cases across Chromium, Firefox and WebKit with current host source and normal
+r14 images. Exact command is in `.context/graphics-cage-pixels-r67/run.sh`
+(41 seconds); the scoped helper typecheck passes. This is a fixture correction,
+not evidence that the earlier intermittent Firefox idle failure had identical
+pixels or that a platform redraw defect is resolved.
+
+The preceding Firefox diagnostic r30-r2 also reports zero changed pixels and
+byte-identical idle images in its passing run. Its original r30 attempt fails
+before guest coverage because the external test configuration starts Vite
+from the private configuration directory. The corrected private configuration
+selects the app working directory explicitly. Both attempts are retained.
+The full shipping desktop matrix and the original intermittent failure's
+cause remain open. No production runtime, ABI or performance claim changes.

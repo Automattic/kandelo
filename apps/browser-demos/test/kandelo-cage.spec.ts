@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { gotoMachine } from "./support/kandelo-machine";
 import { cageShellTextColumns } from "./support/cage-shell-frame";
+import { screenshotPixelDelta } from "./support/screenshot-pixels";
 
 /** Show the Internals syslog, the demo canvas, or the machine's terminal.
  *  Internals is an overlay toggle in the dock; showing another view means
@@ -123,11 +124,12 @@ test("Kandelo cage renders a wlterm session with wlroots' GLES2 renderer", async
   const frame = () => canvas.screenshot({ animations: "disabled" });
   const before = await frame();
   await page.waitForTimeout(1_000);
-  expect((await frame()).equals(before)).toBe(true);
+  const idleDelta = await screenshotPixelDelta(page, before, await frame());
+  expect(idleDelta, "wlterm's rendered pixels remain unchanged while idle").toMatchObject({ same: true, changed: 0 });
   await page.keyboard.type("echo cage-gles2-ok\n", { delay: 40 });
   await expect
     .poll(
-      async () => (await frame()).equals(before),
+      async () => (await screenshotPixelDelta(page, before, await frame())).same,
       { timeout: 60_000, intervals: [500, 1_000, 2_000] },
     )
     .toBe(false);
