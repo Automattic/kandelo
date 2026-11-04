@@ -6853,6 +6853,18 @@ after host context destruction using C-only cleanup, with no query to the
 dead session. The metadata mutex is not held across device IO, and cancellation
 stays disabled until receipt handling and C publication finish.
 
+Shared dispatch guards support same-thread nesting so a query, submission or
+lifecycle barrier can compose with its surrounding object operation. The
+recursive dispatch mutex keeps other threads excluded until the outer guard
+ends. Only the outer name scope reconciles an unpublished external candidate;
+an inner scope must not recursively reconcile that same candidate. Retirement
+scopes keep their separate rule of performing no current-context reconciliation.
+Each guard restores its incoming cancellation state after releasing its lock,
+so pending asynchronous cancellation cannot interrupt outer C publication.
+Ending a guard clears it; a later cleanup of that same guard has no effect.
+The separate metadata mutex remains free across device IO. This composition
+does not itself enable C journal publication or local program selection.
+
 Every reference increment has reserved capacity before native admission.
 Rejected or uncertain mutation receipts do not publish a new C reference;
 uncertainty revokes group knowledge and never authorizes replay. Link-status

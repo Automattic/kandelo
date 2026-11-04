@@ -23039,3 +23039,58 @@ remaining stage and final acceptance gate stay required. This is a raw SDK
 transport/lifecycle proof, not a full B preview or native-feel claim. The5693
 preview remains normal R30+051 partial B1. No new platform boundary, deferral
 or reduction in acceptance is introduced.
+
+## 2026-11-04 composable C shared-dispatch guards (R185–R187)
+
+Connecting C journal publication to queries, submissions and EGL retirement
+requires those operations to compose with a surrounding shared-object guard.
+The dispatch mutex now permits same-thread nesting. Other threads remain
+excluded through the outer operation's C publication. Only the outer name
+scope reconciles unpublished external candidates, avoiding recursive cleanup
+of the same candidate; retirement scopes still perform no current-context
+reconciliation. Each guard restores cancellation after its unlock, and clears
+itself so a second cleanup cannot unlock a surviving parent. The separate
+metadata mutex and device authority are unchanged. No wire, snapshot or version
+change is introduced; versions remain56/3/17/21.
+
+R185's three new nesting/cancellation controls each time out on source22234d1574,
+then pass after the change. A fourth control re-enters while an external
+candidate is being discarded and checks that cleanup does not recur. The native
+checks independently prove peer exclusion after an inner guard ends and that
+pending cancellation preserves the outer program-selection publication.
+
+| Run / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R185 `scripts/dev-shell.sh bash -c 'export KANDELO_GRAPHICS_LIBC_CASES="dispatch-nested dispatch-retirement encoder-records-nested-cancel"; bash tests/graphics/run-libc-unit.sh 22234d1574'` | FAIL: three30s timeouts | Existing nonrecursive source cannot compose the guarded operations; before.log retains the case failures/diagnostics |
+| R185 `graphics-driver-dispatch-focused-r185-1104-151525-07ed` | PASS6s | Four new C/UBSan nesting, peer-exclusion, cancellation and candidate-reconciliation cases |
+| R186 `graphics-driver-dispatch-build-r186-1104-151608-1309` | PASS2m07 | Normal SDK32/64 ensures, canonical `xtask bootstrap kernel`, image writer, ABI check against22234d1574 and evidence registry708; frozen inputs/products |
+| R187-r3 `graphics-driver-dispatch-final-r187-r3-1104-152035-7226`, port6008 | PASS4m27 | Native C/UBSan490, graphics2151 assertions/88files, Node10 and GPU192 on three engines, both widths and production/fatal modes; ABI/registry and frozen source/product hashes pass |
+
+Scripts and logs reside in the root workspace's named.context evidence
+directories; the build and final scripts run from graphics-integration-r2
+through `scripts/dev-shell.sh`. R187's first private wrapper fails before any
+test because its substitution corrupts an environment-variable name. R187-r2
+then finds an old fixture assumption: same-thread trylock was used to prove
+exclusion during retirement. It succeeds for a recursive mutex. The fixture
+now probes from an independent thread and still requires EBUSY, preserving the
+actual exclusion requirement. Those failures remain separate evidence; no
+runtime protection or test assertion is waived. Production products remain
+unchanged between the normal R186 producer and corrected R187-r3 fixture.
+
+The12 new actual-GPU cases nest name/lifecycle guards around ordinary checked
+program use, queries and rendering. All120 journal probe results record the
+actual routed kernel and guest hashes, with native live0 before whole-machine
+teardown. The canonical normal kernel SHA256 is
+`f6901dafca9f71c32e7f060b3dc2611004da9153e17cc5cd16b1208ba58e9613`.
+Node retains explicit no-renderer refusal; those Node cases are not native GLES.
+
+This is a C locking prerequisite, not connected cache/queue publication or a
+completed B1 stage. Program selection remains synchronous. B1 additionally
+requires its remaining exact hot-path validation families, including draw
+authority, plus its original correctness/conformance and round-trip measurement
+gates. No application performance, native-feel, complete CTS/desktop, final
+browser-memory/POSIX/benchmark or manual-browser acceptance is established here.
+Unchanged Rust/xtask/shader checkpoint evidence remains recorded in R184; full
+host type checking last retained its39 baseline errors. The5693 preview remains
+normal R30+051 partial B1. Full B2–B6, a complete B preview before C1–C3, and
+every original ship requirement remain required without reduction or deferral.

@@ -121,6 +121,18 @@ int main(int argc,char **argv) {
     GLuint program=glCreateProgram();assert(program);glAttachShader(program,vertex);glAttachShader(program,fragment);
     glBindAttribLocation(program,0,"p");glLinkProgram(program);GLint linked=0;
     glGetProgramiv(program,GL_LINK_STATUS,&linked);assert(linked);
+    if(!strcmp(argv[1],"driver-dispatch")) {
+        struct wpk_gles_context *encoder=_wpk_gl_current_encoder();
+        struct wpk_gl_name_scope outer=_wpk_gl_begin_name_scope(encoder);
+        assert(outer.group);
+        struct wpk_gl_name_scope inner=_wpk_gl_begin_encoder_retirement(encoder);
+        assert(inner.group==outer.group);
+        glUseProgram(program);glFinish();assert(glGetError()==GL_NO_ERROR);
+        _wpk_gl_end_name_scope(&inner);assert(!inner.group);
+        _wpk_gl_end_name_scope(&inner);
+        glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        _wpk_gl_end_name_scope(&outer);assert(!outer.group);
+    }
     GLint color=-1;
     if(uniform) {
         color=glGetUniformLocation(program,"color");assert(color>=0);glUseProgram(program);

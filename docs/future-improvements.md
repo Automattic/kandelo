@@ -1087,7 +1087,10 @@ selectors and retains recoverable receipts. Wire-only metadata abandoned at
 context/session retirement is reclaimed; accepted asynchronous jobs must gain
 separate slot custody before C1 admission. Next, integrate the C shared immutable
 journal, generation-token cache, caller-prefix submission and recovery before
-enabling local program selection. Audit the final
+enabling local program selection. Shared dispatch/lifecycle guards now nest on
+the owning thread while retaining peer exclusion and cancellation ordering;
+only the outer name scope reconciles unpublished external candidates. This
+prepares query/submission publication hooks, which remain unconnected. Audit the final
 context collector alongside the pending-work path. Reserve all
 fallible ownership/result metadata before local acceptance. Never query a
 destroyed session, flush a foreign mutable encoder or reuse the rejected

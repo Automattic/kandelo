@@ -76,6 +76,9 @@ struct wpk_program_record {
 };
 struct wpk_object_group {
     pthread_mutex_t mutex, dispatch_mutex;
+    /* Guarded by the recursive dispatch mutex, never read before acquisition.
+     * Only the outer operation reconciles shared unpublished candidates. */
+    unsigned dispatch_depth;
     unsigned references;
     GLuint next_name[WPK_NAMES_COUNT];
     uint64_t next_serial;
@@ -112,7 +115,17 @@ static struct wpk_object_group *object_group_create(void) {
         free(group);
         return NULL;
     }
-    if (pthread_mutex_init(&group->dispatch_mutex, NULL) != 0) {
+    pthread_mutexattr_t dispatch_attributes;
+    if (pthread_mutexattr_init(&dispatch_attributes) != 0) {
+        pthread_mutex_destroy(&group->mutex);
+        free(group);
+        return NULL;
+    }
+    int dispatch_error = pthread_mutexattr_settype(&dispatch_attributes, PTHREAD_MUTEX_RECURSIVE);
+    if (!dispatch_error)
+        dispatch_error = pthread_mutex_init(&group->dispatch_mutex, &dispatch_attributes);
+    pthread_mutexattr_destroy(&dispatch_attributes);
+    if (dispatch_error) {
         pthread_mutex_destroy(&group->mutex);
         free(group);
         return NULL;
@@ -410,22 +423,39 @@ static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint
 static GLuint create_program_record(uint32_t kind, GLenum type);
 static void mutate_program_record(uint32_t op, GLuint name, GLuint shader);
 static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap);
-struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
+static struct wpk_gl_name_scope begin_dispatch_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
     // Do not abandon native publication on cancellation; restore after unlock.
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &scope.cancel_state);
-    pthread_mutex_lock(&scope.group->dispatch_mutex);
-    if (scope.group->pending_external_texture &&
+    /* WHY: publication barriers on queries and submits must compose with a
+     * surrounding shared-name/lifecycle operation. Recursion permits only this
+     * thread's nesting; the outer scope still excludes every peer through C
+     * publication and keeps asynchronous cancellation disabled until unlock. */
+    if (pthread_mutex_lock(&scope.group->dispatch_mutex) != 0)
+        abort();
+    if (scope.group->dispatch_depth == UINT_MAX)
+        abort();
+    scope.group->dispatch_depth++;
+    return scope;
+}
+struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
+    struct wpk_gl_name_scope scope = begin_dispatch_scope(state);
+    if (scope.group->dispatch_depth == 1 && scope.group->pending_external_texture &&
         !_wpk_gl_discard_external_candidate(scope.group->pending_external_texture)) {
         _wpk_gl_end_name_scope(&scope);
-        scope.group = NULL;
     }
     return scope;
 }
 void _wpk_gl_end_name_scope(struct wpk_gl_name_scope *scope) {
     if (!scope->group)
         return;
-    pthread_mutex_unlock(&scope->group->dispatch_mutex);
+    struct wpk_object_group *group = scope->group;
+    scope->group = NULL;
+    if (!group->dispatch_depth)
+        abort();
+    group->dispatch_depth--;
+    if (pthread_mutex_unlock(&group->dispatch_mutex) != 0)
+        abort();
     pthread_setcancelstate(scope->cancel_state, NULL);
 }
 
@@ -2313,12 +2343,9 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
  * another context's stream. Release/exit flushed this context before its last
  * current reference ended; host destruction retires native object maps. */
 struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state) {
-    struct wpk_gl_name_scope scope={.group=state->objects};
-    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&scope.cancel_state);
     // Retirement needs no current encoder and must not reconcile a pending
     // texture by querying whichever unrelated context happens to be current.
-    pthread_mutex_lock(&scope.group->dispatch_mutex);
-    return scope;
+    return begin_dispatch_scope(state);
 }
 void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state) {
     // Called with the dispatch guard only AFTER acknowledged host retirement.

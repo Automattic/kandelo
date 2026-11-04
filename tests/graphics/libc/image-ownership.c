@@ -416,6 +416,7 @@ static pthread_cond_t overlap_cond = PTHREAD_COND_INITIALIZER;
 static int overlap_phase, pause_foreign_bind;
 static unsigned foreign_bind_calls;
 static unsigned raw_discard_failure, raw_discard_queries;
+static int raw_discard_nested;
 static uint32_t surface_limits[3] = {8192,8192,67108864};
 static unsigned surface_limit_queries, surface_limit_failure;
 /* Sample counts the fake renderer allocates exactly (bit n = n samples), and
@@ -496,6 +497,18 @@ static void protocol_trace(uint32_t kind, uint32_t op, const void *bytes, uint32
 static _Thread_local int record_dispatch_lock, observe_dispatch_lock;
 static pthread_mutex_t *dispatch_lock;
 static int pause_buffer_query;
+static void *probe_dispatch_from_peer(void *mutex) {
+    const int result=pthread_mutex_trylock(mutex);
+    if (!result) assert(!pthread_mutex_unlock(mutex));
+    return (void *)(intptr_t)result;
+}
+static void assert_dispatch_excludes_peer(void) {
+    assert(dispatch_lock);
+    pthread_t peer;void *result=NULL;
+    assert(!pthread_create(&peer,NULL,probe_dispatch_from_peer,dispatch_lock));
+    assert(!pthread_join(peer,&result));
+    assert((intptr_t)result==EBUSY);
+}
 int graphics_pthread_mutex_lock(pthread_mutex_t *mutex) {
     if (record_dispatch_lock) {
         record_dispatch_lock = 0;
@@ -1421,7 +1434,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         egl_trace(4, fd, binding, sizeof *binding);
     } else if (request == GLIO_DESTROY_CONTEXT) {
         if (observe_program_retirement) {
-            assert(dispatch_lock && pthread_mutex_trylock(dispatch_lock)==EBUSY);
+            // A recursive mutex permits the owning thread's trylock. Test
+            // the actual invariant: a peer remains excluded through retire.
+            assert_dispatch_excludes_peer();
         }
         if (slot->has_current) {
             errno = EBUSY;
@@ -1687,6 +1702,17 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             image_mutation_queries++;
             if (q->op == 0x27 && input[0] == 1 && input[1] == 0x60000000u) {
                 raw_discard_queries++;
+                if (raw_discard_nested) {
+                    // Re-enter while the unpublished candidate is still set.
+                    // Only the outer scope may reconcile it; a recursive
+                    // mutex alone would otherwise recurse into this query.
+                    assert(raw_discard_nested==1);
+                    raw_discard_nested=2;
+                    struct wpk_gl_name_scope nested=_wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+                    assert(nested.group);
+                    _wpk_gl_end_name_scope(&nested);
+                    raw_discard_nested=0;
+                }
                 if (raw_discard_failure) failure = raw_discard_failure;
             }
             int attachment_error = q->op == 0x28 && !(input[1] == 0x8ca8 ? read : draw);
@@ -3266,14 +3292,26 @@ static int egl_spec_case(EGLDisplay dpy, const char *name) {
     return 1;
 }
 
-struct cancel_program_selection {EGLDisplay display;EGLContext context;GLuint program;};
+struct cancel_program_selection {EGLDisplay display;EGLContext context;GLuint program;int nested;};
 static void *cancelled_program_selection(void *opaque) {
     struct cancel_program_selection *args=opaque;
     assert(eglMakeCurrent(args->display,EGL_NO_SURFACE,EGL_NO_SURFACE,args->context));
     int old_type;assert(pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS,&old_type)==0);
+    struct wpk_gl_name_scope outer=args->nested?
+        _wpk_gl_begin_name_scope(_wpk_gl_current_encoder()):(struct wpk_gl_name_scope){0};
     cancel_program_mutation=1;
     glUseProgram(args->program);
+    _wpk_gl_end_name_scope(&outer);
     return (void *)1;
+}
+
+static void *nested_dispatch_peer(void *encoder) {
+    // The outer scope must still exclude a peer after the inner scope ended.
+    observe_dispatch_lock=1;
+    struct wpk_gl_name_scope scope=_wpk_gl_begin_encoder_retirement(encoder);
+    assert(scope.group);
+    _wpk_gl_end_name_scope(&scope);
+    return NULL;
 }
 
 int main(int argc, char **argv) {
@@ -4697,6 +4735,37 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1],"dispatch-nested") || !strcmp(argv[1],"dispatch-retirement")) {
+        int before;
+        assert(!pthread_setcancelstate(PTHREAD_CANCEL_ENABLE,&before));
+        record_dispatch_lock=1;
+        struct wpk_gl_name_scope outer=!strcmp(argv[1],"dispatch-retirement")?
+            _wpk_gl_begin_encoder_retirement(_wpk_gl_current_encoder()):
+            _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+        assert(outer.group);
+        struct wpk_gl_name_scope inner=_wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+        assert(inner.group==outer.group);
+        const unsigned queries=program_mutation_queries;
+        glUseProgram(0);
+        assert(program_mutation_queries==queries+1);
+        _wpk_gl_end_name_scope(&inner);
+        assert(!inner.group);
+        // Ending an already ended guard cannot unlock its surviving parent.
+        _wpk_gl_end_name_scope(&inner);
+        int state;
+        assert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&state)&&state==PTHREAD_CANCEL_DISABLE);
+        pthread_t thread;
+        assert(!pthread_create(&thread,NULL,nested_dispatch_peer,_wpk_gl_current_encoder()));
+        overlap_wait(2);
+        _wpk_gl_end_name_scope(&outer);
+        assert(!pthread_join(thread,NULL));
+        assert(!pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&state)&&state==PTHREAD_CANCEL_ENABLE);
+        assert(!pthread_setcancelstate(before,NULL));
+        assert(glGetError()==GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        assert(allocation_count()==0);
+        printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strcmp(argv[1], "error-default-target-local") ||
         !strcmp(argv[1], "error-default-target-fallbacks")) {
         const int local = !strcmp(argv[1], "error-default-target-local");
@@ -5366,6 +5435,7 @@ int main(int argc, char **argv) {
             puts("PASS raw-discard-last"); return 0;
         }
         raw_discard_failure = 0;
+        if (!strcmp(argv[1],"raw-discard-nested")) raw_discard_nested=1;
         if (!strcmp(argv[1],"raw-discard-query")) {
             const unsigned before = raw_discard_queries;
             assert(!glIsTexture(reserved) && glGetError() == GL_NO_ERROR && raw_discard_queries == before+1);
@@ -5375,6 +5445,7 @@ int main(int argc, char **argv) {
         assert(glGetError() == GL_NO_ERROR);
         assert(!image_groups[group].raw_live);
         assert(raw_discard_queries == before + (strcmp(argv[1],"raw-discard-query") ? 1u : 0u));
+        assert(!raw_discard_nested);
         assert(foreign_bind_calls == 1);
         const unsigned reconciled = raw_discard_queries;
         glBindTexture(GL_TEXTURE_CUBE_MAP,reserved);
@@ -9975,10 +10046,10 @@ int main(int argc, char **argv) {
         if (!strcmp(mode,"reply-malloc"))malloc_before_failure=1;
         if (!strcmp(mode,"prefix")){glClearColor(.1f,.2f,.3f,1);fail_submit=1;}
         unsigned issued=program_mutation_queries;
-        if (!strcmp(mode,"cancel")) {
+        if (!strcmp(mode,"cancel") || !strcmp(mode,"nested-cancel")) {
             const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
             EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
-            struct cancel_program_selection args={dpy,peer,p};
+            struct cancel_program_selection args={dpy,peer,p,!strcmp(mode,"nested-cancel")};
             pthread_t thread;void *result=NULL;
             assert(pthread_create(&thread,NULL,cancelled_program_selection,&args)==0);
             assert(pthread_join(thread,&result)==0 && result==PTHREAD_CANCELED);

@@ -345,8 +345,10 @@ int      _wpk_gl_device_requests_fork_safe(void);
  * thread. Only libGLESv2 knows its layout; EGL owns creation and retirement. */
 struct wpk_gles_context;
 struct wpk_object_group;
-/* Private cross-archive guard; no device/wire layout is changed. A null group
- * means admission failed and begin already unlocked/restored cancellation. */
+/* Private cross-archive guard; no device/wire layout is changed. Same-thread
+ * guards nest, while the outer scope keeps peers excluded and cancellation
+ * disabled through publication. A null group means admission failed and begin
+ * already unlocked/restored cancellation. Ending a guard clears its group. */
 struct wpk_gl_name_scope {
     struct wpk_object_group *group;
     int cancel_state;
