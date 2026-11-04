@@ -22047,3 +22047,56 @@ binaries, Wasm programs/kernel/images and all evidence remain. Inventory and
 guards are in `.context/graphics-cache-clean-r110/`. Free space was about
 31 GiB afterward; concurrent builds/APFS prevent a causal reclaimed-byte
 claim from that free-space reading.
+
+
+**Normal partial-B1 build and archive checkpoints, 2026-11-04.** R16 at
+07321b7bc4 completes its normal full build (`run.sh-1104-004709-afe0`):
+submodules0, own tool0, SDK32/SDK64 both0, setup-all0 (10,610 seconds),
+standalone programs0 (2,584 seconds), ABI0 and freshness0, with unchanged
+tracked source. Original post-build admission `run.sh-1104-010049-e57e`
+passes all6 Cage/ScummVM cases across Chromium, Firefox and WebKit. The
+headless actual Foot/ScummVM cursor method `run.sh-1104-010409-02d0` passes
+all3 engine cases, with the private R17 host and exact normal R16 products.
+That method uses synthetic capture timestamps and does not establish visible
+WindowServer display latency or the native-feel bar. The already available
+port5693 prototype now has a completed full normal build behind its earlier
+published-product admission. It remains the earlier scalar/receipt increment,
+not latest source or complete Stage B.
+
+The separate immutable R20@e1c53127f4 SDK checkpoint R86-r2
+(`run.sh-1104-044045-3194`, port5940) passes own-tool rebuild, both normal SDK
+ensures, ABI, compilation,4 Node checks and24 actual GPU cases across the
+three engines. Candidate probes link the normally ensured archive with no
+explicit GLES object; before probes retain their source-object baselines.
+Array and vertex checks preserve actual pixels, conservative fallbacks and
+the fatal oracle. This validates the e1 array/vertex archive checkpoint, not
+the later reset-scope/custody source or final desktop performance. The first
+R86 attempt stopped before consumer assertions because its new checkout
+lacked the pinned musl submodule. Normal submodule initialization restored
+the recorded gitlinks; the failed log and both attempts remain. The profile
+and public-regression consumers stopped on that failed prerequisite without
+running their assertions, and have fresh output revisions waiting on R86-r2.
+
+**Request-attribution preparation and current-only trace, 2026-11-04.** The
+R111 attempt failed during collection because private R17 lacked the KMS
+contract helper. R112 creates a new frozen R25 copy, preserves every old
+instrumented source byte and adds the exact R15 helper plus its Rust-source
+hashes; its primary/cursor/test-only/failed-commit control and test listing
+pass. An intermediate invocation clone retained old shell output/source
+variables and repeated the collection failure; no workload data existed.
+The corrected R111-r3 (`run.sh-1104-043147-4b4a`, port5938) completes all4
+Chromium attribution workloads with normal R16 products and verified frozen
+inputs. In its ScummVM-pointer window,301 clear commands accompany5,418
+error queries,3,913 buffer-bind queries and903 image-bind queries. These
+counts identify remaining work; clear cycles are not measured display
+frames. This current-only, instrumented headless run overlapped build/SDK
+activity and supports no latency, FPS, improvement or native-feel claim.
+
+The corrected alternating profile is R78-r5
+(`run.sh-1104-044101-a086`, port5941), using frozen R25 and each normal
+R14/R16 producer in before1/after1/after2/before2 order on all3 engines.
+The frozen public sharing regression R97-r4
+(`run.sh-1104-044118-5454`, port5942) waits for that profile's terminal
+result. Superseded waiting queues retain their inputs and explicit cancellation
+records; no assertion was converted to a pass. Final matched benchmarks,
+physical latency controls and every ship-bar workload remain required.
