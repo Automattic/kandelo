@@ -21701,3 +21701,27 @@ from the private configuration directory. The corrected private configuration
 selects the app working directory explicitly. Both attempts are retained.
 The full shipping desktop matrix and the original intermittent failure's
 cause remain open. No production runtime, ABI or performance claim changes.
+
+
+### Historical raw browser evidence archived without changing verdicts
+
+To keep the normal partial-B1 build supplied with disk space, completed raw
+Playwright artifacts from the historical CTS runs are preserved in three
+lossless archives. The 394,309 entries occupied 13.26 GiB; their archives total
+258.8 MiB. Every member and regular-file SHA-256 is verified against the source
+before removal, with unchanged source inventories and empty open-file checks.
+The manifests and archive hashes are in `.context/graphics-evidence-archive-r68/`
+through `-r70/`. Primary conformance reports, QPA files and verdicts remain
+uncompressed and unchanged. This does not clear any recorded failure.
+
+The archived locations are r1-results `retired-playwright-output.tar.zst` and
+r2-results `{chromium,firefox}/gles2/<engine>/playwright.tar.zst`; each has an
+adjacent `ARCHIVED.md` restoration note. Exact scripts are `archive.py` in
+those evidence directories, run through `scripts/agent-job` in the dev shell.
+Canonical `./run.sh cache-gc --apply --max-age-days 1` separately removes one
+unreferenced generation and sidecars, about 1 MiB; the default dry run removes
+nothing. The zero-day attempt is rejected by the tool and removes nothing.
+Inactive owned generated `target` directories totaling 5.25 GiB are also
+retired after repeated empty open-file checks, without removing source or
+current build/preview inputs. Concurrent builds and APFS sharing mean those
+allocated-size totals are not an exact free-space delta.

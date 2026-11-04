@@ -173,10 +173,10 @@ Omit those two environment settings for all three engines and sixty ordinary
 inputs each. Native capture width uses `points`, the owned window's logical
 width, to avoid unnecessary thumbnail resampling. The recorder still enforces
 its 128–2048-pixel bound. It selects only the launched browser process family,
-requires an unlocked authorized console, and invalidates a timed run if the
-window loses foreground status, is not fully contained on one display, or the
-display blanks/suspends. The client
-also refuses reordered/duplicate frames and retains failure custody while
+requires an unlocked authorized console and checks at startup that the
+owned window fits fully on one display. Foreground and blank/suspended-frame
+guards remain active during timed observation. Keep the window fixed and
+visible throughout the run. The client also refuses reordered/duplicate frames and retains failure custody while
 input dispatch is in flight. Cleanup stops only its recorder and browsers.
 
 The headless replay is passing. Native attempts found and corrected capture
