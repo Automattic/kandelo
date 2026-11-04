@@ -6745,3 +6745,15 @@ targets are preallocated: authoritative zero binds need no rollback metadata,
 and GPU allocation reserves the color-storage write counter before publishing
 its target. Private exact and user framebuffer operations keep transactional
 allocation/error behavior; surfaceless clears retain ordinary host validation.
+
+
+Prepared program capture caches are scoped to a share group and retain an
+exact native executable independently of its public program name. They have
+no guest protocol yet. A pending owner clones that exact pin, including its
+execution custody, before cache ownership can end. The registry closes cached
+owners before retiring the group's last public context: otherwise the cache
+would retain the very execution/context whose retirement must close it.
+Pending clones remain independent and retire through the existing ledger.
+Closed caches retain unfinished cleanup custody after a fatal fault for an
+explicit containment retry. This does not enable guest-local program selection;
+that still needs the shared C object/current/pending model and link receipts.

@@ -1,3 +1,4 @@
+import { retireLastPublicProgramCaptures } from "./program-captures.js";
 import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
 import { cubeExtraTextures } from "./cube-storage.js";
 import type { GlObjectCapture } from "./object-capture.js";
@@ -423,6 +424,7 @@ export class GlContextRegistry {
   /** True when native resources were destroyed now; false when an accepted
    * execution retains them and retires them when it completes. */
   private retireContextBinding(b: GlBinding, replace: boolean): boolean {
+    retireLastPublicProgramCaptures(b,this.bindings.values());
     // Copied replies own no native execution; public context retirement revokes
     // their private transfer immediately, even while native work is retained.
     b.objectCapture = null; b.readbackCapture = null;

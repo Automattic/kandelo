@@ -22224,3 +22224,48 @@ regression and Cage/ScummVM admission is `run.sh-1104-052635-ecfc`, port5949.
 The separate shader harness replay is `run.sh-1104-052635-67ef`. Queued work
 is not successful validation, and the preview remains the earlier R16 until
 normal admission and explicit promotion complete.
+
+
+**Prepared B1 executable capture ownership, 2026-11-04.** The host has an
+internal, lazy per-share-group capture cache for immutable native program
+objects. Accepted work clones the exact captured executable instead of
+resolving a mutable public name; clone allocation errors belong to the
+requesting peer. Handles are scoped to the group and never reused there.
+No new command/query exposes the cache, and no guest program-selection fast
+path is enabled. Shared C shader/program/current/pending state and the checked
+link-generation protocol are still required before local selection errors.
+
+A cached pin owns an execution lease, so the registry releases cached owners
+before the last public context retires. This breaks the group/pin/execution
+reference cycle while separately retained pending owners finish normally.
+Partial retirement keeps the cache available to healthy peers. A cleanup
+fault is fatal and retains outstanding custody for an explicit containment
+retry; a closed cache must not silently skip an unfinished release. Deleted
+non-current public names still disappear while their private native object
+remains pinned. All teardown follows the existing generation/cleanup ledger.
+No per-draw/frame check is added for an unused capture cache; the new hook is
+at context retirement. ABI versions remain56/3/17/21 with no snapshot change.
+
+R121's new source controls expose four lifetime failures without the registry
+hook; its earlier prototype exposes both refusal/throw cleanup failures.
+After the fix all2,022 graphics assertions/85 files pass; registry703 passes.
+The first before run stopped at missing evidence classification, then the
+classified replay reached assertions; initial candidate fixture failures
+inspected a replacement group instead of the saved retired group. Both logs
+are retained. R122 (`run.sh-1104-053759-2bfa`, port5950) shows all9 native
+before controls fail and all9 after controls pass across the three engines.
+After adding explicit cleanup-fault retries, R122-r2
+(`run.sh-1104-054100-328e`, port5951) again passes all9 native controls:
+last-public cache retirement, peer/pending lifetime, deleted-name custody,
+exact RGBA51/153/204/255 draw and final native deletion. Frozen inputs and
+copied source identities are retained. Both baseline and candidate full
+TypeScript checks fail with39 identical diagnostics after exact worktree-path
+normalization; none is new, and no full TypeScript pass is claimed.
+
+This is prepared host ownership, not a working guest selection cache,
+application performance, native feel or final artifact acceptance. Node's
+renderer boundary is unchanged; source controls run under Node and real
+WebGL controls run on Chromium/Firefox/WebKit. The combined normal-product,
+full host, browser-memory, conformance and benchmark gates remain required.
+R30's ongoing normal build remains frozen at266a35ae5a and does not include
+this later host-only foundation.

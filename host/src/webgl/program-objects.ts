@@ -518,6 +518,24 @@ export class GlProgramQueryPin {
     }
   }
 
+  /** Accepted work clones the captured executable, never a mutable name.
+   * This remains valid after public context or program-name retirement. */
+  clone(errorOwner: CheckedGlOwner = this.binding): GlProgramQueryPin | null {
+    if(this.released || !this.execution) return null;
+    const b=this.binding, count=b.programQueryPins.get(this.program);
+    if(!count) nativeGlFault("Program executable pin lost before cloning");
+    if(count>=Number.MAX_SAFE_INTEGER) {recordGlError(errorOwner,0x505);return null;}
+    const retained=this.execution.clone();
+    if(!retained) {recordGlError(errorOwner,0x505);return null;}
+    try {
+      const pin=new GlProgramQueryPin(retained,b,this.name,this.program);
+      b.programQueryPins.set(this.program,count+1);
+      return pin;
+    } catch(error) { rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
+      retained.release();recordGlError(errorOwner,0x505);return null;
+    }
+  }
+
   release(): boolean {
     const b=this.binding, program=this.program;
     if(!this.released) {

@@ -1068,3 +1068,11 @@ zero-target bind/clear prefix. It does not complete the current-iteration
 shared program/executable model or the remaining object/draw error families.
 Those, B2–B6 and C1–C3 remain required in this iteration, with normal SDK
 artifacts, application measurements and the complete native-feel ship bar.
+
+
+The prepared host executable-capture cache now has explicit last-public-context
+retirement and independent pending clones. Complete the current-iteration C
+shader/program namespace, logical current/pending references and checked
+immutable-generation protocol before enabling local program-selection errors.
+Do not reuse the rejected name-only cache: its sharing race is still a required
+regression, and a native pin alone does not establish logical program ownership.
