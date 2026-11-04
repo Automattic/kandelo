@@ -631,6 +631,33 @@ describe("program link attempts and installed executables", () => {
     return peer;
   }
 
+  it.each([false,true])("separates deleted program names from private query custody (peer current: %s)", keepCurrent => {
+    const parent=setup(), peer=sharePeer(parent);
+    const lease=parent.registry.retainContextExecution(1,0,new GlMuxer(parent.gl))!;
+    const first=GlProgramQueryPin.acquire(lease,20)!, second=GlProgramQueryPin.acquire(lease,20)!;
+    if(keepCurrent)useProgramIfAccepted(peer,20);
+    useProgramIfAccepted(parent.b,0);parent.send(O.OP_DELETE_PROGRAM,[20]);
+    expect(parent.b.programs.has(20)).toBe(keepCurrent);
+    expect(peer.programs.has(20)).toBe(keepCurrent);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
+    expect(first.program).toBe(parent.original);
+    expect(first.release()).toBe(true);
+    expect(parent.native.deleted.has(parent.original)).toBe(false);
+    expect(second.release()).toBe(true);
+    if(keepCurrent) {
+      expect(parent.native.deleted.has(parent.original)).toBe(false);
+      expect(parent.query(O.QOP_GET_PROGRAMIV,[20,0x8b80])).toBe(1);
+      useProgramIfAccepted(peer,0);
+    } else {
+      // A private query retaining its executable cannot make a deleted public
+      // name usable by another context. The native object outlives the name.
+      useProgramIfAccepted(peer,20);expect(peer.errors).toEqual([0x501]);
+    }
+    expect(parent.b.programs.has(20)).toBe(false);
+    expect(parent.native.deletions.get(parent.original)).toBe(1);
+    expect(lease.release()).toBe(true);
+  });
+
   it("uses each logical context's accepted program rather than the physical installation", () => {
     const parent = setup(), peer = sharePeer(parent);
     // The physical WebGL context still has the parent's executable, while a

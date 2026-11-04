@@ -21988,3 +21988,28 @@ SDK); R99-r2 then exposed a fixture's null input pointer for a bad-length
 check, corrected to a live pointer in R99-r3. Initial R100 ABI checking
 likewise stopped at the missing scratch SDK; APFS-provisioned matching cores
 then supported normal update/check. No failed run was erased or waived.
+
+
+**B1 program-custody foundation, 2026-11-04.** A private executable query pin
+must not keep a deleted non-current GLES program name public. The prepared
+host custody mechanism now removes that name and its logical attachments
+while retaining the native program until its last private pin releases.
+Actual current peer contexts still retain delete-pending names. Final pin
+release preserves the existing exact uninstall/deletion and fatal-refusal
+policy. This is a foundation for B1's future retained selections, not an
+enabled guest cache or complete shared C program model. No ABI changes or
+performance claim accompany it.
+
+R107 before has one new failing control and 170 passes; the corrected source
+gate has 2,006 passes in84 files, including two new peer-current variants.
+R108 (`run.sh-1104-040727-c150`) independently executes real WebGL2 controls
+on Chromium, Firefox and WebKit: all three before unbound-name controls fail
+because the deleted public name remains visible; the three before current-peer
+controls pass; all six corrected controls pass. Each arm checks exact rendered
+pixels from the pinned executable, two independent pin releases, native lifetime,
+public IsProgram, and final native deletion. It uses a private standalone
+source server on5933 and no guest SDK/image; its limits are explicit. Frozen
+inputs match afterward. These controls do not replace final normal guest,
+browser-memory, desktop or conformance validation. R21's rejected program
+cache remains uncommitted and unsafe; R95's cross-thread failure still requires
+the shared guest namespace/current/pending and executable-generation model.

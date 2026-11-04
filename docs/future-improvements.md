@@ -1054,3 +1054,10 @@ Focused native C, host, Rust and browser device-double controls cover it;
 the final normal-built graphics, desktop and browser-memory runs still need
 the resulting archive/kernel/program/image set. This does not complete B1's
 shared program ownership or any B2–B6/C1–C3 stage.
+
+Prepared host program-query custody now releases a deleted non-current public
+name independently of its private executable pins; actual current peers still
+retain the name. This corrects the custody mechanism needed by B1, whose
+shared guest program/current/pending references and immutable generation
+receipts remain required. It does not make the rejected selection cache safe
+or establish an application performance benefit.

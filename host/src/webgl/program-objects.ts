@@ -316,12 +316,16 @@ export function finalizeShader(b: GlBinding, name: number): void {
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if ([...b.objects.members].some(member => name === currentProgramName(member)) || (program && b.programQueryPins.has(program))) return;
+  if ([...b.objects.members].some(member => name === currentProgramName(member))) return;
   finishProgramDeletion(b,name,program);
 }
 
 function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram | undefined): boolean {
-  if (program && b.gl && !deleteUnusedNativeProgram(b, program)) return false;
+  // WHY: private query custody retains the executable, not a public GLES
+  // name. Otherwise a peer can keep using a deleted, non-current program.
+  // Its last pin releases the unnamed native object through the same exact
+  // cleanup path; current contexts remain separate logical name owners.
+  if (program && !b.programQueryPins.has(program) && b.gl && !deleteUnusedNativeProgram(b, program)) return false;
   b.programDeletePending.delete(name);
   b.programs.delete(name);
   const shaders = b.programShaders.get(name);

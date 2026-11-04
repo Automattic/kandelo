@@ -5807,6 +5807,14 @@ use the restored renderer. Hosts without canvas events observe restoration
 when a new owner begins, so its next physical loss is detected too.
 Refused cleanup of that new generation remains
 fatal; a logical guest reset alone does not discard live native resources.
+Prepared program-query custody also separates public names from native
+executables. Deleting a program with no logical current context removes its
+name even while private query pins retain the native program. A sharing peer
+therefore cannot select or query that deleted name. A program still current
+in a peer remains delete-pending until that context unbinds it. The last pin
+releases an unnamed executable through the existing exact native cleanup,
+including fatal refused deletion. This custody foundation does not enable
+local guest program-selection validation or its deferred command path.
 The same leases cover borrowed GPU BO allocations through a native-only
 allocation receipt copied into the surface record. Public BO retirement
 revokes lookup while existing leases keep the old allocation usable. A
