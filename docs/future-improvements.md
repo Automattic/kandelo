@@ -1094,9 +1094,11 @@ context/session retirement is reclaimed; accepted asynchronous jobs must gain
 separate slot custody before C1 admission. The explicitly admitted C prototype
 now connects its immutable shared queue,32-entry generation-token cache,
 256 bounded slots, caller-prefix submission and retained-receipt recovery.
-Ordinary applications still use checked selection. Automatic admission requires
-closure of genuine partial/indeterminate publication, native-loss and uncertain
-prefix reconciliation, unknown error-drain reply custody and the complete
+Ordinary applications still use checked selection. Native OOM during connected
+C selector execution now has passing three-engine peer-isolation and explicit
+retirement controls, including an independent ownership sample before process
+exit. Automatic admission still requires closure of genuine partial/indeterminate
+publication, remaining native-loss and uncertain prefix reconciliation, unknown error-drain reply custody and the complete
 final-context ownership audit. Ordered transport-error markers now prevent an
 earlier retained flag from reappearing after successful publication recovery,
 while preserving unrelated flags and later repetitions. Shared dispatch/lifecycle guards now nest on

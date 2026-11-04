@@ -1,5 +1,5 @@
-/* Exercise the optional journal wire through the real SDK/kernel/host path.
- * This deliberately uses raw records; it does not enable the C UMD fast path. */
+/* Exercise journal transport and explicitly admitted C selection through the
+ * real SDK/kernel/host path. Raw-wire modes keep independent protocol checks. */
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 #include <assert.h>

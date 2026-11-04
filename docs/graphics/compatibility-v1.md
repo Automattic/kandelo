@@ -23221,3 +23221,50 @@ activation, alongside the final-context audit and remaining B1 hot paths and
 application measurements. No application performance/native-feel claim or new
 preview follows. All remaining B2–B6/C1–C3 and original final gates remain
 required without a new boundary, deferral or reduced acceptance criterion.
+
+## 2026-11-04 connected C-journal native OOM controls (R205–R206)
+
+New tracked SDK fixtures enable the C selection journal on two real contexts
+sharing a program. A peer thread leaves its selectors and INVALID_VALUE queued
+while the primary submits. The native probe injects one OUT_OF_MEMORY at
+useProgram(null), beneath the audit wrapper. The guilty context reports one
+reset; the peer retains its older error, renders exact expected pixels and can
+select its still-current delete-pending program again. Releasing the last name
+owner makes that public name invalid even while a private generation pin lives.
+
+Three variants retire the failed context before or after peer execution and
+exercise subsequent peer selection. A second handshake pauses the still-live
+guest after explicit context/display/thread cleanup, so the independent kernel
+observer must report zero native program owners before process exit can reap
+forgotten descriptors. All cases also check the counts after guest exit and
+before whole-machine teardown. These are native ownership counters, not proof
+of physical GPU memory reclamation. The probe captures no guest memory outside
+the disposable kernel realm.
+
+| Run / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R205 `graphics-driver-journal-loss-r205-1104-173209-3fd3`, port6022 | PASS8 / FAIL4 | Chromium32/64 production+fatal. The additional fixture first released the last current owner of a deleted name and incorrectly expected rebinding to succeed; that expectation is corrected to the actual name-lifetime contract |
+| R205-r2 `graphics-driver-journal-loss-r205-r2-1104-173458-da2d`, port6023 | PASS23s,12 cases | Valid same-name selection and rejection after final release; exact pixels, error ownership and context-only reset |
+| R206 `graphics-driver-journal-loss-final-r206-1104-173752-72cf`, port6024 | PASS1m14 | All36 cases, Node2, graphics2155/88, ABI/evidence709 and probe strict TypeScript; source/products frozen. Counts were sampled after guest exit |
+| R206-r2 `graphics-driver-journal-loss-final-r206-1104-173936-074e`, port6025 | FAIL36 | The stronger handshake read the newline left by its first stdin command. These samples do not prove pre-exit retirement; the framing is fixed without changing runtime behavior |
+| R206-r3 `graphics-driver-loss-retirement-r206-r3-1104-174245-4616`, port6026 | PASS1m10 | All36 cases on three engines/both widths/production+fatal; Node2, graphics2155/88, ABI/evidence709 and strict probe types. Explicit native ownership is zero before process exit; source/products frozen |
+
+The exact final command is
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-driver-journal-loss-final-r206-r3/run.sh`,
+started and collected with scripts/agent-job. Raw results record each engine,
+actual guest and kernel hashes, exactly one injected/observed native OOM and
+one attributed context reset. Fatal-audit rows identify the actual selector
+OP_USE_PROGRAM_JOURNAL/useProgram(null). Every case routes the normal canonical
+kernel `124b9ca970ca455b37f2a4a32f0708a616a269f7040db6201625d2f95b07c07f`.
+The frozen R202-r2 normal SDK/kernel/image-writer products are unchanged.
+There is no runtime implementation, wire, snapshot or version change here;
+the family remains56/3/17/21. Node proves explicit no-renderer refusal.
+
+Full host type checking still fails39 diagnostics, with its complete compiler
+stream identical to retained R203 after removing only dev-shell preambles.
+This is focused loss/lifetime evidence. Genuine partial publication, uncertain
+prefix/error-drain reply custody, the complete final-context audit and remaining
+B1 hot paths, conformance and application measurements remain required before
+automatic admission. Full final desktop/memory/POSIX/benchmark/manual gates
+remain open. The preview is unchanged and no performance/native-feel claim is
+made. No new boundary, deferral or reduced acceptance is introduced.

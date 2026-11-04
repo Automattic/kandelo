@@ -7020,6 +7020,13 @@ Only the failure path scans records; unused encoders gain no failure-state
 lookup per command. The optional Program snapshot section changes the contract
 digest while keeping versions56/3/17/21, requiring normal matching products.
 
+Connected C-journal controls now inject native OOM during selector execution
+while a healthy thread retains an unsubmitted prefix and an older error flag.
+They check context-only reset, subsequent peer pixels and selections, public
+name retirement, and native program ownership before process exit can reap
+forgotten descriptors. This covers those explicit scenarios, rather than the
+complete publication-loss and final-context audit.
+
 Automatic application admission is still off. Genuine partial/indeterminate
 publication, native-loss and failed-prefix reconciliation, unknown error-drain
 reply custody, and the complete final-context audit remain required before
