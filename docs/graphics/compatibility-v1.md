@@ -22838,3 +22838,18 @@ not this new C source. B1 is still partial, B2–B6/C1–C3 and the full native-
 ship bar remain required. ABI stays56/3/17/21; the snapshot is unchanged from
 the already additive0x3a protocol. No package patch or new platform boundary
 is introduced.
+
+R171 (`graphics-program-capture-loss-r171-1104-121139-fcd6`, port5992) then
+repeats the native-OOM matrix with the C captures active at3dca573b12. Exact
+command from root workspace:
+`scripts/dev-shell.sh bash .context/graphics-program-capture-loss-r171/run.sh`.
+Normal SDK compile/fork instrumentation/stamping passes;2 Node explicit-refusal
+checks and60 actual-GPU browser cases pass in1m07s across all three engines,
+both widths, production/fatal, direct/compound creation/mutation and readback.
+Each browser case observes exactly one injected native error, one attributed
+OUT_OF_MEMORY reset, the healthy shared peer's exact pixels and zero remaining
+native programs before machine teardown. The routed private kernel clone and
+canonical kernel both hash to
+`a8d2e3656f903b24f3581cff987d5a0213d6f00ae83e244e9ade75cb215349c4`;
+source and product hashes remain unchanged. This focused C-capture/loss evidence
+does not replace the final complete browser-memory or conformance runs.
