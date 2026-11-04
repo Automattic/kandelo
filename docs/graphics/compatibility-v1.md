@@ -22682,3 +22682,20 @@ App respond successfully. Admission and identity records are retained under
 from validation. This is still partial B1, excludes the later7d7 C graph and
 all C stages, and makes no performance/native-feel claim. A coherent normal
 full-B preview and all final combined-tree gates remain required.
+
+
+**Manual admitted-preview check, 2026-11-04.** Installed Chrome156.0.8078.81
+(arm64,V8 15.6.75.27) boots Cage from the normal gallery on5693. Internals shows
+its live log and WebGL2-GL modeset state. The wlterm canvas renders the typed
+`echo KANDELO_MANUAL_CHECK` command and exact output with readable glyphs.
+After `exit`, Terminal shows `WLTERM_EXIT code=0` and a prompt; Syslog reports
+the Cage command exited, and Procs contains only init/-bash, with no cage or
+wlterm. Automatic handoff and worker reclamation were not separately proven.
+Screenshots and observed states are under `.context/graphics-preview-r30-r163/`.
+This covers the admitted266a+051 preview, not the later7d7/final combined tree.
+
+The terminal also reports libinput expiry142ms and156ms late while R159's full
+ordinary host inventory is active. Those warnings remain evidence for latency
+investigation, not a distribution or an attributed outside-runtime defect.
+No performance/native-feel bar is established by this manual functional check.
+Only the owned browser tab was closed; the preview server remains available.
