@@ -22800,3 +22800,41 @@ result resolves the observed harness failure at R35, not final-current host,
 browser, conformance or performance acceptance. The GObject defect and the full
 final validation inventory remain open. No runtime or ABI version changes are
 introduced by this fixture correction.
+
+
+## 2026-11-04 C executable capture and serialized retirement (R169–R170)
+
+The C driver now consumes the existing optional capture/release query after
+acknowledged program link/use. A context owns at most two known descriptors
+(selected and prepared), indexed by shared C link epoch and an opaque native
+capture handle. Failed linking leaves the older selected executable intact.
+Peer contexts acquire their own handles; private captures do not retain public
+program names. Selection itself still uses the ordinary checked mutation.
+
+Request/reply/compound storage is reserved in the encoder before publication.
+No C reply allocation follows acknowledged mutation. Failed or malformed capture
+receipts stop further acquisition; descriptors are not discarded on uncertain
+release, and lost acquisition receipts remain owned by the host context index.
+Acknowledged context destruction closes that index. EGL holds dispatch across
+host destruction and C program/capture retirement; EBUSY preserves all owners.
+No release query is sent to a dead session or through an unrelated current peer.
+IO failure atomically revokes shared program-mirror knowledge. This does not
+establish pending-job custody or local program acceptance: the independently
+audited ordered logical-current journal and reserved pending owners are next.
+
+Exact commands and evidence (all from the integration checkout unless noted):
+
+| Command/run | Result | Scope |
+| --- | --- | --- |
+| `scripts/dev-shell.sh bash tests/graphics/run-libc-unit.sh` (R169 full-native-r2.log) | 486 passed,0 failed, including22 new controls | Native C/UBSan device double: bounded96-link churn, old executable after failed link, peer retirement, busy retirement, reset revocation, no post-ACK malloc, malformed/lost acquire/release and final reclamation |
+| Same runner at76539d9 with only the22 new controls | All22 fail before the change | Missing C capture consumption is observable; evidence retained in before-native.log |
+| R169 `graphics-program-capture-client-r169-1104-120147-b1b4` via `scripts/dev-shell.sh bash .context/graphics-program-capture-client-r169/build.sh` from root workspace | PASS2m19: normal SDK32/64 ensures, `xtask bootstrap kernel`, image writer, ABI and registry705 | Canonical SourceOnly kernel is now normally rebuilt for0x3a. Source hashes and patch unchanged; no raw-kernel substitution |
+| R170 `graphics-program-capture-client-gpu-r170-1104-120436-1517` via `scripts/dev-shell.sh bash .context/graphics-program-capture-client-gpu-r170/run.sh` from root workspace; port5991 | PASS2m03: graphics2083 assertions/86files;8 Node;72 actual-GPU browser cases | Standard compileSdkFixture, all3 engines, both guest widths, production/fatal; creation, peer deletion, failed/successful peer relink and default/surfaceless targets. Source/product hashes unchanged |
+
+The native and GPU results are focused ownership checkpoints, not full CTS,
+desktop, browser-memory, POSIX or benchmark acceptance. No application
+performance measurement was made. The normal5693 preview remains R30+051,
+not this new C source. B1 is still partial, B2–B6/C1–C3 and the full native-feel
+ship bar remain required. ABI stays56/3/17/21; the snapshot is unchanged from
+the already additive0x3a protocol. No package patch or new platform boundary
+is introduced.

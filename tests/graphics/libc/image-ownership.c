@@ -250,7 +250,7 @@ struct device_slot {
     } texture_targets[128];
 };
 static struct device_slot device_slots[8];
-struct native_program { uint32_t name; int live, linked, deleted; };
+struct native_program { uint32_t name, generation; int live, linked, deleted; };
 static struct {
     struct {
         uint32_t kind, name, source, revision;
@@ -272,6 +272,15 @@ static unsigned creation_queries;
 static int creation_failure;
 static unsigned program_mutation_queries;
 static int program_mutation_failure;
+static unsigned program_capture_queries[4], next_program_capture;
+static unsigned program_capture_action, program_capture_failure, retired_program_captures;
+static unsigned observe_program_retirement;
+static struct { uint32_t handle, name, generation; int fd, live; } program_captures[64];
+static unsigned live_program_captures(void) {
+    unsigned count=0;
+    for (unsigned i=0;i<64;i++) count+=program_captures[i].live!=0;
+    return count;
+}
 static _Thread_local int cancel_program_mutation;
 
 static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
@@ -299,6 +308,7 @@ static void native_program_command(struct device_slot *slot, uint16_t op, uint32
     } else if (op == OP_LINK_PROGRAM) {
         assert(program);
         program->linked = !program_link_failure;
+        program->generation++;
     } else if (op == OP_USE_PROGRAM) {
         if (name && (!program || !program->linked)) {
             if (!query_gl_error) query_gl_error = program ? GL_INVALID_OPERATION : GL_INVALID_VALUE;
@@ -1410,12 +1420,18 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         }
         egl_trace(4, fd, binding, sizeof *binding);
     } else if (request == GLIO_DESTROY_CONTEXT) {
+        if (observe_program_retirement) {
+            assert(dispatch_lock && pthread_mutex_trylock(dispatch_lock)==EBUSY);
+        }
         if (slot->has_current) {
             errno = EBUSY;
             return -1;
         }
         egl_trace(6, fd, &slot->context, 4);
         slot->context = 0;
+        for (unsigned i=0;i<64;i++) if(program_captures[i].live && program_captures[i].fd==fd) {
+            program_captures[i].live=0;retired_program_captures++;
+        }
         int group_live = 0;
         for (unsigned i = 0; i < 8; i++)
             group_live |= device_slots[i].context && device_slots[i].image_group == slot->image_group;
@@ -1465,6 +1481,42 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             reply[1]=creation_failure==1 ? 0 : input[2]+(creation_failure==5);
             reply[2]=creation_failure==4 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
             if (creation_failure==1) query_gl_error=GL_OUT_OF_MEMORY;
+            return 0;
+        }
+        if (q->op == 0x3a) {
+            assert(q->in_buf_len==8 && q->out_buf_len==16 && !q->reserved);
+            const uint32_t *input=allocation_for(q->in_buf_ptr,8);
+            uint32_t *reply=allocation_for(q->out_buf_ptr,16);
+            unsigned action=input[0];assert(action==1 || action==3);
+            unsigned failure=action==program_capture_action?program_capture_failure:0;
+            if(failure)program_capture_failure=0;
+            program_capture_queries[action]++;
+            assert(slot->context && slot->has_current && pthread_equal(slot->current_thread,pthread_self()));
+            if(failure==1) {errno=EIO;return -1;}
+            reply[0]=0;reply[1]=1;reply[2]=0;reply[3]=WPK_GL_QUERY_REPLY_MAGIC;
+            if(failure==2) {
+                reply[0]=1;reply[1]=0;query_gl_error=GL_OUT_OF_MEMORY;return 0;
+            }
+            if(action==1) {
+                struct native_program *program=native_program(slot,input[1]);
+                if(program_model)assert(program);
+                if(program_model && !program->linked) {reply[1]=0;return 0;}
+                unsigned i=0;while(i<64 && program_captures[i].live)i++;assert(i<64);
+                program_captures[i].handle=++next_program_capture;
+                program_captures[i].name=input[1];
+                program_captures[i].generation=program?program->generation:0;
+                program_captures[i].fd=fd;program_captures[i].live=1;
+                reply[2]=program_captures[i].handle;
+            } else {
+                unsigned i=0;while(i<64 && (!program_captures[i].live || program_captures[i].handle!=input[1]))i++;
+                assert(i<64 && program_captures[i].fd==fd);
+                program_captures[i].live=0;
+            }
+            if(failure==3) {errno=EIO;return -1;}
+            if(failure==4)reply[3]=0;
+            if(failure==5)reply[0]=9;
+            if(failure==6) {reply[0]=1;reply[1]=1;}
+            if(failure==7)reply[2]=action==1?0:17;
             return 0;
         }
         if (q->op == 0x39) {
@@ -9806,6 +9858,94 @@ int main(int argc, char **argv) {
         assert(allocation_count()==live);
         assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
         assert(allocation_count()==0);
+        printf("PASS %s\n",argv[1]);return 0;
+    }
+    if (!strncmp(argv[1],"encoder-captures-",17)) {
+        const char *mode=argv[1]+17;program_model=1;
+        record_dispatch_lock=1;
+        GLuint p=glCreateProgram(),q=glCreateProgram();assert(p && q && dispatch_lock);
+        if(!strcmp(mode,"failed-link"))program_link_failure=1;
+        unsigned before=program_capture_queries[1];
+        if(!strncmp(mode,"acquire-",8)) {
+            program_capture_action=1;program_capture_failure=(unsigned)strtoul(mode+8,NULL,10);
+        }
+        glLinkProgram(p);
+        assert(program_capture_queries[1]==before+1);
+        if(!strncmp(mode,"acquire-",8)) {
+            unsigned failure=(unsigned)strtoul(mode+8,NULL,10);
+            assert(glGetError()==(failure==2?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
+            assert(glGetError()==GL_NO_ERROR);
+            unsigned issued=program_capture_queries[1];
+            glUseProgram(p);glLinkProgram(q);glUseProgram(q);glUseProgram(0);
+            assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==issued);
+            assert(live_program_captures()<2);
+        } else if(!strcmp(mode,"failed-link")) {
+            assert(glGetError()==GL_NO_ERROR && live_program_captures()==0);
+            glUseProgram(p);assert(glGetError()==GL_INVALID_OPERATION);
+            program_link_failure=0;
+        } else {
+            assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+            unsigned acquired=program_capture_queries[1];
+            glUseProgram(p);glUseProgram(p);
+            assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==acquired);
+            if(!strcmp(mode,"current-failed-link")) {
+                program_link_failure=1;glLinkProgram(p);
+                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+                program_link_failure=0;
+            } else if(!strncmp(mode,"release-",8)) {
+                glLinkProgram(q);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
+                program_capture_action=3;program_capture_failure=(unsigned)strtoul(mode+8,NULL,10);
+                glUseProgram(q);
+                unsigned failure=(unsigned)strtoul(mode+8,NULL,10);
+                assert(glGetError()==(failure==2?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
+                assert(glGetError()==GL_NO_ERROR);
+                unsigned issued=program_capture_queries[1];
+                glLinkProgram(p);glUseProgram(p);glUseProgram(0);
+                assert(glGetError()==GL_NO_ERROR && program_capture_queries[1]==issued);
+            } else if(!strcmp(mode,"relink")) {
+                glLinkProgram(p);
+                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+                assert(program_capture_queries[1]==acquired+1 && program_capture_queries[3]==1);
+            } else if(!strcmp(mode,"bounded")) {
+                for(unsigned i=0;i<96;i++) {
+                    glLinkProgram(i%2?p:q);glUseProgram(i%2?p:q);
+                    assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+                }
+            } else if(!strcmp(mode,"peer")) {
+                EGLContext peer=eglCreateContext(dpy,(EGLConfig)1,ctx,attrs);assert(peer);
+                assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
+                glUseProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
+                glLinkProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==2);
+                unsigned issued=program_capture_queries[3];observe_program_retirement=1;
+                assert(eglDestroyContext(dpy,ctx));
+                assert(live_program_captures()==1 && program_capture_queries[3]==issued);
+                assert(eglGetCurrentContext()==peer);
+                glUseProgram(p);assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+                ctx=peer;
+            } else if(!strcmp(mode,"revoke")) {
+                glClearColor(.2f,.3f,.4f,1);fail_submit=1;glFlush();fail_submit=0;
+                assert(glGetError()==GL_INVALID_OPERATION && glGetError()==GL_NO_ERROR);
+                unsigned issued=program_capture_queries[1];
+                glLinkProgram(q);glUseProgram(q);assert(glGetError()==GL_NO_ERROR);
+                assert(program_capture_queries[1]==issued && live_program_captures()==1);
+            } else if(!strcmp(mode,"malloc")) {
+                /* Checked mutation's two request/reply allocations succeed;
+                 * every later malloc fails. Capture storage was reserved with
+                 * the context, so publication cannot lose its receiver. */
+                malloc_before_failure=2;glLinkProgram(p);malloc_before_failure=-1;
+                assert(glGetError()==GL_NO_ERROR && live_program_captures()==1);
+            }
+        }
+        observe_program_retirement=1;
+        glDeleteProgram(p);glDeleteProgram(q);assert(glGetError()==GL_NO_ERROR);
+        unsigned acquire_queries=program_capture_queries[1], release_queries=program_capture_queries[3];
+        unsigned retained=live_program_captures();
+        assert(eglDestroyContext(dpy,ctx));
+        // EBUSY retirement must keep every C/native receiver until unbinding.
+        assert(live_program_captures()==retained);
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        assert(program_capture_queries[1]==acquire_queries && program_capture_queries[3]==release_queries);
+        assert(live_program_captures()==0 && allocation_count()==0);
         printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strncmp(argv[1],"encoder-records-",16)) {

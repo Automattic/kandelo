@@ -371,6 +371,11 @@ uint32_t _wpk_gl_reserve_names(struct wpk_gles_context *state, uint32_t name_spa
 /* Adopt an acknowledged public WPK texture name; hidden image carriers are
  * not public objects. Returns a GL error enum, preserving first error. */
 uint32_t _wpk_gl_register_external_texture(struct wpk_gles_context *state, uint32_t name);
+/* EGL holds its lifetime guard, then this dispatch guard, across host retire
+ * and C name/capture retirement. No cleanup query may follow host destruction.
+ * A refused host retirement leaves every C owner intact. */
+struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state);
+void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state);
 void _wpk_gl_destroy_encoder(struct wpk_gles_context *state);
 
 /* An EGLImage made by eglCreateImageKHR from dma-buf planes. A

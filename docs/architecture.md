@@ -6856,8 +6856,39 @@ stays disabled until receipt handling and C publication finish.
 Every reference increment has reserved capacity before native admission.
 Rejected or uncertain mutation receipts do not publish a new C reference;
 uncertainty revokes group knowledge and never authorizes replay. Link-status
-observations are serialized with mutations, but these named-object records do
-not yet own immutable executable generations or pending batches. Selection
-remains synchronous. Complete native-generation custody and ordered logical
-current publication before enabling local selection/error proofs; this is an
-intermediate B1 ownership implementation, not native-feel acceptance.
+observations are serialized with mutations. The context-owned cold capture
+layer below now retains native generations separately from these names;
+pending-batch custody and ordered logical-current publication remain required.
+Selection stays synchronous. This is intermediate B1 ownership implementation,
+not native-feel acceptance.
+
+
+The C driver consumes the optional executable-capture receipt after acknowledged
+link/use operations. Each context has two bounded descriptors: its selected
+native executable and one prepared link. Shared link epochs distinguish C
+observations; the opaque host capture handle owns the actual immutable native
+executable. A failed link reports no fresh capture and preserves the older
+selected executable. A peer acquires its own context-owned handle and never
+reads or flushes another encoder. These descriptors do not keep public names
+alive and do not yet own queued selections.
+
+Capture request, reply and compound-packet storage are embedded in the encoder
+before its context is published. Cold capture publication and release therefore
+need no later C heap allocation. Successful release clears its descriptor only
+after the exact receipt. A rejected, malformed or uncertain capture operation
+stops further acquisition in that context; known handles and any host owner
+whose receipt was lost remain covered by acknowledged native-context retirement.
+Transport failure also atomically revokes shared program-mirror knowledge.
+None of this metadata authorizes guest-local program acceptance or a retry of
+an uncertain mutation. The ordinary checked selection remains authoritative.
+
+EGL holds its lifetime guard and the share group's dispatch guard across
+GLIO_DESTROY_CONTEXT and C program/capture retirement. EBUSY/refusal preserves
+all C owners. On acknowledgement the host has already closed its context-owned
+capture index; C then drops descriptors and current-name references without
+querying the destroyed session. Creation-failure encoders have no host captures.
+Other object/image cleanup follows after releasing dispatch serialization.
+This is cold program/context work, with no added draw/frame maintenance; its
+application performance and the full final memory/conformance gates remain
+unmeasured. The next layer must reserve independent pending-work/result custody
+and publish ordered logical-current history before enabling local selection.

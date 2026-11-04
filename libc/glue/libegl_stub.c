@@ -1869,12 +1869,16 @@ static void retire_pending_resources_locked(struct egl_generation *g) {
             context = &p->next;
             continue;
         }
+        struct wpk_gl_name_scope retirement=_wpk_gl_begin_encoder_retirement(p->encoder);
         if (egl_device_ioctl(p->session->fd, GLIO_DESTROY_CONTEXT, NULL) != 0) {
+            _wpk_gl_end_name_scope(&retirement);
             context = &p->next;
             continue;
         }
         if (p->owner)
             detach_binding(p->owner);
+        _wpk_gl_retire_encoder_programs(p->encoder);
+        _wpk_gl_end_name_scope(&retirement);
         *context = p->next;
         _wpk_gl_destroy_encoder(p->encoder);
         p->session->context_used = 0;

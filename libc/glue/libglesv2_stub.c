@@ -23,6 +23,7 @@
 #include <GLES2/gl2ext.h>
 #include <errno.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <limits.h>
 #include <pthread.h>
@@ -70,6 +71,7 @@ struct wpk_program_record {
     uint32_t kind, references;
     GLenum shader_type;
     int delete_pending, link_known, linked;
+    uint64_t link_epoch;
     struct wpk_program_record *shaders[2], *next;
 };
 struct wpk_object_group {
@@ -79,7 +81,7 @@ struct wpk_object_group {
     uint64_t next_serial;
     struct wpk_object_name *names, *retired_objects;
     struct wpk_program_record *program_records;
-    int program_records_known;
+    _Atomic int program_records_known;
     /* Dispatch serialization admits at most one unpublished raw candidate.
      * Reserve its cleanup slot with the group, before any native allocation. */
     GLuint pending_external_texture;
@@ -295,12 +297,28 @@ struct wpk_array_capture {
     int active;
 };
 
+/* Handles own native executable storage, never public names. Two explicit
+ * slots bound the cold cache: the installed generation and one prepared link.
+ * A possibly published unknown handle stays in the host context's retirement
+ * index; acquisition stops until that context retires, never blindly retries. */
+struct wpk_program_capture {
+    GLuint name;
+    uint32_t handle;
+    uint64_t link_epoch;
+};
+
 /* Client execution state belongs to the EGL context and follows it across
  * thread transfers. Shared object groups are a separate ownership layer. */
 struct wpk_gles_context {
     struct wpk_object_group *objects;
     struct wpk_array_capture array_capture;
     struct wpk_program_record *current_program;
+    struct wpk_program_capture selected_program_capture, prepared_program_capture;
+    int program_captures_uncertain;
+    /* Embedded owned transport storage: publication/cleanup never allocates C
+     * reply metadata after a program mutation was acknowledged. */
+    uint32_t program_capture_request[3], program_capture_reply[4];
+    struct gl_submit_query_info program_capture_packet;
     uint8_t *cursor;
     /* Client upload layout is gathered into command records exactly once. */
     GLint unpack_alignment;
@@ -472,6 +490,7 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
  * Error flags and later array binds cannot repair those separate slots. */
 static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
     state->array_binding_known = 0;
+    atomic_store_explicit(&state->objects->program_records_known, 0, memory_order_relaxed);
     state->default_framebuffer_only = 0;
     for (uint32_t i=0; i<state->default_vertex_array.attrib_count; i++)
         state->default_vertex_array.attribs[i].host_row_known = 0;
@@ -2001,6 +2020,77 @@ static int checked_program_mutation(uint32_t op, GLuint name, GLuint shader) {
     raise_client_error(GL_INVALID_OPERATION);
     return -1;
 }
+/* Called under dispatch serialization, with current live-session authority.
+ * Canonical rejection owns its host error; unknown completion cannot authorize
+ * retry or claim that an acquired handle was never published. Native context
+ * retirement closes even an owner whose receipt was lost. */
+static int program_capture_query(struct wpk_gles_context *state, uint32_t action,
+                                uint32_t value, struct wpk_program_capture *capture) {
+    uint8_t *base=_wpk_gl_cmdbuf_base();
+    int fd=_wpk_gl_fd();
+    if (!base || fd<0 || state->program_captures_uncertain) return 0;
+    uint32_t *request=state->program_capture_request, *reply=state->program_capture_reply;
+    request[0]=action;request[1]=value;request[2]=0;
+    memset(reply,0,sizeof state->program_capture_reply);
+    const uint32_t prefix=g_cursor ? (uint32_t)(g_cursor-base) : 0;
+    const struct wpk_error_proof proof=capture_error_proof();
+    int entered=0;
+    int rc=query_owned_reply(state,base,fd,QOP_PROGRAM_CAPTURE,request,8,reply,16,
+        prefix,prefix ? &state->program_capture_packet : NULL,&entered);
+    if (!rc && reply[3]==WPK_GL_QUERY_REPLY_MAGIC) {
+        if (reply[0]==0 && reply[1]==1 &&
+            (action==1 ? reply[2]!=0 : reply[2]==0)) {
+            if (action==1) capture->handle=reply[2];
+            accept_error_proof(proof);return 1;
+        }
+        if (action==1 && reply[0]==0 && reply[1]==0 && reply[2]==0) {
+            accept_error_proof(proof);return 2; /* Observed failed link. */
+        }
+        if (reply[0]==1 && reply[1]==0 && reply[2]==0) {
+            // A private release rejection cannot discard the C receiver.
+            // Stop new captures; acknowledged context retirement owns cleanup.
+            state->program_captures_uncertain=1;return 0;
+        }
+    }
+    state->program_captures_uncertain=1;
+    atomic_store_explicit(&state->objects->program_records_known,0,memory_order_relaxed);
+    if (rc!=WPK_GL_QUERY_NOT_DISPATCHED || entered) raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
+static int release_program_capture(struct wpk_gles_context *state,
+                                   struct wpk_program_capture *capture) {
+    if (!capture->handle) return 1;
+    if (program_capture_query(state,3,capture->handle,NULL)!=1) return 0;
+    *capture=(struct wpk_program_capture){0};return 1;
+}
+/* Cold capture establishes exact native-generation custody, not local API
+ * acceptance. Ordinary checked mutation remains the independent authority.
+ * Peers cannot read this encoder or release its handles; they acquire their
+ * own generation. Selected old links survive a failed/new peer link. */
+static void observe_program_capture(struct wpk_gles_context *state,
+                                    struct wpk_program_record *record, int selected) {
+    if (!record || record->kind!=5 || state->program_captures_uncertain ||
+        !atomic_load_explicit(&state->objects->program_records_known,memory_order_relaxed)) return;
+    struct wpk_program_capture *installed=&state->selected_program_capture;
+    struct wpk_program_capture *prepared=&state->prepared_program_capture;
+    if (installed->handle && installed->name==record->name && installed->link_epoch==record->link_epoch) {
+        if (selected && !release_program_capture(state,prepared)) return;
+        return;
+    }
+    if (!prepared->handle || prepared->name!=record->name || prepared->link_epoch!=record->link_epoch) {
+        if (!release_program_capture(state,prepared)) return;
+        struct wpk_program_capture fresh={.name=record->name,.link_epoch=record->link_epoch};
+        int observed=program_capture_query(state,1,record->name,&fresh);
+        if (!observed) return;
+        record->link_known=1;record->linked=observed==1;
+        if (observed==2) return; /* Keep the older installed executable. */
+        *prepared=fresh;
+    }
+    if (selected) {
+        if (!release_program_capture(state,installed)) return;
+        *installed=*prepared;*prepared=(struct wpk_program_capture){0};
+    }
+}
 static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) {
     struct wpk_gles_context *state=_wpk_gl_current_encoder();
     struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
@@ -2032,7 +2122,12 @@ static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) 
             state->current_program=record;
             if (previous) {previous->references--;collect_program_record(group,previous);}
         }
-        if (record) {record->link_known=1;record->linked=1;}
+        if (record) {
+            record->link_known=1;record->linked=1;
+            observe_program_capture(state,record,1);
+        } else if (!name) {
+            (void)release_program_capture(state,&state->selected_program_capture);
+        }
     } else if (op==OP_ATTACH_SHADER || op==OP_DETACH_SHADER) {
         if (!record || record->kind!=5 || slot<0) {group->program_records_known=0;return;}
         struct wpk_program_record *previous=record->shaders[slot];
@@ -2042,7 +2137,15 @@ static void mutate_program_record(uint32_t op, GLuint name, GLuint shader_name) 
             record->shaders[slot]=NULL;shader->references--;collect_program_record(group,shader);
         } else group->program_records_known=0;
     } else if (op==OP_LINK_PROGRAM) {
-        if (record && record->kind==5) record->link_known=0;
+        if (record && record->kind==5) {
+            record->link_known=0;
+            if (record->link_epoch==UINT64_MAX) {
+                atomic_store_explicit(&group->program_records_known,0,memory_order_relaxed);
+            } else {
+                record->link_epoch++;
+                observe_program_capture(state,record,record==state->current_program);
+            }
+        }
         else group->program_records_known=0;
     } else if (op==OP_DELETE_SHADER || op==OP_DELETE_PROGRAM) {
         if (record && record->kind==(op==OP_DELETE_SHADER?4u:5u)) {
@@ -2209,18 +2312,33 @@ static void release_vertex_array_objects(struct wpk_gles_context *state,
 /* Release explicit ownership without selecting this context or emitting into
  * another context's stream. Release/exit flushed this context before its last
  * current reference ended; host destruction retires native object maps. */
-void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
-    if (!state)
-        return;
+struct wpk_gl_name_scope _wpk_gl_begin_encoder_retirement(struct wpk_gles_context *state) {
+    struct wpk_gl_name_scope scope={.group=state->objects};
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,&scope.cancel_state);
+    // Retirement needs no current encoder and must not reconcile a pending
+    // texture by querying whichever unrelated context happens to be current.
+    pthread_mutex_lock(&scope.group->dispatch_mutex);
+    return scope;
+}
+void _wpk_gl_retire_encoder_programs(struct wpk_gles_context *state) {
+    // Called with the dispatch guard only AFTER acknowledged host retirement.
+    // Its context index already retired known and lost-receipt capture owners.
+    state->selected_program_capture=(struct wpk_program_capture){0};
+    state->prepared_program_capture=(struct wpk_program_capture){0};
     if (state->current_program) {
-        /* libEGL holds the lifetime/cancellation guard after host retirement.
-         * Drop only C ownership here; never query a destroyed GL session. */
-        pthread_mutex_lock(&state->objects->dispatch_mutex);
         struct wpk_program_record *record=state->current_program;
         state->current_program=NULL;record->references--;
         collect_program_record(state->objects,record);
-        pthread_mutex_unlock(&state->objects->dispatch_mutex);
     }
+}
+void _wpk_gl_destroy_encoder(struct wpk_gles_context *state) {
+    if (!state)
+        return;
+    // Creation-failure encoders have no host captures; normal retirement has
+    // already dropped these names under the same guard as GLIO_DESTROY_CONTEXT.
+    struct wpk_gl_name_scope scope=_wpk_gl_begin_encoder_retirement(state);
+    _wpk_gl_retire_encoder_programs(state);
+    _wpk_gl_end_name_scope(&scope);
     while (state->image_attachments) {
         struct wpk_image_attachment *entry = state->image_attachments;
         state->image_attachments = entry->next;

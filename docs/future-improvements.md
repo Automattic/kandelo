@@ -1074,13 +1074,16 @@ remain private, and stale/peer-owned generations cannot manufacture a valid
 selection. The real three-engine retirement regression and failed/successful
 peer-relink controls are retained in the graphics compatibility ledger.
 
-Next, consume those receipts in the C generation/current/pending graph,
-serialize C capture metadata with host context destruction, and implement
-independently audited ordered logical-current publication. Reserve all
+The C driver now consumes cold capture/release receipts into bounded selected
+and prepared-generation descriptors. Embedded transport storage avoids later C
+reply allocation, uncertain replies stop new captures, and EGL serializes C
+capture/name retirement with acknowledged host context destruction. Ordinary
+program selection remains synchronous. Next, reserve independent pending-work
+custody and implement independently audited ordered logical-current publication. Reserve all
 fallible ownership/result metadata before local acceptance. Never query a
 destroyed session, flush a foreign mutable encoder or reuse the rejected
 name-only cache. A private native pin does not establish logical ownership.
-These steps remain current-iteration B1 work; the new host protocol does not
+These steps remain current-iteration B1 work; cold executable custody does not
 complete B1 or demonstrate an application performance improvement. Full B2–B6,
 C1–C3 and all correctness, conformance, memory and native-feel gates remain
 required in their agreed order.
