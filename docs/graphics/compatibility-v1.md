@@ -22269,3 +22269,24 @@ WebGL controls run on Chromium/Firefox/WebKit. The combined normal-product,
 full host, browser-memory, conformance and benchmark gates remain required.
 R30's ongoing normal build remains frozen at266a35ae5a and does not include
 this later host-only foundation.
+
+
+**Public shared-program graph controls, 2026-11-04.** The ordinary SDK fixture
+now checks three contracts needed by B1's shared C model: a newly shared
+peer's deletion preserves the current program name and delete status until
+unbind, then an invalid program query preserves its output; a failed peer
+relink preserves the installed executable while rejecting a fresh selection;
+a successful peer relink followed by Finish and an explicit parent rebind
+renders the new executable. The completion/rebind requirement follows
+OpenGL ES2.0.25 appendix C.2, separately from program name lifetime in C.1.
+
+R123 (`run.sh-1104-055140-0262`, port5952) passes2 Node no-renderer checks
+and36 actual GPU cases at both widths in production/fatal on all3 engines.
+It uses normally ensured read-only e1 SDK archives without source-object
+overrides, the compatible R16 kernel/image writer and the latest71 host.
+Exact pixels, flags, query output, page errors and memory-boundary probes
+pass; source/archive hashes and copied source identities are retained in
+`.context/graphics-program-graph-native-r123/`. This validates public
+contracts of the ordinary driver before the new C fast path, not latest
+normal artifacts, full B1, performance or native-feel acceptance. The unsafe
+name-only cache remains rejected. Final combined validation stays required.

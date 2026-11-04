@@ -21,20 +21,32 @@ static void pixel(unsigned red,unsigned green,unsigned blue) {
     assert(rgba[2]+1>=blue && rgba[2]<=blue+1 && rgba[3]==255);
     assert(glGetError()==GL_NO_ERROR);
 }
-struct peer_delete { EGLDisplay display; EGLConfig config; EGLContext source; GLuint program; };
+struct peer_delete { EGLDisplay display; EGLConfig config; EGLContext source; GLuint program,old_fragment,new_fragment; int mode; };
 static void *delete_in_peer(void *opaque) {
     struct peer_delete *data=opaque;
     const EGLint attrs[]={EGL_CONTEXT_CLIENT_VERSION,2,EGL_NONE};
     EGLContext peer=eglCreateContext(data->display,data->config,data->source,attrs);
     assert(peer!=EGL_NO_CONTEXT);
     assert(eglMakeCurrent(data->display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
-    glDeleteProgram(data->program);assert(glGetError()==GL_NO_ERROR);
+    if(data->mode==0)glDeleteProgram(data->program);
+    else {
+        glDetachShader(data->program,data->old_fragment);
+        if(data->mode==2)glAttachShader(data->program,data->new_fragment);
+        glLinkProgram(data->program);
+        GLint linked=-1;glGetProgramiv(data->program,GL_LINK_STATUS,&linked);
+        assert(linked==(data->mode==2));
+        /* Finish plus the parent's subsequent UseProgram makes successful
+         * peer changes observable under ES 2.0 appendix C.2. */
+        glFinish();
+    }
+    assert(glGetError()==GL_NO_ERROR);
     assert(eglMakeCurrent(data->display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
     assert(eglDestroyContext(data->display,peer)&&eglReleaseThread());
     return NULL;
 }
 int main(int argc,char **argv) {
     assert(argc==2);
+    const int mode=!strcmp(argv[1],"peer-failed-link")?1:!strcmp(argv[1],"peer-linked")?2:0;
     EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(display!=EGL_NO_DISPLAY);
     if(!strcmp(argv[1],"no-renderer")) {
         assert(!eglInitialize(display,NULL,NULL) && eglGetError()==EGL_NOT_INITIALIZED);
@@ -67,15 +79,38 @@ int main(int argc,char **argv) {
     /* The API selection precedes peer creation/deletion, even when the GPU
      * command remains queued. Its program stays current and usable here. */
     glUseProgram(programs[0]);assert(glGetError()==GL_NO_ERROR);
-    struct peer_delete data={display,config,context,programs[0]};pthread_t thread;
+    struct peer_delete data={display,config,context,programs[0],fragments[0],fragments[1],mode};pthread_t thread;
     assert(pthread_create(&thread,NULL,delete_in_peer,&data)==0);
     assert(pthread_join(thread,NULL)==0);
-    assert(glGetError()==GL_NO_ERROR);pixel(51,153,204);
-    glUseProgram(0);glDeleteProgram(programs[1]);
+    assert(glGetError()==GL_NO_ERROR);
+    if(mode==0) {
+        assert(glIsProgram(programs[0])==GL_TRUE);
+        GLint deleted=0,current=0;glGetProgramiv(programs[0],GL_DELETE_STATUS,&deleted);
+        glGetIntegerv(GL_CURRENT_PROGRAM,&current);
+        assert(deleted==GL_TRUE && (GLuint)current==programs[0]);
+        assert(glGetError()==GL_NO_ERROR);pixel(51,153,204);
+        glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        assert(glIsProgram(programs[0])==GL_FALSE);
+        GLint untouched=123;glGetProgramiv(programs[0],GL_LINK_STATUS,&untouched);
+        assert(glGetError()==GL_INVALID_VALUE && untouched==123);
+        assert(glGetError()==GL_NO_ERROR);
+    } else if(mode==1) {
+        pixel(51,153,204);
+        glUseProgram(programs[0]);assert(glGetError()==GL_INVALID_OPERATION);
+        assert(glGetError()==GL_NO_ERROR);pixel(51,153,204);
+        glUseProgram(0);glDeleteProgram(programs[0]);
+    } else {
+        glUseProgram(programs[0]);assert(glGetError()==GL_NO_ERROR);pixel(204,77,51);
+        glUseProgram(0);glDeleteProgram(programs[0]);
+    }
+    glDeleteProgram(programs[1]);
     glDeleteShader(vertex);glDeleteShader(fragments[0]);glDeleteShader(fragments[1]);glDeleteBuffers(1,&buffer);
     assert(glGetError()==GL_NO_ERROR);
     assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
     assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context));
     assert(eglTerminate(display)&&eglReleaseThread());
-    puts("PASS selected program survives a newly shared peer deletion");return 0;
+    if(mode==0)puts("PASS selected program survives a newly shared peer deletion");
+    else if(mode==1)puts("PASS failed peer relink preserves current executable and rejects selection");
+    else puts("PASS finished peer relink is visible after explicit program rebind");
+    return 0;
 }

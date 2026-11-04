@@ -14,8 +14,8 @@ test.beforeAll(()=>{
       ["-pthread","-lEGL","-lGLESv2"],{arch,forkInstrument:true}));
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
-for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
-  test(`${arch} keeps a selected program across newly shared peer deletion (${audit??"production"})`,async({page,baseURL,browser})=>{
+for(const mode of ["render","peer-failed-link","peer-linked"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+  test(`${mode} ${arch} preserves shared program namespace and executable (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
     image.writeFile("/bin/probe",readFileSync(fixtures.get(arch)!.programPath),0o755);
@@ -26,7 +26,7 @@ for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"f
     await installBrowserMemoryBoundaryProbe(page);
     await page.goto(new URL("/trap-signal-test.html",baseURL).href);
     const source=fileURLToPath(new URL("../../../host/src/browser-kernel-host.ts",import.meta.url));
-    const result=await page.evaluate(async({url,audit})=>{
+    const result=await page.evaluate(async({url,audit,mode})=>{
       const {BrowserKernel}=await import(/* @vite-ignore */ url);
       const state={stdout:"",stderr:"",diagnostics:[] as any[]};
       const kernel=new BrowserKernel({kernelOwnedFs:true,glAudit:audit,
@@ -36,14 +36,16 @@ for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"f
       try{
         await kernel.initFromImage({kernelWasm:await(await fetch("/__program_sharing_kernel")).arrayBuffer(),
           vfsImage:new Uint8Array(await(await fetch("/__program_sharing_image")).arrayBuffer())});
-        const child=await kernel.spawnFromVfs("/bin/probe",["program-sharing","render"],{uid:0,gid:0});
+        const child=await kernel.spawnFromVfs("/bin/probe",["program-sharing",mode],{uid:0,gid:0});
         const status=await child.exit;
         return{...state,status};
       }finally{await kernel.destroy();}
-    },{url:new URL(`/@fs${source}`,baseURL).href,audit});
+    },{url:new URL(`/@fs${source}`,baseURL).href,audit,mode});
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({arch,audit,version:browser.version(),...result},null,2));
     expect(result.status,JSON.stringify(result)).toBe(0);
-    expect(result.stdout.trim()).toBe("PASS selected program survives a newly shared peer deletion");
+    expect(result.stdout.trim()).toBe(mode==="render"?"PASS selected program survives a newly shared peer deletion":
+      mode==="peer-failed-link"?"PASS failed peer relink preserves current executable and rejects selection":
+      "PASS finished peer relink is visible after explicit program rebind");
     expect(result.stderr).toBe("");
     const auditRows=result.diagnostics.filter((d:any)=>d.source==="gl-audit").map((d:any)=>JSON.parse(d.message));
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);
