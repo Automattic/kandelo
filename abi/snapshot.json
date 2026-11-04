@@ -28,6 +28,7 @@
       "gl_image_container_receipts",
       "gl_inline_client_draw",
       "gl_object_capture",
+      "gl_program_mutation",
       "gl_readback_capture",
       "gl_server_wait",
       "gl_shader_program_creation",
@@ -1622,6 +1623,45 @@
     "tokens": "monotonic-per-context-no-query-replay",
     "units": "bytes-except-attached-shaders-u32",
     "value": "original-unit-count,[active-size,active-type],requested-prefix"
+  },
+  "gl_program_mutation": {
+    "commands": {
+      "attach_shader": [
+        773,
+        12
+      ],
+      "delete_program": [
+        777,
+        8
+      ],
+      "delete_shader": [
+        771,
+        8
+      ],
+      "detach_shader": [
+        778,
+        12
+      ],
+      "link_program": [
+        774,
+        8
+      ],
+      "use_program": [
+        775,
+        8
+      ]
+    },
+    "opcode": 57,
+    "query_dependencies": "ordinary-query-replay",
+    "reply_bytes": 12,
+    "reply_fields": [
+      "status",
+      "accepted_boolean",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_prefix": "u32 command_opcode",
+    "requires_current_context": true
   },
   "gl_readback_capture": {
     "actions": {

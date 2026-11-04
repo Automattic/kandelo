@@ -22489,3 +22489,70 @@ It retains the complete ordinary host inventory, canonical rootfs rebuild and
 all original source/artifact guards. These are queued work, not passing
 validation; old full-host failures remain open. The available5693 preview
 continues to be normal R16 partial B1, not the later source checkpoint.
+
+
+**B1 shared program mutation admission, 2026-11-04.** Optional query0x39
+accepts a u32 command opcode followed by its unchanged names: attach/detach
+(12 bytes), delete shader/program, link or use (8 bytes). The12-byte checked
+receipt acknowledges completed acceptance independently of older flags, even
+if the same error was already set. Real current-binding changes and peer
+finalization use the real binding rather than an inherited scalar copy.
+Reply bytes and their view are reserved before mutation. Both kernel and
+host reject malformed lengths/opcodes before execution; current TID/session
+authority and normal query replay/buffer dependencies are retained. A failed
+shader link can be a completed command while new UseProgram fails and old
+current pixels remain valid. Nonacceptance never permits mutation replay or
+establishes a new local-state proof. Legacy C mutation calls are unchanged;
+there is no C shared graph or selector optimization yet. B1–B6 and C1–C3
+remain required; no performance or native-feel acceptance is claimed.
+
+| Evidence | Observed result |
+| --- | --- |
+| R149 focused source | 204 checks pass before the additional native-OOM control. |
+| R150-before, graphics-program-mutation-r150-before-1104-083816-2631 | New tests copied onto fefaf5a5a3 source:196 pass/8 fail because the mutation query is absent. |
+| R151, graphics-program-mutation-r151-1104-083851-58b1 | Own xtask, explicit additive compatibility control,88 GLIO tests, query uniqueness, snapshot regeneration/check, SDK32/64, image writer,2,056 graphics assertions/85 files and registry704 pass; frozen source hashes pass. |
+| R152-r2, graphics-program-mutation-r152-r2-1104-084732-624a, port5972 | Standard compileSdkFixture path:8 Node checks and72 actual-GPU cases pass, three engines/two widths/production/fatal. Creation fixture now includes mutation, failed-link old pixels, duplicate errors, deferred shader/program deletion, shape rejection and current authority; existing sharing/default-target/surfaceless controls pass. |
+| R153, graphics-program-mutation-r153-1104-084508-52bf | Clean fef baseline and candidate host type checks both fail with39 identical diagnostics after only worktree-path normalization; no TypeScript pass claim. |
+| R154, graphics-program-mutation-r154-1104-084644-5a3e | Normal `xtask bootstrap kernel` builds/stamps/publishes the current canonical SourceOnly kernel; resolver selects that exact product. |
+| R155-r2, graphics-program-mutation-r155-r2-1104-085315-8d68, port5974 | 2 explicit Node renderer-boundary checks and24 actual-GPU native-OOM cases pass: two widths × direct/compound mutation × production/fatal × three engines. |
+
+R155-r2 injects one OUT_OF_MEMORY at the actual native clone allocation during
+LinkProgram inside the normal dedicated kernel worker. A raw direct query
+returns ENODEV; the compound query preserves completed-query phase, successful
+prefix and query ENODEV. Neither publishes output. The next ordinary SDK
+finish request records that existing reset without replaying mutation. Stale
+older flags stay cleared; CONTEXT_LOST is delivered once, reset status is
+UNKNOWN_CONTEXT_RESET, and a shared peer still returns exact
+RGBA51/153/204/255. Every case checks one attributed reset, one native error,
+no audit divergence, no page error, no surviving native program after teardown
+and no browser-memory boundary failure. This is focused fault evidence, not
+the complete browser-memory gate. The initial R155 fixture could not compile
+because it attempted to call a private C helper; R155-r2 instead exercises
+the exported wire contract and ordinary SDK reset-observation path.
+
+The first R152 failed all8 Node cases before guest execution: the default
+resolver selected the old canonical SourceOnly kernel, ignoring an unrelated
+raw legacy-path copy. That copy was preserved and removed from the active
+path. R154 uses the normal kernel package engine, preserving the earlier
+SourceOnly tree under its evidence root and publishing one canonical stamped
+kernel. R152-r2 then uses the same normally ensured SDK archives, current
+kernel/image writer and standard fixture compilers with no source-object
+substitution. Source/product hashes are verified before/after. This targeted
+kernel provisioning is not a completed whole-desktop build; the single full
+R30 build remains frozen at266a35ae5a and the available5693 preview remains
+normal R16 partial B1.
+
+Exact commands use scripts/dev-shell.sh. R151 runs `cargo test -p runtime-core
+--target aarch64-apple-darwin --lib glio_ -- --test-threads=1`, the xtask
+program_mutation_is_additive_but_existing_receipt_cannot_change control,
+shared query_opcodes test, `bash scripts/check-abi-version.sh update`, the
+check against fefaf5a5a3aa, both `bash scripts/build-musl.sh --ensure --arch`
+SDK ensures, `bash crates/kandelo-image-module/build-wasm.sh`, graphics Vitest
+and the evidence registry script. R152-r2 runs the four permanent Node and
+browser SDK fixture files through its private configs; R155-r2 compiles its
+small SDK guest and uses a native prototype fault injector beneath the audit.
+Their run.sh files and private output roots record exact arguments, engine
+versions and hashes. The new snapshot section is explicitly additive and
+rejects existing-field mutation/removal; program56/host3/GL17/fork21 remain
+unchanged. Full normal current products, CTS, host/Rust/xtask completeness,
+POSIX, memory, benchmarks and native-feel ship-bar measurements remain open.

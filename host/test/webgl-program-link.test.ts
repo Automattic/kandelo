@@ -1337,3 +1337,92 @@ it("reserves a creation reply view before publishing a native program",()=>{
   expect(f.native.createdPrograms).toHaveLength(count);expect(f.b.programs.has(90)).toBe(false);
   expect(f.b.errors).toEqual([0x505]);
 });
+
+
+function mutationReply(b: ReturnType<typeof setup>["b"], words: number[], length = 12) {
+  const input = new Uint8Array(new Uint32Array(words).buffer);
+  const out = new Uint8Array(length).fill(0xa5);
+  const rc = runGlQuery(b, 0x39, input, out);
+  return { rc, out, words: length % 4 ? [] : [...new Uint32Array(out.buffer)] };
+}
+describe("checked program graph mutation", () => {
+  it("acknowledges real current binding changes with older flags intact", () => {
+    const f = setup(), previous = f.b.errors;
+    previous.push(0x500);
+    expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 0]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.currentProgram).toBe(null); expect(f.b.currentProgramId).toBe(0);
+    expect(f.native.current).toBe(null); expect(f.b.errors).toBe(previous);
+    expect(previous).toEqual([0x500]);
+    expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 20]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.currentProgram).toBe(f.original); expect(f.b.currentProgramId).toBe(20);
+  });
+  it("distinguishes a repeated rejection from an already set error flag", () => {
+    const f = setup(); f.b.errors.push(0x502);
+    expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 10]).words).toEqual([1, 0, 0x47514c33]);
+    expect(f.b.errors).toEqual([0x502]); expect(f.b.currentProgram).toBe(f.original);
+    expect(f.native.current).toBe(f.original);
+  });
+  it("keeps a delete-pending current name until a checked unbind", () => {
+    const f = setup();
+    expect(mutationReply(f.b, [O.OP_DELETE_PROGRAM, 20]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.programDeletePending.has(20)).toBe(true); expect(f.b.programs.get(20)).toBe(f.original);
+    expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 0]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.programs.has(20)).toBe(false); expect(f.native.deleted.has(f.original)).toBe(true);
+  });
+  it("retains a deleted shader through its last attachment", () => {
+    const f = setup(), shader = f.b.shaders.get(10) as unknown as Shader;
+    expect(mutationReply(f.b, [O.OP_DELETE_SHADER, 10]).words).toEqual([0, 1, 0x47514c33]);
+    expect(shader.deleted).toBe(false); expect(f.b.shaders.has(10)).toBe(true);
+    expect(mutationReply(f.b, [O.OP_DETACH_SHADER, 20, 10]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.shaders.has(10)).toBe(false); expect(shader.deleted).toBe(true);
+  });
+  it("accepts a failed link as a completed command while preserving the old executable", () => {
+    const f = setup(); (f.b.shaders.get(11) as unknown as Shader).compiled = false;
+    expect(mutationReply(f.b, [O.OP_LINK_PROGRAM, 20]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.currentProgram).toBe(f.original); expect(f.b.programs.get(20)).not.toBe(f.original);
+    expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 20]).words).toEqual([1, 0, 0x47514c33]);
+    expect(f.b.errors).toEqual([0x502]); expect(f.native.current).toBe(f.original);
+  });
+  it("acknowledges attachment acceptance separately from duplicate rejection", () => {
+    const f = setup(); creationReply(f.b, [5, 0, 90]); f.b.errors.push(0x500);
+    expect(mutationReply(f.b, [O.OP_ATTACH_SHADER, 90, 10]).words).toEqual([0, 1, 0x47514c33]);
+    expect(f.b.programShaders.get(90)?.has(10)).toBe(true);
+    expect(mutationReply(f.b, [O.OP_ATTACH_SHADER, 90, 10]).words).toEqual([1, 0, 0x47514c33]);
+    expect(f.b.errors).toEqual([0x500, 0x502]);
+  });
+  it.each([[O.OP_CLEAR, 0], [O.OP_USE_PROGRAM], [O.OP_USE_PROGRAM, 20, 0],
+    [O.OP_ATTACH_SHADER, 20], [O.OP_ATTACH_SHADER, 20, 10, 0], [0x10307, 20]])(
+    "rejects malformed or unauthorized command shape %j before mutation", (...words) => {
+      const f = setup(), reply = mutationReply(f.b, words);
+      expect(reply.rc).toBe(-22); expect([...reply.out]).toEqual(new Array(12).fill(0xa5));
+      expect(f.b.errors).toEqual([]); expect(f.native.current).toBe(f.original);
+    });
+  it.each([0, 8, 16])("rejects output length %s without mutation", length => {
+    const f = setup(); expect(mutationReply(f.b, [O.OP_USE_PROGRAM, 0], length).rc).toBe(-22);
+    expect(f.native.current).toBe(f.original); expect(f.b.errors).toEqual([]);
+  });
+  it("reserves the reply view before changing the installed executable", () => {
+    const f = setup(), original = globalThis.DataView;
+    vi.stubGlobal("DataView", new Proxy(original, {construct(target, args, newTarget) {
+      if (args[0] instanceof ArrayBuffer && args[0].byteLength === 4) throw new RangeError("reply view OOM");
+      return Reflect.construct(target, args, newTarget);
+    }}));
+    let reply: ReturnType<typeof mutationReply>;
+    try { reply = mutationReply(f.b, [O.OP_USE_PROGRAM, 0]); } finally { vi.unstubAllGlobals(); }
+    expect(reply!.words).toEqual([1, 0, 0x47514c33]); expect(f.native.current).toBe(f.original);
+    expect(f.b.currentProgram).toBe(f.original); expect(f.b.errors).toEqual([0x505]);
+  });
+  it("keeps native OOM reset authoritative without resurrecting older flags", () => {
+    const f = setup(); f.b.errors.push(0x500); f.native.failCreateAfterAllocation = true;
+    const rc = withNativeBatch(f.b, "program mutation", () => mutationReply(f.b, [O.OP_LINK_PROGRAM, 20]).rc);
+    expect(rc).toBe(-19); expect(rendererLost(f.b)).toBe(true);
+    expect(rendererResetScope(f.b)).toBe(1); expect(f.b.errors).toEqual([]);
+  });
+  it("preserves a fatal cleanup refusal and the original error owner", () => {
+    const f = setup(), previous = f.b.errors; previous.push(0x500);
+    mutationReply(f.b, [O.OP_DELETE_PROGRAM, 20]); f.native.failDeleteProgram = true;
+    const failure = nativeFaults(() => mutationReply(f.b, [O.OP_USE_PROGRAM, 0]));
+    expect(failure.thrown).toBeInstanceOf(NativeGlFault); expect(failure.faults).toHaveLength(1);
+    expect(f.b.errors).toBe(previous); expect(previous).toContain(0x500);
+  });
+});

@@ -1642,6 +1642,11 @@ fn capture_gl_query_info(
         // destination, and only the thread's current context may create it.
         if info.in_buf_len != 12 || info.out_buf_len != 12 { return Err(Errno::EINVAL); }
         require_gl_current_for_tid(proc, ofd_idx, tid)?;
+    } else if info.op == gl::QOP_PROGRAM_MUTATION {
+        if !matches!(info.in_buf_len, 8 | 12) || info.out_buf_len != 12 {
+            return Err(Errno::EINVAL);
+        }
+        require_gl_current_for_tid(proc, ofd_idx, tid)?;
     } else if info.op == gl::QOP_SERVER_WAIT {
         // in: [source session fd, fence token]; out: the 16-byte fence reply.
         if info.in_buf_len != 8 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
@@ -1684,6 +1689,17 @@ fn capture_gl_query_info(
         if !matches!(kind, 4 | 5) || (kind == 5 && shader_type != 0) {
             return Err(Errno::EINVAL);
         }
+    }
+    if info.op == gl::QOP_PROGRAM_MUTATION {
+        let op = u16::try_from(u32::from_le_bytes(in_buf[..4].try_into().unwrap()))
+            .map_err(|_| Errno::EINVAL)?;
+        let length = match op {
+            gl::OP_ATTACH_SHADER | gl::OP_DETACH_SHADER => 12,
+            gl::OP_DELETE_SHADER | gl::OP_DELETE_PROGRAM |
+            gl::OP_LINK_PROGRAM | gl::OP_USE_PROGRAM => 8,
+            _ => return Err(Errno::EINVAL),
+        };
+        if in_buf.len() != length { return Err(Errno::EINVAL); }
     }
     let mut kernel_reply = None;
     if info.op == gl::QOP_SERVER_WAIT && u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 {
@@ -60814,6 +60830,75 @@ impl HostIO for RelSymlinkMock {
         use wasm_posix_shared::gl;
         assert!(gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_CREATE_SHADER_PROGRAM.to_le_bytes()));
         assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_CREATE_SHADER_PROGRAM.to_le_bytes()));
+    }
+
+    #[test]
+    fn glio_program_mutation_shape_current_authority_and_untouched_rejection() {
+        use wasm_posix_shared::gl;
+        for width in [4, 8] {
+            let (mut proc, mut host, fd) = glio_query_preflight_fixture();
+            proc.pointer_width = width;
+            let query = |input_len: u32, output_len: u32| -> Vec<u8> {
+                if width == 4 {
+                    let info = gl::GlQueryInfo {op: gl::QOP_PROGRAM_MUTATION,
+                        in_buf_ptr: 32, in_buf_len: input_len,
+                        out_buf_ptr: 64, out_buf_len: output_len, ..Default::default()};
+                    unsafe {core::slice::from_raw_parts((&info as *const gl::GlQueryInfo).cast(),
+                        core::mem::size_of_val(&info)).to_vec()}
+                } else {
+                    let info = gl::GlQueryInfo64 {op: gl::QOP_PROGRAM_MUTATION,
+                        in_buf_ptr: 32, in_buf_len: input_len,
+                        out_buf_ptr: 64, out_buf_len: output_len, ..Default::default()};
+                    unsafe {core::slice::from_raw_parts((&info as *const gl::GlQueryInfo64).cast(),
+                        core::mem::size_of_val(&info)).to_vec()}
+                }
+            };
+            for (op, length) in [(u32::from(gl::OP_CLEAR), 8),
+                (u32::from(gl::OP_USE_PROGRAM), 12), (u32::from(gl::OP_ATTACH_SHADER), 8),
+                (0x1_0000 + u32::from(gl::OP_USE_PROGRAM), 8)] {
+                host.proc_memory[32..36].copy_from_slice(&op.to_le_bytes());
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                    &mut query(length, 12)), Err(Errno::EINVAL));
+                assert_eq!(&host.proc_memory[64..76], &[0xa5; 12]);
+            }
+            host.proc_memory[32..36].copy_from_slice(&u32::from(gl::OP_USE_PROGRAM).to_le_bytes());
+            for length in [0, 4, 16] {
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                    &mut query(length, 12)), Err(Errno::EINVAL));
+            }
+            for length in [0, 4, 8, 16] {
+                assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                    &mut query(8, length)), Err(Errno::EINVAL));
+            }
+            assert!(host.gl_query_inputs.is_empty());
+            assert!(host.proc_write_calls.is_empty());
+            let ofd = proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let current = dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().current.take().unwrap();
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(8, 12)), Err(Errno::EACCES));
+            dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().current = Some(current);
+            dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid = 2;
+            assert_eq!(sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY,
+                &mut query(8, 12)), Err(Errno::EACCES));
+            dri_state_mut(&mut proc, ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid = 1;
+            assert!(host.gl_query_inputs.is_empty());
+            for op in [gl::OP_DELETE_SHADER, gl::OP_DELETE_PROGRAM, gl::OP_LINK_PROGRAM,
+                gl::OP_USE_PROGRAM, gl::OP_ATTACH_SHADER, gl::OP_DETACH_SHADER] {
+                let input = [u32::from(op), 20, 10].map(u32::to_le_bytes).concat();
+                let length = if matches!(op, gl::OP_ATTACH_SHADER | gl::OP_DETACH_SHADER) {12} else {8};
+                host.proc_memory[32..32 + length].copy_from_slice(&input[..length]);
+                sys_ioctl(&mut proc, &mut host, fd, gl::GLIO_QUERY, &mut query(length as u32, 12)).unwrap();
+                assert_eq!(host.gl_query_inputs.last(), Some(&(gl::QOP_PROGRAM_MUTATION, input[..length].to_vec(), 12)));
+            }
+            assert_eq!(host.gl_query_inputs.len(), 6);
+        }
+    }
+
+    #[test]
+    fn glio_program_mutation_keeps_ordinary_query_replay_dependencies() {
+        use wasm_posix_shared::gl;
+        assert!(gl_entry_touches_buffers(gl::GLIO_QUERY, &gl::QOP_PROGRAM_MUTATION.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY, &gl::QOP_PROGRAM_MUTATION.to_le_bytes()));
     }
 
     fn glio_query_bytes(info: wasm_posix_shared::gl::GlQueryInfo)

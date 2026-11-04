@@ -37,7 +37,8 @@ import { finishRenderer } from "./finish.js";
  * objects; the cmdbuf needs an integer. Each program numbers its own
  * uniforms densely, as Linux drivers do (uniform-layout.ts, D-41).
  */
-import { validImageStorageRequest, executeImageStorageRequest } from "./bridge.js";
+import { validImageStorageRequest, executeImageStorageRequest,
+  validProgramMutationRequest, executeProgramMutationRequest } from "./bridge.js";
 import { canonicalTexture, canonicalRenderbuffer, imageSourceToken, importImageStorage, boundImageState } from "./image-storage.js";
 import { collectRetiredImages, deleteImageObject, attachImageObject, bindFramebufferObject } from "./image-references.js";
 import { bindImageObject } from "./image-bindings.js";
@@ -325,6 +326,16 @@ export function runGlQuery(
     return checkedQueryReply(b, out, 4, payload => {
       if (!executeImageStorageRequest(b, input)) return -5;
       new DataView(payload.buffer).setUint32(0, 1, true);
+      return 4;
+    });
+  }
+  if (op === O.QOP_PROGRAM_MUTATION) {
+    if (out.byteLength !== 12 || !validProgramMutationRequest(input)) return -22;
+    return checkedQueryReply(b, out, 4, payload => {
+      // Reserve every reply view before a possibly irreversible mutation.
+      const reply = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      if (!executeProgramMutationRequest(b, input)) return -5;
+      reply.setUint32(0, 1, true);
       return 4;
     });
   }

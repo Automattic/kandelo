@@ -262,3 +262,4 @@ export const QOP_EXPORT_FENCE = 0x0036;
 export const QOP_CONTEXT_RESET_SCOPE = 0x0037;
 /** Checked creation: [kind=4 shader/5 program,type,name] -> [status,name,magic]. */
 export const QOP_CREATE_SHADER_PROGRAM = 0x0038;
+export const QOP_PROGRAM_MUTATION = 0x0039;

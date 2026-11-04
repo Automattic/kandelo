@@ -4448,6 +4448,22 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "requires_current_context": true,
         "query_dependencies": "ordinary-query-replay",
     }));
+    s.add(Program, "gl_program_mutation", json!({
+        "opcode": shared::gl::QOP_PROGRAM_MUTATION,
+        "request_prefix": "u32 command_opcode",
+        "commands": {
+            "attach_shader": [shared::gl::OP_ATTACH_SHADER, 12],
+            "detach_shader": [shared::gl::OP_DETACH_SHADER, 12],
+            "delete_shader": [shared::gl::OP_DELETE_SHADER, 8],
+            "delete_program": [shared::gl::OP_DELETE_PROGRAM, 8],
+            "link_program": [shared::gl::OP_LINK_PROGRAM, 8],
+            "use_program": [shared::gl::OP_USE_PROGRAM, 8],
+        },
+        "reply_bytes": 12, "reply_fields": ["status", "accepted_boolean", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+    }));
     s.add(Program, "gl_context_reset_scope", json!({
         "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
         "request_bytes": 0, "reply_bytes": 12,
@@ -8530,6 +8546,7 @@ fn additive_top_level_section(section: &str) -> bool {
         // if changed; only adding this section is compatible.
         "gl_context_reset_scope"
             | "gl_shader_program_creation"
+            | "gl_program_mutation"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10118,6 +10135,28 @@ mod tests {
             changed["gl_shader_program_creation"][field] = json!("different");
             assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
             changed["gl_shader_program_creation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+        }
+        assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn program_mutation_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_program_mutation"] = json!({"opcode": 0x39,
+            "request_prefix": "u32 command_opcode", "commands": {"use_program": [0x307, 8]},
+            "reply_bytes": 12, "reply_fields": ["status", "accepted_boolean", "magic"],
+            "reply_magic": 0x47514c33u32, "requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay"});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_program_mutation\""]);
+        for field in new["gl_program_mutation"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_program_mutation"][field] = json!("different");
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+            changed["gl_program_mutation"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
         }
         assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());

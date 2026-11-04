@@ -6797,3 +6797,30 @@ The optional query is an additive program-surface snapshot entry. Existing
 receipt fields are exact compatibility contracts, and their modification or
 removal is rejected. Versions stay program56/host3/GL17/fork21; the changed
 program digest requires normally rebuilt coherent programs and images.
+
+
+The optional GL17 `QOP_PROGRAM_MUTATION` query admits one shared shader/program
+operation through the ordinary dispatcher: attach/detach (12 input bytes),
+delete shader/program, link or use (8 input bytes). Each input prefixes the
+unchanged command payload with its u32 opcode. Kernel and host validate the
+entire shape and require the caller's own current context before execution;
+ordinary query replay and buffer dependencies remain in force. The12-byte
+reply is `[status, accepted_boolean, QUERY_REPLY_MAGIC]`. An accepted command
+returns `[0,1,magic]`; a recorded operation error returns `[1,0,magic]`.
+
+The receipt reserves its staging bytes and view before dispatch. Its private
+error scope uses the real binding, so current-program changes and peer
+finalization publish to the actual context while older flags stay observable.
+Even a repeated error already set before admission produces rejection. Reset
+retains its existing authority and does not resurrect the old flags. A
+completed link can have false LINK_STATUS and still be acknowledged: the
+installed old executable remains separate from the latest failed link. An
+unaccepted or uncertain reply supplies no new mirror-state proof and never
+authorizes replay of a possibly executed mutation.
+
+The ordinary C mutation entrypoints still emit their legacy commands; no
+local selector is enabled by this query. The required next driver step is the
+shared C shader/program graph, current/attachment/pending references and
+immutable executable-generation custody. This additive program-surface entry
+changes the digest, with versions56/3/17/21 unchanged; final normal desktop
+products must be rebuilt coherently.

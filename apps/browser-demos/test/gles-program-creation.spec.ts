@@ -15,7 +15,7 @@ test.beforeAll(()=>{
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
 for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
-  test(`${arch} checks creation receipts and rendered pixels (${audit??"production"})`,async({page,baseURL,browser})=>{
+  test(`${arch} checks creation/mutation receipts and rendered pixels (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
     image.writeFile("/bin/probe",readFileSync(fixtures.get(arch)!.programPath),0o755);
@@ -43,7 +43,7 @@ for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"f
     },{url:new URL(`/@fs${source}`,baseURL).href,audit});
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({arch,audit,version:browser.version(),...result},null,2));
     expect(result.status,JSON.stringify(result)).toBe(0);
-    expect(result.stdout.trim()).toBe("PASS checked shader/program creation, error ownership, authority and pixels");
+    expect(result.stdout.trim()).toBe("PASS checked shader/program creation and mutation, error ownership, authority and pixels");
     expect(result.stderr).toBe("");
     const auditRows=result.diagnostics.filter((d:any)=>d.source==="gl-audit").map((d:any)=>JSON.parse(d.message));
     expect(auditRows.filter((r:any)=>r.kind==="divergence")).toEqual([]);

@@ -1,4 +1,5 @@
 import { interruptCompressedUpload } from "./compressed-upload.js";
+import { rendererLost } from "./renderer-loss.js";
 import { validateDrawFramebufferWithoutProgram } from "./framebuffer.js";
 /**
  * Cmdbuf TLV walker + per-op dispatch.
@@ -569,6 +570,42 @@ export function executeImageStorageRequest(b: GlBinding, input: Uint8Array): boo
   const payload = new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4);
   if (glAuditOn) noteGlAuditOp(view.getUint32(0, true), payload);
   return dispatch(b.gl!, b, payload, 0, view.getUint32(0, true), true) === true;
+}
+
+/** Result-bearing program graph changes use the unchanged command payload.
+ * Keep the allowlist narrow: arbitrary commands cannot acquire a receipt. */
+export function validProgramMutationRequest(input: Uint8Array): boolean {
+  if (input.byteLength !== 8 && input.byteLength !== 12) return false;
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  const op = view.getUint32(0, true);
+  switch (op) {
+    case O.OP_ATTACH_SHADER: case O.OP_DETACH_SHADER:
+      return input.byteLength === 12;
+    case O.OP_DELETE_SHADER: case O.OP_DELETE_PROGRAM:
+    case O.OP_LINK_PROGRAM: case O.OP_USE_PROGRAM:
+      return input.byteLength === 8;
+    default: return false;
+  }
+}
+
+/** Use the real binding for current-program writes and peer finalization.
+ * A temporary operation error owner distinguishes rejection even if the same
+ * flag was already set. This scope is synchronous and never leaves dispatch. */
+export function executeProgramMutationRequest(b: GlBinding, input: Uint8Array): boolean {
+  const view = new DataView(input.buffer, input.byteOffset, input.byteLength);
+  const payload = new DataView(input.buffer, input.byteOffset + 4, input.byteLength - 4);
+  const previous = b.errors;
+  b.errors = [];
+  try {
+    if (glAuditOn) noteGlAuditOp(view.getUint32(0, true), payload);
+    dispatch(b.gl!, b, payload, 0, view.getUint32(0, true));
+    return b.errors.length === 0 && !rendererLost(b);
+  } finally {
+    const errors = b.errors;
+    b.errors = previous;
+    if (rendererLost(b)) previous.length = 0;
+    else for (const error of errors) recordGlError(b, error);
+  }
 }
 
 /** Record a predicted GLES 2.0 error; true when there is none. */

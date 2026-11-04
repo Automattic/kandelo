@@ -1088,3 +1088,14 @@ regressions, independent error oracle and normal product gates. The recognized
 query-reset errno now reaches libc through plain and compound GLIO, preserving
 A3's existing context-reset boundary. Focused correctness gates do not complete
 B1–B6 or C1–C3, which all remain current-iteration work.
+
+
+The optional checked program-mutation query now acknowledges attach, detach,
+delete, link and selection through the same host dispatcher. It preserves
+older error flags and real current-binding writes, including failed-link
+versus installed-executable behavior. The C mutation entrypoints have not
+switched to this protocol. Use these receipts to establish the shared C
+graph before enabling local selection; a failed or uncertain mutation does
+not establish new state knowledge or permit retry. Immutable-generation
+custody and ordered logical-current publication remain current-iteration B1
+work, followed by B2–B6 and C1–C3 in the agreed order.

@@ -4380,6 +4380,10 @@ pub mod gl {
     /// Checked object creation: [kind=4 shader/5 program, shader_type_or_zero, name].
     /// The 12-byte reply is [status, accepted_name_or_zero, QUERY_REPLY_MAGIC].
     pub const QOP_CREATE_SHADER_PROGRAM: u32 = 0x0038;
+    /// Checked shared program graph mutation: command opcode plus its unchanged
+    /// name payload (8 bytes, or 12 for attach/detach). Reply: status, accepted
+    /// boolean, QUERY_REPLY_MAGIC. Ordinary replay/dependencies/current authority.
+    pub const QOP_PROGRAM_MUTATION: u32 = 0x0039;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6810,6 +6814,7 @@ mod gl_tests {
             QOP_SURFACE_CAPABILITIES,
             QOP_CONTEXT_RESET_SCOPE,
             QOP_CREATE_SHADER_PROGRAM,
+            QOP_PROGRAM_MUTATION,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,
