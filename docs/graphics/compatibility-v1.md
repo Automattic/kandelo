@@ -22474,3 +22474,18 @@ retirements in R135/R135-r2 retain exact inventories. About50 GiB was free at
 08:24; free-space changes during concurrent builds are not a reclaimed-byte
 measurement. No full-host, full-CTS, POSIX, benchmark or native-feel acceptance
 is claimed by this checkpoint.
+
+
+The normal R30 setup-all stage completed successfully in10,599s and is now
+building programs; ABI/freshness and admission are still pending. Original
+admission uses a frozen spec with two missing imports and is retained as-is.
+R147 (`graphics-r30-admission-r147-1104-082733-c36c`, port5970) queues the same
+ordinary Node and42 browser assertions against normal R30 products, projecting
+only import resolution plus the two repaired imports. Collection confirms all
+42 tests in5 files, with unchanged test bodies. R148
+(`graphics-host-r148-1104-083039-21a0`) waits for corrected admission and the
+original wait-only host queue's termination before provisioning frozen R35.
+It retains the complete ordinary host inventory, canonical rootfs rebuild and
+all original source/artifact guards. These are queued work, not passing
+validation; old full-host failures remain open. The available5693 preview
+continues to be normal R16 partial B1, not the later source checkpoint.

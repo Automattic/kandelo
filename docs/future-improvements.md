@@ -1080,7 +1080,11 @@ regression, and a native pin alone does not establish logical program ownership.
 
 B1's checked shader/program creation protocol now supplies authoritative
 allocation receipts while preserving old guest flags and normal query replay.
-It does not yet switch the C API to acknowledged shared records or enable
-local program selection. Finish the shared C graph and immutable-generation
-custody next; retain the existing deletion/relink regressions, error oracle
-and normal product gates. B1–B6 and C1–C3 remain current-iteration work.
+The C API now waits for those allocation receipts before returning a name,
+without replaying uncertain creation. It still needs shared C object records,
+current/pending references and immutable-generation custody before local
+program selection. Finish that graph next; retain the existing deletion/relink
+regressions, independent error oracle and normal product gates. The recognized
+query-reset errno now reaches libc through plain and compound GLIO, preserving
+A3's existing context-reset boundary. Focused correctness gates do not complete
+B1–B6 or C1–C3, which all remain current-iteration work.
