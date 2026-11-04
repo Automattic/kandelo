@@ -21109,3 +21109,61 @@ boundary or an accepted waiver. The initial loss and those cleanup calls
 require further investigation. Evidence:
 `.context/graphics-cts-current-failures-r15/webkit-api001/` and
 `.context/cts-exact-case-r15/all-controls.log` in the integration checkout.
+
+
+**Superseded full-run retirement, 2026-11-03.** The old Chromium and
+Firefox runtime-030 runs are intentionally retired incomplete after
+11 hours 37 minutes to release CPU/GPU capacity for native-feel work.
+The exact owned job groups and orphan Vite processes were verified before
+termination; original chunk reports remain preserved. This is not a waiver
+of the complete final-source matrix, including EGL on all three engines.
+
+| Engine | Completed GLES2 chunks | Rows in completed chunks | Full run complete |
+|---|---:|---:|---|
+| Chromium | 224 | 19302 | No |
+| Firefox | 219 | 18802 | No |
+
+No verdict is inferred for an uncompleted chunk. These old-source reports
+cannot establish current conformance or native feel. Evidence:
+`.context/graphics-superseded-cts-retirement-r17/retirement.json`,
+its `orphan-vite-retirement.json` and `partial-observed-summary.json`, and the
+original `.context/graphics-cts-final-r2-results/` outputs.
+
+
+**Current focused API/compiler and measurement checkpoint, 2026-11-03.**
+The first failing API chunk-001 case passes alone and after its exact nine
+preceding cases on both pre-A3 host `4debe2d0d0` and current production host
+`55b515c7cb`. Each strict arm accounts for one Pass in isolation and ten
+Pass in the ordered prefix, without Fail, Timeout or Missing. Current-host
+source equivalence and normal kernel/program hashes are retained. These
+isolated passes do not identify or clear the earlier 100-case chunk's
+physical context loss. All eight selected directional-lighting compiler
+cases also pass on current-host WebKit 26.6. Earlier unsupported-selector
+attempts never executed the guests; these reruns use the exact-case driver.
+Evidence: `.context/graphics-api-loss-r16-before/`,
+`.context/graphics-api-loss-r16-after/`,
+`.context/graphics-cts-current-lighting-r17/`.
+
+The private latency observer now saves detached output-span locations before
+request dispatch. Request flags are consumed at selection and the kernel
+legitimately reuses record framing as dispatch scratch; reading either at
+publication gave invalid measurement metadata. The corrected control covers
+consumed flags, overwritten framing, bounded output copies, fragmented
+Wayland messages and distinct client-send/compositor-receive observations.
+It changes no guest syscall semantics and retains no guest memory views.
+
+Chromium 153 and Firefox 155 method smokes pass. Their offline decoders pair
+96 and 95 surface commits respectively; client and compositor request streams
+match byte-for-byte, with no observer failure, decode error or incomplete
+frame bytes. These runs are under load and do not establish latency or a
+ship-bar result. The WebKit method attempt fails before measurement while
+waiting for the Internals overlay's startup log; its screenshot still shows
+a running machine and presentation counters. That is not proof of readiness
+or an accepted success. The next method check admits an actual non-zombie,
+non-stopped compositor from the kernel process table, retaining the rendering,
+client-process and guest-command checks. Full input-to-display correlation
+and instrumentation-overhead measurement remain open. Evidence:
+`.context/graphics-kperf-wire-probe-r15-r11/`,
+`.context/graphics-kperf-wire-probe-r15-r12/`, and the private prototype's
+`.context/kperf-wire-copy-control-r7.log` and
+`.context/kperf-wire-analysis-control-r3.log`.
