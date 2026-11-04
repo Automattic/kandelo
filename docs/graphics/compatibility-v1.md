@@ -22637,3 +22637,48 @@ kernel hash in every browser result. All60 results agree with
 `8204a96cf0e015df005267a81376a39177f06d0bfc1241b5db93f7b200df9c3e`;
 input/product checks pass. This supplies the corrected provenance without
 restamping, substituting code or relaxing an assertion.
+
+
+## 2026-11-04 boot diagnostics survive descriptor enrichment (R162)
+
+Image composition can change `desc.id` during the same boot. The App effect
+closed Internals after a user had opened it, removing access to the live syslog.
+Integration05165d80be preserves that explicit panel choice across descriptor
+updates and readiness. Existing dock/view actions still close it. This fixes
+app presentation state; it changes no kernel, Node runtime or ABI behavior.
+
+R162 enters the declared dev shell and runs the actual App with LiveKernelHost
+in a browser fixture, without a kernel or guest. The selected normal R30
+projection only satisfies a static image import. It is not current-product
+or desktop-conformance evidence. Exact commands, source hashes, logs and exit
+codes are in `.context/graphics-internals-boot-r162/commands.md` and its siblings.
+
+| Arm | Chromium | Firefox | WebKit | Result |
+| --- | --- | --- | --- | --- |
+| Before9a+new enrichment regression, port5980 | Fail | Fail | Fail | All3 lose the open panel after descriptor enrichment |
+| After051, enrichment+terminal-removal controls, port5981 | 2 pass | 2 pass | 2 pass | 6 pass7.2s; open and explicitly closed choices survive, no page errors |
+
+The full R30 normal-product replay remains distinct. R163/R163-r2 pass the6
+Node controls but stop before browser tests because the private projection
+loads two Playwright instances. R163-r3 isolates the runner dependency and
+passes all6 real Cage/ScummVM interaction cases on three engines; its36 GLES
+cases fail before guest execution because their dynamic browser-source import
+still points outside the consumer Vite server's allowed tree. These failed
+runs remain preserved. R163-r4 relocates only that byte-identical browser host
+source import to the served consumer; all assertions are retained, with a new
+private port5985/output. The
+consumer is frozen266a plus the exact051 App fix over completed normal R30
+products. It passes6 Node and all42 browser checks (3.0 minutes browser time),
+including real Cage/ScummVM on three engines, both guest widths and production/
+fatal GLES controls. Run/source/product hashes pass. All313 published SourceOnly
+files and their inventory also remain identical across the promotion check.
+
+Owned5693 now serves that admitted normal R30 checkpoint plus the051 App fix.
+The previous R16 server's job, listener, command and working directory were
+verified before terminating only its PID. New owned job is
+`graphics-preview-r30-r163-5693-1104-103538-9590`; both the HTML and transformed
+App respond successfully. Admission and identity records are retained under
+`.context/graphics-preview-r30-r163/`. Availability was announced separately
+from validation. This is still partial B1, excludes the later7d7 C graph and
+all C stages, and makes no performance/native-feel claim. A coherent normal
+full-B preview and all final combined-tree gates remain required.

@@ -180,8 +180,12 @@ visible throughout the run. The client also refuses reordered/duplicate frames a
 input dispatch is in flight. Cleanup stops only its recorder and browsers.
 
 The headless replay is passing. Native attempts found and corrected capture
-color-space assumptions, then exposed browser/native edge differences. The
-revised native-pixel learning path still needs a successful physical replay.
+color-space assumptions and browser/native edge differences. The revised
+native-pixel learning path passes eight ordinary inputs in each DOM and
+OffscreenCanvas mode on Chromium, Firefox and WebKit (R105/R146, 2026-11-04),
+with unlocked-console, calibration, no-op and delayed-response controls.
+The normal desktop build was running concurrently. This validates the observer
+method; it does not establish desktop latency or instrumentation overhead.
 The opt-in `desktop-cursor.spec.ts` now uses this same controller with real
 Foot and ScummVM cursor pixels, passive original pointer-event timestamps,
 normal guest input and a normally built desktop image. It requires an explicit
