@@ -21306,8 +21306,9 @@ runs, not full host or client performance acceptance. Evidence:
 
 The same normal build's full selected compositor/desktop matrix reports
 Chromium 16 Pass; Firefox 12 Pass, two skipped and two Fail; WebKit 14 Pass
-and two skipped. Firefox's failures are Cage/wlterm startup and the initial
-Omarchy desktop case. Labwc, both SFWBar compositor flows and the remaining
+and two skipped. Firefox's failures are Cage's idle-frame equality gate and
+the notification-history gate in the initial Omarchy desktop case. Labwc,
+both SFWBar compositor flows and the remaining
 executed desktop cases pass; the failures and skips are retained, not
 waived. These runs do not measure native desktop feel. Evidence:
 `.context/graphics-desktop-normal-r22/`.
@@ -21327,3 +21328,20 @@ measurement setup is ready. Evidence:
 `.context/graphics-native-frame-canonical-r24/`,
 `.context/graphics-native-frame-canonical-r25/`,
 `.context/graphics-observer-promise-control-r27/`.
+
+The saved Firefox Omarchy trace contains the expected notification in two
+actual terminal reads. Its history scanner instead tries to scroll xterm
+6's retained, non-scrolling `.xterm-viewport` node. The reader now pages
+through the ordinary keyboard UI, observes each rendered page and restores
+the live bottom. A 600-line fixture proves the old scroll operation leaves
+the final rows visible, finds the older marker through the new reader,
+rejects a missing marker and sends no input to the guest. Both terminal
+fixture cases pass on all three engines (six cases, 20.8 seconds). The
+complete initial Omarchy case then passes on Chromium, Firefox and WebKit
+with normal r14 artifacts (three cases, 1.4 minutes), including the original
+notification and lock-screen assertions. Runtime sources are unchanged
+from the normal producer. Cage's earlier idle failure remains unresolved;
+this focused replay does not replace the final full desktop matrix or
+provide performance evidence. Exact commands and frozen input patches:
+`.context/graphics-terminal-history-r28/run.sh`,
+`.context/graphics-omarchy-history-r29/run.sh`.

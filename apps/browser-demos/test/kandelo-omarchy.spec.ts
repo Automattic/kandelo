@@ -2,6 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { gotoApp } from "./support/kandelo-machine";
 import { footFrame } from "./support/labwc-frame";
 import { typePhysicalText } from "./support/physical-typing";
+import { terminalHistoryMatching } from "./support/terminal-history";
 
 
 /**
@@ -77,27 +78,7 @@ async function expectTerminal(page: Page, pattern: RegExp, timeout: number) {
 async function expectTerminalHistory(page: Page, pattern: RegExp, timeout = 60_000) {
   await expect.poll(async () => {
     await openSurface(page, "Terminal");
-    const viewport = page.locator(".xterm-viewport").first();
-    const scroll = async (top: number) => {
-      await viewport.evaluate((node, y) => node.scrollTo(0, y), top);
-      // Capture the actual painted terminal before reading its virtual rows.
-      await page.locator(".xterm-screen").first().screenshot();
-    };
-    await scroll(Number.MAX_SAFE_INTEGER);
-    let text = "";
-    try {
-      for (let i = 0; i < 12; i++) {
-        text = `${await terminalText(page)}\n${text}`;
-        if (pattern.test(text)) return text;
-        const {top, height} = await viewport.evaluate(node =>
-          ({top: node.scrollTop, height: node.clientHeight}));
-        if (top === 0) break;
-        await scroll(Math.max(0, top - Math.max(1, height / 2)));
-      }
-      return text;
-    } finally {
-      await scroll(Number.MAX_SAFE_INTEGER);
-    }
+    return terminalHistoryMatching(page.locator(".xterm:visible").first(), pattern);
   }, { timeout }).toMatch(pattern);
 }
 

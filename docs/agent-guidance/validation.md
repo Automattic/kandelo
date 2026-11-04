@@ -25,6 +25,13 @@ shows old rows. For graphical Quit checks, verify automatic terminal
 handoff, the launching foreground job's exit status, and process cleanup;
 a prompt alone does not establish that contract.
 
+Read terminal history through the terminal's actual scrolling UI. With
+xterm 6, the retained `.xterm-viewport` element has no scrolling range;
+assigning its `scrollTop` does not move the rendered rows. The browser
+fixtures use Shift+PageUp/Down, observe each repaint and restore the live
+bottom. Preserve missing-marker and no-guest-input controls when changing
+that history reader.
+
 A fixture that tests a particular resolution policy must select that policy
 explicitly and restore every changed environment setting in `finally`.
 Run it under the normal suite environment as well as in isolation. A legacy
