@@ -114,7 +114,7 @@ export function retireProgramNameOwner(b: GlBinding): void {
   catch(error) {rethrowNativeGlFault(error);if(isKernelExportFailure(error))throw error;
     nativeGlFault("Could not retire a public program namespace owner",error);
   }
-  const name=currentProgramName(b);
+  const name=publicCurrentProgramName(b);
   if(name) finalizeProgram(b,name);
 }
 export function shaderType(shader: WebGLShader | undefined): number | undefined {
@@ -328,7 +328,7 @@ export function finalizeShader(b: GlBinding, name: number): void {
 export function finalizeProgram(b: GlBinding, name: number): void {
   if (!b.programDeletePending.has(name)) return;
   const program = b.programs.get(name);
-  if ([...b.objects.members].some(member => !retiredProgramNameOwners.has(member) && name === currentProgramName(member))) return;
+  if ([...b.objects.members].some(member => !retiredProgramNameOwners.has(member) && name === publicCurrentProgramName(member))) return;
   finishProgramDeletion(b,name,program);
 }
 
@@ -347,6 +347,12 @@ function finishProgramDeletion(b: GlBinding, name: number, program: WebGLProgram
   b.programAttributeBindings.delete(name);
   if (shaders) for (const shader of shaders) finalizeShader(b, shader);
   return true;
+}
+
+/** Public name ownership can lead native execution. Draws/uniform setters keep
+ * using currentProgramName/currentProgram, with no journal lookup. */
+export function publicCurrentProgramName(b: GlBinding): number {
+  return b.logicalProgramCurrent?.name ?? currentProgramName(b);
 }
 
 export function currentProgramName(b: GlBinding): number {
@@ -390,6 +396,7 @@ export function programLinkGeneration(b: GlBinding, program: WebGLProgram): { va
  * object while the prior executable is installed. The logical object maps
  * to the latest attempt, independently of the executable used for draws. */
 export function linkProgramRetainingExecutable(b: GlBinding, name: number): void {
+  if(b.programJournal)nativeGlFault("Synchronous program link requires draining and disabling its logical journal");
   const gl = b.gl, previous = b.programs.get(name);
   if (!gl || !previous) {
     recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return;
@@ -482,6 +489,7 @@ export function linkProgramRetainingExecutable(b: GlBinding, name: number): void
 }
 
 export function useProgramIfAccepted(b: GlBinding, name: number): boolean {
+  if(b.programJournal)nativeGlFault("Synchronous program selection requires draining and disabling its logical journal");
   const program = name === 0 ? null : b.programs.get(name);
   if (program === undefined) {
     recordGlError(b, b.shaders.has(name) ? 0x502 : 0x501); return false;
@@ -518,6 +526,18 @@ export class GlProgramQueryPin {
   static acquire(execution: GlContextExecutionLease, name: number): GlProgramQueryPin | null {
     const b=execution.binding, program=b.programs.get(name);
     if(!program) {recordGlError(b,b.shaders.has(name)?0x502:0x501);return null;}
+    return GlProgramQueryPin.acquireExact(execution,name,program);
+  }
+
+  /** Cold journal activation must pin an installed old executable even when
+   * its public name maps to a newer failed link. */
+  static acquireInstalled(execution: GlContextExecutionLease): GlProgramQueryPin | null {
+    const b=execution.binding;
+    return b.currentProgram ? GlProgramQueryPin.acquireExact(execution,currentProgramName(b),b.currentProgram) : null;
+  }
+
+  private static acquireExact(execution: GlContextExecutionLease,name: number,program: WebGLProgram): GlProgramQueryPin | null {
+    const b=execution.binding;
     const count=b.programQueryPins.get(program)??0;
     if(count>=Number.MAX_SAFE_INTEGER) {recordGlError(b,0x505);return null;}
     const retained=execution.clone();
@@ -561,7 +581,8 @@ export class GlProgramQueryPin {
       else {
         const named=b.programs.get(this.name)===program;
         const current=[...b.objects.members].some(member=>member.currentProgram===program);
-        if(named && b.programDeletePending.has(this.name) && !current) {
+        if(named && b.programDeletePending.has(this.name) && !current &&
+            ![...b.objects.members].some(member=>!retiredProgramNameOwners.has(member) && publicCurrentProgramName(member)===this.name)) {
           if(!finishProgramDeletion(b,this.name,program)) return false;
         } else if(!named && !current && !deleteUnusedNativeProgram(b,program)) return false;
         b.programQueryPins.delete(program);

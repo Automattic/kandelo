@@ -89,6 +89,15 @@ export function retainGlProgramCapture(b: GlBinding, handle: number): GlProgramQ
   return pin.clone(b);
 }
 
+/** Cold journal admission may clone only the caller's own public capture. */
+export function retainContextGlProgramCapture(b: GlBinding, handle: number): GlProgramQueryPin | null {
+  const state=groups.get(b.objects);
+  if(state?.closed || state?.closedOwners?.has(b) || state?.owners?.get(handle)!==b) {
+    recordGlError(b,0x502);return null;
+  }
+  return state.pins.get(handle)?.clone(b) ?? null;
+}
+
 export function releaseGlProgramCapture(b: GlBinding, handle: number): boolean {
   const state=groups.get(b.objects),pin=state?.pins.get(handle);
   if(!pin) {recordGlError(b,0x501);return false;}

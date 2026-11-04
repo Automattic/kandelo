@@ -1078,8 +1078,13 @@ The C driver now consumes cold capture/release receipts into bounded selected
 and prepared-generation descriptors. Embedded transport storage avoids later C
 reply allocation, uncertain replies stop new captures, and EGL serializes C
 capture/name retirement with acknowledged host context destruction. Ordinary
-program selection remains synchronous. Next, reserve independent pending-work
-custody and implement independently audited ordered logical-current publication. Reserve all
+program selection remains synchronous. The prepared host logical journal now
+reserves pending/result cells and independent generation/context custody,
+separates logical names from installed execution, and delays host-computed
+errors until their command positions. Next, wire kernel current-session
+validation, the C shared journal/capture-token cache and native submission/
+completion selectors before enabling local program selection. Audit the final
+context collector alongside the pending-work path. Reserve all
 fallible ownership/result metadata before local acceptance. Never query a
 destroyed session, flush a foreign mutable encoder or reuse the rejected
 name-only cache. A private native pin does not establish logical ownership.

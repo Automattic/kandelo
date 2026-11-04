@@ -22853,3 +22853,47 @@ canonical kernel both hash to
 `a8d2e3656f903b24f3581cff987d5a0213d6f00ae83e244e9ade75cb215349c4`;
 source and product hashes remain unchanged. This focused C-capture/loss evidence
 does not replace the final complete browser-memory or conformance runs.
+
+## 2026-11-04 prepared host logical-current journal (R172–R174)
+
+The host journal now separates public logical-current names from installed
+native execution. Cold activation reserves bounded cells, a root pin for the
+exact installed executable, and immutable captured-generation pins. Shared
+sequence/per-context ticket checks precede publication. Host-computed results
+stay in those cells until execution, preserving errors separated by observations.
+Successor edges retain predecessor native storage through a deferred switch.
+Public retirement closes caches/names without revoking accepted work; refused
+cleanup and partially inserted admission indexes retain exact retry custody.
+
+The independent tests also found and fixed two integration defects in this new
+mechanism: session reuse retained a stale logical-name override, and peer
+publication charged private cleanup errors to the target rather than the current
+metadata caller. Both fail their focused pre-fix controls. The first two R172
+full targeted attempts instead failed a fixture assertion observing the reset
+binding's new empty group; the corrected assertion observes the original group,
+matching the registry's existing lifecycle. All earlier logs remain separate.
+The retained-context activation control was already passing before a redundant
+guard-edit attempt; it is not claimed as a before-failing regression.
+
+Exact commands/results (root workspace paths unless noted):
+
+| Run/command | Result | Scope |
+| --- | --- | --- |
+| R172 `scripts/dev-shell.sh bash -c 'cd host; npx --no-install vitest run -c vitest.graphics.config.ts test/webgl-program-journal.test.ts'` | Final30 controls pass in R174-r2's full gate | Name/current separation, predecessor edges, ordered repeated errors, bounded/reused cells, same-process/group metadata scope, root/registration rollback, native refusal/no replay, context retirement/reuse and caller-owned cleanup errors |
+| R173-r2 `scripts/dev-shell.sh bash .context/graphics-program-journal-native-r173-r2/run.sh`, port5996 | 12 pass,10.0s | Direct real WebGL on Chromium/Firefox/WebKit: old/new exact pixels, failed/successful peer relink, name deletion, accepted work after public retirement, final native deletion, empty original members/pins, native error0. No guest/kernel transport |
+| R174 final `graphics-program-journal-final-r174-1104-130201-5c8e`, `scripts/dev-shell.sh bash .context/graphics-program-journal-gpu-r174-r2/run.sh`, port5995 | PASS2m02: ABI, registry706, graphics2113 assertions/87files,8 Node +72 GPU cases | Existing normal SDK32/64/kernel/image-writer products reused unchanged for this host-only change. Three engines, both widths, production/fatal. Source/product hashes match |
+| R172 final `cd host; npx --no-install tsc --noEmit --pretty false` inside the declared dev shell | FAIL39 diagnostics | Complete compiler stream matches retained R166 baseline after root normalization. No typecheck pass |
+
+The first R174 run separately passes2112 graphics assertions plus Node8/GPU72
+before the additional cleanup-authority regression/fix; R173 first12 also pass.
+Final evidence above includes that fix. No ordinary full-host, complete CTS,
+desktop, memory, POSIX or performance acceptance is implied.
+
+This is prepared host machinery only. The C driver does not publish logical
+intents or submit captured selectors yet: its program selection remains checked
+and synchronous. Complete kernel live-session/current-thread validation, C
+shared-journal/capture-token metadata, pending-slot completion/reuse, submission
+and error-observation wiring, then the required frozen-stage validation and
+measurements. B1 remains partial; B2–B6/C1–C3 and every ship-bar requirement stay
+open. The5693 preview is unchanged R30+051. No ABI wire/snapshot changes or new
+boundary: versions remain56/3/17/21.

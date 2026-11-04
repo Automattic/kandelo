@@ -6892,3 +6892,43 @@ This is cold program/context work, with no added draw/frame maintenance; its
 application performance and the full final memory/conformance gates remain
 unmeasured. The next layer must reserve independent pending-work/result custody
 and publish ordered logical-current history before enabling local selection.
+
+The prepared host `GlProgramJournal` separates a public logical program name
+from the installed native executable. Only the public getter and name retirement
+consult the optional logical owner; draw/uniform paths continue using installed
+state. Journal activation and capture registration are cold operations. They
+reserve bounded intent/result cells, an exact installed-executable root pin
+(including an old executable after failed relink), and immutable captured
+native generations before publication can begin.
+
+Publication uses a shared group sequence and a per-context execution ticket.
+It validates names/generations independently, changes logical name ownership,
+and stores its result in the reserved cell. It does not install a native program
+or insert an early error into the runtime queue. Execution later selects the
+captured executable or records that stored error at its original command
+position. Repeated errors separated by observations therefore remain distinct.
+Each successor retains its predecessor until the native switch completes, even
+if the predecessor has already lost its public name and cache owner.
+
+Publication accepts metadata only within one process/object group; its future
+kernel entrypoint must still establish the caller's live current-thread
+session authority. Namespace cleanup uses the metadata caller's error owner,
+not the target peer's. No peer native-selection authority is granted. Busy
+cells, stale tickets and out-of-order execution are refused. Native selection
+failure is consumed and cannot be replayed. A driver must drain and disable
+journal mode before an ordinary synchronous link/use operation.
+
+Public context retirement closes journal caches and logical name ownership
+while accepted cells retain independent generation/context custody. Exact
+cleanup refusals retain their receivers for containment; neither a partially
+published cold index nor a failed public-name finalization loses ownership.
+Session reuse clears the retired logical-name override. These mechanisms are
+shared by Node and browser and add no journal lookup to draw/uniform handlers.
+
+This is prepared host machinery, not an enabled guest transport. The C driver
+still performs checked synchronous program selection. Kernel query authority,
+C shared-journal publication, bounded pending-slot reuse/completion, command
+execution selectors and ordered error-observation wiring must be completed
+before local program acceptance is enabled. The existing final-context cleanup
+path remains part of the complete ownership audit. No new wire operation,
+version bump, worker or application-performance claim is introduced here.

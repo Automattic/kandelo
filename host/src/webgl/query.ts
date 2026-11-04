@@ -52,7 +52,7 @@ import type { GlBinding, GlContextExecutionLease } from "./registry.js";
 import { runProgramCaptureQuery } from "./program-capture-query.js";
 import * as O from "./ops.js";
 import { getGlesExtensionString } from "./capabilities.js";
-import { checkedGlCall, currentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
+import { checkedGlCall, publicCurrentProgramName, recordGlError, linkedProgramForQuery, attributeLocation } from "./program-objects.js";
 import { captureNativeGlErrors, mergeClientGlErrors } from "./errors.js";
 import { drainGlErrors, readGlErrorQuery } from "./error-query.js";
 import { boundFramebuffer, isDefaultFramebuffer, validFramebufferTarget, GL_FRAMEBUFFER_UNDEFINED } from "./framebuffer.js";
@@ -799,7 +799,7 @@ function nameForObject<T>(objects: Map<number, T>, object: T | null): number {
 /** Native objects never cross the GLES numeric query protocol. Name zero
  * includes host-owned default-FBO redirects absent from the guest map. */
 function queryParameter(b: GlBinding, pname: number): unknown {
-  if (pname === GL_CURRENT_PROGRAM) return currentProgramName(b);
+  if (pname === GL_CURRENT_PROGRAM) return publicCurrentProgramName(b);
   // WebGL exposes source compilation and its compressed-format vector, but
   // does not expose GLES's binary-compiler and vector-count query enums.
   if (pname === 0x8df8) return []; // SHADER_BINARY_FORMATS: no binary loader

@@ -1,3 +1,4 @@
+import { retireProgramJournal, type GlProgramJournal } from "./program-journal.js";
 import { retireContextProgramCaptures, retireLastPublicProgramCaptures } from "./program-captures.js";
 import { forgetRendererLoss, rendererObjectEpoch } from "./renderer-loss.js";
 import { cubeExtraTextures } from "./cube-storage.js";
@@ -152,6 +153,9 @@ export type GlBinding = GlBindingInput & GlSharedObjects & GlSurfaceFields & GlC
   /** Logical name remains current when the latest link attempt failed and
    * currentProgram still holds an earlier installed native executable. */
   currentProgramId: number;
+  /** Optional driver journal; never consulted by draw/uniform hot paths. */
+  programJournal?: GlProgramJournal;
+  logicalProgramCurrent?: {name: number};
 
 
   shadow: GlShadowState;
@@ -424,6 +428,7 @@ export class GlContextRegistry {
   /** True when native resources were destroyed now; false when an accepted
    * execution retains them and retires them when it completes. */
   private retireContextBinding(b: GlBinding, replace: boolean): boolean {
+    retireProgramJournal(b);
     retireContextProgramCaptures(b);
     retireLastPublicProgramCaptures(b,this.bindings.values());
     // Copied replies own no native execution; public context retirement revokes
@@ -803,6 +808,7 @@ function destroyContextResources(b: GlBinding, gpuBos: ReadonlyMap<number,GpuBo>
   }
   b.currentProgram = null;
   b.currentProgramId = 0;
+  b.logicalProgramCurrent = undefined;
   b.currentDrawable = null;
   b.hasBeenCurrent = false;
   b.shadow = defaultShadow();
