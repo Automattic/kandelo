@@ -217,13 +217,20 @@ int main(int argc,char **argv) {
             glDeleteProgram(program);assert(glGetError()==GL_NO_ERROR);
         }
         assert(_wpk_gl_enable_program_journal());
-        if(!strcmp(argv[1],"driver-indeterminate")) {
+        if(!strcmp(argv[1],"driver-indeterminate")||!strcmp(argv[1],"driver-error-recovery")||!strcmp(argv[1],"driver-error-suffix")) {
             EGLContext peer=eglCreateContext(display,config,context,attrs);assert(peer!=EGL_NO_CONTEXT);
             assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
             assert(_wpk_gl_enable_program_journal());
             assert(eglMakeCurrent(display,surface,surface,context));
             glUseProgram(program);
+            const int error_recovery=!strcmp(argv[1],"driver-error-recovery");
+            const int error_suffix=!strcmp(argv[1],"driver-error-suffix");
+            if(error_recovery||error_suffix)glUseProgram(vertex);
+            if(error_recovery)glEnable(0xffff);
             assert(glGetError()==GL_INVALID_OPERATION);
+            if(error_suffix)glUseProgram(vertex);
+            if(error_recovery)assert(glGetError()==GL_INVALID_ENUM);
+            if(error_suffix)assert(glGetError()==GL_INVALID_OPERATION);
             assert(glGetError()==GL_NO_ERROR);
             glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
             glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);

@@ -4505,6 +4505,14 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
         "query_dependencies":"metadata-only-no-buffer-sync",
         "reads":"available-after-reset; no-native-replay-error-drain-or-upload-interruption",
     }));
+    s.add(Program, "gl_transport_error_observation", json!({
+        "opcode":shared::gl::OP_TRANSPORT_ERROR_OBSERVED,
+        "payload_bytes":0,
+        "returned_error":0x0502,
+        "effect":"consume-only-earlier-coalesced-invalid-operation-at-record-position",
+        "oracle":"no-exact-flag-proof; ordinary-error-observed-audit-unchanged",
+        "native_effects":false,
+    }));
     s.add(Program, "gl_program_journal_barrier", json!({
         "opcode":shared::gl::QOP_PROGRAM_JOURNAL_BARRIER,
         "journal_protocol":"gl_program_journal",
@@ -8603,6 +8611,7 @@ fn additive_top_level_section(section: &str) -> bool {
             | "gl_program_capture"
             | "gl_program_journal"
             | "gl_program_journal_barrier"
+            | "gl_transport_error_observation"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10271,6 +10280,21 @@ mod tests {
             let mut changed=new.clone();changed["gl_program_journal_barrier"][field]=json!("different");
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
             changed["gl_program_journal_barrier"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+        }
+        assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn transport_error_observation_is_additive_but_existing_semantics_are_exact() {
+        let old=base_snapshot();let mut new=old.clone();
+        new["gl_transport_error_observation"]=json!({"opcode":0x20,"payload_bytes":0,
+            "returned_error":0x502,"effect":"ordered-single-flag-observation"});
+        assert!(classify_compat_change(&old,&new).unwrap().breaking.is_empty());
+        for field in new["gl_transport_error_observation"].as_object().unwrap().keys() {
+            let mut changed=new.clone();changed["gl_transport_error_observation"][field]=json!("different");
+            assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
+            changed["gl_transport_error_observation"].as_object_mut().unwrap().remove(field);
             assert!(!classify_compat_change(&new,&changed).unwrap().breaking.is_empty(),"{field}");
         }
         assert!(!classify_compat_change(&new,&old).unwrap().breaking.is_empty());

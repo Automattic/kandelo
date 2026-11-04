@@ -275,7 +275,8 @@ Program selection now has shared C names, current-context references, cold
 native executable captures and checked host-journal transport. Its explicitly
 admitted C prototype connects bounded pending/result custody, generation-token
 caching and ordered shared publication; ordinary application admission remains
-off until the remaining failure and error-ordering cases are closed. A positive link-status cache without complete ownership
+off until the remaining loss, partial-publication and error-reply custody
+cases are closed. A positive link-status cache without complete ownership
 fails a newly shared pthread deletion regression; that prototype
 was not landed. This ownership remains required current-iteration work.
 This is only the start of B1: the remaining exact validation families and their audit
@@ -1095,8 +1096,10 @@ now connects its immutable shared queue,32-entry generation-token cache,
 256 bounded slots, caller-prefix submission and retained-receipt recovery.
 Ordinary applications still use checked selection. Automatic admission requires
 closure of genuine partial/indeterminate publication, native-loss and uncertain
-prefix reconciliation, ordered error observation through transport failures,
-and the complete final-context ownership audit. Shared dispatch/lifecycle guards now nest on
+prefix reconciliation, unknown error-drain reply custody and the complete
+final-context ownership audit. Ordered transport-error markers now prevent an
+earlier retained flag from reappearing after successful publication recovery,
+while preserving unrelated flags and later repetitions. Shared dispatch/lifecycle guards now nest on
 the owning thread while retaining peer exclusion and cancellation ordering;
 only the outer name scope reconciles unpublished external candidates. Query, submission and EGL retirement hooks now publish metadata without
 flushing foreign mutable encoders. Audit the final context collector alongside

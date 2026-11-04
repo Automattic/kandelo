@@ -7010,10 +7010,18 @@ orphaned mutex, and sharing such an encoder reports EGL_BAD_CONTEXT. A refused
 cold registration releases known capture ownership after an acknowledged
 journal disable, rather than dropping its descriptor.
 
+A failed guest error observation now appends an empty transport-observation
+record before any later command. It consumes only the coalesced earlier
+INVALID_OPERATION that this call already returned. Other flags and later
+repetitions remain independent; ordinary exact-mask observations retain their
+fatal audit. Reserved tail space and coalescing adjacent failure records make
+this path allocation-free without retrying publication or command execution.
+Only the failure path scans records; unused encoders gain no failure-state
+lookup per command. The optional Program snapshot section changes the contract
+digest while keeping versions56/3/17/21, requiring normal matching products.
+
 Automatic application admission is still off. Genuine partial/indeterminate
-publication, native-loss and failed-prefix reconciliation, ordered error
-observation through transport failures, and the complete final-context audit
-remain required before activation. These are unfinished B1 work. The prototype
-adds no wire/snapshot change beyond the existing optional transport; versions
-remain56/3/17/21. Normal matching products are required. Focused warm device
-request counts do not establish application latency or native desktop feel.
+publication, native-loss and failed-prefix reconciliation, unknown error-drain
+reply custody, and the complete final-context audit remain required before
+activation. These are unfinished B1 work. Focused warm device request counts
+do not establish application latency or native desktop feel.

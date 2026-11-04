@@ -2536,6 +2536,31 @@ misreading it. Rebuild the libraries, linked consumers and host together
 through the normal build graph. Both SDK layout checks and the current
 kernel/snapshot check pass without changing the reserved family.
 
+### Ordered transport-error observations within ABI 56 and GL table 17
+
+`OP_TRANSPORT_ERROR_OBSERVED` (`0x0020`) has an empty payload. It denotes
+an `INVALID_OPERATION` already returned by a failed guest transport call.
+The host consumes only that coalesced flag at this record's exact position,
+leaving other flags, other contexts and errors from later commands intact.
+It performs no native operation or upload interruption. Unlike the ordinary
+`OP_ERROR_OBSERVED`, this record claims no exact knowledge of other flags.
+The existing exact-mask audit remains unchanged. Nonempty payloads reject the
+whole command batch before effects.
+
+The C failure path reserves its header in advance alongside the existing
+error trailer, without allocation or another submission. Consecutive failed
+observations with no intervening record coalesce; this bounded scan runs only
+on failure. This does not recover arbitrary error flags lost with an unknown
+error-drain reply; retained drain-reply custody remains unfinished work.
+
+The new optional Program section `gl_transport_error_observation` records
+this command without changing any previous snapshot entry. Its addition
+changes the program-contract digest. Keep versions56/3/17/21, and rebuild
+matching SDKs, linked programs, kernel and images normally. Old programs keep
+their existing path; an old host rejects the new record rather than silently
+accepting it. Future changes to this established section are exact-match
+compatibility checks, including its error value, empty payload and effect.
+
 ### Additive multisampled surface configs within ABI 56
 
 Two existing values gain new accepted forms; no layout, operation number

@@ -36,6 +36,7 @@
       "gl_server_wait",
       "gl_shader_program_creation",
       "gl_submit_query",
+      "gl_transport_error_observation",
       "host_env_imports",
       "host_intercepted_syscalls",
       "io_multiplexing",
@@ -1942,6 +1943,14 @@
     "reply_magic": 1196642609,
     "request": 75,
     "retry": "none"
+  },
+  "gl_transport_error_observation": {
+    "effect": "consume-only-earlier-coalesced-invalid-operation-at-record-position",
+    "native_effects": false,
+    "opcode": 32,
+    "oracle": "no-exact-flag-proof; ordinary-error-observed-audit-unchanged",
+    "payload_bytes": 0,
+    "returned_error": 1282
   },
   "host_adapter": {
     "kernel_export_lifecycles": [

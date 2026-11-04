@@ -157,6 +157,13 @@ function decodeAndDispatchFrame(
       mergeClientGlErrors(b,payload.getUint32(0,true));
       return GL_SUBMIT_OK;
     }
+    if (op === O.OP_TRANSPORT_ERROR_OBSERVED) {
+      // WHY: a failed transport has already returned INVALID_OPERATION.
+      // Consume the coalesced earlier flag here, without claiming knowledge
+      // of other flags or consuming the same flag from a later command.
+      consumeObservedGlError(b,1 << (0x502 - 0x500));
+      return GL_SUBMIT_OK;
+    }
     if (op === O.OP_ERROR_OBSERVED) {
       if (glAuditOn) auditGuestErrorFlags(b.errors,payload.getUint32(0,true));
       consumeObservedGlError(b,payload.getUint32(4,true));
@@ -399,6 +406,7 @@ function normalizeTextureInternalFormat(internal: number, format: number, type: 
 }
 
 function validPayload(op: number, v: DataView): boolean {
+  if (op === O.OP_TRANSPORT_ERROR_OBSERVED) return exact(v,0);
   if (op === O.OP_CLIENT_ERRORS) return exact(v,4) && (v.getUint32(0,true) & ~GL_CLIENT_ERROR_MASK) === 0;
   if (op === O.OP_ERROR_OBSERVED) {
     if (!exact(v,8)) return false;

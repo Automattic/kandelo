@@ -644,8 +644,8 @@ static int flush_commands(void) {
     const uint32_t errors = state->client_errors;
     if (g_cursor == base && !errors) return 0;
     if (errors) {
-        /* reserve() always leaves this fixed trailer available. Error
-         * recording neither allocates nor submits at the invalid API call. */
+        /* reserve() leaves this trailer plus a transport-observation header
+         * available. Error recording neither allocates nor submits. */
         uint8_t *trailer = g_cursor;
         w_u16(&trailer, OP_CLIENT_ERRORS); w_u16(&trailer, 4); w_u32(&trailer, errors);
         g_cursor = trailer;
@@ -680,8 +680,8 @@ static uint8_t *reserve(size_t bytes) {
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return NULL;
     if (g_cursor == NULL) g_cursor = base;
-    if (bytes > WPK_GL_CMDBUF_LEN - 8u) return NULL;
-    if ((size_t)(g_cursor - base) + bytes > WPK_GL_CMDBUF_LEN - 8u) {
+    if (bytes > WPK_GL_CMDBUF_LEN - 12u) return NULL;
+    if ((size_t)(g_cursor - base) + bytes > WPK_GL_CMDBUF_LEN - 12u) {
         if (flush_commands() != 0) return NULL;
     }
     return g_cursor;
@@ -1854,6 +1854,32 @@ static int accept_error_drain(struct wpk_gles_context *state, int *retained) {
     *retained = (int)reply[1];
     return 1;
 }
+/* This failure path must neither allocate nor try to submit again. Normal
+ * reservations leave one observation header plus the error trailer free.
+ * Consecutive failures with no intervening record coalesce: both returned the
+ * same synthetic flag, and no command between them could set a new host flag.
+ * Scan only on failure, avoiding unused-feature work in command encoders. */
+static void record_transport_error_observation(void) {
+    uint8_t *base = _wpk_gl_cmdbuf_base();
+    if (!base) return;
+    if (!g_cursor) g_cursor = base;
+    uint8_t *last = NULL;
+    for (uint8_t *at = base; at < g_cursor;) {
+        uint16_t length;
+        if (g_cursor-at < 4) abort();
+        memcpy(&length,at+2,2);
+        if (g_cursor-at < 4+length) abort();
+        last=at;at+=4+length;
+    }
+    if (last && g_cursor-last==4) {
+        uint16_t op;memcpy(&op,last,2);
+        if (op==OP_TRANSPORT_ERROR_OBSERVED) return;
+    }
+    if (g_cursor-base > WPK_GL_CMDBUF_LEN-12u) abort();
+    uint8_t *at=g_cursor;
+    w_u16(&at,OP_TRANSPORT_ERROR_OBSERVED);w_u16(&at,0);
+    g_cursor=at;
+}
 static GLenum failed_error_observation(struct wpk_gles_context *state) {
     state->client_errors &= ~(1u << (GL_INVALID_OPERATION-GL_INVALID_ENUM));
     for (uint32_t i=0;i<state->held_error_count;i++) if (state->held_errors[i]==GL_INVALID_OPERATION) {
@@ -1862,7 +1888,9 @@ static GLenum failed_error_observation(struct wpk_gles_context *state) {
         break;
     }
     GLenum reset_error;
-    return _wpk_gl_reset_error(&reset_error)?reset_error:GL_INVALID_OPERATION;
+    if (_wpk_gl_reset_error(&reset_error)) return reset_error;
+    record_transport_error_observation();
+    return GL_INVALID_OPERATION;
 }
 GLenum glGetError(void) {
     /* KHR_robustness section 2.3.1rob: GetError keeps working after a
@@ -1921,6 +1949,8 @@ GLenum glGetError(void) {
          * until a reply proves the host received them, so none is lost; host
          * flags a failed reply may have carried away are the remaining
          * copyout custody gap, as for any query whose completion is unknown.
+         * An ordered transport observation prevents an earlier retained
+         * INVALID_OPERATION from being reported twice after recovery.
          * The next call asks the host again. */
         return failed_error_observation(state);
     }

@@ -25,6 +25,7 @@
 /* Wire tag is independent of the selected production revision in baseline runs. */
 #define GRAPHICS_SURFACE_CAPABILITIES 0x002du
 #define GRAPHICS_ERROR_OBSERVED 0x001fu
+#define GRAPHICS_TRANSPORT_ERROR_OBSERVED 0x0020u
 /* Existing bridge entry points; this fixture does not advertise GLES3. */
 void glGenVertexArrays(GLsizei, GLuint *);
 void glDeleteVertexArrays(GLsizei, const GLuint *);
@@ -265,6 +266,7 @@ static int program_link_failure;
 static uint32_t query_gl_error;
 static uint32_t client_error_masks[8];
 /* QOP_GET_ERROR accounting and drain-reply fault injection. */
+static unsigned transport_observations;
 static unsigned error_queries, drain_requests, drain_capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
 static unsigned drain_corrupt, drain_lost_reply;
 static uint32_t drain_extra_error;
@@ -1123,7 +1125,7 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
             assert(at + 4 + len <= end);
             uint32_t words[2] = {0};
             memcpy(words, commands + at + 4, len < 8 ? len : 8);
-            if (op != OP_CLIENT_ERRORS && op != GRAPHICS_ERROR_OBSERVED) only_client_errors = 0;
+            if (op != OP_CLIENT_ERRORS && op != GRAPHICS_ERROR_OBSERVED && op != GRAPHICS_TRANSPORT_ERROR_OBSERVED) only_client_errors = 0;
             if ((op == OP_ENABLE || op == OP_DISABLE) && words[0] == 0xdead) client_error_masks[fd-10] |= 1u;
             if (op == OP_CLEAR && (words[0] & ~(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_STENCIL_BUFFER_BIT)))
                 client_error_masks[fd-10] |= 2u;
@@ -1134,6 +1136,9 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
                 int32_t width, height;
                 memcpy(&width,commands+at+12,4); memcpy(&height,commands+at+16,4);
                 if (width < 0 || height < 0) client_error_masks[fd-10] |= 2u;
+            }
+            if (op == GRAPHICS_TRANSPORT_ERROR_OBSERVED) {
+                assert(len == 0);transport_observations++;client_error_masks[fd-10] &= ~4u;
             }
             if (op == GRAPHICS_ERROR_OBSERVED) {
                 assert(len == 8 && !(words[0] & ~0x67u) && !(words[1] & ~words[0]));
@@ -5237,7 +5242,7 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "error-predicted-observation-wrap")) {
         assert(glGetError() == GL_NO_ERROR);
         const unsigned queries = error_queries, submits = submit_batches;
-        for (unsigned i = 0; i < (WPK_GL_CMDBUF_LEN-8u)/8u; ++i) glDepthMask(GL_TRUE);
+        for (unsigned i = 0; i < (WPK_GL_CMDBUF_LEN-12u)/8u; ++i) glDepthMask(GL_TRUE);
         assert(submit_batches == submits);
         /* The observation itself needs space. A flush revokes the proof
          * before that call may consume a flag or answer locally. */
@@ -5892,10 +5897,14 @@ int main(int argc, char **argv) {
          * arbitrary host-error copyout custody is not established here. After
          * a complete drain no request has followed, so the answer is local. */
         assert(glGetError() == GL_NO_ERROR);
-        assert(compound_batches == compounds + 1 && submit_batches == submits + 1 &&
+        /* A failed observation leaves one ordered header. The next
+         * explicit call submits only that header, never the earlier clear. */
+        const unsigned observed = noalloc ? 0u : 1u;
+        assert(compound_batches == compounds + 1 + observed && submit_batches == submits + 1 + observed &&
                clear_commands == clears + (rejected ? 0u : 1u) &&
+               transport_observations == observed &&
                combined.error_queries == (rejected ? 1u : noalloc ? 1u : 2u));
-        glFlush(); assert(submit_batches == submits + 1);
+        glFlush(); assert(submit_batches == submits + 1 + observed);
         combined.enabled = 0;
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         assert(allocation_count() == 0);
@@ -6117,7 +6126,7 @@ int main(int argc, char **argv) {
         glBindBuffer(GL_ARRAY_BUFFER,buffer); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
         get(GL_ARRAY_BUFFER,GL_BUFFER_SIZE,&value); assert(value == 4 && scalar_queries == 1);
         fail_submit = 1;
-        for (unsigned i=0; i<(WPK_GL_CMDBUF_LEN-8)/8+1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        for (unsigned i=0; i<(WPK_GL_CMDBUF_LEN-12)/8+1; i++) glClear(GL_COLOR_BUFFER_BIT);
         fail_submit = 0; glFlush();
         assert(clear_commands == 0 && glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
         glDeleteBuffers(1,&buffer); assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
@@ -6719,7 +6728,7 @@ int main(int argc, char **argv) {
         glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices); glEnableVertexAttribArray(0); glFlush();
         // Fill to within one CLEAR of the command limit. Reserving the whole
         // inline record must flush first, and refusal must not publish it.
-        for (unsigned i=0; i<WPK_GL_CMDBUF_LEN/8-1; i++) glClear(GL_COLOR_BUFFER_BIT);
+        for (unsigned i=0; i<(WPK_GL_CMDBUF_LEN-12)/8; i++) glClear(GL_COLOR_BUFFER_BIT);
         fail_submit=1; glDrawArrays(GL_POINTS,0,1); fail_submit=0; glFlush();
         assert(draw_commands == 0 && inline_draws == 0 && clear_commands == 0 && glGetError() == GL_INVALID_OPERATION);
         glDrawArrays(GL_POINTS,0,1); glFlush();

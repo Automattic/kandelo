@@ -272,6 +272,32 @@ describe("ordered client error flags", () => {
     expect(gl.log).toEqual([]);expect(b.errors).toEqual([]);
   });
 
+  it.each([[],[0x502],[0x500,0x502,0x505]].map(flags=>({flags})))("orders a transport observation without claiming other flags: $flags", ({flags}) => {
+    const gl = new RecordingGl(), {reg,b} = setupBinding(gl);
+    reg.bind({pid:1,sessionId:2,cmdbufAddr:0,cmdbufLen:64});
+    const peer=reg.get(1,2)!;peer.errors.push(0x502);
+    b.errors.push(...flags);
+    const t=new Tlv(b.cmdbufView!.buffer);
+    t.op(O.OP_TRANSPORT_ERROR_OBSERVED,0);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(0);
+    expect(b.errors).toEqual(flags.filter(value=>value!==0x502));
+    expect(peer.errors).toEqual([0x502]);expect(gl.log).toEqual([]);
+    // A suffix can set the same flag again after the observation.
+    const h=t.op(O.OP_CLIENT_ERRORS,4);t.view.setUint32(h.p,4,true);
+    expect(decodeAndDispatch(b,4,t.p-4)).toBe(0);
+    expect(b.errors).toEqual([...flags.filter(value=>value!==0x502),0x502]);
+  });
+
+  it("refuses a nonempty transport-observation payload before any effects", () => {
+    const gl=new RecordingGl(), {b}=setupBinding(gl);
+    b.errors.push(0x502);
+    const t=new Tlv(b.cmdbufView!.buffer);
+    const h=t.op(O.OP_CLEAR,4);t.view.setUint32(h.p,0x4000,true);
+    t.op(O.OP_TRANSPORT_ERROR_OBSERVED,4);
+    expect(decodeAndDispatch(b,0,t.p)).toBe(GL_SUBMIT_EINVAL);
+    expect(b.errors).toEqual([0x502]);expect(gl.log).toEqual([]);
+  });
+
   it("merges repeated client/native flags once while retaining unrelated flags", () => {
     const gl = new RecordingGl(), { b } = setupBinding(gl);
     const pending = [0x500,0x505,0];

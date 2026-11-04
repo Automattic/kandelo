@@ -23172,3 +23172,52 @@ and manual-browser acceptance remain open.
 Disk was checked before producers. R195 cache GC used `./run.sh cache-gc --apply`
 and removed0 bytes; protected artifacts/evidence were preserved. Disk after
 R199 has37GiB available. No new boundary, deferral or reduced acceptance applies.
+
+## 2026-11-04 ordered failure observations (R200–R203)
+
+A failed publication can leave an earlier INVALID_OPERATION in the queued
+command prefix after glGetError has already returned that same transport
+error. Recovery must consume the coalesced earlier flag before later commands
+can record it again. Clearing flags after the whole recovered prefix would
+also erase a later error. The C driver now records that observation at the
+original boundary, using empty OP_TRANSPORT_ERROR_OBSERVED0x0020. It does not
+claim a complete flag prediction or weaken the ordinary exact-mask audit.
+Other flags, peer contexts and later repetitions retain their own ownership.
+Normal reservations leave room for this header and the error trailer. Adjacent
+failed observations coalesce in a scan confined to the failure path, without
+allocation, mutator replay or extra work in unused command encoders.
+
+The new optional Program section is additive; every old snapshot entry is
+unchanged. Versions remain56/3/17/21. The program-contract digest changes,
+so matching SDK/kernel/program/image products must be normally rebuilt.
+Automatic application activation remains off.
+
+| Run / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R200 `graphics-driver-error-order-r200-1104-170326-2029`, port6019 | FAIL4 / PASS4 | Actual Chromium, both widths and production/fatal. Recovery leaves an incorrect prior flag; suffix controls also check that a later repetition survives |
+| R201 classifier and focused host controls | Classifier PASS; initial fixture FAIL | The first host test parameterization incorrectly spread flag arrays; corrected without changing runtime acceptance |
+| R201-r2 native controls | FAIL4 | Added observation headers change failure-only submission counts and leave four fewer bytes for ordinary records; fixed the old fixture's capacity assumptions while retaining no-replay/no-extra-draw assertions |
+| R201-r3 `graphics-driver-error-prepare-r201-r3-1104-170909-69f3` | PASS22s | Full native C/UBSan491 and focused bridge169 assertions; additive classifier protects every established field |
+| R202-r2 `graphics-driver-error-build-r202-r2-1104-170948-473a` | PASS3m39 | Current release xtask, normal SDK32/64, canonical kernel/image writer, ABI/evidence708; frozen inputs/products. Original R202 exits before producing anything because its prerequisite failed |
+| R204 `graphics-driver-error-focused-r204-1104-171636-b8d5`, port6021 | PASS40s | All24 new real-GPU cases pass across three engines/both widths/production+fatal; frozen source/products; zero duplicate intents and native live0 before teardown |
+| R203 `graphics-driver-error-final-r203-1104-171019-a30b`, port6020 | PASS15m30 | ABI/evidence708, xtask842 unit+8 integration, Rust13+2869+96, native C491, graphics2155/88, shader harness with no hard failures, Node10 and GPU372; frozen source/products |
+
+The exact final command is
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-driver-error-final-r203/run.sh`,
+started and collected through scripts/agent-job. The script records each exact
+stage command and its output separately. All300 journal results (100 per engine)
+record actual guest hashes, the canonical routed kernel SHA256 `124b9ca970ca455b37f2a4a32f0708a616a269f7040db6201625d2f95b07c07f`,
+and native program live0 before whole-machine teardown. The24 new cases prove
+recovered error ordering and preservation of a later same-valued error, on
+three engines, both widths and production/fatal modes.
+
+Full host TypeScript checking still fails39 diagnostics. The complete compiler
+stream equals retained R195 after removing only dev-shell preambles; this is
+not a type-check pass. Node controls do not constitute native GLES rendering.
+These checks do not establish full CTS/desktop/memory/POSIX/benchmark or manual
+browser acceptance. Native-loss, genuine partially applied publication,
+failed-prefix and unknown error-drain reply custody remain required before
+activation, alongside the final-context audit and remaining B1 hot paths and
+application measurements. No application performance/native-feel claim or new
+preview follows. All remaining B2–B6/C1–C3 and original final gates remain
+required without a new boundary, deferral or reduced acceptance criterion.

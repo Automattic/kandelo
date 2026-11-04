@@ -4253,6 +4253,8 @@ pub mod gl {
     /// B1 ordered local glGetError observation: pending mask, consumed bit.
     /// Both words use bits 0,1,2,5,6; consumed is zero or one pending bit.
     pub const OP_ERROR_OBSERVED: u16 = 0x001F;
+    /// Ordered observation of transport INVALID_OPERATION, not an exact flag proof.
+    pub const OP_TRANSPORT_ERROR_OBSERVED: u16 = 0x0020;
     pub const OP_TEX_PARAMETERF: u16 = 0x0208;
     pub const OP_COMPRESSED_TEX_IMAGE_2D: u16 = 0x0209;
     pub const OP_COMPRESSED_TEX_SUB_IMAGE_2D: u16 = 0x020A;
@@ -6713,6 +6715,7 @@ mod gl_tests {
             OP_BLEND_EQUATION_SEPARATE,
             OP_CLIENT_ERRORS,
             OP_ERROR_OBSERVED,
+            OP_TRANSPORT_ERROR_OBSERVED,
             OP_GEN_BUFFERS,
             OP_DELETE_BUFFERS,
             OP_BIND_BUFFER,
