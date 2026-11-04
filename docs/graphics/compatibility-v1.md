@@ -21555,3 +21555,59 @@ overhead remain required before the ship-bar measurements can be accepted.
 The user has released the previous visible test session; these controls run
 headlessly. This increment makes no native-feel, latency, throughput, FPS or
 Stage B-completion claim and does not publish a new preview.
+
+
+### Moving-pixel controller: headless proof and preserved native failures
+
+The measurement controller now maps viewport coordinates into the captured
+window with four temporary markers. It removes the markers, learns directly
+from native foreground/background rasters and verifies the learned pose plus
+two held-out poses through the matcher. Timed input keeps the original event
+creation timestamp; actual native response frames supply the visibility
+endpoint. Reordered/duplicate frames, inactive displays and suspended/blank
+capture invalidate the run. Pending observation failures remain owned while
+input dispatch is in flight.
+
+The same controller passes its headless replay on Chromium 153.0.8010.12,
+Firefox 155.0 and WebKit 26.6 in DOM and worker-WebGL modes: 360 ordinary
+responses, six no-op controls and six deliberate 50 ms stalls. It recovers the
+synthetic 0.75 scale and offsets (7, 53) exactly. Its timestamps are synthetic,
+so these results make no native latency claim. Exact command:
+`scripts/dev-shell.sh benchmarks/desktop-latency/run-cursor-control.sh` with
+private `.context/graphics-cursor-controller-r55/` and `headless` arguments;
+50 seconds. The preceding corrected replay r52 also passes all six cohorts.
+The scoped TypeScript check and strict-Node observation-row failure/order/
+foreground/timeout controls pass. Frozen source and binary hashes are retained.
+
+Initial evidence remains intact. The r50 replay was stopped after verified
+high Node CPU and over 1 GiB RSS while transferring individual screenshot
+pixel numbers; it contributes no complete result. Packed-byte transfer
+replaces that transport. The r51 replay passes five cohorts but its deliberate
+worker stall exposes a one-screenshot replay adapter: it captures before the
+stall finishes. Only the headless adapter now drains submitted work before
+capturing; the native adapter remains driven by actual window frames. The
+first scoped typecheck reports three missing callback annotations; the fixed
+and final scoped checks pass without weakening types.
+
+The maintainer supplied a short unlocked session for native controls. The r53
+Chromium attempts visibly capture all four markers but reject their colors:
+ScreenCaptureKit defaults to the display gamut, while marker values are sRGB.
+The recorder now explicitly selects sRGB, as specified by the installed Apple
+SDK. Native coordinate fitting then passes in r54 with unit scale and offsets
+(0, 87), but the provisional browser-PNG-derived template fails at native
+anti-aliased edges. Recorded native cursor pixels give mean differences of
+4.32/6.31 and maximum differences of 94/130 for DOM/worker templates, so the
+existing maximum-error threshold correctly rejects them. No successful cursor
+latency or complete native run is claimed. Source, captures, frame records and
+the offline analysis remain in `.context/graphics-cursor-native-r53/` and
+`-r54/`.
+
+The current controller eliminates that browser/native template conversion:
+foreground/background learning occurs in the capture raster, followed by
+independent pose checks with unchanged thresholds. It still needs a positive
+physical replay. The previous visible session is released; no further headed
+run should start without another ready window. These diagnostic changes do
+not alter the runtime, program 56/host 3/GL 17/fork 21 or the normal preview.
+Actual desktop cursor/content correlation, instrumentation overhead and the
+full native-feel workload/engine matrix remain open. B1 remains partial;
+a normal-built B preview is still required before C1–C3.

@@ -6655,3 +6655,14 @@ Clock-only bounds around the first captured response are insufficient.
 Coordinates, actual guest cursor/content correlation and instrumentation
 overhead must be validated before this observer establishes desktop latency.
 Headless DOM/worker pixel controls establish classification only.
+
+
+The moving-pixel controller fits CSS viewport coordinates from temporary
+markers rather than assuming browser toolbar offsets. It learns templates
+from foreground/background captures and checks independent poses through
+native frame identity. Capture output is explicitly sRGB so marker bytes
+have a declared color space. Browser PNG and native compositor edge coverage
+are not treated as interchangeable. A shared headless replay exercises the
+controller with synthetic geometry/timestamps; it cannot establish native
+desktop latency. The native path remains driven by WindowServer samples,
+with no worker-acknowledgement substitute for a visible response.

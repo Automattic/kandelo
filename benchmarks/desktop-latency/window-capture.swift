@@ -278,7 +278,8 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       let observer = Observer()
       let config = SCStreamConfiguration()
       observer.observedApplication = application
-      let width = CommandLine.arguments.count == 4 ? Int(CommandLine.arguments[3]) ?? 0 : 512
+      let requestedWidth = CommandLine.arguments.count == 4 ? CommandLine.arguments[3] : "512"
+      let width = requestedWidth == "points" ? Int(window.frame.width.rounded()) : Int(requestedWidth) ?? 0
       guard (128...2048).contains(width) else {
         throw PixelMatcherError.invalid("capture width must be 128 through 2048")
       }
@@ -286,6 +287,9 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
       config.height = max(128, Int(Double(width) * window.frame.height / window.frame.width))
       guard config.height <= 2048 else { throw PixelMatcherError.invalid("capture height") }
       config.pixelFormat = kCVPixelFormatType_32BGRA
+      // Browser screenshots and calibration colors are sRGB. The default
+      // follows the display gamut and cannot be compared as raw RGB bytes.
+      config.colorSpaceName = CGColorSpace.sRGB
       config.minimumFrameInterval = CMTime(value: 1, timescale: 120)
       config.queueDepth = 3
       config.showsCursor = false
@@ -304,6 +308,7 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
         "titleMatched": window.title?.contains(title) == true, "activated": activated,
         "unhidden": unhidden, "hiddenBefore": hiddenBefore, "hiddenAfter": application.isHidden,
         "active": application.isActive, "displays": displays,
+        "captureColorSpace": "sRGB",
         "windowBounds": [
           window.frame.origin.x, window.frame.origin.y, window.frame.width, window.frame.height,
         ],

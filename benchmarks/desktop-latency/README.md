@@ -119,3 +119,60 @@ controlled response must remain visible until the next stimulus; repeated or
 reused poses require an independently verified transition. A missing preceding
 non-response gives a zero lower bound. Historical clock-only lower quantiles
 must not be used as exact first-display latency or evidence of a ship-bar miss.
+
+
+## Moving-pixel controller and viewport coordinates
+
+```bash
+scripts/dev-shell.sh benchmarks/desktop-latency/run-cursor-control.sh .context/cursor-replay headless
+scripts/dev-shell.sh npx --no-install tsx --unhandled-rejections=strict benchmarks/desktop-latency/observation-rows-control.ts
+```
+
+The replay runs the same controller against headless DOM and worker-WebGL
+content on three engines. Its capture adapter adds a synthetic border and
+0.75 scale. Four temporary colored markers recover the scale and offsets;
+missing, ambiguous, distorted or inconsistent geometry fails calibration.
+Markers are removed before cursor learning. The controller learns directly
+from foreground/background capture rasters, then proves the learned pose and
+two held-out poses by native matcher identity. Calibration screenshots and
+worker acknowledgements never supply the timed display endpoint.
+
+Sixty ordinary inputs vary their phase by 0/3/7/11 ms, followed by a deliberate
+50 ms handler/worker stall. A no-op input must retain the preceding pose.
+Original event timestamps, all frame matches, ambiguity, missing observations,
+clock bounds, calibration data and failures remain in the private output.
+The headless adapter drains submitted work before its next screenshot because
+it has no autonomous window-frame stream. Its timestamps and geometry are
+synthetic; the result deliberately omits native latency quantiles.
+
+The native mode uses actual WindowServer observations and never drains or
+waits for a worker acknowledgement on the timed path. Coordinate calibration
+uses sRGB capture output explicitly: the default follows the display's gamut
+and its bytes cannot be compared directly with sRGB marker colors. Template
+learning also stays within native captured pixels; resampled browser PNG edges
+are not interchangeable with native-composited edges. No color or matching
+tolerance is widened to hide a failed calibration.
+
+After coordinating a short unlocked, visible session, a diagnostic operator
+can run the native control with the same driver:
+
+```bash
+scripts/dev-shell.sh env KPERF_NATIVE_ENGINES=chromium KPERF_CURSOR_SAMPLES=8 benchmarks/desktop-latency/run-cursor-control.sh .context/cursor-native native
+```
+
+Omit those two environment settings for all three engines and sixty ordinary
+inputs each. Native capture width uses `points`, the owned window's logical
+width, to avoid unnecessary thumbnail resampling. The recorder still enforces
+its 128–2048-pixel bound. It selects only the launched browser process family,
+requires an unlocked authorized console, and invalidates a timed run if the
+window loses foreground status or the display blanks/suspends. The client
+also refuses reordered/duplicate frames and retains failure custody while
+input dispatch is in flight. Cleanup stops only its recorder and browsers.
+
+The headless replay is passing. Native attempts found and corrected capture
+color-space assumptions, then exposed browser/native edge differences. The
+revised native-pixel learning path still needs a successful physical replay.
+Actual Kandelo Foot/ScummVM correlation, continuous motion/drag/resize/scroll
+workloads, concurrent load, missed-frame accounting and total capture/matcher
+overhead remain required for desktop acceptance. This standalone control is
+not a Stage B application preview or a native-feel result.
