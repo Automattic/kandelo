@@ -22290,3 +22290,26 @@ pass; source/archive hashes and copied source identities are retained in
 contracts of the ordinary driver before the new C fast path, not latest
 normal artifacts, full B1, performance or native-feel acceptance. The unsafe
 name-only cache remains rejected. Final combined validation stays required.
+
+
+**Validation queue and disk custody, 2026-11-04.** The next coherent normal
+build R30 is frozen at266a35ae5a (`run.sh-1104-052535-046c`). Its admission
+job (`run.sh-1104-052635-ecfc`, port5949) waits for a successful full build
+and uses the normal SDK sharing, surfaceless and default-target regressions
+before the three-engine compositor checks. The later host-only executable
+capture foundation and expanded sharing controls are outside that producer.
+A full host inventory at96e9dcd068 is frozen in R35 and queued after both
+producer and admission (`run.sh-1104-060637-8d68`); it has not passed yet.
+The superseded wait-only R124 attempt was canceled before provisioning or
+tests because its artifact inventory assumed a legacy kernel mirror. The
+replacement hashes the normal SourceOnly kernel and rebuilds the canonical
+rootfs for the ordinary resolver. Historical full-host failures remain open.
+
+R125 removed4,816,020 KiB of inactive native Cargo debug object/test caches
+from owned R22, integration, R20 and R16 trees. Two open-file guards, tracked
+file and Wasm exclusions, and exact path/size inventories are retained in
+`.context/graphics-cache-clean-r125/`. Active R30 build data, standalone
+tools, guest Wasm, SDKs, images, source and validation logs were preserved.
+Free space was about28 GiB at06:43; concurrent writes and APFS clones mean
+that number is not a causal estimate of reclaimed bytes. The current normal
+partial-B1 preview at5693 remains the earlier R16 product, not full B1 or C.
