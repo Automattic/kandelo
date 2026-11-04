@@ -3,6 +3,8 @@ import {fileURLToPath} from "node:url";
 import {expect,test} from "@playwright/test";
 import {resolveBinary} from "../../../host/src/binary-resolver";
 import {compileSdkFixture} from "../../../host/test/support/compile-sdk-fixture";
+import {KandeloImageFs} from "../../../images/vfs/lib/kandelo-image-fs";
+import {installBrowserMemoryBoundaryProbe,memoryBoundaryFailures} from "./support/browser-memory-boundary";
 const fixtures=new Map<string,ReturnType<typeof compileSdkFixture>>();
 test.beforeAll(()=>{
   for(const arch of ["wasm32","wasm64"] as const)

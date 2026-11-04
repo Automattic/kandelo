@@ -22390,3 +22390,87 @@ crates/kandelo-image-module/build-wasm.sh`. R127-r4's script records their
 individual statuses; R131 records the final host-only view fix. R133's script
 records the standard fixture commands, private config, port and output root.
 All commands use `scripts/dev-shell.sh`; no final whole-tree pass is implied.
+
+
+**B1 creation admission and A3 query-reset propagation, 2026-11-04.**
+The C driver now uses the acknowledged shader/program allocation query before
+returning a public name. Definite rejection returns zero; an uncertain or
+malformed reply also returns zero, revokes binding knowledge and never
+retries the possibly executed mutation. The existing dispatch/name scope,
+monotonic reservation, prior-error proof and cancellation rules are retained.
+This is creation admission, not the required shared C program/executable
+ownership graph or a local UseProgram cache. B1 remains incomplete and
+B2–B6/C1–C3 have not started. No performance improvement is claimed.
+
+An actual native-OOM probe exposed an A3 propagation bug: GlQueryRequest
+converted the renderer's recognized ENODEV to generic EIO, preventing libc
+from recording the reset. The failure branch now preserves only ENODEV;
+all other negative/oversized results remain EIO. Plain and compound queries
+leave guest output untouched and do not replay. This restores the existing
+D-49/D-50 reset contract, with versions56/3/17/21 and the c6bd72e283 snapshot
+and digest unchanged. No new reset boundary is introduced.
+
+| Evidence | Result and scope |
+| --- | --- |
+| R138, graphics-program-creation-r138-1104-072330-30a2 | Normal SDK32/64; 13 allocation/custody controls; frozen inputs/products pass. |
+| R139-r2, graphics-program-creation-r139-r2-1104-073252-4dd5, port5960 | 52 Node and156 browser device-double controls pass; three engines/two widths, including expected old-client failure arms. |
+| R140-r3, graphics-program-creation-r140-r3-1104-074434-aba7, port5962 | 8 Node and72 actual-GPU standard SDK fixture cases pass: creation, sharing, surfaceless and default-target; all engines/widths, production/fatal. |
+| R142/R143-r2, graphics-query-reset-r143-r2-1104-075917-5805 | Before: two new Rust tests fail EIO versus ENODEV. After:86 GLIO tests,449 native UBSan controls,2,038 graphics assertions/85 files, normal SDK32/64, own kernel/image writer and ABI check pass. |
+| R145-r4, graphics-query-reset-r145-r4-1104-082605-fbe5, port5969 | 4 Node no-renderer controls and72 actual-GPU controls pass: old/new kernel × two widths × direct creation/compound creation/readback × production/fatal × three engines. |
+
+R145-r4 injects one native OUT_OF_MEMORY after an actual native call inside
+the normal dedicated kernel worker. The old kernel fails the guest reset
+assertion as expected; the corrected kernel records UNKNOWN_CONTEXT_RESET,
+returns CONTEXT_LOST once, and preserves a healthy shared peer with exact
+RGBA51/153/204/255. Each case checks one attributed context-reset diagnostic,
+one injection, one error, no surviving native program, no audit divergence,
+no page error and no browser-memory boundary violation. These are focused
+controls, not the full browser-memory gate, desktop admission or CTS pass.
+The candidate kernel is R143-r2/kernel-after.wasm; the before kernel is the
+preserved c6 product under R134/before-products. Both use the same normally
+compiled current SDK guest and matching program digest, with no fake GPU or
+main-thread kernel.
+
+Exact commands and source/product hashes are retained in each named
+`.context/graphics-*` evidence root. All execute through scripts/dev-shell.sh.
+R143-r2 runs the ordinary native C suite, runtime-core glio_ tests, SDK ensures,
+ABI checker and graphics Vitest config; R145-r4 runs its compile.sh, focused
+Vitest config and Playwright config on Chromium, Firefox and WebKit with one
+worker and private output. Its frozen input and product checks pass. The
+integration legacy kernel mirror is not updated by this targeted build;
+final coherent normal-built products and complete validation remain open.
+
+Earlier fixture failures remain disclosed. R139 copied stdout before awaiting
+guest exit; the corrected harness snapshots afterward. R140-r2 lacked two
+imports in the default-target spec and failed before guest execution; the
+permanent imports are repaired without changing assertions. Initial R144
+wrappers lost the initialization message or used an invalid blob-relative
+process-worker URL. R144-r3 then passes its two actual Chromium controls.
+R145's production cases pass, while fatal-mode injection was bypassed because
+the audit wraps prototype methods. The corrected fixture injects beneath
+that wrapper and preserves the independent audit. R145-r2 accidentally reused
+the original output basename and reran two original fatal failures, overwriting
+those summaries/two case directories; the other70 original case directories
+remain. It is not evidence for the corrected injection. R145-r3's private
+Chromium smoke and R145-r4's complete independent matrix pass.
+
+**Physical measurement positive control, 2026-11-04.** The fresh unlocked
+session at08:03 supports R105 Chromium and R146 Firefox/WebKit, each in DOM
+and OffscreenCanvas modes with eight responses:48 genuine WindowServer
+response timestamps. Authorization, unlocked/on-console preflight,
+calibration, no-op rejection and delayed-response controls all pass; frozen
+bench inputs are verified. Raw observer rows, startup/calibration captures,
+results and session times are retained under graphics-native-cursor-r105 and
+-r146. The normal R30 build was running concurrently. These results validate
+the measurement method only, not Kandelo desktop latency, native feel,
+instrumentation overhead or any ship-bar distribution. Test browsers and
+recorders closed; the Mac was explicitly released at08:05:30.
+
+R137 used canonical npm cache clean --force after verifying the cache path
+and no open files. The download cache occupied23,107,272 KiB before cleaning;
+installed dependencies, active npx tools, browser binaries, guest artifacts,
+source and evidence were preserved. Additional guarded inactive native-object
+retirements in R135/R135-r2 retain exact inventories. About50 GiB was free at
+08:24; free-space changes during concurrent builds are not a reclaimed-byte
+measurement. No full-host, full-CTS, POSIX, benchmark or native-feel acceptance
+is claimed by this checkpoint.

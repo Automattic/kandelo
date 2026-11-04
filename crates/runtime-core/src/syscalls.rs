@@ -61094,6 +61094,45 @@ impl HostIO for RelSymlinkMock {
         }
     }
 
+    fn reset_query_header(width: u8) -> Vec<u8> {
+        use wasm_posix_shared::gl;
+        let mut query = alloc::vec![0; if width == 4 { 24 } else { 40 }];
+        query[..4].copy_from_slice(&gl::QOP_GET_ERROR.to_le_bytes());
+        let pointer = if width == 4 { 12 } else { 24 };
+        query[pointer..pointer+width as usize].copy_from_slice(&64u64.to_le_bytes()[..width as usize]);
+        query[pointer+width as usize..pointer+width as usize+4].copy_from_slice(&4u32.to_le_bytes());
+        query
+    }
+
+    #[test]
+    fn glio_query_preserves_recognized_renderer_reset_without_output_or_retry() {
+        use wasm_posix_shared::gl;
+        for width in [4,8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            host.proc_memory[64..68].fill(0xa5);host.gl_query_result=Some(-(Errno::ENODEV as i32));
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut reset_query_header(width)),Err(Errno::ENODEV));
+            assert_eq!(&host.proc_memory[64..68],&[0xa5;4]);
+            assert!(host.proc_write_calls.is_empty());assert_eq!(host.gl_transport_events,vec!["query"]);
+        }
+    }
+
+    #[test]
+    fn glio_query_compound_preserves_recognized_renderer_reset_in_query_phase() {
+        use wasm_posix_shared::gl;
+        for width in [4,8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            host.proc_memory[64..68].fill(0xa5);host.gl_query_result=Some(-(Errno::ENODEV as i32));
+            let query=reset_query_header(width);let offset=8+query.len();
+            let mut packet=alloc::vec![0;offset+16];packet[4..8].copy_from_slice(&4u32.to_le_bytes());
+            packet[8..offset].copy_from_slice(&query);
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_SUBMIT_QUERY,&mut packet).unwrap();
+            let words:Vec<u32>=packet[offset..].chunks_exact(4).map(|b|u32::from_le_bytes(b.try_into().unwrap())).collect();
+            assert_eq!(words,vec![gl::SUBMIT_QUERY_PHASE_QUERY,0,(-(Errno::ENODEV as i32)) as u32,gl::SUBMIT_QUERY_REPLY_MAGIC]);
+            assert_eq!(&host.proc_memory[64..68],&[0xa5;4]);assert!(host.proc_write_calls.is_empty());
+            assert_eq!(host.gl_transport_events,vec!["submit","query"]);
+        }
+    }
+
     #[test]
     fn glio_query_preflight_rejects_oversized_and_failed_renderer_replies_without_copy() {
         use wasm_posix_shared::gl;

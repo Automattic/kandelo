@@ -92,7 +92,8 @@ impl GlQueryRequest {
     }
 
     /// The existing immediate host contract finishes before returning. A
-    /// negative result, including EAGAIN, remains EIO; it does not authorize
+    /// recognized renderer reset keeps ENODEV so libc can record its scope.
+    /// Other negative results, including EAGAIN, remain EIO; none authorizes
     /// retaining a host destination or replaying a potentially mutating query.
     pub fn execute_immediate(&mut self, host: &mut dyn HostIO) -> Result<(), Errno> {
         if let Completion::Answered(len) = self.completion {
@@ -111,7 +112,13 @@ impl GlQueryRequest {
             self.owner.session_id,
         );
         if written < 0 || written as usize > self.output.len() {
-            return Err(Errno::EIO);
+            // Classify only failure: A3's known reset must reach libc like
+            // submit/present's ENODEV, without accepting data or replaying.
+            return Err(if written == -(Errno::ENODEV as i32) {
+                Errno::ENODEV
+            } else {
+                Errno::EIO
+            });
         }
         self.completion = Completion::Executed(written as usize);
         Ok(())

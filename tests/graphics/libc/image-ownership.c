@@ -268,6 +268,8 @@ static uint32_t client_error_masks[8];
 static unsigned error_queries, drain_requests, drain_capacity = WPK_GL_ERROR_DRAIN_CAPACITY;
 static unsigned drain_corrupt, drain_lost_reply;
 static uint32_t drain_extra_error;
+static unsigned creation_queries;
+static int creation_failure;
 
 static struct native_program *native_program(struct device_slot *slot, uint32_t name) {
     for (unsigned i = 0; i < 32; ++i)
@@ -1442,6 +1444,26 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
     } else if (request == GLIO_QUERY) {
         struct gl_query_info *q = arg;
         if (q->op == QOP_CHECK_FB_STATUS) framebuffer_status_queries++;
+        if (q->op == 0x38) {
+            assert(q->in_buf_len==12 && q->out_buf_len==12 && q->reserved==0);
+            const uint32_t *input=allocation_for(q->in_buf_ptr,12);
+            uint32_t *reply=allocation_for(q->out_buf_ptr,12);
+            assert((input[0]==4 || input[0]==5) && input[2]);
+            assert(input[0]==4 ? input[1]==GL_VERTEX_SHADER || input[1]==GL_FRAGMENT_SHADER : input[1]==0);
+            creation_queries++;
+            if (creation_failure==2) {errno=EIO;return -1;}
+            if (creation_failure!=1) {
+                if (input[0]==4 && shaders_created<2) shader_names[shaders_created++]=input[2];
+                if (input[0]==5 && programs_created<2) program_names[programs_created++]=input[2];
+                if (program_model && input[0]==5) native_program_command(slot,OP_CREATE_PROGRAM,input[2]);
+            }
+            if (creation_failure==3) {errno=EIO;return -1;}
+            reply[0]=creation_failure==1 || creation_failure==6 ? 1 : creation_failure==7 ? 9 : 0;
+            reply[1]=creation_failure==1 ? 0 : input[2]+(creation_failure==5);
+            reply[2]=creation_failure==4 ? 0 : WPK_GL_QUERY_REPLY_MAGIC;
+            if (creation_failure==1) query_gl_error=GL_OUT_OF_MEMORY;
+            return 0;
+        }
         if(q->op==0x35) {
             assert(q->in_buf_len==8 && q->out_buf_len==16 && q->reserved==0);
             const uint32_t *input=allocation_for(q->in_buf_ptr,8);uint32_t *reply=allocation_for(q->out_buf_ptr,16);
@@ -9689,6 +9711,57 @@ int main(int argc, char **argv) {
         assert(eglGetError() == EGL_NOT_INITIALIZED && count == 17);
         puts("PASS config-list");
         return 0;
+    }
+    if (!strncmp(argv[1], "encoder-create-",15)) {
+        assert(glGetError()==GL_NO_ERROR);
+        const char *mode=argv[1]+15;
+        const unsigned live=allocation_count();
+        if (!strcmp(mode,"reject")) creation_failure=1;
+        if (!strcmp(mode,"unknown-before")) creation_failure=2;
+        if (!strcmp(mode,"unknown-after")) creation_failure=3;
+        if (!strcmp(mode,"magic")) creation_failure=4;
+        if (!strcmp(mode,"echo")) creation_failure=5;
+        if (!strcmp(mode,"contradiction")) creation_failure=6;
+        if (!strcmp(mode,"status")) creation_failure=7;
+        if (!strcmp(mode,"malloc")) fail_malloc=1;
+        if (!strcmp(mode,"reply-malloc")) malloc_before_failure=1;
+        if (!strcmp(mode,"prefix") || !strcmp(mode,"compound")) {
+            glClearColor(.2f,.4f,.6f,1);
+            if (!strcmp(mode,"prefix")) fail_submit=1;
+            else compound_failure=4;
+        }
+        if (!strcmp(mode,"older")) {query_gl_error=GL_INVALID_ENUM;_wpk_gl_note_device_request();}
+        const uint64_t before=_wpk_gl_device_requests();
+        GLuint name=glCreateProgram();
+        fail_malloc=fail_submit=0;malloc_before_failure=-1;
+        if (!strcmp(mode,"proof") || !strcmp(mode,"older")) {
+            assert(name && creation_queries==1 && programs_created==1);
+            const uint64_t after=_wpk_gl_device_requests();assert(after==before+1);
+            assert(glGetError()==(!strcmp(mode,"older")?GL_INVALID_ENUM:GL_NO_ERROR));
+            assert(glGetError()==GL_NO_ERROR);
+            if (!strcmp(mode,"proof")) assert(_wpk_gl_device_requests()==after);
+        } else {
+            assert(name==0);
+            if (!strcmp(mode,"malloc") || !strcmp(mode,"reply-malloc")) {
+                assert(creation_queries==0 && programs_created==0);
+                assert(glGetError()==GL_OUT_OF_MEMORY);
+            } else if (!strcmp(mode,"prefix")) {
+                assert(creation_queries==0 && programs_created==0);
+                assert(glGetError()==GL_INVALID_OPERATION);
+            } else {
+                assert(creation_queries==1);
+                assert(programs_created==(creation_failure==1 || creation_failure==2 ? 0 : 1));
+                assert(glGetError()==(creation_failure==1?GL_OUT_OF_MEMORY:GL_INVALID_OPERATION));
+            }
+            assert(glGetError()==GL_NO_ERROR);
+            unsigned issued=creation_queries;creation_failure=0;
+            GLuint recovery=glCreateProgram();assert(recovery>1 && creation_queries==issued+1);
+            assert(glGetError()==GL_NO_ERROR && creation_queries==issued+1);
+        }
+        assert(allocation_count()==live);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        assert(allocation_count()==0);
+        printf("PASS %s\n",argv[1]);return 0;
     }
     if (!strcmp(argv[1], "namespace")) {
         GLuint names[] = { glCreateShader(GL_VERTEX_SHADER), glCreateProgram(),

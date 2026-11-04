@@ -369,6 +369,7 @@ struct wpk_gles_context {
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
 
 static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
+static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint name);
 static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap);
 struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
@@ -958,16 +959,11 @@ GLuint glCreateShader(GLenum type) {
         raise_client_error(GL_INVALID_ENUM);
         return 0;
     }
-    uint8_t *_c = reserve(4u + 8u);
-    if (_c == NULL) return 0;
-    uint32_t name = next_shader_program_name();
-    if (name == 0) return 0;
-    w_u16(&_c, (uint16_t)OP_CREATE_SHADER);
-    w_u16(&_c, 8);
-    w_u32(&_c, (uint32_t)type);
-    w_u32(&_c, name);
-    g_cursor = _c;
-    return name;
+    struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+    if (!scope.group) return 0;
+    GLuint name = next_shader_program_name();
+    return name ? checked_shader_program_creation(4, type, name) : 0;
 }
 
 static void upload_shader_source(GLuint, GLsizei, const GLchar *const *, const GLint *, uint32_t);
@@ -1011,15 +1007,11 @@ void glDeleteShader(GLuint shader) {
 
 GLuint glCreateProgram(void) {
     if (!_wpk_gl_command_encoder()) return 0;
-    uint8_t *_c = reserve(4u + 4u);
-    if (_c == NULL) return 0;
-    uint32_t name = next_shader_program_name();
-    if (name == 0) return 0;
-    w_u16(&_c, (uint16_t)OP_CREATE_PROGRAM);
-    w_u16(&_c, 4);
-    w_u32(&_c, name);
-    g_cursor = _c;
-    return name;
+    struct wpk_gl_name_scope scope __attribute__((cleanup(_wpk_gl_end_name_scope))) =
+        _wpk_gl_begin_name_scope(_wpk_gl_current_encoder());
+    if (!scope.group) return 0;
+    GLuint name = next_shader_program_name();
+    return name ? checked_shader_program_creation(5, 0, name) : 0;
 }
 
 void glAttachShader(GLuint program, GLuint shader) {
@@ -1913,6 +1905,32 @@ static void raise_client_error(GLenum error) {
 /* A framebuffer attachment retains its object storage after the object name
  * is deleted while another FBO is bound. Keep that ownership separate from
  * both the name table and the public EGLImage. */
+
+/* Creation returns its name only after this operation's own receipt. An
+ * uncertain prefix/reply cannot authorize retrying a possibly-created name. */
+static GLuint checked_shader_program_creation(uint32_t kind, GLenum type, GLuint name) {
+    uint32_t *input = malloc(3 * sizeof *input);
+    if (!input) { raise_client_error(GL_OUT_OF_MEMORY); return 0; }
+    input[0] = kind; input[1] = type; input[2] = name;
+    uint32_t reply[3] = {0};
+    const struct wpk_error_proof proof = capture_error_proof();
+    int entered = 0;
+    int rc = query_into_tracked(QOP_CREATE_SHADER_PROGRAM, input, 12, reply, 12, &entered);
+    free(input);
+    if (rc == WPK_GL_QUERY_NOT_DISPATCHED || (rc && !entered)) return 0;
+    if (!rc && reply[2] == WPK_GL_QUERY_REPLY_MAGIC) {
+        if (reply[0] == 1 && reply[1] == 0) return 0;
+        if (reply[0] == 0 && reply[1] == name) {
+            accept_error_proof(proof);
+            return name;
+        }
+    }
+    // The query may have published its native owner. Never emit a second
+    // creation or infer any binding/error knowledge from the lost reply.
+    invalidate_binding_knowledge(_wpk_gl_current_encoder());
+    raise_client_error(GL_INVALID_OPERATION);
+    return 0;
+}
 
 /* Return 1 for checked acceptance, 0 for definite rejection and -1 for
  * indeterminate completion. Inputs must be heap-owned for guest marshalling. */

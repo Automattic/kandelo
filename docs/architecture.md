@@ -6775,10 +6775,23 @@ flags remain with the original context; a reply cannot acknowledge a
 preexisting colliding object. Failed map publication rolls back the native
 handle, and native OOM follows the existing local-reset boundary. The query
 retains ordinary replay, CPU-image publication and buffer dependencies;
-it does not bypass them or grant pre-MakeCurrent query authority. The legacy
-C creation commands remain available, and no guest program cache is enabled
-by this protocol. Shared C namespace/current/pending references and immutable
-executable receipts remain necessary before local program-selection errors.
+it does not bypass them or grant pre-MakeCurrent query authority. The C driver
+now uses this receipt for glCreateShader/glCreateProgram and returns a name
+only after canonical acceptance. It holds the existing dispatch/name scope
+across admission, keeps name reservation monotonic, and never retries an
+uncertain creation. A malformed or lost reply returns zero and invalidates
+binding knowledge; older guest flags remain independently observable. The
+legacy creation commands remain available to existing clients. No guest
+program-selection cache is enabled: shared C namespace/current/pending
+references and immutable executable receipts remain necessary.
+
+Immediate GL queries preserve a recognized renderer-reset ENODEV through
+both plain and compound GLIO replies, allowing libc to record the already
+specified reset scope. Other negative or oversized host results remain EIO.
+Failure never publishes output bytes or authorizes a query replay. In
+particular, native OOM resets only the guilty logical context while a healthy
+shared peer keeps running; this is the existing native-OOM boundary, not a
+new boundary for C metadata allocation failure.
 
 The optional query is an additive program-surface snapshot entry. Existing
 receipt fields are exact compatibility contracts, and their modification or
