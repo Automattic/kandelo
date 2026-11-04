@@ -4439,6 +4439,15 @@ fn build_snapshot(kernel_wasm: &std::path::Path) -> Result<JsonMap, String> {
             "poll": runtime_core::dri::fence::HOST_REQUEST_POLL,
             "release": runtime_core::dri::fence::HOST_REQUEST_RELEASE},
     }));
+    s.add(Program, "gl_shader_program_creation", json!({
+        "opcode": shared::gl::QOP_CREATE_SHADER_PROGRAM,
+        "request_bytes": 12, "request_fields": ["object_kind", "shader_type_or_zero", "reserved_name"],
+        "object_kinds": {"shader": 4, "program": 5},
+        "reply_bytes": 12, "reply_fields": ["status", "accepted_name_or_zero", "magic"],
+        "reply_magic": shared::gl::QUERY_REPLY_MAGIC,
+        "requires_current_context": true,
+        "query_dependencies": "ordinary-query-replay",
+    }));
     s.add(Program, "gl_context_reset_scope", json!({
         "opcode": shared::gl::QOP_CONTEXT_RESET_SCOPE,
         "request_bytes": 0, "reply_bytes": 12,
@@ -8520,6 +8529,7 @@ fn additive_top_level_section(section: &str) -> bool {
         // Existing receipt fields remain exact-match and therefore breaking
         // if changed; only adding this section is compatible.
         "gl_context_reset_scope"
+            | "gl_shader_program_creation"
             | "clipboard_device_abi"
             | "host_adapter"
             | "io_multiplexing"
@@ -10088,6 +10098,29 @@ mod tests {
         }
         new["gl_context_reset_scope"]["scope"]["logical_context_reset"] = json!(2);
         assert!(!classify_compat_change(&established, &new).unwrap().breaking.is_empty());
+    }
+
+    #[test]
+    fn shader_program_creation_is_additive_but_existing_receipt_cannot_change() {
+        let old = base_snapshot();
+        let mut new = old.clone();
+        new["gl_shader_program_creation"] = json!({"opcode": 0x38,
+            "request_bytes": 12, "request_fields": ["object_kind", "shader_type_or_zero", "reserved_name"],
+            "object_kinds": {"shader": 4, "program": 5},
+            "reply_bytes": 12, "reply_fields": ["status", "accepted_name_or_zero", "magic"],
+            "reply_magic": 0x47514c33u32, "requires_current_context": true,
+            "query_dependencies": "ordinary-query-replay"});
+        let report = classify_compat_change(&old, &new).unwrap();
+        assert!(report.breaking.is_empty(), "{report:?}");
+        assert_eq!(report.additive, vec!["added top-level section \"gl_shader_program_creation\""]);
+        for field in new["gl_shader_program_creation"].as_object().unwrap().keys() {
+            let mut changed = new.clone();
+            changed["gl_shader_program_creation"][field] = json!("different");
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+            changed["gl_shader_program_creation"].as_object_mut().unwrap().remove(field);
+            assert!(!classify_compat_change(&new, &changed).unwrap().breaking.is_empty(), "{field}");
+        }
+        assert!(!classify_compat_change(&new, &old).unwrap().breaking.is_empty());
     }
 
     #[test]

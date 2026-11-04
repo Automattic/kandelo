@@ -4377,6 +4377,9 @@ pub mod gl {
     /// 0 healthy, 1 logical context reset, 2 physical renderer/share-group loss.
     /// No commands, muxer replay or native error drain may run for this query.
     pub const QOP_CONTEXT_RESET_SCOPE: u32 = 0x0037;
+    /// Checked object creation: [kind=4 shader/5 program, shader_type_or_zero, name].
+    /// The 12-byte reply is [status, accepted_name_or_zero, QUERY_REPLY_MAGIC].
+    pub const QOP_CREATE_SHADER_PROGRAM: u32 = 0x0038;
     /// V17 retained fences. Input: one nonzero client token, allocated
     /// monotonically per object session before creation. Output: 16 bytes
     /// (status, echoed token, signaled bool, checked reply magic).
@@ -6806,6 +6809,7 @@ mod gl_tests {
             QOP_DELETE_BUFFER,
             QOP_SURFACE_CAPABILITIES,
             QOP_CONTEXT_RESET_SCOPE,
+            QOP_CREATE_SHADER_PROGRAM,
             QOP_CREATE_FENCE,
             QOP_FENCE_STATUS,
             QOP_RELEASE_FENCE,

@@ -6757,3 +6757,30 @@ Pending clones remain independent and retire through the existing ledger.
 Closed caches retain unfinished cleanup custody after a fatal fault for an
 explicit containment retry. This does not enable guest-local program selection;
 that still needs the shared C object/current/pending model and link receipts.
+
+
+The optional GL17 `QOP_CREATE_SHADER_PROGRAM` receipt creates a reserved
+shader/program name only on its owning current context. Its12-byte request
+is `[object_kind, shader_type_or_zero, reserved_name]`, where4 denotes a
+shader and5 a program; the12-byte reply is `[status, accepted_name_or_zero,
+QUERY_REPLY_MAGIC]`. Status0 acknowledges the echoed name, while status1
+has a zero payload and preserves the operation's API error in the original
+binding. Malformed lengths, object kinds or a nonzero program type fail with
+EINVAL before renderer execution and leave output untouched. Shader enums
+remain API validation, including their priority over a colliding name.
+
+This allocation path reserves both reply bytes and the reply view before
+native ownership, then uses exact private allocation checks. Older guest
+flags remain with the original context; a reply cannot acknowledge a
+preexisting colliding object. Failed map publication rolls back the native
+handle, and native OOM follows the existing local-reset boundary. The query
+retains ordinary replay, CPU-image publication and buffer dependencies;
+it does not bypass them or grant pre-MakeCurrent query authority. The legacy
+C creation commands remain available, and no guest program cache is enabled
+by this protocol. Shared C namespace/current/pending references and immutable
+executable receipts remain necessary before local program-selection errors.
+
+The optional query is an additive program-surface snapshot entry. Existing
+receipt fields are exact compatibility contracts, and their modification or
+removal is rejected. Versions stay program56/host3/GL17/fork21; the changed
+program digest requires normally rebuilt coherent programs and images.

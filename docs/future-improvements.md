@@ -1076,3 +1076,11 @@ shader/program namespace, logical current/pending references and checked
 immutable-generation protocol before enabling local program-selection errors.
 Do not reuse the rejected name-only cache: its sharing race is still a required
 regression, and a native pin alone does not establish logical program ownership.
+
+
+B1's checked shader/program creation protocol now supplies authoritative
+allocation receipts while preserving old guest flags and normal query replay.
+It does not yet switch the C API to acknowledged shared records or enable
+local program selection. Finish the shared C graph and immutable-generation
+custody next; retain the existing deletion/relink regressions, error oracle
+and normal product gates. B1–B6 and C1–C3 remain current-iteration work.

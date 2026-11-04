@@ -30,6 +30,7 @@
       "gl_object_capture",
       "gl_readback_capture",
       "gl_server_wait",
+      "gl_shader_program_creation",
       "gl_submit_query",
       "host_env_imports",
       "host_intercepted_syscalls",
@@ -1696,6 +1697,28 @@
       "reply_token": 0,
       "request": "source_fd-is-a-sync_file-and-source_fence_token-is-zero"
     }
+  },
+  "gl_shader_program_creation": {
+    "object_kinds": {
+      "program": 5,
+      "shader": 4
+    },
+    "opcode": 56,
+    "query_dependencies": "ordinary-query-replay",
+    "reply_bytes": 12,
+    "reply_fields": [
+      "status",
+      "accepted_name_or_zero",
+      "magic"
+    ],
+    "reply_magic": 1196510259,
+    "request_bytes": 12,
+    "request_fields": [
+      "object_kind",
+      "shader_type_or_zero",
+      "reserved_name"
+    ],
+    "requires_current_context": true
   },
   "gl_submit_query": {
     "negative_phase_rc": "errno",

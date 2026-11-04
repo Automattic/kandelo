@@ -22313,3 +22313,80 @@ tools, guest Wasm, SDKs, images, source and validation logs were preserved.
 Free space was about28 GiB at06:43; concurrent writes and APFS clones mean
 that number is not a causal estimate of reclaimed bytes. The current normal
 partial-B1 preview at5693 remains the earlier R16 product, not full B1 or C.
+
+
+**B1 checked shader/program allocation receipts, 2026-11-04.** An optional
+GL17 query0x38 accepts12-byte `[kind4 shader/5 program, shader_type_or_zero,
+reserved_name]` requests and returns12-byte `[status, accepted_name_or_zero,
+magic]` receipts. The kernel requires the caller's own current context and
+validates structural lengths/kind/program-zero fields before renderer work.
+The host reserves reply bytes and its view before native allocation, preserves
+older guest flags, refuses collisions without acknowledging the existing
+object, and rolls back failed namespace publication. Shader type validation
+keeps its API-error priority; native OOM resets only the guilty context.
+Ordinary query replay and buffer dependencies are retained. Legacy C creation
+and selection remain unchanged: this prepares the C graph rather than
+completing B1 or enabling the rejected name-only selector.
+
+R126's before source lacks the receipt and fails9 new controls; R131 exposes
+a later reply-view OOM that returned rejection after publishing a program.
+Reserving the view first fixes that control. The final graphics source gate
+passes2,038 assertions/85 files without skips. R127's first ABI check stopped
+at an unregistered additive section; explicit addition classification now
+rejects changes/removals of every established receipt field. R127-r2's
+misrouted kernel-crate command executed zero GLIO tests and is not evidence;
+R129 actually passes84 runtime-core GLIO tests. R128-r2 then fails all12 GPU
+cases because malformed fields reached the host and became generic EIO.
+The kernel fix rejects them before dispatch with untouched output.
+
+R127-r4 (`graphics-program-creation-r127-r4-1104-065858-d50e`) passes the
+correct84 GLIO tests, query opcode uniqueness, receipt compatibility control,
+ABI regeneration/check against96e9dcd068, normal SDK ensures for both widths,
+matching kernel/image-writer builds and the source gate before the view fix.
+R128-r4 (`graphics-program-creation-r128-r4-1104-070149-db29`, port5956)
+passes2 Node explicit no-renderer controls and12 actual GPU cases on all3
+engines in production/fatal at both widths, after the reply-view fix. Exact
+RGBA51/153/204/255, old flags, collisions, malformed output preservation,
+unbound authority and rebind recovery pass. These use the own matching
+kernel, SDK archives and image writer without source-object overrides;
+frozen source/product hashes remain verified. R132 full host type checks
+both fail with39 identical diagnostics after worktree-path normalization:
+there is no new diagnostic and no full TypeScript pass claim.
+
+Versions56/3/17/21 are unchanged. The new optional program-surface section
+changes the digest, so final kernel/SDK/program/image acceptance still needs
+a coherent normal build. The live R16 preview and ongoing frozen R30 producer
+do not contain this protocol. No performance, full-host, full-CTS,
+browser-memory or native-feel acceptance is claimed by these focused gates.
+
+R130's second guarded native-cache retirement removed5,474,332 KiB allocated
+from24 inactive native object/incremental directories, including R36's
+completed incremental history and old R14 test objects. Exact inventories,
+two open-file guards and tracked/Wasm exclusions are retained. Active R30,
+standalone tools, SDKs, guest artifacts, source and logs were preserved.
+The canonical `./run.sh cache-gc --apply --max-age-days 1` correctly skipped
+the shared cache while the active build held its lock. Disk recovered above
+20 GiB; fluctuating free space is not a causal reclaimed-byte measurement.
+
+
+R133 (`graphics-program-creation-r133-1104-070422-1d1e`, port5957) reruns
+the permanent fixture through `compileSdkFixture`, the normal SDK wrappers
+and current kernel/image writer:2 Node checks and all12 browser checks pass,
+with unchanged product hashes and frozen source. The evidence registry agrees
+with all704 Vitest files. Its focused Vitest config disables broad product
+setup because this fixture constructs its own small image; it is not a full
+host inventory or a normally rebuilt desktop admission.
+
+Exact focused commands are `npx --no-install vitest run -c
+vitest.graphics.config.ts` from `host/`, `cargo test -p runtime-core --target
+aarch64-apple-darwin --lib glio_ -- --test-threads=1`, `cargo test -p
+wasm-posix-shared --target aarch64-apple-darwin --lib query_opcodes`,
+`cargo test -p xtask --target aarch64-apple-darwin --
+shader_program_creation_is_additive_but_existing_receipt_cannot_change`,
+`bash scripts/check-abi-version.sh update`, `ABI_CHECK_BASE_REF=96e9dcd068
+bash scripts/check-abi-version.sh`, `bash scripts/build-musl.sh --ensure
+--arch wasm32posix` and its wasm64posix counterpart, and `bash
+crates/kandelo-image-module/build-wasm.sh`. R127-r4's script records their
+individual statuses; R131 records the final host-only view fix. R133's script
+records the standard fixture commands, private config, port and output root.
+All commands use `scripts/dev-shell.sh`; no final whole-tree pass is implied.

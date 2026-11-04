@@ -233,6 +233,7 @@
  * samples) before the marker. Requires a live display's mapped object
  * session, not a current context. */
 #define QOP_CONTEXT_RESET_SCOPE 0x0037u
+#define QOP_CREATE_SHADER_PROGRAM 0x0038u
 #define QOP_SURFACE_CAPABILITIES 0x002Du
 #define WPK_SURFACE_CAPABILITIES_LEN 16u
 #define WPK_SURFACE_CAPABILITIES_SAMPLES_LEN 20u

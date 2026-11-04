@@ -1,3 +1,5 @@
+import { rendererLost } from "./renderer-loss.js";
+import { createShaderIfAccepted, createProgramIfAccepted } from "./program-objects.js";
 import { externalValidationFailed, guestUniformType } from "./external-texture.js";
 import { validationHadNoExecutable } from "./validate-status.js";
 import { programGuestName } from "./essl3-translation.js";
@@ -398,6 +400,31 @@ export function runGlQuery(
   if (object !== undefined) return object;
 
   switch (op) {
+    case O.QOP_CREATE_SHADER_PROGRAM: {
+      if (input.byteLength !== 12 || out.byteLength !== 12) return -22;
+      const kind = inDv.getUint32(0, true), type = inDv.getUint32(4, true),
+        name = inDv.getUint32(8, true);
+      if ((kind !== 4 && kind !== 5) || (kind === 5 && type !== 0)) return -22;
+      return checkedQueryReply(b, out, 4, payload => {
+        // Reserve the checked reply before creating a namespace/native owner.
+        // An existing object must never turn a rejected duplicate into an ACK.
+        const reply = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+        const existed = b.shaders.has(name) || b.programs.has(name);
+        // Allocation is private bookkeeping: verify native creation before
+        // publishing its handle to a share group. Preserve the actual guest's
+        // older flags while collecting this operation's validation result.
+        const owner = Object.create(b) as GlBinding;
+        owner.errors = [];
+        if (kind === 4) createShaderIfAccepted(owner, type, name);
+        else createProgramIfAccepted(owner, name);
+        if (!rendererLost(b)) for (const error of owner.errors) recordGlError(b, error);
+        const object = kind === 4 ? b.shaders.get(name) : b.programs.get(name);
+        if (existed || !name || owner.errors.length || !object) return -5;
+        reply.setUint32(0, name, true);
+        return 4;
+      });
+    }
+
     case O.QOP_GET_ERROR:
       captureNativeGlErrors(gl, b);
       // Failed command submission can leave C flags for this fallback route.

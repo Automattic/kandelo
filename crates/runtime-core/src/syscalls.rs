@@ -1637,6 +1637,11 @@ fn capture_gl_query_info(
             && info.out_buf_len != gl::SURFACE_CAPABILITIES_SAMPLES_LEN) {
             return Err(Errno::EINVAL);
         }
+    } else if info.op == gl::QOP_CREATE_SHADER_PROGRAM {
+        // A result-bearing creation cannot publish through a short/oversized
+        // destination, and only the thread's current context may create it.
+        if info.in_buf_len != 12 || info.out_buf_len != 12 { return Err(Errno::EINVAL); }
+        require_gl_current_for_tid(proc, ofd_idx, tid)?;
     } else if info.op == gl::QOP_SERVER_WAIT {
         // in: [source session fd, fence token]; out: the 16-byte fence reply.
         if info.in_buf_len != 8 || info.out_buf_len != 16 { return Err(Errno::EINVAL); }
@@ -1670,6 +1675,15 @@ fn capture_gl_query_info(
     }
     if fence_query && u32::from_le_bytes(in_buf[..4].try_into().unwrap()) == 0 {
         return Err(Errno::EINVAL);
+    }
+    if info.op == gl::QOP_CREATE_SHADER_PROGRAM {
+        // Malformed wire fields are an ioctl error, not an API error or an
+        // indeterminate renderer failure. Shader enums remain host validation.
+        let kind = u32::from_le_bytes(in_buf[..4].try_into().unwrap());
+        let shader_type = u32::from_le_bytes(in_buf[4..8].try_into().unwrap());
+        if !matches!(kind, 4 | 5) || (kind == 5 && shader_type != 0) {
+            return Err(Errno::EINVAL);
+        }
     }
     let mut kernel_reply = None;
     if info.op == gl::QOP_SERVER_WAIT && u32::from_le_bytes(in_buf[4..8].try_into().unwrap()) == 0 {
@@ -60748,6 +60762,58 @@ impl HostIO for RelSymlinkMock {
         host.proc_memory.fill(0xa5);
         host.proc_write_calls.clear();
         (proc, host, fd)
+    }
+
+    #[test]
+    fn glio_shader_program_creation_shape_and_current_authority() {
+        use wasm_posix_shared::gl;
+        for width in [4, 8] {
+            let (mut proc,mut host,fd)=glio_query_preflight_fixture();proc.pointer_width=width;
+            let input=[5u32,0,90].map(u32::to_le_bytes).concat();
+            host.proc_memory[32..44].copy_from_slice(&input);
+            let query=|input_len:u32,output_len:u32| -> Vec<u8> {
+                if width==4 {
+                    let info=gl::GlQueryInfo{op:gl::QOP_CREATE_SHADER_PROGRAM,in_buf_ptr:32,in_buf_len:input_len,out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&info as *const gl::GlQueryInfo).cast(),core::mem::size_of_val(&info)).to_vec()}
+                } else {
+                    let info=gl::GlQueryInfo64{op:gl::QOP_CREATE_SHADER_PROGRAM,in_buf_ptr:32,in_buf_len:input_len,out_buf_ptr:64,out_buf_len:output_len,..Default::default()};
+                    unsafe{core::slice::from_raw_parts((&info as *const gl::GlQueryInfo64).cast(),core::mem::size_of_val(&info)).to_vec()}
+                }
+            };
+            for input_len in [0,4,8,16] {
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(input_len,12)),Err(Errno::EINVAL));
+            }
+            for output_len in [0,4,8,16] {
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,output_len)),Err(Errno::EINVAL));
+            }
+            for malformed in [[3u32,0,90],[5,1,90],[0,0,90]] {
+                host.proc_memory[32..44].copy_from_slice(&malformed.map(u32::to_le_bytes).concat());
+                host.proc_memory[64..76].fill(0xa5);
+                assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,12)),Err(Errno::EINVAL));
+                assert_eq!(&host.proc_memory[64..76], &[0xa5;12]);
+            }
+            host.proc_memory[32..44].copy_from_slice(&input);
+            assert!(host.gl_query_inputs.is_empty());
+            let ofd=proc.fd_table.get(fd).unwrap().ofd_ref.0;
+            let current=dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.take().unwrap();
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,12)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current=Some(current);
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,12)),Err(Errno::EACCES));
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().current.as_mut().unwrap().owner_tid=1;
+            sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,12)).unwrap();
+            assert_eq!(host.gl_query_inputs,vec![(gl::QOP_CREATE_SHADER_PROGRAM,input,12)]);
+            dri_state_mut(&mut proc,ofd).unwrap().gl.as_mut().unwrap().owner_pid=2;
+            assert_eq!(sys_ioctl(&mut proc,&mut host,fd,gl::GLIO_QUERY,&mut query(12,12)),Err(Errno::EACCES));
+            assert_eq!(host.gl_query_inputs.len(),1);
+        }
+    }
+
+    #[test]
+    fn glio_shader_program_creation_keeps_ordinary_query_replay_dependencies() {
+        use wasm_posix_shared::gl;
+        assert!(gl_entry_touches_buffers(gl::GLIO_QUERY,&gl::QOP_CREATE_SHADER_PROGRAM.to_le_bytes()));
+        assert!(gl_entry_touches_buffers(gl::GLIO_SUBMIT_QUERY,&gl::QOP_CREATE_SHADER_PROGRAM.to_le_bytes()));
     }
 
     fn glio_query_bytes(info: wasm_posix_shared::gl::GlQueryInfo)

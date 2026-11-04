@@ -1,3 +1,5 @@
+import { withNativeBatch } from "../src/webgl/native-batch.js";
+import { rendererLost,rendererResetScope } from "../src/webgl/renderer-loss.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import { uniformLocation } from "../src/webgl/uniform-queries.js";
@@ -1256,4 +1258,82 @@ describe("per-program uniform location numbering", () => {
     linkProgramRetainingExecutable(t.b,20);
     expect(uniformLocation(t.b,20,"y")).toBe(1);
   });
+});
+
+
+function creationReply(b: ReturnType<typeof setup>["b"],words:number[],length=12) {
+  const input=new Uint8Array(words.length*4),out=new Uint8Array(length).fill(0xa5);
+  words.forEach((word,i)=>new DataView(input.buffer).setUint32(i*4,word,true));
+  const rc=runGlQuery(b,O.QOP_CREATE_SHADER_PROGRAM,input,out);
+  return {rc,out,words:length%4?[]:[...new Uint32Array(out.buffer)]};
+}
+it.each([4,5])("acknowledges typed creation kind %s without consuming older guest errors",kind=>{
+  const f=setup();f.b.errors.push(0x500);
+  const reply=creationReply(f.b,[kind,kind===4?0x8b31:0,90]);
+  expect(reply.words).toEqual([0,90,0x47514c33]);expect(reply.rc).toBe(12);
+  expect((kind===4?f.b.shaders:f.b.programs).has(90)).toBe(true);
+  expect(f.b.errors).toEqual([0x500]);expect(f.native.current).toBe(f.original);
+});
+it.each([4,5])("refuses duplicate creation kind %s without replacing a program",kind=>{
+  const f=setup(),original=f.b.programs.get(20),programs=f.native.createdPrograms.length,shaders=f.native.createdShaders.length;
+  expect(creationReply(f.b,[kind,kind===4?0x8b31:0,20]).words).toEqual([1,0,0x47514c33]);
+  expect(f.b.programs.get(20)).toBe(original);expect(f.b.errors).toEqual([0x502]);
+  expect(f.native.createdPrograms).toHaveLength(programs);expect(f.native.createdShaders).toHaveLength(shaders);
+});
+it("keeps shader type-error priority even when its reserved name also collides",()=>{
+  const f=setup();expect(creationReply(f.b,[4,0xdead,20]).words).toEqual([1,0,0x47514c33]);
+  expect(f.b.errors).toEqual([0x500]);expect(f.b.programs.get(20)).toBe(f.original);
+});
+it("reserves a complete creation reply before creating native ownership",()=>{
+  const f=setup(),n=f.native.createdPrograms.length,original=Uint8Array;
+  // checkedQueryReply is the only four-byte staging allocation in this call.
+  const request=new Uint8Array(new Uint32Array([5,0,90]).buffer),out=new Uint8Array(12);
+  const replacement=new Proxy(original,{construct(target,args,newTarget){if(args.length===1&&args[0]===4)throw new RangeError("reply allocation");return Reflect.construct(target,args,newTarget);}});
+  vi.stubGlobal("Uint8Array",replacement);
+  try {expect(runGlQuery(f.b,O.QOP_CREATE_SHADER_PROGRAM,request,out)).toBe(12);}
+  finally{vi.unstubAllGlobals();}
+  expect([...new Uint32Array(out.buffer)]).toEqual([1,0,0x47514c33]);
+  expect(f.native.createdPrograms).toHaveLength(n);expect(f.b.errors).toEqual([0x505]);
+});
+it("rolls back private native creation after namespace allocation failure",()=>{
+  const f=setup();const fail=vi.spyOn(f.b.programs,"set").mockImplementation(()=>{throw new RangeError("namespace allocation");});
+  let reply:ReturnType<typeof creationReply>;
+  try {reply=creationReply(f.b,[5,0,90]);}finally{fail.mockRestore();}
+  expect(reply!.words).toEqual([1,0,0x47514c33]);expect(f.b.programs.has(90)).toBe(false);
+  expect(f.b.programShaders.has(90)).toBe(false);expect(f.b.errors).toEqual([0x505]);
+  const created=f.native.createdPrograms.at(-1)!;expect(f.native.deletions.get(created)).toBe(1);
+});
+it.each([[[3,0,90]],[[5,1,90]],[[4,0x8b31]]])("refuses malformed creation fields %j before native mutation",words=>{
+  const f=setup(),programs=f.native.createdPrograms.length,shaders=f.native.createdShaders.length;
+  const reply=creationReply(f.b,words);expect(reply.rc).toBe(-22);expect([...reply.out]).toEqual(new Array(12).fill(0xa5));
+  expect(f.native.createdPrograms).toHaveLength(programs);expect(f.native.createdShaders).toHaveLength(shaders);expect(f.b.errors).toEqual([]);
+});
+it.each([0,8,16])("refuses creation output length %s without native mutation",length=>{
+  const f=setup(),n=f.native.createdPrograms.length;expect(creationReply(f.b,[5,0,90],length).rc).toBe(-22);
+  expect(f.native.createdPrograms).toHaveLength(n);expect(f.b.errors).toEqual([]);
+});
+
+it.each(["shader","program"] as const)("does not publish a %s handle after native OOM in a guest batch",kind=>{
+  const f=setup();if(kind==="shader")f.native.failCreateShaderAfterAllocation=true;else f.native.failCreateAfterAllocation=true;
+  const input=new Uint8Array(new Uint32Array([kind==="shader"?4:5,kind==="shader"?0x8b31:0,90]).buffer),out=new Uint8Array(12);
+  const rc=withNativeBatch(f.b,"object creation",()=>runGlQuery(f.b,O.QOP_CREATE_SHADER_PROGRAM,input,out));
+  expect(rc).toBe(-19);expect(rendererLost(f.b)).toBe(true);expect(rendererResetScope(f.b)).toBe(1);
+  expect(f.b.shaders.has(90)).toBe(false);expect(f.b.programs.has(90)).toBe(false);
+  expect(f.b.errors).toEqual([]);
+  if(kind==="shader")expect(f.native.createdShaders.at(-1)!.deleted).toBe(true);
+  else expect(f.native.deletions.get(f.native.createdPrograms.at(-1)!)).toBe(1);
+});
+
+it("reserves a creation reply view before publishing a native program",()=>{
+  const f=setup(),count=f.native.createdPrograms.length;
+  const original=globalThis.DataView;
+  vi.stubGlobal("DataView",new Proxy(original,{construct(target,args,newTarget){
+    if(args[0] instanceof ArrayBuffer && args[0].byteLength===4)throw new RangeError("reply view OOM");
+    return Reflect.construct(target,args,newTarget);
+  }}));
+  let reply:ReturnType<typeof creationReply>;
+  try{reply=creationReply(f.b,[5,0,90]);}finally{vi.unstubAllGlobals();}
+  expect(reply!.rc).toBe(12);expect(reply!.words).toEqual([1,0,0x47514c33]);
+  expect(f.native.createdPrograms).toHaveLength(count);expect(f.b.programs.has(90)).toBe(false);
+  expect(f.b.errors).toEqual([0x505]);
 });
