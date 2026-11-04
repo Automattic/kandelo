@@ -22959,3 +22959,32 @@ B2–B6, the full B preview before C1–C3 and every final ship-bar/conformance/
 POSIX/benchmark/manual gate remain required. Application performance was not
 measured. The5693 preview remains normal R30+051 partial B1, not this source.
 No new platform boundary or acceptance reduction is introduced.
+
+## 2026-11-04 journal import and partial-upload ordering (R180)
+
+Tracing C integration exposed an earlier host-import guard that still interrupted
+a staged uniform upload before the lower-level journal exception. A read-only
+receipt could therefore return EIO and manufacture INVALID_OPERATION; an invalid
+Rust destination could discard the upload before returning its pointer failure.
+Four new import regressions fail before the fix at both pointer widths.
+
+The import now validates its spans and request shape and reserves output storage
+before ordinary upload interruption or foreign retirement. Journal metadata
+bypasses upload interruption throughout the import path, including recovery after
+logical reset. Ordinary valid queries retain their existing interruption rule.
+No wire/snapshot/version change or new platform boundary is introduced.
+
+R180 `graphics-journal-import-r180-1104-141545-d285` runs
+`scripts/dev-shell.sh bash ../graphics-journal-import-r180/run.sh` from integration
+(the script/evidence directory is in the root workspace's.context). It passes in
+3m37: ABI and registry708, graphics2147 assertions/88files,10 Node and156 GPU cases
+on Chromium/Firefox/WebKit, both widths and production/fatal modes. Normal SDK,
+kernel and image-writer products are reused unchanged; source/product hashes pass.
+All84 journal cases record actual kernel/guest hashes and native live0 before
+machine teardown, with the canonical kernel hash recorded in R179 above.
+
+The12 new GPU cases stage a uniform BEGIN/CHUNK, reserve/register/read journal
+metadata while that transaction is pending, then COMMIT and verify exact rendered
+pixels. This supplements the import-level pointer/error/upload/reset controls.
+It does not enable the C program-selection fast path, complete B1, or establish
+application performance or final ship acceptance.

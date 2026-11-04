@@ -13,6 +13,7 @@ import {
   WasmPosixKernel,
 } from "../src/kernel";
 import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
+import {markRendererReset,rendererLost} from "../src/webgl/renderer-loss";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1628,4 +1629,53 @@ it.each([4,8] as const)("journal controls preflight before custody at wasm%d wid
  expect(retained).toHaveBeenCalledTimes(1);expect(native).not.toHaveBeenCalled();expect(restore).not.toHaveBeenCalled();
  expect(b.programJournalControl.receipt.buffer).not.toBe(memory.buffer);
  native.mockRestore();restore.mockRestore();kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("journal metadata preserves partial uploads and older flags through the wasm%d import",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const upload={} as NonNullable<typeof b.uniformUpload>,compressed={} as NonNullable<typeof b.compressedUpload>;
+ b.uniformUpload=upload;b.compressedUpload=compressed;b.errors=[0x500];
+ const query=(words:number[],out=8192)=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(words.length*4),ptr(out),ptr(48),0);
+ };
+ expect(query([6])).toBe(48);
+ expect(query([1,1,4],memory.buffer.byteLength-2)).toBe(-14);
+ expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);expect(b.errors).toEqual([0x500]);
+ expect(query([6,123])).toBe(-22);
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ const native=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("metadata read sampled native errors");});
+ try{expect(query([6])).toBe(48);expect(query([7,123])).toBe(48);expect(native).not.toHaveBeenCalled();}
+ finally{native.mockRestore();}
+ expect(query([1,1,4])).toBe(48);
+ expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);expect(b.errors).toEqual([0x500]);
+ markRendererReset(b);
+ const lostNative=vi.spyOn(b.gl,"getError").mockImplementation(()=>{throw new Error("reset recovery sampled native errors");});
+ try{expect(query([6])).toBe(48);expect(query([7,1])).toBe(48);expect(lostNative).not.toHaveBeenCalled();}
+ finally{lostNative.mockRestore();}
+ expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);expect(b.compressedUpload).toBe(compressed);
+ b.uniformUpload=null;b.compressedUpload=null;kernel.gl.destroyContext(7,0);
+});
+
+it.each([4,8] as const)("ordinary query destination preflight precedes upload interruption at wasm%d width",width=>{
+ const {kernel,memory}=fullKernelHarness({}, {}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ const finish=vi.fn();
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null,finish},
+   {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n,upload={} as NonNullable<typeof b.uniformUpload>;
+ b.uniformUpload=upload;b.errors=[0x500];
+ expect(imports.env.host_gl_query(7,QOP_GET_ERROR,ptr(0),ptr(0),ptr(memory.buffer.byteLength-2),ptr(4),0)).toBe(-14);
+ expect(b.uniformUpload).toBe(upload);expect(b.errors).toEqual([0x500]);
+ expect(imports.env.host_gl_query(7,QOP_FINISH,ptr(0),ptr(0),ptr(0),ptr(0),0)).toBe(-5);
+ expect(b.uniformUpload).toBeNull();expect(b.errors).toEqual([0x500,0x502]);expect(finish).not.toHaveBeenCalled();
+ kernel.gl.destroyContext(7,0);
 });

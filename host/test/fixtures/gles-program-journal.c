@@ -38,6 +38,11 @@ static size_t emit(size_t at,uint16_t op,const uint32_t *words,size_t count) {
     const uint16_t header[]={op,(uint16_t)(count*4)};
     memcpy(base+at,header,sizeof header);memcpy(base+at+4,words,count*4);return at+4+count*4;
 }
+static void submit(size_t length) {
+    assert(length<=WPK_GL_CMDBUF_LEN);
+    const struct gl_submit_info request={.offset=0,.length=length};
+    _wpk_gl_note_device_request();assert(ioctl(_wpk_gl_fd(),GLIO_SUBMIT,&request)==0);
+}
 struct peer_data {EGLDisplay display;EGLConfig config;EGLContext source;GLuint program;int fd;};
 static void *delete_in_peer(void *opaque) {
     struct peer_data *p=opaque;
@@ -57,6 +62,7 @@ static void *delete_in_peer(void *opaque) {
 }
 int main(int argc,char **argv) {
     assert(argc==2);const int errors=!strcmp(argv[1],"errors"),preflight=!strcmp(argv[1],"preflight");
+    const int uniform=!strcmp(argv[1],"uniform-interleave");
     EGLDisplay display=eglGetDisplay(EGL_DEFAULT_DISPLAY);assert(display!=EGL_NO_DISPLAY);
     if(!strcmp(argv[1],"no-renderer")) {
         assert(!eglInitialize(display,NULL,NULL)&&eglGetError()==EGL_NOT_INITIALIZED);
@@ -71,10 +77,17 @@ int main(int argc,char **argv) {
     EGLSurface surface=eglCreatePbufferSurface(display,config,dimensions);
     assert(context!=EGL_NO_CONTEXT&&surface!=EGL_NO_SURFACE&&eglMakeCurrent(display,surface,surface,context));
     GLuint vertex=shader(GL_VERTEX_SHADER,"attribute vec2 p;void main(){gl_Position=vec4(p,0.,1.);}");
-    GLuint fragment=shader(GL_FRAGMENT_SHADER,"precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}");
+    GLuint fragment=shader(GL_FRAGMENT_SHADER,uniform?
+        "precision mediump float;uniform vec4 color;void main(){gl_FragColor=color;}":
+        "precision mediump float;void main(){gl_FragColor=vec4(.2,.6,.8,1.);}");
     GLuint program=glCreateProgram();assert(program);glAttachShader(program,vertex);glAttachShader(program,fragment);
     glBindAttribLocation(program,0,"p");glLinkProgram(program);GLint linked=0;
     glGetProgramiv(program,GL_LINK_STATUS,&linked);assert(linked);
+    GLint color=-1;
+    if(uniform) {
+        color=glGetUniformLocation(program,"color");assert(color>=0);glUseProgram(program);
+        glUniform4f(color,.8,.3,.2,1.);
+    }
     const GLfloat triangle[]={-1,-1,1,-1,0,1};GLuint buffer;
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
@@ -82,6 +95,13 @@ int main(int argc,char **argv) {
     uint32_t captured[4];const uint32_t acquire[]={1,program};
     query(QOP_PROGRAM_CAPTURE,acquire,2,captured,sizeof captured);
     assert(captured[0]==0&&captured[1]==1&&captured[2]&&captured[3]==WPK_GL_QUERY_REPLY_MAGIC);
+    if(uniform) {
+        const uint32_t begin[]={1,OP_UNIFORM4FV,(uint32_t)color,1,0};
+        uint32_t chunk[8]={1,OP_UNIFORM4FV,0,1};const GLfloat rgba[]={.2,.6,.8,1.};
+        memcpy(chunk+4,rgba,sizeof rgba);
+        size_t length=emit(0,OP_UNIFORM_UPLOAD_BEGIN,begin,5);
+        length=emit(length,OP_UNIFORM_UPLOAD_CHUNK,chunk,8);submit(length);
+    }
     control(1,4,0);const uint32_t id=reply[3];assert(id&&reply[4]==4);
     if(!strcmp(argv[1],"recovery")) {
         /* Discard a successful response locally, then recover its exact receipt.
@@ -90,6 +110,10 @@ int main(int argc,char **argv) {
         assert(reply[0]==0&&reply[1]==1&&reply[2]==1&&reply[3]==id&&reply[4]==4);
     }
     control(2,captured[2],0);const uint32_t token=reply[4];assert(token);
+    if(uniform) {
+        const uint32_t read[]={6},snapshot[]={7,id};journal(read,1);journal(snapshot,2);
+        const uint32_t commit[]={1};submit(emit(0,OP_UNIFORM_UPLOAD_COMMIT,commit,1));
+    }
     uint32_t publication[]={3,++transaction,2,
         id,0,1,0,1,0,errors?0xfffffff0:program,errors?0:token,
         id,1,2,0,2,0,errors?0xfffffff0:0,0};
@@ -119,8 +143,7 @@ int main(int argc,char **argv) {
     length=emit(length,errors?OP_ERROR_OBSERVED:OP_DRAW_ARRAYS,errors?observed:draw,errors?2:3);
     length=emit(length,OP_USE_PROGRAM_JOURNAL,second,4);
     if(errors)length=emit(length,OP_ERROR_OBSERVED,observed,2);
-    const struct gl_submit_info submit={.offset=0,.length=length};
-    _wpk_gl_note_device_request();assert(ioctl(_wpk_gl_fd(),GLIO_SUBMIT,&submit)==0);
+    submit(length);
     const uint32_t snapshot[]={7,id};journal(snapshot,2);
     assert(reply[0]==0&&reply[2]==7&&reply[3]==id&&reply[4]==1&&reply[5]==2&&reply[7]==2&&reply[9]==2);
     if(!errors) {

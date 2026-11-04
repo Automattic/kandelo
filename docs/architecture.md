@@ -6936,7 +6936,10 @@ retained receipt, while indeterminate status blocks further mutators. Read-only
 recovery remains available after reset, without native replay, error draining,
 buffer synchronization or interruption of pending uploads. A recovered receipt
 does not clear a context reset; existing reset-scope handling still governs
-execution. Transactions and
+execution. The host import preflights its destination and reserves reply storage
+before ordinary upload interruption or foreign retirement work. Its metadata
+path preserves staged uniform/compressed transfers as well as older error flags;
+the lower-level query exception alone is insufficient. Transactions and
 handles are bounded nonzero u32 values; sequence/ticket counters are exact u53
 values. Handles never wrap into older authority within their owning scope.
 

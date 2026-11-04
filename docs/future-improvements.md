@@ -1096,3 +1096,9 @@ These steps remain current-iteration B1 work; cold executable custody does not
 complete B1 or demonstrate an application performance improvement. Full B2–B6,
 C1–C3 and all correctness, conformance, memory and native-feel gates remain
 required in their agreed order.
+
+C publication must also precede EGL lifetime mutations made without a current
+GL binding. Preserve the current-thread checks on ordinary journal queries;
+the lifecycle path needs explicit authority to publish only shared metadata,
+without selecting a peer or submitting its mutable command buffer. Complete
+and validate that path before enabling local program acceptance.

@@ -3673,7 +3673,6 @@ export class WasmPosixKernel {
           const operation = b.operations.tryBeginImmediate(queryOperationKind(op));
           if (!operation) return -5;
           try {
-          if (op !== QOP_CONTEXT_RESET_SCOPE && interruptUniformUpload(b)) return -5;
           let inputLength: number;
           let outputLength: number;
           let outputDestination: RustLentKernelDestination | null = null;
@@ -3716,8 +3715,11 @@ export class WasmPosixKernel {
           let written: number;
           let preparedFence: PreparedFenceQuery | undefined;
           try {
-            if (op !== QOP_CONTEXT_RESET_SCOPE && op!==QOP_PROGRAM_JOURNAL && !this.prepareForeignRetirements(b)) return -5;
             outBuf = new IntrinsicUint8Array(outputLength);
+            // Validate and reserve the complete result before interrupting an
+            // API transfer. Journal metadata/recovery is not an upload barrier.
+            if (op !== QOP_CONTEXT_RESET_SCOPE && op !== QOP_PROGRAM_JOURNAL && interruptUniformUpload(b)) return -5;
+            if (op !== QOP_CONTEXT_RESET_SCOPE && op!==QOP_PROGRAM_JOURNAL && !this.prepareForeignRetirements(b)) return -5;
             // Fence creation/waits are guest execution too. Retained foreign
             // contexts keep their exact private checks, while native work on
             // this selected owner shares the same reset/sample policy.
