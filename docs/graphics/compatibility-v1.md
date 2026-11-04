@@ -22616,3 +22616,24 @@ now runs the complete ordinary host inventory at frozen96e9dcd068 using the
 normal R30 products; its own tool/SDK, host build, canonical rootfs and registry
 setup pass. Browser admission still fails and historical host failures remain
 open; R159 is not final-current-head acceptance.
+
+
+R161-r3 (`graphics-program-records-r161-r3-1104-100435-2402`, port5979)
+adds native-OOM coverage with the committed7d7 C records:2 Node renderer-boundary
+checks and60 actual-GPU cases pass on all three engines, both widths and
+production/fatal modes. Creation and mutation each exercise direct/compound
+requests; readback also checks untouched output. Old flags clear, reset/error
+counts and phase/errno are exact, a shared peer returns RGBA51/153/204/255,
+and no native program survives teardown. These remain targeted fault controls,
+not complete CTS, memory, desktop or performance acceptance.
+
+The first R161 behavior run passed but inherited inventory entries for unused
+older kernels; R155-r2 has the same inventory limitation. Their routes used the
+canonical kernel, but those inventory files alone do not prove its immutability.
+R161-r2 then stopped before tests because GNU cp rejects the Mac-only -c option.
+R161-r3 uses a plain byte copy of the normally published canonical kernel,
+compares source/copy before execution, hashes both, and records the exact routed
+kernel hash in every browser result. All60 results agree with
+`8204a96cf0e015df005267a81376a39177f06d0bfc1241b5db93f7b200df9c3e`;
+input/product checks pass. This supplies the corrected provenance without
+restamping, substituting code or relaxing an assertion.
