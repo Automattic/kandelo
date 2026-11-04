@@ -1379,6 +1379,11 @@ switch between Demo, Terminal, and Internals views, while dock panes open for
 new-machine setup, gallery browsing, system config, and sharing. These controls
 consume `KernelHost` state and actions rather than replacing the runtime path.
 
+Opening Internals during boot keeps diagnostics visible while image composition
+enriches the boot descriptor and the machine becomes ready. Descriptor updates
+preserve the user's open or closed choice; the dock's explicit controls still
+close the panel or switch views.
+
 The dock may be collapsed or moved horizontally within the browser viewport;
 that placement is UI-only presentation state and does not alter the running
 machine, boot descriptor, VFS image, or share/export data.

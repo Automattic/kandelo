@@ -179,7 +179,8 @@ export const App: React.FC<{ invitationOpen?: boolean; invitationDismissed?: boo
   React.useEffect(() => {
     setDemoDockControls(null);
     setDemoGuidePopup(null);
-    setInternalsOpen(false);
+    // Image composition can enrich desc.id during the same boot. Internals
+    // is a user choice: keep diagnostics open through that metadata update.
     setThemeOpen(false);
   }, [desc.id]);
 
