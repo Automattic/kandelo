@@ -21167,3 +21167,46 @@ and instrumentation-overhead measurement remain open. Evidence:
 `.context/graphics-kperf-wire-probe-r15-r12/`, and the private prototype's
 `.context/kperf-wire-copy-control-r7.log` and
 `.context/kperf-wire-analysis-control-r3.log`.
+
+
+**Three-engine observer and build checkpoint, 2026-11-03.** The revised
+private method checks pass on Chromium, Firefox and WebKit. They admit the
+actual live compositor through the kernel process table, retain rendered
+mode/client/guest-command checks, and identify both Foot and SFWBar peer
+connections. Temporary per-syscall debugging counters are removed; presenter
+observations now retain framebuffer and CRTC identities. The offline decoder
+observes equal client-send/compositor-receive commit counts of 145, 141 and
+144 respectively, with byte-identical request streams and no decode errors
+or incomplete frames. This remains a loaded method check, not shipping
+latency evidence; input-to-present correlation, overhead and quiet workload
+measurements remain required. Evidence:
+`.context/graphics-kperf-wire-probe-r15-r13/`,
+`.context/graphics-kperf-wire-probe-r15-r14/`.
+
+A private native lifecycle observer runs the same WebKit API chunk 001 with
+100 Pass, no context loss and no page or console errors. It adds no native
+GL query and retains no native object strongly. Before machine teardown it
+counts 1,233,428 buffer creations and 1,233,426 delete attempts, with no
+foreign, stale or duplicate deletes. The two private completion buffers
+remain cached for the physical context's lifetime. Other observed resource
+creation/delete counts balance. These are API lifecycle counts, not GPU
+allocation/liveness measurements or a throughput claim. The run does not
+reproduce or clear the previous loss; the large transient-buffer workload
+is an investigation target, not an established cause. Evidence:
+`.context/graphics-api-resource-r17/`, including the owned-snapshot/no-extra-
+native-call control and the per-attempt native resource snapshot.
+
+The normal r14 r6 build reports a `coreutils-docs` failure: its real guest
+capture exceeds the existing 30,000 ms program deadline. The shell and
+related image products are blocked while independent nodes finish. No
+complete build or new preview is claimed. A separate diagnostic using the
+exact normally built coreutils, kernel and rootfs artifacts completes all
+200 unchanged help/version requests in 73 seconds, capturing 99 of the
+100 tools; the existing `test` empty-help skip is retained. It logs actual
+process start/exit events, changes no guest argument or deadline and does
+not publish a package. This does not explain the original timeout. A normal
+cached retry is queued behind the current build's actual termination, with
+unchanged source and acceptance checks. Evidence:
+`.context/graphics-final-r14-build-r6/`,
+`.context/graphics-coreutils-capture-r17/`,
+`.context/graphics-final-r14-build-r7/`.
