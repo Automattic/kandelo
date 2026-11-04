@@ -9975,6 +9975,25 @@ int main(int argc, char **argv) {
         assert(allocation_count()==0);
         printf("PASS %s\n",argv[1]);return 0;
     }
+    if (!strcmp(argv[1],"encoder-selection-requests")) {
+        program_model=1;
+        GLuint p=glCreateProgram();assert(p);glLinkProgram(p);
+        glUseProgram(p);glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        const unsigned acquire_before=program_capture_queries[1];
+        const unsigned release_before=program_capture_queries[3];
+        const uint64_t before=_wpk_gl_device_requests();
+        for(unsigned i=0;i<20;i++) {
+            glUseProgram(p);assert(glGetError()==GL_NO_ERROR);
+            glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        }
+        printf("SELECTION_REQUESTS pairs20 device%llu captures%u releases%u\n",
+            (unsigned long long)(_wpk_gl_device_requests()-before),
+            program_capture_queries[1]-acquire_before,program_capture_queries[3]-release_before);
+        glDeleteProgram(p);assert(glGetError()==GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx)&&eglReleaseThread()&&eglTerminate(dpy));
+        assert(!live_program_captures()&&!allocation_count());
+        printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strncmp(argv[1],"encoder-captures-",17)) {
         const char *mode=argv[1]+17;program_model=1;
         record_dispatch_lock=1;

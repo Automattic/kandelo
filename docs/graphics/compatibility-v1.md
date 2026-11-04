@@ -42,6 +42,35 @@ Announce each runnable prototype and its URL separately from its validation
 status so the maintainer can try intermediate stages. Proposed subsequent
 work is remaining driver work, GLES3, IGT and multiple displays.
 
+## Ordinary selection request baseline, 2026-11-04
+
+The R212 diagnostic never enables the optional selection journal. Through
+both normal SDK widths, twenty select/unselect pairs with an error check
+after each mutation make80 device requests. Twenty relinks with error
+checks make59. All12 cases agree across Chromium, Firefox and WebKit,
+in production and fatal-audit modes, render the expected pixel and reclaim
+all native programs before machine teardown. The native C device double
+independently attributes40 of the80 selection requests to20 unused private
+capture acquisitions and20 releases. This confirms overhead in the
+ordinary path; its removal and application latency effect remain unproven.
+
+Exact commands: `KANDELO_GRAPHICS_LIBC_CASES=encoder-selection-requests
+bash tests/graphics/run-libc-unit.sh`; Node `vitest run` with the private
+R212 configuration; browser `playwright test` with that configuration,
+`--grep legacy-selection --project=chromium --project=firefox
+--project=webkit --workers=1`. All run through `scripts/dev-shell.sh` in
+job `graphics-unused-captures-r212-1104-183539-bab2`. Native1, Node2 and
+browser12 pass with frozen source/products and the unchanged normal R202
+kernel/SDKs. Node verifies truthful no-renderer admission refusal (D-6),
+not native GPU timing. The wrapper exits1 after these checks because its
+summary assumes production rows serialize an undefined `audit` property;
+retained per-case records reconstruct the summary with absent audit treated
+as production. The wrapper remains failed; component results above are
+individually verified. Raw logs,
+source/product hashes and reconstructed summary are retained under
+`.context/graphics-unused-captures-r212/`. No runtime change, new preview,
+wall-clock speedup, native-feel acceptance or final conformance is claimed.
+
 ## Upstream coverage guide for the implementation pass
 
 [The upstream case-family map](cts-coverage-v1.md) links 92 recorded EGL/GLES2

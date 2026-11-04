@@ -16,7 +16,7 @@ test.beforeAll(()=>{
       ["-pthread","-lEGL","-lGLESv2"],{arch,forkInstrument:true}));
 });
 test.afterAll(()=>{for(const fixture of fixtures.values())fixture.cleanup();});
-for(const mode of ["render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
+for(const mode of ["legacy-selection","render","preflight","recovery","errors","abandon","exit-pending","uniform-interleave","lifecycle-unbound","lifecycle-current-peer","driver-dispatch","driver-local","driver-sharing","driver-wrap","driver-errors","driver-relink","driver-retirement","driver-recovery","driver-fork","driver-cache","driver-cold-refusal","driver-failed-link","driver-malformed","driver-indeterminate","driver-error-recovery","driver-error-suffix"] as const) for(const arch of ["wasm32","wasm64"] as const) for(const audit of [undefined,"fatal"] as const)
   test(`${mode} ${arch} checks journal transport and captured execution (${audit??"production"})`,async({page,baseURL,browser})=>{
     test.setTimeout(90_000);
     const image=KandeloImageFs.create();image.mkdir("/bin",0o755);
@@ -52,6 +52,16 @@ for(const mode of ["render","preflight","recovery","errors","abandon","exit-pend
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify(evidence,null,2));
     const lines=result.stdout.trim().split("\n");
     let driverCounters:{pairs:number;warmDeviceRequests:number}|undefined;
+    let selectionCounters:{pairs:number;selectionDeviceRequests:number;links:number;linkDeviceRequests:number}|undefined;
+    if(mode==="legacy-selection") {
+      expect(lines).toHaveLength(2);expect(lines[0]).toMatch(/^SELECTION_COUNTERS /);
+      selectionCounters=JSON.parse(lines[0].slice("SELECTION_COUNTERS ".length));
+      expect(selectionCounters!.pairs).toBe(20);expect(selectionCounters!.links).toBe(20);
+      // Each checked mutation needs one entry. Extra entries are measured,
+      // never encoded as required behavior of the optional feature.
+      expect(selectionCounters!.selectionDeviceRequests).toBeGreaterThanOrEqual(40);
+      expect(selectionCounters!.linkDeviceRequests).toBeGreaterThanOrEqual(20);
+    }else
     if(mode.startsWith("driver-")&&mode!=="driver-dispatch"&&mode!=="driver-cold-refusal"&&mode!=="driver-indeterminate"&&mode!=="driver-error-recovery"&&mode!=="driver-error-suffix"&&result.status===0) {
       expect(lines).toHaveLength(2);expect(lines[0]).toMatch(/^DRIVER_COUNTERS /);
       driverCounters=JSON.parse(lines[0].slice("DRIVER_COUNTERS ".length));
@@ -62,7 +72,7 @@ for(const mode of ["render","preflight","recovery","errors","abandon","exit-pend
       }else expect(driverCounters!.warmDeviceRequests).toBe(0);
     }else expect(lines).toHaveLength(1);
     writeFileSync(test.info().outputPath("guest-result.json"),JSON.stringify({engine:test.info().project.name,arch,audit,mode,kernelPath,kernelSha256,programSha256,
-      version:browser.version(),driverCounters,...result},null,2));
+      version:browser.version(),driverCounters,selectionCounters,...result},null,2));
     expect(result.status,JSON.stringify(result)).toBe(0);
     expect(lines.at(-1)).toBe(`PASS journal wire ${mode}`);
     expect(result.stderr).toBe("");

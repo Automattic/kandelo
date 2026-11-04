@@ -199,6 +199,31 @@ int main(int argc,char **argv) {
     glGenBuffers(1,&buffer);glBindBuffer(GL_ARRAY_BUFFER,buffer);glBufferData(GL_ARRAY_BUFFER,sizeof triangle,triangle,GL_STATIC_DRAW);
     glEnableVertexAttribArray(0);glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
     glViewport(0,0,16,16);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);glFinish();assert(glGetError()==GL_NO_ERROR);
+    if(!strcmp(argv[1],"legacy-selection")) {
+        // Never admit a journal: ordinary applications must not pay for its
+        // private generation cache. Record device entries, not inferred FPS.
+        glUseProgram(program);glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        const unsigned rounds=20;
+        uint64_t before=_wpk_gl_device_requests();
+        for(unsigned i=0;i<rounds;i++) {
+            glUseProgram(program);assert(glGetError()==GL_NO_ERROR);
+            glUseProgram(0);assert(glGetError()==GL_NO_ERROR);
+        }
+        const uint64_t selections=_wpk_gl_device_requests()-before;
+        before=_wpk_gl_device_requests();
+        for(unsigned i=0;i<rounds;i++) {
+            glLinkProgram(program);assert(glGetError()==GL_NO_ERROR);
+        }
+        const uint64_t links=_wpk_gl_device_requests()-before;
+        printf("SELECTION_COUNTERS {\"pairs\":%u,\"selectionDeviceRequests\":%llu,\"links\":%u,\"linkDeviceRequests\":%llu}\n",
+            rounds,(unsigned long long)selections,rounds,(unsigned long long)links);
+        glUseProgram(program);glDrawArrays(GL_TRIANGLES,0,3);check_color(51,153,204);
+        glUseProgram(0);glDeleteProgram(program);glDeleteShader(vertex);glDeleteShader(fragment);
+        glDeleteBuffers(1,&buffer);assert(glGetError()==GL_NO_ERROR);
+        assert(eglMakeCurrent(display,EGL_NO_SURFACE,EGL_NO_SURFACE,EGL_NO_CONTEXT));
+        assert(eglDestroySurface(display,surface)&&eglDestroyContext(display,context)&&eglTerminate(display)&&eglReleaseThread());
+        printf("PASS journal wire %s\n",argv[1]);return 0;
+    }
     if(!strncmp(argv[1],"driver-",7)&&strcmp(argv[1],"driver-dispatch")) {
         const int sharing=!strcmp(argv[1],"driver-sharing"),retirement=!strcmp(argv[1],"driver-retirement");
         GLuint cached[35]={0};
