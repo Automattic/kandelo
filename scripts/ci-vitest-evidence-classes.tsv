@@ -173,6 +173,7 @@ host/test/getaddrinfo.test.ts	prepared-product
 host/test/getdents-boundary.test.ts	prepared-product
 host/test/getgroups-large-buffer.test.ts	prepared-product
 host/test/getpwent.test.ts	prepared-product
+host/test/gles-default-target.test.ts	prepared-product
 host/test/gles-hints.test.ts	prepared-product
 host/test/gles-program-sharing.test.ts	prepared-product
 host/test/gles-surfaceless-default.test.ts	prepared-product

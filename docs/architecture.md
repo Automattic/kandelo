@@ -6735,3 +6735,13 @@ default framebuffer rejects clear, read and copy operations with
 does not reset the context or its sharing peers. A later real drawable can
 render normally. Real window-system default targets are complete by
 construction; guest framebuffer attachment caches apply to user targets.
+
+
+The guest driver has a narrow exact-error proof for logical-zero framebuffer
+binds and clears on a real EGL drawable before any user framebuffer has been
+selected. Indeterminate submissions revoke the clear proof permanently for
+that context. Host execution still validates the original commands. Default
+targets are preallocated: authoritative zero binds need no rollback metadata,
+and GPU allocation reserves the color-storage write counter before publishing
+its target. Private exact and user framebuffer operations keep transactional
+allocation/error behavior; surfaceless clears retain ordinary host validation.

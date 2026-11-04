@@ -307,6 +307,9 @@ uint8_t *_wpk_gl_cmdbuf_base(void) {
     struct egl_context_record *context = g_thread_binding.object;
     return context ? context->session->cmdbuf_base : NULL;
 }
+int _wpk_gl_has_draw_surface(void) {
+    return g_thread_binding.object && g_thread_binding.draw;
+}
 struct wpk_gles_context *_wpk_gl_current_encoder(void) {
     return g_thread_binding.encoder;
 }

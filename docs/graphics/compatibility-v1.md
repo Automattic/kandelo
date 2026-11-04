@@ -22126,3 +22126,35 @@ This is a host-source regression with compatible older normal client/kernel
 artifacts, not final-head normal-build, browser-memory or full CTS evidence.
 ABI versions remain56/3/17/21. Node continues the approved explicit renderer
 refusal. Final combined-tree validation remains required.
+
+
+**B1 default-target exact-error increment, 2026-11-04.** Logical zero
+framebuffer binds select existing EGL targets without staging fallible
+native inverse/retirement metadata in an authoritative guest batch. Private
+exact and user-target binds retain their transactions. GPU allocation now
+reserves default color-storage write counters before publishing its result,
+so the first clear cannot fail while allocating those coherence records.
+The C driver predicts zero binds and clear-mask errors only for an actual
+EGL draw surface in a context that has never selected a user framebuffer.
+A failed/indeterminate prefix permanently revokes that clear proof; drains
+or later zero binds never repair it. Surfaceless and unknown/user-target
+clears remain conservative. Original commands still reach the independent
+host oracle. This introduces no shared-name cache and preserves ABI56/3/17/21.
+
+R116 (`bash tests/graphics/run-libc-unit.sh`) passes436 native UBSan cases;
+the new local control fails on384d747ea0 and the fallback control already
+passes. R117's three new allocation controls fail on the old host; the
+candidate graphics gate passes2,014 assertions/84 files and registry702.
+R118 (`run.sh-1104-051636-2845`, port5947) compiles both source arms at both
+widths using read-only normal R16 SDKs, then passes2 Node no-renderer and24
+GPU cases (before/after, production/fatal, Chromium/Firefox/WebKit). Each
+probe's32 default bind/clear operations produce32 device requests before
+and0 after, while exact pixels, split EGL draw/read storage, invalid clear
+mask, user-target fallback and surfaceless recovery remain correct. Native
+controls additionally inject failed submission and prove that a later error
+drain does not rearm the default clear proof. Frozen inputs/archive hashes
+and copied source identities remain in the R118 evidence directory. This is
+a source-object comparison, not a newly rebuilt SDK archive, full B1,
+application latency or native-feel claim. The permanent standard SDK tests
+are added for the next normally built checkpoint; final full CTS, memory,
+Node/browser benchmark and combined-artifact validation remain required.

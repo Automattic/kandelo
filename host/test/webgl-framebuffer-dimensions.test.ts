@@ -3,6 +3,10 @@ import { decodeAndDispatch } from "../src/webgl/bridge.js";
 import * as O from "../src/webgl/ops.js";
 import { runGlQuery } from "../src/webgl/query.js";
 import { GlContextRegistry } from "../src/webgl/registry.js";
+import { withNativeBatch } from "../src/webgl/native-batch.js";
+import * as recovery from "../src/webgl/native-recovery.js";
+import { bindFramebufferObject } from "../src/webgl/image-references.js";
+import { registerFramebufferColorStorage,hostFramebufferColorStorage,storageWrites } from "../src/webgl/image-writes.js";
 import { requireGlesFramebufferComplete } from "../src/webgl/image-sizes.js";
 
 /** WebGL 2 follows ES 3.0 completeness: attachments of different sizes are
@@ -186,4 +190,43 @@ it("uses the existing drawable's default completeness without allocating a verdi
   let complete=false;
   try{complete=requireGlesFramebufferComplete(t.b);}finally{spy.mockRestore();}
   expect(complete).toBe(true);expect(t.b.errors).toEqual([]);expect(t.gl.log).toEqual([]);
+});
+
+
+it("binds preallocated default draw/read targets without transaction allocation in a guest batch",()=>{
+  const t=setup(),draw={} as WebGLFramebuffer,read={} as WebGLFramebuffer;
+  t.b.drawSurface={renderTargetFbo:draw} as any;t.b.readSurface={renderTargetFbo:read} as any;
+  const inverse=vi.spyOn(recovery,"nativeInverse").mockImplementation(()=>{throw new Error("allocation");});
+  try {
+    expect(withNativeBatch(t.b,"default bind",()=>{expect(bindFramebufferObject(t.b,0x8d40,0)).toBe(true);})).toBe(0);
+    expect(t.b.shadow.fbo).toBe(draw);expect(t.b.shadow.readFbo).toBe(read);
+    expect(t.b.errors).toEqual([]);expect(inverse).not.toHaveBeenCalled();
+  }finally{inverse.mockRestore();}
+});
+it("keeps fallible transaction preparation for private exact and user-target binds",()=>{
+  const t=setup();
+  const inverse=vi.spyOn(recovery,"nativeInverse").mockImplementation(()=>{throw new Error("allocation");});
+  try {
+    expect(bindFramebufferObject(t.b,0x8d40,0)).toBe(false);expect(t.error()).toBe(0x505);
+    expect(withNativeBatch(t.b,"user bind",()=>{expect(bindFramebufferObject(t.b,0x8d40,17)).toBe(false);})).toBe(0);
+    expect(t.error()).toBe(0x505);expect(t.b.fbos.size).toBe(0);
+  }finally{inverse.mockRestore();}
+});
+it("reserves default-target write metadata before its first clear",()=>{
+  const t=setup(),fbo={} as WebGLFramebuffer,storage={};
+  registerFramebufferColorStorage(fbo,storage);t.b.renderTargetFbo=fbo;t.b.shadow.fbo=fbo;
+  const set=vi.spyOn(WeakMap.prototype,"set").mockImplementation(()=>{throw new Error("allocation");});
+  try {t.send(O.OP_CLEAR,[0x4000]);expect(t.error()).toBe(0);expect(t.gl.log).toEqual(["clear"]);
+    expect(storageWrites(storage).count).toBe(1);expect(set).not.toHaveBeenCalled();
+  }finally{set.mockRestore();}
+});
+it("does not publish default color storage when coherence metadata reservation fails",()=>{
+  const fbo={} as WebGLFramebuffer,storage={};
+  const original=WeakMap.prototype.set;
+  const set=vi.spyOn(WeakMap.prototype,"set").mockImplementation(function(this:WeakMap<object,unknown>,key:object,value:unknown){
+    if(key===storage)throw new Error("metadata allocation");return original.call(this,key,value);
+  });
+  try {expect(()=>registerFramebufferColorStorage(fbo,storage)).toThrow("metadata allocation");
+    expect(hostFramebufferColorStorage(fbo)).toBeUndefined();
+  }finally{set.mockRestore();}
 });

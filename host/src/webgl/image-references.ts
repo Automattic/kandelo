@@ -6,6 +6,7 @@ import { boundFramebuffer, defaultFramebuffer, isDefaultFramebuffer, validFrameb
 import { framebufferInputsChanged } from "./framebuffer-revision.js";
 import { setTextureUnit } from "./depth-sampling.js";
 import { TEXTURE_2D_ARRAY } from "./cube-storage.js";
+import { predictsNativeCalls } from "./native-batch.js";
 export type GlImageAttachment = {
   kind: "texture";
   object: WebGLTexture;
@@ -82,10 +83,23 @@ export function bindFramebufferObject(b: GlBinding, target: number, name: number
   const gl = b.gl;
   if (!gl)
     return false;
-  const owner = nativeOwner(b), oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
+
   let object = name ? b.fbos.get(name) ?? null : defaultFramebuffer(b, target === 0x8ca8);
   const allocate = name !== 0 && object === null;
   let read = name === 0 && target === 0x8d40 ? defaultFramebuffer(b, true) : object;
+  // Logical zero selects preallocated EGL storage, with no namespace or
+  // retirement change. In an authoritative batch native faults reset this
+  // owner; staging rollback metadata here would add a new guest OOM.
+  if (name === 0 && predictsNativeCalls(b)) {
+    if (target === 0x8d40 && read !== object) {
+      if (!checkedGlCall(b, () => gl.bindFramebuffer(0x8ca9, object)) ||
+          !checkedGlCall(b, () => gl.bindFramebuffer(0x8ca8, read))) return false;
+    } else if (!checkedGlCall(b, () => gl.bindFramebuffer(target, object))) return false;
+    if (target !== 0x8ca8) b.shadow.fbo = object;
+    if (target !== 0x8ca9) b.shadow.readFbo = read;
+    return true;
+  }
+  const owner = nativeOwner(b), oldDraw = b.shadow.fbo, oldRead = b.shadow.readFbo;
   let changes: NativeChange[];
   try {
     changes = [];

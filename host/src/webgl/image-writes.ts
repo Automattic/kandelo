@@ -59,6 +59,9 @@ export function imageWriteAudit(): boolean {
 const hostColorStorage = new WeakMap<WebGLFramebuffer, object>();
 
 export function registerFramebufferColorStorage(framebuffer: WebGLFramebuffer, storage: object): void {
+  // Reserve write-coherence metadata before publishing the allocation.
+  // First default-target draws must not discover a new allocation failure.
+  storageWrites(storage);
   hostColorStorage.set(framebuffer, storage);
 }
 

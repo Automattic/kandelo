@@ -323,6 +323,7 @@ struct wpk_gles_context;
 struct wpk_gles_context *_wpk_gl_command_encoder(void);
 void     _wpk_gl_note_reset(void);
 int      _wpk_gl_context_reset(void);
+int      _wpk_gl_has_draw_surface(void);
 int      _wpk_gl_reset_error(unsigned int *error);
 unsigned int _wpk_gl_graphics_reset_status(void);
 int      _wpk_gl_robustness_state(unsigned int pname, int32_t *value);

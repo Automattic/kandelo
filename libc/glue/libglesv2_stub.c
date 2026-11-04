@@ -323,6 +323,8 @@ struct wpk_gles_context {
      * publication. Draining error flags cannot restore this separate proof. */
     int array_binding_known;
     int default_vertex_array_only;
+    /* Never rearm after selecting a user FBO or losing an ordered prefix. */
+    int default_framebuffer_only;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
@@ -425,6 +427,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->current_vertex_array = &state->default_vertex_array;
     state->array_binding_known = 1; /* The initial binding is zero. */
     state->default_vertex_array_only = 1;
+    state->default_framebuffer_only = 1;
     init_vertex_array(&state->default_vertex_array);
     return state;
 }
@@ -447,6 +450,7 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
  * Error flags and later array binds cannot repair those separate slots. */
 static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
     state->array_binding_known = 0;
+    state->default_framebuffer_only = 0;
     for (uint32_t i=0; i<state->default_vertex_array.attrib_count; i++)
         state->default_vertex_array.attribs[i].host_row_known = 0;
 }
@@ -678,10 +682,21 @@ void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
 }
 
 void glClear(GLbitfield mask) {
-    if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_CLEAR, 4)
-    w_u32(&_c, (uint32_t)mask);
-    EMIT_END()
+    struct wpk_gles_context *state = _wpk_gl_command_encoder();
+    if (!state) return;
+    if (state->default_framebuffer_only && _wpk_gl_has_draw_surface()) {
+        /* No guest attachment or shared namespace can change this target.
+         * Keep the original record so the host independently checks it. */
+        EMIT_PREDICTED_BEGIN(OP_CLEAR, 4,
+            mask & ~(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT | GL_STENCIL_BUFFER_BIT)
+                ? GL_INVALID_VALUE : GL_NO_ERROR)
+        w_u32(&_c, (uint32_t)mask);
+        EMIT_PREDICTED_END()
+    } else {
+        EMIT_BEGIN(OP_CLEAR, 4)
+        w_u32(&_c, (uint32_t)mask);
+        EMIT_END()
+    }
 }
 
 void glViewport(GLint x, GLint y, GLsizei w, GLsizei h) {
@@ -3124,9 +3139,16 @@ void glBindFramebuffer(GLenum target, GLuint fb) {
         state->framebuffer_names[slot] = fb;
         state->framebuffer_name_count++;
     }
-    EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)
-    w_u32(&_c,target); w_u32(&_c,fb);
-    EMIT_END()
+    if (!fb) {
+        EMIT_INFALLIBLE_BEGIN(OP_BIND_FRAMEBUFFER,8)
+        w_u32(&_c,target); w_u32(&_c,fb);
+        EMIT_INFALLIBLE_END()
+    } else {
+        state->default_framebuffer_only = 0;
+        EMIT_BEGIN(OP_BIND_FRAMEBUFFER,8)
+        w_u32(&_c,target); w_u32(&_c,fb);
+        EMIT_END()
+    }
 }
 
 void glFramebufferTexture2D(GLenum target, GLenum attachment,

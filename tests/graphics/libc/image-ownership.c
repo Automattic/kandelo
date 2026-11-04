@@ -4585,6 +4585,47 @@ int main(int argc, char **argv) {
         fail_make_current = 0;
     }
     assert(eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx));
+    if (!strcmp(argv[1], "error-default-target-local") ||
+        !strcmp(argv[1], "error-default-target-fallbacks")) {
+        const int local = !strcmp(argv[1], "error-default-target-local");
+        const EGLint size[] = {EGL_WIDTH, 4, EGL_HEIGHT, 4, EGL_NONE};
+        EGLSurface surface = eglCreatePbufferSurface(dpy, (EGLConfig)1, size);
+        assert(surface != EGL_NO_SURFACE && eglMakeCurrent(dpy,surface,surface,ctx));
+        assert(glGetError() == GL_NO_ERROR);
+        if (local) {
+            const unsigned queries = error_queries, submits = submit_batches, clears = clear_commands;
+            for (unsigned i=0;i<20;i++) {
+                glBindFramebuffer(GL_FRAMEBUFFER,0);assert(glGetError()==GL_NO_ERROR);
+                glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR);
+            }
+            glClear(0x80000000u);assert(glGetError()==GL_INVALID_VALUE);
+            assert(glGetError()==GL_NO_ERROR && error_queries==queries && submit_batches==submits);
+            glFlush();assert(submit_batches==submits+1 && clear_commands==clears+21);
+            assert(glGetError()==GL_NO_ERROR);
+        } else {
+            glBindFramebuffer(GL_FRAMEBUFFER,17);glBindFramebuffer(GL_FRAMEBUFFER,0);
+            assert(glGetError()==GL_NO_ERROR);
+            unsigned queries=error_queries;
+            glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR && error_queries==queries+1);
+            /* A different fresh context loses its prefix without selecting
+             * a user FBO. Later drains/default binds must not rearm it. */
+            EGLContext other=eglCreateContext(dpy,(EGLConfig)1,EGL_NO_CONTEXT,attrs);
+            assert(other!=EGL_NO_CONTEXT && eglMakeCurrent(dpy,surface,surface,other));
+            assert(glGetError()==GL_NO_ERROR);
+            glClear(GL_COLOR_BUFFER_BIT);fail_submit=1;glFlush();fail_submit=0;
+            assert(glGetError()==GL_INVALID_OPERATION && glGetError()==GL_NO_ERROR);
+            glBindFramebuffer(GL_FRAMEBUFFER,0);assert(glGetError()==GL_NO_ERROR);
+            queries=error_queries;
+            glClear(GL_COLOR_BUFFER_BIT);assert(glGetError()==GL_NO_ERROR && error_queries==queries+1);
+            assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
+            queries=error_queries;glClear(GL_COLOR_BUFFER_BIT);
+            assert(glGetError()==GL_NO_ERROR && error_queries==queries+1);
+            assert(eglDestroyContext(dpy,other));
+        }
+        assert(eglDestroyContext(dpy,ctx) && eglDestroySurface(dpy,surface));
+        assert(eglReleaseThread() && eglTerminate(dpy));
+        printf("PASS %s\n",argv[1]);return 0;
+    }
     if (!strcmp(argv[1], "encoder-error-duplicate")) {
         glEnable(0xdead);
         glBindBuffer(0xdead,17);

@@ -1061,3 +1061,10 @@ retain the name. This corrects the custody mechanism needed by B1, whose
 shared guest program/current/pending references and immutable generation
 receipts remain required. It does not make the rejected selection cache safe
 or establish an application performance benefit.
+
+
+The B1 default-target increment removes error-query requests for a proven
+zero-target bind/clear prefix. It does not complete the current-iteration
+shared program/executable model or the remaining object/draw error families.
+Those, B2–B6 and C1–C3 remain required in this iteration, with normal SDK
+artifacts, application measurements and the complete native-feel ship bar.
