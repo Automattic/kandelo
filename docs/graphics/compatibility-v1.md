@@ -21754,8 +21754,45 @@ prefix, ordinary query or command-buffer wrap. Exact script and frozen hashes:
 candidate exits 0). These are C/device-double observations, not native GLES
 conformance or application performance.
 
-Both normal SDKs and Node/browser execution of this newest increment remain
-to be run after the separate frozen normal r16 preview build releases the
-build slot. That preview contains the earlier scalar/receipt driver and is
+Both normal SDK archives and their consumer checks remain to be rebuilt
+after the separate frozen normal r16 preview build releases the build slot.
+The source-override Node/browser cohorts below are separate evidence. That preview contains the earlier scalar/receipt driver and is
 not changed by this source increment. The original ship bar, ABI family,
 remaining B1 validation, B2–B6 and C1–C3 requirements all remain in force.
+
+
+### B1 array-buffer proof through source-built guest consumers
+
+The additional controls compile both complete GLES source arms through the
+already-prepared, read-only r16 SDK while its separate full package build
+continues. They do not overwrite that SDK or claim that the new source has
+already entered its normal archive or desktop image. The unchanged host and
+current prepared kernel exercise the normal program ABI.
+
+The device-double guest cohort passes ten Node cases and thirty cases across
+Chromium, Firefox and WebKit. Before-driver local-proof and proof-recovery
+assertions fail as expected; the new driver passes, and the conservative
+element/large-upload/epoch cases remain intact. The new oversized-size input
+is now conditional on `GLsizeiptr` being wide enough to represent it, avoiding
+signed overflow on wasm32 while retaining the native 64-bit check. Exact run:
+`.context/graphics-b1-array-source-r72/run.sh`, 72 seconds.
+
+The real GLES source-built consumer then passes two Node loud-no-renderer
+checks and nine rendering cases on Chromium 153.0.8010.12, Firefox 155.0 and
+WebKit 26.6. All three engines observe 37 device requests for 37 checked array
+storage definitions before, and zero afterward in production and fatal-audit
+modes. A sharing peer deletes and reuses the buffer name; a subsequent upload
+repopulates the retained old identity and its triangle passes pixel readback.
+That definition requires one request before and zero after. Cross-class
+binding, element-buffer fallback, pending error custody, an unknown prefix
+and a separate state-query epoch also meet their original assertions. No
+audit divergence, unexpected diagnostic, page error or memory-boundary failure
+is observed. Exact run: `.context/graphics-b1-array-real-source-r73/run.sh`,
+41 seconds.
+
+These are bounded API, data and request-count results, not desktop latency,
+FPS, total instrumentation overhead or full conformance. Both source arms use
+an explicit source object; the after consumer of the rebuilt normal SDK
+archive is queued separately after the frozen preview build and its checks.
+The preview remains unchanged until its own normal build/admission succeeds.
+B1 and all remaining driver/scheduling stages and ship gates remain open.

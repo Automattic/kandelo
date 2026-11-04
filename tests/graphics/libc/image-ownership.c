@@ -4666,8 +4666,10 @@ int main(int argc, char **argv) {
         glBufferData(0xdead,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_ENUM);
         glBufferData(GL_ARRAY_BUFFER,4,NULL,0xdead); assert(glGetError() == GL_INVALID_ENUM);
         glBufferData(GL_ARRAY_BUFFER,-1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_VALUE);
-        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)INT32_MAX+1,NULL,GL_STATIC_DRAW);
-        assert(glGetError() == GL_OUT_OF_MEMORY);
+        if (sizeof(GLsizeiptr) > sizeof(int32_t)) {
+            glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)((uint64_t)INT32_MAX+1u),NULL,GL_STATIC_DRAW);
+            assert(glGetError() == GL_OUT_OF_MEMORY);
+        }
         glBindBuffer(GL_ARRAY_BUFFER,0);
         glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_OPERATION);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries);
