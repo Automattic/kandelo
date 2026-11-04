@@ -22013,3 +22013,37 @@ inputs match afterward. These controls do not replace final normal guest,
 browser-memory, desktop or conformance validation. R21's rejected program
 cache remains uncommitted and unsafe; R95's cross-thread failure still requires
 the shared guest namespace/current/pending and executable-generation model.
+
+
+**Partial B1 prototype availability, 2026-11-04.** The maintainer's port5693
+now serves the frozen R16 normal published desktop closure at07321b7bc4.
+R109 (`run.sh-1104-041345-4b65`, private port5934) passes the ordinary
+ScummVM-in-Sway interaction spec on Chromium, Firefox and WebKit: launcher
+pixels, dialog input, clean exact-wrapper exit and compositor DRM ownership.
+All313 published SourceOnly product SHA-256 values match afterward, and a
+separate exact file-inventory comparison also passes. The normal setup-all
+stage had already passed; its unrelated standalone GTK test instrumentation
+is still running. This prototype availability does not declare that full
+build or final acceptance complete. The original post-build admission and
+desktop method queues remain required. The prototype includes the earlier
+31 scalar/state and checked-receipt B1 increment, not later array/vertex or
+reset-scope/custody changes, full B1 or any C stage. No performance or native
+feel claim follows from these functional controls.
+
+Only the owned R14 preview server was retired: exact child/supervisor IDs,
+command, source cwd and port were checked against its job record before
+SIGTERM; its terminal status was collected. The replacement owned server is
+`graphics-preview-b1-r16-5693-1104-041647-5655`, serving that exact frozen R16
+source with its own tool and SourceOnly products. Gallery and Wayland URLs
+return HTTP200; the three-engine guest controls above provide rendering
+and interaction evidence separately. Availability was announced separately
+from validation, and the maintainer can refresh the existing tab.
+
+**Inactive incremental-cache cleanup, 2026-11-04.** R110 removes only inactive
+native Cargo incremental directories in the owned R22 and R14 trees after
+two empty open-file checks, tracked-file guards and a no-Wasm inventory.
+The removed files account for2,853,772 KiB allocated. Source, SDKs, native
+binaries, Wasm programs/kernel/images and all evidence remain. Inventory and
+guards are in `.context/graphics-cache-clean-r110/`. Free space was about
+31 GiB afterward; concurrent builds/APFS prevent a causal reclaimed-byte
+claim from that free-space reading.
