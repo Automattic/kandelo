@@ -262,7 +262,12 @@ same stream position; the fatal audit checks the independent host oracle.
 Unknown operations and ordinary device requests still force a drain. A fully
 checked synchronous mutation receipt can preserve an existing exact proof
 when context, cursor and request-count checks establish that it added no
-error; this does not make binds asynchronous. This is only the start of B1: the remaining exact validation families and their audit
+error; this does not make binds asynchronous. Array-buffer storage also
+preserves the proof when its binding is separately known. Indeterminate
+mutations revoke binding certainty; an ordinary error drain cannot repair it,
+and storage uses a checked binding-presence query until an acknowledged bind.
+Element-buffer/VAO and large-upload sub-data paths remain conservative.
+This is only the start of B1: the remaining exact validation families and their audit
 coverage, application measurements and the ScummVM round-trip target remain
 required before B1 is complete. B2–B6 and C1–C3 remain current-iteration
 work; no completed driver stage or native-feel result follows from the

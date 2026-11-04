@@ -6197,6 +6197,18 @@ buffer, a local `glGetError` must queue its ordered observation before
 consuming that flag. Later I/O revokes the proof through the normal epoch
 check.
 
+Validated array-buffer storage definitions can also extend an existing exact
+error proof. Their binding must have a separate acceptance proof: a lost
+mutation reply can change the host binding without publishing its C mirror,
+and draining error flags cannot recover that binding. Failed transport,
+failed submission and indeterminate mutation replies revoke binding
+knowledge. Until an acknowledged array bind restores it, `glBufferData`
+checks actual binding presence through the existing buffer-parameter query
+and leaves error observation on the ordinary drain path. It does not infer
+an object identity from that query. Healthy acknowledged bindings need no
+extra query. Element-buffer definitions retain the ordinary path because
+queued vertex-array selection is not yet mirrored exactly.
+
 This is still partial B1; the remaining draw/object validation, later driver
 stages and desktop acceptance measurements are not established by these
 scalar checks.

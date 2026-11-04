@@ -318,6 +318,9 @@ struct wpk_gles_context {
     uint32_t next_readback_capture;
     uint32_t next_object_capture;
     GLuint array_buffer;
+    /* An indeterminate mutation can change the host binding without a C
+     * publication. Draining error flags cannot restore this separate proof. */
+    int array_binding_known;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
@@ -362,6 +365,7 @@ struct wpk_gles_context {
 #define g_next_vertex_array (_wpk_gl_current_encoder()->next_vertex_array)
 
 static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t count);
+static int checked_client_query(uint32_t op, const void *in, uint32_t len, void *out, uint32_t cap);
 struct wpk_gl_name_scope _wpk_gl_begin_name_scope(struct wpk_gles_context *state) {
     struct wpk_gl_name_scope scope = {.group = state->objects};
     // Do not abandon native publication on cancellation; restore after unlock.
@@ -417,6 +421,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->generate_mipmap_hint = state->fragment_derivative_hint = GL_DONT_CARE;
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
+    state->array_binding_known = 1; /* The initial binding is zero. */
     init_vertex_array(&state->default_vertex_array);
     return state;
 }
@@ -438,7 +443,11 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
 static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
     _wpk_gl_note_device_request(); /* Voids local glGetError knowledge. */
     int rc = ioctl(fd, request, arg);
-    if (rc != 0 && errno == ENODEV) _wpk_gl_note_reset();
+    if (rc != 0) {
+        struct wpk_gles_context *state = _wpk_gl_current_encoder();
+        if (state) state->array_binding_known = 0;
+        if (errno == ENODEV) _wpk_gl_note_reset();
+    }
     return rc;
 }
 
@@ -451,6 +460,7 @@ static void finish_command_submission(struct wpk_gles_context *state,
     if (rc == 0) state->client_errors &= ~errors;
     /* A reset context reports CONTEXT_LOST instead and never submits again. */
     else if (!_wpk_gl_context_reset()) {
+        state->array_binding_known = 0;
         record_client_error(state, GL_INVALID_OPERATION);
         const uint32_t token = state->next_uniform_upload;
         if (token) {
@@ -800,6 +810,7 @@ void glBindBuffer(GLenum target, GLuint buf) {
     if (target == GL_ARRAY_BUFFER) {
         g_array_buffer = buf;
         state->array_serial = object ? object->serial : 0;
+        state->array_binding_known = 1;
     } else {
         g_element_buffer = buf;
         state->current_vertex_array->element_serial = object ? object->serial : 0;
@@ -853,7 +864,8 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
  * binding also depends on VAO selection, whose queued acceptance is not yet
  * mirrored exactly, so that target must retain the ordinary error drain. */
 static void finish_buffer_definition(uint8_t *start, uint8_t *end, GLenum target) {
-    if (target == GL_ARRAY_BUFFER) finish_predicted_command(start, end, GL_NO_ERROR);
+    if (target == GL_ARRAY_BUFFER && _wpk_gl_current_encoder()->array_binding_known)
+        finish_predicted_command(start, end, GL_NO_ERROR);
     else g_cursor = end;
 }
 
@@ -866,7 +878,15 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     if (size < 0) {
         raise_client_error(GL_INVALID_VALUE); return;
     }
-    if (!(target == GL_ARRAY_BUFFER ? g_array_buffer : g_element_buffer)) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    if (target == GL_ARRAY_BUFFER && !state->array_binding_known) {
+        /* A checked parameter reply certifies binding presence, including a
+         * retained unnamed identity. It does not repair the C name/reference
+         * mirror: only a subsequent acknowledged bind enables the fast path. */
+        const uint32_t input[2] = {GL_ARRAY_BUFFER,GL_BUFFER_SIZE};
+        GLint size_ignored;
+        if (!checked_client_query(QOP_GET_BUFFER_PARAMETER,input,sizeof input,&size_ignored,sizeof size_ignored)) return;
+    } else if (!(target == GL_ARRAY_BUFFER ? g_array_buffer : g_element_buffer)) {
         raise_client_error(GL_INVALID_OPERATION); return;
     }
     /* ES 2.0 section 2.9 makes only a negative size INVALID_VALUE. Buffer
@@ -1878,6 +1898,7 @@ static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t c
             return 1;
         }
     }
+    _wpk_gl_current_encoder()->array_binding_known = 0;
     raise_client_error(GL_INVALID_OPERATION);
     return -1;
 }

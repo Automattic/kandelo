@@ -21796,3 +21796,41 @@ an explicit source object; the after consumer of the rebuilt normal SDK
 archive is queued separately after the frozen preview build and its checks.
 The preview remains unchanged until its own normal build/admission succeeds.
 B1 and all remaining driver/scheduling stages and ship gates remain open.
+
+
+### B1 storage binding certainty after an indeterminate mutation
+
+An error drain establishes error flags, not object-binding state. A malformed
+bind receipt can leave the host unbound while C retains a name, or bound while
+C retains zero. The storage proof now tracks binding certainty separately.
+Transport/submission failures and indeterminate mutation replies revoke it;
+an acknowledged array bind restores it. While uncertain, storage uses the
+existing checked buffer-parameter query to certify actual binding presence,
+then retains the ordinary error drain. It never treats that query as a repair
+of the C object/name mirror. The healthy path adds no request.
+
+Two causal controls model both directions of a lost bind acknowledgement.
+The previous driver at `da03866f76` fails both; the candidate passes all 428
+native C/device-double cases under UBSan. The first fixture attempt failed
+because its double rejected stack input and did not model an unbound query;
+that evidence remains preserved. The corrected double enforces the actual
+query precondition without weakening assertions. Exact run:
+`.context/graphics-b1-array-certainty-r75-r2/run.sh`, 23 seconds.
+
+Source-built guest controls pass fourteen Node cases and forty-two browser
+cases across Chromium, Firefox and WebKit, including expected before-driver
+failures for the two lost-acknowledgement controls. Real GLES consumers pass
+two Node loud-no-renderer checks and nine browser rendering cases: 37 storage
+definitions still require 37 requests before and zero after; the shared,
+deleted-and-reused-name definition remains one before and zero after.
+Production and fatal-audit after arms preserve payload pixels, error custody,
+query/unknown-prefix fallback and teardown. Exact runs:
+`.context/graphics-b1-array-certainty-source-r76/run.sh` (84 seconds) and
+`.context/graphics-b1-array-certainty-real-r77/run.sh` (41 seconds).
+
+These consumers explicitly compile source objects through the prepared SDK;
+they do not validate the pending normal SDK archive or desktop preview.
+Normal archive checks remain queued in
+`.context/graphics-b1-array-sdk-r74-r3/run.sh`, after the frozen preview build
+and its checks. No desktop performance, completed B1, native timing or full
+conformance claim follows from these bounded results. ABI remains unchanged.

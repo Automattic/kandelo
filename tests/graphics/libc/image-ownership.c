@@ -455,6 +455,7 @@ static unsigned bind_failure, bind_queries;
 static uint32_t last_image_target; /* QOP_BOUND_IMAGE_TARGET's target */
 static unsigned buffer_bind_failure, buffer_delete_failure;
 static unsigned buffer_bind_other_request, buffer_bind_bad_receipt;
+static unsigned array_storage_binding_model;
 static unsigned image_mutation_failure, image_mutation_queries;
 static unsigned framebuffer_bind_queries;
 static int fail_alloc_after_image_mutation;
@@ -2159,6 +2160,16 @@ int graphics_ioctl(int fd, unsigned long request, ...) {
         if (q->op == 0x12 || q->op == 0x15 || q->op == 0x16) {
             scalar_queries++;
             assert(q->out_buf_len == 12 && latest_allocation);
+            if (q->op == QOP_GET_BUFFER_PARAMETER) {
+                const uint32_t *input = (const uint32_t *)(uintptr_t)q->in_buf_ptr;
+                assert(q->in_buf_len == 8);
+                const uint32_t binding = input[0] == GL_ARRAY_BUFFER ? slot->array_binding : slot->element_binding;
+                if (!binding || array_storage_binding_model) {
+                    const uint32_t reply[3] = {binding ? 0u : 1u,0,WPK_GL_QUERY_REPLY_MAGIC};
+                    if (!binding) query_gl_error = GL_INVALID_OPERATION;
+                    memcpy(latest_allocation,reply,sizeof reply); return 0;
+                }
+            }
             memset(latest_allocation,0,12); memcpy(latest_allocation,&query_status,4); memcpy((uint8_t *)latest_allocation+4,&query_scalar,4);
             const uint32_t footer = 0x47514c33u; memcpy((uint8_t *)latest_allocation+8,&footer,4); return 0;
         }
@@ -4722,6 +4733,41 @@ int main(int argc, char **argv) {
         assert(captured_size == sizeof bytes && !memcmp(captured_bytes,bytes,sizeof bytes));
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-array-storage-large"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-unknown-unbind")) {
+        array_storage_binding_model = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        buffer_bind_bad_receipt = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,0); /* Host changed; C cannot publish it. */
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        const unsigned queries = scalar_queries, uploads = buffer_uploads;
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        assert(scalar_queries == queries + 1 && buffer_uploads == uploads);
+        glBindBuffer(GL_ARRAY_BUFFER,21); assert(glGetError() == GL_NO_ERROR);
+        const unsigned errors = error_queries;
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == errors && scalar_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-unknown-unbind"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-unknown-bind")) {
+        array_storage_binding_model = 1;
+        assert(glGetError() == GL_NO_ERROR);
+        buffer_bind_bad_receipt = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,17); /* Host bound it; C still holds zero. */
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        const unsigned queries = scalar_queries, uploads = buffer_uploads;
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_NO_ERROR);
+        assert(scalar_queries == queries + 1 && buffer_uploads == uploads + 1);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STREAM_DRAW); assert(glGetError() == GL_NO_ERROR);
+        assert(scalar_queries == queries + 2 && buffer_uploads == uploads + 2);
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        const unsigned errors = error_queries;
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_DYNAMIC_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == errors && scalar_queries == queries + 2);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-unknown-bind"); return 0;
     }
     if (!strcmp(argv[1], "error-receipt-local")) {
         assert(glGetError() == GL_NO_ERROR);
