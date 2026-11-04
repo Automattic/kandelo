@@ -10,6 +10,7 @@ an installed Apple SDK and existing Screen Recording authorization:
 
 ```bash
 scripts/dev-shell.sh npx --no-install tsx benchmarks/desktop-latency/clock-bounds-control.ts
+scripts/dev-shell.sh npx --no-install tsx --unhandled-rejections=strict benchmarks/desktop-latency/observer-promises-control.ts
 scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .context/native-control-dom dom
 scripts/dev-shell.sh benchmarks/desktop-latency/run-control.sh .context/native-control-worker offscreen
 ```
@@ -34,7 +35,9 @@ existing framebuffer context attributes. Sixty ordinary inputs are followed
 by one input whose handler deliberately blocks for 50 ms. A no-op input
 must not produce the opposite color. Each stimulus has one outstanding
 response; native frame ordering, input counts and pixel colors are checked.
-The startup screenshot occurs before measurement.
+The startup screenshot and first visible transition occur before the
+guarded measurement window. A frame failure that occurs while input
+dispatch is in flight remains owned and is rethrown when awaited.
 
 `SCStreamFrameInfo.displayTime` is the Mach absolute time at which
 WindowServer displayed the frame. This is window composition evidence,

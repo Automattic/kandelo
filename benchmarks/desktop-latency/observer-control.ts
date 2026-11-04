@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { loadavg } from 'node:os';
 import assert from 'node:assert/strict';
 import { clockBounds, quantile, type ClockSample } from './clock-bounds.js';
+import { holdObservation } from './observer-promises.js';
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const out = process.env.KPERF_NATIVE_METHOD_OUT;
 assert(out, 'KPERF_NATIVE_METHOD_OUT must name a private output directory');
@@ -33,7 +34,7 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
       throw new Error('Observer capacity exceeded');
     if (row.kind === 'error')
       terminalError = new Error(row.error);
-    if (observing && ((row.kind === 'sample-status' && [2, 3].includes(row.status)) ||
+    if (observing && !stopping && ((row.kind === 'sample-status' && [2, 3].includes(row.status)) ||
         (row.kind === 'frame' && row.active !== true))) {
       terminalError = new Error('Display became blank, suspended or inactive; visible measurement is invalid');
     }
@@ -46,12 +47,12 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
   };
   const wait = (predicate: (row: any) => boolean, after = 0) => {
     if (terminalError)
-      return Promise.reject(terminalError);
+      return holdObservation(Promise.reject(terminalError));
     const ready = rows.slice(after).find(predicate);
     if (ready)
       return Promise.resolve(ready);
-    return new Promise<any>((resolve, reject) => { const w: any = { predicate, resolve, reject }; w.timer = setTimeout(() => { const i = waiters.indexOf(w); if (i >= 0)
-      waiters.splice(i, 1); reject(new Error('Native frame/control timeout')); }, 10000); waiters.push(w); });
+    return holdObservation(new Promise<any>((resolve, reject) => { const w: any = { predicate, resolve, reject }; w.timer = setTimeout(() => { const i = waiters.indexOf(w); if (i >= 0)
+      waiters.splice(i, 1); reject(new Error('Native frame/control timeout')); }, 10000); waiters.push(w); }));
   };
   try {
     const profile = mkdtempSync(join(out, `${engine}-profile-`));
@@ -156,12 +157,15 @@ for (const engine of (process.env.KPERF_NATIVE_ENGINES ?? 'chromium,firefox,webk
     const nativeBefore = await nativeCalibrate();
     const color = (r: any) => r.kind === 'frame' ? (r.rgb[0] > 180 && r.rgb[2] < 80 ? 'red' : r.rgb[2] > 180 && r.rgb[0] < 80 ? 'blue' : 'other') : undefined;
     await wait(r => color(r) === 'blue');
-    observing = true;
+    await page.evaluate('new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))');
     let at = rows.length;
     let response = wait(r => color(r) === 'red', at);
     await page.keyboard.down('a');
     await response;
     await page.keyboard.up('a');
+    // The first observed transition warms capture. Suspension before this
+    // point is startup evidence; the no-op and timed inputs are guarded.
+    observing = true;
     await page.evaluate(() => { (globalThis as any).skip = true; });
     at = rows.length;
     await page.keyboard.down('a');

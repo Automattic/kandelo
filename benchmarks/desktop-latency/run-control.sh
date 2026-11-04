@@ -26,8 +26,8 @@ mac_tool swift --version > "$out/swift-version.txt" 2>&1
 /usr/bin/sw_vers > "$out/os-version.txt"
 mac_tool swiftc -parse-as-library "$root/benchmarks/desktop-latency/window-capture.swift" -o "$out/window-capture" > "$out/compile.log" 2>&1
 cd "$root"
-shasum -a 256 benchmarks/desktop-latency/{observer-control.ts,window-capture.swift,clock-bounds.ts,run-control.sh} "$out/window-capture" apps/browser-demos/node_modules/playwright-core/{package.json,browsers.json} > "$out/inputs.sha256"
-cp benchmarks/desktop-latency/{observer-control.ts,window-capture.swift,clock-bounds.ts} "$out/"
+shasum -a 256 benchmarks/desktop-latency/{observer-control.ts,window-capture.swift,clock-bounds.ts,observer-promises.ts,run-control.sh} "$out/window-capture" apps/browser-demos/node_modules/playwright-core/{package.json,browsers.json} > "$out/inputs.sha256"
+cp benchmarks/desktop-latency/{observer-control.ts,window-capture.swift,clock-bounds.ts,observer-promises.ts} "$out/"
 "$out/window-capture" --preflight > "$out/preflight.json" 2> "$out/preflight-error.log"
 export KPERF_NATIVE_METHOD_OUT="$out" KPERF_NATIVE_MODE="$mode"
 # Keep this already-unlocked display awake only for this owned measurement.

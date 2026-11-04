@@ -21311,3 +21311,19 @@ Omarchy desktop case. Labwc, both SFWBar compositor flows and the remaining
 executed desktop cases pass; the failures and skips are retained, not
 waived. These runs do not measure native desktop feel. Evidence:
 `.context/graphics-desktop-normal-r22/`.
+
+
+During the unlocked repository observer replay, Chromium and WebKit DOM
+controls pass. Firefox's stream reports capture suspension before its first
+red warmup transition; this invalidates the attempted run. A rejected frame
+promise could also terminate Node while input dispatch was still awaited.
+The rejection now remains owned and propagates to the caller; a strict-Node
+control fails before and passes after this adjustment, and the real failed
+Firefox attempt subsequently cleans up and continues to WebKit. The capture
+warmup is now outside the guarded measurement window; the no-op and timed
+inputs remain guarded. That startup adjustment still needs a positive
+physical replay. No further unlocked time is requested until the next
+measurement setup is ready. Evidence:
+`.context/graphics-native-frame-canonical-r24/`,
+`.context/graphics-native-frame-canonical-r25/`,
+`.context/graphics-observer-promise-control-r27/`.
