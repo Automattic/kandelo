@@ -4579,6 +4579,64 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-drain-local"); return 0;
     }
+    if (!strcmp(argv[1], "error-drain-infallible")) {
+        /* A scalar prefix before the first proof must still ask the host. */
+        unsigned queries = error_queries;
+        glClearColor(0, 0, 0, 1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        queries = error_queries;
+        const unsigned submits = submit_batches;
+        for (unsigned i = 0; i < 3; ++i) {
+            glClearColor(-1, 2, 0, 1); assert(glGetError() == GL_NO_ERROR);
+            glBlendColor(-1, 2, 0, 1); assert(glGetError() == GL_NO_ERROR);
+            glClearDepthf(-1); assert(glGetError() == GL_NO_ERROR);
+            glClearStencil(INT_MIN); assert(glGetError() == GL_NO_ERROR);
+            glColorMask(0, 2, 0, 1); assert(glGetError() == GL_NO_ERROR);
+            glDepthMask(2); assert(glGetError() == GL_NO_ERROR);
+            glStencilMask(UINT_MAX); assert(glGetError() == GL_NO_ERROR);
+            glPolygonOffset(-1, 2); assert(glGetError() == GL_NO_ERROR);
+            glDepthRangef(2, -1); assert(glGetError() == GL_NO_ERROR);
+            glSampleCoverage(2, 2); assert(glGetError() == GL_NO_ERROR);
+        }
+        assert(error_queries == queries && submit_batches == submits);
+        /* Local errors retain their existing custody while this exact prefix
+         * is pending; reporting one must not replay it after submission. */
+        glBindBuffer(0xdead, 17);
+        assert(glGetError() == GL_INVALID_ENUM && glGetError() == GL_NO_ERROR);
+        assert(error_queries == queries);
+        glFlush();
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-infallible"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-infallible-unknown")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        glClearColor(1, 0, 0, 1);
+        glEnable(0xdead);
+        glBlendColor(1, 0, 0, 1);
+        /* A later infallible command cannot cover an unknown earlier op. */
+        assert(glGetError() == GL_INVALID_ENUM && error_queries == queries + 1);
+        glClearColor(0, 0, 0, 1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-infallible-unknown"); return 0;
+    }
+    if (!strcmp(argv[1], "error-drain-infallible-wrap")) {
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries, submits = submit_batches;
+        unsigned i = 0;
+        while (submit_batches == submits && i++ < WPK_GL_CMDBUF_LEN / 20u + 2u)
+            glClearColor(0, 0, 0, 1);
+        assert(submit_batches == submits + 1);
+        /* reserve() submitted even though every recorded setter is exact.
+         * That request invalidates knowledge before a local answer. */
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        glClearColor(0, 0, 0, 1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-drain-infallible-wrap"); return 0;
+    }
     if (!strcmp(argv[1], "error-drain-multiple")) {
         /* Host and client flags arrive in one request; each is returned
          * exactly once and a flag present in both is one flag. */
@@ -4638,21 +4696,25 @@ int main(int argc, char **argv) {
         unsigned queries = error_queries;
         assert(glGetError() == GL_NO_ERROR && glGetError() == GL_NO_ERROR && error_queries == queries + 1);
         /* Any GL device request voids the knowledge, even an empty finish. */
+        glClearColor(0, 0, 0, 1);
         glFinish();
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
         /* EGL requests count, including a context switch away and back. */
+        glClearColor(0, 0, 0, 1);
         assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,peer));
         assert(eglMakeCurrent(dpy,EGL_NO_SURFACE,EGL_NO_SURFACE,ctx));
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 3);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 3);
         /* So do another thread's requests on another context. */
+        glClearColor(0, 0, 0, 1);
         struct thread_context input = {dpy, peer};
         pthread_t thread; assert(!pthread_create(&thread,NULL,flush_peer_context,&input));
         assert(!pthread_join(thread,NULL));
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
         assert(glGetError() == GL_NO_ERROR && error_queries == queries + 4);
         /* A fork child never repeats the parent's knowledge. */
+        glClearColor(0, 0, 0, 1);
         fflush(NULL);
         const pid_t child = fork(); assert(child >= 0);
         if (child == 0) {

@@ -21345,3 +21345,53 @@ this focused replay does not replace the final full desktop matrix or
 provide performance evidence. Exact commands and frozen input patches:
 `.context/graphics-terminal-history-r28/run.sh`,
 `.context/graphics-omarchy-history-r29/run.sh`.
+
+### B1 initial scalar increment, not a completed stage
+
+The guest now preserves a drained context's error proof across ten scalar
+setters that cannot raise GLES API errors. It tracks the exact prefix end
+and the existing device-request epoch; unknown commands, automatic buffer
+submission, context changes, other-thread requests and fork still invalidate
+that proof. No opcode, query layout or version changes. Draw paths are
+unchanged. The original setter records still reach the host.
+
+`tests/graphics/run-libc-unit.sh` passes all 412 native cases. Three causal
+controls fail with the previous library and pass with the candidate. The
+same SDK-built controls pass six Node cases and eighteen browser cases
+across Chromium, Firefox and WebKit, checking the expected failures before
+and successful results after, with no skipped cases. They exercise local
+error custody, an unknown command between exact setters, and automatic
+buffer wrap. The existing request-invalidation control also queues an exact
+setter before finish, context transfer, another thread's request and fork.
+These are library/device-double controls, not native GPU measurements.
+
+A separate real EGL/GLES pbuffer probe executes thirty scalar setters and
+checks each error result. Its before/after device-request counts are:
+
+| Engine | Before | Candidate |
+| --- | ---: | ---: |
+| Chromium 153.0.8010.12 | 30 | 0 |
+| Firefox 155.0 | 30 | 0 |
+| WebKit 26.6 | 30 | 0 |
+
+All six browser cases pass, including the unchanged invalid-command
+fallback, with no page, host or memory-boundary diagnostics. These counts
+prove only this scalar path; no desktop latency, FPS, throughput or overall
+performance improvement is claimed. Node retains its explicit unsupported
+renderer admission: both before/after Node cases pass with the exact loud
+`EGL_NOT_INITIALIZED` diagnostic. The initial cross-host setup forgot fork instrumentation
+and was correctly refused before guest execution. The first Node admission
+wrapper also incorrectly expected empty stderr despite the required loud
+EGL diagnostic; a subsequent wrapper used a noncanonical resolver path and
+was refused before execution. The failed runs are retained separately from
+the corrected controls. The preview still uses the previous normal build.
+
+Full B1 remains open: exact validation for the remaining families, ordered
+error audit, complete GLES/desktop coverage and matched application and
+benchmark measurements, including the ScummVM round-trip target. B2–B6 and
+C1–C3 have not started. Evidence and exact commands:
+`.context/graphics-b1-infallible-r31/`,
+`.context/graphics-b1-infallible-r32/run-all.sh`,
+`.context/graphics-b1-real-gl-r33/run-wasm.sh`,
+`.context/graphics-b1-node-refusal-r34/`,
+`.context/graphics-b1-node-refusal-r35/run.sh`.

@@ -6149,11 +6149,20 @@ flags ride in the request mask, and the renderer captures native flags and
 moves every recorded flag, oldest first, into a checked reply that also
 says whether any flag was retained. libGLESv2 holds the moved flags in the
 context encoder beside its own client flags and returns one per call. When
-nothing was retained, the command buffer is still empty and no
-graphics-device request has been made since (libEGL counts every request
+nothing was retained, only proven infallible scalar setters have been queued
+and no graphics-device request has been made since (libEGL counts every request
 from both libraries, process-wide; a fork child's count is advanced by a
 `pthread_atfork` handler), no command can have recorded a new flag, so
-`glGetError` answers from the guest with no request. Any request,
+`glGetError` answers from the guest with no request. The first B1 increment
+tracks the end of that exact command prefix for `glClearColor`,
+`glBlendColor`, `glClearDepthf`, `glClearStencil`, `glColorMask`,
+`glDepthMask`, `glStencilMask`, `glPolygonOffset`, `glDepthRangef` and
+`glSampleCoverage`. These scalar setters cannot raise GLES API errors;
+their original records still reach the host for independent validation and
+execution. An unknown command leaves the proven prefix behind and forces
+the next error drain. Automatic buffer submission also invalidates the
+request epoch, even when the command cursor wraps to the same address.
+Draws and object-dependent operations do not use this proof. Any request,
 including a state query, make-current, swap, fence operation or another
 thread's work, voids that knowledge, and the next `glGetError` drains
 again. This relies on the host recording a flag only into the context

@@ -255,6 +255,15 @@ also the planned migration of host GL logic out of TypeScript. Asynchronous
 binds also fix the dEQP-EGL `gles2_shared_render` timeouts, where every
 `glBindTexture` is a synchronous round trip.
 
+The first B1 source increment preserves local error knowledge across ten
+infallible scalar setters, retaining the ordinary host command records.
+Unknown operations and device requests still force a drain. This is only
+the start of B1: the remaining exact validation families, ordered error
+audit, application measurements and the ScummVM round-trip target remain
+required before B1 is complete. B2–B6 and C1–C3 remain current-iteration
+work; no completed driver stage or native-feel result follows from the
+focused scalar controls.
+
 This migration must preserve ordinary shared-memory Wayland clients. The
 baseline removes the Foot, mako, GTK and Qt DRM-pool rewrites now that
 wlcompositor maps memfd pools; future graphics transport and scheduling

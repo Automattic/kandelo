@@ -300,12 +300,13 @@ struct wpk_gles_context {
      * the context's error state (ES 2.0 section 2.5). */
     GLenum held_errors[WPK_GL_ERROR_DRAIN_CAPACITY];
     uint32_t held_error_count;
-    /* The host held no flags after the last drain, and errors_known_at is
-     * the device request count that drain left. While the count and an empty
-     * command buffer both still hold, held_errors + client_errors are the
-     * complete error state and glGetError needs no round trip. */
+    /* The host held no flags after the last drain. Its request epoch and
+     * the end of the exactly validated prefix prove that queued commands
+     * cannot have added a flag. Unknown commands leave the prefix behind;
+     * any device request invalidates the epoch. */
     int errors_known;
     uint64_t errors_known_at;
+    uint8_t *errors_known_cursor;
     GLenum generate_mipmap_hint, fragment_derivative_hint;
     uint32_t next_compressed_upload;
     uint32_t next_shader_upload;
@@ -523,6 +524,24 @@ static uint8_t *reserve(size_t bytes) {
 
 #define EMIT_END() g_cursor = _c;
 
+/* Start B1 with scalar setters whose GLES2 contract cannot raise an API
+ * error, regardless of other context state. Keep their original TLVs so
+ * the host still independently validates and executes them. Do not extend
+ * this to draws, allocations or object-dependent operations. */
+static void finish_infallible_command(uint8_t *start, uint8_t *end) {
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    /* WHY: reserve() can submit when the buffer fills. Even if its cursor
+     * wraps to the same address, that request revokes the old error proof. */
+    if (state->errors_known && state->errors_known_cursor == start &&
+        _wpk_gl_device_requests() == state->errors_known_at)
+        state->errors_known_cursor = end;
+    g_cursor = end;
+}
+#define EMIT_INFALLIBLE_BEGIN(op_, payload_len_)                         \
+    EMIT_BEGIN(op_, payload_len_)                                       \
+    uint8_t *_exact_start = _c - 4;
+#define EMIT_INFALLIBLE_END() finish_infallible_command(_exact_start, _c);
+
 /* Max u32 names that fit one `{u16 op, u16 payload_len, u32 n, u32
  * names[n]}` record: the payload_len header is 16-bit, so
  * 4 + n*4 <= 0xFFFF, i.e. n <= (0xFFFF - 4) / 4 = 16382. */
@@ -550,9 +569,9 @@ static void emit_name_array(uint16_t op, GLsizei n, const GLuint *names) {
 
 void glClearColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_CLEAR_COLOR, 16)
+    EMIT_INFALLIBLE_BEGIN(OP_CLEAR_COLOR, 16)
     w_f32(&_c, r); w_f32(&_c, g); w_f32(&_c, b); w_f32(&_c, a);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glClear(GLbitfield mask) {
@@ -1504,9 +1523,10 @@ abort:
  * it reports none retained and no device request has followed it, nothing
  * can have recorded a new host flag, so later calls answer from
  * held_errors/client_errors with no request. Any device request voids that
- * knowledge (see _wpk_gl_note_device_request in libEGL), and queued
- * commands are sent as the prefix of the drain that observes their errors,
- * so a check after a command costs exactly the one request it always did. */
+ * knowledge (see _wpk_gl_note_device_request in libEGL). Commands outside
+ * the exactly validated prefix are sent as the prefix of the next drain.
+ * Infallible scalar setters can extend that proof without a request, while
+ * keeping their original commands for host execution. */
 static int hold_error(struct wpk_gles_context *state, GLenum error) {
     for (uint32_t i = 0; i < state->held_error_count; ++i)
         if (state->held_errors[i] == error) return 1; /* One flag per value. */
@@ -1558,7 +1578,8 @@ GLenum glGetError(void) {
     uint8_t *base = _wpk_gl_cmdbuf_base();
     if (base == NULL) return GL_NO_ERROR;
     const int idle = !g_cursor || g_cursor == base;
-    if (state->errors_known && idle && _wpk_gl_device_requests() == state->errors_known_at)
+    if (state->errors_known && (!g_cursor || g_cursor == state->errors_known_cursor) &&
+        _wpk_gl_device_requests() == state->errors_known_at)
         return take_held_error(state);
     state->errors_known = 0;
     /* One request carries the queued commands (as the compound prefix), the
@@ -1600,6 +1621,7 @@ GLenum glGetError(void) {
         _wpk_gl_device_requests() == requests + 1 && _wpk_gl_device_requests_fork_safe()) {
         state->errors_known = 1;
         state->errors_known_at = requests + 1;
+        state->errors_known_cursor = base;
     }
     return take_held_error(state);
 }
@@ -3533,40 +3555,40 @@ void glHint(GLenum target, GLenum mode) {
 // Native GLES renderer entry points.
 void glBlendColor(GLfloat r, GLfloat g, GLfloat b, GLfloat a) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_BLEND_COLOR, 16)
+    EMIT_INFALLIBLE_BEGIN(OP_BLEND_COLOR, 16)
     w_f32(&_c, r); w_f32(&_c, g); w_f32(&_c, b); w_f32(&_c, a);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glClearDepthf(GLfloat d) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_CLEAR_DEPTHF, 4)
+    EMIT_INFALLIBLE_BEGIN(OP_CLEAR_DEPTHF, 4)
     w_f32(&_c, d);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glClearStencil(GLint s) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_CLEAR_STENCIL, 4)
+    EMIT_INFALLIBLE_BEGIN(OP_CLEAR_STENCIL, 4)
     w_i32(&_c, s);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glColorMask(GLboolean r, GLboolean g, GLboolean b, GLboolean a) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_COLOR_MASK, 16)
+    EMIT_INFALLIBLE_BEGIN(OP_COLOR_MASK, 16)
     w_u32(&_c, r ? 1u : 0u);
     w_u32(&_c, g ? 1u : 0u);
     w_u32(&_c, b ? 1u : 0u);
     w_u32(&_c, a ? 1u : 0u);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glDepthMask(GLboolean flag) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DEPTH_MASK, 4)
+    EMIT_INFALLIBLE_BEGIN(OP_DEPTH_MASK, 4)
     w_u32(&_c, flag ? 1u : 0u);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glDepthFunc(GLenum func) {
@@ -3618,9 +3640,9 @@ void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) {
 
 void glStencilMask(GLuint mask) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_STENCIL_MASK, 4)
+    EMIT_INFALLIBLE_BEGIN(OP_STENCIL_MASK, 4)
     w_u32(&_c, mask);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glStencilMaskSeparate(GLenum face, GLuint mask) {
@@ -3652,26 +3674,26 @@ void glStencilOpSeparate(GLenum face, GLenum fail, GLenum zfail, GLenum zpass) {
 
 void glPolygonOffset(GLfloat factor, GLfloat units) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_POLYGON_OFFSET, 8)
+    EMIT_INFALLIBLE_BEGIN(OP_POLYGON_OFFSET, 8)
     w_f32(&_c, factor);
     w_f32(&_c, units);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glDepthRangef(GLfloat n, GLfloat f) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_DEPTH_RANGEF, 8)
+    EMIT_INFALLIBLE_BEGIN(OP_DEPTH_RANGEF, 8)
     w_f32(&_c, n);
     w_f32(&_c, f);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glSampleCoverage(GLfloat value, GLboolean invert) {
     if (!_wpk_gl_command_encoder()) return;
-    EMIT_BEGIN(OP_SAMPLE_COVERAGE, 8)
+    EMIT_INFALLIBLE_BEGIN(OP_SAMPLE_COVERAGE, 8)
     w_f32(&_c, value);
     w_u32(&_c, invert ? 1u : 0u);
-    EMIT_END()
+    EMIT_INFALLIBLE_END()
 }
 
 void glReleaseShaderCompiler(void) {
