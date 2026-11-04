@@ -1097,8 +1097,11 @@ now connects its immutable shared queue,32-entry generation-token cache,
 Ordinary applications still use checked selection. Native OOM during connected
 C selector execution now has passing three-engine peer-isolation and explicit
 retirement controls, including an independent ownership sample before process
-exit. Automatic admission still requires closure of genuine partial/indeterminate
-publication, remaining native-loss and uncertain prefix reconciliation, unknown error-drain reply custody and the complete
+exit. Unexpected exceptions in a preflighted journal transaction now latch a
+fatal host fault before further work, and completion is sealed after all receipt
+fields. Completed-copyout recovery remains available. Automatic admission still
+requires client reconciliation for legitimate context-reset partial publication,
+remaining native-loss and uncertain prefix reconciliation, unknown error-drain reply custody and the complete
 final-context ownership audit. Ordered transport-error markers now prevent an
 earlier retained flag from reappearing after successful publication recovery,
 while preserving unrelated flags and later repetitions. Shared dispatch/lifecycle guards now nest on

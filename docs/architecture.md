@@ -6955,6 +6955,15 @@ the lower-level query exception alone is insufficient. Transactions and
 handles are bounded nonzero u32 values; sequence/ticket counters are exact u53
 values. Handles never wrap into older authority within their owning scope.
 
+Receipt completion is published only after every progress field is sealed.
+Unexpected exceptions before that seal follow the existing fatal host-invariant
+path, attributed to process, session, transaction and action before propagation.
+A partly published group cannot continue behind an ordinary EIO. Legitimate
+context-reset unwinds and kernel-export faults retain their existing handling.
+A lost copyout after a completed seal still recovers the retained receipt
+without replay. Tests check both direct host queries and kernel imports, plus
+actual browser machines refusing subsequent work after the fatal latch.
+
 Publication preflights every row before committing any intent. Native command
 0x030c selects only the submitting context's exact journal/slot/ticket. Original
 error-observation records consume independently predicted slot results at their

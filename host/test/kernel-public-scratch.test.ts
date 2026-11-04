@@ -14,6 +14,8 @@ import {
 } from "../src/kernel";
 import { QOP_GET_ERROR, QOP_FINISH, QOP_PROGRAM_JOURNAL_BARRIER, QOP_PROGRAM_JOURNAL, QOP_PROGRAM_CAPTURE } from "../src/webgl/ops";
 import {markRendererReset,rendererLost} from "../src/webgl/renderer-loss";
+import {NativeGlFault} from "../src/webgl/native-recovery";
+import {NativeContextReset} from "../src/webgl/native-batch";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
 
 function hostileBytes(length: number, reportedLength = 1): Uint8Array {
@@ -1715,4 +1717,38 @@ it.each([4,8] as const)("lifecycle journal import confines metadata and preserve
  }finally{lostNative.mockRestore();}
  expect(rendererLost(b)).toBe(true);expect(b.uniformUpload).toBe(upload);
  b.uniformUpload=null;kernel.gl.destroyContext(7,0);
+});
+
+for(const kind of ["unexpected","reset"] as const)it.each([4,8] as const)(`journal ${kind} failure preserves the host fault policy at wasm%d width`,width=>{
+ const onHostFault=vi.fn(),{kernel,memory}=fullKernelHarness({}, {onHostFault}, width);
+ kernel.gl.bind({pid:7,sessionId:0,cmdbufAddr:4096,cmdbufLen:4096});
+ const b=kernel.gl.get(7,0)!;b.contextId=21;
+ b.gl=new Proxy({getError:()=>0,isContextLost:()=>false,getParameter:()=>null},
+  {get:(o,k)=>Reflect.get(o,k)??(()=>null)}) as unknown as WebGL2RenderingContext;
+ const imports=kernel.testAuthority.buildImportObject(memory) as {env:Record<string,(...args:any[])=>any>};
+ const ptr=(n:number)=>width===8?BigInt(n):n;
+ const query=(words:number[])=>{
+  new Uint32Array(memory.buffer,4096,words.length).set(words);
+  return imports.env.host_gl_query(7,QOP_PROGRAM_JOURNAL,ptr(4096),ptr(words.length*4),ptr(8192),ptr(48),0);
+ };
+ expect(query([1,1,4])).toBe(48);
+ const journal=b.programJournal!,original=journal.publish.bind(journal);
+ const cause=kind==="reset"?new NativeContextReset("controlled import reset"):new Error("controlled import publication failure");
+ const publish=vi.spyOn(journal,"publish").mockImplementation((...args)=>{
+  expect(original(...args)).toBe(true);
+  if(kind==="reset")markRendererReset(b);
+  throw cause;
+ });
+ new Uint8Array(memory.buffer,8192,48).fill(0xa5);
+ try{
+  const mutation=()=>query([3,2,2,journal.id,0,1,0,1,0,0,0,journal.id,1,2,0,2,0,0,0]);
+  if(kind==="unexpected"){
+   let thrown:unknown;try{mutation();}catch(error){thrown=error;}
+   expect(thrown).toBeInstanceOf(NativeGlFault);expect(onHostFault).toHaveBeenCalledExactlyOnceWith(thrown);
+   expect((thrown as Error).cause).toBe(cause);
+  }else{expect(mutation()).toBe(-19);expect(onHostFault).not.toHaveBeenCalled();expect(rendererLost(b)).toBe(true);}
+  expect([...new Uint8Array(memory.buffer,8192,48)]).toEqual(new Array(48).fill(0xa5));
+  expect(b.programJournalControl.receipt.slice(0,3)).toEqual(new Uint32Array([2,2,3]));
+  expect(journal.publishedTicket).toBe(1);expect(publish).toHaveBeenCalledTimes(1);
+ }finally{publish.mockRestore();kernel.gl.destroyContext(7,0);}
 });

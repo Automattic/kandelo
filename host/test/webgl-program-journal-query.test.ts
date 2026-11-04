@@ -6,9 +6,11 @@ import {captureContextGlProgram} from "../src/webgl/program-captures.js";
 import {publicCurrentProgramName,GlProgramQueryPin} from "../src/webgl/program-objects.js";
 import {decodeAndDispatch,validateCommandBuffer} from "../src/webgl/bridge.js";
 import {QOP_PROGRAM_JOURNAL,QOP_PROGRAM_JOURNAL_BARRIER,OP_USE_PROGRAM_JOURNAL,OP_ERROR_OBSERVED} from "../src/webgl/ops.js";
-import {NativeGlFault} from "../src/webgl/native-recovery.js";
+import {NativeGlFault,setNativeGlFaultReporter} from "../src/webgl/native-recovery.js";
+import {NativeContextReset} from "../src/webgl/native-batch.js";
+import {markRendererReset} from "../src/webgl/renderer-loss.js";
 import {configureGlAudit,resetGlAuditForTesting} from "../src/webgl/native-audit.js";
-afterEach(()=>resetGlAuditForTesting());
+afterEach(()=>{resetGlAuditForTesting();setNativeGlFaultReporter(null);});
 const magic=0x47514c33;
 function fixture(){
  const selected:unknown[]=[],native=new Set<object>();let current:unknown=null;
@@ -63,6 +65,42 @@ it("retains indeterminate status and forbids mutator retry after a native admiss
  expect(f.query([6]).words.slice(0,3)).toEqual([2,2,2]);expect(f.query([2,2,f.capture]).rc).toBe(-22);
  expect(f.query([2,3,f.capture]).rc).toBe(-22);f.dispose();
 });
+for(const kind of ["unexpected","reset"] as const)it(`retains a committed prefix without replay after ${kind} publication failure`,()=>{
+ const f=fixture();f.setup();const journal=f.b.programJournal!,original=journal.publish.bind(journal);
+ const reported:Error[]=[],cause=kind==="reset"?new NativeContextReset("controlled reset"):new Error("controlled publication failure");
+ setNativeGlFaultReporter(fault=>{reported.push(fault);});
+ const publish=vi.spyOn(journal,"publish").mockImplementation((...args)=>{
+  const accepted=original(...args);expect(accepted).toBe(true);
+  if(kind==="reset")markRendererReset(f.b);
+  throw cause;
+ });
+ try{
+  expect(()=>f.query([3,3,2,1,0,1,0,1,0,20,1,1,1,2,0,2,0,0,0])).toThrow(kind==="reset"?NativeContextReset:NativeGlFault);
+  expect(publish).toHaveBeenCalledTimes(1);expect(f.selected).toEqual([]);
+  expect(publicCurrentProgramName(f.b)).toBe(20);
+  expect(f.query([6]).words.slice(0,3)).toEqual([2,3,3]);
+  expect(f.query([7,1]).words.slice(5,11)).toEqual([1,0,1,0,0,0]);
+  expect(f.query([3,3,1,1,0,1,0,1,0,20,1]).rc).toBe(-22);
+  expect(f.query([3,4,1,1,1,2,0,2,0,0,0]).rc).toBe(-22);
+  expect(publish).toHaveBeenCalledTimes(1);
+  expect(reported).toHaveLength(kind==="reset"?0:1);
+  if(kind==="unexpected"){
+   expect(reported[0]!.cause).toBe(cause);
+   expect(reported[0]!.message).toMatch(/pid 1 session 0 transaction 3 action 3/);
+  }
+ }finally{publish.mockRestore();setNativeGlFaultReporter(null);f.dispose();}
+});
+it("keeps the receipt indeterminate until all progress fields are sealed",()=>{
+ const f=fixture();f.setup();const cause=new Error("receipt snapshot failed"),reported:Error[]=[];
+ setNativeGlFaultReporter(fault=>{reported.push(fault);});
+ const snapshot=vi.spyOn(f.b.programJournal!,"publishedTicket","get").mockImplementation(()=>{throw cause;});
+ try{
+  expect(()=>f.query([3,3,2,1,0,1,0,1,0,20,1,1,1,2,0,2,0,0,0])).toThrow(NativeGlFault);
+  expect(f.query([6]).words.slice(0,3)).toEqual([2,3,3]);
+  expect(reported).toHaveLength(1);expect(reported[0]!.cause).toBe(cause);
+ }finally{snapshot.mockRestore();setNativeGlFaultReporter(null);f.dispose();}
+});
+
 it("never wraps an exhausted generation token into an earlier wire handle",()=>{
  const f=fixture();f.setup();
  (f.b.programJournal as unknown as {nextGeneration:number}).nextGeneration=0xffff_ffff;

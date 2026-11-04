@@ -23268,3 +23268,56 @@ B1 hot paths, conformance and application measurements remain required before
 automatic admission. Full final desktop/memory/POSIX/benchmark/manual gates
 remain open. The preview is unchanged and no performance/native-feel claim is
 made. No new boundary, deferral or reduced acceptance is introduced.
+
+## 2026-11-04 journal receipt sealing and host-fault propagation (R209–R211)
+
+A real injected exception after the first metadata publication previously left
+a status2 transaction behind an ordinary EIO. The guest failed an assertion but
+the machine still admitted later work. A separate exception while collecting
+receipt progress exposed status0 before all fields were sealed; the existing
+client recovered that incomplete success and its probe exited successfully.
+Both violate the existing preflighted host-state/fail-loudly contract.
+
+Receipt completion now becomes visible after all progress fields are complete.
+Unexpected exceptions while the transaction remains indeterminate enter the
+existing NativeGlFault reporter before propagation, including pid, session,
+transaction, action and cause. A poisoned kernel instance refuses later guest
+work. Legitimate NativeContextReset and kernel-export failures keep their
+existing paths; a completed receipt whose copyout is lost still recovers through
+READ_LAST without mutator replay. No new wire, snapshot or version change is
+introduced; the family remains56/3/17/21. These are host bookkeeping invariants,
+not a new native-error boundary or guest API acceptance policy.
+
+| Run / exact principal command | Result | Scope |
+| --- | --- | --- |
+| R209 `graphics-journal-fault-before-r209-1104-175028-2385` | FAIL2 / PASS31 | New partial-publication and receipt-seal controls fail on b4e3188af5; the legitimate context-reset control already passes |
+| R210 `graphics-journal-fault-native-before-r21-1104-175303-9567`, port6028 | FAIL8 | Actual Chromium/both widths/production+fatal. Four partial publications end as guest134 without a kernel fault; four premature success receipts let the guest exit0. All later spawn requests are still admitted |
+| R209 after `graphics-journal-fault-after-r209-1104-175430-b7ea` | PASS33 | Fatal attribution, retained prefix, no replay, sealed completion, context-reset exception and completed-copyout recovery |
+| R210-r2 / R210-r3 | Recorded fixture failures | First diagnostic regex assumed class-before-message; then a stack-string check passed8 Chromium cases but failed16 on other engines. The portable contract is now checked as fatal message, exact receipt progress and refusal of later work. Actual error class/report-before-throw remains independently checked in host/import controls |
+| R210-r3 Node import/source controls | PASS133 | Two files, including four real host-import controls at wasm32/64 pointer widths; legitimate reset returns ENODEV without the host-fault callback, unexpected partial mutation reports before throwing; no partial output copied |
+| R211 `graphics-journal-fault-final-r211-1104-180335-7a4a`, port6031 | PASS8m38 | ABI/evidence709, graphics2162/88, strict probe types, Node12 and GPU432 across three engines/both widths/production+fatal; source/products frozen |
+
+The exact final command is
+`scripts/dev-shell.sh bash /Users/brandon/conductor/workspaces/kandelo/moscow/.context/graphics-journal-fault-final-r211/run.sh`,
+started and collected through scripts/agent-job. All360 routed records retain
+actual guest/kernel hashes. The336 successful journal/rendering/OOM results
+have native program live0 before whole-machine teardown, including36 with an
+independent ownership sample before process exit. The24 forced-fault cases
+verify one attributed kernel-fatal diagnostic and refusal of subsequent work,
+with exact status2 progress after one published row or after all rows before
+receipt sealing. They do not claim explicit native retirement after a fatal
+worker termination. Every routed case uses canonical normal kernel SHA256
+`124b9ca970ca455b37f2a4a32f0708a616a269f7040db6201625d2f95b07c07f`.
+The normal SDK/kernel/image-writer products are unchanged; no normal producer
+was needed for this host-only change.
+
+Full host TypeScript checking still fails39 diagnostics. The complete compiler
+stream matches R203 after removing only dev-shell preambles, not errors or
+locations. This is not a type-check pass. Rust/xtask/shader checkpoint evidence
+is unchanged; full final conformance, desktop, memory, POSIX, benchmark and
+manual-browser gates remain required. Automatic C selection admission remains
+off: legitimate context-reset partial publication, uncertain prefix/error-drain
+reply custody, the complete final-context audit and remaining B1 hot paths and
+application measurements remain open. No application performance/native-feel
+claim or new preview follows. No new boundary, deferral or reduced acceptance
+criterion applies.

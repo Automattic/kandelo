@@ -2,7 +2,7 @@ import {rendererLost} from "./renderer-loss.js";
 import type {GlBinding,GlContextExecutionLease} from "./registry.js";
 import {GlProgramJournal,lookupProgramJournal,programJournalSequence} from "./program-journal.js";
 import {recordGlError} from "./errors.js";
-import {nativeGlFault} from "./native-recovery.js";
+import {nativeGlFault,rethrowNativeGlFault} from "./native-recovery.js";
 
 export const PROGRAM_JOURNAL_REPLY_BYTES=48;
 export const PROGRAM_JOURNAL_MAX_ENTRIES=256;
@@ -98,8 +98,22 @@ export function runProgramJournalQuery(b:GlBinding,input:Uint8Array,out:Uint8Arr
     value=accepted?v.getUint32(12,true):0;
   }else if(action===5){accepted=!!journal && journal.disable();}
   if(!accepted && !b.errors.length)recordGlError(b,0x502);
-  words[0]=accepted?0:1;words[3]=journal?.id??0;words[4]=value;snapshot(words,b,journal);
+  words[3]=journal?.id??0;words[4]=value;snapshot(words,b,journal);
+  // Publish completion only after every progress field is sealed. A failed
+  // copyout can then recover this exact receipt without replaying effects.
+  words[0]=accepted?0:1;
   out.set(control.bytes);return 48;
+  }catch(error){
+    // WHY: a preflighted mutation that throws unexpectedly has lost a host
+    // bookkeeping invariant. Returning EIO would leave a partially published
+    // group looking usable. Preserve legitimate context-reset unwinds and
+    // already reported faults; completed-receipt copyout remains recoverable.
+    rethrowNativeGlFault(error);
+    if(words[0]===2){
+      let detail="unexpected exception";try{detail=String(error);}catch{}
+      nativeGlFault(`Program journal transaction failed after entry: pid ${b.pid} session ${b.sessionId} transaction ${tx} action ${action}; ${detail}`,error);
+    }
+    throw error;
   }finally{
     b.errors=previous;
     if(rendererLost(b))previous.length=0;else for(const error of control.errors)recordGlError(b,error);
