@@ -1,9 +1,10 @@
+import { predictsNativeCalls } from "./native-batch.js";
 import { applyNativeChanges, nativeInverse, reserveNativeRetirement, retireNativeRetirement, transferNativeRetirement, type NativeCall, type NativeChange, rethrowNativeGlFault } from "./native-recovery.js";
 import { vertexAttribute } from "./buffer-references.js";
 import { maxVertexAttributes } from "./limits.js";
 import type { GlBinding } from "./registry.js";
 import type { GlVertexAttribute } from "./buffer-references.js";
-import { allocateNativeBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer, retireBufferObjects } from "./buffer-storage.js";
+import { allocateNativeBuffer, canonicalBuffer, BUFFER_TRANSFER_BYTES, withBufferTransfer, retireBufferObjects } from "./buffer-storage.js";
 import { checkedGlCall, recordGlError } from "./program-objects.js";
 
 const FIXED = 0x140c, FLOAT = 0x1406, ARRAY = 0x8892;
@@ -66,6 +67,27 @@ export function installVertexConstant(b: GlBinding, index: number,
   // slots publishes without a fallible Map.set/clone after native acceptance.
   if (previous) { previous[0]=x; previous[1]=y; previous[2]=z; previous[3]=w; }
   else b.shadow.vertexAttribValues = replacement!;
+}
+
+/** An existing ordinary attribute needs no new native object, shadow slot or
+ * rollback journal inside an authoritative guest batch. Reuse its admitted
+ * slot so a layout-only update cannot fail in metadata reservation. Converted
+ * layouts and first installations keep the transactional allocation path. */
+export function installExistingVertexAttribute(b: GlBinding, index: number,
+  size: number, type: number, normalized: boolean, stride: number, offset: number): boolean {
+  const attribute = b.vertexArrays.get(b.vertexArrayId)?.attributes.get(index);
+  const width = componentBytes(type);
+  if (!attribute || !predictsNativeCalls(b) || !width || type === FIXED ||
+      size < 1 || size > 4 || stride < 0 || stride > 255 || offset < 0 ||
+      stride % width !== 0 || offset % width !== 0) return false;
+  const array = b.shadow.arrayBuffer;
+  const buffer = array && canonicalBuffer(b,array);
+  if (buffer ? !b.bufferStores.has(buffer) : offset !== 0) return false;
+  if (!checkedGlCall(b, () => b.gl!.vertexAttribPointer(index,size,type,normalized,stride,offset))) return true;
+  attribute.buffer = buffer; attribute.size = size; attribute.type = type;
+  attribute.normalized = normalized; attribute.stride = stride; attribute.offset = offset;
+  delete attribute.view;
+  return true;
 }
 
 /** Install every core format transactionally. Metadata capacity precedes native

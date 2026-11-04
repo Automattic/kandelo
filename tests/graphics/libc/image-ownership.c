@@ -4769,6 +4769,63 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-array-storage-unknown-bind"); return 0;
     }
+    if (!strcmp(argv[1], "error-vertex-layout-local")) {
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        glEnableVertexAttribArray(0);
+        const unsigned queries = error_queries;
+        for (unsigned i=0; i<20; i++) {
+            glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,8,(void *)(uintptr_t)(4*(i%4)));
+            assert(glGetError() == GL_NO_ERROR);
+        }
+        assert(error_queries == queries);
+        glBindBuffer(GL_ARRAY_BUFFER,0); assert(glGetError() == GL_NO_ERROR);
+        const unsigned client_queries = error_queries;
+        GLfloat vertices[6] = {0};
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,vertices);
+        assert(glGetError() == GL_NO_ERROR && error_queries == client_queries);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-vertex-layout-local"); return 0;
+    }
+    if (!strcmp(argv[1], "error-vertex-layout-fallbacks")) {
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        unsigned queries = error_queries;
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,2,GL_FIXED,GL_FALSE,0,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,300,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(void *)1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        if (UINTPTR_MAX > UINT32_MAX) {
+            glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,(void *)(uintptr_t)(UINT64_C(1)<<32));
+            assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        }
+        GLuint vao; glGenVertexArrays(1,&vao); glBindVertexArray(vao);
+        glEnableVertexAttribArray(0); assert(glGetError() == GL_NO_ERROR);
+        queries = error_queries;
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-vertex-layout-fallbacks"); return 0;
+    }
+    if (!strcmp(argv[1], "error-vertex-layout-unknown-prefix")) {
+        assert(glGetError() == GL_NO_ERROR);
+        glEnableVertexAttribArray(0);
+        buffer_bind_bad_receipt = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,17);
+        assert(glGetError() == GL_INVALID_OPERATION && glGetError() == GL_NO_ERROR);
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        unsigned queries = error_queries;
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0,2,GL_FLOAT,GL_FALSE,0,NULL);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-vertex-layout-unknown-prefix"); return 0;
+    }
     if (!strcmp(argv[1], "error-receipt-local")) {
         assert(glGetError() == GL_NO_ERROR);
         const unsigned queries = error_queries;

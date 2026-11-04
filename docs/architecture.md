@@ -6209,6 +6209,18 @@ an object identity from that query. Healthy acknowledged bindings need no
 extra query. Element-buffer definitions retain the ordinary path because
 queued vertex-array selection is not yet mirrored exactly.
 
+Ordinary vertex-layout updates can reuse an existing host attribute slot
+inside an authoritative guest batch. Aligned BYTE/UNSIGNED_BYTE/SHORT/
+UNSIGNED_SHORT/FLOAT layouts with stride at most 255 need neither a shadow
+map clone nor a native-retirement reservation. First installations, converted
+layouts and private exact owners keep the transactional path. The guest
+extends its error proof only for a known array binding, a known existing
+slot and a context that has never selected a nondefault VAO. Attribute
+creation remains ordered before use. Indeterminate submissions or mutations
+revoke slot knowledge separately from error flags; acknowledging an array
+bind does not restore those slots. Wider encoded offsets remain outside this
+proof. Client arrays retain their usual draw-time staging.
+
 This is still partial B1; the remaining draw/object validation, later driver
 stages and desktop acceptance measurements are not established by these
 scalar checks.

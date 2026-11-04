@@ -51,7 +51,7 @@ import { recordRenderbufferSize, requireGlesFramebufferComplete } from "./image-
 import { nativeDepthRange, noteUniformWrite, recordCompiledShader } from "./reversed-depth.js";
 import { drawGlesElements } from "./index-data.js";
 import { drawPrivateClientArrays, validPrivateClientDraw } from "./private-client-draw.js";
-import { installVertexAttribute, installVertexConstant } from "./vertex-data.js";
+import { installExistingVertexAttribute, installVertexAttribute, installVertexConstant } from "./vertex-data.js";
 import { bindBufferObject, canonicalBuffer, prepareBufferDraw, replaceBufferData, updateBufferData } from "./buffer-storage.js";
 import type { GlBinding } from "./registry.js";
 import { createShaderIfAccepted, createProgramIfAccepted, checkedGlCall, finalizeProgram, finalizeShader, linkProgramRetainingExecutable, recordGlError, useProgramIfAccepted, requireProgramObject, requireShaderObject, shaderType } from "./program-objects.js";
@@ -1571,6 +1571,7 @@ function dispatch(
       const normalized = v.getUint32(p + 12, true) !== 0;
       const stride = v.getInt32(p + 16, true);
       const off = v.getInt32(p + 20, true);
+      if (installExistingVertexAttribute(b,index,size,type,normalized,stride,off)) return;
       const attribute = {buffer:b.shadow.arrayBuffer && canonicalBuffer(b,b.shadow.arrayBuffer),enabled:vertexAttribute(b,index).enabled,
         size,type,normalized,stride,offset:off};
       const vao = activeVertexArray(b);

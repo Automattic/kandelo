@@ -1,3 +1,4 @@
+import { withNativeBatch } from "../src/webgl/native-batch.js";
 import { describe, expect, it } from "vitest";
 import { NativeGlFault, setNativeGlFaultReporter } from "../src/webgl/native-recovery.js";
 import {
@@ -1039,6 +1040,63 @@ describe("shared buffer deletion", () => {
       ["vertexAttribPointer",[0,2,0x1406,false,8,4]], ["vertexAttribPointer",[0,2,0x1406,false,8,0]]]);
     send(b,O.OP_BIND_BUFFER,[0x8893,0]);
     expect(gl.log.filter(([name,args]) => name === "deleteBuffer" && args[0] === old)).toEqual([["deleteBuffer",[old]]]);
+  });
+
+  it("updates an existing ordinary pointer without cloning its shadow map", () => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const attributes = a.vertexArrays.get(0)!.attributes;
+    const slot = attributes.get(0)!;
+    const OriginalMap = globalThis.Map;
+    let clones = 0;
+    class RefuseAttributeClone<K,V> extends OriginalMap<K,V> {
+      constructor(entries?: Iterable<readonly [K,V]> | null) {
+        if (entries === attributes as unknown) { clones++; throw new Error("metadata capacity unavailable"); }
+        super(entries);
+      }
+    }
+    try {
+      globalThis.Map = RefuseAttributeClone as typeof Map;
+      expect(withNativeBatch(a,"existing ordinary pointer",() => send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,3,0x1406,1,12,4]))).toBe(0);
+    } finally { globalThis.Map = OriginalMap; }
+    expect(clones).toBe(0);
+    expect(a.vertexArrays.get(0)!.attributes).toBe(attributes);
+    expect(attributes.get(0)).toBe(slot);
+    expect(slot).toEqual({buffer:a.buffers.get(71),enabled:true,size:3,type:0x1406,normalized:true,stride:12,offset:4});
+    expect(gl.log.filter(([name])=>name==="vertexAttribPointer").at(-1)).toEqual(["vertexAttribPointer",[0,3,0x1406,true,12,4]]);
+    expect(a.errors).toEqual([]);
+  });
+
+  it.each([
+    {kind:"first installation",initialize:false,batch:true,type:0x1406,stride:0,offset:0},
+    {kind:"fixed conversion",initialize:true,batch:true,type:0x140c,stride:0,offset:0},
+    {kind:"large stride",initialize:true,batch:true,type:0x1406,stride:300,offset:0},
+    {kind:"unaligned offset",initialize:true,batch:true,type:0x1406,stride:0,offset:1},
+    {kind:"private exact ownership",initialize:true,batch:false,type:0x1406,stride:0,offset:0},
+  ])("keeps metadata reservation for $kind", ({initialize,batch,type,stride,offset}) => {
+    const {gl,a,send} = setup();
+    send(a,O.OP_BIND_BUFFER,[0x8892,71]);
+    if (initialize) send(a,O.OP_ENABLE_VERTEX_ATTRIB_ARRAY,[0]);
+    const attributes = a.vertexArrays.get(0)!.attributes;
+    const OriginalMap = globalThis.Map;
+    let clones = 0;
+    class RefuseAttributeClone<K,V> extends OriginalMap<K,V> {
+      constructor(entries?: Iterable<readonly [K,V]> | null) {
+        if (entries === attributes as unknown) { clones++; throw new Error("metadata capacity unavailable"); }
+        super(entries);
+      }
+    }
+    const nativeCalls = gl.log.filter(([name])=>name==="vertexAttribPointer").length;
+    try {
+      globalThis.Map = RefuseAttributeClone as typeof Map;
+      const update = () => send(a,O.OP_VERTEX_ATTRIB_POINTER,[0,2,type,0,stride,offset]);
+      if (batch) expect(withNativeBatch(a,"fallible layout",update)).toBe(0);
+      else update();
+    } finally { globalThis.Map = OriginalMap; }
+    expect(clones).toBe(1); expect(a.errors).toEqual([0x505]);
+    expect(a.vertexArrays.get(0)!.attributes).toBe(attributes);
+    expect(gl.log.filter(([name])=>name==="vertexAttribPointer")).toHaveLength(nativeCalls);
   });
 
   it("preserves accepted pointer state when a later native pointer update fails", () => {

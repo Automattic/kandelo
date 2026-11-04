@@ -21834,3 +21834,70 @@ Normal archive checks remain queued in
 `.context/graphics-b1-array-sdk-r74-r3/run.sh`, after the frozen preview build
 and its checks. No desktop performance, completed B1, native timing or full
 conformance claim follows from these bounded results. ABI remains unchanged.
+
+
+### B1 ordinary vertex layouts with existing metadata
+
+A regular layout update no longer clones an existing attribute map or reserves
+native-retirement metadata inside an authoritative guest batch. It updates the
+admitted slot after the ordinary native setter. First installations, converted
+layouts and private exact owners retain their transactional behavior. The C
+proof is narrower: a separately known array binding, a slot created by an
+ordered attribute enable/disable and no nondefault-VAO selection in this
+context. BYTE, UNSIGNED_BYTE, SHORT, UNSIGNED_SHORT and FLOAT layouts must be
+component-aligned, with stride at most 255 and an encoded offset representable
+as a nonnegative signed 32-bit value. Client pointers still use draw-time
+staging. Failed or indeterminate submissions/mutations revoke default-slot
+knowledge; a later successful array bind cannot repair it.
+
+The old host fails the new allocation control by cloning the map; the new host
+passes it and five controls that preserve allocation failure for first,
+converted, large-stride, unaligned and private-owner paths. The source graphics
+gate passes all 2,002 assertions in 84 files. The previous C driver fails two
+local-proof controls; the candidate passes all 431 native C/device-double cases
+under UBSan. Existing native, Node and browser semantics remain independently
+checked by the unchanged host validator and the fatal error oracle.
+
+The final serial source cohort passes two Node loud-no-renderer checks, twelve
+real-GLES cases, six Node device-double cases and eighteen browser device-double
+cases. Chromium 153.0.8010.12, Firefox 155.0 and WebKit 26.6 each observe twenty
+requests for twenty checked ordinary pointer definitions across all five
+component types before, and zero after, in production and fatal-audit modes.
+A separate client-pointer definition takes one request before and zero after;
+its ordinary staged draw also passes pixel readback. Pixel readback, retained shared
+buffer identity, pending flags and conservative fallbacks remain intact.
+The device-double before arm fails the two local-proof assertions as expected.
+Exact scripts and frozen identities:
+`.context/graphics-b1-vertex-serial-r85/run.sh`,
+`.context/graphics-b1-vertex-real-r83-r4/run.sh` and
+`.context/graphics-b1-vertex-source-r84-r3/run.sh`. The initial serial job takes
+122 seconds; the expanded five-format/client-pointer real-GLES run takes
+63 seconds. The host gate is recorded under
+`.context/graphics-b1-vertex-r18/.context/vertex-gate-r81/`.
+
+Earlier browser attempts failed before guest coverage because the scratch
+checkout lacked the prepared image-writer module. Their logs remain preserved;
+the final cohort explicitly records provisioning that unchanged writer from
+normal r14. A partial overlapping source-control setup was stopped and both
+cohorts replayed serially. These consumers compile explicit GLES source objects
+through the prepared SDK: they are not normal archive/image validation, desktop
+latency, total instrumentation overhead or full B1 acceptance. The waiting
+normal archive/profile jobs were superseded before execution to admit this
+increment as well; the frozen r16 preview build and its consumers are unchanged.
+Program 56, unpublished host 3, GL 17 and fork 21 remain unchanged.
+
+### Additional disk preservation during the normal build
+
+Only inactive archived Cargo incremental caches (2,491,124 KiB allocated) were
+removed after tracked-file and repeated open-file checks. Source, logs and
+built test binaries remain. Inventory: `.context/graphics-cache-clean-r80/`.
+Sixty-four historical profiler trace files (4,401,123,328 allocated bytes) were
+losslessly archived to 264,799,169 bytes. Every file SHA-256 and the complete
+member inventory were verified before raw removal. Primary measurement JSON,
+screenshots, scripts and verdicts remain directly readable. Restore from
+`.context/timerfd-epoll-runs/kperf/raw-traces.tar.zst`; its adjacent note and
+`.context/graphics-evidence-archive-r82/` record the exact restore command,
+manifest and archive SHA-256
+`e926450288cb6fd8b828db4292beca6b9b0d8a9d8562fcb8f3b1e89154edf8b6`.
+Concurrent builds and APFS cloning prevent assigning the free-space delta
+solely to these operations.

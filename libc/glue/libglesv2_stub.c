@@ -240,6 +240,7 @@ static struct wpk_object_name *attachment_object(struct wpk_object_group *group,
 struct wpk_client_attrib {
     int client;          /* 1: pointer is client memory, not a buffer offset */
     int enabled;
+    int host_row_known;
     GLint size;
     GLenum type;
     GLboolean normalized;
@@ -321,6 +322,7 @@ struct wpk_gles_context {
     /* An indeterminate mutation can change the host binding without a C
      * publication. Draining error flags cannot restore this separate proof. */
     int array_binding_known;
+    int default_vertex_array_only;
     uint64_t array_serial;
     struct wpk_object_name *array_object;
     struct wpk_vertex_array default_vertex_array, *current_vertex_array, *vertex_arrays;
@@ -422,6 +424,7 @@ struct wpk_gles_context *_wpk_gl_create_shared_encoder(struct wpk_gles_context *
     state->next_framebuffer = state->next_vertex_array = 1;
     state->current_vertex_array = &state->default_vertex_array;
     state->array_binding_known = 1; /* The initial binding is zero. */
+    state->default_vertex_array_only = 1;
     init_vertex_array(&state->default_vertex_array);
     return state;
 }
@@ -440,12 +443,20 @@ static inline void w_f32(uint8_t **c, float v)    { memcpy(*c, &v, 4); *c += 4; 
 /* Every device reply passes through here. ENODEV is the host's report that
  * the current context's renderer was lost (a graphics reset); libEGL keeps
  * that state, so the reset status needs no request of its own. */
+/* Queued attribute creation may not have executed after a lost prefix.
+ * Error flags and later array binds cannot repair those separate slots. */
+static void invalidate_binding_knowledge(struct wpk_gles_context *state) {
+    state->array_binding_known = 0;
+    for (uint32_t i=0; i<state->default_vertex_array.attrib_count; i++)
+        state->default_vertex_array.attribs[i].host_row_known = 0;
+}
+
 static int gl_device_ioctl(int fd, unsigned long request, void *arg) {
     _wpk_gl_note_device_request(); /* Voids local glGetError knowledge. */
     int rc = ioctl(fd, request, arg);
     if (rc != 0) {
         struct wpk_gles_context *state = _wpk_gl_current_encoder();
-        if (state) state->array_binding_known = 0;
+        if (state) invalidate_binding_knowledge(state);
         if (errno == ENODEV) _wpk_gl_note_reset();
     }
     return rc;
@@ -460,7 +471,7 @@ static void finish_command_submission(struct wpk_gles_context *state,
     if (rc == 0) state->client_errors &= ~errors;
     /* A reset context reports CONTEXT_LOST instead and never submits again. */
     else if (!_wpk_gl_context_reset()) {
-        state->array_binding_known = 0;
+        invalidate_binding_knowledge(state);
         record_client_error(state, GL_INVALID_OPERATION);
         const uint32_t token = state->next_uniform_upload;
         if (token) {
@@ -1054,9 +1065,10 @@ void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) {
  * at it, draws, and deletes the buffer. SDL2's GLES2 renderer draws this way
  * on every platform except Emscripten. */
 
+static uint32_t attrib_type_size(GLenum type);
 static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
                                        GLboolean normalized, GLsizei stride,
-                                       uint32_t offset) {
+                                       uintptr_t offset) {
     EMIT_BEGIN(OP_VERTEX_ATTRIB_POINTER, 24)
     w_u32(&_c, (uint32_t)index);
     w_i32(&_c, (int32_t)size);
@@ -1064,9 +1076,18 @@ static void emit_vertex_attrib_pointer(GLuint index, GLint size, GLenum type,
     w_u32(&_c, normalized ? 1u : 0u);
     w_i32(&_c, (int32_t)stride);
     w_i32(&_c, (int32_t)offset);
-    EMIT_END()
+    uint8_t *start = _c - 28;
+    struct wpk_gles_context *state = _wpk_gl_current_encoder();
+    const uint32_t width = attrib_type_size(type);
+    if (state->default_vertex_array_only && state->array_binding_known &&
+        state->current_vertex_array == &state->default_vertex_array &&
+        index < state->default_vertex_array.attrib_count &&
+        state->default_vertex_array.attribs[index].host_row_known &&
+        type != GL_FIXED && width && stride >= 0 && stride <= 255 &&
+        (uint32_t)stride % width == 0 && offset <= INT32_MAX && offset % width == 0)
+        finish_predicted_command(start,_c,GL_NO_ERROR);
+    else g_cursor = _c;
 }
-static uint32_t attrib_type_size(GLenum type);
 
 static uint32_t vertex_attrib_limit(struct wpk_gles_context *state);
 enum { WPK_ATTRIB_ERROR = -1, WPK_ATTRIB_OUT_OF_RANGE = 0, WPK_ATTRIB_PRESENT = 1,
@@ -1105,6 +1126,7 @@ void glEnableVertexAttribArray(GLuint index) {
     EMIT_PREDICTED_BEGIN(OP_ENABLE_VERTEX_ATTRIB_ARRAY, 4,
         slot == WPK_ATTRIB_OUT_OF_RANGE ? GL_INVALID_VALUE : GL_NO_ERROR)
     w_u32(&_c, (uint32_t)index); EMIT_PREDICTED_END()
+    if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].host_row_known = 1;
 }
 
 void glDisableVertexAttribArray(GLuint index) {
@@ -1115,6 +1137,7 @@ void glDisableVertexAttribArray(GLuint index) {
     EMIT_PREDICTED_BEGIN(OP_DISABLE_VERTEX_ATTRIB_ARRAY, 4,
         slot == WPK_ATTRIB_OUT_OF_RANGE ? GL_INVALID_VALUE : GL_NO_ERROR)
     w_u32(&_c, (uint32_t)index); EMIT_PREDICTED_END()
+    if (slot == WPK_ATTRIB_PRESENT) g_attribs[index].host_row_known = 1;
 }
 
 void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
@@ -1170,7 +1193,7 @@ void glVertexAttribPointer(GLuint index, GLint size, GLenum type,
     g_attribs[index].client = 0;
     /* `pointer` is an offset into the bound GL_ARRAY_BUFFER. */
     emit_vertex_attrib_pointer(index, size, type, normalized, stride,
-                               (uint32_t)(uintptr_t)pointer);
+                               (uintptr_t)pointer);
 }
 
 void glVertexAttrib4fv(GLuint index, const GLfloat *values) {
@@ -1898,7 +1921,7 @@ static int checked_mutation_query(uint32_t op, const uint32_t *words, uint32_t c
             return 1;
         }
     }
-    _wpk_gl_current_encoder()->array_binding_known = 0;
+    invalidate_binding_knowledge(_wpk_gl_current_encoder());
     raise_client_error(GL_INVALID_OPERATION);
     return -1;
 }
@@ -4530,6 +4553,7 @@ void glBindVertexArray(GLuint array) {
     struct wpk_vertex_array *entry = array ? state->vertex_arrays : &state->default_vertex_array;
     while (entry && entry->name != array) entry = entry->next;
     if (!entry) { raise_client_error(GL_INVALID_OPERATION); return; }
+    if (array) state->default_vertex_array_only = 0;
     state->current_vertex_array = entry;
     EMIT_BEGIN(OP_BIND_VERTEX_ARRAY, 4)
     w_u32(&_c, array);
