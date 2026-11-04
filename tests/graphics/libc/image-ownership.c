@@ -4638,6 +4638,89 @@ int main(int argc, char **argv) {
         assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
         puts("PASS error-drain-infallible"); return 0;
     }
+    if (!strcmp(argv[1], "error-array-storage-local")) {
+        glBindBuffer(GL_ARRAY_BUFFER,17);
+        assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries, submits = submit_batches, uploads = buffer_uploads;
+        const GLenum usages[] = {GL_STATIC_DRAW,GL_STREAM_DRAW,GL_DYNAMIC_DRAW};
+        const unsigned char bytes[] = {7,1,9,2,8,3,6};
+        capture_array_upload = 1;
+        for (unsigned i=0;i<3;i++) {
+            glBufferData(GL_ARRAY_BUFFER,37,NULL,usages[i]); assert(glGetError() == GL_NO_ERROR);
+            glBufferData(GL_ARRAY_BUFFER,sizeof bytes,bytes,usages[i]); assert(glGetError() == GL_NO_ERROR);
+            glBufferData(GL_ARRAY_BUFFER,0,bytes,usages[i]); assert(glGetError() == GL_NO_ERROR);
+        }
+        glBufferData(GL_ARRAY_BUFFER,sizeof bytes,bytes,GL_STREAM_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries && submit_batches == submits);
+        assert(buffer_uploads == uploads);
+        glFlush();
+        assert(buffer_uploads == uploads + 10 && captured_size == sizeof bytes);
+        assert(!memcmp(captured_bytes,bytes,sizeof bytes));
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-local"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-guards")) {
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries, uploads = buffer_uploads;
+        glBufferData(0xdead,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_ENUM);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,0xdead); assert(glGetError() == GL_INVALID_ENUM);
+        glBufferData(GL_ARRAY_BUFFER,-1,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_VALUE);
+        glBufferData(GL_ARRAY_BUFFER,(GLsizeiptr)INT32_MAX+1,NULL,GL_STATIC_DRAW);
+        assert(glGetError() == GL_OUT_OF_MEMORY);
+        glBindBuffer(GL_ARRAY_BUFFER,0);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW); assert(glGetError() == GL_INVALID_OPERATION);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        glFlush(); assert(buffer_uploads == uploads);
+        assert(glGetError() == GL_NO_ERROR);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-guards"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-element")) {
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER,23); assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries;
+        const unsigned char bytes[] = {1,2,3};
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,7,NULL,GL_STATIC_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,sizeof bytes,bytes,GL_STREAM_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 2);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER,0,bytes,GL_DYNAMIC_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 3);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-element"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-revoke")) {
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        unsigned queries = error_queries;
+        glClear(GL_COLOR_BUFFER_BIT); glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STATIC_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        GLint limit = 0; glGetIntegerv(GL_MAX_VERTEX_ATTRIBS,&limit);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STREAM_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        const unsigned submits = submit_batches;
+        unsigned i = 0;
+        while (submit_batches == submits && i++ < WPK_GL_CMDBUF_LEN/16u + 2u)
+            glBufferData(GL_ARRAY_BUFFER,0,NULL,GL_DYNAMIC_DRAW);
+        assert(submit_batches == submits + 1);
+        assert(glGetError() == GL_NO_ERROR && error_queries == ++queries);
+        glBufferData(GL_ARRAY_BUFFER,4,NULL,GL_STREAM_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries);
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-revoke"); return 0;
+    }
+    if (!strcmp(argv[1], "error-array-storage-large")) {
+        static unsigned char bytes[70000];
+        for (unsigned i=0;i<sizeof bytes;i++) bytes[i] = (unsigned char)(i%251);
+        capture_array_upload = 1;
+        glBindBuffer(GL_ARRAY_BUFFER,17); assert(glGetError() == GL_NO_ERROR);
+        const unsigned queries = error_queries, uploads = buffer_uploads, chunks = captured_chunks;
+        glBufferData(GL_ARRAY_BUFFER,sizeof bytes,bytes,GL_STREAM_DRAW);
+        assert(glGetError() == GL_NO_ERROR && error_queries == queries + 1);
+        assert(buffer_uploads == uploads + 1 && captured_chunks == chunks + 2);
+        assert(captured_size == sizeof bytes && !memcmp(captured_bytes,bytes,sizeof bytes));
+        assert(eglDestroyContext(dpy,ctx) && eglReleaseThread() && eglTerminate(dpy));
+        puts("PASS error-array-storage-large"); return 0;
+    }
     if (!strcmp(argv[1], "error-receipt-local")) {
         assert(glGetError() == GL_NO_ERROR);
         const unsigned queries = error_queries;

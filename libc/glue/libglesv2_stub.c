@@ -847,6 +847,16 @@ void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size,
     }
 }
 
+/* ARRAY_BUFFER is mirrored only after checked bind/delete acceptance. Its
+ * valid storage definition has no further API rejection in replaceBufferData;
+ * native allocation failure retains the context-reset boundary. Element
+ * binding also depends on VAO selection, whose queued acceptance is not yet
+ * mirrored exactly, so that target must retain the ordinary error drain. */
+static void finish_buffer_definition(uint8_t *start, uint8_t *end, GLenum target) {
+    if (target == GL_ARRAY_BUFFER) finish_predicted_command(start, end, GL_NO_ERROR);
+    else g_cursor = end;
+}
+
 void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage) {
     if (!_wpk_gl_command_encoder()) return;
     if ((target != GL_ARRAY_BUFFER && target != GL_ELEMENT_ARRAY_BUFFER)
@@ -870,10 +880,11 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     uint32_t dlen = (uint32_t)size;
     if (data == NULL || dlen == 0) {
         EMIT_BEGIN(OP_BUFFER_DATA, 12u)
+        uint8_t *start = _c - 4;
         w_u32(&_c, (uint32_t)target);
         w_u32(&_c, dlen);
         w_u32(&_c, (uint32_t)usage);
-        EMIT_END()
+        finish_buffer_definition(start, _c, target);
         return;
     }
 
@@ -884,12 +895,13 @@ void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage
     }
 
     EMIT_BEGIN(OP_BUFFER_DATA, 12u + dlen)
+    uint8_t *start = _c - 4;
     w_u32(&_c, (uint32_t)target);
     w_u32(&_c, dlen);
     memcpy(_c, data, dlen);
     _c += dlen;
     w_u32(&_c, (uint32_t)usage);
-    EMIT_END()
+    finish_buffer_definition(start, _c, target);
 }
 
 /* ----- shaders / programs ------------------------------------------ */

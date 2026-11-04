@@ -21725,3 +21725,37 @@ Inactive owned generated `target` directories totaling 5.25 GiB are also
 retired after repeated empty open-file checks, without removing source or
 current build/preview inputs. Concurrent builds and APFS sharing mean those
 allocated-size totals are not an exact free-space delta.
+
+
+### B1 array-buffer storage proof, initial C controls
+
+Validated `glBufferData(GL_ARRAY_BUFFER, ...)` records now preserve an existing
+exact error proof. Array bindings are published in C only after checked
+bind/delete acceptance, and the host's `replaceBufferData` has no further API
+rejection for these validated arguments and that retained binding. Original
+records and upload bytes still reach the independent host validator. Native
+allocation failure retains D-50's context-reset policy; no host bookkeeping
+OOM policy is changed. Other unknown commands and device-request epochs still
+revoke the proof.
+
+Element-buffer definitions remain on the ordinary drain path: their binding
+also depends on queued VAO acceptance, which C does not yet mirror exactly.
+Large data definitions still split into storage plus sub-data records; those
+sub-data records remain unknown and force the ordinary drain. This is a
+scoped B1 increment, not a completed storage/VAO family or driver stage.
+
+The existing driver at `9536e84b84` fails the new local-proof assertion; the
+changed driver passes all 426 C library device-double cases under UBSan.
+The added cases retain ten queued definitions and their final exact upload
+bytes without an extra error query, preserve invalid-argument flags, require
+element-buffer and large-upload drains, and revoke knowledge after an unknown
+prefix, ordinary query or command-buffer wrap. Exact script and frozen hashes:
+`.context/graphics-b1-array-storage-r71/run.sh` (24 seconds; before exits 1,
+candidate exits 0). These are C/device-double observations, not native GLES
+conformance or application performance.
+
+Both normal SDKs and Node/browser execution of this newest increment remain
+to be run after the separate frozen normal r16 preview build releases the
+build slot. That preview contains the earlier scalar/receipt driver and is
+not changed by this source increment. The original ship bar, ABI family,
+remaining B1 validation, B2–B6 and C1–C3 requirements all remain in force.
