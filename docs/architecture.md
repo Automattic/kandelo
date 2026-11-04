@@ -6659,10 +6659,23 @@ Headless DOM/worker pixel controls establish classification only.
 
 The moving-pixel controller fits CSS viewport coordinates from temporary
 markers rather than assuming browser toolbar offsets. It learns templates
-from foreground/background captures and checks independent poses through
-native frame identity. Capture output is explicitly sRGB so marker bytes
+from foreground/background captures separately for each pose, then validates
+each identity in fresh frames. The shared matcher bounds the sum of all
+candidate-template comparisons. This accounts for position-dependent edge
+coverage at fractional capture scales without widening match tolerances. Capture output is explicitly sRGB so marker bytes
 have a declared color space. Browser PNG and native compositor edge coverage
 are not treated as interchangeable. A shared headless replay exercises the
 controller with synthetic geometry/timestamps; it cannot establish native
 desktop latency. The native path remains driven by WindowServer samples,
 with no worker-acknowledgement substitute for a visible response.
+
+
+The opt-in desktop cursor method uses the same controller for real Foot and
+ScummVM cursors through ordinary browser input, with original event timestamps
+and separate KMS cursor pixels. ScummVM template qualification requires its
+red software cursor; the browser OS cursor must be hidden. Headless replay
+proves captured-pixel correlation with synthetic clocks only. Its screenshot
+acquisition budgets and durations are separate from the native observer's
+deadline and display timestamps. Native capture additionally requires the
+owned window to fit fully on one display. Positive physical validation, total
+instrumentation overhead and the full desktop workload matrix remain open.

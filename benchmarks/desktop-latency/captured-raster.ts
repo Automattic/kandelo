@@ -2,8 +2,8 @@ import type { WindowRaster } from './pixel-template.js';
 import type { ViewportMapping } from './viewport-calibration.js';
 
 export async function screenshotRaster(page: any, path?: string,
-  projection?: { width: number; height: number; mapping: ViewportMapping }): Promise<WindowRaster> {
-  const png = await page.screenshot({ ...(path ? { path } : {}), scale: 'css' });
+  projection?: { width: number; height: number; mapping: ViewportMapping }, timeoutMs = 15_000): Promise<WindowRaster> {
+  const png = await page.screenshot({ ...(path ? { path } : {}), scale: 'css', timeout: timeoutMs });
   const data = await page.evaluate(async ({ bytes, projection }: any) => {
     const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
     const canvas = document.createElement('canvas');

@@ -21611,3 +21611,65 @@ not alter the runtime, program 56/host 3/GL 17/fork 21 or the normal preview.
 Actual desktop cursor/content correlation, instrumentation overhead and the
 full native-feel workload/engine matrix remain open. B1 remains partial;
 a normal-built B preview is still required before C1–C3.
+
+
+### Real desktop cursor correlation method (November 4)
+
+The standalone and desktop sources now share one controller. It learns a
+bounded template per pose and validates each identity in fresh captured
+frames, rather than claiming unseen-pose validation from one template. The
+shared Swift matcher validates candidate overrides and their cumulative work
+budget. Calibration retains intermediate captures and requires changed pixels;
+ScummVM additionally requires its red software cursor. No matching threshold
+is widened. A saved-frame control from r57 rejects the single-template
+configuration and accepts the pose-specific configuration for all three
+desktop phases on exactly the same rasters.
+
+The opt-in desktop fixture observes original pointer-event timestamps and
+uses ordinary guest input with the browser cursor hidden. It follows real
+Foot cursor pixels, Foot with concurrent ScummVM, and ScummVM's software
+cursor. It neither paints guest cursor replacements nor uses acknowledgements
+as visible response endpoints. Its images/kernel are the normal r14 build;
+the host is the private r15 diagnostic pre-B baseline with process and kperf
+observation. These are method checks, not validation of the current B driver
+or final production tree. The existing ScummVM paint observer is shared with
+the ordinary launcher/dialog/quit spec without changing its assertions.
+
+Evidence and exact private commands, all under `scripts/dev-shell.sh`:
+
+- `.context/graphics-desktop-pixels-r59/run.sh`: headless Chromium 153.0.8010.12,
+  Firefox 155.0 and WebKit 26.6 pass all three phases, 72 ordinary responses and
+  nine no-op controls; 2 minutes 37 seconds. Geometry/clocks are synthetic.
+- `.context/graphics-cursor-regressions-r64/run.sh`: all six standalone
+  engine/render-mode cohorts pass 360 ordinary responses, six no-ops and six
+  deliberate 50 ms stalls; the shared matcher passes 354 assertions including
+  template override and cumulative-budget negatives. Strict stream/clock
+  controls and scoped TypeScript checks pass; 1 minute 33 seconds.
+- `.context/graphics-scumm-paint-r63/run.sh`: the full existing ScummVM Wayland
+  launcher/dialog/quit spec passes on all three engines; 2 minutes 1 second.
+- `.context/graphics-desktop-pixels-r62/run.sh`: the 1280x720 method passes all
+  three phases on Chromium and Firefox, then fails WebKit's second geometry
+  calibration. Offline replay of that saved raster at the declared viewport
+  fits the expected mapping; the cause remains unresolved. The viewport is
+  now copied and calibration inputs retained before checking geometry.
+  `.context/graphics-desktop-pixels-r65/run.sh` then passes all three WebKit
+  phases in 49 seconds. This does not erase or explain the preceding failure.
+
+Earlier failures are preserved. R56 captures before a stable cursor template;
+r58 captures ScummVM before its software-cursor redraw on Firefox. R61 has a
+10.03-second Firefox `page.screenshot` call that races the ten-second response
+wait, despite a late pixel row arriving. That is collector-acquisition evidence,
+not established guest latency or a confirmed external-runtime defect. The
+headless adapter now pumps intermediate frames, gives each screenshot a
+15-second limit within a 30-second functional response budget, and records
+every acquisition duration separately. Native observation retains its own
+ten-second deadline and real display timestamps. No performance criterion is
+relaxed by this synthetic replay budget.
+
+The native desktop adapter is wired but has not been physically validated.
+The recorder now also rejects an owned window not fully contained on one
+display. No new headed run occurred after the maintainer's short session was
+released. Native cursor visibility, the full workload matrix, overhead, missed
+frames and all driver-stage acceptance remain open. Program 56, host 3, GL 17
+and fork 21 are unchanged. A normal build of the partial B1 candidate is
+running separately; it is not an available preview or a completed B stage.

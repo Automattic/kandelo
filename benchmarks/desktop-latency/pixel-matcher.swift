@@ -11,11 +11,24 @@ struct PixelTemplate: Codable {
   let width: Int
   let height: Int
   let points: [PixelTemplatePoint]
+
+  func validate() throws {
+    guard (1...64).contains(width), (1...64).contains(height), (6...256).contains(points.count)
+    else { throw PixelMatcherError.invalid("template bounds") }
+    var seen = Set<Int>()
+    for point in points {
+      guard (0..<width).contains(point.x), (0..<height).contains(point.y),
+        point.rgb.count == 3, point.rgb.allSatisfy({ (0...255).contains($0) }),
+        seen.insert(point.y * width + point.x).inserted
+      else { throw PixelMatcherError.invalid("template point") }
+    }
+  }
 }
 struct PixelCandidate: Codable {
   let id: String
   let x: Int
   let y: Int
+  let template: PixelTemplate?
 }
 struct PixelMatcherConfiguration: Codable {
   let tag: String
@@ -27,21 +40,19 @@ struct PixelMatcherConfiguration: Codable {
 
   func validate() throws {
     guard !tag.isEmpty, tag.utf8.count <= 128,
-      (1...64).contains(template.width), (1...64).contains(template.height),
-      (6...256).contains(template.points.count),
       (1...128).contains(candidates.count), (0...2).contains(searchRadius),
       (0...64).contains(maxChannelError), maxMeanError.isFinite,
-      maxMeanError >= 0, maxMeanError <= Double(maxChannelError),
-      candidates.count * (2 * searchRadius + 1) * (2 * searchRadius + 1)
-        * template.points.count <= 131_072
+      maxMeanError >= 0, maxMeanError <= Double(maxChannelError)
     else { throw PixelMatcherError.invalid("configuration bounds or work budget") }
-    var points = Set<Int>()
-    for point in template.points {
-      guard (0..<template.width).contains(point.x), (0..<template.height).contains(point.y),
-        point.rgb.count == 3, point.rgb.allSatisfy({ (0...255).contains($0) }),
-        points.insert(point.y * template.width + point.x).inserted
-      else { throw PixelMatcherError.invalid("template point") }
+    try template.validate()
+    var totalPoints = 0
+    for candidate in candidates {
+      let selected = candidate.template ?? template
+      try selected.validate()
+      totalPoints += selected.points.count
     }
+    guard totalPoints * (2 * searchRadius + 1) * (2 * searchRadius + 1) <= 131_072
+    else { throw PixelMatcherError.invalid("configuration work budget") }
     var ids = Set<String>()
     var positions = Set<String>()
     for candidate in candidates {
@@ -96,16 +107,17 @@ struct PixelMatcher {
     var comparisons = 0
     for candidate in c.candidates {
       let radius = c.searchRadius
+      let template = candidate.template ?? c.template
       guard candidate.x >= radius, candidate.y >= radius,
-        candidate.x + c.template.width + radius <= width,
-        candidate.y + c.template.height + radius <= height
+        candidate.x + template.width + radius <= width,
+        candidate.y + template.height + radius <= height
       else { throw PixelMatcherError.invalid("candidate outside captured window") }
       var best: PixelMatch?
       for dy in -radius...radius {
         for dx in -radius...radius {
           var total = 0
           var largest = 0
-          for point in c.template.points {
+          for point in template.points {
             let at = (candidate.y + dy + point.y) * stride + (candidate.x + dx + point.x) * 4
             let r = abs(Int(bgra[at + 2]) - point.rgb[0])
             let g = abs(Int(bgra[at + 1]) - point.rgb[1])
@@ -114,7 +126,7 @@ struct PixelMatcher {
             total += r + g + b
             comparisons += 1
           }
-          let mean = Double(total) / Double(3 * c.template.points.count)
+          let mean = Double(total) / Double(3 * template.points.count)
           if largest <= c.maxChannelError && mean <= c.maxMeanError &&
               (best == nil || mean < best!.meanError) {
             best = PixelMatch(id: candidate.id, x: candidate.x + dx, y: candidate.y + dy,

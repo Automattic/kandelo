@@ -7,7 +7,9 @@ import { screenshotRaster } from './captured-raster.js';
 // Exercises the SAME control/calibration flow without operating the desktop.
 // The window border and timestamps here are synthetic, never native timing.
 export class HeadlessWindowObserver implements WindowObserver {
-  readonly stream = new ObservationRows();
+  // This budget covers screenshot transport and decoding, not display latency.
+  // The native observer retains its independent ten-second response deadline.
+  readonly stream = new ObservationRows(30_000);
   private configuration: any;
   private snapshots: string[] = [];
   private snapshotIds = new Set<string>();
@@ -29,13 +31,23 @@ export class HeadlessWindowObserver implements WindowObserver {
   }
   async flush() {
     try {
-      // Replay has no autonomous native frame stream. Drain submitted work
-      // before asking for its next captured pixels. This is NOT used by the
-      // native adapter, whose response still requires WindowServer evidence.
-      await this.page.evaluate(() => (globalThis as any).whenIdle());
+      // Replay pumps captured frames while a response is outstanding. Keep
+      // intermediate/missing matches; no source acknowledgement ends a wait.
+      const waiting = this.stream.pendingCount > 0;
+      do {
       await this.page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+      const viewport = this.page.viewportSize();
+      assert(viewport, 'A fixed viewport is required for replay');
       const mapping = { x: { scale: .75, offset: 7 }, y: { scale: .75, offset: 53 } } as any;
-      const raster = await screenshotRaster(this.page, undefined, { width: 616, height: 514, mapping });
+      const acquisitionStartN = performance.now();
+      let raster;
+      try {
+        raster = await screenshotRaster(this.page, undefined, { width: Math.round(viewport.width * .75) + 16, height: Math.round(viewport.height * .75) + 64, mapping });
+      } finally {
+        const acquisitionEndN = performance.now();
+        this.stream.receive({ kind: 'headless-acquisition', acquisitionStartN, acquisitionEndN,
+          durationMs: acquisitionEndN - acquisitionStartN, completed: !!raster, native: false });
+      }
       const bgra = Buffer.from(raster.bgra).toString('base64');
       const now = performance.now();
       const frame: any = { kind: 'frame', index: ++this.index, displayMs: now, receivedMs: now,
@@ -46,6 +58,7 @@ export class HeadlessWindowObserver implements WindowObserver {
       }));
       this.stream.receive(frame);
       for (const id of this.snapshots.splice(0)) this.stream.receive({ ...frame, ...raster, kind: 'pixels', id, bgra });
+      } while (waiting && this.stream.pendingCount > 0);
     } catch (error) { this.stream.fail(error as Error); throw error; }
   }
   async calibrate() { return Array.from({ length: 9 }, () => { const n0 = performance.now(); return { n0, n1: n0, b: n0 }; }); }

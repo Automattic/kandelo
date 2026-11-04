@@ -36,4 +36,7 @@ for (const status of [2, 3]) {
 }
 const expired = new ObservationRows();
 await assert.rejects(expired.wait(() => false, 0, 1), /response timeout/); expired.dispose();
+const customDeadline = new ObservationRows(1);
+await assert.rejects(customDeadline.wait(() => false), /response timeout/); customDeadline.dispose();
+for (const invalid of [0, -1, NaN, Infinity, 60_001, 1.5]) assert.throws(() => new ObservationRows(invalid));
 console.log('PASS response cursor, in-flight failure custody, ordering, active-display guards and timeout controls');

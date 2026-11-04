@@ -92,7 +92,8 @@ The live recorder accepts these additional stdin commands:
   at most sixteen unique snapshots per process and four pending requests.
 - `matcher <json>` installs a `PixelMatcherConfiguration` from
   `pixel-matcher.swift`. Each candidate has a unique identity and a window-raster
-  position; the template contains sparse RGB samples. `learnPixelTemplate` in
+  position, and can override the shared sparse RGB template. The comparison
+  budget includes the sum of all selected templates. `learnPixelTemplate` in
   `pixel-template.ts` derives those samples from foreground/background captures.
 - `matcher-clear` removes the matcher.
 
@@ -106,7 +107,7 @@ observer run. The optional third recorder argument selects capture width
 instrumentation-overhead measurements; `matcherMs` alone does not supply them.
 
 A desktop caller still needs verified CSS-to-capture coordinate calibration,
-independent validation at a held-out cursor pose, and input-to-pixel correlation.
+independent captured-frame validation of each cursor pose, and input-to-pixel correlation.
 Use original event timestamps. Preserve every ambiguous/unmatched observation
 and report coalesced inputs; do not silently remove latency tails. None of
 these controls completes the required desktop workload/engine matrix.
@@ -133,17 +134,25 @@ content on three engines. Its capture adapter adds a synthetic border and
 0.75 scale. Four temporary colored markers recover the scale and offsets;
 missing, ambiguous, distorted or inconsistent geometry fails calibration.
 Markers are removed before cursor learning. The controller learns directly
-from foreground/background capture rasters, then proves the learned pose and
-two held-out poses by native matcher identity. Calibration screenshots and
+a separate template for each pose from foreground/background capture rasters,
+then proves each pose in fresh frames through the shared matcher. Fractional
+capture scaling can change edge coverage between positions; validation does
+not reuse the learning frames. Image-qualified calibration retains up to three
+attempts per pose and never treats a source acknowledgement as a redraw. Calibration screenshots and
 worker acknowledgements never supply the timed display endpoint.
 
 Sixty ordinary inputs vary their phase by 0/3/7/11 ms, followed by a deliberate
 50 ms handler/worker stall. A no-op input must retain the preceding pose.
 Original event timestamps, all frame matches, ambiguity, missing observations,
 clock bounds, calibration data and failures remain in the private output.
-The headless adapter drains submitted work before its next screenshot because
-it has no autonomous window-frame stream. Its timestamps and geometry are
-synthetic; the result deliberately omits native latency quantiles.
+The headless adapter pumps screenshots while a response is outstanding,
+retaining intermediate unmatched frames without waiting for source completion.
+Its timestamps and geometry are synthetic; the result deliberately omits
+native latency quantiles. Each screenshot has a 15-second acquisition limit
+inside a 30-second functional response budget. All acquisition intervals,
+failures and counts over 50 ms/1 second are retained separately. Those are
+collector durations, not guest latency. Native observation keeps its independent
+ten-second response deadline and actual WindowServer timestamps.
 
 The native mode uses actual WindowServer observations and never drains or
 waits for a worker acknowledgement on the timed path. Coordinate calibration
@@ -165,14 +174,32 @@ inputs each. Native capture width uses `points`, the owned window's logical
 width, to avoid unnecessary thumbnail resampling. The recorder still enforces
 its 128–2048-pixel bound. It selects only the launched browser process family,
 requires an unlocked authorized console, and invalidates a timed run if the
-window loses foreground status or the display blanks/suspends. The client
+window loses foreground status, is not fully contained on one display, or the
+display blanks/suspends. The client
 also refuses reordered/duplicate frames and retains failure custody while
 input dispatch is in flight. Cleanup stops only its recorder and browsers.
 
 The headless replay is passing. Native attempts found and corrected capture
 color-space assumptions, then exposed browser/native edge differences. The
 revised native-pixel learning path still needs a successful physical replay.
-Actual Kandelo Foot/ScummVM correlation, continuous motion/drag/resize/scroll
-workloads, concurrent load, missed-frame accounting and total capture/matcher
-overhead remain required for desktop acceptance. This standalone control is
+The opt-in `desktop-cursor.spec.ts` now uses this same controller with real
+Foot and ScummVM cursor pixels, passive original pointer-event timestamps,
+normal guest input and a normally built desktop image. It requires an explicit
+`KPERF_DESKTOP_PIXEL_METHOD=1` diagnostic host exposing `__kperf`, private output
+(`KPERF_DESKTOP_PIXEL_OUT`) and a compiled `KPERF_PIXEL_MATCHER_BIN`; missing
+prerequisites fail. The fixture runs Foot alone, Foot under concurrent ScummVM
+load and ScummVM. ScummVM calibration requires its red software cursor, and
+verification requires the browser OS cursor to be hidden. It does not paint
+a replacement cursor. A native run additionally requires
+`KPERF_DESKTOP_PIXEL_NATIVE=1`, `KPERF_NATIVE_CAPTURE_BIN`, an owned visible
+window and a newly coordinated unlocked session. This native desktop mode
+has not yet passed physical validation.
+
+Headless desktop correlation has passed on all three engines. Failed capture
+and geometry attempts remain evidence, including a Firefox screenshot taking
+10.03 seconds and a later WebKit geometry failure that is not explained by
+replaying the saved raster. A subsequent WebKit run passes; that does not
+establish the cause or erase the failure. Continuous motion/drag/resize/scroll,
+native display correlation under load, missed-frame accounting and total
+capture/matcher overhead remain required for desktop acceptance. This standalone control is
 not a Stage B application preview or a native-feel result.

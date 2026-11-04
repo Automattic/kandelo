@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { performance } from 'node:perf_hooks';
 import assert from 'node:assert/strict';
@@ -11,6 +11,10 @@ export class ObservationRows {
   private failure?: Error;
   private guarded = false;
   private lastFrame?: { index: number; displayMs: number };
+  constructor(private readonly defaultTimeoutMs = 10_000) {
+    assert(Number.isInteger(defaultTimeoutMs) && defaultTimeoutMs > 0 && defaultTimeoutMs <= 60_000);
+  }
+  get pendingCount() { return this.waiters.length; }
   arm() { this.guarded = true; }
   fail(error: Error) {
     this.failure ??= error;
@@ -37,7 +41,7 @@ export class ObservationRows {
       }
     } catch (error) { this.fail(error as Error); }
   }
-  wait(predicate: (row: any) => boolean, after = 0, timeoutMs = 10_000): Promise<any> {
+  wait(predicate: (row: any) => boolean, after = 0, timeoutMs = this.defaultTimeoutMs): Promise<any> {
     if (this.failure) return holdObservation(Promise.reject(this.failure));
     const row = this.rows.slice(after).find(predicate);
     if (row) return Promise.resolve(row);
@@ -102,4 +106,19 @@ export class NativeWindowObserver implements WindowObserver {
     try { assert.equal(await this.closed, 0, this.stderr); this.stream.check(); }
     finally { clearTimeout(timer); this.stream.dispose(); }
   }
+}
+
+/** Enumerate only descendants of a caller-owned browser/server/test process. */
+export function ownedProcessFamily(rootPid: number): number[] {
+  assert(Number.isInteger(rootPid) && rootPid > 0);
+  const tree = execFileSync('/bin/ps', ['-axo', 'pid=,ppid='], { encoding: 'utf8' })
+    .trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
+  assert(tree.some(([pid]) => pid === rootPid), 'Owned process root no longer exists');
+  const owners = new Set<number>([rootPid]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [pid, parent] of tree) if (owners.has(parent) && !owners.has(pid)) { owners.add(pid); changed = true; }
+  }
+  return [...owners];
 }

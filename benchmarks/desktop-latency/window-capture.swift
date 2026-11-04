@@ -273,7 +273,11 @@ final class Observer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sen
           "nominalModeHz": CGDisplayCopyDisplayMode(id)?.refreshRate ?? 0,
           "bounds": [bounds.origin.x, bounds.origin.y, bounds.width, bounds.height],
           "intersectsWindow": bounds.intersects(window.frame),
+          "containsWindow": bounds.contains(window.frame),
         ]
+      }
+      guard displays.contains(where: { $0["containsWindow"] as? Bool == true }) else {
+        throw PixelMatcherError.invalid("owned window must fit completely within one display")
       }
       let observer = Observer()
       let config = SCStreamConfiguration()

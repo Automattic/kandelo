@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { learnPixelTemplate, type WindowRaster } from './pixel-template.js';
+import { learnPixelTemplate, type WindowRaster, type PixelTemplate } from './pixel-template.js';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const out = process.env.KPERF_PIXEL_CONTROL_OUT;
@@ -39,7 +39,7 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
       try {
         const page = await context.newPage();
         const pageErrors: string[] = [];
-        page.on('pageerror', e => pageErrors.push(e.message));
+        page.on('pageerror', (e: Error) => pageErrors.push(e.message));
         await page.goto('data:text/html,' + encodeURIComponent('<title>Offline pixel matcher control</title><style>html,body{margin:0;background:rgb(34,51,68);overflow:hidden}.cursor{position:absolute;width:12px;height:18px;clip-path:polygon(0 0,12px 18px,4px 18px,4px 12px,0 12px);background:rgb(255,26,13)}</style>'));
         if (mode === 'dom') {
           await page.evaluate(() => {
@@ -54,7 +54,7 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
             };
           });
         } else {
-          await page.evaluate(async source => {
+          await page.evaluate(async (source: string) => {
             const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 240;
             document.body.append(canvas);
             const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
@@ -76,14 +76,14 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
           }, workerSource);
         }
         const raster = async (name: string, pose: any): Promise<WindowRaster> => {
-          await page.evaluate(p => (globalThis as any).pose(p), pose);
+          await page.evaluate((p: any) => (globalThis as any).pose(p), pose);
           // A worker acknowledgement is not a displayed-frame endpoint. This
           // is untimed calibration setup; advance compositor frames before
           // capturing it. Native timing must still wait for matching pixels.
           await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
           const png = await page.screenshot({ path: join(dir, `${name}.png`) });
           // Decode the captured PNG, rather than reading the live drawing canvas.
-          const decoded = await page.evaluate(async bytes => {
+          const decoded = await page.evaluate(async (bytes: number[]) => {
             const image = await createImageBitmap(new Blob([new Uint8Array(bytes)], { type: 'image/png' }));
             const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
             const ctx = canvas.getContext('2d')!; ctx.drawImage(image, 0, 0); image.close();
@@ -100,15 +100,17 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
         assert.throws(() => learnPixelTemplate(background, background, { ...positions[0], width: 12, height: 18 }), /insufficient changed pixels/); assertions++;
         assert.throws(() => learnPixelTemplate(background, { ...frames[0], bgra: frames[0].bgra.subarray(4) }, { ...positions[0], width: 12, height: 18 }), /raster/); assertions++;
         const configuration = { tag: `${engine}-${mode}`, template,
-          candidates: positions.map((p, i) => ({ id: String(i), ...p })),
+          candidates: positions.map((p, i): { id: string; x: number; y: number; template?: PixelTemplate } => ({ id: String(i), ...p })),
           searchRadius: 1, maxChannelError: 16, maxMeanError: 4 };
         const request = (frame: WindowRaster, config = configuration) => ({ configuration: config,
           ...frame, bgra: Buffer.from(frame.bgra).toString('base64') });
         const wrong = await raster('wrong-color', { ...positions[2], wrong: true });
+        const green = learnPixelTemplate(background, wrong, { ...positions[2], width: 12, height: 18 });
+        const override = { ...configuration, candidates: configuration.candidates.map(c => c.id === '2' ? { ...c, template: green } : c) };
         const twin = await raster('ambiguous', { ...positions[1], twin: true, x2: positions[4].x, y2: positions[4].y });
         const padded = { ...frames[3], stride: frames[3].stride + 16, bgra: new Uint8Array((frames[3].stride + 16) * frames[3].height).fill(0xa5) };
         for (let y = 0; y < padded.height; y++) padded.bgra.set(frames[3].bgra.subarray(y * frames[3].stride, (y + 1) * frames[3].stride), y * padded.stride);
-        const requests = [request(background), ...frames.map(f => request(f)), request(wrong), request(twin), request(padded), request(frames[0])];
+        const requests = [request(background), ...frames.map(f => request(f)), request(wrong), request(twin), request(padded), request(frames[0]), request(wrong, override)];
         const input = requests.map(r => JSON.stringify(r)).join('\n') + '\n';
         const output = execFileSync(binary, [], { input, encoding: 'utf8', maxBuffer: 1_000_000 });
         const results = output.trim().split('\n').map(line => JSON.parse(line));
@@ -127,12 +129,17 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
         assert.equal(results[9].state, 'matched'); assert.equal(results[9].matches[0].id, '3'); assertions += 2;
         // Replaying an old/no-op raster cannot claim that target 5 appeared.
         assert.equal(results[10].matches[0].id, '0'); assert(!results[10].matches.some((m: any) => m.id === '5')); assertions += 2;
+        assert.equal(results[11].state, 'matched'); assert.equal(results[11].matches[0].id, '2'); assertions += 2;
+        const budgetTemplate: PixelTemplate = { width: 16, height: 16, points: Array.from({ length: 256 }, (_, i) => ({ x: i % 16, y: Math.floor(i / 16), rgb: [0, 0, 0] })) };
         const negatives = [
           request(frames[0], { ...configuration, candidates: [{ id: 'bad', x: 319, y: 239 }] }),
           request(frames[0], { ...configuration, candidates: [configuration.candidates[0], configuration.candidates[0]] }),
           { ...request(frames[0]), bgra: Buffer.from(frames[0].bgra.subarray(4)).toString('base64') },
           request(frames[0], { ...configuration, searchRadius: 3 }),
           request(frames[0], { ...configuration, searchRadius: 2, candidates: Array.from({ length: 128 }, (_, i) => ({ id: String(i), x: i + 2, y: 50 })) }),
+          request(frames[0], { ...configuration, candidates: [{ ...configuration.candidates[0], template: { ...template, width: 65 } }] }),
+          request(frames[0], { ...configuration, template: { ...template, points: template.points.slice(0, 6) }, searchRadius: 2,
+            candidates: Array.from({ length: 128 }, (_, i) => ({ id: String(i), x: i + 2, y: 50, template: budgetTemplate })) }),
         ];
         for (const [i, negative] of negatives.entries()) {
           const result = spawnSync(binary, [], { input: JSON.stringify(negative) + '\n', encoding: 'utf8' });
@@ -142,7 +149,7 @@ for (const engine of ['chromium', 'firefox', 'webkit'] as const) {
         assert.deepEqual(pageErrors, []); assertions++;
         writeFileSync(join(dir, 'result.json'), JSON.stringify({ engine, mode, version: browser.version(),
           scope: 'Headless rendered-pixel classification only; no native display timing or instrumentation-overhead claim',
-          configuration, results, assertions, negatives: negatives.length }, null, 2));
+          configuration, overrideConfiguration: override, results, assertions, negatives: negatives.length }, null, 2));
         console.log(JSON.stringify({ engine, mode, version: browser.version(), results: results.length, negatives: negatives.length, assertions }));
       } finally { await context.close(); }
     }
